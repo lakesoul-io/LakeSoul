@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! The dedicated incremental SQL entry end to end: bootstrap, incremental
 //! maintenance, definition-change rebuilds (with state table replacement) and
 //! `INSERT OVERWRITE`.

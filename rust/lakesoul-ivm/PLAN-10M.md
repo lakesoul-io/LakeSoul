@@ -248,6 +248,24 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
 - 剩余：聚合/其他形状的输出仍 collect（输出小）；bootstrap 的**输入** delta 仍 materialize
   （10M 行），后续可把初始刷新也改为 provider 流式扫描 + 流式 delta。
 
+#### P0.2c 结果：执行层输入/输出全面流式化（2026-10）
+
+- `source_baseline` 只保留 `PartitionFiles`、游标和版本；所有 rebuild（join、aggregate、
+  window、union、semi/anti、row、multi-join、lookup chain、fallback）直接从 provider 流式
+  读取，不再把整表读成 `Vec<RecordBatch>` 再注册 `MemTable`。
+- 增量路径的 current / before-window / as-of 以及显式窗口文件组读取也统一走
+  `IvmTableProvider`；显式文件组通过 `IvmTableProvider::groups` 扫描，保留 CDC tombstone，
+  与旧 `read_partition_files` 语义一致。
+- 聚合、join、union、semi/anti、window、row 的输出改为 `append_stream`/`write_dataframe`
+  流式写入，驱动端不再 `collect` 整份输出。
+- affected-key / group-key / 维表也不再 `collect`：它们以 DataFrame/Provider 形式注册，
+  由 DataFusion 的 semi-join / broadcast join 消费；刷新路径的中间步骤不再把数据收进 driver。
+  代价是失去 `IN` 列表的 reader 裁剪，部分状态读取会扫描整表/整分区，但内存不随源表/MV
+  总行数增长，且不再有 driver 端峰值。
+- 附带修复：reader 的 range partition 列不再重复加入 `target_schema`（分区列由
+  `table_partition_cols` 追加）；否则 `day = ...` 这类分区谓词会报
+  `Ambiguous reference to unqualified field day`。
+
 #### P5b 结果：rebuild 桶并行（2026-10）
 
 - `source_baseline` 拆出只取文件/版本/游标的 metadata 版本；rebuild 不再先整表读一遍

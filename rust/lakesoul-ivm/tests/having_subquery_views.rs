@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! A `HAVING` subquery needs a second source, which a single-statement view
 //! does not model.  The documented two-view pattern covers it: group the
 //! source into one view, then filter that view against the subquery with the

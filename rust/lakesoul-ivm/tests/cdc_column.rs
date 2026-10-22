@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Tests for the configurable CDC change column and the tombstone handling it
 //! implies: deleted keys survive merge-on-read as `delete` rows and must be
 //! excluded from rebuilds and from the retraction lookup.

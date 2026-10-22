@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Tests for `MIN`/`MAX` views backed by the value-count state table.
 
 use std::collections::HashMap;

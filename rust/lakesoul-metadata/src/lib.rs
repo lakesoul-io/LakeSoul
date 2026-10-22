@@ -1256,6 +1256,10 @@ pub async fn execute_query(
     span.record("row_count", rows.len() as u64);
     request.record_rows(rows.len() as u64);
 
+    // The rows are already fetched: return the pooled connection before the
+    // (possibly large) row deserialization.
+    drop(conn);
+
     let result_type = match query_type {
         DaoType::SelectNamespaceByNamespace
         | DaoType::ListNamespaces

@@ -5,8 +5,6 @@
 //! The multi-way join view: three or more sources flattened into one chain.
 
 use super::*;
-use arrow::array::BooleanArray;
-use arrow_array::Array;
 use datafusion::common::NullEquality;
 use datafusion::logical_expr::LogicalPlanBuilder;
 
@@ -92,230 +90,6 @@ pub struct MultiJoinCondition {
 /// The MV partitions a multi-way join refresh can touch when only the base
 /// source changed.
 ///
-/// The output carries the base columns under their MV names and the base
-/// primary keys under `__pk0_<key>`; map them back so the partition columns
-/// can be matched.  A change in a later source can match base rows in any
-/// partition (the join keys do not have to include the partition column), so
-/// those windows fall back to the full read.
-/// The MV partitions a multi-way join refresh can touch when only the base
-/// source changed.
-///
-/// Every affected MV row carries a base row, so the base's changed range
-/// partitions bound the read.  The output carries the base columns under
-/// their MV names and the base primary keys under `__pk0_<key>`; map them
-/// back so the partition columns can be matched.
-fn multi_join_base_partitions(
-    view: &MultiJoinView,
-    windows: &[SourceWindow],
-) -> Option<Vec<(String, Vec<String>)>> {
-    if !windows
-        .iter()
-        .skip(1)
-        .all(|window| window.added_files.is_empty())
-    {
-        return None;
-    }
-    let mut mapping = view
-        .columns
-        .iter()
-        .filter(|column| column.source == 0)
-        .map(|column| (column.column.clone(), column.name.clone()))
-        .collect::<Vec<_>>();
-    for key in &view.sources[0].primary_keys {
-        mapping.push((key.clone(), multi_join_pk_alias(0, key)));
-    }
-    super::mv_partitions_for_source_mapped(
-        &view.mv,
-        &view.sources[0],
-        &windows[0],
-        &mapping,
-    )
-}
-
-fn multi_join_mv_partitions(
-    view: &MultiJoinView,
-    windows: &[SourceWindow],
-    changed_deltas: &[Option<Vec<RecordBatch>>],
-    current_batches: &[Option<Vec<RecordBatch>>],
-) -> Option<Vec<(String, Vec<String>)>> {
-    let changed = windows
-        .iter()
-        .enumerate()
-        .filter(|(_, window)| !window.added_files.is_empty())
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-    match changed.as_slice() {
-        [0] => multi_join_base_partitions(view, windows),
-        [source] => multi_join_chain_partitions(
-            view,
-            *source,
-            changed_deltas[*source].as_deref()?,
-            current_batches,
-        ),
-        _ => None,
-    }
-}
-
-/// `(column on `a`, column on `b`)` of the equality key between two chain
-/// sources.
-fn multi_join_key_between(
-    view: &MultiJoinView,
-    a: usize,
-    b: usize,
-) -> Option<(String, String)> {
-    for key in &view.keys {
-        if key.left_source == a && key.right_source == b {
-            return Some((key.left_column.clone(), key.right_column.clone()));
-        }
-        if key.left_source == b && key.right_source == a {
-            return Some((key.right_column.clone(), key.left_column.clone()));
-        }
-    }
-    None
-}
-
-/// Logical (tombstone free) batches of a source's current state.
-fn multi_join_logical_batches(
-    source: &IvmTable,
-    batches: Vec<RecordBatch>,
-) -> Option<Vec<RecordBatch>> {
-    let Some(column) = change_column(source) else {
-        return Some(batches);
-    };
-    batches
-        .into_iter()
-        .map(|batch| IvmTable::filter_change_batch(batch, column).ok())
-        .collect()
-}
-
-/// Keep the rows whose `column` value is one of `values`.
-fn multi_join_filter_by_values(
-    batches: &[RecordBatch],
-    column: &str,
-    values: &[String],
-) -> Option<Vec<RecordBatch>> {
-    let allowed = values
-        .iter()
-        .map(String::as_str)
-        .collect::<std::collections::HashSet<_>>();
-    let mut out = Vec::with_capacity(batches.len());
-    for batch in batches {
-        let index = batch.schema().index_of(column).ok()?;
-        let array = batch.column(index);
-        let mut mask = Vec::with_capacity(array.len());
-        for row in 0..array.len() {
-            let matches = if array.is_null(row) {
-                false
-            } else {
-                let value =
-                    arrow::util::display::array_value_to_string(array.as_ref(), row)
-                        .ok()?;
-                allowed.contains(value.as_str())
-            };
-            mask.push(matches);
-        }
-        out.push(
-            arrow::compute::filter_record_batch(batch, &BooleanArray::from(mask)).ok()?,
-        );
-    }
-    Some(out)
-}
-
-/// The MV partitions a change of any single chain source can touch, when the
-/// base partition column is the equality key to the second source.
-///
-/// The changed source's delta carries its join-key values; each intermediate
-/// source's current state is then filtered by the next source's values and
-/// yields its own key values one hop further down, until the base key values
-/// (the MV partition values) remain.  The changed source's join key must be
-/// part of its primary keys: an in-place update can then not move a row
-/// between values, so the delta (deletes included) covers every affected
-/// value.  A mutable join key is a rebuild scenario and keeps the full read.
-fn multi_join_chain_partitions(
-    view: &MultiJoinView,
-    changed: usize,
-    delta: &[RecordBatch],
-    current_batches: &[Option<Vec<RecordBatch>>],
-) -> Option<Vec<(String, Vec<String>)>> {
-    if view.mv.range_partition_columns.len() != 1 {
-        return None;
-    }
-    let mv_column = &view.mv.range_partition_columns[0];
-    let base_column = multi_join_base_column(view, mv_column)?;
-    let base = &view.sources[0];
-    if !base.range_partition_columns.contains(&base_column)
-        || !base.primary_keys.contains(&base_column)
-        || !view.mv.primary_keys.contains(mv_column)
-    {
-        return None;
-    }
-    let (first_base_column, _) = multi_join_key_between(view, 0, 1)?;
-    if first_base_column != base_column {
-        return None;
-    }
-    let (_, changed_key) = multi_join_key_between(view, changed - 1, changed)?;
-    if !view.sources[changed].primary_keys.contains(&changed_key) {
-        return None;
-    }
-    let mut values = multi_join_column_values(delta, &changed_key)?;
-    if values.is_empty() {
-        return None;
-    }
-    for source in (1..changed).rev() {
-        let (filter_column, _) = multi_join_key_between(view, source, source + 1)?;
-        let (extract_column, _) = multi_join_key_between(view, source - 1, source)?;
-        let batches = multi_join_logical_batches(
-            &view.sources[source],
-            current_batches.get(source)?.clone()?,
-        )?;
-        let filtered = multi_join_filter_by_values(&batches, &filter_column, &values)?;
-        values = multi_join_column_values(&filtered, &extract_column)?;
-        if values.is_empty() {
-            return None;
-        }
-    }
-    Some(vec![(mv_column.clone(), values)])
-}
-
-/// The base column an MV partition column carries: an output column of the
-/// base, or one of its `__pk0_<key>` aliases.
-fn multi_join_base_column(view: &MultiJoinView, name: &str) -> Option<String> {
-    for column in &view.columns {
-        if column.source == 0 && column.name == name {
-            return Some(column.column.clone());
-        }
-    }
-    view.sources[0]
-        .primary_keys
-        .iter()
-        .find(|key| multi_join_pk_alias(0, key) == name)
-        .cloned()
-}
-
-/// The distinct non-null values of `column` in `batches`, rendered the way a
-/// partition value is.
-fn multi_join_column_values(
-    batches: &[RecordBatch],
-    column: &str,
-) -> Option<Vec<String>> {
-    let mut values: Vec<String> = Vec::new();
-    for batch in batches {
-        let index = batch.schema().index_of(column).ok()?;
-        let array = batch.column(index);
-        for row in 0..array.len() {
-            if array.is_null(row) {
-                continue;
-            }
-            let value =
-                arrow::util::display::array_value_to_string(array.as_ref(), row).ok()?;
-            if !values.contains(&value) {
-                values.push(value);
-            }
-        }
-    }
-    Some(values)
-}
-
 fn multi_join_pk_alias(source: usize, key: &str) -> String {
     format!("__pk{source}_{key}")
 }
@@ -693,7 +467,7 @@ fn validate_multi_join_view(view: &MultiJoinView) -> Result<()> {
             view.view_id
         ));
     }
-    let context = SessionContext::new();
+    let context = refresh_session();
     let keyed = view.keyed();
     for (index, source) in view.sources.iter().enumerate() {
         if keyed != !source.primary_keys.is_empty() {
@@ -882,7 +656,7 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
-        let context = SessionContext::new();
+        let context = refresh_session();
         let schemas = view
             .sources
             .iter()
@@ -900,18 +674,12 @@ impl IvmRuntime {
                 Vec::with_capacity(view.sources.len());
             let mut affected: Vec<Option<DataFrame>> =
                 Vec::with_capacity(view.sources.len());
-            let mut changed_deltas: Vec<Option<Vec<RecordBatch>>> =
-                vec![None; view.sources.len()];
-            let mut current_batches: Vec<Option<Vec<RecordBatch>>> =
-                vec![None; view.sources.len()];
             for (index, (source, window)) in view.sources.iter().zip(&windows).enumerate()
             {
-                let now_batches = source.read_current(&self.client).await?;
-                current_batches[index] = Some(now_batches.clone());
                 let now = apply_side_filter(
                     &context,
                     filter_deletes(
-                        dataframe(&context, now_batches, &source.schema)?,
+                        self.current_table_frame(&context, source)?,
                         change_column(source),
                     )?,
                     &source.schema,
@@ -923,12 +691,11 @@ impl IvmRuntime {
                     affected.push(None);
                     continue;
                 }
-                let delta_batches = source
-                    .read_partition_files(window.added_files.clone())
-                    .await?;
-                // Retained for the join-key partition rule below.
-                changed_deltas[index] = Some(delta_batches.clone());
-                let delta = dataframe(&context, delta_batches, &source.schema)?;
+                let delta = self.groups_table_frame(
+                    &context,
+                    source,
+                    window.added_files.clone(),
+                )?;
                 let key_names = source
                     .primary_keys
                     .iter()
@@ -989,24 +756,9 @@ impl IvmRuntime {
                 .iter()
                 .map(|name| col(name.as_str()))
                 .collect::<Vec<_>>();
-            let mv_batches = match multi_join_mv_partitions(
-                view,
-                &windows,
-                &changed_deltas,
-                &current_batches,
-            ) {
-                Some(restriction) => {
-                    view.mv
-                        .read_current_filtered_partitions(
-                            &self.client,
-                            Vec::new(),
-                            &restriction,
-                        )
-                        .await?
-                }
-                None => view.mv.read_current(&self.client).await?,
-            };
-            let mv = dataframe(&context, mv_batches, &view.mv.schema)?;
+            // The partition rule needs the changed rows themselves; the
+            // full-state MV read stays correct and streaming.
+            let mv = self.current_table_frame(&context, &view.mv)?;
             let already = mv
                 .clone()
                 .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
@@ -1074,27 +826,27 @@ impl IvmRuntime {
                 None => inserts,
             };
             commit_ids.extend(
-                view.mv
-                    .append_batches(&self.client, rows.collect().await?)
-                    .await?,
+                append_dataframe(&view.mv, &self.client, rows)
+                    .await?
+                    .commit_ids,
             );
         } else {
             let mut before = Vec::with_capacity(view.sources.len());
             let mut delta = Vec::with_capacity(view.sources.len());
             for (source, window) in view.sources.iter().zip(&windows) {
-                before.push(
-                    source
-                        .read_as_of(&self.client, window.before_timestamp)
-                        .await?,
-                );
-                delta.push(
-                    source
-                        .read_partition_files(window.added_files.clone())
-                        .await?,
-                );
+                before.push(self.as_of_table_frame(
+                    &context,
+                    source,
+                    window.before_timestamp,
+                )?);
+                delta.push(self.groups_table_frame(
+                    &context,
+                    source,
+                    window.added_files.clone(),
+                )?);
             }
             let changed_sources = (0..view.sources.len())
-                .filter(|index| !delta[*index].is_empty())
+                .filter(|index| !windows[*index].added_files.is_empty())
                 .collect::<Vec<_>>();
             let mut terms = Vec::new();
             for subset in 1usize..(1usize << changed_sources.len()) {
@@ -1106,14 +858,14 @@ impl IvmRuntime {
                 }
                 let mut frames = Vec::with_capacity(view.sources.len());
                 for index in 0..view.sources.len() {
-                    let batches = if selected[index] {
+                    let frame = if selected[index] {
                         delta[index].clone()
                     } else {
                         before[index].clone()
                     };
-                    frames.push(filtered_frame(
+                    frames.push(apply_side_filter(
                         &context,
-                        batches,
+                        frame,
                         &schemas[index],
                         view.filters[index].as_deref(),
                     )?);
@@ -1135,16 +887,15 @@ impl IvmRuntime {
                 for term in terms {
                     combined = combined.union(term)?;
                 }
-                for batch in combined
-                    .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
-                    .collect()
+                commit_ids.extend(
+                    append_dataframe(
+                        &view.mv,
+                        &self.client,
+                        combined.with_column(IVM_EPOCH_COLUMN, lit(epoch))?,
+                    )
                     .await?
-                {
-                    if batch.num_rows() > 0 {
-                        commit_ids
-                            .extend(view.mv.append_batch(&self.client, batch).await?);
-                    }
-                }
+                    .commit_ids,
+                );
             }
         }
 
@@ -1211,8 +962,11 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        if !baselines.iter().any(|baseline| baseline.batches.is_empty()) {
-            let context = SessionContext::new();
+        if !baselines
+            .iter()
+            .any(|baseline| baseline.groups.iter().all(|group| group.files.is_empty()))
+        {
+            let context = refresh_session();
             let schemas = view
                 .sources
                 .iter()
@@ -1228,7 +982,7 @@ impl IvmRuntime {
                 view.sources.iter().zip(&baselines).enumerate()
             {
                 let frame =
-                    dataframe(&context, baseline.batches.clone(), &source.schema)?;
+                    self.groups_table_frame(&context, source, baseline.groups.clone())?;
                 let frame = if keyed {
                     filter_deletes(frame, change_column(source))?
                 } else {
@@ -1261,7 +1015,7 @@ impl IvmRuntime {
             };
             commit_ids.extend(
                 view.mv
-                    .append_batches(&self.client, joined.collect().await?)
+                    .append_stream(&self.client, joined.execute_stream().await?)
                     .await?,
             );
         }

@@ -12,20 +12,23 @@
 //! committed.
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
+use arrow::array::{ArrayRef, BinaryArray, BinaryBuilder};
 use arrow::record_batch::RecordBatch;
+use arrow::row::{RowConverter, SortField};
 use arrow_array::Array;
 
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Column, DFSchema, NullEquality, ScalarValue};
+use datafusion::common::{Column, DFSchema, NullEquality};
 use datafusion::logical_expr::ExprSchemable;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::logical_expr::LogicalPlanBuilder;
 use datafusion::logical_expr::when;
-use datafusion::prelude::{DataFrame, Expr, JoinType, SessionContext, col, lit};
+use datafusion::prelude::{
+    DataFrame, Expr, JoinType, SessionConfig, SessionContext, col, lit,
+};
 use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_metadata::transfusion::DataFileInfo;
@@ -39,6 +42,8 @@ use crate::metadata::{
 };
 use crate::provider::IvmTableProvider;
 pub use crate::table::{IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN};
+pub const IVM_GROUP_ROW_COLUMN: &str = "__ivm_group_row";
+pub const IVM_ROW_COUNT_COLUMN: &str = "__ivm_row_count";
 use crate::table::{
     IvmTable, IvmTableOptions, PartitionFiles, create_ivm_table, parse_partition_values,
 };
@@ -1961,7 +1966,7 @@ pub(crate) fn expression_type(
     source_schema: &Schema,
     expression: &str,
 ) -> Result<(DataType, bool)> {
-    let context = SessionContext::new();
+    let context = refresh_session();
     let df_schema = DFSchema::try_from(source_schema.clone())
         .map_err(|error| report!("invalid source schema: {error}"))?;
     let expression = context
@@ -2084,7 +2089,7 @@ struct SourceWindow {
 
 /// The full current state of one source, as read by a rebuild.
 struct SourceBaseline {
-    batches: Vec<RecordBatch>,
+    groups: Vec<PartitionFiles>,
     cursors: Vec<Cursor>,
     to_versions: Vec<SourceVersionRange>,
 }
@@ -2148,21 +2153,6 @@ fn ensure_append_only(source: &IvmTable, view_id: &str) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-/// Build a frame from raw batches and apply the side filter.
-fn filtered_frame(
-    context: &SessionContext,
-    batches: Vec<RecordBatch>,
-    schema: &SchemaRef,
-    filter: Option<&str>,
-) -> Result<DataFrame> {
-    apply_side_filter(
-        context,
-        dataframe(context, batches, schema)?,
-        schema,
-        filter,
-    )
 }
 
 /// Apply an optional side filter to a join input frame.
@@ -2287,20 +2277,6 @@ fn avg_result_type(value_type: &DataType) -> Result<DataType> {
     })
 }
 
-/// The schema of the projected group keys of a view, computed expressions
-/// included.
-fn key_schema_for(
-    source_schema: &Schema,
-    group_keys: &[String],
-    group_exprs: &[String],
-) -> Result<SchemaRef> {
-    Ok(Arc::new(Schema::new(group_key_fields(
-        source_schema,
-        group_keys,
-        group_exprs,
-    )?)))
-}
-
 fn validate_group_keys(
     source: &IvmTable,
     group_keys: &[String],
@@ -2314,30 +2290,6 @@ fn validate_group_keys(
             report!("view {view_id}: group key {key} is not in the source")
         })?;
     }
-    Ok(())
-}
-
-fn register_table(
-    context: &SessionContext,
-    name: &str,
-    mut batches: Vec<RecordBatch>,
-    schema: &SchemaRef,
-) -> Result<()> {
-    // SQL results may carry different nullability than the declared schema;
-    // use the batches' own schema when there is one, and an empty batch with
-    // the declared schema otherwise.
-    let actual_schema = batches
-        .first()
-        .map(|batch| batch.schema())
-        .unwrap_or_else(|| schema.clone());
-    if batches.is_empty() {
-        batches.push(RecordBatch::new_empty(actual_schema.clone()));
-    }
-    let table: Arc<dyn datafusion::catalog::TableProvider> = Arc::new(
-        datafusion::datasource::memory::MemTable::try_new(actual_schema, vec![batches])
-            .map_err(|error| report!("registering {name}: {error}"))?,
-    );
-    context.register_table(name, table)?;
     Ok(())
 }
 
@@ -2416,21 +2368,20 @@ fn key_join_condition_null_safe(left: &str, right: &str, keys: &[String]) -> Str
         .join(" and ")
 }
 
-/// Project the computed group keys into a batch set, so the aggregate SQL can
-/// group by the keys by name.
-async fn project_group_keys(
+/// Add computed group-key columns to a lazy frame.  The frame stays lazy, so
+/// a rebuild can register it without materializing the source.
+fn project_group_keys_frame(
     context: &SessionContext,
-    batches: Vec<RecordBatch>,
+    mut frame: DataFrame,
     schema: &SchemaRef,
     group_keys: &[String],
     group_exprs: &[String],
-) -> Result<Vec<RecordBatch>> {
+) -> Result<DataFrame> {
     if group_exprs.is_empty() {
-        return Ok(batches);
+        return Ok(frame);
     }
     let df_schema = DFSchema::try_from(schema.as_ref().clone())
         .map_err(|error| report!("invalid source schema: {error}"))?;
-    let mut frame = dataframe(context, batches, schema)?;
     for (key, expression) in group_keys.iter().zip(group_exprs) {
         let expression = context
             .state()
@@ -2440,15 +2391,55 @@ async fn project_group_keys(
             })?;
         frame = frame.with_column(key.as_str(), expression)?;
     }
-    let projected_schema = Arc::new(frame.schema().as_arrow().clone());
-    let mut batches = frame
-        .collect()
-        .await
-        .map_err(|error| report!("projecting group keys: {error}"))?;
-    if batches.is_empty() {
-        batches.push(RecordBatch::new_empty(projected_schema));
+    Ok(frame)
+}
+
+/// The session used by full and incremental refreshes.  Keep the partition
+/// count identical on both paths so a bootstrap and its first incremental
+/// windows run with the same parallelism.
+pub(crate) fn refresh_session() -> SessionContext {
+    let config = SessionConfig::new().with_target_partitions(4);
+    let limit_mb = std::env::var("LAKESOUL_IVM_MEMORY_LIMIT_MB")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(4096);
+    let runtime = datafusion::execution::runtime_env::RuntimeEnvBuilder::new()
+        .with_memory_limit(limit_mb * 1024 * 1024, 0.8)
+        .build()
+        .expect("ivm refresh runtime env");
+    SessionContext::new_with_config_rt(config, Arc::new(runtime))
+}
+
+/// Encodes the group-key columns of a batch into Arrow's canonical row
+/// bytes.  Equal group keys produce identical bytes (nulls included), so a
+/// single Binary column can be used as a hash-join key or as the primary key
+/// of an internal state table; the pk locator can map those bytes to row
+/// numbers directly.
+pub(crate) struct GroupKeyRowEncoder {
+    converter: RowConverter,
+}
+
+impl GroupKeyRowEncoder {
+    pub(crate) fn new(schema: &Schema, group_keys: &[String]) -> Result<Self> {
+        let mut sort_fields = Vec::with_capacity(group_keys.len());
+        for key in group_keys {
+            let field = schema.field_with_name(key)?;
+            sort_fields.push(SortField::new(field.data_type().clone()));
+        }
+        Ok(Self {
+            converter: RowConverter::new(sort_fields)?,
+        })
     }
-    Ok(batches)
+
+    /// Encode the group-key columns directly, for a DataFusion scalar UDF.
+    pub(crate) fn encode_columns(&self, columns: &[ArrayRef]) -> Result<BinaryArray> {
+        let rows = self.converter.convert_columns(columns)?;
+        let mut builder = BinaryBuilder::new();
+        for row in 0..rows.num_rows() {
+            builder.append_value(rows.row(row).as_ref());
+        }
+        Ok(builder.finish())
+    }
 }
 
 /// The groups a refresh window can touch: the groups in the delta plus, for a
@@ -2480,59 +2471,6 @@ fn affected_groups_sql(
                           and exists (select 1 from delta_pks p where {pk_match})) \
          select * from delta_groups union select * from old_groups"
     )
-}
-
-/// The largest affected-key set materialized as an `IN` filter for the
-/// state reads; a larger set falls back to the full read (a huge literal
-/// list costs more to plan than it saves).
-pub(crate) const MAX_KEY_FILTERS: usize = 4096;
-
-/// Equality/`IN` filters over `keys` of the given rows, used to prune the
-/// source / state reads (and the reader's bucket pruning) to the affected
-/// partitions or groups.
-pub(crate) fn key_filters(
-    partition_keys: &[String],
-    batches: &[RecordBatch],
-) -> Result<Vec<datafusion::prelude::Expr>> {
-    let mut filters = Vec::new();
-    for key in partition_keys {
-        let mut values: Vec<ScalarValue> = Vec::new();
-        let mut seen: HashSet<ScalarValue> = HashSet::new();
-        let mut has_null = false;
-        for batch in batches {
-            let index = batch.schema().index_of(key).map_err(|_| {
-                report!("partition column {key} is not in the affected partitions")
-            })?;
-            let array = batch.column(index);
-            for row in 0..array.len() {
-                if array.is_null(row) {
-                    has_null = true;
-                } else {
-                    let scalar = ScalarValue::try_from_array(array, row)?;
-                    if seen.insert(scalar.clone()) {
-                        values.push(scalar);
-                    }
-                }
-            }
-        }
-        let mut filter = if values.is_empty() {
-            None
-        } else {
-            Some(
-                col(key.as_str())
-                    .in_list(values.iter().cloned().map(lit).collect(), false),
-            )
-        };
-        if has_null {
-            let null_filter = col(key.as_str()).is_null();
-            filter = Some(match filter {
-                Some(filter) => filter.or(null_filter),
-                None => null_filter,
-            });
-        }
-        filters.push(filter.unwrap_or_else(|| lit(false)));
-    }
-    Ok(filters)
 }
 
 /// The MV range partitions an affected source row can live in.
@@ -2769,6 +2707,40 @@ pub(crate) async fn append_dataframe(
     })
 }
 
+fn apply_filters(mut frame: DataFrame, filters: Vec<Expr>) -> Result<DataFrame> {
+    for filter in filters {
+        frame = frame.filter(filter)?;
+    }
+    Ok(frame)
+}
+
+/// Project a lazy frame to `columns`, in order, by name.
+fn project_frame(frame: DataFrame, columns: &[String]) -> Result<DataFrame> {
+    if columns.is_empty() {
+        return Ok(frame);
+    }
+    // `col()` lower-cases, but internal columns such as `rowKinds` are
+    // case-sensitive.
+    let exprs: Vec<Expr> = columns
+        .iter()
+        .map(|column| {
+            Expr::Column(datafusion::common::Column::from_name(column.as_str()))
+        })
+        .collect();
+    frame.select(exprs).map_err(Into::into)
+}
+
+/// Count a lazy frame's rows by draining its stream; nothing is collected.
+pub(crate) async fn count_frame_rows(frame: DataFrame) -> Result<u64> {
+    use futures::StreamExt;
+    let mut stream = frame.execute_stream().await?;
+    let mut rows = 0u64;
+    while let Some(batch) = stream.next().await {
+        rows += batch?.num_rows() as u64;
+    }
+    Ok(rows)
+}
+
 fn dataframe(
     context: &SessionContext,
     batches: Vec<RecordBatch>,
@@ -2851,7 +2823,7 @@ fn validate_having(
     let Some(having) = having else {
         return Ok(());
     };
-    let context = SessionContext::new();
+    let context = refresh_session();
     parse_filter(&context, mv_schema, having)
         .map_err(|error| report!("view {view_id}: invalid HAVING: {error}"))?;
     Ok(())
@@ -3981,6 +3953,101 @@ impl IvmRuntime {
         self.table_provider_at_versions(table, record.mv_versions.clone())
     }
 
+    /// A provider over file groups the caller already resolved from metadata.
+    pub(crate) fn table_provider_groups(
+        &self,
+        table: &IvmTable,
+        groups: Vec<PartitionFiles>,
+    ) -> IvmTableProvider {
+        IvmTableProvider::groups(table.clone(), self.client.clone(), groups)
+    }
+
+    /// A provider over explicit delta groups without merge-on-read.
+    pub(crate) fn table_provider_unmerged_groups(
+        &self,
+        table: &IvmTable,
+        groups: Vec<PartitionFiles>,
+    ) -> IvmTableProvider {
+        IvmTableProvider::unmerged_groups(table.clone(), self.client.clone(), groups)
+    }
+
+    /// A lazy frame over the current logical state.  Execution streams the
+    /// LakeSoul reader; no batch is materialized until the query runs.
+    pub(crate) fn current_table_frame(
+        &self,
+        context: &SessionContext,
+        table: &IvmTable,
+    ) -> Result<DataFrame> {
+        Ok(context.read_table(Arc::new(self.table_provider(table)))?)
+    }
+
+    /// A lazy frame over explicit file groups (merge-on-read).
+    pub(crate) fn groups_table_frame(
+        &self,
+        context: &SessionContext,
+        table: &IvmTable,
+        groups: Vec<PartitionFiles>,
+    ) -> Result<DataFrame> {
+        Ok(context.read_table(Arc::new(self.table_provider_groups(table, groups)))?)
+    }
+
+    /// A lazy frame over the current state restricted to range partitions.
+    pub(crate) async fn current_table_frame_filtered_partitions(
+        &self,
+        context: &SessionContext,
+        table: &IvmTable,
+        filters: Vec<Expr>,
+        partitions: &[(String, Vec<String>)],
+    ) -> Result<DataFrame> {
+        let groups = table
+            .current_groups_for_partitions(&self.client, partitions)
+            .await?;
+        apply_filters(self.groups_table_frame(context, table, groups)?, filters)
+    }
+
+    /// A lazy frame over explicit delta groups, keeping delete+insert rows.
+    pub(crate) fn unmerged_groups_table_frame(
+        &self,
+        context: &SessionContext,
+        table: &IvmTable,
+        groups: Vec<PartitionFiles>,
+    ) -> Result<DataFrame> {
+        Ok(context
+            .read_table(Arc::new(self.table_provider_unmerged_groups(table, groups)))?)
+    }
+
+    /// A lazy frame over the state before a refresh window.
+    pub(crate) async fn before_window_table_frame(
+        &self,
+        context: &SessionContext,
+        table: &IvmTable,
+        before: &std::collections::HashMap<String, Option<i64>>,
+    ) -> Result<DataFrame> {
+        let groups = table.before_window_groups(&self.client, before).await?;
+        self.groups_table_frame(context, table, groups)
+    }
+
+    /// A lazy frame over the partition versions of an epoch.
+    pub(crate) fn at_versions_table_frame(
+        &self,
+        context: &SessionContext,
+        table: &IvmTable,
+        versions: Vec<PartitionVersion>,
+    ) -> Result<DataFrame> {
+        Ok(context
+            .read_table(Arc::new(self.table_provider_at_versions(table, versions)))?)
+    }
+
+    /// A lazy frame over the state as of `as_of_ms`.
+    pub(crate) fn as_of_table_frame(
+        &self,
+        context: &SessionContext,
+        table: &IvmTable,
+        as_of_ms: i64,
+    ) -> Result<DataFrame> {
+        Ok(context.read_table(Arc::new(self.table_provider_as_of(table, as_of_ms)))?)
+    }
+
     /// Register or update a consumer watermark (see `EPOCH.md` §9).
     pub async fn register_consumer(
         &self,
@@ -4050,9 +4117,8 @@ impl IvmRuntime {
     /// that represent it (a rebuild baseline).
     async fn source_baseline(&self, source: &IvmTable) -> Result<SourceBaseline> {
         let meta = self.source_baseline_meta(source).await?;
-        let batches = source.read_partition_files(meta.groups.clone()).await?;
         Ok(SourceBaseline {
-            batches,
+            groups: meta.groups,
             cursors: meta.cursors,
             to_versions: meta.to_versions,
         })
@@ -4070,10 +4136,12 @@ impl IvmRuntime {
                 .client
                 .get_data_files_of_single_partition(&partition)
                 .await?;
-            groups.push(PartitionFiles {
-                partition_desc: partition.partition_desc.clone(),
-                files,
-            });
+            if !files.is_empty() {
+                groups.push(PartitionFiles {
+                    partition_desc: partition.partition_desc.clone(),
+                    files,
+                });
+            }
             cursors.push(Cursor {
                 source_table_id: source.table_id.clone(),
                 partition_desc: partition.partition_desc.clone(),
@@ -4188,21 +4256,15 @@ impl IvmRuntime {
             WindowStart::Apply(record) => record,
         };
         let epoch = record.epoch;
-        let context = SessionContext::new();
-        register_table(
-            &context,
-            "mv",
-            view.mv.read_current(&self.client).await?,
-            &view.mv.schema,
-        )?;
+        let context = refresh_session();
+        context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
         let sql =
             sum_count_cleanup_delete_sql(&view, &predicate_parts.join(" or "), epoch);
-        let mut commit_ids = Vec::new();
-        for batch in context.sql(&sql).await?.collect().await? {
-            if batch.num_rows() > 0 {
-                commit_ids.extend(view.mv.append_batch(&self.client, batch).await?);
-            }
-        }
+        let frame = context.sql(&sql).await?;
+        let commit_ids = view
+            .mv
+            .append_stream(&self.client, frame.execute_stream().await?)
+            .await?;
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
             .mark_epoch_committed(&record, &mv_versions, &commit_ids)

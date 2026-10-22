@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! SEMI/ANTI extensions: non-equi conditions (including pure non-equi joins)
 //! and projected output columns.
 

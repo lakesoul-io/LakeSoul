@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! A bucket-parallel refresh writes its buckets in parallel but publishes them
 //! with one commit: workers return the files they wrote and the coordinator
 //! commits them (the shape a distributed refresh uses as well).

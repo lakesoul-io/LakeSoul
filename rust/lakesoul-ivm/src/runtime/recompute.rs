@@ -8,6 +8,48 @@
 
 use super::*;
 
+use arrow::array::{ArrayRef, Int64Array, StringArray};
+use datafusion::prelude::col;
+
+use crate::metadata::PartitionVersion;
+use datafusion::error::{DataFusionError, Result as DataFusionResult};
+
+/// The internal state schema for a multi-aggregate view: the Arrow row
+/// encoding of the group keys as a binary primary key, the group keys as
+/// payload, one accumulator per aggregate, the row count, and the bookkeeping
+/// columns.
+pub fn multi_agg_state_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    columns: &[(String, DataType)],
+) -> Result<SchemaRef> {
+    let mut fields: Vec<Arc<Field>> = vec![Arc::new(Field::new(
+        IVM_GROUP_ROW_COLUMN,
+        DataType::Binary,
+        false,
+    ))];
+    fields.extend(group_key_fields(source_schema, group_keys, &[])?);
+    for (name, data_type) in columns {
+        fields.push(Arc::new(Field::new(name.clone(), data_type.clone(), true)));
+    }
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_COUNT_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
 /// The schema of a [`ViewSpec::MultiAgg`] materialized view: the group keys,
 /// one nullable column per aggregate, the row kind and the epoch.
 pub fn multi_agg_mv_schema_for(
@@ -2053,29 +2095,20 @@ fn validate_multi_agg_view(view: &MultiAggView) -> Result<()> {
 /// non-NULL tuples of a deduplicated subquery instead.
 /// Project the lookup delta onto the joined group key names, so it can take
 /// part in the affected-group union.
-async fn project_lookup_keys(
-    context: &SessionContext,
-    batches: Vec<RecordBatch>,
-    schema: &SchemaRef,
+fn project_lookup_keys(
+    frame: DataFrame,
     lookup: &RecomputeLookup<'_>,
-) -> Result<Vec<RecordBatch>> {
+) -> Result<Option<DataFrame>> {
     if lookup.join_keys.is_empty() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
-    let frame = dataframe(context, batches, schema)?;
     let select = lookup
         .join_keys
         .iter()
         .zip(lookup_right_keys(lookup))
         .map(|(key, right)| col(right.as_str()).alias(key.as_str()))
         .collect::<Vec<_>>();
-    let frame = frame.select(select)?;
-    let projected = Arc::new(frame.schema().as_arrow().clone());
-    let mut batches = frame.collect().await?;
-    if batches.is_empty() {
-        batches.push(RecordBatch::new_empty(projected));
-    }
-    Ok(batches)
+    Ok(Some(frame.select(select)?))
 }
 
 /// The keys the lookup aggregate groups by (falling back to the joined keys).
@@ -2186,14 +2219,23 @@ fn recompute_refresh_sql(
     let columns = parts.aggregate_columns().join(", ");
     let agg = &parts.aggregate_call;
     let keyed = !parts.source.primary_keys.is_empty();
+    let affected_match = key_join_condition_null_safe("src", "a", parts.group_keys);
     let src_from = if keyed {
         format!(
-            "src where {}{}",
+            "src where {}{} and exists (select 1 from affected a where {affected_match})",
             source_delete_filter("src", change_column(parts.source)),
             filter_clause(parts.filter),
         )
     } else {
-        format!("src{}", filter_where(parts.filter))
+        let plain_where = filter_where(parts.filter);
+        let prefix = if plain_where.is_empty() {
+            " where true".to_string()
+        } else {
+            plain_where
+        };
+        format!(
+            "src{prefix} and exists (select 1 from affected a where {affected_match})"
+        )
     };
     let active_match = key_join_condition_null_safe("a", "s", parts.group_keys);
     let already_match = key_join_condition_null_safe("a", "p", parts.group_keys);
@@ -2212,7 +2254,8 @@ fn recompute_refresh_sql(
             .is_some_and(|lookup| lookup.join_keys.is_empty())
         {
             format!(
-                "select distinct {keys} from mv \
+                "select distinct {keys} from src \
+                 union select distinct {keys} from mv \
                  where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}"
             )
         } else {
@@ -2329,11 +2372,11 @@ pub(super) fn validate_recompute_view(parts: &RecomputeParts<'_>) -> Result<()> 
         parts.group_exprs,
     )?;
     if let Some(filter) = parts.filter {
-        let context = SessionContext::new();
+        let context = refresh_session();
         parse_filter(&context, &parts.source.schema, filter)?;
     }
     if let Some(having) = parts.having {
-        let context = SessionContext::new();
+        let context = refresh_session();
         let mut schema = parts.mv.schema.fields().iter().cloned().collect::<Vec<_>>();
         if let Some(lookup) = &parts.lookup {
             // The lookup value is joined into the recompute and referenced by
@@ -2553,30 +2596,21 @@ impl IvmRuntime {
             // single row without a primary key, so the aggregate is
             // recomputed over the current source and the MV is rewritten
             // wholesale.
-            let context = SessionContext::new();
-            register_table(
-                &context,
-                "src",
-                parts.source.read_current(&self.client).await?,
-                &parts.source.schema,
-            )?;
+            let context = refresh_session();
+            context.register_table("src", Arc::new(self.table_provider(parts.source)))?;
             if let Some(lookup) = &parts.lookup {
-                register_table(
-                    &context,
+                context.register_table(
                     "lookup",
-                    lookup.table.read_current(&self.client).await?,
-                    &lookup.table.schema,
+                    Arc::new(self.table_provider(lookup.table)),
                 )?;
             }
             parts.mv.truncate(&self.client).await?;
             let sql = recompute_global_sql(parts, epoch);
+            let frame = context.sql(&sql).await?;
             commit_ids.extend(
                 parts
                     .mv
-                    .append_batches(
-                        &self.client,
-                        context.sql(&sql).await?.collect().await?,
-                    )
+                    .append_stream(&self.client, frame.execute_stream().await?)
                     .await?,
             );
             let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
@@ -2591,157 +2625,76 @@ impl IvmRuntime {
             return Ok(Some(epoch));
         }
 
-        let context = SessionContext::new();
-        let delta_batches = project_group_keys(
+        let context = refresh_session();
+        let delta = project_group_keys_frame(
             &context,
-            parts
-                .source
-                .read_partition_files(window.added_files)
-                .await?,
+            self.groups_table_frame(&context, parts.source, window.added_files)?,
             &parts.source.schema,
             parts.group_keys,
             parts.group_exprs,
-        )
-        .await?;
-        let keyed = !parts.source.primary_keys.is_empty();
-        let delta_context = SessionContext::new();
-        register_table(
-            &delta_context,
-            "delta",
-            delta_batches.clone(),
-            &parts.source.schema,
         )?;
-        let old_batches = if keyed {
-            let pk_filters = key_filters(&parts.source.primary_keys, &delta_batches)?;
-            let batches = project_group_keys(
+        let keyed = !parts.source.primary_keys.is_empty();
+        let old_frame = if keyed {
+            let old = self
+                .before_window_table_frame(
+                    &context,
+                    parts.source,
+                    &window.before_versions,
+                )
+                .await?;
+            project_group_keys_frame(
                 &context,
-                parts
-                    .source
-                    .read_before_window_filtered(
-                        &self.client,
-                        &window.before_versions,
-                        pk_filters,
-                    )
-                    .await?,
+                old,
                 &parts.source.schema,
                 parts.group_keys,
                 parts.group_exprs,
-            )
-            .await?;
-            register_table(&delta_context, "old", batches.clone(), &parts.source.schema)?;
-            batches
+            )?
         } else {
-            Vec::new()
+            dataframe(&context, Vec::new(), &parts.source.schema)?
         };
-        let groups = delta_context
-            .sql(&affected_groups_sql(
-                parts.source,
-                parts.group_keys,
-                keyed,
-                parts.filter,
-                false,
-            ))
-            .await?
-            .collect()
-            .await?;
-        // A changed lookup re-evaluates the groups it can touch.
-        let lookup_delta_batches = match (&parts.lookup, &lookup_window) {
-            (Some(lookup), Some(lookup_window)) => {
-                project_lookup_keys(
+        context.register_table("delta", delta.into_view())?;
+        let lookup_delta = match (&parts.lookup, &lookup_window) {
+            (Some(lookup), Some(lookup_window))
+                if !lookup_window.added_files.is_empty() =>
+            {
+                let frame = self.groups_table_frame(
                     &context,
-                    lookup
-                        .table
-                        .read_partition_files(lookup_window.added_files.clone())
-                        .await?,
-                    &lookup.table.schema,
-                    lookup,
-                )
-                .await?
-            }
-            _ => Vec::new(),
-        };
-        let lookup_global = parts
-            .lookup
-            .as_ref()
-            .is_some_and(|lookup| lookup.join_keys.is_empty());
-        let groups = if lookup_delta_batches.is_empty() {
-            groups
-        } else {
-            let keys_schema = project_schema(&parts.source.schema, parts.group_keys)?;
-            dataframe(&delta_context, groups, &keys_schema)?
-                .union(dataframe(
-                    &delta_context,
-                    lookup_delta_batches.clone(),
-                    &keys_schema,
-                )?)?
-                .distinct()?
-                .collect()
-                .await?
-        };
-        // A computed group key cannot prune the source reads, and a changed
-        // global lookup touches every group.
-        let filters =
-            if parts.group_exprs.is_empty() && !(lookup_global && lookup_changed) {
-                key_filters(parts.group_keys, &groups)?
-            } else {
-                Vec::new()
-            };
-
-        register_table(&context, "delta", delta_batches, &parts.source.schema)?;
-        if let Some(lookup) = &parts.lookup {
-            register_table(
-                &context,
-                "lookup",
-                lookup.table.read_current(&self.client).await?,
-                &lookup.table.schema,
-            )?;
-            if !lookup_delta_batches.is_empty() {
-                let schema = lookup_delta_batches[0].schema();
-                register_table(
-                    &context,
-                    "lookup_delta",
-                    lookup_delta_batches.clone(),
-                    &schema,
+                    lookup.table,
+                    lookup_window.added_files.clone(),
                 )?;
+                project_lookup_keys(frame, lookup)?
+            }
+            _ => None,
+        };
+        if let Some(lookup) = &parts.lookup {
+            context
+                .register_table("lookup", Arc::new(self.table_provider(lookup.table)))?;
+            if let Some(frame) = lookup_delta {
+                context.register_table("lookup_delta", frame.into_view())?;
             }
         }
         if keyed {
-            register_table(&context, "old", old_batches, &parts.source.schema)?;
+            context.register_table("old", old_frame.into_view())?;
         }
-        let src_batches = project_group_keys(
+        let src = self.current_table_frame(&context, parts.source)?;
+        let src = project_group_keys_frame(
             &context,
-            parts
-                .source
-                .read_current_filtered(&self.client, filters.clone())
-                .await?,
+            src,
             &parts.source.schema,
             parts.group_keys,
             parts.group_exprs,
-        )
-        .await?;
-        register_table(&context, "src", src_batches, &parts.source.schema)?;
-        register_table(
-            &context,
-            "mv",
-            parts
-                .mv
-                .read_current_filtered(&self.client, filters)
-                .await?,
-            &parts.mv.schema,
         )?;
-        commit_ids.extend(
-            parts
-                .mv
-                .append_batches(
-                    &self.client,
-                    context
-                        .sql(&recompute_refresh_sql(parts, epoch, lookup_changed))
-                        .await?
-                        .collect()
-                        .await?,
-                )
-                .await?,
-        );
+        context.register_table("src", src.into_view())?;
+        context.register_table("mv", Arc::new(self.table_provider(parts.mv)))?;
+        let frame = context
+            .sql(&recompute_refresh_sql(parts, epoch, lookup_changed))
+            .await?;
+        let stream = frame.execute_stream().await?;
+        // The plan and its streaming readers are no longer needed: drop the
+        // session before the metadata commit so no reader task/pooled
+        // connection is still alive when we ask for a commit connection.
+        drop(context);
+        commit_ids.extend(parts.mv.append_stream(&self.client, stream).await?);
 
         let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
         self.metadata
@@ -2822,24 +2775,25 @@ impl IvmRuntime {
         if parts.group_keys.is_empty() {
             // A global aggregate is recomputed over the baseline into the
             // single MV row.
-            let context = SessionContext::new();
-            register_table(&context, "src", baseline.batches, &parts.source.schema)?;
+            let context = refresh_session();
+            context.register_table(
+                "src",
+                Arc::new(
+                    self.table_provider_groups(parts.source, baseline.groups.clone()),
+                ),
+            )?;
             if let Some(lookup) = &parts.lookup {
-                register_table(
-                    &context,
+                context.register_table(
                     "lookup",
-                    lookup.table.read_current(&self.client).await?,
-                    &lookup.table.schema,
+                    Arc::new(self.table_provider(lookup.table)),
                 )?;
             }
             let sql = recompute_global_sql(parts, epoch);
+            let frame = context.sql(&sql).await?;
             commit_ids.extend(
                 parts
                     .mv
-                    .append_batches(
-                        &self.client,
-                        context.sql(&sql).await?.collect().await?,
-                    )
+                    .append_stream(&self.client, frame.execute_stream().await?)
                     .await?,
             );
             let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
@@ -2851,35 +2805,26 @@ impl IvmRuntime {
             return Ok(epoch);
         }
 
-        let context = SessionContext::new();
-        let batches = project_group_keys(
+        let context = refresh_session();
+        let frame =
+            self.groups_table_frame(&context, parts.source, baseline.groups.clone())?;
+        let frame = project_group_keys_frame(
             &context,
-            baseline.batches,
+            frame,
             &parts.source.schema,
             parts.group_keys,
             parts.group_exprs,
-        )
-        .await?;
-        register_table(&context, "src", batches, &parts.source.schema)?;
+        )?;
+        context.register_table("src", frame.into_view())?;
         if let Some(lookup) = &parts.lookup {
-            register_table(
-                &context,
-                "lookup",
-                lookup.table.read_current(&self.client).await?,
-                &lookup.table.schema,
-            )?;
+            context
+                .register_table("lookup", Arc::new(self.table_provider(lookup.table)))?;
         }
+        let frame = context.sql(&recompute_rebuild_sql(parts, epoch)).await?;
         commit_ids.extend(
             parts
                 .mv
-                .append_batches(
-                    &self.client,
-                    context
-                        .sql(&recompute_rebuild_sql(parts, epoch))
-                        .await?
-                        .collect()
-                        .await?,
-                )
+                .append_stream(&self.client, frame.execute_stream().await?)
                 .await?,
         );
 
@@ -3079,6 +3024,373 @@ impl IvmRuntime {
         let parts = view.parts()?;
         validate_recompute_view(&parts)?;
         self.refresh_recomputed(&parts).await
+    }
+
+    fn bootstrap_state_batch(
+        batch: &RecordBatch,
+        schema: &SchemaRef,
+        group_keys: &[String],
+        epoch: i64,
+    ) -> DataFusionResult<RecordBatch> {
+        let num_rows = batch.num_rows();
+        let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
+        for field in schema.fields() {
+            let name = field.name();
+            let array: ArrayRef = if name == IVM_GROUP_ROW_COLUMN
+                || group_keys.iter().any(|key| key == name)
+            {
+                batch.column_by_name(name).cloned().ok_or_else(|| {
+                    DataFusionError::Execution(format!("missing {name}"))
+                })?
+            } else if name == IVM_ROW_COUNT_COLUMN {
+                batch.column_by_name("d_rows").cloned().ok_or_else(|| {
+                    DataFusionError::Execution("missing d_rows".to_string())
+                })?
+            } else if name == IVM_ROW_KINDS_COLUMN {
+                Arc::new(StringArray::from(vec!["insert"; num_rows]))
+            } else if name == IVM_EPOCH_COLUMN {
+                Arc::new(Int64Array::from(vec![epoch; num_rows]))
+            } else {
+                let source = format!("d_{name}");
+                let array = batch.column_by_name(&source).cloned().ok_or_else(|| {
+                    DataFusionError::Execution(format!("missing {source}"))
+                })?;
+                arrow::compute::cast(&array, field.data_type())
+                    .map_err(|error| DataFusionError::Execution(error.to_string()))?
+            };
+            columns.push(array);
+        }
+        RecordBatch::try_new(schema.clone(), columns)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))
+    }
+
+    fn bootstrap_mv_batch(
+        batch: &RecordBatch,
+        schema: &SchemaRef,
+        group_keys: &[String],
+        epoch: i64,
+    ) -> DataFusionResult<RecordBatch> {
+        let num_rows = batch.num_rows();
+        let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
+        for field in schema.fields() {
+            let name = field.name();
+            let array: ArrayRef = if group_keys.iter().any(|key| key == name) {
+                batch.column_by_name(name).cloned().ok_or_else(|| {
+                    DataFusionError::Execution(format!("missing {name}"))
+                })?
+            } else if name == IVM_ROW_KINDS_COLUMN {
+                Arc::new(StringArray::from(vec!["insert"; num_rows]))
+            } else if name == IVM_EPOCH_COLUMN {
+                Arc::new(Int64Array::from(vec![epoch; num_rows]))
+            } else {
+                let source = format!("d_{name}");
+                let array = batch.column_by_name(&source).cloned().ok_or_else(|| {
+                    DataFusionError::Execution(format!("missing {source}"))
+                })?;
+                arrow::compute::cast(&array, field.data_type())
+                    .map_err(|error| DataFusionError::Execution(error.to_string()))?
+            };
+            columns.push(array);
+        }
+        RecordBatch::try_new(schema.clone(), columns)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))
+    }
+
+    fn data_type_sql(data_type: &DataType) -> Result<String> {
+        Ok(match data_type {
+            DataType::Decimal128(precision, scale) => {
+                format!("DECIMAL({precision},{scale})")
+            }
+            DataType::Int64 => "BIGINT".to_string(),
+            other => return Err(report!("unsupported state accumulator type {other}")),
+        })
+    }
+
+    /// Refresh a multi-aggregate view through a group-key state table.
+    ///
+    /// The state is keyed by the Arrow row encoding of the group keys, so a
+    /// wide key is a single binary primary key: the source/MV are never read
+    /// in full, and only the groups touched by the window are written.
+    pub async fn refresh_multi_agg_state(
+        &self,
+        view: &MultiAggView,
+        state: &IvmTable,
+    ) -> Result<Option<i64>> {
+        if !view.group_exprs.is_empty() || view.having.is_some() || view.filter.is_some()
+        {
+            return Err(report!(
+                "multi-agg state refresh needs plain group keys without lookup/having/filter"
+            ));
+        }
+        let mut measures = Vec::new();
+        for (call, column, _) in &view.aggregates {
+            let inner = call
+                .strip_prefix("SUM(")
+                .and_then(|call| call.strip_suffix(')'))
+                .ok_or_else(|| {
+                    report!("multi-agg state refresh only supports SUM aggregates")
+                })?;
+            let data_type = view.mv.schema.field_with_name(column)?.data_type().clone();
+            measures.push((inner.to_string(), column.clone(), data_type));
+        }
+        self.register_multi_agg_view(view).await?;
+        self.register_state_tables(&view.view_id, &[(StateRole::State, state)])
+            .await?;
+        let window = self
+            .collect_source_window(&view.view_id, &view.source)
+            .await?;
+        if window.added_files.is_empty() {
+            return Ok(None);
+        }
+        let identity = window.identity.clone();
+        let record = match self
+            .begin_window(&view.view_id, &identity, &view.mv)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => {
+                self.advance_cursors(&view.view_id, window.cursors).await?;
+                return Ok(Some(epoch));
+            }
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
+        let context = refresh_session();
+        // The bootstrap is the whole current source; read it through the
+        // provider instead of materialising every initial file here.
+        let delta = if window.before_versions.is_empty() {
+            None
+        } else {
+            Some(self.groups_table_frame(
+                &context,
+                &view.source,
+                window.added_files.clone(),
+            )?)
+        };
+        let keyed = !view.source.primary_keys.is_empty();
+        let versions: Vec<PartitionVersion> = window
+            .before_versions
+            .iter()
+            .filter_map(|(partition_desc, version)| {
+                version.map(|version| PartitionVersion {
+                    partition_desc: partition_desc.clone(),
+                    version,
+                })
+            })
+            .collect();
+        let empty_old = dataframe(&context, Vec::new(), &view.source.schema)?;
+        let (old, new, bootstrap_new) = if keyed && !versions.is_empty() {
+            let delta = delta
+                .as_ref()
+                .ok_or_else(|| report!("multi-agg refresh without a delta"))?;
+            let key_names = view
+                .source
+                .primary_keys
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let key_exprs = view
+                .source
+                .primary_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let delta_keys = delta.clone().select(key_exprs)?.distinct()?;
+            let before =
+                self.at_versions_table_frame(&context, &view.source, versions)?;
+            let old = before.join(
+                delta_keys.clone(),
+                JoinType::LeftSemi,
+                &key_names,
+                &key_names,
+                None,
+            )?;
+            let current = self.current_table_frame(&context, &view.source)?;
+            let new = current.join(
+                delta_keys,
+                JoinType::LeftSemi,
+                &key_names,
+                &key_names,
+                None,
+            )?;
+            (old, new, None)
+        } else if window.before_versions.is_empty() {
+            (
+                empty_old.clone(),
+                empty_old,
+                Some(self.table_provider(&view.source)),
+            )
+        } else {
+            let new = filter_deletes(
+                delta.ok_or_else(|| report!("multi-agg refresh without a delta"))?,
+                change_column(&view.source),
+            )?;
+            (empty_old, new, None)
+        };
+        context.register_table("old", old.into_view())?;
+        if let Some(provider) = bootstrap_new {
+            context.register_table("new", Arc::new(provider))?;
+        } else {
+            context.register_table("new", new.into_view())?;
+        }
+        let keys = quoted_list(&view.group_keys);
+        let contributions = measures
+            .iter()
+            .map(|(inner, column, data_type)| {
+                Ok(format!(
+                    "cast(coalesce(sum({inner} * w), 0) as {}) as d_{column}",
+                    Self::data_type_sql(data_type)?
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .join(", ");
+        let contrib_sql = format!(
+            "select {keys}, ivm_group_row({keys}) as \"{IVM_GROUP_ROW_COLUMN}\", \
+                    {contributions}, cast(coalesce(sum(w), 0) as bigint) as d_rows \
+             from (select *, -1 as w from old union all select *, 1 as w from new) t \
+             group by {keys}"
+        );
+        let encoder = Arc::new(GroupKeyRowEncoder::new(
+            &view.source.schema,
+            &view.group_keys,
+        )?);
+        let mut input_types = Vec::with_capacity(view.group_keys.len());
+        for key in &view.group_keys {
+            input_types
+                .push(view.source.schema.field_with_name(key)?.data_type().clone());
+        }
+        let udf_encoder = encoder.clone();
+        let group_row_udf = datafusion::logical_expr::create_udf(
+            "ivm_group_row",
+            input_types,
+            DataType::Binary,
+            datafusion::logical_expr::Volatility::Immutable,
+            Arc::new(move |args: &[datafusion::logical_expr::ColumnarValue]| {
+                let arrays =
+                    datafusion::logical_expr::ColumnarValue::values_to_arrays(args)?;
+                let rows = udf_encoder
+                    .encode_columns(&arrays)
+                    .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+                Ok(datafusion::logical_expr::ColumnarValue::Array(Arc::new(
+                    rows,
+                )))
+            }),
+        );
+        context.register_udf(group_row_udf);
+        if window.before_versions.is_empty() {
+            use futures::StreamExt;
+            let frame = context.sql(&contrib_sql).await?;
+            let mut stream = frame.execute_stream().await?;
+            let state_schema = state.schema.clone();
+            let mv_schema = view.mv.schema.clone();
+            let group_keys = view.group_keys.clone();
+            let mut commit_ids: Vec<String> = Vec::new();
+            let mut state_chunk: Vec<RecordBatch> = Vec::new();
+            let mut mv_chunk: Vec<RecordBatch> = Vec::new();
+            let mut chunk_rows = 0usize;
+            while let Some(batch) = stream.next().await {
+                let batch = batch?;
+                if batch.num_rows() == 0 {
+                    continue;
+                }
+                let state_batch = Self::bootstrap_state_batch(
+                    &batch,
+                    &state_schema,
+                    &group_keys,
+                    epoch,
+                )?;
+                let mv_batch =
+                    Self::bootstrap_mv_batch(&batch, &mv_schema, &group_keys, epoch)?;
+                chunk_rows += state_batch.num_rows();
+                state_chunk.push(state_batch);
+                mv_chunk.push(mv_batch);
+                if chunk_rows >= crate::table::MAX_STATE_APPEND_ROWS {
+                    commit_ids.extend(
+                        state
+                            .append_batches(
+                                &self.client,
+                                std::mem::take(&mut state_chunk),
+                            )
+                            .await?,
+                    );
+                    commit_ids.extend(
+                        view.mv
+                            .append_batches(&self.client, std::mem::take(&mut mv_chunk))
+                            .await?,
+                    );
+                    chunk_rows = 0;
+                }
+            }
+            if !state_chunk.is_empty() {
+                commit_ids.extend(state.append_batches(&self.client, state_chunk).await?);
+                commit_ids.extend(view.mv.append_batches(&self.client, mv_chunk).await?);
+            }
+            let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+            self.metadata
+                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+                .await?;
+            self.advance_cursors(&view.view_id, window.cursors).await?;
+            return Ok(Some(epoch));
+        }
+        let contrib = context.sql(&contrib_sql).await?;
+        let merge_context = refresh_session();
+        merge_context.register_table("contrib", contrib.into_view())?;
+        merge_context.register_table("state", Arc::new(self.table_provider(state)))?;
+        let row = quote_ident(IVM_GROUP_ROW_COLUMN);
+        let row_count = quote_ident(IVM_ROW_COUNT_COLUMN);
+        let row_kinds = quote_ident(IVM_ROW_KINDS_COLUMN);
+        let epoch_column = quote_ident(IVM_EPOCH_COLUMN);
+        let key_select = view
+            .group_keys
+            .iter()
+            .map(|key| format!("c.{}", quote_ident(key)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let key_output = view
+            .group_keys
+            .iter()
+            .map(|key| quote_ident(key))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut measure_parts = Vec::new();
+        for (_, column, data_type) in &measures {
+            measure_parts.push(format!(
+                "cast(coalesce(s.{}, 0) + c.{} as {}) as {}",
+                quote_ident(column),
+                quote_ident(&format!("d_{column}")),
+                Self::data_type_sql(data_type)?,
+                quote_ident(column)
+            ));
+        }
+        let measure_select = measure_parts.join(", ");
+        let state_sql = format!(
+            "select c.{row} as {row}, {key_select}, {measure_select}, \
+             cast(coalesce(s.{row_count}, 0) + c.d_rows as bigint) as {row_count}, \
+             case when coalesce(s.{row_count}, 0) + c.d_rows > 0 then 'insert' else 'delete' end as {row_kinds}, \
+             {epoch} as {epoch_column} \
+             from contrib c left join state s on c.{row} = s.{row}"
+        );
+        let mv_sql = format!(
+            "select {key_output}, {}, {row_kinds}, {epoch_column} from ({state_sql}) t",
+            measures
+                .iter()
+                .map(|(_, column, _)| quote_ident(column))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let state_stream = merge_context
+            .sql(&state_sql)
+            .await?
+            .execute_stream()
+            .await?;
+        let mv_stream = merge_context.sql(&mv_sql).await?.execute_stream().await?;
+        let mut commit_ids = state.append_stream(&self.client, state_stream).await?;
+        commit_ids.extend(view.mv.append_stream(&self.client, mv_stream).await?);
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.metadata
+            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            .await?;
+        self.advance_cursors(&view.view_id, window.cursors).await?;
+        Ok(Some(epoch))
     }
 
     /// Rebuild a multi-aggregate view from the full source state.

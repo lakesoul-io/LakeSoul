@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Epochs publish the LakeSoul commit ids of the MV writes, so consumers can
 //! pin an epoch snapshot through the standard commit semantics.
 

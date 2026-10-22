@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Projection/filter (`RowView`) and `UNION ALL` (`UnionAllView`) views.
 
 use std::collections::HashSet;

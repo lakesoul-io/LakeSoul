@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Tests for `SEMI`/`ANTI` join views: the affected left rows are recomputed
 //! against both current source states, so updates, deletes and join key
 //! changes on either side are reflected.

@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! The Tier-2 full-recompute fallback: a statement whose shape the
 //! incremental analyzer does not maintain is recomputed in full on every
 //! refresh, the action names it, and the switch restores the explicit

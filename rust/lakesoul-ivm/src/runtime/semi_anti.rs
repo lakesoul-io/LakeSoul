@@ -328,7 +328,7 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
         }
     }
     if view.left_filter.is_some() || view.right_filter.is_some() {
-        let context = SessionContext::new();
+        let context = refresh_session();
         if let Some(filter) = &view.left_filter {
             parse_filter(&context, &view.left.schema, filter)?;
         }
@@ -348,7 +348,7 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
             let predicate = view.match_predicate.as_deref().ok_or_else(|| {
                 report!("semi/anti view {} has no aggregate predicate", view.view_id)
             })?;
-            let context = SessionContext::new();
+            let context = refresh_session();
             let aggregate_type = right_aggregate_type(&context, view)?;
             let schema = match_schema(&view.left.schema, &aggregate_type)?;
             parse_filter(&context, &schema, predicate).map_err(|error| {
@@ -686,7 +686,7 @@ fn null_safe_semi_join(
             NullEquality::NullEqualsNull,
         )?
         .build()?;
-    Ok(DataFrame::new(SessionContext::new().state().clone(), plan))
+    Ok(DataFrame::new(refresh_session().state().clone(), plan))
 }
 
 /// Join `left` against `right` with a semi/anti view's predicate.
@@ -761,7 +761,7 @@ fn semi_anti_join(
             NullEquality::NullEqualsNull,
         )?
         .build()?;
-    Ok(DataFrame::new(SessionContext::new().state().clone(), plan))
+    Ok(DataFrame::new(refresh_session().state().clone(), plan))
 }
 
 impl IvmRuntime {
@@ -828,7 +828,7 @@ impl IvmRuntime {
 
         // Project both sides to the columns the view actually needs (the
         // side filters included).
-        let context = SessionContext::new();
+        let context = refresh_session();
         let mut left_columns = semi_anti_left_columns(view);
         if let Some(filter) = view.left_filter.as_deref() {
             for column in filter_columns(&context, &view.left.schema, filter)? {
@@ -866,133 +866,74 @@ impl IvmRuntime {
 
         let mv_partitions =
             super::mv_partitions_for_source(&view.mv, &view.left, &left_window);
-        let delta_left = view
-            .left
-            .read_partition_files_projected(
-                left_window.added_files,
-                Some(&left_projection),
-            )
-            .await?;
-        let delta_right = view
-            .right
-            .read_partition_files_projected(
-                right_window.added_files,
-                Some(&right_projection),
-            )
-            .await?;
-        let right_changed = !delta_right.is_empty();
-        // With only the left side changed (and no rank mode, which also
-        // touches the other rows of a changed tuple) the affected left keys
-        // are exactly the delta's: filter the state reads by them and prune
-        // the MV partitions the delta did not touch.
-        let left_filters = if !right_changed && !view.count_mode {
-            let changed = delta_left
-                .iter()
-                .map(|batch| batch.num_rows())
-                .sum::<usize>();
-            if changed > 0 && changed <= crate::runtime::MAX_KEY_FILTERS {
-                crate::runtime::key_filters(&view.left.primary_keys, &delta_left)?
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
+        let context = refresh_session();
+        let right_changed = !right_window.added_files.is_empty();
+        let delta_left = project_frame(
+            self.groups_table_frame(&context, &view.left, left_window.added_files)?,
+            &left_columns,
+        )?;
+        let delta_right = project_frame(
+            self.groups_table_frame(&context, &view.right, right_window.added_files)?,
+            &right_columns,
+        )?;
         let mv_partitions = if right_changed { None } else { mv_partitions };
-        let left_before = if left_filters.is_empty() {
-            view.left
-                .read_before_window_projected(
-                    &self.client,
-                    &left_window.before_versions,
-                    Some(&left_projection),
-                )
-                .await?
-        } else {
-            view.left
-                .read_before_window_filtered_projected(
-                    &self.client,
-                    &left_window.before_versions,
-                    left_filters.clone(),
-                    Some(&left_projection),
-                )
-                .await?
-        };
+        let left_before = project_frame(
+            self.before_window_table_frame(
+                &context,
+                &view.left,
+                &left_window.before_versions,
+            )
+            .await?,
+            &left_columns,
+        )?;
         let right_before = if !right_changed {
-            Vec::new()
+            dataframe(&context, Vec::new(), &right_projection)?
         } else {
-            view.right
-                .read_before_window_projected(
-                    &self.client,
+            project_frame(
+                self.before_window_table_frame(
+                    &context,
+                    &view.right,
                     &right_window.before_versions,
-                    Some(&right_projection),
                 )
-                .await?
+                .await?,
+                &right_columns,
+            )?
         };
-        let left_now = if left_filters.is_empty() {
-            view.left
-                .read_current_projected(&self.client, Some(&left_projection))
-                .await?
-        } else {
-            view.left
-                .read_current_filtered_projected(
-                    &self.client,
-                    left_filters.clone(),
-                    Some(&left_projection),
-                )
-                .await?
-        };
-        let right_now = view
-            .right
-            .read_current_projected(&self.client, Some(&right_projection))
-            .await?;
-        let mv_batches = match &mv_partitions {
+        let left_now = project_frame(
+            self.current_table_frame(&context, &view.left)?,
+            &left_columns,
+        )?;
+        let right_now = project_frame(
+            self.current_table_frame(&context, &view.right)?,
+            &right_columns,
+        )?;
+        let mv = match &mv_partitions {
             Some(restriction) => {
-                view.mv
-                    .read_current_filtered_partitions(
-                        &self.client,
-                        left_filters.clone(),
-                        restriction,
-                    )
-                    .await?
+                self.current_table_frame_filtered_partitions(
+                    &context,
+                    &view.mv,
+                    Vec::new(),
+                    restriction,
+                )
+                .await?
             }
-            None if !left_filters.is_empty() => {
-                view.mv
-                    .read_current_filtered(&self.client, left_filters.clone())
-                    .await?
-            }
-            None => view.mv.read_current(&self.client).await?,
+            None => self.current_table_frame(&context, &view.mv)?,
         };
 
-        let context = SessionContext::new();
-        let delta_left = dataframe(&context, delta_left, &left_projection)?;
-        let delta_right = dataframe(&context, delta_right, &right_projection)?;
-        let left_before = filter_deletes(
-            dataframe(&context, left_before, &left_projection)?,
-            change_column(&view.left),
-        )?;
-        let right_before = filter_deletes(
-            dataframe(&context, right_before, &right_projection)?,
-            change_column(&view.right),
-        )?;
+        let left_before = filter_deletes(left_before, change_column(&view.left))?;
+        let right_before = filter_deletes(right_before, change_column(&view.right))?;
         let left_now = apply_side_filter(
             &context,
-            filter_deletes(
-                dataframe(&context, left_now, &left_projection)?,
-                change_column(&view.left),
-            )?,
+            filter_deletes(left_now, change_column(&view.left))?,
             &left_projection,
             view.left_filter.as_deref(),
         )?;
         let right_now = apply_side_filter(
             &context,
-            filter_deletes(
-                dataframe(&context, right_now, &right_projection)?,
-                change_column(&view.right),
-            )?,
+            filter_deletes(right_now, change_column(&view.right))?,
             &right_projection,
             view.right_filter.as_deref(),
         )?;
-        let mv = dataframe(&context, mv_batches, &view.mv.schema)?;
 
         let left_key_names = view
             .left
@@ -1223,16 +1164,13 @@ impl IvmRuntime {
             .collect::<Vec<_>>();
         sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
         commit_ids.extend(
-            view.mv
-                .append_batches(
-                    &self.client,
-                    inserts
-                        .union(deletes)?
-                        .sort_by(sort_exprs)?
-                        .collect()
-                        .await?,
-                )
-                .await?,
+            append_dataframe(
+                &view.mv,
+                &self.client,
+                inserts.union(deletes)?.sort_by(sort_exprs)?,
+            )
+            .await?
+            .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -1294,11 +1232,15 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = SessionContext::new();
+        let context = refresh_session();
         let left = apply_side_filter(
             &context,
             filter_deletes(
-                dataframe(&context, left_baseline.batches, &view.left.schema)?,
+                self.groups_table_frame(
+                    &context,
+                    &view.left,
+                    left_baseline.groups.clone(),
+                )?,
                 change_column(&view.left),
             )?,
             &view.left.schema,
@@ -1307,7 +1249,11 @@ impl IvmRuntime {
         let right = apply_side_filter(
             &context,
             filter_deletes(
-                dataframe(&context, right_baseline.batches, &view.right.schema)?,
+                self.groups_table_frame(
+                    &context,
+                    &view.right,
+                    right_baseline.groups.clone(),
+                )?,
                 change_column(&view.right),
             )?,
             &view.right.schema,
@@ -1341,9 +1287,9 @@ impl IvmRuntime {
         .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
         .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         commit_ids.extend(
-            view.mv
-                .append_batches(&self.client, rows.collect().await?)
-                .await?,
+            append_dataframe(&view.mv, &self.client, rows)
+                .await?
+                .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -1706,7 +1652,7 @@ fn validate_left_aggregate_view(view: &LeftAggregateView) -> Result<()> {
             )
         })?;
     }
-    let context = SessionContext::new();
+    let context = refresh_session();
     let df_schema = DFSchema::try_from(view.right.schema.as_ref().clone())
         .map_err(|error| report!("invalid source schema: {error}"))?;
     context
@@ -1736,7 +1682,7 @@ fn left_aggregate_left_columns(view: &LeftAggregateView) -> Result<Vec<String>> 
             columns.push(key.clone());
         }
     }
-    let context = SessionContext::new();
+    let context = refresh_session();
     if let Some(filter) = &view.left_filter {
         for column in filter_columns(&context, &view.left.schema, filter)? {
             if !columns.contains(&column) {
@@ -1887,68 +1833,49 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = SessionContext::new();
+        let context = refresh_session();
         let left_columns = left_aggregate_left_columns(view)?;
         let right_columns = left_aggregate_right_columns(view, &context)?;
         let left_projection = project_schema(&view.left.schema, &left_columns)?;
         let right_projection = project_schema(&view.right.schema, &right_columns)?;
-        let delta_left = dataframe(
-            &context,
-            view.left
-                .read_partition_files_projected(
-                    left_window.added_files,
-                    Some(&left_projection),
-                )
-                .await?,
-            &left_projection,
+        let delta_left = project_frame(
+            self.groups_table_frame(&context, &view.left, left_window.added_files)?,
+            &left_columns,
         )?;
-        let delta_right = dataframe(
-            &context,
-            view.right
-                .read_partition_files_projected(
-                    right_window.added_files,
-                    Some(&right_projection),
-                )
-                .await?,
-            &right_projection,
+        let delta_right = project_frame(
+            self.groups_table_frame(&context, &view.right, right_window.added_files)?,
+            &right_columns,
         )?;
         let left_before = filter_deletes(
-            dataframe(
-                &context,
-                view.left
-                    .read_before_window_projected(
-                        &self.client,
-                        &left_window.before_versions,
-                        Some(&left_projection),
-                    )
-                    .await?,
-                &left_projection,
+            project_frame(
+                self.before_window_table_frame(
+                    &context,
+                    &view.left,
+                    &left_window.before_versions,
+                )
+                .await?,
+                &left_columns,
             )?,
             change_column(&view.left),
         )?;
         let right_before = filter_deletes(
-            dataframe(
-                &context,
-                view.right
-                    .read_before_window_projected(
-                        &self.client,
-                        &right_window.before_versions,
-                        Some(&right_projection),
-                    )
-                    .await?,
-                &right_projection,
+            project_frame(
+                self.before_window_table_frame(
+                    &context,
+                    &view.right,
+                    &right_window.before_versions,
+                )
+                .await?,
+                &right_columns,
             )?,
             change_column(&view.right),
         )?;
         let left_now = apply_side_filter(
             &context,
             filter_deletes(
-                dataframe(
-                    &context,
-                    view.left
-                        .read_current_projected(&self.client, Some(&left_projection))
-                        .await?,
-                    &left_projection,
+                project_frame(
+                    self.current_table_frame(&context, &view.left)?,
+                    &left_columns,
                 )?,
                 change_column(&view.left),
             )?,
@@ -1958,23 +1885,16 @@ impl IvmRuntime {
         let right_now = apply_side_filter(
             &context,
             filter_deletes(
-                dataframe(
-                    &context,
-                    view.right
-                        .read_current_projected(&self.client, Some(&right_projection))
-                        .await?,
-                    &right_projection,
+                project_frame(
+                    self.current_table_frame(&context, &view.right)?,
+                    &right_columns,
                 )?,
                 change_column(&view.right),
             )?,
             &right_projection,
             view.right_filter.as_deref(),
         )?;
-        let mv = dataframe(
-            &context,
-            view.mv.read_current(&self.client).await?,
-            &view.mv.schema,
-        )?;
+        let mv = self.current_table_frame(&context, &view.mv)?;
 
         let left_key_names = view
             .left
@@ -2111,16 +2031,13 @@ impl IvmRuntime {
             .collect::<Vec<_>>();
         sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
         commit_ids.extend(
-            view.mv
-                .append_batches(
-                    &self.client,
-                    inserts
-                        .union(deletes)?
-                        .sort_by(sort_exprs)?
-                        .collect()
-                        .await?,
-                )
-                .await?,
+            append_dataframe(
+                &view.mv,
+                &self.client,
+                inserts.union(deletes)?.sort_by(sort_exprs)?,
+            )
+            .await?
+            .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -2177,11 +2094,15 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = SessionContext::new();
+        let context = refresh_session();
         let left = apply_side_filter(
             &context,
             filter_deletes(
-                dataframe(&context, left_baseline.batches, &view.left.schema)?,
+                self.groups_table_frame(
+                    &context,
+                    &view.left,
+                    left_baseline.groups.clone(),
+                )?,
                 change_column(&view.left),
             )?,
             &view.left.schema,
@@ -2190,7 +2111,11 @@ impl IvmRuntime {
         let right = apply_side_filter(
             &context,
             filter_deletes(
-                dataframe(&context, right_baseline.batches, &view.right.schema)?,
+                self.groups_table_frame(
+                    &context,
+                    &view.right,
+                    right_baseline.groups.clone(),
+                )?,
                 change_column(&view.right),
             )?,
             &view.right.schema,
@@ -2217,9 +2142,9 @@ impl IvmRuntime {
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         commit_ids.extend(
-            view.mv
-                .append_batches(&self.client, rows.collect().await?)
-                .await?,
+            append_dataframe(&view.mv, &self.client, rows)
+                .await?
+                .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;

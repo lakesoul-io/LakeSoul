@@ -316,7 +316,7 @@ fn lookup_chain_replay(
 ) -> Result<DataFrame> {
     // The base frame's rows keep their own column names, so a computed key
     // over the base is materialized here.
-    let context = SessionContext::new();
+    let context = refresh_session();
     for step in &view.steps {
         for (key_index, expr) in step.key_exprs.left.iter().enumerate() {
             if expr.is_empty() || step_key_source(step, key_index) != 0 {
@@ -515,7 +515,7 @@ fn validate_lookup_chain_view(view: &LookupChainView) -> Result<()> {
             }
         }
     }
-    let context = SessionContext::new();
+    let context = refresh_session();
     for (table, filter) in &view.sources {
         if let Some(filter) = filter {
             parse_filter(&context, &table.schema, filter)?;
@@ -693,7 +693,7 @@ fn lookup_chain_step_frame(
     // The step's own computed keys and the computed keys later steps read
     // from it are materialized before the aliasing projection: their
     // expressions use the source's own columns.
-    let context = SessionContext::new();
+    let context = refresh_session();
     let mut now = now.clone();
     for (key_index, expr) in step.key_exprs.right.iter().enumerate() {
         if expr.is_empty() {
@@ -718,7 +718,7 @@ fn lookup_chain_step_frame(
         select.push(col(key.as_str()).alias(lookup_chain_alias(index + 1, key)));
     }
     let mut columns = lookup_chain_payload(view, index + 1);
-    for column in lookup_chain_referenced(view, index + 1, &SessionContext::new())? {
+    for column in lookup_chain_referenced(view, index + 1, &refresh_session())? {
         if !columns.contains(&column) {
             columns.push(column);
         }
@@ -743,6 +743,29 @@ fn lookup_chain_step_frame(
         .collect::<Vec<_>>();
     keys.sort();
     Ok((keys.join(","), now.clone().select(select)?))
+}
+
+/// The dimension frames of a chain, built from streaming providers.
+fn lookup_chain_dim_frames(
+    context: &SessionContext,
+    view: &LookupChainView,
+    client: &MetaDataClient,
+) -> Result<Vec<DataFrame>> {
+    let mut frames = Vec::new();
+    for (index, (table, filter)) in view.sources.iter().enumerate().skip(1) {
+        let columns = lookup_chain_source_columns(view, index, context)?;
+        let projection = project_schema(&table.schema, &columns)?;
+        let provider = crate::IvmTableProvider::current(table.clone(), client.clone());
+        let frame = project_frame(context.read_table(Arc::new(provider))?, &columns)?;
+        let frame = filter_deletes(frame, change_column(table))?;
+        frames.push(apply_side_filter(
+            context,
+            frame,
+            &projection,
+            filter.as_deref(),
+        )?);
+    }
+    Ok(frames)
 }
 
 impl IvmRuntime {
@@ -797,17 +820,11 @@ impl IvmRuntime {
             && base_rows > 0
         {
             let base = &view.sources[0].0;
-            let key_schema = project_schema(&base.schema, &base.primary_keys)?;
-            let batches = base
-                .read_partition_files_projected(
-                    windows[0].added_files.clone(),
-                    Some(&key_schema),
-                )
-                .await?;
-            let delta_rows = batches
-                .iter()
-                .map(|batch| batch.num_rows() as u64)
-                .sum::<u64>();
+            let context = refresh_session();
+            let delta =
+                self.groups_table_frame(&context, base, windows[0].added_files.clone())?;
+            let delta = project_frame(delta, &base.primary_keys)?;
+            let delta_rows = count_frame_rows(delta).await?;
             if delta_rows * 100 >= base_rows * rebuild_ratio_percent(&view.mv) {
                 return self.rebuild_lookup_chain(view).await.map(Some);
             }
@@ -876,32 +893,28 @@ impl IvmRuntime {
             return Ok(Some(epoch));
         }
 
-        let context = SessionContext::new();
+        let context = refresh_session();
         let mut frames = Vec::with_capacity(view.sources.len());
         for (index, (table, filter)) in view.sources.iter().enumerate() {
             let columns = lookup_chain_source_columns(view, index, &context)?;
             let projection = project_schema(&table.schema, &columns)?;
-            let delta = dataframe(
-                &context,
-                table
-                    .read_partition_files_projected(
-                        windows[index].added_files.clone(),
-                        Some(&projection),
-                    )
-                    .await?,
-                &projection,
+            let delta = project_frame(
+                self.groups_table_frame(
+                    &context,
+                    table,
+                    windows[index].added_files.clone(),
+                )?,
+                &columns,
             )?;
             let before = if changed[index] && !(base_only && index == 0) {
-                dataframe(
-                    &context,
-                    table
-                        .read_before_window_projected(
-                            &self.client,
-                            &windows[index].before_versions,
-                            Some(&projection),
-                        )
-                        .await?,
-                    &projection,
+                project_frame(
+                    self.before_window_table_frame(
+                        &context,
+                        table,
+                        &windows[index].before_versions,
+                    )
+                    .await?,
+                    &columns,
                 )?
             } else {
                 dataframe(&context, Vec::new(), &projection)?
@@ -917,52 +930,10 @@ impl IvmRuntime {
                     &projection,
                     filter.as_deref(),
                 )?
-            } else if base_only {
-                apply_side_filter(
-                    &context,
-                    filter_deletes(
-                        dataframe(
-                            &context,
-                            table
-                                .read_current_projected(&self.client, Some(&projection))
-                                .await?,
-                            &projection,
-                        )?,
-                        change_column(table),
-                    )?,
-                    &projection,
-                    filter.as_deref(),
-                )?
-            } else if index == 0 {
-                let provider =
-                    crate::IvmTableProvider::raw(table.clone(), self.client.clone());
-                let frame = context.read_table(Arc::new(provider))?;
-                let frame = filter_deletes(frame, change_column(table))?;
-                let frame = frame.select(
-                    columns
-                        .iter()
-                        .map(|column| col(column.as_str()))
-                        .collect::<Vec<_>>(),
-                )?;
-                apply_side_filter(
-                    &context,
-                    filter_deletes(frame, change_column(table))?,
-                    &projection,
-                    filter.as_deref(),
-                )?
             } else {
                 apply_side_filter(
                     &context,
-                    filter_deletes(
-                        dataframe(
-                            &context,
-                            table
-                                .read_current_projected(&self.client, Some(&projection))
-                                .await?,
-                            &projection,
-                        )?,
-                        change_column(table),
-                    )?,
+                    project_frame(self.current_table_frame(&context, table)?, &columns)?,
                     &projection,
                     filter.as_deref(),
                 )?
@@ -981,38 +952,21 @@ impl IvmRuntime {
             .map(|column| col(column.as_str()))
             .collect::<Vec<_>>();
 
-        // The view only needs the state rows of the affected keys.  In the
-        // base-only case that is a key-filtered read instead of the whole MV;
-        // a range-partitioned MV additionally skips the partitions the delta
-        // did not touch.
         let mv = if base_only {
-            let key_batches = frames[0]
-                .0
-                .clone()
-                .select(base_key_exprs.clone())?
-                .distinct()?
-                .collect()
-                .await?;
-            let filters = key_filters(&base.primary_keys, &key_batches)?;
-            let batches = match lookup_chain_mv_partitions(view, &windows[0]) {
+            match lookup_chain_mv_partitions(view, &windows[0]) {
                 Some(restriction) => {
-                    view.mv
-                        .read_current_filtered_partitions(
-                            &self.client,
-                            filters,
-                            &restriction,
-                        )
-                        .await?
+                    self.current_table_frame_filtered_partitions(
+                        &context,
+                        &view.mv,
+                        Vec::new(),
+                        &restriction,
+                    )
+                    .await?
                 }
-                None => view.mv.read_current_filtered(&self.client, filters).await?,
-            };
-            dataframe(&context, batches, &view.mv.schema)?
+                None => self.current_table_frame(&context, &view.mv)?,
+            }
         } else {
-            dataframe(
-                &context,
-                view.mv.read_current(&self.client).await?,
-                &view.mv.schema,
-            )?
+            self.current_table_frame(&context, &view.mv)?
         };
 
         let now_frames = frames
@@ -1273,32 +1227,10 @@ impl IvmRuntime {
             mv_by_bucket.entry(bucket).or_default().push(file);
         }
 
-        let context = SessionContext::new();
+        let context = refresh_session();
         let (base, base_filter) = &view.sources[0];
         let base_columns = lookup_chain_source_columns(view, 0, &context)?;
         let base_projection = project_schema(&base.schema, &base_columns)?;
-        let mut dims: Vec<(SchemaRef, Vec<RecordBatch>)> = Vec::new();
-        for (index, (table, filter)) in view.sources.iter().enumerate().skip(1) {
-            let columns = lookup_chain_source_columns(view, index, &context)?;
-            let projection = project_schema(&table.schema, &columns)?;
-            let frame = apply_side_filter(
-                &context,
-                filter_deletes(
-                    dataframe(
-                        &context,
-                        table
-                            .read_current_projected(&self.client, Some(&projection))
-                            .await?,
-                        &projection,
-                    )?,
-                    change_column(table),
-                )?,
-                &projection,
-                filter.as_deref(),
-            )?;
-            dims.push((projection, frame.collect().await?));
-        }
-        let dims = Arc::new(dims);
         let identity_columns = lookup_chain_identity_columns(view);
         let identity_names = identity_columns;
         let identity_exprs = identity_names
@@ -1322,9 +1254,10 @@ impl IvmRuntime {
             let view = view.clone();
             let base = base.clone();
             let mv_table = view.mv.clone();
-            let dims = dims.clone();
             let base_filter = base_filter.clone();
             let base_projection = base_projection.clone();
+            let base_columns = base_columns.clone();
+            let client = self.client.clone();
             let key_names = key_names.clone();
             let key_exprs = key_exprs.clone();
             let identity_names = identity_names.clone();
@@ -1334,13 +1267,21 @@ impl IvmRuntime {
             let sort_exprs = sort_exprs.clone();
             let mv_files = mv_by_bucket.get(&bucket).cloned().unwrap_or_default();
             async move {
-                let context = SessionContext::new();
-                let raw = dataframe(
-                    &context,
-                    base.read_files_projected(files, Some(&base_projection))
-                        .await?,
-                    &base_projection,
+                let context = refresh_session();
+                let provider = crate::IvmTableProvider::groups(
+                    base.clone(),
+                    client.clone(),
+                    vec![crate::table::PartitionFiles {
+                        partition_desc: lakesoul_io::constant::DEFAULT_PARTITION_DESC
+                            .to_string(),
+                        files,
+                    }],
+                );
+                let raw = project_frame(
+                    context.read_table(Arc::new(provider))?,
+                    &base_columns,
                 )?;
+                let raw = project_frame(raw, &base_columns)?;
                 let now = apply_side_filter(
                     &context,
                     filter_deletes(raw.clone(), change_column(&base))?,
@@ -1348,14 +1289,18 @@ impl IvmRuntime {
                     base_filter.as_deref(),
                 )?;
                 let affected = raw.select(key_exprs.clone())?.distinct()?;
-                let key_batches = affected.clone().collect().await?;
-                let filters = key_filters(&base.primary_keys, &key_batches)?;
-                let mv_batches = mv_table.read_files_filtered(mv_files, filters).await?;
-                let mv = dataframe(&context, mv_batches, &mv_table.schema)?;
+                let mv =
+                    context.read_table(Arc::new(crate::IvmTableProvider::groups(
+                        mv_table.clone(),
+                        client.clone(),
+                        vec![crate::table::PartitionFiles {
+                            partition_desc: lakesoul_io::constant::DEFAULT_PARTITION_DESC
+                                .to_string(),
+                            files: mv_files,
+                        }],
+                    )))?;
                 let mut now_frames = vec![now.clone()];
-                for (projection, batches) in dims.iter() {
-                    now_frames.push(dataframe(&context, batches.clone(), projection)?);
-                }
+                now_frames.extend(lookup_chain_dim_frames(&context, &view, &client)?);
                 let frame =
                     lookup_chain_replay(&view, &now_frames, view.steps.len(), now)?;
                 let key_refs = key_names.iter().map(String::as_str).collect::<Vec<_>>();
@@ -1502,57 +1447,38 @@ impl IvmRuntime {
                 }
             }
             if splittable && groups.len() > 1 {
-                let context = SessionContext::new();
+                let context = refresh_session();
                 let (base, base_filter) = &view.sources[0];
                 let base_columns = lookup_chain_source_columns(view, 0, &context)?;
                 let base_projection = project_schema(&base.schema, &base_columns)?;
-                let mut dims: Vec<(SchemaRef, Vec<RecordBatch>)> = Vec::new();
-                for (index, (table, filter)) in view.sources.iter().enumerate().skip(1) {
-                    let columns = lookup_chain_source_columns(view, index, &context)?;
-                    let projection = project_schema(&table.schema, &columns)?;
-                    let frame = apply_side_filter(
-                        &context,
-                        filter_deletes(
-                            dataframe(
-                                &context,
-                                table
-                                    .read_current_projected(
-                                        &self.client,
-                                        Some(&projection),
-                                    )
-                                    .await?,
-                                &projection,
-                            )?,
-                            change_column(table),
-                        )?,
-                        &projection,
-                        filter.as_deref(),
-                    )?;
-                    dims.push((projection, frame.collect().await?));
-                }
-                let dims = Arc::new(dims);
                 let row_exprs = lookup_chain_row_exprs(view)?;
                 let tasks = groups.into_values().map(|files| {
                     let view = view.clone();
                     let base = base.clone();
                     let mv = view.mv.clone();
-                    let dims = dims.clone();
                     let base_filter = base_filter.clone();
                     let base_projection = base_projection.clone();
+                    let base_columns = base_columns.clone();
+                    let client = self.client.clone();
                     let row_exprs = row_exprs.clone();
                     async move {
-                        let context = SessionContext::new();
+                        let context = refresh_session();
+                        let provider = crate::IvmTableProvider::groups(
+                            base.clone(),
+                            client.clone(),
+                            vec![crate::table::PartitionFiles {
+                                partition_desc:
+                                    lakesoul_io::constant::DEFAULT_PARTITION_DESC
+                                        .to_string(),
+                                files,
+                            }],
+                        );
                         let base_frame = apply_side_filter(
                             &context,
                             filter_deletes(
-                                dataframe(
-                                    &context,
-                                    base.read_files_projected(
-                                        files,
-                                        Some(&base_projection),
-                                    )
-                                    .await?,
-                                    &base_projection,
+                                project_frame(
+                                    context.read_table(Arc::new(provider))?,
+                                    &base_columns,
                                 )?,
                                 change_column(&base),
                             )?,
@@ -1560,13 +1486,7 @@ impl IvmRuntime {
                             base_filter.as_deref(),
                         )?;
                         let mut frames = vec![base_frame];
-                        for (projection, batches) in dims.iter() {
-                            frames.push(dataframe(
-                                &context,
-                                batches.clone(),
-                                projection,
-                            )?);
-                        }
+                        frames.extend(lookup_chain_dim_frames(&context, &view, &client)?);
                         let frame = lookup_chain_replay(
                             &view,
                             &frames,
@@ -1608,19 +1528,12 @@ impl IvmRuntime {
             }
         }
 
-        let context = SessionContext::new();
+        let context = refresh_session();
         let mut frames = Vec::with_capacity(view.sources.len());
         for (table, filter) in &view.sources {
             let frame = apply_side_filter(
                 &context,
-                filter_deletes(
-                    dataframe(
-                        &context,
-                        table.read_current(&self.client).await?,
-                        &table.schema,
-                    )?,
-                    change_column(table),
-                )?,
+                self.current_table_frame(&context, table)?,
                 &table.schema,
                 filter.as_deref(),
             )?;

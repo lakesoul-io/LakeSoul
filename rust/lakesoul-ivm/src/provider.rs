@@ -20,7 +20,9 @@
 //! of a key and resurrect an older one, so those stay with DataFusion's own
 //! `FilterExec`.
 
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::catalog::{Session, TableProvider};
@@ -35,11 +37,14 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning,
     PlanProperties, SendableRecordBatchStream,
 };
+use futures::Stream;
+use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 use lakesoul_metadata::MetaDataClient;
 
 use crate::error::Result;
 use crate::metadata::PartitionVersion;
-use crate::table::IvmTable;
+use crate::observability::{self, RefreshIo};
+use crate::table::{IvmTable, PartitionFiles};
 
 /// How an [`IvmTableProvider`] reads its table.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +68,13 @@ pub struct IvmTableProvider {
     table: IvmTable,
     client: MetaDataClient,
     mode: IvmReadMode,
+    /// Explicit file groups, used by refresh paths that already resolved the
+    /// window/baseline metadata.  When set, `mode` only contributes the
+    /// tombstone policy.
+    groups: Option<Vec<PartitionFiles>>,
+    /// Whether the reader merges duplicate primary keys.  Unmerged scans
+    /// expose the physical delete+insert changelog of a delta.
+    merge: bool,
 }
 
 impl IvmTableProvider {
@@ -72,6 +84,40 @@ impl IvmTableProvider {
             table,
             client,
             mode,
+            groups: None,
+            merge: true,
+        }
+    }
+
+    /// A provider over explicit file groups, without another metadata read.
+    pub(crate) fn groups(
+        table: IvmTable,
+        client: MetaDataClient,
+        groups: Vec<PartitionFiles>,
+    ) -> Self {
+        Self {
+            table,
+            client,
+            // Explicit groups are used for delta/baseline reads: keep the
+            // CDC tombstones, exactly like `IvmTable::read_partition_files`.
+            mode: IvmReadMode::Raw,
+            groups: Some(groups),
+            merge: true,
+        }
+    }
+
+    /// A provider over explicit delta groups **without** merge-on-read.
+    pub(crate) fn unmerged_groups(
+        table: IvmTable,
+        client: MetaDataClient,
+        groups: Vec<PartitionFiles>,
+    ) -> Self {
+        Self {
+            table,
+            client,
+            mode: IvmReadMode::Raw,
+            groups: Some(groups),
+            merge: false,
         }
     }
 
@@ -158,6 +204,57 @@ impl IvmTableProvider {
     }
 }
 
+impl IvmTableProvider {
+    pub(crate) async fn groups_for_mode(&self) -> DataFusionResult<Vec<PartitionFiles>> {
+        if let Some(groups) = &self.groups {
+            return Ok(groups.clone());
+        }
+        let groups = match &self.mode {
+            IvmReadMode::Current | IvmReadMode::Raw => {
+                self.table.current_groups(&self.client).await
+            }
+            IvmReadMode::AsOf(as_of_ms) => {
+                self.table.as_of_groups(&self.client, *as_of_ms).await
+            }
+            IvmReadMode::AtVersions(versions) => {
+                self.table.version_groups(&self.client, versions).await
+            }
+        };
+        groups.map_err(|error| DataFusionError::Execution(error.to_string()))
+    }
+
+    pub(crate) fn stream_plan_groups(
+        &self,
+        groups: Vec<PartitionFiles>,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let (reader_projection, out_schema) = self
+            .reader_projection(projection)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+        let pushed = self.key_filters(filters);
+        // The raw mode keeps the CDC tombstones; every logical mode hides
+        // them after merge-on-read.  An unmerged delta scan exposes the
+        // physical changelog.
+        let change_filter = if self.merge {
+            match self.mode {
+                IvmReadMode::Raw => None,
+                _ => self.change_column().map(str::to_string),
+            }
+        } else {
+            None
+        };
+        self.stream_plan(
+            groups,
+            reader_projection,
+            out_schema,
+            pushed,
+            change_filter,
+            self.merge,
+        )
+    }
+}
+
 #[async_trait::async_trait]
 impl TableProvider for IvmTableProvider {
     fn schema(&self) -> SchemaRef {
@@ -200,17 +297,8 @@ impl TableProvider for IvmTableProvider {
         filters: &[Expr],
         _limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let (reader_projection, out_schema) = self
-            .reader_projection(projection)
-            .map_err(|error| DataFusionError::Execution(error.to_string()))?;
-        let pushed = self.key_filters(filters);
-        // The raw mode keeps the CDC tombstones; every logical mode hides
-        // them after merge-on-read.
-        let change_filter = match self.mode {
-            IvmReadMode::Raw => None,
-            _ => self.change_column().map(str::to_string),
-        };
-        self.stream_plan(reader_projection, out_schema, pushed, change_filter)
+        let groups = self.groups_for_mode().await?;
+        self.stream_plan_groups(groups, projection, filters)
     }
 }
 
@@ -248,79 +336,79 @@ impl IvmTableProvider {
     /// so a scan never materializes the table in the driver.
     fn stream_plan(
         &self,
+        groups: Vec<PartitionFiles>,
         reader_projection: Option<SchemaRef>,
         out_schema: SchemaRef,
         filters: Vec<Expr>,
         change_filter: Option<String>,
+        merge: bool,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         let table = self.table.clone();
-        let client = self.client.clone();
-        let mode = self.mode.clone();
+        let partitions = groups.len().max(1);
+        let file_counts = Arc::new(
+            groups
+                .iter()
+                .map(|group| group.files.len())
+                .collect::<Vec<_>>(),
+        );
+        let refresh_io = observability::current_refresh_io();
+        let groups = Arc::new(groups);
         let stream_schema = out_schema.clone();
         let plan_schema = out_schema.clone();
-        let factory = Arc::new(move || -> DataFusionResult<SendableRecordBatchStream> {
-            let mut builder =
-                RecordBatchReceiverStreamBuilder::new(stream_schema.clone(), 2);
-            let tx = builder.tx();
-            let table = table.clone();
-            let client = client.clone();
-            let mode = mode.clone();
-            let reader_projection = reader_projection.clone();
-            let out_schema = out_schema.clone();
-            let filters = filters.clone();
-            let change_filter = change_filter.clone();
-            builder.spawn_blocking(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|error| DataFusionError::Execution(error.to_string()))?;
-                runtime.block_on(async move {
-                    let result = match &mode {
-                        IvmReadMode::Current | IvmReadMode::Raw => {
-                            table
-                                .stream_current(
-                                    &client,
-                                    filters,
-                                    reader_projection.as_ref(),
-                                    Some(&out_schema),
-                                    change_filter.as_deref(),
-                                    tx,
-                                )
-                                .await
-                        }
-                        IvmReadMode::AsOf(as_of_ms) => {
-                            table
-                                .stream_as_of(
-                                    &client,
-                                    *as_of_ms,
-                                    filters,
-                                    reader_projection.as_ref(),
-                                    Some(&out_schema),
-                                    change_filter.as_deref(),
-                                    tx,
-                                )
-                                .await
-                        }
-                        IvmReadMode::AtVersions(versions) => {
-                            table
-                                .stream_at_versions(
-                                    &client,
-                                    versions,
-                                    filters,
-                                    reader_projection.as_ref(),
-                                    Some(&out_schema),
-                                    change_filter.as_deref(),
-                                    tx,
-                                )
-                                .await
-                        }
-                    };
-                    result.map_err(|error| DataFusionError::Execution(error.to_string()))
-                })
-            });
-            Ok(builder.build())
-        });
-        Ok(Arc::new(IvmStreamExec::new(plan_schema, factory)))
+        let factory = Arc::new(
+            move |partition: usize| -> DataFusionResult<SendableRecordBatchStream> {
+                let mut builder =
+                    RecordBatchReceiverStreamBuilder::new(stream_schema.clone(), 2);
+                let tx = builder.tx();
+                let table = table.clone();
+                let group =
+                    groups
+                        .get(partition)
+                        .cloned()
+                        .unwrap_or_else(|| PartitionFiles {
+                            partition_desc: DEFAULT_PARTITION_DESC.to_string(),
+                            files: Vec::new(),
+                        });
+                if group.files.is_empty() {
+                    drop(tx);
+                    return Ok(builder.build());
+                }
+                let reader_projection = reader_projection.clone();
+                let out_schema = out_schema.clone();
+                let filters = filters.clone();
+                let change_filter = change_filter.clone();
+                builder.spawn_blocking(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+                    runtime.block_on(async move {
+                        table
+                            .stream_files_with_group(
+                                group,
+                                filters,
+                                reader_projection.as_ref(),
+                                Some(&out_schema),
+                                change_filter.as_deref(),
+                                merge,
+                                tx,
+                            )
+                            .await
+                            .map_err(|error| {
+                                DataFusionError::Execution(error.to_string())
+                            })
+                    })
+                });
+                Ok(builder.build())
+            },
+        );
+        Ok(Arc::new(IvmStreamExec::new(
+            plan_schema,
+            factory,
+            partitions,
+            refresh_io,
+            file_counts,
+        )))
     }
 }
 
@@ -337,26 +425,34 @@ fn project_schema(schema: &SchemaRef, indices: &[usize]) -> SchemaRef {
 /// A one-partition, re-executable streaming scan.
 struct IvmStreamExec {
     schema: SchemaRef,
-    factory: Arc<dyn Fn() -> DataFusionResult<SendableRecordBatchStream> + Send + Sync>,
+    factory:
+        Arc<dyn Fn(usize) -> DataFusionResult<SendableRecordBatchStream> + Send + Sync>,
     properties: Arc<PlanProperties>,
+    refresh_io: Option<Arc<Mutex<RefreshIo>>>,
+    file_counts: Arc<Vec<usize>>,
 }
 
 impl IvmStreamExec {
     fn new(
         schema: SchemaRef,
         factory: Arc<
-            dyn Fn() -> DataFusionResult<SendableRecordBatchStream> + Send + Sync,
+            dyn Fn(usize) -> DataFusionResult<SendableRecordBatchStream> + Send + Sync,
         >,
+        partitions: usize,
+        refresh_io: Option<Arc<Mutex<RefreshIo>>>,
+        file_counts: Arc<Vec<usize>>,
     ) -> Self {
         Self {
             properties: Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(schema.clone()),
-                Partitioning::UnknownPartitioning(1),
+                Partitioning::UnknownPartitioning(partitions.max(1)),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
             )),
             schema,
             factory,
+            refresh_io,
+            file_counts,
         }
     }
 }
@@ -432,9 +528,53 @@ impl ExecutionPlan for IvmStreamExec {
 
     fn execute(
         &self,
-        _partition: usize,
+        partition: usize,
         _context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
-        (self.factory)()
+        let input = (self.factory)(partition)?;
+        let Some(refresh_io) = &self.refresh_io else {
+            return Ok(input);
+        };
+        let files = self.file_counts.get(partition).copied().unwrap_or(0) as u64;
+        observability::add_files_read_shared(refresh_io, files);
+        let schema = input.schema();
+        Ok(Box::pin(RefreshCountingStream {
+            input,
+            schema,
+            refresh_io: refresh_io.clone(),
+        }))
+    }
+}
+
+/// Counts rows consumed from a provider scan into the refresh's IO sink.
+struct RefreshCountingStream {
+    input: SendableRecordBatchStream,
+    schema: SchemaRef,
+    refresh_io: Arc<Mutex<RefreshIo>>,
+}
+
+impl Stream for RefreshCountingStream {
+    type Item = DataFusionResult<arrow_array::RecordBatch>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        match self.input.as_mut().poll_next(cx) {
+            Poll::Ready(Some(Ok(batch))) => {
+                observability::add_rows_scanned_shared(
+                    &self.refresh_io,
+                    batch.num_rows() as u64,
+                );
+                Poll::Ready(Some(Ok(batch)))
+            }
+            other => other,
+        }
+    }
+}
+
+impl datafusion::physical_plan::RecordBatchStream for RefreshCountingStream {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
     }
 }

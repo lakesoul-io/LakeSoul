@@ -875,7 +875,7 @@ fn multi_window_rebuild_sql(view: &MultiWindowView, epoch: i64) -> String {
 /// Validate that a multi-window view can be maintained.
 fn validate_multi_window_view(view: &MultiWindowView) -> Result<()> {
     if let Some(filter) = &view.filter {
-        let context = SessionContext::new();
+        let context = refresh_session();
         parse_filter(&context, &view.source.schema, filter)?;
     }
     for column in &view.payload_columns {
@@ -932,7 +932,7 @@ fn validate_multi_window_view(view: &MultiWindowView) -> Result<()> {
             if view.source.schema.field_with_name(column).is_ok() {
                 continue;
             }
-            let context = SessionContext::new();
+            let context = refresh_session();
             parse_filter(&context, &view.source.schema, column).map_err(|error| {
                 report!(
                     "window view {}: order column {column} is not in the source \
@@ -1148,7 +1148,7 @@ fn top_k_materialized_columns(
 /// Validate that a window view can be maintained.
 fn validate_window_view(view: &WindowView) -> Result<()> {
     if let Some(filter) = &view.filter {
-        let context = SessionContext::new();
+        let context = refresh_session();
         parse_filter(&context, &view.source.schema, filter)?;
     }
     if view.columns.is_empty() {
@@ -1199,7 +1199,7 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
             continue;
         }
         // A computed ordering item is a rendered expression over the source.
-        let context = SessionContext::new();
+        let context = refresh_session();
         parse_filter(&context, &view.source.schema, column).map_err(|error| {
             report!(
                 "window view {}: order column {column} is not in the source \
@@ -1255,7 +1255,7 @@ fn validate_window_column(
                 "window view {view_id}: FILTER needs an aggregate window function"
             ));
         }
-        let context = SessionContext::new();
+        let context = refresh_session();
         parse_filter(&context, &source.schema, filter)?;
     }
     match column.function {
@@ -1486,16 +1486,6 @@ fn window_affected_cte(view: &WindowView) -> String {
     )
 }
 
-/// SQL returning the affected partitions of one window refresh.
-fn window_affected_sql(view: &WindowView) -> String {
-    if view.partition_keys.is_empty() {
-        // A global window recomputes every row; there are no partitions to
-        // enumerate (the caller then reads the whole source anyway).
-        return "select 1 as \"__ivm_all\"".to_string();
-    }
-    format!("with {} select * from affected", window_affected_cte(view))
-}
-
 /// The ordering items of a window/top-k view: the analyzed rendered ordering,
 /// falling back to the plain ascending order keys.
 fn order_items(order_by: &[String], order_keys: &[String]) -> Vec<String> {
@@ -1675,7 +1665,7 @@ fn top_k_computed_cte(view: &TopKView, source_alias: &str) -> String {
     let mut order = order_items(&view.order_by, &view.order_keys);
     order.extend(view.source.primary_keys.iter().map(|key| quote_ident(key)));
     let orders = order.join(", ");
-    let context = SessionContext::new();
+    let context = refresh_session();
     let names = top_k_output_columns(view);
     let unparser = Unparser::default();
     // The unparser drops aliases, so every item carries its own `AS name`.
@@ -1803,7 +1793,7 @@ fn top_k_output_columns(view: &TopKView) -> Vec<String> {
 /// Validate that a top-k view can be maintained.
 fn validate_top_k_view(view: &TopKView) -> Result<()> {
     if let Some(filter) = &view.filter {
-        let context = SessionContext::new();
+        let context = refresh_session();
         parse_filter(&context, &view.source.schema, filter)?;
     }
     if view.limit <= 0 {
@@ -1830,7 +1820,7 @@ fn validate_top_k_view(view: &TopKView) -> Result<()> {
                 view.view_id
             ));
         }
-        let context = SessionContext::new();
+        let context = refresh_session();
         let df_schema = DFSchema::try_from(view.source.schema.as_ref().clone())
             .map_err(|error| report!("invalid source schema: {error}"))?;
         for expression in &view.output_exprs {
@@ -1878,7 +1868,7 @@ fn validate_top_k_view(view: &TopKView) -> Result<()> {
             continue;
         }
         // A computed ordering item is a rendered expression over the source.
-        let context = SessionContext::new();
+        let context = refresh_session();
         parse_filter(&context, &view.source.schema, column).map_err(|error| {
             report!(
                 "top-k view {}: order column {column} is not in the source \
@@ -1975,63 +1965,36 @@ impl IvmRuntime {
         // source key cannot move between them).
         let mv_partitions =
             super::mv_partitions_for_source(&view.mv, &view.source, &window);
-        let delta_batches = view.source.read_partition_files(window.added_files).await?;
-        let mv_batches = match mv_partitions {
+        let context = refresh_session();
+        let delta =
+            self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
+        let mv = match mv_partitions {
             Some(restriction) => {
-                view.mv
-                    .read_current_filtered_partitions(
-                        &self.client,
-                        Vec::new(),
-                        &restriction,
-                    )
-                    .await?
+                self.current_table_frame_filtered_partitions(
+                    &context,
+                    &view.mv,
+                    Vec::new(),
+                    &restriction,
+                )
+                .await?
             }
-            None => view.mv.read_current(&self.client).await?,
+            None => self.current_table_frame(&context, &view.mv)?,
         };
 
-        // Phase 1: the affected partitions follow from the delta and the MV
-        // alone, so the source scan can be pruned to them.
-        let affected_context = SessionContext::new();
-        register_table(
-            &affected_context,
-            "delta",
-            delta_batches.clone(),
-            &view.source.schema,
-        )?;
-        register_table(&affected_context, "mv", mv_batches.clone(), &view.mv.schema)?;
-        let mut affected_batches = Vec::new();
-        for batch in affected_context
-            .sql(&window_affected_sql(view))
-            .await?
-            .collect()
-            .await?
-        {
-            if batch.num_rows() > 0 {
-                affected_batches.push(batch);
-            }
-        }
-        let filters = key_filters(&view.partition_keys, &affected_batches)?;
-        let src_batches = view
-            .source
-            .read_current_filtered(&self.client, filters)
-            .await?;
+        // The refresh SQL computes the affected partitions itself and only
+        // aggregates those source partitions; register the full source as a
+        // streaming provider.
+        context.register_table("delta", delta.clone().into_view())?;
+        context.register_table("mv", mv.clone().into_view())?;
+        let src = self.current_table_frame(&context, &view.source)?;
 
         // Phase 2: recompute the affected partitions from their pruned
-        // current source rows.
-        let context = SessionContext::new();
-        register_table(&context, "delta", delta_batches, &view.source.schema)?;
-        register_table(&context, "mv", mv_batches, &view.mv.schema)?;
-        register_table(&context, "src", src_batches, &view.source.schema)?;
+        // current source rows.  `delta` and `mv` are already registered.
+        context.register_table("src", src.into_view())?;
+        let frame = context.sql(&window_refresh_sql(view, epoch)).await?;
         commit_ids.extend(
             view.mv
-                .append_batches(
-                    &self.client,
-                    context
-                        .sql(&window_refresh_sql(view, epoch))
-                        .await?
-                        .collect()
-                        .await?,
-                )
+                .append_stream(&self.client, frame.execute_stream().await?)
                 .await?,
         );
 
@@ -2082,35 +2045,16 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = SessionContext::new();
-        register_table(
-            &context,
-            "delta",
-            view.source.read_partition_files(window.added_files).await?,
-            &view.source.schema,
-        )?;
-        register_table(
-            &context,
-            "mv",
-            view.mv.read_current(&self.client).await?,
-            &view.mv.schema,
-        )?;
-        register_table(
-            &context,
-            "src",
-            view.source.read_current(&self.client).await?,
-            &view.source.schema,
-        )?;
+        let context = refresh_session();
+        let delta =
+            self.groups_table_frame(&context, &view.source, window.added_files)?;
+        context.register_table("delta", delta.into_view())?;
+        context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
+        context.register_table("src", Arc::new(self.table_provider(&view.source)))?;
+        let frame = context.sql(&multi_window_refresh_sql(view, epoch)).await?;
         commit_ids.extend(
             view.mv
-                .append_batches(
-                    &self.client,
-                    context
-                        .sql(&multi_window_refresh_sql(view, epoch))
-                        .await?
-                        .collect()
-                        .await?,
-                )
+                .append_stream(&self.client, frame.execute_stream().await?)
                 .await?,
         );
 
@@ -2160,18 +2104,15 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = SessionContext::new();
-        register_table(&context, "src", baseline.batches, &view.source.schema)?;
+        let context = refresh_session();
+        context.register_table(
+            "src",
+            Arc::new(self.table_provider_groups(&view.source, baseline.groups.clone())),
+        )?;
+        let frame = context.sql(&multi_window_rebuild_sql(view, epoch)).await?;
         commit_ids.extend(
             view.mv
-                .append_batches(
-                    &self.client,
-                    context
-                        .sql(&multi_window_rebuild_sql(view, epoch))
-                        .await?
-                        .collect()
-                        .await?,
-                )
+                .append_stream(&self.client, frame.execute_stream().await?)
                 .await?,
         );
 
@@ -2225,18 +2166,15 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = SessionContext::new();
-        register_table(&context, "src", baseline.batches, &view.source.schema)?;
+        let context = refresh_session();
+        context.register_table(
+            "src",
+            Arc::new(self.table_provider_groups(&view.source, baseline.groups.clone())),
+        )?;
+        let frame = context.sql(&window_rebuild_sql(view, epoch)).await?;
         commit_ids.extend(
             view.mv
-                .append_batches(
-                    &self.client,
-                    context
-                        .sql(&window_rebuild_sql(view, epoch))
-                        .await?
-                        .collect()
-                        .await?,
-                )
+                .append_stream(&self.client, frame.execute_stream().await?)
                 .await?,
         );
 
@@ -2276,44 +2214,30 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = SessionContext::new();
+        let context = refresh_session();
         let mv_partitions =
             super::mv_partitions_for_source(&view.mv, &view.source, &window);
-        register_table(
-            &context,
-            "delta",
-            view.source.read_partition_files(window.added_files).await?,
-            &view.source.schema,
-        )?;
-        register_table(
-            &context,
-            "src",
-            view.source.read_current(&self.client).await?,
-            &view.source.schema,
-        )?;
-        let mv_batches = match mv_partitions {
+        let delta =
+            self.groups_table_frame(&context, &view.source, window.added_files)?;
+        context.register_table("delta", delta.into_view())?;
+        context.register_table("src", Arc::new(self.table_provider(&view.source)))?;
+        let mv = match mv_partitions {
             Some(restriction) => {
-                view.mv
-                    .read_current_filtered_partitions(
-                        &self.client,
-                        Vec::new(),
-                        &restriction,
-                    )
-                    .await?
+                self.current_table_frame_filtered_partitions(
+                    &context,
+                    &view.mv,
+                    Vec::new(),
+                    &restriction,
+                )
+                .await?
             }
-            None => view.mv.read_current(&self.client).await?,
+            None => self.current_table_frame(&context, &view.mv)?,
         };
-        register_table(&context, "mv", mv_batches, &view.mv.schema)?;
+        context.register_table("mv", mv.into_view())?;
+        let frame = context.sql(&top_k_refresh_sql(view, epoch)).await?;
         commit_ids.extend(
             view.mv
-                .append_batches(
-                    &self.client,
-                    context
-                        .sql(&top_k_refresh_sql(view, epoch))
-                        .await?
-                        .collect()
-                        .await?,
-                )
+                .append_stream(&self.client, frame.execute_stream().await?)
                 .await?,
         );
 
@@ -2363,18 +2287,15 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = SessionContext::new();
-        register_table(&context, "src", baseline.batches, &view.source.schema)?;
+        let context = refresh_session();
+        context.register_table(
+            "src",
+            Arc::new(self.table_provider_groups(&view.source, baseline.groups.clone())),
+        )?;
+        let frame = context.sql(&top_k_rebuild_sql(view, epoch)).await?;
         commit_ids.extend(
             view.mv
-                .append_batches(
-                    &self.client,
-                    context
-                        .sql(&top_k_rebuild_sql(view, epoch))
-                        .await?
-                        .collect()
-                        .await?,
-                )
+                .append_stream(&self.client, frame.execute_stream().await?)
                 .await?,
         );
 

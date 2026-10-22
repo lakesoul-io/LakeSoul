@@ -297,7 +297,7 @@ async fn validate_row_view(view: &RowView) -> Result<()> {
                 view.view_id
             ));
         }
-        let context = SessionContext::new();
+        let context = refresh_session();
         let df_schema = DFSchema::try_from(view.source.schema.as_ref().clone())
             .map_err(|error| report!("invalid source schema: {error}"))?;
         for expression in &view.output_exprs {
@@ -337,7 +337,7 @@ async fn validate_row_view(view: &RowView) -> Result<()> {
             if let Some(position) = columns.iter().position(|column| column == key)
                 && let Some(expression) = view.output_exprs.get(position)
             {
-                let context = SessionContext::new();
+                let context = refresh_session();
                 let df_schema =
                     DFSchema::try_from(view.source.schema.as_ref().clone())
                         .map_err(|error| report!("invalid source schema: {error}"))?;
@@ -387,7 +387,7 @@ async fn validate_row_view(view: &RowView) -> Result<()> {
 /// A session with the view's scalar subquery tables registered as empty
 /// relations (enough to parse and plan the filter).
 fn scalar_context(view: &RowView) -> Result<SessionContext> {
-    let context = SessionContext::new();
+    let context = refresh_session();
     if let Some(scalar) = &view.scalar {
         for (name, table) in &scalar.tables {
             let provider: Arc<dyn datafusion::catalog::TableProvider> =
@@ -422,28 +422,17 @@ impl IvmRuntime {
     /// A session with the row view's scalar subquery tables registered in
     /// their current state, so the filter's subqueries can resolve and run.
     async fn scalar_context_with_state(&self, view: &RowView) -> Result<SessionContext> {
-        let context = SessionContext::new();
+        let context = refresh_session();
         let Some(scalar) = &view.scalar else {
             return Ok(context);
         };
         for (name, table) in &scalar.tables {
-            let rows = filter_deletes(
-                dataframe(
-                    &context,
-                    table.read_current(&self.client).await?,
-                    &table.schema,
-                )?,
+            let frame = filter_deletes(
+                self.current_table_frame(&context, table)?,
                 change_column(table),
-            )?
-            .collect()
-            .await?;
-            let provider: Arc<dyn datafusion::catalog::TableProvider> =
-                Arc::new(datafusion::datasource::memory::MemTable::try_new(
-                    table.schema.clone(),
-                    vec![rows],
-                )?);
+            )?;
             context
-                .register_table(name.as_str(), provider)
+                .register_table(name.as_str(), frame.into_view())
                 .map_err(|error| {
                     report!(
                         "row view {}: cannot register scalar table {name}: {error}",
@@ -508,11 +497,7 @@ impl IvmRuntime {
         // Computed before the delta read moves `window.added_files`.
         let partitions = row_mv_partitions(view, &window);
         let delta = if outer_changed {
-            dataframe(
-                &context,
-                view.source.read_partition_files(window.added_files).await?,
-                &view.source.schema,
-            )?
+            self.groups_table_frame(&context, &view.source, window.added_files)?
         } else {
             dataframe(&context, Vec::new(), &view.source.schema)?
         };
@@ -532,26 +517,16 @@ impl IvmRuntime {
                 .iter()
                 .map(|column| col(column.as_str()))
                 .collect::<Vec<_>>();
-            // The delta is the merged current state of the changed keys, so
-            // only a scalar-subquery change (which can flip any row) needs
-            // the full source read.  The view only needs the affected keys:
-            // reading it with a primary-key filter keeps a refresh's reads
-            // proportional to the change when the key set is small enough
-            // for an `IN` list.
+            // The delta is the merged current state of the changed keys.
+            // The MV is read as a streaming provider (optionally restricted
+            // to the touched range partitions); the semi-joins below select
+            // the affected keys, so no key list is collected.
             let (source_now, mv, affected) = if scalar_changed {
                 let source_now = filter_deletes(
-                    dataframe(
-                        &context,
-                        view.source.read_current(&self.client).await?,
-                        &view.source.schema,
-                    )?,
+                    self.current_table_frame(&context, &view.source)?,
                     change_column(&view.source),
                 )?;
-                let mv = dataframe(
-                    &context,
-                    view.mv.read_current(&self.client).await?,
-                    &view.mv.schema,
-                )?;
+                let mv = self.current_table_frame(&context, &view.mv)?;
                 // A scalar subquery change re-evaluates every key either the
                 // current source or the view knows.
                 let affected = source_now
@@ -565,47 +540,18 @@ impl IvmRuntime {
                 // must be retracted even though no new row survives.
                 let affected = delta.clone().select(key_exprs.clone())?.distinct()?;
                 let source_now = filter_deletes(delta, change_column(&view.source))?;
-                let key_batches = affected.clone().collect().await?;
-                let key_count = key_batches
-                    .iter()
-                    .map(|batch| batch.num_rows())
-                    .sum::<usize>();
-                let mv_batches = if key_count > 0
-                    && key_count <= crate::runtime::MAX_KEY_FILTERS
-                {
-                    let filters = crate::runtime::key_filters(
-                        &view.source.primary_keys,
-                        &key_batches,
-                    )?;
-                    match &partitions {
-                        Some(restriction) => {
-                            view.mv
-                                .read_current_filtered_partitions(
-                                    &self.client,
-                                    filters,
-                                    restriction,
-                                )
-                                .await?
-                        }
-                        None => {
-                            view.mv.read_current_filtered(&self.client, filters).await?
-                        }
+                let mv = match &partitions {
+                    Some(restriction) => {
+                        self.current_table_frame_filtered_partitions(
+                            &context,
+                            &view.mv,
+                            Vec::new(),
+                            restriction,
+                        )
+                        .await?
                     }
-                } else {
-                    match &partitions {
-                        Some(restriction) => {
-                            view.mv
-                                .read_current_filtered_partitions(
-                                    &self.client,
-                                    Vec::new(),
-                                    restriction,
-                                )
-                                .await?
-                        }
-                        None => view.mv.read_current(&self.client).await?,
-                    }
+                    None => self.current_table_frame(&context, &view.mv)?,
                 };
-                let mv = dataframe(&context, mv_batches, &view.mv.schema)?;
                 (source_now, mv, affected)
             };
             let mut passing = if scalar_changed {
@@ -734,7 +680,7 @@ impl IvmRuntime {
 
         let context = self.scalar_context_with_state(view).await?;
         let mut rows = filter_deletes(
-            dataframe(&context, baseline.batches, &view.source.schema)?,
+            self.groups_table_frame(&context, &view.source, baseline.groups.clone())?,
             change_column(&view.source),
         )?;
         if let Some(predicate) = row_filter_predicate(&context, view).await? {

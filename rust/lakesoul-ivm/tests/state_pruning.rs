@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Aggregate state reads are pruned to the affected groups. This builds many
 //! groups so the reads carry long `IN` filters, then updates/deletes a few of
 //! them and cross-checks every group against SQL.

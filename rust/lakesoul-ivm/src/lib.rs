@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! LakeSoul incremental materialized view runtime.
 //!
 //! See [README.md](https://github.com/lakesoul-io/LakeSoul/blob/main/rust/lakesoul-ivm/README.md)
@@ -95,9 +97,10 @@ pub use runtime::{
     ChainPolicy, CompareOp, ComputedAggArg, ComputedAggResult, ComputedAggView,
     CrossJoinView, DistinctAggKind, DistinctAggView, FullJoinView, GroupingColumn,
     IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_CUME_DIST_COLUMN, IVM_DENSE_RANK_COLUMN,
-    IVM_FIRST_VALUE_COLUMN, IVM_GROUPING_COLUMN, IVM_LAG_COLUMN, IVM_LAST_VALUE_COLUMN,
-    IVM_LEAD_COLUMN, IVM_MEDIAN_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_NTH_VALUE_COLUMN,
-    IVM_NTILE_COLUMN, IVM_PAIR_IDENTITY_COLUMN, IVM_PERCENT_RANK_COLUMN, IVM_RANK_COLUMN,
+    IVM_FIRST_VALUE_COLUMN, IVM_GROUP_ROW_COLUMN, IVM_GROUPING_COLUMN, IVM_LAG_COLUMN,
+    IVM_LAST_VALUE_COLUMN, IVM_LEAD_COLUMN, IVM_MEDIAN_COLUMN, IVM_NONNULL_COUNT_COLUMN,
+    IVM_NTH_VALUE_COLUMN, IVM_NTILE_COLUMN, IVM_PAIR_IDENTITY_COLUMN,
+    IVM_PERCENT_RANK_COLUMN, IVM_RANK_COLUMN, IVM_ROW_COUNT_COLUMN,
     IVM_ROW_NUMBER_COLUMN, IVM_SOURCE_COLUMN, IVM_STDDEV_COLUMN, IVM_SUM_COLUMN,
     IVM_VALUE_COLUMN, IVM_VALUE_COUNT_COLUMN, IVM_VARIANCE_COLUMN, IvmRuntime,
     JoinKeyExprs, JoinOutputColumn, JoinSide, JoinView, LeftAggregateView, LeftJoinView,
@@ -127,16 +130,16 @@ pub use runtime::{
     lookup_chain_mv_schema_for, lookup_chain_step_id_column, lookup_join_view_schema_for,
     median_groups_mv_schema_for, median_mv_schema_for, min_max_expr_mv_schema_for,
     min_max_groups_mv_schema_for, min_max_mv_schema, min_max_mv_schema_for,
-    min_max_state_schema, multi_agg_mv_schema_for, multi_join_append_schema_for,
-    multi_join_mv_schema_for, multi_join_primary_keys, multi_join_source_limit,
-    multi_window_mv_schema_for, multi_window_mv_schema_for_with_payload,
-    nullable_join_key_schema, row_expr_mv_schema_for, row_mv_schema_for,
-    semi_anti_mv_schema, semi_anti_mv_schema_for, string_agg_column,
-    string_agg_expr_mv_schema_for, string_agg_groups_mv_schema_for,
-    string_agg_mv_schema_for, string_agg_output_column, sum_count_groups_mv_schema_for,
-    sum_count_mv_schema, sum_count_mv_schema_for, sum_expr_mv_schema_for,
-    top_k_expr_mv_schema_for, top_k_mv_schema_for, union_all_mv_schema_for,
-    union_distinct_mv_schema_for, union_output_schema_for,
+    min_max_state_schema, multi_agg_mv_schema_for, multi_agg_state_schema_for,
+    multi_join_append_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
+    multi_join_source_limit, multi_window_mv_schema_for,
+    multi_window_mv_schema_for_with_payload, nullable_join_key_schema,
+    row_expr_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema,
+    semi_anti_mv_schema_for, string_agg_column, string_agg_expr_mv_schema_for,
+    string_agg_groups_mv_schema_for, string_agg_mv_schema_for, string_agg_output_column,
+    sum_count_groups_mv_schema_for, sum_count_mv_schema, sum_count_mv_schema_for,
+    sum_expr_mv_schema_for, top_k_expr_mv_schema_for, top_k_mv_schema_for,
+    union_all_mv_schema_for, union_distinct_mv_schema_for, union_output_schema_for,
     value_count_groups_state_schema_for, value_count_mv_schema,
     value_count_mv_schema_for, value_count_state_expr_schema_for,
     value_count_state_schema, value_count_state_schema_for,

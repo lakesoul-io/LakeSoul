@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! End-to-end measurement of the pk locator on IVM refresh reads.
 //!
 //! All tables are vortex, so the locator applies to the `old` as-of read, the

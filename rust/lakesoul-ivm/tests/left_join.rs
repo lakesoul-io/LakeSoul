@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! General LEFT join views over two keyed sources: every left row keeps all of
 //! its matching right rows, or a NULL-padded pair when nothing matches.
 

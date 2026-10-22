@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Tests for the metadata-first epoch protocol (see `EPOCH.md`).
 //!
 //! They cover the crash windows around `ivm.epochs`: a pending window whose

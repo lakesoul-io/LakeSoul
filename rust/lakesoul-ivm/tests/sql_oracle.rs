@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Differential oracle for the incremental executor.
 //!
 //! Every round appends a random batch of inserts/updates/deletes to the source,

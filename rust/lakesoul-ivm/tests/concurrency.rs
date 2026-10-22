@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Concurrent refreshes. The docker-compose test database runs PostgreSQL at
 //! `serializable`, so parallel writers abort each other's statements with
 //! `40001`; the metadata layer retries those with backoff, and every view here

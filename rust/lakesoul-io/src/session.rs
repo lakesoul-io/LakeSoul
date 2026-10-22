@@ -577,7 +577,17 @@ impl LakeSoulIOSession {
                     uniform_schema(self.io_config().target_schema())
                 };
 
-                let mut builder = SchemaBuilder::from(target_schema.fields());
+                // Range partition columns are appended by `TableSchema`
+                // from `table_partition_cols`; keeping them in the target
+                // schema would add them twice and make a predicate on such a
+                // column ambiguous.
+                let range_partitions = &self.io_config().range_partitions;
+                let mut builder = SchemaBuilder::new();
+                for field in target_schema.fields() {
+                    if !range_partitions.iter().any(|column| column == field.name()) {
+                        builder.push(field.clone());
+                    }
+                }
 
                 // Resolve the schema (all files schema)
                 let file_schema = self.io_file_schema().await?;
@@ -628,7 +638,13 @@ impl LakeSoulIOSession {
             uniform_schema(self.io_config.target_schema())
         };
 
-        let mut builder = SchemaBuilder::from(target_schema.fields());
+        let range_partitions = &self.io_config.range_partitions;
+        let mut builder = SchemaBuilder::new();
+        for field in target_schema.fields() {
+            if !range_partitions.iter().any(|column| column == field.name()) {
+                builder.push(field.clone());
+            }
+        }
         // O(n^2), n is the number of fields in the file_schema
         for field in file_schema.fields() {
             if target_schema.field_with_name(field.name()).is_err() {

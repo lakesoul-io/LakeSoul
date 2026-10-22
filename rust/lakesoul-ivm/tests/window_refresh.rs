@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#![recursion_limit = "512"]
+
 //! Tests for `ROW_NUMBER()` views: a refresh recomputes the affected
 //! partitions and rewrites the rows whose rank changed (including rows that
 //! disappeared or moved to another partition).

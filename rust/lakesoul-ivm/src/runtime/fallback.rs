@@ -649,64 +649,44 @@ impl IvmRuntime {
         restriction: &PartitionRestriction,
         epoch: i64,
     ) -> Result<Option<Vec<String>>> {
-        let context = SessionContext::new();
+        let context = refresh_session();
         for table in &view.tables {
             let restricted = table
                 .range_partition_columns
                 .iter()
                 .any(|column| restriction.iter().any(|(name, _)| name == column));
-            let batches = if restricted {
-                table
-                    .read_current_filtered_partitions(
-                        &self.client,
-                        Vec::new(),
-                        restriction,
-                    )
-                    .await?
+            let provider: Arc<dyn datafusion::catalog::TableProvider> = if restricted {
+                let groups = table
+                    .current_groups_for_partitions(&self.client, restriction)
+                    .await?;
+                Arc::new(self.table_provider_groups(table, groups))
             } else {
-                table.read_current(&self.client).await?
+                Arc::new(self.table_provider(table))
             };
-            register_table(
-                &context,
-                table.table_name.as_str(),
-                batches.clone(),
-                &table.schema,
-            )?;
+            context.register_table(table.table_name.as_str(), provider.clone())?;
             // The qualified name only resolves when the namespace schema is
             // registered (the executor's session may not have it).
             let qualified = format!("{}.{}", table.namespace, table.table_name);
-            let _ = register_table(&context, qualified.as_str(), batches, &table.schema);
+            let _ = context.register_table(qualified.as_str(), provider);
         }
-        let statement = context
-            .sql(&view.statement)
-            .await
-            .map_err(|error| report!("fallback `{}`: {error}", view.statement))?;
-        let batches = statement
-            .collect()
-            .await
-            .map_err(|error| report!("fallback `{}`: {error}", view.statement))?;
-        self.ensure_fallback_keys(view, &batches).await?;
+        self.ensure_fallback_keys_sql(&context, view).await?;
 
         // Guard: the recomputed rows must stay inside the restriction.  An
         // analysis that let another partition through would otherwise retract
         // rows it never rewrites.
         let predicate = restriction_predicate(restriction);
-        if let Some(first) = batches.first()
-            && !predicate.is_empty()
-        {
-            let guard = SessionContext::new();
-            register_table(&guard, "__ivm_guard", batches.clone(), &first.schema())?;
-            let frame = guard
+        if !predicate.is_empty() {
+            let frame = context
                 .sql(&format!(
-                    "select count(*) as c from __ivm_guard where not ({predicate})"
+                    "select count(*) as c from ({}) __ivm_guard where not ({predicate})",
+                    view.statement
                 ))
                 .await
                 .map_err(|error| report!("fallback guard: {error}"))?;
-            for batch in frame
-                .collect()
-                .await
-                .map_err(|error| report!("fallback guard: {error}"))?
-            {
+            use futures::StreamExt;
+            let mut stream = frame.execute_stream().await?;
+            if let Some(batch) = stream.next().await {
+                let batch = batch?;
                 let count = batch
                     .column(0)
                     .as_any()
@@ -721,65 +701,51 @@ impl IvmRuntime {
 
         // The delete rows retract every active row of the recomputed
         // partitions; the insert rows are the recomputed statement output.
-        let current = view
+        let current_groups = view
             .mv
-            .read_current_filtered_partitions(&self.client, Vec::new(), restriction)
+            .current_groups_for_partitions(&self.client, restriction)
             .await?;
-        let deletes = if current.is_empty() {
-            Vec::new()
-        } else {
-            let context = SessionContext::new();
-            register_table(&context, "mv", current, &view.mv.schema)?;
-            context
+        let has_deletes = !current_groups.is_empty();
+        // Plan the statement in the context that has the source tables; the
+        // resulting view is self-contained and can be composed elsewhere.
+        let ins = context
+            .sql(&format!(
+                "select *, 'insert' as \"{IVM_ROW_KINDS_COLUMN}\", \
+                 {epoch} as \"{IVM_EPOCH_COLUMN}\" \
+                 from ({}) __ivm_fallback_rows",
+                view.statement
+            ))
+            .await
+            .map_err(|error| report!("fallback `{}`: {error}", view.statement))?;
+        let compose = refresh_session();
+        compose.register_table("ins", ins.into_view())?;
+        if has_deletes {
+            let mv = self.groups_table_frame(&compose, &view.mv, current_groups)?;
+            compose.register_table("mv", mv.into_view())?;
+            let del = compose
                 .sql(&fallback_partition_delete_sql(view, epoch))
                 .await
-                .map_err(|error| report!("fallback partition deletes: {error}"))?
-                .collect()
-                .await
-                .map_err(|error| report!("fallback partition deletes: {error}"))?
-        };
-        let inserts = rows_with_epoch(&SessionContext::new(), batches, epoch).await?;
-
-        // Deletes must precede the inserts of the same row (the batch is
-        // ordered by the MV's primary keys), so the merge keeps the rewrite.
-        let compose = SessionContext::new();
+                .map_err(|error| report!("fallback partition deletes: {error}"))?;
+            compose.register_table("del", del.into_view())?;
+        }
         let order = quoted_list(&refresh_order_columns(&view.mv, &view.mv.primary_keys));
-        let mut written = 0u64;
-        let mut commit_ids = Vec::new();
-        let (has_deletes, has_inserts) = (!deletes.is_empty(), !inserts.is_empty());
-        if has_deletes {
-            let schema = deletes[0].schema();
-            register_table(&compose, "del", deletes, &schema)?;
-        }
-        if has_inserts {
-            let schema = inserts[0].schema();
-            register_table(&compose, "ins", inserts, &schema)?;
-        }
         let kinds = quote_ident(IVM_ROW_KINDS_COLUMN);
-        let sql = match (has_deletes, has_inserts) {
-            (true, true) => format!(
+        let sql = if has_deletes {
+            format!(
                 "select * from del union all select * from ins \
                  order by {order}, {kinds}"
-            ),
-            (true, false) => format!("select * from del order by {order}, {kinds}"),
-            (false, true) => format!("select * from ins order by {order}, {kinds}"),
-            (false, false) => String::new(),
+            )
+        } else {
+            format!("select * from ins order by {order}, {kinds}")
         };
-        if !sql.is_empty() {
-            let batches = compose
-                .sql(&sql)
-                .await
-                .map_err(|error| report!("fallback partition write: {error}"))?
-                .collect()
-                .await
-                .map_err(|error| report!("fallback partition write: {error}"))?;
-            written += batches
-                .iter()
-                .map(|batch| batch.num_rows() as u64)
-                .sum::<u64>();
-            commit_ids.extend(view.mv.append_batches(&self.client, batches).await?);
-        }
-        crate::observability::record_fallback(written);
+        let frame = compose
+            .sql(&sql)
+            .await
+            .map_err(|error| report!("fallback partition write: {error}"))?;
+        let written = write_dataframe(&view.mv, frame).await?;
+        let rows = written.rows;
+        let commit_ids = view.mv.commit_files(&self.client, written.files).await?;
+        crate::observability::record_fallback(rows);
         Ok(Some(commit_ids))
     }
 
@@ -946,7 +912,7 @@ impl IvmRuntime {
         view: &FallbackView,
         epoch: i64,
     ) -> Result<Vec<String>> {
-        let context = SessionContext::new();
+        let context = refresh_session();
         for table in &view.tables {
             let provider: Arc<dyn datafusion::catalog::TableProvider> =
                 Arc::new(self.table_provider(table));
@@ -954,60 +920,44 @@ impl IvmRuntime {
             let qualified = format!("{}.{}", table.namespace, table.table_name);
             let _ = context.register_table(qualified.as_str(), provider);
         }
-        let frame = context
-            .sql(&view.statement)
-            .await
-            .map_err(|error| report!("fallback `{}`: {error}", view.statement))?;
-        let batches = frame
-            .collect()
-            .await
-            .map_err(|error| report!("fallback `{}`: {error}", view.statement))?;
-        self.ensure_fallback_keys(view, &batches).await?;
-
-        let rows = rows_with_epoch(&context, batches, epoch).await?;
+        self.ensure_fallback_keys_sql(&context, view).await?;
         view.mv.truncate(&self.client).await?;
-        let mut written = 0u64;
-        let mut commit_ids = Vec::new();
-        written += rows
-            .iter()
-            .map(|batch| batch.num_rows() as u64)
-            .sum::<u64>();
-        commit_ids.extend(view.mv.append_batches(&self.client, rows).await?);
-        crate::observability::record_fallback(written);
+        let frame = context
+            .sql(&format!(
+                "select *, 'insert' as \"{IVM_ROW_KINDS_COLUMN}\", \
+                 {epoch} as \"{IVM_EPOCH_COLUMN}\" \
+                 from ({}) __ivm_fallback_rows",
+                view.statement
+            ))
+            .await
+            .map_err(|error| report!("fallback `{}`: {error}", view.statement))?;
+        let written = write_dataframe(&view.mv, frame).await?;
+        let rows = written.rows;
+        let commit_ids = view.mv.commit_files(&self.client, written.files).await?;
+        crate::observability::record_fallback(rows);
         Ok(commit_ids)
     }
 
-    /// A keyed fallback MV must be unique on its primary keys: the write path
-    /// merges repeated keys, which would silently collapse rows.
-    async fn ensure_fallback_keys(
+    /// Query-only uniqueness check: the fallback result is never
+    /// materialized in the driver.
+    async fn ensure_fallback_keys_sql(
         &self,
+        context: &SessionContext,
         view: &FallbackView,
-        batches: &[RecordBatch],
     ) -> Result<()> {
-        if view.mv.primary_keys.is_empty() || batches.is_empty() {
+        if view.mv.primary_keys.is_empty() {
             return Ok(());
         }
-        let context = SessionContext::new();
-        let schema = batches[0].schema();
-        let mem = datafusion::datasource::memory::MemTable::try_new(
-            schema,
-            vec![batches.to_vec()],
-        )?;
-        context.register_table("__ivm_fallback", Arc::new(mem))?;
         let keys = quoted_list(&view.mv.primary_keys);
         let frame = context
             .sql(&format!(
-                "select 1 from __ivm_fallback group by {keys} \
-                 having count(*) > 1 limit 1"
+                "select 1 from ({}) __ivm_fallback_keys \
+                 group by {keys} having count(*) > 1 limit 1",
+                view.statement
             ))
             .await
             .map_err(|error| report!("fallback key check: {error}"))?;
-        if !frame
-            .collect()
-            .await
-            .map_err(|error| report!("fallback key check: {error}"))?
-            .is_empty()
-        {
+        if count_frame_rows(frame).await? > 0 {
             return Err(report!(
                 "the fallback result repeats the primary key ({keys}) of the \
                  target table; create the materialized view without primary \
@@ -1060,33 +1010,6 @@ fn window_cursors(windows: &[SourceWindow]) -> Vec<Cursor> {
         .iter()
         .flat_map(|window| window.cursors.iter().cloned())
         .collect()
-}
-
-/// Attach the row kind and epoch columns the MV write expects.
-async fn rows_with_epoch(
-    context: &SessionContext,
-    batches: Vec<RecordBatch>,
-    epoch: i64,
-) -> Result<Vec<RecordBatch>> {
-    let Some(first) = batches.first() else {
-        return Ok(Vec::new());
-    };
-    let mem =
-        datafusion::datasource::memory::MemTable::try_new(first.schema(), vec![batches])?;
-    context.register_table("__ivm_fallback_rows", Arc::new(mem))?;
-    // The names are quoted: SQL would lowercase `rowKinds` and the writer
-    // looks the column up by its exact name.
-    let frame = context
-        .sql(&format!(
-            "select *, 'insert' as \"{IVM_ROW_KINDS_COLUMN}\", {epoch} as \"{IVM_EPOCH_COLUMN}\" \
-             from __ivm_fallback_rows"
-        ))
-        .await
-        .map_err(|error| report!("fallback epoch columns: {error}"))?;
-    frame
-        .collect()
-        .await
-        .map_err(|error| report!("fallback epoch columns: {error}"))
 }
 
 #[cfg(test)]
@@ -1145,7 +1068,7 @@ mod partition_scope_tests {
         mv_partitions: &[&str],
         sources: Vec<IvmTable>,
     ) -> PartitionScopeAnalysis {
-        let context = SessionContext::new();
+        let context = refresh_session();
         for source in &sources {
             let table = MemTable::try_new(source.schema.clone(), vec![vec![]]).unwrap();
             context
