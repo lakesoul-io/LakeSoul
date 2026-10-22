@@ -1092,7 +1092,7 @@ impl object_store::ObjectStore for GatedStore {
 /// pauses its first file read at `gate` (opened when the channel sends
 /// `true`), so a test can commit a version while the workers hold dispatched,
 /// blocked tasks.
-/// Like [`spawn_workers_with_handles`], but each worker's object store is a
+/// Like [`spawn_observable_workers`], but each worker's object store is a
 /// [`GatedStore`] sharing `gate`, and instead of session-builder receipts the
 /// function returns each worker's gate-arrival counter: a test can wait until
 /// every worker's first read is parked at the (still closed) gate and know
@@ -1204,21 +1204,6 @@ async fn wait_until_all_reached(counters: &[Arc<AtomicUsize>], label: &str) {
     panic!("not every {label} parked a read at the gate within 30 s: {reached:?}");
 }
 
-/// Polls until the worker runs no task, within 5 s: a query's worker tasks
-/// must be stopped promptly after it ends or fails, not left for their TTL.
-async fn wait_until_no_tasks(handle: &Worker, label: &str) {
-    for _ in 0..100 {
-        if handle.tasks_running().await == 0 {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!(
-        "the tasks of {label} must be stopped promptly, {} still running",
-        handle.tasks_running().await
-    );
-}
-
 async fn initialized_tasks(
     observer: &mut ObservabilityServiceClient<tonic::transport::Channel>,
 ) -> Result<usize> {
@@ -1253,6 +1238,17 @@ async fn wait_until_no_initialized_tasks(
              {remaining} task(s) still hold a plan"
         ))
     })?
+}
+
+/// Connects to the observability service of every worker in `urls`.
+async fn connect_observers(
+    urls: &[String],
+) -> Result<Vec<ObservabilityServiceClient<tonic::transport::Channel>>> {
+    let mut observers = Vec::with_capacity(urls.len());
+    for url in urls {
+        observers.push(ObservabilityServiceClient::connect(url.clone()).await?);
+    }
+    Ok(observers)
 }
 
 /// Runs a `count(*)` on `ctx` under the execution timeout and asserts it
@@ -3062,14 +3058,10 @@ async fn test_vortex_table_runs_when_no_stage_is_sent_inner() -> Result<()> {
     Ok(())
 }
 
-/// Like `spawn_workers`, but returns each `Worker` handle and exposes its
-/// observability service, so tests can distinguish initialized tasks from
-/// empty cache entries (`tasks_running` needs the dev-only `integration` feature).
-async fn spawn_workers_with_handles(
-    workers: usize,
-) -> (Vec<String>, Vec<Worker>, JoinSet<()>) {
+/// Like `spawn_workers`, but exposes each worker's observability service, so
+/// tests can count initialized tasks (see [`wait_until_no_initialized_tasks`]).
+async fn spawn_observable_workers(workers: usize) -> (Vec<String>, JoinSet<()>) {
     let mut urls = Vec::new();
-    let mut handles = Vec::new();
     let mut join_set = JoinSet::new();
     for _ in 0..workers {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -3086,7 +3078,6 @@ async fn spawn_workers_with_handles(
             crate::distributed::StaticWorkerResolver::new(vec![url])
                 .expect("worker url is well formed"),
         ));
-        handles.push(worker.clone());
         join_set.spawn(async move {
             let incoming = TcpListenerStream::new(listener);
             tonic::transport::Server::builder()
@@ -3097,7 +3088,7 @@ async fn spawn_workers_with_handles(
                 .unwrap();
         });
     }
-    (urls, handles, join_set)
+    (urls, join_set)
 }
 
 /// Streams `rows` of `(part, b)` into an append-only range-partitioned table
@@ -3181,12 +3172,8 @@ async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() ->
     // running after the drop stays backpressured instead of finishing.
     let (t, expected_rows) = seed_large_table(client.clone(), 2_000_000, 2).await?;
 
-    let (worker_urls, handles, mut workers) =
-        spawn_workers_with_handles(WORKER_COUNT).await;
-    let mut observers = Vec::with_capacity(handles.len());
-    for url in &worker_urls {
-        observers.push(ObservabilityServiceClient::connect(url.clone()).await?);
-    }
+    let (worker_urls, mut workers) = spawn_observable_workers(WORKER_COUNT).await;
+    let mut observers = connect_observers(&worker_urls).await?;
     let factory = distributed_factory(client.clone(), worker_urls, false)?;
     let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
 
@@ -3262,10 +3249,7 @@ async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() ->
         let (_gate_tx, gate_rx) = tokio::sync::watch::channel(false);
         let (worker_urls, arrived, _handles, mut workers) =
             spawn_gated_workers(WORKER_COUNT, gate_rx).await;
-        let mut observers = Vec::with_capacity(worker_urls.len());
-        for url in &worker_urls {
-            observers.push(ObservabilityServiceClient::connect(url.clone()).await?);
-        }
+        let mut observers = connect_observers(&worker_urls).await?;
         let factory = distributed_factory(client.clone(), worker_urls, false)?;
         let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
         let stream = ctx.sql(&sql).await?.execute_stream().await?;
@@ -3650,11 +3634,12 @@ impl datafusion_distributed::WorkerSessionBuilder for FailingSessionBuilder {
 
 /// Replaces one worker of the set with a worker that fails every task.
 ///
-/// The `Worker` handles of all workers are returned too, so a test can check
-/// that the query's tasks are drained from the workers after the failure.
-async fn spawn_workers_with_one_failing()
--> (Vec<String>, Vec<Worker>, JoinSet<()>, Arc<AtomicUsize>) {
-    let (mut urls, mut handles, mut workers) = spawn_workers_with_handles(2).await;
+/// The failing worker's URL is the last one; the others expose their
+/// observability service, so a test can check that the query's tasks are
+/// drained from the healthy workers after the failure.
+async fn spawn_workers_with_one_failing() -> (Vec<String>, JoinSet<()>, Arc<AtomicUsize>)
+{
+    let (mut urls, mut workers) = spawn_observable_workers(2).await;
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .unwrap();
@@ -3672,14 +3657,13 @@ async fn spawn_workers_with_one_failing()
         crate::session::build_worker_runtime_env(&CoreArgs::default()).unwrap(),
     )
     .with_version(crate::distributed::DISTRIBUTED_PROTOCOL_VERSION);
-    handles.push(worker.clone());
     workers.spawn(async move {
         let _ = tonic::transport::Server::builder()
             .add_service(worker.into_worker_server())
             .serve_with_incoming(TcpListenerStream::new(listener))
             .await;
     });
-    (urls, handles, workers, asked)
+    (urls, workers, asked)
 }
 
 /// A worker that cannot serve a task fails the query, and the query does not
@@ -3695,7 +3679,8 @@ fn test_a_worker_that_cannot_serve_fails_the_query() {
     run_distributed_test(async {
         let client = Arc::new(MetaDataClient::from_env().await?);
         let wide = seed_wide_table(Arc::clone(&client), 32, 32).await?;
-        let (urls, handles, mut workers, asked) = spawn_workers_with_one_failing().await;
+        let (urls, mut workers, asked) = spawn_workers_with_one_failing().await;
+        let mut observers = connect_observers(&urls[..urls.len() - 1]).await?;
         let factory = distributed_factory(Arc::clone(&client), urls, false)?;
         let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
 
@@ -3707,15 +3692,16 @@ fn test_a_worker_that_cannot_serve_fails_the_query() {
              be about its failure, asked {}",
             asked.load(Ordering::SeqCst)
         );
-        // The healthy workers must drain the query's tasks. The worker that
-        // fails at session build never started its task, so nothing on the
-        // worker observes the query's end to invalidate its task entry —
-        // the same leaked-entry mechanism the cancellation test
+        // The healthy workers must drain the query's initialized tasks. The
+        // worker that fails at session build never initialized its task, and
+        // a late `ExecuteTask` can leave an empty cache entry on any worker —
+        // the mechanism the cancellation test
         // (`test_dropping_a_running_distributed_stream_stops_the_workers`)
-        // documents: such an entry is what the TTL is for, and it holds no
-        // running execution.
-        for handle in handles[..handles.len() - 1].iter() {
-            wait_until_no_tasks(handle, "healthy worker").await;
+        // documents: such an entry holds no plan and no running execution,
+        // and is what the TTL is for.
+        for (index, observer) in observers.iter_mut().enumerate() {
+            wait_until_no_initialized_tasks(observer, &format!("healthy worker {index}"))
+                .await?;
         }
 
         workers.abort_all();
@@ -4448,10 +4434,10 @@ fn test_a_failing_read_cleans_up_tasks_and_recovers() {
         let fail_enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let mut fault_workers = JoinSet::new();
         let mut urls = Vec::new();
-        let mut handles = Vec::new();
         for _ in 0..WORKER_COUNT {
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-            urls.push(format!("http://{}", listener.local_addr()?));
+            let url = format!("http://{}", listener.local_addr()?);
+            urls.push(url.clone());
             let runtime = crate::session::build_worker_runtime_env(&CoreArgs::default())?;
             runtime.register_object_store(
                 &url::Url::parse("file://")?,
@@ -4469,16 +4455,20 @@ fn test_a_failing_read_cleans_up_tasks_and_recovers() {
                 },
             )?
             .with_runtime_env(runtime);
-            handles.push(worker.clone());
+            let observability = worker.with_observability_service(Arc::new(
+                StaticWorkerResolver::new(vec![url]).expect("worker url is well formed"),
+            ));
             fault_workers.spawn(async move {
                 let _ = tonic::transport::Server::builder()
                     .add_service(worker.into_worker_server())
+                    .add_service(observability)
                     .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
                         listener,
                     ))
                     .await;
             });
         }
+        let mut observers = connect_observers(&urls).await?;
         let factory = distributed_factory(Arc::clone(&client), urls, false)?;
         let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
 
@@ -4493,10 +4483,16 @@ fn test_a_failing_read_cleans_up_tasks_and_recovers() {
             "the injected failure must occur"
         );
 
-        // The failure must drain the query's tasks from the healthy workers,
-        // not leave them running until their TTL.
-        for (index, handle) in handles.iter().enumerate() {
-            wait_until_no_tasks(handle, &format!("recovery worker {index}")).await;
+        // The failure must drain the query's initialized tasks from the
+        // workers, not leave them running until their TTL. Empty cache
+        // entries recreated by a late `ExecuteTask` hold no plan and are not
+        // counted (see `test_dropping_a_running_distributed_stream_stops_the_workers`).
+        for (index, observer) in observers.iter_mut().enumerate() {
+            wait_until_no_initialized_tasks(
+                observer,
+                &format!("recovery worker {index}"),
+            )
+            .await?;
         }
 
         // Once the fault is removed, the workers serve a full query again.
@@ -4537,7 +4533,8 @@ fn test_a_session_builder_failure_is_not_rerun_locally() {
     run_distributed_test(async {
         let client = Arc::new(MetaDataClient::from_env().await?);
         let wide = seed_wide_table(Arc::clone(&client), 32, 32).await?;
-        let (urls, handles, mut workers, asked) = spawn_workers_with_one_failing().await;
+        let (urls, mut workers, asked) = spawn_workers_with_one_failing().await;
+        let mut observers = connect_observers(&urls[..urls.len() - 1]).await?;
         let factory = distributed_factory(Arc::clone(&client), urls, true)?;
         let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
 
@@ -4550,10 +4547,11 @@ fn test_a_session_builder_failure_is_not_rerun_locally() {
             asked.load(Ordering::SeqCst)
         );
         // Same reasoning as the failing-worker test: only the workers that
-        // served a task must drain; the session-build failure's entry has no
-        // running execution behind it and relies on the TTL.
-        for handle in handles[..handles.len() - 1].iter() {
-            wait_until_no_tasks(handle, "healthy worker").await;
+        // served a task must drain their initialized tasks; the session-build
+        // failure never initialized one and relies on the TTL.
+        for (index, observer) in observers.iter_mut().enumerate() {
+            wait_until_no_initialized_tasks(observer, &format!("healthy worker {index}"))
+                .await?;
         }
 
         workers.abort_all();
