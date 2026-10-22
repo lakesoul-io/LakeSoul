@@ -137,4 +137,6 @@ jobs:
           name: compaction-clean-logs
           path: |
             script/benchmark/work-dir/compaction.log
+            script/benchmark/work-dir/flink-jobmanager.log
+            script/benchmark/work-dir/flink-taskmanager.log
           if-no-files-found: ignore

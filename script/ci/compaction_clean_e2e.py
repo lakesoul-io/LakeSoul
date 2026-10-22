@@ -91,6 +91,16 @@ def _psql(statement: str) -> str:
     return result.stdout.strip()
 
 
+def _container_logs(container: str, tail: int = 20000) -> str:
+    result = subprocess.run(
+        ["docker", "logs", "--tail", str(tail), container],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout + result.stderr
+
+
 DATA_SUFFIXES = (".parquet", ".vortex")
 
 
@@ -308,11 +318,21 @@ def scenario_update_commit() -> None:
             + "; commit;"
         )
 
-        # Let the clean job consume the update commit and populate the
-        # broadcast state before the older compaction version arrives; the
-        # compaction version is then cleaned immediately instead of waiting
-        # for the (hourly) timer.
-        time.sleep(int(os.environ.get("LAKESOUL_E2E_UPDATE_DELAY", "30")))
+        # Wait until the clean job has actually processed the update commit and
+        # stored its compaction state. A fixed sleep is racy: if the older
+        # compaction version is processed before the broadcast state arrives,
+        # the clean job falls back to its (hourly) timer and the test times
+        # out. The marker is logged by CompactionBroadcastProcessFunction.
+        marker = f"Received compaction state for {table_id}/-5: version=0"
+        taskmanager = os.environ.get(
+            "LAKESOUL_E2E_TM_CONTAINER",
+            "lakesoul-docker-compose-env-taskmanager-1",
+        )
+        _wait_for(
+            lambda: marker in _container_logs(taskmanager),
+            "clean job to receive the update commit",
+            seconds=int(os.environ.get("LAKESOUL_E2E_UPDATE_WAIT", "120")),
+        )
 
         _psql(
             insert_partition(-1, "CompactionCommit", compaction_commit, now_ms - 60_000)

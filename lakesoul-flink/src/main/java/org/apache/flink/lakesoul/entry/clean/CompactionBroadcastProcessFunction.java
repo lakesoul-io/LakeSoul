@@ -131,6 +131,12 @@ public class CompactionBroadcastProcessFunction
                 }
             }
         }
+        log.info(
+                "Received compaction state for {}: version={}, oldCompaction={}, switchVersion={}",
+                key,
+                value.getVersion(),
+                value.isOldCompaction(),
+                value.switchVersion);
     }
 
     @Override

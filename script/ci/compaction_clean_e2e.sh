@@ -23,6 +23,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK_DIR="$ROOT/script/benchmark/work-dir"
 COMPOSE_DIR="$ROOT/docker/lakesoul-docker-compose-env"
 JOBMANAGER="lakesoul-docker-compose-env-jobmanager-1"
+TASKMANAGER="lakesoul-docker-compose-env-taskmanager-1"
 PG_CONTAINER="lakesoul-test-pg"
 PG_SERVICE="lakesoul-meta-db"
 CLEAN_JOB_SLOT="clean_job_slot"
@@ -57,6 +58,9 @@ META_INIT_BACKUP="$(mktemp /tmp/lakesoul-meta-init-XXXXXX.sql)"
 cp "$ROOT/script/meta_init.sql" "$META_INIT_BACKUP"
 cleanup() {
   docker rm -f lakesoul-e2e-compaction >/dev/null 2>&1 || true
+  # keep the flink logs for the failure artifact
+  docker logs --tail 20000 "$JOBMANAGER" > "$WORK_DIR/flink-jobmanager.log" 2>&1 || true
+  docker logs --tail 20000 "$TASKMANAGER" > "$WORK_DIR/flink-taskmanager.log" 2>&1 || true
   cp "$META_INIT_BACKUP" "$ROOT/script/meta_init.sql"
 }
 trap cleanup EXIT
@@ -180,6 +184,7 @@ LAKESOUL_PG_URL="${LAKESOUL_PG_URL:-jdbc:postgresql://127.0.0.1:5432/lakesoul_te
 LAKESOUL_PG_USERNAME="${LAKESOUL_PG_USERNAME:-lakesoul_test}" \
 LAKESOUL_PG_PASSWORD="${LAKESOUL_PG_PASSWORD:-lakesoul_test}" \
 LAKESOUL_E2E_PG_CONTAINER="$PG_CONTAINER" \
+LAKESOUL_E2E_TM_CONTAINER="$TASKMANAGER" \
 RUSTFS_ENDPOINT="${RUSTFS_ENDPOINT:-http://127.0.0.1:9000}" \
 "$PYTHON" "$ROOT/script/ci/compaction_clean_e2e.py"
 
