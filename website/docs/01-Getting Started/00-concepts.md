@@ -99,9 +99,28 @@ mixed Spark/Flink/native writers can still encounter JVM commit conflicts.
 DataFrame upserts require input types logically equivalent to the stored types;
 perform any needed value casts before calling the upsert API.
 
+An absent field in a partial update contributes no value; it is not an explicit null update. If no version of a key contributed a requested value field, the merged value is null, including when older files predate that field.
+
+The Rust/DataFusion catalog therefore exposes primary-key MOR value fields as nullable before logical planning, regardless of their stored nullability declarations. This derives a read schema; it does not rewrite the stored table schema or file format. Primary-key and range-partition fields retain their declared nullability, non-null key validation remains enabled, and append-only read declarations are not widened by this MOR rule.
+
 The primary key table can also support [CDC format](../03-Usage%20Docs/04-cdc-ingestion-table.mdx). For tables synchronized from the database, CDC format needs to be enabled. At the same time, the CDC format will automatically support ChangeLog semantics during Flink stream reading, thus enabling streaming incremental calculations in Flink.
 
 Primary key tables (including CDC format tables) batch read is also supported in Apache Doris, Presto and Python.
+
+### Native MOR value operations and SQL aggregates
+
+Native MOR operations combine contributions for each primary key before ordinary SQL aggregation. Missing fields contribute nothing to any operation:
+
+| Native operation | Selected contributions | NULL behavior |
+|---|---|---|
+| `UseLast` (default) | Latest present contribution | An explicit NULL overwrites an older value |
+| `UseLastNotNull` | Latest non-NULL contribution | NULL if none exists |
+| `SumAll` | Every present row contribution | Any NULL contribution makes the result NULL |
+| `SumLast` | Last present contribution per input stream/file, across batch boundaries | Any selected NULL makes the result NULL |
+| `JoinedAllByComma`, `JoinedAllBySemicolon` | All present string contributions | Any NULL contribution makes the result NULL |
+| `JoinedLastByComma`, `JoinedLastBySemicolon` | Last present string contribution per input stream/file | Any selected NULL makes the result NULL |
+
+Empty native MOR input produces no rows. Native MOR has no AVG, COUNT, MIN, or MAX operation. SQL `SUM`, `AVG`, `MIN`, and `MAX` consume the merged rows, ignore NULL values, and return NULL for empty or all-NULL scalar input. SQL `COUNT(value)` excludes NULLs; `COUNT(*)` counts merged rows. Both COUNT results are non-null and return zero for empty input.
 
 ### Snapshot read
 LakeSoul supports snapshot reading (Time Travel) and version rollback in Spark and Flink. Reference documents: [Spark snapshot function](https://lakesoul-io.github.io/docs/Tutorials/snapshot-manage), [Flink snapshot reading](https://lakesoul-io.github.io/docs/Usage%20Docs/flink-lakesoul-connector#42-snapshot-batch-read).

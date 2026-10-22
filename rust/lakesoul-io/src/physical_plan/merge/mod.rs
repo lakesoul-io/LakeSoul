@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_schema::{Field, Schema, SchemaRef, SortOptions};
+use arrow_schema::{Schema, SchemaRef, SortOptions};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::dataframe::DataFrame;
 use datafusion::datasource::physical_plan::FileScanConfigBuilder;
@@ -112,36 +112,39 @@ pub struct MergeParquetExec {
 impl MergeParquetExec {
     /// Align the advertised merged schema with the values this plan can emit.
     ///
-    /// Schema evolution can leave older files without a newly requested column.
-    /// Default-column projection fills those missing fields with defaults or nulls,
-    /// so any field missing from any input must be reported as nullable.
+    /// A value field absent from an input may have no contribution for some
+    /// keys and therefore produce NULL. Nullable input fields can likewise
+    /// contribute NULL. Neither rule applies to declared primary keys or
+    /// injected partition constants: retain their contract and let Arrow
+    /// reject actual NULLs under a non-null declaration.
     fn merged_schema_with_input_nullability(
         merged_schema: SchemaRef,
         inputs: &[Arc<dyn ExecutionPlan>],
         partition_columns: &[String],
+        primary_keys: &[String],
     ) -> SchemaRef {
-        SchemaRef::new(Schema::new(
-            merged_schema
-                .fields()
-                .iter()
-                .map(|field| {
-                    let is_partition_column = partition_columns.contains(field.name());
-                    // A missing non-partition field is synthesized by the default-column
-                    // projection and may therefore be null. Partition columns are constants
-                    // injected by this plan, so their absence from a parquet input does not
-                    // affect output nullability.
-                    let nullable_in_any_input = inputs.iter().any(|plan| {
-                        plan.schema()
-                            .column_with_name(field.name())
-                            .is_none_or(|(_, input_field)| input_field.is_nullable())
-                    });
-                    let nullable_due_to_input =
-                        !is_partition_column && nullable_in_any_input;
-                    let output_nullable = field.is_nullable() || nullable_due_to_input;
-                    Field::new(field.name(), field.data_type().clone(), output_nullable)
+        let mut fields = None;
+        for (index, field) in merged_schema.fields().iter().enumerate() {
+            if !field.is_nullable()
+                && !partition_columns.contains(field.name())
+                && !primary_keys.contains(field.name())
+                && inputs.iter().any(|plan| {
+                    plan.schema()
+                        .column_with_name(field.name())
+                        .is_none_or(|(_, input_field)| input_field.is_nullable())
                 })
-                .collect::<Vec<_>>(),
-        ))
+            {
+                fields.get_or_insert_with(|| merged_schema.fields().to_vec())[index] =
+                    Arc::new(field.as_ref().clone().with_nullable(true));
+            }
+        }
+        match fields {
+            Some(fields) => Arc::new(Schema::new_with_metadata(
+                fields,
+                merged_schema.metadata().clone(),
+            )),
+            None => merged_schema,
+        }
     }
 
     /// Create a new Parquet reader execution plan provided file list and schema.
@@ -168,6 +171,7 @@ impl MergeParquetExec {
             merged_schema,
             &inputs,
             &partition_columns,
+            io_config.primary_keys_slice(),
         );
 
         let config = io_config.clone();
@@ -209,6 +213,7 @@ impl MergeParquetExec {
             schema,
             &inputs,
             &partition_columns,
+            io_config.primary_keys_slice(),
         );
         let config = io_config.clone();
         let primary_keys = Arc::new(io_config.primary_keys);

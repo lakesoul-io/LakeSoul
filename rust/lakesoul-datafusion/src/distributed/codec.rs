@@ -255,13 +255,21 @@ pub(crate) mod roundtrip {
     //! Encode/decode helper mirroring the coordinator↔worker codec list.
 
     use super::*;
+    use datafusion::execution::SessionStateBuilder;
     use datafusion_proto::physical_plan::AsExecutionPlan;
     use datafusion_proto::protobuf::PhysicalPlanNode;
 
     pub(crate) fn exec(node: Arc<dyn ExecutionPlan>) -> DFResult<Arc<dyn ExecutionPlan>> {
         let codec = composed_codec();
         let buf = PhysicalPlanNode::try_from_physical_plan(node, &codec)?.encode_to_vec();
-        let ctx = TaskContext::default();
+        // Decode in a session-backed `TaskContext`, like the worker does when
+        // it decodes a stage (`session_state.task_ctx()`). A bare
+        // `TaskContext::default()` has empty function registries, so a plan
+        // carrying a built-in aggregate (`sum`, `avg`, ...) would fail to
+        // decode for a reason that cannot happen over the wire.
+        let ctx = SessionStateBuilder::new_with_default_features()
+            .build()
+            .task_ctx();
         PhysicalPlanNode::try_decode(buf.as_slice())?.try_into_physical_plan(&ctx, &codec)
     }
 }

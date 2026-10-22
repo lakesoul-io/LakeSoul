@@ -187,6 +187,40 @@ impl LakeSoulTableProvider {
             .any(|(target, merged)| target.name() != merged.name())
     }
 
+    /// A MOR read describes merged rows, not the schema of any one upsert.
+    ///
+    /// Value columns may have no contribution for a key (partial updates or
+    /// schema evolution), or an explicit NULL contribution. The stored field
+    /// declaration therefore cannot promise non-null merged values. Expose
+    /// this before logical optimization, not only while building the scan.
+    /// Keys and injected range constants retain their declared nullability;
+    /// append-only tables do not have these partial-update semantics.
+    fn read_schema(
+        schema: SchemaRef,
+        primary_keys: &[String],
+        range_partitions: &[String],
+    ) -> SchemaRef {
+        if primary_keys.is_empty() {
+            return schema;
+        }
+        let mut fields = None;
+        for (index, field) in schema.fields().iter().enumerate() {
+            if !field.is_nullable()
+                && !primary_keys.contains(field.name())
+                && !range_partitions.contains(field.name())
+            {
+                fields.get_or_insert_with(|| schema.fields().to_vec())[index] =
+                    Arc::new(field.as_ref().clone().with_nullable(true));
+            }
+        }
+        match fields {
+            Some(fields) => {
+                Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
+            }
+            None => schema,
+        }
+    }
+
     fn split_schemas(
         logical_schema: SchemaRef,
         range_partitions: &[String],
@@ -322,6 +356,8 @@ impl LakeSoulTableProvider {
         );
         let (range_partitions, hash_partitions) =
             parse_table_info_partitions(&table_info.partitions)?;
+        let logical_schema =
+            Self::read_schema(logical_schema, &hash_partitions, &range_partitions);
         let (file_schema, scan_schema) =
             Self::split_schemas(logical_schema.clone(), &range_partitions)?;
 
@@ -444,8 +480,6 @@ impl LakeSoulTableProvider {
         };
 
         let logical_schema = Arc::new(schema_builder.finish());
-        let (file_schema, scan_schema) =
-            Self::split_schemas(logical_schema.clone(), &range_partitions)?;
 
         // The `vector_index_columns` option declares vector indexes at
         // creation time (JSON array, as in the Python SDK); it is validated
@@ -591,6 +625,10 @@ impl LakeSoulTableProvider {
                 &table_info.properties,
             )
             .unwrap_or_default();
+        let logical_schema =
+            Self::read_schema(logical_schema, &primary_keys, &range_partitions);
+        let (file_schema, scan_schema) =
+            Self::split_schemas(logical_schema.clone(), &range_partitions)?;
         Ok(Self {
             listing_options: ListingOptions::new(Arc::new(LakeSoulMetaDataFormat::new(
                 client.clone(),
@@ -1232,32 +1270,27 @@ impl LakeSoulTableProvider {
         inputs: &[Arc<dyn ExecutionPlan>],
         partition_columns: &[String],
     ) -> SchemaRef {
-        Arc::new(Schema::new(
-            merged_schema
-                .fields()
-                .iter()
-                .map(|field| {
-                    // The logical schema is the contract for nullability:
-                    // DataFusion's physical planner rejects scan outputs whose
-                    // fields are *more* nullable than the logical schema, so a
-                    // file-level nullable inference (parquet always infers
-                    // nullable) must not widen a logically non-null column.
-                    // Widen only when a non-partition column is genuinely
-                    // absent from some input (schema evolution), where merged
-                    // rows can be null; partition columns are projected
-                    // constants supplied by the merge exec.
-                    let missing_in_some_input = !partition_columns.contains(field.name())
-                        && inputs.iter().any(|input| {
-                            input.schema().column_with_name(field.name()).is_none()
-                        });
-                    Field::new(
-                        field.name(),
-                        field.data_type().clone(),
-                        field.is_nullable() || missing_in_some_input,
-                    )
-                })
-                .collect::<Vec<_>>(),
-        ))
+        let mut fields = None;
+        for (index, field) in merged_schema.fields().iter().enumerate() {
+            // The append-only scan pads genuinely absent fields with NULLs;
+            // nullable file metadata alone does not widen its read contract.
+            if !field.is_nullable()
+                && !partition_columns.contains(field.name())
+                && inputs
+                    .iter()
+                    .any(|input| input.schema().column_with_name(field.name()).is_none())
+            {
+                fields.get_or_insert_with(|| merged_schema.fields().to_vec())[index] =
+                    Arc::new(field.as_ref().clone().with_nullable(true));
+            }
+        }
+        match fields {
+            Some(fields) => Arc::new(Schema::new_with_metadata(
+                fields,
+                merged_schema.metadata().clone(),
+            )),
+            None => merged_schema,
+        }
     }
 }
 
@@ -1762,11 +1795,15 @@ impl TableProvider for LakeSoulTableProvider {
             }
         }
 
-        let merged_schema = Self::merged_schema_with_input_nullability(
-            merged_schema,
-            &all_inputs,
-            &self.range_partitions,
-        );
+        let merged_schema = if self.primary_keys.is_empty() {
+            Self::merged_schema_with_input_nullability(
+                merged_schema,
+                &all_inputs,
+                &self.range_partitions,
+            )
+        } else {
+            merged_schema
+        };
 
         let mut partitioned_execs = Vec::new();
         for (_, (partition_values, (inputs, file_paths, configs))) in inputs_map {

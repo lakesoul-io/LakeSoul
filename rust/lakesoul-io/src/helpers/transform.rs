@@ -216,7 +216,7 @@ pub fn transform_schema(
         target_schema
     } else {
         // O(nm) n = schema.fields().len(), m = target_schema.fields().len()
-        Arc::new(Schema::new(
+        Arc::new(Schema::new_with_metadata(
             target_schema
                 .fields()
                 .iter()
@@ -226,6 +226,7 @@ pub fn transform_schema(
                         .map(|_| target_field.clone())
                 })
                 .collect::<Vec<_>>(),
+            target_schema.metadata().clone(),
         ))
     }
 }
@@ -262,6 +263,7 @@ pub fn transform_record_batch(
         };
     let mut transform_arrays = Vec::new();
     let mut fields = vec![];
+    let mut field_types_changed = false;
 
     // Iterate through each field in the target schema to align the input batch
     merged_schema.fields().iter().enumerate().try_for_each(
@@ -283,11 +285,18 @@ pub fn transform_record_batch(
                         use_default,
                         default_column_value.clone(),
                     )?;
-                    fields.push(Arc::new(Field::new(
-                        target_field.name(),
-                        transformed_array.data_type().clone(),
-                        target_field.is_nullable(),
-                    )));
+                    fields.push(
+                        if transformed_array.data_type() == target_field.data_type() {
+                            target_field.clone()
+                        } else {
+                            field_types_changed = true;
+                            Arc::new(
+                                target_field.as_ref().clone().with_data_type(
+                                    transformed_array.data_type().clone(),
+                                ),
+                            )
+                        },
+                    );
                     transform_arrays.push(transformed_array);
                     Ok(())
                 }
@@ -306,11 +315,18 @@ pub fn transform_record_batch(
                         // Default to a Null array if no specific value is provided
                         _ => new_null_array(&target_field.data_type().clone(), num_rows),
                     };
-                    fields.push(Arc::new(Field::new(
-                        target_field.name(),
-                        default_value_array.data_type().clone(),
-                        target_field.is_nullable(),
-                    )));
+                    fields.push(
+                        if default_value_array.data_type() == target_field.data_type() {
+                            target_field.clone()
+                        } else {
+                            field_types_changed = true;
+                            Arc::new(
+                                target_field.as_ref().clone().with_data_type(
+                                    default_value_array.data_type().clone(),
+                                ),
+                            )
+                        },
+                    );
                     transform_arrays.push(default_value_array);
                     Ok(())
                 }
@@ -321,8 +337,17 @@ pub fn transform_record_batch(
     )?;
 
     // Construct the final aligned RecordBatch
+    let output_schema =
+        if !field_types_changed && fields.len() == merged_schema.fields().len() {
+            merged_schema
+        } else {
+            Arc::new(Schema::new_with_metadata(
+                fields,
+                merged_schema.metadata().clone(),
+            ))
+        };
     Ok(RecordBatch::try_new_with_options(
-        Arc::new(Schema::new(fields)),
+        output_schema,
         transform_arrays,
         &RecordBatchOptions::new().with_row_count(Some(num_rows)),
     )?)

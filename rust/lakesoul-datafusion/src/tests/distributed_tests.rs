@@ -156,7 +156,7 @@ static TABLE_SUFFIX: AtomicU64 = AtomicU64::new(0);
 /// budget (SQLSTATE 53300) and make unrelated tests fail.
 static DISTRIBUTED_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-fn run_distributed_test<F>(future: F)
+pub(super) fn run_distributed_test<F>(future: F)
 where
     F: std::future::Future<Output = Result<()>>,
 {
@@ -181,7 +181,7 @@ async fn create_distributed_table(
 
 /// Spawns `workers` in-process LakeSoul workers on free ports and returns
 /// their `http://127.0.0.1:<port>` URLs.
-async fn spawn_workers(workers: usize) -> (Vec<String>, JoinSet<()>) {
+pub(super) async fn spawn_workers(workers: usize) -> (Vec<String>, JoinSet<()>) {
     let mut urls = Vec::new();
     let mut join_set = JoinSet::new();
     for _ in 0..workers {
@@ -228,7 +228,7 @@ fn distributed_factory_with(
 
 /// Like [`distributed_factory_with`], with an explicit
 /// `bytes_per_partition` (`None` keeps the library default).
-fn distributed_factory_sized(
+pub(super) fn distributed_factory_sized(
     client: MetaDataClientRef,
     worker_urls: Vec<String>,
     target_partitions: usize,
