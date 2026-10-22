@@ -477,3 +477,66 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
 - MIN/MAX/DISTINCT 占比未定：决定 value-count 状态表是否值得。
 - 维表 fanout 分布未定：决定 FK 索引/状态表是否值得，或直接代价回退。
 - 集群调度接口未定：P5 需要与现有调度/compaction 服务对接。
+
+## 7. 多聚合 state：全量基线、增量点查与 compaction
+
+### 7.1 全量基线要持久化
+
+全量基准不能只执行 `COUNT(*)`；需要把同一 source epoch 的
+`GROUP BY` 输出真正写到持久化参考表：
+
+- schema 与 MV 一致（group keys + measures）；
+- 使用与 MV 相同的 LakeSoul writer 和线程配置；
+- 计时包含聚合、writer 排序/分区、文件与 metadata commit；
+- 与增量 MV 按 row/group key 对比，而不是只比较 group 数。
+
+### 7.2 增量 state 用流式 PK lookup
+
+state 表的主键是 `ivm_group_row`（Arrow Row 二进制），并且按该列 bucket。
+增量不能用 driver collect 全部 affected keys，也不能让 state 全分区扫描。
+
+目标执行路径：
+
+```text
+contrib stream (affected groups, bounded batches)
+  -> group_row key batch
+  -> state provider / LakeSoulReader bulk PK filter
+  -> matched state rows
+  -> per-batch state/MV merge
+  -> append_stream / bounded append
+```
+
+约束：
+
+- keys 不回到 driver，不构造全局 IN 列表；
+- state reader 走 `with_state_key_lookup` / `bulk_pk_lookup`；
+- 按 changed range partition 裁剪 state；
+- affected 比例过高时允许回退全 state/分区扫描，但要有成本阈值；
+- 用 `rows_scanned` 证明 state 读量接近 affected groups，而不是 state 总行数。
+
+### 7.3 compaction
+
+- state：写入方提供 `IvmTable::compact` 能力；生产由外部 compaction 任务触发。
+- MV：保持外部 compaction。
+- 测试时在窗口之间显式执行 state/MV compaction，单独统计 compaction
+  时间、RSS、文件数；compaction 不进入增量 refresh 的计时。
+- 多聚合 state 路径也需要接入 state compaction 触发/测试，不能只覆盖
+  `refresh_sum_count`。
+- 测试关注 100 轮后 state/MV 文件数是否稳定，以及 compaction 后下一次
+  增量 lookup 是否仍正确。
+
+### 7.4 首轮实现结果
+
+- 增量 `refresh_multi_agg_state` 已改为消费 `contrib` batch stream：
+  - 每个 batch 从 `ivm_group_row` 构造 batch-local PK 过滤；
+  - `state` 按 changed range partition + PK filter 读取；
+  - 在同一个 DataFusion session 中注册 batch-local contrib/state，执行
+    state merge；
+  - state/MV 输出按有界 chunk 写入，state 与 MV 并行 append。
+- 不把完整 key 集合 collect 到 driver；每个 batch 的 key 集合和 state 结果
+  都是有界的。
+- 小分区真实 delta：25 个窗口全部 `equal=true`，单窗口约 1.2–4.8s。
+- 仍需补：
+  - state reader 的 `rows_scanned` 指标，证明 PK lookup 命中而不是全分区扫描；
+  - state/MV compaction 在测试窗口之间的显式调度；
+  - full-day 真实/合成增量与持久化 full_ref 对比。

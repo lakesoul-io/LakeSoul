@@ -8,8 +8,9 @@
 
 use super::*;
 
-use arrow::array::{ArrayRef, Int64Array, StringArray};
-use datafusion::prelude::col;
+use arrow::array::{ArrayRef, BinaryArray, Int64Array, StringArray};
+use datafusion::common::ScalarValue;
+use datafusion::prelude::{col, lit};
 
 use crate::metadata::PartitionVersion;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
@@ -3096,6 +3097,57 @@ impl IvmRuntime {
             .map_err(|error| DataFusionError::Execution(error.to_string()))
     }
 
+    /// Build a state PK filter from the Arrow Row keys of one contrib batch.
+    ///
+    /// The list is deliberately batch-local: the key frame is consumed as a
+    /// stream, so the driver never materializes all affected groups.
+    fn state_key_filters(batch: &RecordBatch) -> DataFusionResult<Vec<Expr>> {
+        let index = batch
+            .schema()
+            .index_of(IVM_GROUP_ROW_COLUMN)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+        let keys = batch
+            .column(index)
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or_else(|| {
+                DataFusionError::Execution(format!(
+                    "{IVM_GROUP_ROW_COLUMN} is not binary"
+                ))
+            })?;
+        let list = keys
+            .iter()
+            .flatten()
+            .map(|key| lit(ScalarValue::Binary(Some(key.to_vec()))))
+            .collect::<Vec<_>>();
+        if list.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Ok(vec![col(IVM_GROUP_ROW_COLUMN).in_list(list, false)])
+        }
+    }
+
+    /// Project the state merge output onto the user MV schema.
+    fn state_to_mv_batch(
+        batch: &RecordBatch,
+        schema: &SchemaRef,
+    ) -> DataFusionResult<RecordBatch> {
+        let columns = schema
+            .fields()
+            .iter()
+            .map(|field| {
+                batch.column_by_name(field.name()).cloned().ok_or_else(|| {
+                    DataFusionError::Execution(format!(
+                        "state merge is missing {}",
+                        field.name()
+                    ))
+                })
+            })
+            .collect::<DataFusionResult<Vec<_>>>()?;
+        RecordBatch::try_new(schema.clone(), columns)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))
+    }
+
     fn data_type_sql(data_type: &DataType) -> Result<String> {
         Ok(match data_type {
             DataType::Decimal128(precision, scale) => {
@@ -3378,23 +3430,12 @@ impl IvmRuntime {
             self.advance_cursors(&view.view_id, window.cursors).await?;
             return Ok(Some(epoch));
         }
+        use futures::StreamExt;
         let contrib = context.sql(&contrib_sql).await?;
+        let mut contrib_stream = contrib.execute_stream().await?;
         let merge_context = refresh_session();
-        merge_context.register_table("contrib", contrib.into_view())?;
         let state_partitions =
             self.changed_partition_restriction(&window, &state.range_partition_columns);
-        let state_frame = if let Some(restriction) = state_partitions.as_deref() {
-            self.current_table_frame_filtered_partitions(
-                &merge_context,
-                state,
-                Vec::new(),
-                restriction,
-            )
-            .await?
-        } else {
-            self.current_table_frame(&merge_context, state)?
-        };
-        merge_context.register_table("state", state_frame.into_view())?;
         let row = quote_ident(IVM_GROUP_ROW_COLUMN);
         let row_count = quote_ident(IVM_ROW_COUNT_COLUMN);
         let row_kinds = quote_ident(IVM_ROW_KINDS_COLUMN);
@@ -3403,12 +3444,6 @@ impl IvmRuntime {
             .group_keys
             .iter()
             .map(|key| format!("c.{}", quote_ident(key)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let key_output = view
-            .group_keys
-            .iter()
-            .map(|key| quote_ident(key))
             .collect::<Vec<_>>()
             .join(", ");
         let mut measure_parts = Vec::new();
@@ -3429,22 +3464,91 @@ impl IvmRuntime {
              {epoch} as {epoch_column} \
              from contrib c left join state s on c.{row} = s.{row}"
         );
-        let mv_sql = format!(
-            "select {key_output}, {}, {row_kinds}, {epoch_column} from ({state_sql}) t",
-            measures
-                .iter()
-                .map(|(_, column, _)| quote_ident(column))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        let state_stream = merge_context
-            .sql(&state_sql)
-            .await?
-            .execute_stream()
+        let state_schema = state.schema.clone();
+        let mv_schema = view.mv.schema.clone();
+        let mut state_chunk: Vec<RecordBatch> = Vec::new();
+        let mut mv_chunk: Vec<RecordBatch> = Vec::new();
+        let mut chunk_rows = 0usize;
+        let mut commit_ids: Vec<String> = Vec::new();
+        let mut state_writes = 0usize;
+        let mut mv_writes = 0usize;
+        let mut state_keys = 0usize;
+        let write_started = std::time::Instant::now();
+        while let Some(batch) = contrib_stream.next().await {
+            let batch = batch?;
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            state_keys += batch.num_rows();
+            let filters = Self::state_key_filters(&batch)?;
+            let state_batches = if let Some(restriction) = state_partitions.as_deref() {
+                state
+                    .read_current_filtered_partitions(&self.client, filters, restriction)
+                    .await?
+            } else {
+                state.read_current_filtered(&self.client, filters).await?
+            };
+            let state_batch = if state_batches.is_empty() {
+                RecordBatch::new_empty(state_schema.clone())
+            } else if state_batches.len() == 1 {
+                state_batches.into_iter().next().expect("one state batch")
+            } else {
+                arrow::compute::concat_batches(&state_schema, &state_batches)?
+            };
+            let _ = merge_context.deregister_table("contrib")?;
+            let _ = merge_context.deregister_table("state")?;
+            merge_context.register_batch("contrib", batch)?;
+            merge_context.register_batch("state", state_batch)?;
+            let mut output = merge_context
+                .sql(&state_sql)
+                .await?
+                .execute_stream()
+                .await?;
+            while let Some(batch) = output.next().await {
+                let batch = batch?;
+                if batch.num_rows() == 0 {
+                    continue;
+                }
+                let mv_batch = Self::state_to_mv_batch(&batch, &mv_schema)?;
+                chunk_rows += batch.num_rows();
+                state_chunk.push(batch);
+                mv_chunk.push(mv_batch);
+                if chunk_rows >= crate::table::MAX_STATE_APPEND_ROWS {
+                    let (state_ids, mv_ids) = futures::future::try_join(
+                        state.append_batches(
+                            &self.client,
+                            std::mem::take(&mut state_chunk),
+                        ),
+                        view.mv
+                            .append_batches(&self.client, std::mem::take(&mut mv_chunk)),
+                    )
+                    .await?;
+                    commit_ids.extend(state_ids);
+                    commit_ids.extend(mv_ids);
+                    state_writes += 1;
+                    mv_writes += 1;
+                    chunk_rows = 0;
+                }
+            }
+        }
+        if !state_chunk.is_empty() {
+            let (state_ids, mv_ids) = futures::future::try_join(
+                state.append_batches(&self.client, state_chunk),
+                view.mv.append_batches(&self.client, mv_chunk),
+            )
             .await?;
-        let mv_stream = merge_context.sql(&mv_sql).await?.execute_stream().await?;
-        let mut commit_ids = state.append_stream(&self.client, state_stream).await?;
-        commit_ids.extend(view.mv.append_stream(&self.client, mv_stream).await?);
+            commit_ids.extend(state_ids);
+            commit_ids.extend(mv_ids);
+            state_writes += 1;
+            mv_writes += 1;
+        }
+        tracing::info!(
+            state_keys,
+            state_writes,
+            mv_writes,
+            elapsed = ?write_started.elapsed(),
+            "multi-agg keyed incremental finished"
+        );
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
             .mark_epoch_committed(&record, &mv_versions, &commit_ids)
