@@ -179,6 +179,7 @@ export LD_LIBRARY_PATH="$HADOOP_HOME/lib/native${JAVA_HOME:+:$JAVA_HOME/lib/serv
 LAKESOUL_PG_URL="${LAKESOUL_PG_URL:-jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified}" \
 LAKESOUL_PG_USERNAME="${LAKESOUL_PG_USERNAME:-lakesoul_test}" \
 LAKESOUL_PG_PASSWORD="${LAKESOUL_PG_PASSWORD:-lakesoul_test}" \
+LAKESOUL_E2E_PG_CONTAINER="$PG_CONTAINER" \
 RUSTFS_ENDPOINT="${RUSTFS_ENDPOINT:-http://127.0.0.1:9000}" \
 "$PYTHON" "$ROOT/script/ci/compaction_clean_e2e.py"
 

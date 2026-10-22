@@ -11,8 +11,10 @@ the retired files.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import subprocess
 import time
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -58,6 +60,35 @@ def _list_files(uri: str) -> set[str]:
 def _s3_path(uri: str) -> str:
     parsed = urlparse(uri)
     return f"{parsed.netloc}/{parsed.path.lstrip('/')}"
+
+
+def _psql(statement: str) -> str:
+    """Run a statement in the e2e PostgreSQL container.
+
+    The scenarios only have the python package (no PG driver); the e2e already
+    runs PostgreSQL in the docker compose environment.
+    """
+    container = os.environ.get("LAKESOUL_E2E_PG_CONTAINER", "lakesoul-test-pg")
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            container,
+            "psql",
+            "-U",
+            "lakesoul_test",
+            "-d",
+            "lakesoul_test",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-tAc",
+            statement,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
 
 
 DATA_SUFFIXES = (".parquet", ".vortex")
@@ -196,6 +227,142 @@ def scenario_tag(catalog: LakeSoulCatalog) -> None:
         print(f"[tag] ok: {name}")
     finally:
         catalog.drop_table(name, if_exists=True)
+
+
+def scenario_update_commit() -> None:
+    """The clean job must keep files re-added by an UpdateCommit.
+
+    Spark builds an update commit from the current partition files: unchanged
+    files are re-added with their original paths, new files are added and
+    replaced files are marked ``del``. The clean job used to delete every file
+    of the older compaction commit, including the ones the update commit still
+    referenced.
+
+    Versions 0 and -1 are used on purpose so the partition_insert trigger does
+    not notify the background compaction task: this scenario only exercises
+    the clean job.
+    """
+    name = f"e2e_update_{uuid4().hex[:8]}"
+    base = f"{WAREHOUSE}/{name}"
+    table_id = f"table_{uuid4()}"
+    filesystem = _s3()
+    shared = f"{_s3_path(base)}/shared-{uuid4().hex}.parquet"
+    expired = f"{_s3_path(base)}/expired-{uuid4().hex}.parquet"
+    updated = f"{_s3_path(base)}/updated-{uuid4().hex}.parquet"
+    for path in (shared, expired, updated):
+        with filesystem.open_output_stream(path) as stream:
+            stream.write(b"x")
+    shared_uri = f"s3://{shared}"
+    expired_uri = f"s3://{expired}"
+    updated_uri = f"s3://{updated}"
+    compaction_commit = str(uuid4())
+    update_commit = str(uuid4())
+    now_ms = int(time.time() * 1000)
+
+    def file_ops(ops: list[tuple[str, str]]) -> str:
+        values = ", ".join(
+            f"ROW('{path}', '{op}', 1, 'id')::data_file_op" for path, op in ops
+        )
+        return f"ARRAY[{values}]"
+
+    def insert_commit(
+        commit_id: str, commit_op: str, ops: list[tuple[str, str]], ts: int
+    ) -> str:
+        return (
+            "insert into data_commit_info(table_id, partition_desc, commit_id,"
+            " file_ops, commit_op, committed, timestamp, domain) values"
+            f" ('{table_id}', '-5', '{commit_id}'::uuid, {file_ops(ops)},"
+            f" '{commit_op}', true, {ts}, 'public')"
+        )
+
+    def insert_partition(version: int, commit_op: str, commit_id: str, ts: int) -> str:
+        return (
+            "insert into partition_info(table_id, partition_desc, version,"
+            " commit_op, timestamp, snapshot, domain) values"
+            f" ('{table_id}', '-5', {version}, '{commit_op}', {ts},"
+            f" ARRAY['{commit_id}'::uuid], 'public')"
+        )
+
+    try:
+        _psql(
+            "begin; "
+            + insert_commit(
+                compaction_commit,
+                "CompactionCommit",
+                [(shared_uri, "add"), (expired_uri, "add")],
+                now_ms - 60_000,
+            )
+            + "; "
+            + insert_commit(
+                update_commit,
+                "UpdateCommit",
+                [
+                    (shared_uri, "add"),
+                    (updated_uri, "add"),
+                    (expired_uri, "del"),
+                ],
+                now_ms,
+            )
+            + "; "
+            + insert_partition(0, "UpdateCommit", update_commit, now_ms)
+            + "; commit;"
+        )
+
+        # Let the clean job consume the update commit and populate the
+        # broadcast state before the older compaction version arrives; the
+        # compaction version is then cleaned immediately instead of waiting
+        # for the (hourly) timer.
+        time.sleep(int(os.environ.get("LAKESOUL_E2E_UPDATE_DELAY", "30")))
+
+        _psql(
+            insert_partition(-1, "CompactionCommit", compaction_commit, now_ms - 60_000)
+            + ";"
+        )
+
+        def current_files() -> set[str]:
+            return _list_files(base)
+
+        _wait_for(
+            lambda: _s3_path(expired_uri) not in current_files(),
+            "update commit cleanup to delete the expired file",
+        )
+        files = current_files()
+        assert _s3_path(shared_uri) in files, (
+            "file re-added by the update commit must not be deleted"
+        )
+        assert _s3_path(updated_uri) in files, (
+            "file of the update commit must not be deleted"
+        )
+        assert (
+            _psql(
+                "select count(*) from data_commit_info where"
+                f" table_id = '{table_id}' and commit_id = '{compaction_commit}'"
+            )
+            == "0"
+        ), "superseded commit metadata must be deleted"
+        assert (
+            _psql(
+                "select count(*) from data_commit_info where"
+                f" table_id = '{table_id}' and commit_id = '{update_commit}'"
+            )
+            == "1"
+        ), "update commit metadata must stay"
+        assert (
+            _psql(
+                "select count(*) from partition_info where"
+                f" table_id = '{table_id}' and version = -1"
+            )
+            == "0"
+        ), "superseded partition version must be deleted"
+        print(f"[update-commit] ok: {name}")
+    finally:
+        _psql(
+            f"delete from data_commit_info where table_id = '{table_id}';"
+            f" delete from partition_info where table_id = '{table_id}';"
+        )
+        for path in (shared, expired, updated):
+            with contextlib.suppress(FileNotFoundError):
+                filesystem.delete_file(path)
 
 
 def scenario_blob(catalog: LakeSoulCatalog) -> None:
@@ -340,6 +507,7 @@ def main() -> None:
     catalog = _catalog()
     scenario_normal(catalog)
     scenario_tag(catalog)
+    scenario_update_commit()
     scenario_blob(catalog)
     print("compaction clean e2e passed")
 

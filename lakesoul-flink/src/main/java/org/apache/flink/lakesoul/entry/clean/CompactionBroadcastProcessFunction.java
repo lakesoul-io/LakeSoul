@@ -171,18 +171,26 @@ public class CompactionBroadcastProcessFunction
                     log.info(ctx.getCurrentKey() + " 执行删除操作");
                     CleanUtils cleanUtils = new CleanUtils();
                     boolean latestCompactVersionIsOld = state.get(key).isOldCompaction();
+                    // Older commits are obsolete, but a file may be re-added by a newer commit
+                    // with the same path (UpdateCommit / leveled compaction). CleanUtils checks
+                    // the latest snapshot before deleting any file.
                     boolean belongOldCompaction =
                             value.version < state.get(key).switchVersion
                                     || latestCompactVersionIsOld;
                     try (Connection connection = dataSource.getConnection()) {
-                        cleanUtils.deleteFileAndDataCommitInfo(
-                                value.snapshot,
-                                value.tableId,
-                                value.partitionDesc,
-                                connection,
-                                belongOldCompaction);
-                        cleanUtils.cleanPartitionInfo(
-                                value.tableId, value.partitionDesc, value.version, connection);
+                        boolean cleaned =
+                                cleanUtils.deleteFileAndDataCommitInfo(
+                                        value.snapshot,
+                                        value.tableId,
+                                        value.partitionDesc,
+                                        connection,
+                                        belongOldCompaction);
+                        if (cleaned) {
+                            cleanUtils.cleanPartitionInfo(
+                                    value.tableId, value.partitionDesc, value.version, connection);
+                        } else {
+                            log.warn(ctx.getCurrentKey() + " 清理未完成，保留 partition_info 等待重试");
+                        }
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
@@ -237,19 +245,27 @@ public class CompactionBroadcastProcessFunction
             long compactTimestamp = compactionOut.timestamp;
             if (eventTimestamp < compactTimestamp && timestamp - eventTimestamp > expiredTime) {
                 boolean latestCompactVersionIsOld = state.get(partitionDescKey).isOldCompaction();
+                // Older commits are obsolete, but a file may be re-added by a newer commit with
+                // the same path (UpdateCommit / leveled compaction). CleanUtils checks the latest
+                // snapshot before deleting any file.
                 boolean belongOldCompaction =
                         value.version < state.get(partitionDescKey).switchVersion
                                 || latestCompactVersionIsOld;
                 log.info(currentKey + " 执行旧版清理： " + belongOldCompaction);
                 try (Connection connection = dataSource.getConnection()) {
-                    cleanUtils.deleteFileAndDataCommitInfo(
-                            value.snapshot,
-                            value.tableId,
-                            value.partitionDesc,
-                            connection,
-                            belongOldCompaction);
-                    cleanUtils.cleanPartitionInfo(
-                            value.tableId, value.partitionDesc, value.version, connection);
+                    boolean cleaned =
+                            cleanUtils.deleteFileAndDataCommitInfo(
+                                    value.snapshot,
+                                    value.tableId,
+                                    value.partitionDesc,
+                                    connection,
+                                    belongOldCompaction);
+                    if (cleaned) {
+                        cleanUtils.cleanPartitionInfo(
+                                value.tableId, value.partitionDesc, value.version, connection);
+                    } else {
+                        log.warn(currentKey + " 清理未完成，保留 partition_info 等待重试");
+                    }
                     timerTsState.clear();
                 } catch (Exception e) {
                     throw new RuntimeException(e);

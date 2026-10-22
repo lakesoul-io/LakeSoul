@@ -75,6 +75,10 @@ public class CompactProcessFunction
         CleanUtils cleanUtils = new CleanUtils();
         if (snapshot.size() == 1) {
             try (Connection pgConnection = dataSource.getConnection()) { // ✅ 自动关闭连接
+                // UpdateCommit and old-format compaction replace the partition snapshot, so older
+                // commits become obsolete. This does not mean their files are obsolete: an
+                // UpdateCommit re-adds unchanged files with the same path, so CleanUtils must
+                // check the latest snapshot before deleting any file.
                 boolean isOldCompaction =
                         commitOp.equals("UpdateCommit")
                                 || cleanUtils.getCompactVersion(
