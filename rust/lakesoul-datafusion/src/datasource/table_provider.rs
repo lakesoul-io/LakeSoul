@@ -4,7 +4,7 @@
 
 //! The [`datafusion::datasource::TableProvider`] implementation for LakeSoul table.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -133,6 +133,19 @@ struct FormatScanGroup {
     physical_format: PhysicalFormat,
     partitioned_file_lists: Vec<Vec<PartitionedFile>>,
 }
+
+/// Merge inputs and the work units spanning them, in input order.
+type RangeMergeUnits = (
+    Vec<Arc<dyn ExecutionPlan>>,
+    Vec<lakesoul_io::physical_plan::merge::MergeWorkUnit>,
+);
+
+/// A packed merge: its inputs, work units with assigned lanes, lane count.
+type PackedMerge = (
+    Vec<Arc<dyn ExecutionPlan>>,
+    Vec<lakesoul_io::physical_plan::merge::MergeWorkUnit>,
+    usize,
+);
 
 /// Reads data from LakeSoul
 ///
@@ -1247,20 +1260,17 @@ impl LakeSoulTableProvider {
         }
     }
 
-    /// Regroup aligned file/input pairs without changing version order within
-    /// a bucket. Untrusted filenames make the whole range partition atomic:
-    /// an unknown file may contain versions of keys from any known bucket.
+    /// Regroup the aligned file/input pairs of one range partition into its
+    /// bucket work units, without changing version order within a bucket.
+    /// Untrusted filenames make the whole range partition atomic: an unknown
+    /// file may contain versions of keys from any known bucket. Lanes are
+    /// assigned by [`Self::pack_range_merges`].
     fn bucket_merge_work_units(
         inputs: Vec<Arc<dyn ExecutionPlan>>,
         files: Vec<String>,
         defaults: Arc<HashMap<String, String>>,
         bucket_count: usize,
-        lane_budget: usize,
-    ) -> (
-        Vec<Arc<dyn ExecutionPlan>>,
-        Vec<lakesoul_io::physical_plan::merge::MergeWorkUnit>,
-        usize,
-    ) {
+    ) -> RangeMergeUnits {
         let buckets: Option<Vec<_>> = files
             .iter()
             .map(|file| {
@@ -1280,20 +1290,59 @@ impl LakeSoulTableProvider {
             groups[index].0.push(input);
             groups[index].1.push(file);
         }
-        let lanes = lane_budget.max(1).min(groups.len().max(1));
         let mut inputs = Vec::new();
         let mut units = Vec::with_capacity(groups.len());
-        for (index, (group_inputs, files)) in groups.into_iter().enumerate() {
+        for (group_inputs, files) in groups {
             let start = inputs.len();
             inputs.extend(group_inputs);
             units.push(lakesoul_io::physical_plan::merge::MergeWorkUnit {
                 input_range: start..inputs.len(),
                 files,
                 default_column_value: defaults.clone(),
-                lane: index % lanes,
+                lane: 0,
             });
         }
-        (inputs, units, lanes)
+        (inputs, units)
+    }
+
+    /// Packs the bucket work units of range partitions into at most
+    /// `merge_count` merges of at most `lane_budget` lanes each.
+    ///
+    /// A range partition is never divided: range `i` (in the caller's order)
+    /// joins merge `i % merge_count` with all its units, so the one task that
+    /// runs a merge reads every version of the ranges it serves. A merge's
+    /// units take its lanes round-robin, and a lane runs its units one after
+    /// another, so a merge holds at most `lanes` units open at once.
+    fn pack_range_merges(
+        ranges: Vec<RangeMergeUnits>,
+        merge_count: usize,
+        lane_budget: usize,
+    ) -> Vec<PackedMerge> {
+        let merge_count = merge_count.max(1).min(ranges.len());
+        let mut merges: Vec<RangeMergeUnits> =
+            (0..merge_count).map(|_| (Vec::new(), Vec::new())).collect();
+        for (index, (inputs, units)) in ranges.into_iter().enumerate() {
+            let (merge_inputs, merge_units) = &mut merges[index % merge_count];
+            let offset = merge_inputs.len();
+            merge_inputs.extend(inputs);
+            merge_units.extend(units.into_iter().map(|unit| {
+                lakesoul_io::physical_plan::merge::MergeWorkUnit {
+                    input_range: unit.input_range.start + offset
+                        ..unit.input_range.end + offset,
+                    ..unit
+                }
+            }));
+        }
+        merges
+            .into_iter()
+            .map(|(inputs, mut units)| {
+                let lanes = lane_budget.max(1).min(units.len().max(1));
+                for (index, unit) in units.iter_mut().enumerate() {
+                    unit.lane = index % lanes;
+                }
+                (inputs, units, lanes)
+            })
+            .collect()
     }
 
     fn build_partitioned_exec(
@@ -1801,7 +1850,9 @@ impl TableProvider for LakeSoulTableProvider {
             None => None,
         };
 
-        let mut inputs_map: HashMap<
+        // Keyed by partition description, so ranges are packed into merges in
+        // a stable order.
+        let mut inputs_map: BTreeMap<
             String,
             (
                 Arc<HashMap<String, String>>,
@@ -1811,7 +1862,7 @@ impl TableProvider for LakeSoulTableProvider {
                     Vec<FileScanConfig>,
                 ),
             ),
-        > = HashMap::new();
+        > = BTreeMap::new();
         let mut all_inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
 
         for (index, config) in flatten_configs.into_iter().enumerate() {
@@ -1855,11 +1906,7 @@ impl TableProvider for LakeSoulTableProvider {
         };
 
         let mut partitioned_execs = Vec::new();
-        // Keep range merges as separate distributed subtrees. Dividing the
-        // lane budget prevents every range from claiming target_partitions.
-        let range_count = inputs_map.len().max(1);
-        let lane_budget =
-            (session_state.config().target_partitions() / range_count).max(1);
+        let mut range_merges = Vec::new();
         for (_, (partition_values, (inputs, file_paths, configs))) in inputs_map {
             // A work unit of a table without primary keys never merges
             // (`merge_stream` concatenates), so it is served by a plain scan
@@ -1883,46 +1930,63 @@ impl TableProvider for LakeSoulTableProvider {
             } else {
                 None
             };
-            let work_unit_exec = match leaf {
-                Some(exec) => exec,
+            match leaf {
+                Some(exec) => partitioned_execs.push(exec),
                 None => {
-                    let mut io_config = self.io_config.clone();
-                    io_config.set_files(file_paths.clone());
                     let bucket_count = if self.primary_keys.is_empty() {
                         // Mixed-format append-only fallback concatenates one range.
                         0
                     } else {
                         self.io_config.hash_bucket_num()
                     };
-                    let (inputs, units, lanes) = Self::bucket_merge_work_units(
+                    range_merges.push(Self::bucket_merge_work_units(
                         inputs,
                         file_paths,
                         partition_values,
                         bucket_count,
-                        lane_budget,
-                    );
-                    Arc::new(
-                        lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
-                            merged_schema.clone(),
-                            inputs,
-                            io_config,
-                            units,
-                            lanes,
-                        )
-                        .map_err(|report| {
-                            DataFusionError::External(report.into_boxed_error())
-                        })?,
-                    ) as Arc<dyn ExecutionPlan>
+                    ));
                 }
-            };
-            partitioned_execs.push(work_unit_exec);
+            }
+        }
+
+        // Every open merge holds a non-spillable reservation, and a parent
+        // pulls every partition of its input at once: a merge per range
+        // partition would open all of them together however few partitions
+        // the session targets. The ranges are therefore packed into one merge
+        // per distributed task the scan's stage may get — a single merge when
+        // the session plans locally — each with at most `target_partitions`
+        // lanes. A lane runs its units one after another, so a node (the
+        // local process, or one task of a distributed stage) holds at most
+        // `target_partitions` merges of this scan open at a time.
+        let merge_range_count = range_merges.len();
+        let merges = Self::pack_range_merges(
+            range_merges,
+            crate::distributed::planner::scan_task_budget(session_state.config()),
+            session_state.config().target_partitions(),
+        );
+        let merge_count = merges.len();
+        // Files belong to the work units, which `MergeParquetExec` hands to
+        // every merge it opens.
+        let mut merge_io_config = self.io_config.clone();
+        merge_io_config.set_files(Vec::new());
+        for (inputs, units, lanes) in merges {
+            partitioned_execs.push(Arc::new(
+                lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
+                    merged_schema.clone(),
+                    inputs,
+                    merge_io_config.clone(),
+                    units,
+                    lanes,
+                )
+                .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
+            ) as Arc<dyn ExecutionPlan>);
         }
 
         let empty_exec_schema = Self::empty_partitioned_exec_schema(
             scan_schema.clone(),
             merged_schema.clone(),
         );
-        let work_unit_count = partitioned_execs.len();
+        let scan_node_count = partitioned_execs.len();
         let exec = Self::build_partitioned_exec(partitioned_execs, empty_exec_schema)?;
 
         let cdc_column = self.io_config.cdc_column();
@@ -1955,7 +2019,9 @@ impl TableProvider for LakeSoulTableProvider {
             Self::needs_output_projection(&scan_schema, &merged_schema);
         debug!(
             strategy = scan_strategy,
-            work_unit_count,
+            scan_node_count,
+            merge_range_count,
+            merge_count,
             input_count = all_inputs.len(),
             cdc_filter = cdc_filter_enabled,
             needs_output_projection,
@@ -2289,6 +2355,136 @@ mod tests {
         rows
     }
 
+    /// Packs a single range partition into one merge.
+    fn pack_one(range: RangeMergeUnits, lane_budget: usize) -> PackedMerge {
+        let mut merges =
+            LakeSoulTableProvider::pack_range_merges(vec![range], 1, lane_budget);
+        assert_eq!(merges.len(), 1);
+        merges.pop().unwrap()
+    }
+
+    /// A range partition `name` with one single-input work unit per entry of
+    /// `buckets`, its inputs distinct by pointer.
+    fn packing_range(name: &str, buckets: &[u32]) -> RangeMergeUnits {
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let inputs: Vec<Arc<dyn ExecutionPlan>> = buckets
+            .iter()
+            .map(|_| Arc::new(EmptyExec::new(schema.clone())) as Arc<dyn ExecutionPlan>)
+            .collect();
+        let files = buckets
+            .iter()
+            .map(|bucket| format!("part-{name}_{bucket:04}.parquet"))
+            .collect();
+        LakeSoulTableProvider::bucket_merge_work_units(
+            inputs,
+            files,
+            Arc::new(HashMap::from([("part".into(), name.into())])),
+            16,
+        )
+    }
+
+    #[test]
+    fn pack_range_merges_keeps_ranges_whole_and_bounds_lanes() {
+        let bucket_counts = [3, 1, 4, 2, 5];
+        let ranges: Vec<RangeMergeUnits> = bucket_counts
+            .iter()
+            .enumerate()
+            .map(|(range, &count)| {
+                packing_range(&format!("r{range}"), &(0..count).collect::<Vec<_>>())
+            })
+            .collect();
+        let originals: Vec<_> = ranges
+            .iter()
+            .map(|(inputs, units)| (inputs.clone(), units.clone()))
+            .collect();
+
+        let merges = LakeSoulTableProvider::pack_range_merges(ranges, 2, 2);
+        assert_eq!(merges.len(), 2);
+        let mut seen_units = 0;
+        for (merge_index, (inputs, units, lanes)) in merges.iter().enumerate() {
+            assert_eq!(*lanes, 2.min(units.len()));
+            // Round-robin lanes, contiguous spans covering every input once.
+            let mut next_input = 0;
+            for (unit_index, unit) in units.iter().enumerate() {
+                assert_eq!(unit.lane, unit_index % lanes);
+                assert_eq!(unit.input_range.start, next_input);
+                next_input = unit.input_range.end;
+            }
+            assert_eq!(next_input, inputs.len());
+            // Range `i` lands in merge `i % 2`, whole and in order.
+            let mut offset = 0;
+            let mut unit_offset = 0;
+            for (range_inputs, range_units) in
+                originals.iter().skip(merge_index).step_by(2)
+            {
+                for (packed, original) in inputs[offset..offset + range_inputs.len()]
+                    .iter()
+                    .zip(range_inputs)
+                {
+                    assert!(Arc::ptr_eq(packed, original));
+                }
+                for (packed, original) in units
+                    [unit_offset..unit_offset + range_units.len()]
+                    .iter()
+                    .zip(range_units)
+                {
+                    assert_eq!(packed.files, original.files);
+                    assert_eq!(
+                        packed.default_column_value,
+                        original.default_column_value
+                    );
+                    assert_eq!(packed.input_range.len(), original.input_range.len());
+                }
+                offset += range_inputs.len();
+                unit_offset += range_units.len();
+            }
+            assert_eq!(offset, inputs.len());
+            assert_eq!(unit_offset, units.len());
+            seen_units += units.len();
+            // The spans form a valid merge.
+            lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
+                inputs[0].schema(),
+                inputs.clone(),
+                LakeSoulIOConfig::default(),
+                units.clone(),
+                *lanes,
+            )
+            .unwrap();
+        }
+        assert_eq!(seen_units, bucket_counts.iter().sum::<u32>() as usize);
+    }
+
+    #[test]
+    fn pack_range_merges_never_exceeds_ranges_or_lane_budget() {
+        let ranges = || -> Vec<RangeMergeUnits> {
+            (0..84)
+                .map(|range| packing_range(&format!("r{range:02}"), &[0, 1]))
+                .collect()
+        };
+        // A local scan: one merge, `target_partitions` lanes.
+        let merges = LakeSoulTableProvider::pack_range_merges(ranges(), 1, 2);
+        assert_eq!(merges.len(), 1);
+        assert_eq!((merges[0].1.len(), merges[0].2), (168, 2));
+        // More task slots than ranges: one merge per range.
+        let merges = LakeSoulTableProvider::pack_range_merges(
+            ranges().into_iter().take(3).collect(),
+            8,
+            8,
+        );
+        assert_eq!(merges.len(), 3);
+        assert!(
+            merges
+                .iter()
+                .all(|(_, units, lanes)| units.len() == 2 && *lanes == 2)
+        );
+        // A zero budget still yields one lane per merge.
+        let merges = LakeSoulTableProvider::pack_range_merges(ranges(), 0, 0);
+        assert_eq!((merges.len(), merges[0].2), (1, 1));
+        // No range partitions: no merges.
+        assert!(LakeSoulTableProvider::pack_range_merges(vec![], 4, 4).is_empty());
+    }
+
     #[tokio::test]
     async fn bucket_merge_lanes_preserve_file_versions_and_all_buckets() {
         let originals = vec![
@@ -2297,18 +2493,20 @@ mod tests {
             bucket_test_input(2, 22).await,
             bucket_test_input(1, 11).await,
         ];
-        let (inputs, units, lanes) = LakeSoulTableProvider::bucket_merge_work_units(
-            originals.clone(),
-            [
-                "part-a_0001.parquet",
-                "part-b_0000.parquet",
-                "part-c_0001.parquet",
-                "part-d_0000.parquet",
-            ]
-            .map(String::from)
-            .to_vec(),
-            Arc::new(HashMap::from([("part".into(), "range-a".into())])),
-            2,
+        let (inputs, units, lanes) = pack_one(
+            LakeSoulTableProvider::bucket_merge_work_units(
+                originals.clone(),
+                [
+                    "part-a_0001.parquet",
+                    "part-b_0000.parquet",
+                    "part-c_0001.parquet",
+                    "part-d_0000.parquet",
+                ]
+                .map(String::from)
+                .to_vec(),
+                Arc::new(HashMap::from([("part".into(), "range-a".into())])),
+                2,
+            ),
             8,
         );
         assert_eq!(lanes, 2);
@@ -2351,15 +2549,17 @@ mod tests {
                 bucket_test_input(1, 11).await,
                 bucket_test_input(1, 12).await,
             ];
-            let (inputs, units, lanes) = LakeSoulTableProvider::bucket_merge_work_units(
-                originals.clone(),
-                vec![
-                    "part-a_0000.parquet".into(),
-                    untrusted.into(),
-                    "part-c_0001.parquet".into(),
-                ],
-                Arc::new(HashMap::from([("part".into(), "range-a".into())])),
-                2,
+            let (inputs, units, lanes) = pack_one(
+                LakeSoulTableProvider::bucket_merge_work_units(
+                    originals.clone(),
+                    vec![
+                        "part-a_0000.parquet".into(),
+                        untrusted.into(),
+                        "part-c_0001.parquet".into(),
+                    ],
+                    Arc::new(HashMap::from([("part".into(), "range-a".into())])),
+                    2,
+                ),
                 8,
             );
             assert_eq!(lanes, 1);
@@ -2826,7 +3026,7 @@ mod tests {
             &[],
         );
 
-        let (bucket_inputs, bucket_units, lanes) =
+        let (bucket_inputs, bucket_units, lanes) = pack_one(
             LakeSoulTableProvider::bucket_merge_work_units(
                 vec![old_input.clone(), new_input.clone()],
                 vec![
@@ -2835,8 +3035,9 @@ mod tests {
                 ],
                 Arc::new(HashMap::new()),
                 2,
-                2,
-            );
+            ),
+            2,
+        );
         let bucket_partition =
             lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
                 merged_schema.clone(),

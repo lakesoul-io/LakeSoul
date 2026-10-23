@@ -277,17 +277,19 @@ type CatalogDecorator =
 
 /// Pins every `MergeParquetExec` to a single distributed task.
 ///
-/// Every bucket work unit in a range merge must see all its version files.
-/// This distributed-task cap does not limit the merge's local output lanes.
-/// Without it the distributed planner derives the merge subtree's task
-/// count from its file scans (`Desired(N)` for large file sets or a small
-/// `bytes_per_partition`), the children-isolator union allocates several tasks
-/// to one merge, and the leaf scale-up slices every version file into byte
-/// ranges — so the same primary key's versions merge in different tasks and
-/// the scan emits stale or duplicate rows. `Maximum(1)` wins over the scans'
-/// `Desired(N)` during task-count reconciliation, for both the union and the
-/// no-union (single range partition) plan shape; parallelism across merges of
-/// different range partitions and across local bucket lanes is preserved.
+/// A merge holds whole range partitions (one per distributed task of the scan
+/// stage; see `LakeSoulTableProvider::scan`), and every bucket work unit in it
+/// must see all its version files. This distributed-task cap does not limit
+/// the merge's local output lanes. Without it the distributed planner derives
+/// the merge subtree's task count from its file scans (`Desired(N)` for large
+/// file sets or a small `bytes_per_partition`), the children-isolator union
+/// allocates several tasks to one merge, and the leaf scale-up slices every
+/// version file into byte ranges — so the same primary key's versions merge
+/// in different tasks and the scan emits stale or duplicate rows.
+/// `Maximum(1)` wins over the scans' `Desired(N)` during task-count
+/// reconciliation, for both the union and the no-union (single merge) plan
+/// shape; parallelism across merges and across local bucket lanes is
+/// preserved.
 fn merge_parquet_exec_single_task(
     ev: DesiredTaskCountEvent<'_>,
 ) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
@@ -584,13 +586,14 @@ impl LakeSoulSessionFactory {
             for codec in crate::distributed::codec::user_codecs() {
                 builder = builder.with_distributed_user_codec_arc(codec);
             }
-            // Merge-work-unit atomicity: a merge-on-read work unit (one
-            // partition's complete file set) is one `MergeParquetExec`, i.e. one
-            // child of the scan's union. The children-isolator union runs each
-            // child whole inside a single task, so a merge never sees only a
-            // subset of its versions — which would duplicate primary keys or
-            // lose the version that should win. Enabled explicitly rather than
-            // relying on the library default.
+            // Merge-work-unit atomicity: the range partitions a merge-on-read
+            // scan reads are packed whole into `MergeParquetExec`s, one per
+            // task the scan stage may get, each one child of the scan's union.
+            // The children-isolator union runs each child whole inside a
+            // single task, so a merge never sees only a subset of its versions
+            // — which would duplicate primary keys or lose the version that
+            // should win. Enabled explicitly rather than relying on the
+            // library default.
             builder = builder.with_distributed_children_isolator_unions(true)?;
             if let Some(bytes_per_partition) = dist.bytes_per_partition {
                 builder = builder.with_distributed_file_scan_config_bytes_per_partition(
