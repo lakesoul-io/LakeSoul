@@ -72,6 +72,13 @@ fn with_spill_pool(
     let directory = std::env::var("LAKESOUL_IVM_SPILL_DIR")
         .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
     let _ = std::fs::create_dir_all(&directory);
+    tracing::debug!(
+        size_env,
+        size,
+        threads,
+        %directory,
+        "IVM IO spill pool configured"
+    );
     builder
         .with_thread_num(threads)
         .with_option(OPTION_KEY_POOL_SIZE, size)

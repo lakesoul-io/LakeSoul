@@ -2402,7 +2402,14 @@ pub(crate) fn refresh_session() -> SessionContext {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(4);
-    let config = SessionConfig::new().with_target_partitions(target_partitions);
+    let batch_size = std::env::var("LAKESOUL_IVM_BATCH_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(8192)
+        .max(1);
+    let config = SessionConfig::new()
+        .with_target_partitions(target_partitions)
+        .with_batch_size(batch_size);
     let limit_mb = std::env::var("LAKESOUL_IVM_MEMORY_LIMIT_MB")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -2416,7 +2423,15 @@ pub(crate) fn refresh_session() -> SessionContext {
         .with_max_temp_directory_size(100 * 1024 * 1024 * 1024)
         .build()
         .expect("ivm refresh runtime env");
-    SessionContext::new_with_config_rt(config, Arc::new(runtime))
+    let context = SessionContext::new_with_config_rt(config, Arc::new(runtime));
+    tracing::debug!(
+        target_partitions,
+        batch_size,
+        limit_mb,
+        %spill_dir,
+        "IVM refresh session configured"
+    );
+    context
 }
 
 /// Encodes the group-key columns of a batch into Arrow's canonical row

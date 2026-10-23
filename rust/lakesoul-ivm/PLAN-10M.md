@@ -786,3 +786,56 @@ memory:
 5% 在 32GB cgroup 下完成了 refresh 和流式校验，但峰值已经接近上限；生产上
 不能假设 5% 变化仍能保持较大 headroom。
 
+### 7.12 内存配置复查与 jemalloc
+
+配置复查结论：
+
+- DataFusion refresh session 使用 `LAKESOUL_IVM_MEMORY_LIMIT_MB`（本次 8192，
+  对应 6.4GB pool），并新增 `LAKESOUL_IVM_BATCH_SIZE`（本次 4096）；
+- LakeSoul writer 的 spill pool 由 `LAKESOUL_IVM_WRITE_POOL_SIZE` 控制（本次
+  2048MB），state/MV 并行写时各自一个 writer；
+- reader spill pool 由 `LAKESOUL_IVM_READ_POOL_SIZE` 控制（本次 512MB），
+  注意它是 **每个 reader/partition** 的预算，16 个 bucket 的理论上限是
+  16×512MB，不是全局 512MB；
+- 实测把 write pool 降到 512MB 时，bootstrap 的 ExternalSorter 需要
+  508.4MB，但 pool 只剩 502MB，直接报 `Resources exhausted`；writer pool
+  至少要留出约 1GB 余量，2048MB 可稳定通过。
+
+使用：
+
+```sh
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so
+export MALLOC_CONF=background_thread:true
+```
+
+并设置 batch=4096、read pool=512MB、write pool=2048MB 后，full-day 复测：
+
+1%：
+
+| 阶段 | start | peak | end |
+|---|---:|---:|---:|
+| initial full aggregate | 1.9GB | 14.1GB | 4.1GB |
+| bootstrap refresh | 4.9GB | 16.5GB | 1.6GB |
+| bootstrap validation | 2.1GB | 15.6GB | 1.9GB |
+| incremental refresh | 6.7GB | 6.7GB | 2.9GB |
+| incremental validation | 2.9GB | 15.6GB | 2.0GB |
+
+5%：
+
+| 阶段 | start | peak | end |
+|---|---:|---:|---:|
+| incremental refresh | 8.0GB | 19.9GB | 4.1GB |
+| incremental validation | 4.1GB | 16.1GB | 1.8GB |
+
+与没有 jemalloc、batch=8192、read/write pool=2048MB 的旧结果相比：
+
+- 1% incremental refresh peak 从 19.3GB 降到 6.7GB；
+- 1% validation peak 从 23.2GB 降到 15.6GB；
+- 5% refresh peak 从 30.1GB 降到 19.9GB；
+- 5% validation peak 从 31.1GB 降到 16.1GB。
+
+这说明此前“偏高”很大一部分是 allocator 保留已释放页造成的 RSS 碎片，
+而不是 DataFusion/writer 的活跃内存。jemalloc 会及时归还页面，配合更小的
+batch 和 reader pool 后内存明显下降。生产环境仍应把 reader pool 按 bucket
+数计入总预算，不能只按单个 512MB 计算。
+
