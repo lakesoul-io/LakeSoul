@@ -9,7 +9,7 @@ use lakesoul_datafusion::{
     MetaDataClient,
     cli::CoreArgs,
     distributed::{DistributedOptions, WorkerDiscovery},
-    session::{LakeSoulSessionFactory, LakeSoulSessionOptions},
+    session::{ExecutionMemoryArgs, LakeSoulSessionFactory, LakeSoulSessionOptions},
     tpch::register_tpch_udtfs,
 };
 use rand::Rng;
@@ -51,6 +51,9 @@ struct Cli {
 
     #[command(flatten)]
     pub core: CoreArgs,
+
+    #[command(flatten)]
+    memory: ExecutionMemoryArgs,
 
     /// Worker gRPC URL. Supplying one or more workers enables distributed execution.
     #[arg(long = "worker", value_name = "URL")]
@@ -141,7 +144,12 @@ async fn main_inner(cli: Cli) -> Result<()> {
     print_banner();
     let _log_guard = init_log(&cli.log_dir);
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
-    let mut session_factory = LakeSoulSessionFactory::new(meta_client, &cli.core)?;
+    cli.memory.install_vortex_decode_budget()?;
+    let mut session_factory = LakeSoulSessionFactory::new_with_memory_pool(
+        meta_client,
+        &cli.core,
+        cli.memory.create_pool(),
+    )?;
     if !cli.workers.is_empty() {
         session_factory = session_factory.with_distributed(DistributedOptions {
             discovery: WorkerDiscovery::Static(cli.workers.clone()),

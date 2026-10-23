@@ -111,7 +111,7 @@ Pod anti-affinity keeps it off the coordinator and worker nodes.
 ```sh
 # Single node: the console plans and executes everything in its Pod
 python3 scripts/bench.py console --run-dir results/<run> --bench-tag <tag> --name console-sf1 \
-  --cpu 4 --mem 8Gi [--node <node>] [--env LAKESOUL_MEMORY_LIMIT=6Gi] \
+  --cpu 4 --mem 8Gi [--node <node>] [--env LAKESOUL_MEMORY_LIMIT=6Gi] [--env LAKESOUL_CACHE=1] \
   -- --database tpch_sf1_nopk --sf 1 --iterations 3 --warmup 1 --target-partitions 4 \
      --answers /bench/workloads/tpch/answers/sf1
 # Distributed: every ready lakesoul-worker Pod becomes a --worker
@@ -125,6 +125,11 @@ datafusion.execution.target_partitions` (the console's single-node default
 is 1). The worker Pods keep the resources of the last `deploy`. `--answers`
 compares values as in `tpch` (`lakesoul-console --format json` prints typed
 rows).
+The console reads the coordinator's execution-memory and local-cache
+variables (`LAKESOUL_MEMORY_LIMIT`, `LAKESOUL_MEMORY_POOL`,
+`LAKESOUL_VORTEX_DECODE_BUDGET`, `LAKESOUL_CACHE`, `LAKESOUL_CACHE_SIZE`,
+`LAKESOUL_CACHE_PATH`; see `../k8s/README.md`), so `--env` bounds its
+memory and caches warehouse reads on the Pod's `/var/scratch` volume.
 
 `console` writes `NAME.jsonl`, `NAME.console.log` (console output without
 result rows), `NAME.console.json` (node, QoS class, resources, allowed

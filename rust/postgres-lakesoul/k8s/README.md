@@ -279,6 +279,12 @@ share the `CoreArgs` CLI (`--warehouse-prefix`, `--endpoint`, …).
 | `LAKESOUL_MEMORY_POOL` / `--memory-pool` | `fair` | `fair` or `greedy`, used only with a nonzero limit. |
 | `LAKESOUL_VORTEX_DECODE_BUDGET` / `--vortex-decode-budget` | ¼ of the memory limit; unbounded when the limit is `0` | Per-worker-process budget for decoded Vortex splits in flight; same meaning as on the coordinator. |
 
+| Local disk cache (coordinator, worker, console) | Default | Meaning |
+|---|---|---|
+| `LAKESOUL_CACHE` | unset (off) | Any value, even `false`, puts the warehouse S3 store behind a read-through page cache (4 MiB pages) on local disk, shared by every session of the process. Also enables the primary-key index cache. |
+| `LAKESOUL_CACHE_SIZE` | `1GiB` | Cache capacity. Must end in `KiB`, `MiB`, `GiB` or `TiB`, e.g. `5GiB`; any other suffix (`5Gi`, `5G`) silently falls back to 1 GiB. |
+| `LAKESOUL_CACHE_PATH` | `lakesoul_cache_dir` in the working directory | Cache directory, emptied at startup. Use the scratch volume, e.g. `/var/scratch/lakesoul-cache`, with a size below its `sizeLimit`. |
+
 These budgets govern DataFusion execution reservations, not process RSS,
 LakeSoul IO pools or writer-internal buffers. Spill files use DataFusion's
 default OS temporary directory (`TMPDIR`, `/var/scratch` in these deployments).
