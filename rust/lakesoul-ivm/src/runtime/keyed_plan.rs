@@ -24,10 +24,10 @@ use datafusion::common::ScalarValue;
 use datafusion::error::DataFusionError;
 use datafusion::physical_expr::expressions::Column as PhysicalColumn;
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr};
+use datafusion::physical_plan::Partitioning;
 use datafusion::physical_plan::execution_plan::ExecutionPlan;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::Partitioning;
 use datafusion::physical_plan::{RangePartitioning, SplitPoint};
 
 use crate::error::Result;
@@ -84,8 +84,8 @@ impl PhysicalExpr for LakeSoulBucketExpr {
                 builder.append_null();
             } else {
                 let scalar = ScalarValue::try_from_array(&array, row)?;
-                let bucket =
-                    lakesoul_io::helpers::compute_scalar_hash(&scalar) % self.bucket_count;
+                let bucket = lakesoul_io::helpers::compute_scalar_hash(&scalar)
+                    % self.bucket_count;
                 builder.append_value(bucket);
             }
         }
@@ -153,9 +153,7 @@ pub(crate) fn bucket_repartition(
     )])
     .ok_or_else(|| DataFusionError::Internal("empty bucket ordering".to_string()))?;
     let split_points = (1..bucket_count)
-        .map(|bucket| {
-            SplitPoint::new(vec![ScalarValue::UInt32(Some(bucket as u32))])
-        })
+        .map(|bucket| SplitPoint::new(vec![ScalarValue::UInt32(Some(bucket as u32))]))
         .collect();
     let range = RangePartitioning::try_new(ordering, split_points)?;
     let repartitioned = Arc::new(RepartitionExec::try_new(
@@ -207,11 +205,14 @@ mod tests {
             while let Some(batch) = stream.next().await {
                 let batch = batch?;
                 seen += batch.num_rows();
-                let key = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+                let key = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
                 for row in 0..key.len() {
                     let scalar = ScalarValue::Utf8(Some(key.value(row).to_string()));
-                    let expected =
-                        lakesoul_io::helpers::compute_scalar_hash(&scalar) % 4;
+                    let expected = lakesoul_io::helpers::compute_scalar_hash(&scalar) % 4;
                     assert_eq!(partition, expected as usize);
                 }
             }

@@ -589,17 +589,16 @@ impl ExecutionPlan for IvmStreamExec {
         partition: usize,
         _context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
-        let mut builder =
-            RecordBatchReceiverStreamBuilder::new(self.schema.clone(), 2);
+        let mut builder = RecordBatchReceiverStreamBuilder::new(self.schema.clone(), 2);
         let tx = builder.tx();
-        let group = self
-            .groups
-            .get(partition)
-            .cloned()
-            .unwrap_or_else(|| PartitionFiles {
-                partition_desc: DEFAULT_PARTITION_DESC.to_string(),
-                files: Vec::new(),
-            });
+        let group =
+            self.groups
+                .get(partition)
+                .cloned()
+                .unwrap_or_else(|| PartitionFiles {
+                    partition_desc: DEFAULT_PARTITION_DESC.to_string(),
+                    files: Vec::new(),
+                });
         if group.files.is_empty() {
             drop(tx);
             return Ok(builder.build());
