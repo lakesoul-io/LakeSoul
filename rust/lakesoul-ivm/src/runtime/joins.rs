@@ -3322,11 +3322,18 @@ impl IvmRuntime {
             None
         };
         if let Some(state) = &left_side_state {
-            // A source row can change its join key, so a full refresh of the
-            // side state is required until the side table carries a stable
-            // row identity delete stream.
-            self.sync_join_side_state(&view.left, state, &view.join_keys)
+            if state.current_files(&self.client).await?.is_empty() {
+                self.sync_join_side_state(&view.left, state, &view.join_keys)
+                    .await?;
+            } else {
+                self.apply_join_side_delta(
+                    &view.left,
+                    state,
+                    &left_window,
+                    &view.join_keys,
+                )
                 .await?;
+            }
         }
         if let Some(state) = &right_side_state {
             let right_join_keys = if view.right_keys.is_empty() {
@@ -3334,8 +3341,18 @@ impl IvmRuntime {
             } else {
                 &view.right_keys
             };
-            self.sync_join_side_state(&view.right, state, right_join_keys)
+            if state.current_files(&self.client).await?.is_empty() {
+                self.sync_join_side_state(&view.right, state, right_join_keys)
+                    .await?;
+            } else {
+                self.apply_join_side_delta(
+                    &view.right,
+                    state,
+                    &right_window,
+                    right_join_keys,
+                )
                 .await?;
+            }
         }
         let context = refresh_session();
         if keyed {

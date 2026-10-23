@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, BinaryArray};
+use arrow::array::{Array, ArrayRef, BinaryArray, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
@@ -64,6 +64,15 @@ pub(crate) fn join_side_state_schema_for(
         .iter()
         .map(|field| Arc::new(field.as_ref().clone()))
         .collect::<Vec<_>>();
+    if source.cdc_column.is_none()
+        && source.schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_err()
+    {
+        fields.push(Arc::new(Field::new(
+            IVM_ROW_KINDS_COLUMN,
+            DataType::Utf8,
+            false,
+        )));
+    }
     fields.push(Arc::new(Field::new(
         IVM_JOIN_KEY_COLUMN,
         DataType::Binary,
@@ -98,6 +107,7 @@ pub(crate) fn join_side_needs_state(source: &IvmTable, join_keys: &[String]) -> 
 /// Encoder for the hidden join-key column.
 pub(crate) struct JoinKeyEncoder {
     keys: Vec<String>,
+    kind_column: Option<String>,
     encoder: GroupKeyRowEncoder,
 }
 
@@ -107,6 +117,7 @@ impl JoinKeyEncoder {
             .map_err(|error| DataFusionError::Execution(error.to_string()))?;
         Ok(Self {
             keys: join_keys.to_vec(),
+            kind_column: join_side_state_cdc_column(source),
             encoder,
         })
     }
@@ -143,6 +154,18 @@ impl JoinKeyEncoder {
             false,
         )));
         let mut output = batch.columns().to_vec();
+        if let Some(kind_column) = &self.kind_column
+            && batch.schema().field_with_name(kind_column).is_err()
+        {
+            fields.push(Arc::new(Field::new(
+                kind_column.clone(),
+                DataType::Utf8,
+                false,
+            )));
+            output.push(Arc::new(StringArray::from_iter_values(
+                std::iter::repeat_n("insert", batch.num_rows()),
+            )));
+        }
         output.push(Arc::new(encoded));
         RecordBatch::try_new(Arc::new(Schema::new(fields)), output)
             .map_err(|error| DataFusionError::Execution(error.to_string()))
@@ -162,6 +185,7 @@ pub(crate) fn join_side_state_cdc_column(source: &IvmTable) -> Option<String> {
                 .ok()
                 .map(|_| IVM_ROW_KINDS_COLUMN.to_string())
         })
+        .or_else(|| Some(IVM_ROW_KINDS_COLUMN.to_string()))
 }
 
 /// The epoch column is optional on a source but always present on a join
@@ -267,9 +291,13 @@ impl super::IvmRuntime {
 }
 
 impl super::IvmRuntime {
-    /// Apply a source changelog window to one side state.  The raw delta keeps
-    /// update/delete tombstones, so the state table's CDC column resolves the
-    /// latest source version by its primary key.
+    /// Incrementally replace a side state from one source window.
+    ///
+    /// The source row identity is stable while its join key can change.  The
+    /// old side row is therefore found by the source primary keys, marked as a
+    /// delete under its old encoded join key, and the window rows are appended
+    /// under their new keys.  Keeping both operations in the state table's CDC
+    /// log makes the read side a normal merge-on-read keyed table.
     pub(crate) async fn apply_join_side_delta(
         &self,
         source: &IvmTable,
@@ -282,10 +310,33 @@ impl super::IvmRuntime {
             return Ok(());
         }
         let context = super::refresh_session();
-        let frame =
+        let delta =
             self.groups_table_frame(&context, source, window.added_files.clone())?;
+        let pk_exprs = source
+            .primary_keys
+            .iter()
+            .map(|key| datafusion::prelude::col(key.as_str()))
+            .collect::<Vec<_>>();
+        let delta_pks = delta.clone().select(pk_exprs.clone())?.distinct()?;
+        let pk_names = source
+            .primary_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let state_frame = self.current_table_frame(&context, state)?;
+        let old = state_frame.join(
+            delta_pks,
+            datafusion::prelude::JoinType::LeftSemi,
+            &pk_names,
+            &pk_names,
+            None,
+        )?;
+        let kind = join_side_state_cdc_column(source)
+            .ok_or_else(|| rootcause::report!("join side state has no change column"))?;
+        let old = old.with_column(kind.as_str(), datafusion::prelude::lit("delete"))?;
+        super::append_dataframe(state, &self.client, old).await?;
         let encoder = JoinKeyEncoder::new(source, join_keys)?;
-        let mut stream = frame.execute_stream().await?;
+        let mut stream = delta.execute_stream().await?;
         let mut pending = Vec::new();
         let mut pending_rows = 0usize;
         while let Some(batch) = stream.next().await {
