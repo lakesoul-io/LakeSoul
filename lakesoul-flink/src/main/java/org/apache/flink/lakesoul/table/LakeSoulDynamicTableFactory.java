@@ -80,16 +80,14 @@ public class LakeSoulDynamicTableFactory
 
     @Override
     public DynamicTableSource createDynamicTableSource(Context context) {
+        TableConfig tableConfig = (TableConfig) context.getConfiguration();
         Configuration options = new Configuration();
         options.addAll(FlinkUtil.IOConfigs.getInstance().conf);
         options.addAll(
                 (Configuration) FactoryUtil.createTableFactoryHelper(this, context).getOptions());
         FlinkUtil.setLocalTimeZone(
-                options,
-                FlinkUtil.getLocalTimeZone(
-                        ((TableConfig) context.getConfiguration()).getConfiguration()));
-        FlinkUtil.setS3Options(
-                options, ((TableConfig) context.getConfiguration()).getConfiguration());
+                options, FlinkUtil.getLocalTimeZone(tableConfig.getConfiguration()));
+        FlinkUtil.setS3Options(options, tableConfig.getConfiguration());
         ObjectIdentifier objectIdentifier = context.getObjectIdentifier();
         ResolvedCatalogTable catalogTable = context.getCatalogTable();
         TableSchema schema = catalogTable.getSchema();
@@ -139,6 +137,7 @@ public class LakeSoulDynamicTableFactory
                 catalogTable.getResolvedSchema().toPhysicalRowDataType(),
                 catalogTable.getPartitionKeys(),
                 conf,
-                options.toMap());
+                options.toMap(),
+                tableConfig.getLocalTimeZone());
     }
 }

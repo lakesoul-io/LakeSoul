@@ -37,6 +37,7 @@ import org.slf4j.LoggerFactory;
 import java.io.Serializable;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
@@ -64,7 +65,38 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource
             List<String> partitionKeys,
             Configuration conf,
             Map<String, String> optionParams) {
-        super(tableId, rowType, isStreaming, pkColumns, partitionColumns, optionParams);
+        this(
+                tableId,
+                rowType,
+                isStreaming,
+                pkColumns,
+                partitionColumns,
+                producedDataType,
+                partitionKeys,
+                conf,
+                optionParams,
+                ZoneId.systemDefault());
+    }
+
+    public LakeSoulLookupTableSource(
+            TableId tableId,
+            RowType rowType,
+            boolean isStreaming,
+            List<String> pkColumns,
+            List<String> partitionColumns,
+            DataType producedDataType,
+            List<String> partitionKeys,
+            Configuration conf,
+            Map<String, String> optionParams,
+            ZoneId localTimeZone) {
+        super(
+                tableId,
+                rowType,
+                isStreaming,
+                pkColumns,
+                partitionColumns,
+                optionParams,
+                localTimeZone);
         this.producedDataType = producedDataType;
         this.partitionKeys = partitionKeys;
         this.configuration = conf;
@@ -292,7 +324,8 @@ public class LakeSoulLookupTableSource extends LakeSoulTableSource
                         this.producedDataType,
                         this.partitionKeys,
                         this.configuration,
-                        this.optionParams);
+                        this.optionParams,
+                        this.localTimeZone);
         newInstance.projectedFields = this.projectedFields;
         newInstance.remainingPartitions = this.remainingPartitions;
         newInstance.pushedFilters = this.pushedFilters;
