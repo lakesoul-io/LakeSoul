@@ -15,9 +15,9 @@ TPC-H results.
 | `k8s/profiles/{small,medium,throttled}` | coordinator/worker requests and limits |
 | `k8s/profiles/{large,xl}` | definitions only (no cluster capacity) |
 | `k8s/components/sampler` | sidecar sampling cgroup v1 and `/proc` once per second |
-| `k8s/jobs` | driver and datagen Jobs |
+| `k8s/jobs` | driver, datagen and console Jobs |
 | `k8s/blocked/` | slow storage/worker (netem), node pressure, Chaos Mesh: definitions only, not authorized on the shared cluster |
-| `scripts/bench.py` | deploy, datagen, drive, collect |
+| `scripts/bench.py` | deploy, datagen, drive, console, collect |
 | `scripts/report.py` | summary, compare, memory tables |
 | `scripts/*.sh` | scenario suites: memory matrix, backpressure, worker buffer budget, concurrency, faults |
 | `reports/` | inventory and final reports |
@@ -97,6 +97,40 @@ queries, and `load` ends the run at the first dropped connection
 OOM-killed coordinator is not driven into CrashLoopBackOff.
 `scripts/faults.sh` passes `--no-stop-on-outage` because its pod kills are
 intentional.
+
+## lakesoul-console engine runs
+
+`bench.py console` measures the DataFusion engine without the PG-wire
+coordinator: `lsbench console` runs `lakesoul-console` in a Job Pod and
+parses its per-statement `Elapsed` times into `NAME.jsonl` (same schema as
+`tpch`, `scenario: "console"`). Requests equal limits for every container, so
+the Pod is Guaranteed QoS with a fixed CPU quota and memory limit; the
+console gets one tokio thread per CPU unless `--worker-threads` is passed.
+Pod anti-affinity keeps it off the coordinator and worker nodes.
+
+```sh
+# Single node: the console plans and executes everything in its Pod
+python3 scripts/bench.py console --run-dir results/<run> --bench-tag <tag> --name console-sf1 \
+  --cpu 4 --mem 8Gi [--node <node>] [--env LAKESOUL_MEMORY_LIMIT=6Gi] \
+  -- --database tpch_sf1_nopk --sf 1 --iterations 3 --warmup 1 --target-partitions 4 \
+     --answers /bench/workloads/tpch/answers/sf1
+# Distributed: every ready lakesoul-worker Pod becomes a --worker
+python3 scripts/bench.py console --run-dir results/<run> --bench-tag <tag> --name console-sf1-dist \
+  --cpu 2 --mem 4Gi --distributed \
+  -- --database tpch_sf1_nopk --sf 1 --iterations 3 --bytes-per-partition 16777216
+```
+
+Without workers, `--target-partitions` becomes `SET
+datafusion.execution.target_partitions` (the console's single-node default
+is 1). The worker Pods keep the resources of the last `deploy`. `--answers`
+compares only row counts, because the console prints formatted tables.
+
+`console` writes `NAME.jsonl`, `NAME.console.log` (console output without
+result tables), `NAME.console.json` (node, QoS class, resources, allowed
+CPUs, worker URLs, termination state), the console's
+`NAME.sampler.console.<pod>.jsonl`, plus the service evidence of `collect`.
+The samples are read from the container log after the Pod completes, so an
+OOM-killed console still leaves the finished queries and an `aborted` record.
 
 ## Scenario suites
 

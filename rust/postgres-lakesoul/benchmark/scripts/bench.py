@@ -12,6 +12,8 @@ series, pod status) into a run directory. Talks to the cluster only through
                    [--env all:K=V] [--env coordinator:K=V] [--env worker:K=V] [--workers N]
   bench.py datagen --run-dir D --bench-tag B --sf 1 --location s3://bucket/bench
   bench.py drive   --run-dir D --bench-tag B --name NAME -- <lsbench args>
+  bench.py console --run-dir D --bench-tag B --name NAME --cpu 4 --mem 8Gi [--distributed] \
+                   [--node N] [--env K=V] -- <lsbench console args>
   bench.py collect --run-dir D --name NAME --since UNIX --until UNIX
   bench.py exec-cancel ... (see --help)
 """
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import string
@@ -198,10 +201,13 @@ def cmd_meta(a) -> None:
 # ---------------------------------------------------------------- deploy
 
 
+def env_items(env: dict[str, str]) -> str:
+    """Container `env` list entries, indented for a Pod template."""
+    return "".join(f"            - name: {k}\n              value: {json.dumps(v)}\n" for k, v in env.items())
+
+
 def env_patch(dep: str, container: str, env: dict[str, str]) -> str:
-    items = "".join(
-        f"            - name: {k}\n              value: {json.dumps(v)}\n" for k, v in env.items()
-    )
+    items = env_items(env)
     return (
         f"apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: {dep}\n  namespace: {NS}\n"
         f"spec:\n  template:\n    spec:\n      containers:\n        - name: {container}\n"
@@ -448,6 +454,112 @@ def cmd_drive(a) -> None:
     log(f"{name}: exit={rc} samples={raw.count(chr(10))} -> {run / name}.jsonl")
 
 
+def worker_urls() -> list[tuple[str, str]]:
+    """Ready worker Pods as (pod, gRPC URL), from the worker Service's
+    EndpointSlices; the console needs one `--worker` per Pod."""
+    slices = kjson("-n", NS, "get", "endpointslices", "-l", "kubernetes.io/service-name=lakesoul-worker")["items"]
+    out = []
+    for s in slices:
+        port = next((p["port"] for p in s.get("ports") or [] if p.get("name") == "grpc"), None)
+        for e in s.get("endpoints") or []:
+            if port and e.get("conditions", {}).get("ready"):
+                addr = e["addresses"][0]
+                host = f"[{addr}]" if ":" in addr else addr
+                out.append((e.get("targetRef", {}).get("name"), f"http://{host}:{port}"))
+    return sorted(out)
+
+
+def cpu_cores(quantity: str) -> float:
+    return float(quantity[:-1]) / 1000 if quantity.endswith("m") else float(quantity)
+
+
+def cmd_console(a) -> None:
+    run = Path(a.run_dir)
+    args = list(a.console_args)
+    if args and args[0] == "--":
+        args = args[1:]
+    name = a.name
+    run_id = f"{run.name}/{name}"
+    if "--worker-threads" not in args:
+        # One tokio thread per CPU of the limit (the console's minimum is 2).
+        args += ["--worker-threads", str(max(2, math.ceil(cpu_cores(a.cpu))))]
+    workers: list[tuple[str, str]] = []
+    if a.distributed:
+        if "--worker" in args:
+            raise SystemExit("--distributed resolves the worker URLs; do not pass --worker")
+        workers = worker_urls()
+        if not workers:
+            raise SystemExit("--distributed: the lakesoul-worker Service has no ready endpoints")
+        for _, url in workers:
+            args += ["--worker", url]
+    env = dict(kv.split("=", 1) for kv in a.env or [])
+    job = f"lsbench-console-{re.sub(r'[^a-z0-9-]', '-', name.lower())[:30]}-{int(time.time()) % 100000}"
+    manifest = render(
+        "console-job.yaml",
+        JOB_NAME=job,
+        RUN_ID=run.name,
+        BENCH_IMAGE=f"{REGISTRY}/lakesoul-bench:{a.bench_tag}",
+        CONSOLE_ARGS=" ".join(shlex_quote(x) for x in ["console", *args, "--run-id", run_id]),
+        CONSOLE_CPU=a.cpu,
+        CONSOLE_MEM=a.mem,
+        NODE_SELECTOR=json.dumps({"kubernetes.io/hostname": a.node} if a.node else {}),
+        DEADLINE_S=str(int(a.timeout)),
+        EXTRA_ENV=env_items(env),
+    )
+    (run / "jobs").mkdir(parents=True, exist_ok=True)
+    (run / "jobs" / f"{job}.yaml").write_text(manifest)
+    kubectl("apply", "-f", "-", input=manifest)
+    pod = job_pod(job)
+    log(f"{name}: console pod {pod}")
+    t0 = time.time()
+    # The Job's activeDeadlineSeconds stops the Pod at the timeout; the extra
+    # minute lets the kubelet report it.
+    deadline = t0 + a.timeout + 60
+    while True:
+        info = kjson("-n", NS, "get", "pod", pod)
+        statuses = {c["name"]: c for c in info["status"].get("containerStatuses") or []}
+        terminated = (statuses.get("console") or {}).get("state", {}).get("terminated")
+        if terminated or info["status"].get("phase") in ("Succeeded", "Failed") or time.time() > deadline:
+            break
+        time.sleep(3)
+    t1 = time.time()
+    stdout = kubectl("-n", NS, "logs", pod, "-c", "console", check=False, timeout=600)
+    (run / f"{name}.console.log").write_text(stdout)
+    records, cpus, finished = [], None, False
+    for line in stdout.splitlines():
+        if line.startswith("LSBENCH_CPUS "):
+            cpus = line.removeprefix("LSBENCH_CPUS ")
+        elif line.startswith("LSBENCH_EXIT "):
+            finished = True
+        elif line.startswith("{"):
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict) and record.get("run_id") == run_id:
+                records.append(line)
+    if not finished:
+        # lsbench itself was killed (OOM, deadline): its own `aborted` record
+        # is missing.
+        records.append(json.dumps({"type": "aborted", "run_id": run_id, "scenario": "console",
+                                   "reason": f"console container terminated: {terminated or info['status'].get('phase')}"}))
+    (run / f"{name}.jsonl").write_text("".join(r + "\n" for r in records))
+    sampler = kubectl("-n", NS, "logs", pod, "-c", "sampler", check=False, timeout=300)
+    (run / f"{name}.sampler.console.{pod}.jsonl").write_text(
+        "".join(line + "\n" for line in sampler.splitlines() if line.startswith("{")))
+    console_spec = next(c for c in info["spec"]["containers"] if c["name"] == "console")
+    write_json(run / f"{name}.console.json", {
+        "job": job, "pod": pod, "node": info["spec"].get("nodeName"), "qos": info["status"].get("qosClass"),
+        "resources": console_spec.get("resources"), "cpus": cpus, "args": args, "env": env,
+        "workers": [{"pod": p, "url": u} for p, u in workers], "terminated": terminated,
+        "start_unix": t0, "end_unix": t1,
+    })
+    kubectl("-n", NS, "delete", "job", job, "--wait=false", check=False)
+    collect(run, name, t0 - 5, t1 + 5)
+    ok = sum('"status": "ok"' in r for r in records)
+    log(f"{name}: exit={(terminated or {}).get('exitCode')} samples={len(records)} ok={ok} -> {run / name}.jsonl")
+
+
 def shlex_quote(s: str) -> str:
     import shlex
 
@@ -563,6 +675,20 @@ def main() -> None:
     r.add_argument("--cpu-lim", default="2")
     r.add_argument("driver_args", nargs=argparse.REMAINDER)
     r.set_defaults(fn=cmd_drive)
+    k = sub.add_parser("console", help="run `lsbench console` (lakesoul-console) in a Guaranteed-QoS Job")
+    k.add_argument("--run-dir", required=True)
+    k.add_argument("--bench-tag", required=True)
+    k.add_argument("--name", required=True)
+    k.add_argument("--cpu", required=True, help="console CPU request = limit, e.g. 4 or 3500m")
+    k.add_argument("--mem", required=True, help="console memory request = limit, e.g. 8Gi")
+    k.add_argument("--node", help="pin to this node (kubernetes.io/hostname); must not run the service")
+    k.add_argument("--distributed", action="store_true",
+                   help="pass every ready lakesoul-worker Pod as --worker")
+    k.add_argument("--env", action="append", metavar="K=V",
+                   help="console container env, e.g. LAKESOUL_MEMORY_LIMIT=4Gi")
+    k.add_argument("--timeout", type=float, default=3600, help="Job activeDeadlineSeconds")
+    k.add_argument("console_args", nargs=argparse.REMAINDER, help="-- <lsbench console args>")
+    k.set_defaults(fn=cmd_console)
     c = sub.add_parser("collect")
     c.add_argument("--run-dir", required=True)
     c.add_argument("--name", required=True)

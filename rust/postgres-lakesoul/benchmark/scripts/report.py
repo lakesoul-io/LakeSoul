@@ -10,8 +10,8 @@
   report.py memory RUN_DIR... [--names serial,burst]
                                              # memory-matrix table (scripts/memory-matrix.sh)
 
-Inputs are the files `scripts/bench.py drive` writes: NAME.jsonl (driver
-samples), NAME.sampler.<role>.<pod>.jsonl, NAME.pods.json.
+Inputs are the files `scripts/bench.py drive` and `console` write: NAME.jsonl
+(driver samples), NAME.sampler.<role>.<pod>.jsonl, NAME.pods.json.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def samples(path: Path) -> list[dict]:
 def phase(r: dict) -> str:
     """TPC-H iteration phase: warmup (<0), cold (0, first measured pass after a
     fresh deploy with --warmup 0), warm (>0). Other scenarios have none."""
-    if r.get("scenario") != "tpch":
+    if r.get("scenario") not in ("tpch", "console"):
         return ""
     i = r.get("iteration") or 0
     return "warmup" if i < 0 else "cold" if i == 0 else "warm"

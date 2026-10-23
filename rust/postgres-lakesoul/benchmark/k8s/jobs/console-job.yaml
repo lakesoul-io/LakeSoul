@@ -1,0 +1,134 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# lakesoul-console TPC-H Job (rendered by scripts/bench.py console; ${...}
+# are template variables). The console plans and runs the queries in this Pod
+# (single node, or distributed over the worker Pods), without the PG-wire
+# coordinator. Requests equal limits for every container, so the Pod has
+# Guaranteed QoS: a fixed CPU quota and memory limit for the console.
+#
+# lsbench writes its JSONL samples to stdout. They are part of the container
+# log, which survives the container being OOM-killed; the harness reads it
+# after the Pod completes. The resource sampler is a native sidecar, stopped
+# by the kubelet once the console container exits.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+  namespace: lakesoul
+  labels:
+    app.kubernetes.io/name: lakesoul-bench
+    lsbench/run: "${RUN_ID}"
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: ${DEADLINE_S}
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lakesoul-bench
+        lsbench/run: "${RUN_ID}"
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: lakesoul-registry
+      # The sampler reads the console's /proc entry and, through
+      # /proc/<pid>/root, its container cgroup.
+      shareProcessNamespace: true
+      nodeSelector: ${NODE_SELECTOR}
+      # Keep the console off the nodes running the coordinator and workers.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: lakesoul
+              topologyKey: kubernetes.io/hostname
+      initContainers:
+        - name: sampler
+          image: ${BENCH_IMAGE}
+          imagePullPolicy: Always
+          restartPolicy: Always
+          command: ["/bin/sh", "/bench/k8s/components/sampler/sampler.sh"]
+          env:
+            - name: SAMPLER_TARGET
+              value: lakesoul-console
+            - name: SAMPLER_INTERVAL
+              value: "1"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      containers:
+        - name: console
+          image: ${BENCH_IMAGE}
+          imagePullPolicy: Always
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "LSBENCH_CPUS $(grep Cpus_allowed_list /proc/self/status | cut -f2) nproc=$(nproc)"
+              python3 -m lsbench ${CONSOLE_ARGS} --out -
+              rc=$?
+              echo "LSBENCH_EXIT $rc"
+              exit $rc
+          env:
+            - name: TMPDIR
+              value: /var/scratch
+            - name: LAKESOUL_PG_URL
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: pg-url
+            - name: LAKESOUL_PG_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: pg-username
+            - name: LAKESOUL_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: pg-password
+            - name: LAKESOUL_WAREHOUSE
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: warehouse
+            - name: AWS_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-endpoint
+            - name: AWS_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-bucket
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-secret-access-key
+${EXTRA_ENV}
+          resources:
+            requests:
+              cpu: "${CONSOLE_CPU}"
+              memory: "${CONSOLE_MEM}"
+            limits:
+              cpu: "${CONSOLE_CPU}"
+              memory: "${CONSOLE_MEM}"
+          volumeMounts:
+            - name: scratch
+              mountPath: /var/scratch
+      volumes:
+        - name: scratch
+          emptyDir:
+            sizeLimit: 20Gi

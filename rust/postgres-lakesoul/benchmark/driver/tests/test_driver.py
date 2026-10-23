@@ -9,6 +9,7 @@ from pathlib import Path
 
 from lsbench.answers import compare, ordered
 from lsbench.cli import int32, parser, read_mix, substitute_sf
+from lsbench.console import Parser, script
 from lsbench.wire import ReadPolicy, Result
 
 
@@ -108,6 +109,49 @@ class CLITests(unittest.TestCase):
         self.assertEqual(args.protocol, "simple")
         self.assertEqual(args.max_rows, 0)
         self.assertTrue(args.fetch_result)
+
+
+class ConsoleTests(unittest.TestCase):
+    @staticmethod
+    def feed(lines: list[str], exit_code: int) -> list[dict]:
+        parser = Parser()
+        outcomes = [parser.line(line, float(i)) for i, line in enumerate(lines)]
+        outcomes.append(parser.finish(float(len(lines)), exit_code))
+        return [o for o in outcomes if o is not None]
+
+    @staticmethod
+    def marker(name: str, iteration: int) -> list[str]:
+        return ["+----+", f"| lsbench-marker:{name}:{iteration} |", "+----+",
+                "1 row(s) fetched. ", "Elapsed 0.001 seconds.", ""]
+
+    def test_queries_take_their_own_elapsed_and_errors(self):
+        lines = (["0 row(s) fetched. ", "Elapsed 0.002 seconds."]  # USE
+                 + self.marker("q01", -1) + ["| 4 |", "4 row(s) fetched. ", "Elapsed 1.250 seconds.", ""]
+                 + self.marker("q02", -1) + ["● Schema error: No field named x.", "│ Valid fields are a."]
+                 + self.marker("q03", 0) + ["0 row(s) fetched. ", "Elapsed 0.300 seconds."])
+        q01, q02, q03 = self.feed(lines, 0)
+        self.assertEqual((q01["query"], q01["iteration"], q01["status"], q01["latency_s"], q01["rows"]),
+                         ("q01", -1, "ok", 1.25, 4))
+        self.assertEqual((q02["query"], q02["status"], q02["latency_s"]), ("q02", "error", None))
+        self.assertIn("No field named x", q02["error"])
+        self.assertEqual((q03["query"], q03["iteration"], q03["status"], q03["rows"]), ("q03", 0, "ok", 0))
+
+    def test_killed_console_marks_the_running_query(self):
+        lines = self.marker("q01", 0) + ["memory allocation failed"]
+        (q01,) = self.feed(lines, -9)
+        self.assertEqual(q01["status"], "disconnected")
+        self.assertIn("memory allocation failed", q01["error"])
+        self.assertIn("code -9", q01["error"])
+
+    def test_script_terminates_statements(self):
+        text = script("tpch_sf1", [("q01", "select 1\n"), ("q02", "select 2;\n")], 1, 1, 8)
+        self.assertEqual(text.splitlines()[:2], ["USE tpch_sf1;", "SET datafusion.execution.target_partitions = 8;"])
+        self.assertEqual(text.count("select 1;"), 2)
+        self.assertEqual(text.count("select 2;"), 2)
+        self.assertNotIn("SET", script("d", [("q01", "select 1")], 0, 1, None))
+        with self.assertRaises(ValueError):
+            script("tpch; drop", [("q01", "select 1")], 0, 1, None)
+
 
 
 class PolicyTests(unittest.IsolatedAsyncioTestCase):

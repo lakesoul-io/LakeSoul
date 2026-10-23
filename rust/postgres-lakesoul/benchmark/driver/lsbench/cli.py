@@ -8,6 +8,7 @@ import math
 import random
 import re
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -129,18 +130,25 @@ def substitute_sf(sql: str, sf: float | None) -> str:
     return sql.replace("{{SF}}", str(float(sf)))
 
 
-async def tpch(args, output: Output) -> None:
+def tpch_queries(args) -> list[tuple[str, str]]:
+    """`--queries` as (name, SQL) pairs with `{{SF}}` substituted; validates
+    `--answers` up front so a missing file fails before any query runs."""
     names = [f"q{i:02}" for i in range(1, 23)] if args.queries == "all" else args.queries.split(",")
     if not names or any(not re.fullmatch(r"q(?:0[1-9]|1[0-9]|2[0-2])", name) for name in names):
         raise ValueError("--queries must be all or comma-separated q01..q22")
     queries = [(name, substitute_sf((Path(args.query_dir) / f"{name}.sql").read_text(encoding="utf-8"), args.sf))
                for name in names]
-    if args.answers and not args.fetch_result:
-        raise ValueError("--answers requires --fetch-result")
     if args.answers:
         for name in names:
             if not (Path(args.answers) / f"{name}.csv").is_file():
                 raise ValueError(f"Missing answer: {Path(args.answers) / (name + '.csv')}")
+    return queries
+
+
+async def tpch(args, output: Output) -> None:
+    if args.answers and not args.fetch_result:
+        raise ValueError("--answers requires --fetch-result")
+    queries = tpch_queries(args)
     connection = client(args)
     outages = 0
     try:
@@ -558,11 +566,34 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("--connections", type=positive_int, required=True)
             sub.add_argument("--rate", type=positive, default=10)
             sub.add_argument("--hold", type=nonnegative, default=10)
+    console = commands.add_parser("console", help="Sequential TPC-H through lakesoul-console (no PG wire)")
+    console.add_argument("--database", required=True, help="existing LakeSoul namespace (USE)")
+    console.add_argument("--out", required=True, help="append JSONL to this file; - for stdout")
+    console.add_argument("--run-id", default=uuid.uuid4().hex)
+    console.add_argument("--sf", type=positive, help="replace {{SF}} in SQL with a float literal")
+    console.add_argument("--queries", default="all")
+    console.add_argument("--query-dir", default=str(Path(__file__).resolve().parents[2] / "workloads/tpch/queries"))
+    console.add_argument("--iterations", type=positive_int, default=1)
+    console.add_argument("--warmup", type=nonnegative_int, default=0)
+    console.add_argument("--answers", help="answer directory; only row counts are compared")
+    console.add_argument("--console-bin", default="lakesoul-console")
+    console.add_argument("--worker-threads", type=positive_int, required=True,
+                         help="console tokio threads; match the CPU limit (the console default is 2)")
+    console.add_argument("--target-partitions", type=positive_int,
+                         help="single node: SET datafusion.execution.target_partitions; "
+                              "with --worker: the console's --target-partitions")
+    console.add_argument("--worker", action="append", default=[], metavar="URL",
+                         help="worker gRPC URL (repeatable); none runs on a single node")
+    console.add_argument("--bytes-per-partition", type=positive_int,
+                         help="with --worker: bytes per distributed file-scan task")
+    console.add_argument("--log-dir", default=tempfile.gettempdir(), help="console tracing log directory")
     return result
 
 
 async def dispatch(args, output: Output) -> None:
-    handler = {"tpch": tpch, "load": load, "slowclient": slowclient,
+    from .console import console
+
+    handler = {"tpch": tpch, "load": load, "slowclient": slowclient, "console": console,
                "cancel": interruption, "disconnect": interruption, "connflood": connflood}[args.command]
     await handler(args, output)
 
@@ -570,7 +601,7 @@ async def dispatch(args, output: Output) -> None:
 def main() -> int:
     arguments = parser()
     args = arguments.parse_args()
-    if args.port > 65535:
+    if getattr(args, "port", 0) > 65535:
         arguments.error("--port must be <= 65535")
     output = None
     try:

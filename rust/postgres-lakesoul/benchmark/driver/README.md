@@ -57,6 +57,31 @@ process exit code.
 still drains all rows, so server execution and backpressure are not bypassed.
 Result values are not copied into JSONL.
 
+## TPC-H through lakesoul-console
+
+```sh
+python3 -m lsbench console --database tpch_sf1 --out console.jsonl --sf 1 \
+  --iterations 3 --warmup 1 --worker-threads 4 --target-partitions 4 \
+  --answers rust/postgres-lakesoul/benchmark/workloads/tpch/answers/sf1
+```
+
+`console` does not use PG wire. It writes one statement file (`USE`, an
+optional `SET datafusion.execution.target_partitions`, then a marker `SELECT`
+before every query) and runs it with a single `lakesoul-console` process
+(`--console-bin`, default from `PATH`), so caches persist across iterations
+as in `tpch`. The console needs the metadata and warehouse environment
+(`LAKESOUL_PG_URL`, `LAKESOUL_WAREHOUSE`, `AWS_*`). `latency_s` is the
+console's own `Elapsed` time (millisecond resolution, planning plus
+execution plus printing); `rows` comes from its `N row(s) fetched.` line.
+`--answers` checks row counts only.
+
+`--worker URL` (repeatable) runs distributed; `--target-partitions` and
+`--bytes-per-partition` then go to the console's flags. Without workers,
+`--target-partitions` becomes the `SET`, because single-node sessions default
+to one partition. A failed query is recorded with `status: "error"` and the
+run continues. If the console dies, the running query is `disconnected` and a
+`type: "aborted"` record follows.
+
 ## Closed-loop and open-loop load
 
 Create a mix JSON file, for example:
