@@ -52,6 +52,7 @@ mod aggregates;
 mod chain;
 mod fallback;
 mod joins;
+mod keyed_plan;
 mod lookup_chain;
 mod multi_join;
 mod recompute;
