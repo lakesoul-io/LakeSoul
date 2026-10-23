@@ -3480,6 +3480,7 @@ impl IvmRuntime {
         view: &JoinView,
         affected_left: &DataFrame,
         affected_right: &DataFrame,
+        right_index: Option<&IvmTable>,
     ) -> Result<DataFrame> {
         let left_columns = view
             .left
@@ -3505,7 +3506,7 @@ impl IvmRuntime {
         let right = self
             .lookup_output_side(
                 context,
-                table,
+                right_index.unwrap_or(table),
                 affected_right,
                 &view.right.primary_keys,
                 &right_columns,
@@ -3705,13 +3706,19 @@ impl IvmRuntime {
         &self,
         output: &IvmTable,
         state: Option<&IvmTable>,
+        pair_index: Option<&IvmTable>,
         frame: DataFrame,
     ) -> Result<Vec<String>> {
         let written = append_dataframe(output, &self.client, frame.clone()).await?;
         let mut commit_ids = written.commit_ids;
         if let Some(state) = state {
-            let state_written = append_dataframe(state, &self.client, frame).await?;
+            let state_written =
+                append_dataframe(state, &self.client, frame.clone()).await?;
             commit_ids.extend(state_written.commit_ids);
+        }
+        if let Some(index) = pair_index {
+            let index_written = append_dataframe(index, &self.client, frame).await?;
+            commit_ids.extend(index_written.commit_ids);
         }
         Ok(commit_ids)
     }
@@ -3748,6 +3755,97 @@ impl IvmRuntime {
         if state_stale {
             self.sync_join_state(output, state).await?;
         }
+        Ok(())
+    }
+
+    /// Create or reuse the right-key pair index for a keyed join output.
+    ///
+    /// The output MV is bucketed by the left pair-key prefix.  This index
+    /// repeats the same output rows with the right source identities first, so
+    /// a right-key delete lookup can use its bucket and PK index instead of
+    /// scanning every left bucket.
+    async fn ensure_join_pair_index(
+        &self,
+        view: &JoinView,
+        output: &IvmTable,
+    ) -> Result<Option<IvmTable>> {
+        if view.left.primary_keys.is_empty() || view.right.primary_keys.is_empty() {
+            return Ok(None);
+        }
+        if output
+            .schema
+            .field_with_name(&right_pk_alias(&view.right.primary_keys[0]))
+            .is_err()
+            || output
+                .schema
+                .field_with_name(&left_pk_alias(&view.left.primary_keys[0]))
+                .is_err()
+        {
+            return Ok(None);
+        }
+        let mut primary_keys = view
+            .right
+            .primary_keys
+            .iter()
+            .map(|key| right_pk_alias(key))
+            .collect::<Vec<_>>();
+        primary_keys.extend(view.left.primary_keys.iter().map(|key| left_pk_alias(key)));
+        let bucket_columns = view
+            .right
+            .primary_keys
+            .iter()
+            .map(|key| right_pk_alias(key))
+            .collect::<Vec<_>>();
+        if let Some(existing) = self
+            .metadata()
+            .get_state(&view.view_id, StateRole::JoinPairIndex)
+            .await?
+        {
+            let table = self.open_table_by_id(&existing.table_id).await?;
+            if table.schema == output.schema && table.primary_keys == primary_keys {
+                return Ok(Some(table));
+            }
+            self.metadata
+                .unregister_state(&view.view_id, StateRole::JoinPairIndex)
+                .await?;
+            let _ = self
+                .client()
+                .drop_table(&table.table_name, &table.namespace)
+                .await;
+        }
+        let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
+        let mut options = IvmTableOptions::new(
+            format!("{}__ivm_right_index_{suffix}", output.table_name),
+            format!("{}__ivm_right_index_{suffix}", output.table_path),
+            output.schema.clone(),
+        )
+        .with_namespace(output.namespace.clone())
+        .with_primary_keys(primary_keys)
+        .with_bucket_columns(bucket_columns)
+        .with_file_format(output.file_format);
+        if options.schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_ok() {
+            options = options.with_cdc_column(IVM_ROW_KINDS_COLUMN);
+        }
+        options.hash_bucket_num = output.hash_bucket_num.clone();
+        let index = self.create_table(options).await?;
+        self.metadata()
+            .register_state(&view.view_id, StateRole::JoinPairIndex, &index)
+            .await?;
+        if !output.current_files(&self.client).await?.is_empty() {
+            self.sync_join_pair_index(output, &index).await?;
+        }
+        Ok(Some(index))
+    }
+
+    async fn sync_join_pair_index(
+        &self,
+        output: &IvmTable,
+        index: &IvmTable,
+    ) -> Result<()> {
+        let context = refresh_session();
+        let frame = self.current_table_frame(&context, output)?;
+        index.truncate(&self.client).await?;
+        append_dataframe(index, &self.client, frame).await?;
         Ok(())
     }
 
@@ -3838,6 +3936,11 @@ impl IvmRuntime {
 
         self.ensure_join_state(&view.output, view.state.as_ref())
             .await?;
+        let pair_index = if keyed {
+            self.ensure_join_pair_index(view, &view.output).await?
+        } else {
+            None
+        };
         let left_side_state = if keyed {
             self.ensure_join_side_state(
                 &view.view_id,
@@ -4159,6 +4262,7 @@ impl IvmRuntime {
                     view,
                     &affected_left,
                     &affected_right,
+                    pair_index.as_ref(),
                 )
                 .await?;
             let current = if let Some(current) = fast_current {
@@ -4250,6 +4354,7 @@ impl IvmRuntime {
                 self.append_join_rows(
                     &view.output,
                     view.state.as_ref(),
+                    pair_index.as_ref(),
                     inserts.union(deletes)?.sort_by(sort_exprs)?,
                 )
                 .await?,
@@ -4320,6 +4425,7 @@ impl IvmRuntime {
                 self.append_join_rows(
                     &view.output,
                     view.state.as_ref(),
+                    None,
                     combined.with_column(IVM_EPOCH_COLUMN, lit(epoch))?,
                 )
                 .await?,
@@ -4598,6 +4704,7 @@ impl IvmRuntime {
             self.append_join_rows(
                 &view.output,
                 view.state.as_ref(),
+                None,
                 inserts.union(deletes)?.sort_by(sort_exprs)?,
             )
             .await?,
@@ -6088,6 +6195,14 @@ impl IvmRuntime {
                     .await?
                     .commit_ids,
             );
+        }
+
+        // The right-key pair index mirrors the rebuilt output; refresh it
+        // after truncating/refilling the MV.
+        if keyed
+            && let Some(index) = self.ensure_join_pair_index(view, &view.output).await?
+        {
+            self.sync_join_pair_index(&view.output, &index).await?;
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;

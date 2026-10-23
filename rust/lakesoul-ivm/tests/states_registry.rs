@@ -395,7 +395,10 @@ async fn states_are_registered_for_each_view_kind() {
         .map(|(role, _)| *role)
         .collect::<Vec<_>>();
     roles.sort_unstable();
-    assert_eq!(roles, vec!["join_left", "join_right", "mv", "state"]);
+    assert_eq!(
+        roles,
+        vec!["join_left", "join_pair_index", "join_right", "mv", "state",]
+    );
     assert!(join_states.contains(&("mv", join_mv.table_id.clone())));
     assert!(join_states.contains(&("state", join_state.table_id.clone())));
 
