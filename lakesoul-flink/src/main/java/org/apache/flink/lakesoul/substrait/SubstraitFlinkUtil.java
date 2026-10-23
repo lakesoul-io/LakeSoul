@@ -12,7 +12,20 @@ import org.apache.flink.table.expressions.FieldReferenceExpression;
 import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.functions.BuiltInFunctionDefinition;
+import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
+import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.LocalZonedTimestampType;
+import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.table.types.logical.TimeType;
+import org.apache.flink.table.types.logical.TimestampType;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 
 public class SubstraitFlinkUtil {
@@ -36,6 +49,130 @@ public class SubstraitFlinkUtil {
             }
         }
         return Tuple2.of(SupportsFilterPushDown.Result.of(pushed, remaining), combined);
+    }
+
+    /**
+     * Replaces query-start time functions with literals so that both row-level filters and
+     * partition filters can be converted to Substrait.
+     *
+     * <p>This is only used for batch scans. Streaming scans intentionally keep these expressions
+     * and let Flink evaluate them.
+     */
+    public static List<ResolvedExpression> foldQueryStartFunctions(
+            List<ResolvedExpression> filters, ZoneId zoneId) {
+        List<ResolvedExpression> folded = new ArrayList<>(filters.size());
+        for (ResolvedExpression filter : filters) {
+            folded.add(foldQueryStartFunctions(filter, zoneId));
+        }
+        return folded;
+    }
+
+    public static ResolvedExpression foldQueryStartFunctions(
+            ResolvedExpression expression, ZoneId zoneId) {
+        return foldQueryStartFunctions(expression, Clock.system(zoneId));
+    }
+
+    static ResolvedExpression foldQueryStartFunctions(ResolvedExpression expression, Clock clock) {
+        if (!(expression instanceof CallExpression)) {
+            return expression;
+        }
+        CallExpression call = (CallExpression) expression;
+
+        ValueLiteralExpression folded = evaluateQueryStartFunction(call, clock);
+        if (folded != null) {
+            return folded;
+        }
+
+        List<ResolvedExpression> children = call.getResolvedChildren();
+        List<ResolvedExpression> foldedChildren = new ArrayList<>(children.size());
+        boolean changed = false;
+        for (ResolvedExpression child : children) {
+            ResolvedExpression foldedChild = foldQueryStartFunctions(child, clock);
+            foldedChildren.add(foldedChild);
+            changed |= foldedChild != child;
+        }
+        if (!changed) {
+            return call;
+        }
+        return new CallExpression(
+                call.isTemporary(),
+                call.getFunctionIdentifier().orElse(null),
+                call.getFunctionDefinition(),
+                foldedChildren,
+                call.getOutputDataType());
+    }
+
+    private static ValueLiteralExpression evaluateQueryStartFunction(
+            CallExpression call, Clock clock) {
+        if (!call.getResolvedChildren().isEmpty()) {
+            return null;
+        }
+
+        DataType outputType = call.getOutputDataType();
+        if (call.getFunctionDefinition().equals(BuiltInFunctionDefinitions.CURRENT_DATE)) {
+            return new ValueLiteralExpression(LocalDate.now(clock), outputType.notNull());
+        } else if (call.getFunctionDefinition().equals(BuiltInFunctionDefinitions.CURRENT_TIME)
+                || call.getFunctionDefinition().equals(BuiltInFunctionDefinitions.LOCAL_TIME)) {
+            return new ValueLiteralExpression(
+                    truncate(LocalTime.now(clock), getPrecision(outputType.getLogicalType())),
+                    outputType.notNull());
+        } else if (call.getFunctionDefinition().equals(BuiltInFunctionDefinitions.CURRENT_TIMESTAMP)
+                || call.getFunctionDefinition().equals(BuiltInFunctionDefinitions.NOW)) {
+            return new ValueLiteralExpression(
+                    truncate(Instant.now(clock), getPrecision(outputType.getLogicalType())),
+                    outputType.notNull());
+        } else if (call.getFunctionDefinition()
+                .equals(BuiltInFunctionDefinitions.LOCAL_TIMESTAMP)) {
+            return new ValueLiteralExpression(
+                    truncate(LocalDateTime.now(clock), getPrecision(outputType.getLogicalType())),
+                    outputType.notNull());
+        } else if (call.getFunctionDefinition().equals(BuiltInFunctionDefinitions.UNIX_TIMESTAMP)) {
+            return new ValueLiteralExpression(
+                    Instant.now(clock).getEpochSecond(), outputType.notNull());
+        }
+        return null;
+    }
+
+    private static int getPrecision(LogicalType logicalType) {
+        if (logicalType instanceof TimeType) {
+            return ((TimeType) logicalType).getPrecision();
+        } else if (logicalType instanceof TimestampType) {
+            return ((TimestampType) logicalType).getPrecision();
+        } else if (logicalType instanceof LocalZonedTimestampType) {
+            return ((LocalZonedTimestampType) logicalType).getPrecision();
+        }
+        return 3;
+    }
+
+    private static LocalTime truncate(LocalTime time, int precision) {
+        return time.withNano(truncateNanos(time.getNano(), precision));
+    }
+
+    private static LocalDateTime truncate(LocalDateTime time, int precision) {
+        return time.withNano(truncateNanos(time.getNano(), precision));
+    }
+
+    private static Instant truncate(Instant time, int precision) {
+        return time.truncatedTo(precisionUnit(precision));
+    }
+
+    private static int truncateNanos(int nanos, int precision) {
+        if (precision >= 9) {
+            return nanos;
+        }
+        int factor = (int) Math.pow(10, 9 - precision);
+        return (nanos / factor) * factor;
+    }
+
+    private static ChronoUnit precisionUnit(int precision) {
+        if (precision >= 9) {
+            return ChronoUnit.NANOS;
+        } else if (precision >= 6) {
+            return ChronoUnit.MICROS;
+        } else if (precision >= 3) {
+            return ChronoUnit.MILLIS;
+        }
+        return ChronoUnit.SECONDS;
     }
 
     public static Expression toSubstraitExpr(ResolvedExpression flinkExpression) {

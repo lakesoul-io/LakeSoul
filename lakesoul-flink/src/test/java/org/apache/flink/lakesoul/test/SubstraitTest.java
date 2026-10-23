@@ -1,6 +1,7 @@
 package org.apache.flink.lakesoul.test;
 
 import static org.apache.flink.lakesoul.test.flinkSource.TestUtils.BATCH_TYPE;
+import static org.apache.flink.lakesoul.test.flinkSource.TestUtils.STREAMING_TYPE;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.substrait.extension.SimpleExtension;
@@ -13,6 +14,8 @@ import org.apache.flink.util.CollectionUtil;
 import org.junit.Test;
 
 import java.io.IOException;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.Comparator;
 import java.util.List;
 import java.util.TimeZone;
@@ -114,6 +117,82 @@ public class SubstraitTest extends AbstractTestBase {
                 .isEqualTo(
                         "[+I[1, Bob, 1995-10-01, true, 10.01, A, 1.85, 3, 1, 89, 100.11, [1, -81],"
                                 + " [18, 67, 112, -105], 1990-01-07T10:10, 1995-10-01T07:10:00Z]]");
+    }
+
+    @Test
+    public void currentDateFilterPushdownTest() throws ExecutionException, InterruptedException {
+        ZoneId zone = ZoneId.of("Asia/Shanghai");
+        TableEnvironment createEnv = TestUtils.createTableEnv(BATCH_TYPE);
+        createEnv.getConfig().setLocalTimeZone(zone);
+        String table = "current_date_pushdown";
+        String tablePath = getTempDirUri("/lakeSource/current_date_pushdown");
+        createEnv.executeSql("DROP TABLE IF EXISTS " + table);
+        createEnv.executeSql(
+                "CREATE TABLE "
+                        + table
+                        + " ("
+                        + "  id INT,"
+                        + "  stat_date DATE,"
+                        + "  dt DATE,"
+                        + "  PRIMARY KEY (id) NOT ENFORCED"
+                        + ") PARTITIONED BY (`stat_date`) WITH ("
+                        + "  'connector'='lakesoul',"
+                        + "  'hashBucketNum'='1',"
+                        + "  'path'='"
+                        + tablePath
+                        + "'"
+                        + ")");
+
+        LocalDate today = LocalDate.now(zone);
+        LocalDate yesterday = today.minusDays(1);
+        createEnv
+                .executeSql(
+                        String.format(
+                                "INSERT INTO %s VALUES "
+                                        + "(1, DATE '%s', DATE '%s'), "
+                                        + "(2, DATE '%s', DATE '%s')",
+                                table, today, today, yesterday, yesterday))
+                .await();
+
+        StreamTableEnvironment queryEnv = TestUtils.createStreamTableEnv(BATCH_TYPE);
+        queryEnv.getConfig().setLocalTimeZone(zone);
+
+        String partitionSql = "SELECT id FROM " + table + " WHERE stat_date = CURRENT_DATE";
+        String partitionPlan = createEnv.explainSql(partitionSql);
+        assertThat(partitionPlan).contains("filter=[=(stat_date, " + today + ")]");
+        List<Row> partitionRows =
+                CollectionUtil.iteratorToList(queryEnv.executeSql(partitionSql).collect());
+        assertThat(partitionRows).containsExactly(Row.of(1));
+
+        String nonPartitionSql = "SELECT id FROM " + table + " WHERE dt = CURRENT_DATE";
+        String nonPartitionPlan = createEnv.explainSql(nonPartitionSql);
+        assertThat(nonPartitionPlan).contains("filter=[=(dt, " + today + ")]");
+        List<Row> nonPartitionRows =
+                CollectionUtil.iteratorToList(queryEnv.executeSql(nonPartitionSql).collect());
+        assertThat(nonPartitionRows).containsExactly(Row.of(1));
+
+        String literalSql = "SELECT id FROM " + table + " WHERE stat_date = DATE '" + today + "'";
+        List<Row> literalRows =
+                CollectionUtil.iteratorToList(queryEnv.executeSql(literalSql).collect());
+        assertThat(literalRows).containsExactly(Row.of(1));
+
+        // MONTH/DAYOFMONTH are not convertible to Substrait. The filter must stay in Flink instead
+        // of being accepted and silently dropped.
+        String unsupportedSql =
+                "SELECT id FROM "
+                        + table
+                        + " WHERE MONTH(stat_date) = MONTH(CURRENT_DATE)"
+                        + " AND DAYOFMONTH(stat_date) = DAYOFMONTH(CURRENT_DATE)";
+        List<Row> unsupportedRows =
+                CollectionUtil.iteratorToList(queryEnv.executeSql(unsupportedSql).collect());
+        assertThat(unsupportedRows).containsExactly(Row.of(1));
+
+        // Streaming mode must keep the filter in Flink instead of folding it into a literal.
+        StreamTableEnvironment streamingEnv = TestUtils.createStreamTableEnv(STREAMING_TYPE);
+        streamingEnv.getConfig().setLocalTimeZone(zone);
+        String streamingPlan =
+                streamingEnv.explainSql("SELECT id FROM " + table + " WHERE dt = CURRENT_DATE");
+        assertThat(streamingPlan).contains("CURRENT_DATE");
     }
 
     private void createLakeSoulSourceTableWithDateType(TableEnvironment tEnvs)

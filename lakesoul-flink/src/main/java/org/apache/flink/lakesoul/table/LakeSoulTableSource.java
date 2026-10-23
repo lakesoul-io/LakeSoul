@@ -26,6 +26,7 @@ import org.apache.flink.lakesoul.source.LakeSoulRowDataSource;
 import org.apache.flink.lakesoul.substrait.SubstraitFlinkUtil;
 import org.apache.flink.lakesoul.tool.LakeSoulSinkOptions;
 import org.apache.flink.lakesoul.types.TableId;
+import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.RowLevelModificationScanContext;
 import org.apache.flink.table.connector.source.DynamicTableSource;
@@ -44,6 +45,7 @@ import org.apache.flink.types.RowKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.ZoneId;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -82,6 +84,8 @@ public class LakeSoulTableSource
     protected LakeSoulRowLevelModificationScanContext modificationContext;
     protected Plan partitionFilters;
 
+    protected ZoneId localTimeZone;
+
     public LakeSoulTableSource(
             TableId tableId,
             RowType rowType,
@@ -89,12 +93,31 @@ public class LakeSoulTableSource
             List<String> pkColumns,
             List<String> partitionColumns,
             Map<String, String> optionParams) {
+        this(
+                tableId,
+                rowType,
+                isStreaming,
+                pkColumns,
+                partitionColumns,
+                optionParams,
+                ZoneId.systemDefault());
+    }
+
+    public LakeSoulTableSource(
+            TableId tableId,
+            RowType rowType,
+            boolean isStreaming,
+            List<String> pkColumns,
+            List<String> partitionColumns,
+            Map<String, String> optionParams,
+            ZoneId localTimeZone) {
         this.tableId = tableId;
         this.tableRowType = rowType;
         this.isBounded = isStreaming;
         this.pkColumns = pkColumns;
         this.partitionColumns = partitionColumns;
         this.optionParams = optionParams;
+        this.localTimeZone = localTimeZone;
         this.modificationContext = null;
     }
 
@@ -111,7 +134,8 @@ public class LakeSoulTableSource
                         this.isBounded,
                         this.pkColumns,
                         this.partitionColumns,
-                        this.optionParams);
+                        this.optionParams,
+                        this.localTimeZone);
         newInstance.projectedFields = this.projectedFields;
         newInstance.remainingPartitions = this.remainingPartitions;
         newInstance.pushedFilters = this.pushedFilters;
@@ -125,9 +149,23 @@ public class LakeSoulTableSource
 
     @Override
     public Result applyFilters(List<ResolvedExpression> filters) {
-        // first we filter out partition filter conditions
         LOG.info("Applying filters to native io: {}, table {}", filters, tableId);
         long startTime = System.currentTimeMillis();
+
+        if (isBounded) {
+            List<ResolvedExpression> foldedFilters =
+                    SubstraitFlinkUtil.foldQueryStartFunctions(filters, localTimeZone);
+            if (!foldedFilters.equals(filters)) {
+                LOG.info(
+                        "Folded query-start functions from {} to {}, table {}",
+                        filters,
+                        foldedFilters,
+                        tableId);
+            }
+            filters = foldedFilters;
+        }
+
+        // first we filter out partition filter conditions
         List<ResolvedExpression> completePartitionFilters = new ArrayList<>();
         List<ResolvedExpression> nonPartitionFilters = new ArrayList<>();
         DBManager dbManager = new DBManager();
@@ -147,79 +185,100 @@ public class LakeSoulTableSource
         LOG.info("completePartitionFilters: {}, table {}", completePartitionFilters, tableId);
         LOG.info("nonPartitionFilters: {}, table {}", nonPartitionFilters, tableId);
 
+        List<ResolvedExpression> acceptedPartitionFilters = new ArrayList<>();
+        List<ResolvedExpression> remainingPartitionFilters = new ArrayList<>();
+
         if (!completePartitionFilters.isEmpty()) {
             Tuple2<Result, Expression> substraitPartitionExpr =
                     SubstraitFlinkUtil.flinkExprToSubStraitExpr(completePartitionFilters);
             Expression partitionFilter = substraitPartitionExpr.f1;
+            acceptedPartitionFilters.addAll(substraitPartitionExpr.f0.getAcceptedFilters());
+            remainingPartitionFilters.addAll(substraitPartitionExpr.f0.getRemainingFilters());
+
             if (isDelete()) {
+                if (partitionFilter == null || !remainingPartitionFilters.isEmpty()) {
+                    throw new TableException(
+                            "Unsupported partition filter for delete: "
+                                    + remainingPartitionFilters);
+                }
                 partitionFilter = not(partitionFilter);
             }
             this.partitionFilters = substraitExprToProto(partitionFilter, tableInfo.getTableName());
-            List<PartitionInfo> remainingPartitionInfo = Collections.emptyList();
-            Map<String, String> remainingPartitionKeys =
-                    SubstraitFlinkUtil.equalityFilterFieldNames(completePartitionFilters);
-            if (remainingPartitionKeys.size() == completePartitionFilters.size()) {
-                // all partition filters are equality literal filter
-                if (partitionKeys.rangeKeys.stream()
-                        .allMatch(remainingPartitionKeys::containsKey)) {
-                    // 1. equality partition filters contains all partition cols
-                    // for this case we directly get one partition by partition_info's primary key
-                    String partitionDesc =
-                            partitionKeys.rangeKeys.stream()
-                                    .map(
-                                            rangeCol -> {
-                                                String value = remainingPartitionKeys.get(rangeCol);
-                                                return rangeCol + "=" + value;
-                                            })
-                                    .collect(Collectors.joining(LAKESOUL_RANGE_PARTITION_SPLITTER));
-                    LOG.info(
-                            "Apply all equality partition filter with partitionDesc: {}, table {}",
-                            partitionDesc,
-                            tableId);
-                    List<PartitionInfo> pInfo =
-                            dbManager.getOnePartition(tableInfo.getTableId(), partitionDesc);
-                    if (pInfo != null && !pInfo.isEmpty()) {
-                        remainingPartitionInfo = pInfo;
+
+            if (!acceptedPartitionFilters.isEmpty()) {
+                List<PartitionInfo> remainingPartitionInfo = Collections.emptyList();
+                Map<String, String> remainingPartitionKeys =
+                        SubstraitFlinkUtil.equalityFilterFieldNames(acceptedPartitionFilters);
+                if (remainingPartitionKeys.size() == acceptedPartitionFilters.size()) {
+                    // all partition filters are equality literal filter
+                    if (partitionKeys.rangeKeys.stream()
+                            .allMatch(remainingPartitionKeys::containsKey)) {
+                        // 1. equality partition filters contains all partition cols
+                        // for this case we directly get one partition by partition_info's primary
+                        // key
+                        String partitionDesc =
+                                partitionKeys.rangeKeys.stream()
+                                        .map(
+                                                rangeCol -> {
+                                                    String value =
+                                                            remainingPartitionKeys.get(rangeCol);
+                                                    return rangeCol + "=" + value;
+                                                })
+                                        .collect(
+                                                Collectors.joining(
+                                                        LAKESOUL_RANGE_PARTITION_SPLITTER));
+                        LOG.info(
+                                "Apply all equality partition filter with partitionDesc: {},"
+                                        + " table {}",
+                                partitionDesc,
+                                tableId);
+                        List<PartitionInfo> pInfo =
+                                dbManager.getOnePartition(tableInfo.getTableId(), partitionDesc);
+                        if (pInfo != null && !pInfo.isEmpty()) {
+                            remainingPartitionInfo = pInfo;
+                        }
+                    } else {
+                        // construct ts_query
+                        String paritionQuery =
+                                remainingPartitionKeys.entrySet().stream()
+                                        .map(entry -> entry.getKey() + "=" + entry.getValue())
+                                        .collect(Collectors.joining(" & "));
+                        LOG.info(
+                                "Apply partial equality partition filter with query: {}, table {}",
+                                paritionQuery,
+                                tableId);
+                        remainingPartitionInfo =
+                                dbManager.getPartitionInfosByPartialFilter(
+                                        tableInfo.getTableId(), paritionQuery);
                     }
                 } else {
-                    // construct ts_query
-                    String paritionQuery =
-                            remainingPartitionKeys.entrySet().stream()
-                                    .map(entry -> entry.getKey() + "=" + entry.getValue())
-                                    .collect(Collectors.joining(" & "));
-                    LOG.info(
-                            "Apply partial equality partition filter with query: {}, table {}",
-                            paritionQuery,
-                            tableId);
-                    remainingPartitionInfo =
-                            dbManager.getPartitionInfosByPartialFilter(
-                                    tableInfo.getTableId(), paritionQuery);
-                }
-            } else {
-                List<String> allPartitionDesc =
-                        dbManager.getTableAllPartitionDesc(tableInfo.getTableId());
-                List<PartitionInfo> allPartitionInfo =
-                        allPartitionDesc.stream()
-                                .map(
-                                        desc ->
-                                                PartitionInfo.newBuilder()
-                                                        .setPartitionDesc(desc)
-                                                        .build())
-                                .collect(Collectors.toList());
-                Schema tableSchema = ArrowUtils.toArrowSchema(tableRowType);
-                List<Field> partitionFields =
-                        partitionColumns.stream()
-                                .map(tableSchema::findField)
-                                .collect(Collectors.toList());
+                    List<PartitionInfo> allPartitionInfo =
+                            getAllPartitionInfo(dbManager, tableInfo);
+                    Schema tableSchema = ArrowUtils.toArrowSchema(tableRowType);
+                    List<Field> partitionFields =
+                            partitionColumns.stream()
+                                    .map(tableSchema::findField)
+                                    .collect(Collectors.toList());
 
-                Schema partitionSchema = new Schema(partitionFields);
-                remainingPartitionInfo =
-                        applyPartitionFilters(
-                                allPartitionInfo, partitionSchema, this.partitionFilters);
+                    Schema partitionSchema = new Schema(partitionFields);
+                    remainingPartitionInfo =
+                            applyPartitionFilters(
+                                    allPartitionInfo, partitionSchema, this.partitionFilters);
+                }
+                remainingPartitions = partitionInfoToPartitionMap(remainingPartitionInfo);
+                setModificationContextSourcePartitions(
+                        JniWrapper.newBuilder()
+                                .addAllPartitionInfo(remainingPartitionInfo)
+                                .build());
+            } else {
+                // No partition filter could be converted. Keep all partitions and let Flink apply
+                // the remaining filters. This also preserves incremental batch reads, where an
+                // empty remainingPartitions would mean no partitions.
+                List<PartitionInfo> allPartitionInfo = getAllPartitionInfo(dbManager, tableInfo);
+                remainingPartitions = partitionInfoToPartitionMap(allPartitionInfo);
+                setModificationContextSourcePartitions(
+                        JniWrapper.newBuilder().addAllPartitionInfo(allPartitionInfo).build());
             }
-            remainingPartitions = partitionInfoToPartitionMap(remainingPartitionInfo);
-            setModificationContextSourcePartitions(
-                    JniWrapper.newBuilder().addAllPartitionInfo(remainingPartitionInfo).build());
             setModificationContextPartitionFilter(this.partitionFilters);
         }
         long endTime = System.currentTimeMillis();
@@ -236,30 +295,30 @@ public class LakeSoulTableSource
                             pushDownResultAndSubstraitExpr.f1, tableInfo.getTableName());
             setModificationContextNonPartitionFilter(this.pushedFilters);
 
-            // add accepted non-partition filters to completePartitionFilters as all accepted
-            // filters
-            completePartitionFilters.addAll(pushDownResultAndSubstraitExpr.f0.getAcceptedFilters());
+            acceptedPartitionFilters.addAll(pushDownResultAndSubstraitExpr.f0.getAcceptedFilters());
+            remainingPartitionFilters.addAll(
+                    pushDownResultAndSubstraitExpr.f0.getRemainingFilters());
             LOG.info(
                     "Applied filters to native io in batch mode: {}, accepted {}, remaining {},"
                             + " table {}",
                     this.pushedFilters,
-                    completePartitionFilters,
-                    pushDownResultAndSubstraitExpr.f0.getRemainingFilters(),
+                    acceptedPartitionFilters,
+                    remainingPartitionFilters,
                     tableId);
 
-            return Result.of(
-                    completePartitionFilters,
-                    pushDownResultAndSubstraitExpr.f0.getRemainingFilters());
+            return Result.of(acceptedPartitionFilters, remainingPartitionFilters);
         } else {
-            // for streaming scan, we cannot pushdown any non-complete-partition filters
+            // streaming scan does not push down non-partition filters; partition filters are only
+            // used for partition pruning. Filters that cannot be converted are returned to Flink.
+            remainingPartitionFilters.addAll(nonPartitionFilters);
             LOG.info(
                     "Applied filters to native io in streaming mode: {}, accepted {}, remaining {},"
                             + " table {}",
                     this.pushedFilters,
-                    completePartitionFilters,
-                    nonPartitionFilters,
+                    acceptedPartitionFilters,
+                    remainingPartitionFilters,
                     tableId);
-            return Result.of(completePartitionFilters, nonPartitionFilters);
+            return Result.of(acceptedPartitionFilters, remainingPartitionFilters);
         }
     }
 
@@ -284,6 +343,12 @@ public class LakeSoulTableSource
         if (modificationContext != null) {
             modificationContext.setSourcePartitionInfo(sourcePartitions);
         }
+    }
+
+    private List<PartitionInfo> getAllPartitionInfo(DBManager dbManager, TableInfo tableInfo) {
+        return dbManager.getTableAllPartitionDesc(tableInfo.getTableId()).stream()
+                .map(desc -> PartitionInfo.newBuilder().setPartitionDesc(desc).build())
+                .collect(Collectors.toList());
     }
 
     private List<Map<String, String>> partitionInfoToPartitionMap(
