@@ -41,7 +41,7 @@ use datafusion::common::exec_err;
 use datafusion::datasource::physical_plan::{FileSource, ParquetSource};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion_proto::physical_plan::{
     ComposedPhysicalExtensionCodec, PhysicalExtensionCodec,
     PhysicalProtoConverterExtension,
@@ -49,6 +49,7 @@ use datafusion_proto::physical_plan::{
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::file_format::vortex_scan_session;
 use lakesoul_io::physical_plan::MergeParquetExec;
+use lakesoul_io::physical_plan::merge::MergeWorkUnit;
 use prost::Message as _;
 use vortex_datafusion::{VortexScanCodec, VortexSource};
 
@@ -68,10 +69,10 @@ pub const CODEC_VERSION: u32 = 2;
 
 /// Wire format for [`MergeParquetExec`].
 ///
-/// Children are re-attached by the codec driver, so only merge-specific state
-/// is encoded. The config subset mirrors exactly what the merge operator reads
-/// at execution time (`files`, primary keys, merge operators, and the
-/// `options` map carrying the `is_compacted` / `skip_merge_on_read` flags).
+/// Children are re-attached by the codec driver. Work units retain their
+/// spans into those children, files, constants, and output lanes; primary keys,
+/// merge operators, and the `options` map carrying the `is_compacted` /
+/// `skip_merge_on_read` flags remain exec-wide.
 /// Object-store credentials are not part of the format; see the module docs.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MergeParquetExecProto {
@@ -81,16 +82,31 @@ pub struct MergeParquetExecProto {
     pub primary_keys: Vec<String>,
     #[prost(map = "string, string", tag = "3")]
     pub merge_operators: HashMap<String, String>,
-    #[prost(map = "string, string", tag = "4")]
-    pub default_column_value: HashMap<String, String>,
-    #[prost(string, repeated, tag = "5")]
-    pub files: Vec<String>,
+    #[prost(message, repeated, tag = "4")]
+    pub work_units: Vec<MergeWorkUnitProto>,
+    #[prost(uint64, tag = "5")]
+    pub partition_count: u64,
     #[prost(map = "string, string", tag = "6")]
     pub options: HashMap<String, String>,
     /// [`CODEC_VERSION`] of the encoder; appended rather than numbered first so
     /// the layout stays additively evolvable.
     #[prost(uint32, tag = "7")]
     pub codec_version: u32,
+}
+
+/// A merge work unit's child span and lane-local execution state.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MergeWorkUnitProto {
+    #[prost(uint64, tag = "1")]
+    pub input_start: u64,
+    #[prost(uint64, tag = "2")]
+    pub input_end: u64,
+    #[prost(string, repeated, tag = "3")]
+    pub files: Vec<String>,
+    #[prost(map = "string, string", tag = "4")]
+    pub default_column_value: HashMap<String, String>,
+    #[prost(uint64, tag = "5")]
+    pub lane: u64,
 }
 
 /// [`PhysicalExtensionCodec`] for LakeSoul execution plan nodes.
@@ -160,12 +176,18 @@ impl LakeSoulCodec {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
-            default_column_value: exec
-                .default_column_value()
+            work_units: exec
+                .work_units()
                 .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
+                .map(|unit| MergeWorkUnitProto {
+                    input_start: unit.input_range.start as u64,
+                    input_end: unit.input_range.end as u64,
+                    files: unit.files.clone(),
+                    default_column_value: unit.default_column_value.as_ref().clone(),
+                    lane: unit.lane as u64,
+                })
                 .collect(),
-            files: exec.io_config().files_slice().to_vec(),
+            partition_count: exec.output_partitioning().partition_count() as u64,
             options: exec
                 .io_config()
                 .options()
@@ -209,24 +231,45 @@ impl PhysicalExtensionCodec for LakeSoulCodec {
                 .try_into()?,
         );
 
-        let mut builder = LakeSoulIOConfigBuilder::new()
-            .with_files(proto.files.clone())
-            .with_primary_keys(proto.primary_keys.clone());
+        let mut builder =
+            LakeSoulIOConfigBuilder::new().with_primary_keys(proto.primary_keys.clone());
         for (key, value) in &proto.options {
             builder = builder.with_option(key, value);
         }
         for (field, op) in &proto.merge_operators {
             builder = builder.with_merge_op(field.clone(), op.clone());
         }
+        let decode_index = |value: u64, field: &str| {
+            usize::try_from(value).map_err(|_| {
+                DataFusionError::Internal(format!(
+                    "MergeParquetExecProto {field} exceeds this platform's index range"
+                ))
+            })
+        };
+        let partition_count = decode_index(proto.partition_count, "partition_count")?;
+        let work_units = proto
+            .work_units
+            .into_iter()
+            .map(|unit| {
+                Ok(MergeWorkUnit {
+                    input_range: decode_index(unit.input_start, "input_start")?
+                        ..decode_index(unit.input_end, "input_end")?,
+                    files: unit.files,
+                    default_column_value: Arc::new(unit.default_column_value),
+                    lane: decode_index(unit.lane, "lane")?,
+                })
+            })
+            .collect::<DFResult<Vec<_>>>()?;
 
         let exec = MergeParquetExec::from_parts(
             schema,
             Arc::new(proto.primary_keys),
-            Arc::new(proto.default_column_value.clone()),
-            Arc::new(proto.merge_operators.clone()),
+            Arc::new(proto.merge_operators),
             inputs.to_vec(),
             builder.build(),
-        );
+            work_units,
+            partition_count,
+        )?;
         Ok(Arc::new(exec))
     }
 
@@ -295,12 +338,28 @@ mod tests {
         LakeSoulFormatRegistry, PhysicalFormat, append_only_scan_exec,
     };
     fn merge_exec(inputs: Vec<Arc<dyn ExecutionPlan>>) -> MergeParquetExec {
+        let work_units = vec![MergeWorkUnit {
+            input_range: 0..inputs.len(),
+            files: vec!["s3://bucket/t/file-0.parquet".to_string()],
+            default_column_value: Arc::new(HashMap::from([(
+                "part".to_string(),
+                "p0".to_string(),
+            )])),
+            lane: 0,
+        }];
+        merge_exec_with_work_units(inputs, work_units, 1)
+    }
+
+    fn merge_exec_with_work_units(
+        inputs: Vec<Arc<dyn ExecutionPlan>>,
+        work_units: Vec<MergeWorkUnit>,
+        partition_count: usize,
+    ) -> MergeParquetExec {
         let schema: SchemaRef = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new("name", DataType::Utf8, true),
         ]));
         let io_config = LakeSoulIOConfigBuilder::new()
-            .with_files(vec!["s3://bucket/t/file-0.parquet"])
             .with_primary_keys(vec!["id".to_string()])
             .with_merge_op("name".to_string(), "UseLast".to_string())
             .with_option(OPTION_KEY_IS_COMPACTED.to_string(), "true".to_string())
@@ -308,11 +367,13 @@ mod tests {
         MergeParquetExec::from_parts(
             schema,
             Arc::new(vec!["id".to_string()]),
-            Arc::new(HashMap::from([("part".to_string(), "p0".to_string())])),
             Arc::new(HashMap::from([("name".to_string(), "UseLast".to_string())])),
             inputs,
             io_config,
+            work_units,
+            partition_count,
         )
+        .expect("valid merge work units")
     }
 
     fn parquet_input(path: &str) -> Arc<dyn ExecutionPlan> {
@@ -498,14 +559,21 @@ mod tests {
             Some("UseLast")
         );
         assert_eq!(
-            merge.default_column_value().get("part").map(String::as_str),
+            merge.work_units()[0]
+                .default_column_value
+                .get("part")
+                .map(String::as_str),
             Some("p0")
         );
         assert!(merge.io_config().is_compacted());
         assert_eq!(
-            merge.io_config().files_slice(),
+            merge.work_units()[0].files,
             ["s3://bucket/t/file-0.parquet"]
         );
+        assert_eq!(merge.work_units()[0].input_range, 0..1);
+        assert_eq!(merge.work_units()[0].lane, 0);
+        assert_eq!(merge.output_partitioning().partition_count(), 1);
+        assert!(merge.output_ordering().is_none());
         assert_eq!(merge.schema(), decoded.schema());
         assert_eq!(merge.children().len(), 1);
         assert_eq!(merge.children()[0].name(), "DataSourceExec");
@@ -520,6 +588,114 @@ mod tests {
         let decoded = roundtrip(Arc::new(exec)).unwrap();
         let merge = decoded.downcast_ref::<MergeParquetExec>().unwrap();
         assert_eq!(merge.children().len(), 2);
+    }
+
+    #[test]
+    fn merge_exec_multiple_work_units_and_lanes_roundtrip() {
+        let work_units = vec![
+            MergeWorkUnit {
+                input_range: 0..2,
+                files: vec![
+                    "s3://bucket/t/first-base.parquet".to_string(),
+                    "s3://bucket/t/first-delta.parquet".to_string(),
+                ],
+                default_column_value: Arc::new(HashMap::from([(
+                    "part".to_string(),
+                    "first".to_string(),
+                )])),
+                lane: 1,
+            },
+            MergeWorkUnit {
+                input_range: 2..3,
+                files: vec!["s3://bucket/t/second.parquet".to_string()],
+                default_column_value: Arc::new(HashMap::from([(
+                    "part".to_string(),
+                    "second".to_string(),
+                )])),
+                lane: 0,
+            },
+            MergeWorkUnit {
+                input_range: 3..4,
+                files: vec!["s3://bucket/t/third.parquet".to_string()],
+                default_column_value: Arc::new(HashMap::from([(
+                    "part".to_string(),
+                    "third".to_string(),
+                )])),
+                lane: 1,
+            },
+        ];
+        let exec = merge_exec_with_work_units(
+            vec![
+                parquet_input("s3://bucket/t/first-base.parquet"),
+                parquet_input("s3://bucket/t/first-delta.parquet"),
+                parquet_input("s3://bucket/t/second.parquet"),
+                parquet_input("s3://bucket/t/third.parquet"),
+            ],
+            work_units.clone(),
+            2,
+        );
+        let schema = exec.schema();
+        let decoded = roundtrip(Arc::new(exec)).unwrap();
+        let merge = decoded.downcast_ref::<MergeParquetExec>().unwrap();
+
+        assert_eq!(merge.work_units(), work_units.as_slice());
+        assert_eq!(merge.output_partitioning().partition_count(), 2);
+        assert!(merge.output_ordering().is_none());
+        assert_eq!(merge.schema(), schema);
+        assert_eq!(merge.children().len(), 4);
+        assert!(
+            merge
+                .children()
+                .iter()
+                .all(|child| child.name() == "DataSourceExec")
+        );
+        assert!(merge.io_config().is_compacted());
+    }
+
+    #[test]
+    fn decode_rejects_malformed_work_units_and_partition_counts() {
+        let inputs = vec![
+            parquet_input("s3://bucket/t/a.parquet"),
+            parquet_input("s3://bucket/t/b.parquet"),
+        ];
+        let valid = LakeSoulCodec::proto_from_merge_exec(&merge_exec(inputs.clone()));
+        let mut cases = Vec::new();
+
+        let mut proto = valid.clone();
+        proto.work_units[0].input_start = 1;
+        cases.push(("gap before first span", proto));
+        let mut proto = valid.clone();
+        proto.work_units[0].input_start = 2;
+        proto.work_units[0].input_end = 1;
+        cases.push(("reversed span", proto));
+        let mut proto = valid.clone();
+        proto.work_units[0].input_end = 3;
+        cases.push(("span past children", proto));
+        let mut proto = valid.clone();
+        proto.work_units[0].input_end = 1;
+        cases.push(("uncovered child", proto));
+        let mut proto = valid.clone();
+        proto.work_units.push(proto.work_units[0].clone());
+        cases.push(("overlapping spans", proto));
+        let mut proto = valid.clone();
+        proto.work_units.clear();
+        cases.push(("missing work units", proto));
+        let mut proto = valid.clone();
+        proto.partition_count = 0;
+        cases.push(("zero partition count", proto));
+        let mut proto = valid;
+        proto.work_units[0].lane = proto.partition_count;
+        cases.push(("lane outside partition count", proto));
+
+        for (case, proto) in cases {
+            let result = LakeSoulCodec.try_decode(
+                &proto.encode_to_vec(),
+                &inputs,
+                &TaskContext::default(),
+                &DefaultPhysicalProtoConverter {},
+            );
+            assert!(result.is_err(), "{case} must fail decoding");
+        }
     }
 
     #[test]
@@ -614,6 +790,12 @@ mod tests {
             .with_object_store_option("fs.s3a.endpoint", "https://s3.invalid:9000")
             .with_option(OPTION_KEY_IS_COMPACTED.to_string(), "true".to_string())
             .build();
+        let work_units = vec![MergeWorkUnit {
+            input_range: 0..0,
+            files: io_config.files_slice().to_vec(),
+            default_column_value: Arc::new(HashMap::new()),
+            lane: 0,
+        }];
         let exec = MergeParquetExec::from_parts(
             Arc::new(Schema::new(vec![
                 Field::new("id", DataType::Int32, false),
@@ -621,10 +803,12 @@ mod tests {
             ])),
             Arc::new(vec!["id".to_string()]),
             Arc::new(HashMap::new()),
-            Arc::new(HashMap::new()),
             vec![],
             io_config,
-        );
+            work_units,
+            1,
+        )
+        .expect("valid credential-omission fixture");
 
         let mut buf = Vec::new();
         LakeSoulCodec

@@ -51,7 +51,9 @@ pub trait CursorValues {
         self.len() == 0
     }
 
-    fn slice(&self, offset: usize, length: usize) -> Self;
+    fn slice(&self, offset: usize, length: usize) -> crate::Result<Self>
+    where
+        Self: Sized;
 }
 
 /// A comparable cursor, used by sort operations
@@ -163,7 +165,7 @@ pub struct RowValues {
 
     /// Tracks for the memory used by in the `Rows` of this
     /// cursor. Freed on drop
-    _reservation: MemoryReservation,
+    _reservation: Arc<MemoryReservation>,
 
     // for use in slice
     row_converter: Arc<RowConverter>,
@@ -189,7 +191,7 @@ impl RowValues {
         Self {
             rows: AtomicRefCell::new(rows),
             row_converter,
-            _reservation: reservation,
+            _reservation: Arc::new(reservation),
         }
     }
 }
@@ -212,29 +214,33 @@ impl CursorValues for RowValues {
         l.rows.borrow().row(l_idx).cmp(&r.rows.borrow().row(r_idx))
     }
 
-    fn slice(&self, offset: usize, length: usize) -> Self {
+    fn slice(&self, offset: usize, length: usize) -> crate::Result<Self> {
         if length == 1 {
             let borrowed = self.rows.borrow();
             let row = borrowed.row(offset);
             let mut new_rows = self.row_converter.empty_rows(1, row.data().len());
             new_rows.push(row);
             let rows_reservation = self._reservation.new_empty();
-            rows_reservation.try_grow(new_rows.size()).unwrap();
-            RowValues::new(new_rows, self.row_converter.clone(), rows_reservation)
+            rows_reservation.try_grow(new_rows.size())?;
+            Ok(RowValues::new(
+                new_rows,
+                self.row_converter.clone(),
+                rows_reservation,
+            ))
         } else {
+            let mut borrowed = self.rows.borrow_mut();
             let empty_rows = self.row_converter.empty_rows(1, 1);
-            unsafe {
-                let old_rows_ref = &mut *self.rows.as_ptr();
-                let old_rows = std::mem::replace(old_rows_ref, empty_rows);
-                let binary_array = old_rows.try_into_binary().unwrap();
-                let sliced = binary_array.slice(offset, length);
-                let new_rows = self.row_converter.from_binary(sliced);
-                let old_rows = self.row_converter.from_binary(binary_array);
-                let _ = std::mem::replace(old_rows_ref, old_rows);
-                let rows_reservation = self._reservation.new_empty();
-                rows_reservation.try_grow(new_rows.size()).unwrap();
-                RowValues::new(new_rows, self.row_converter.clone(), rows_reservation)
-            }
+            let old_rows = std::mem::replace(&mut *borrowed, empty_rows);
+            let binary_array = old_rows.try_into_binary().unwrap();
+            let new_rows = self
+                .row_converter
+                .from_binary(binary_array.slice(offset, length));
+            *borrowed = self.row_converter.from_binary(binary_array);
+            Ok(Self {
+                rows: AtomicRefCell::new(new_rows),
+                row_converter: self.row_converter.clone(),
+                _reservation: self._reservation.clone(),
+            })
         }
     }
 }
@@ -281,8 +287,8 @@ impl<T: ArrowNativeTypeOp> CursorValues for PrimitiveValues<T> {
         l.0[l_idx].compare(r.0[r_idx])
     }
 
-    fn slice(&self, offset: usize, length: usize) -> Self {
-        Self(self.0.slice(offset, length))
+    fn slice(&self, offset: usize, length: usize) -> crate::Result<Self> {
+        Ok(Self(self.0.slice(offset, length)))
     }
 }
 
@@ -321,11 +327,11 @@ impl<T: OffsetSizeTrait> CursorValues for ByteArrayValues<T> {
         l.value(l_idx).cmp(r.value(r_idx))
     }
 
-    fn slice(&self, offset: usize, length: usize) -> Self {
-        Self {
+    fn slice(&self, offset: usize, length: usize) -> crate::Result<Self> {
+        Ok(Self {
             offsets: self.offsets.slice(offset, length),
             values: self.values.clone(),
-        }
+        })
     }
 }
 
@@ -401,8 +407,8 @@ impl CursorValues for StringViewArray {
         unsafe { GenericByteViewArray::compare_unchecked(l, l_idx, r, r_idx) }
     }
 
-    fn slice(&self, offset: usize, length: usize) -> Self {
-        self.slice(offset, length)
+    fn slice(&self, offset: usize, length: usize) -> crate::Result<Self> {
+        Ok(self.slice(offset, length))
     }
 }
 
@@ -419,7 +425,7 @@ pub struct ArrayValues<T: CursorValues> {
 
     /// Tracks the memory used by the values array,
     /// freed on drop.
-    _reservation: MemoryReservation,
+    _reservation: Arc<MemoryReservation>,
 }
 
 impl<T: CursorValues> ArrayValues<T> {
@@ -442,7 +448,7 @@ impl<T: CursorValues> ArrayValues<T> {
             values: array.values(),
             null_threshold,
             options,
-            _reservation: reservation,
+            _reservation: Arc::new(reservation),
         }
     }
 
@@ -491,12 +497,50 @@ impl<T: CursorValues> CursorValues for ArrayValues<T> {
         }
     }
 
-    fn slice(&self, offset: usize, length: usize) -> Self {
-        Self {
-            values: self.values.slice(offset, length),
-            null_threshold: self.null_threshold,
+    fn slice(&self, offset: usize, length: usize) -> crate::Result<Self> {
+        Ok(Self {
+            values: self.values.slice(offset, length)?,
+            null_threshold: self.null_threshold.saturating_sub(offset).min(length),
             options: self.options,
-            _reservation: self._reservation.new_empty(),
-        }
+            _reservation: self._reservation.clone(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{ArrayRef, Int32Array};
+    use arrow::row::SortField;
+    use datafusion_common::DataFusionError;
+    use datafusion_execution::memory_pool::{
+        GreedyMemoryPool, MemoryConsumer, MemoryPool,
+    };
+
+    #[test]
+    fn merge_memory_row_slice_rejection_is_fallible() {
+        let converter =
+            Arc::new(RowConverter::new(vec![SortField::new(DataType::Int32)]).unwrap());
+        let arrays: Vec<ArrayRef> = vec![Arc::new(Int32Array::from(vec![1, 2, 3]))];
+        let rows = converter.convert_columns(&arrays).unwrap();
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(rows.size()));
+        let reservation = MemoryConsumer::new("row-slice").register(&pool);
+        reservation.try_grow(rows.size()).unwrap();
+        let values = RowValues::new(rows, converter, reservation);
+        let error = values
+            .slice(0, 1)
+            .err()
+            .expect("single-row copy must reserve memory");
+        assert!(matches!(
+            crate::stream::merge_memory::merge_error(error),
+            DataFusionError::ResourcesExhausted(_)
+        ));
+        let shared = values.slice(0, 2).unwrap();
+        let bytes = pool.reserved();
+        drop(values);
+        assert_eq!(pool.reserved(), bytes);
+        assert_eq!(shared.len(), 2);
+        drop(shared);
+        assert_eq!(pool.reserved(), 0);
     }
 }

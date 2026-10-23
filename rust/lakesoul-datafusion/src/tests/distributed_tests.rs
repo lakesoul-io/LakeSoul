@@ -32,7 +32,8 @@
 //!   (`test_remote_cdc_merge_with_non_key_filter`);
 //! - several hash buckets behind a composite primary key, with the same key
 //!   updated across three files, run with more and with fewer workers than
-//!   merge work units (`test_multi_bucket_composite_pk_merge_on_workers`);
+//!   range merges and with parallel local bucket lanes
+//!   (`test_multi_bucket_composite_pk_merge_on_workers`);
 //! - ordered Top-K / `LIMIT` / `OFFSET` over several merge work units,
 //!   compared in output order (the shared `assert_batches_eq` sorts rows,
 //!   which cannot catch a wrong global order)
@@ -211,7 +212,7 @@ fn distributed_factory(
     distributed_factory_with(client, worker_urls, WORKER_COUNT, fallback_to_local)
 }
 
-/// Like [`distributed_factory`], with an explicit stage task count.
+/// Like [`distributed_factory`], with an explicit task/partition target.
 fn distributed_factory_with(
     client: MetaDataClientRef,
     worker_urls: Vec<String>,
@@ -1289,19 +1290,20 @@ async fn assert_count(
     Ok(())
 }
 
-/// Asserts the distributed plan pins every merge work unit to a single task.
+/// Asserts every range-partition merge stays in a single distributed task.
 ///
 /// A merge split across `tasks=N` sees only a byte slice of every version
 /// file, so the same primary key's versions land in different tasks and the
 /// merge emits stale or duplicate rows. The task map of the distributed plan
 /// (`EXPLAIN ANALYZE`) is the observable surface of that contract:
 ///
-/// - With a `DistributedUnionExec` (several merge work units), every union
-///   task slot must reference a merge child with an inner task count of 1 —
-///   the planner displays multi-task allocations as `c0(0/2)` markers.
-/// - Without a union (single work unit), the stage containing the
-///   `MergeParquetExec` must run in one task, or the plan must execute
-///   entirely in the coordinator's head stage.
+/// - With a `DistributedUnionExec` (several range-partition merges), every
+///   union task slot must reference a merge child with an inner task count of
+///   1 — multi-task allocations are displayed as `c0(0/2)` markers.
+/// - Without a union (one range-partition merge), its stage must run in one
+///   task, or the plan must execute entirely in the coordinator's head stage.
+///
+/// The cap is on distributed tasks, not the merge's local output lanes.
 ///
 /// Only merge-on-read (primary-key) tables are covered: append-only tables
 /// distribute their scan legitimately.
@@ -1890,7 +1892,7 @@ fn split_scan_partitions(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
 }
 
 /// Asserts every merge-on-read input of `plan` is one stream sorted by
-/// `primary_key`.
+/// the complete `primary_keys` prefix.
 ///
 /// The k-way merge deduplicates a key only when its versions surface
 /// adjacently across its inputs: an input split into byte ranges fails the
@@ -1899,7 +1901,7 @@ fn split_scan_partitions(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
 /// yields stale and duplicate rows.
 fn assert_merge_inputs_are_sorted_streams(
     plan: &Arc<dyn ExecutionPlan>,
-    primary_key: &str,
+    primary_keys: &[&str],
     sql: &str,
 ) {
     let explain = display_plan_ascii(plan.as_ref(), false);
@@ -1910,17 +1912,26 @@ fn assert_merge_inputs_are_sorted_streams(
                 inputs += 1;
                 let properties = input.properties();
                 let partitions = properties.partitioning.partition_count();
-                let leading_key = properties.output_ordering().and_then(|ordering| {
+                let ordering_keys = properties.output_ordering().map(|ordering| {
                     ordering
-                        .first()
-                        .expr
-                        .downcast_ref::<Column>()
-                        .map(|column| column.name().to_string())
+                        .iter()
+                        .take(primary_keys.len())
+                        .map(|sort| {
+                            sort.expr
+                                .downcast_ref::<Column>()
+                                .map(|column| column.name())
+                        })
+                        .collect::<Vec<_>>()
                 });
                 assert!(
-                    partitions == 1 && leading_key.as_deref() == Some(primary_key),
-                    "{sql}: merge input {} must be one stream sorted by {primary_key}, \
-                     has {partitions} partition(s) led by {leading_key:?}:\n{explain}",
+                    partitions == 1
+                        && ordering_keys.as_ref().is_some_and(|keys| {
+                            keys.iter()
+                                .copied()
+                                .eq(primary_keys.iter().copied().map(Some))
+                        }),
+                    "{sql}: merge input {} must be one stream sorted by {primary_keys:?}, \
+                     has {partitions} partition(s) led by {ordering_keys:?}:\n{explain}",
                     input.name(),
                 );
             }
@@ -1929,6 +1940,66 @@ fn assert_merge_inputs_are_sorted_streams(
     })
     .expect("walking a physical plan cannot fail");
     assert!(inputs > 0, "{sql}: no merge input to check:\n{explain}");
+}
+
+/// Local output lanes share the target across range merges; they do not
+/// increase the distributed task count of an individual merge subtree.
+fn assert_merge_lane_layout(
+    plan: &Arc<dyn ExecutionPlan>,
+    merge_nodes: usize,
+    target_partitions: usize,
+    sql: &str,
+) -> (usize, usize) {
+    let explain = display_plan_ascii(plan.as_ref(), false);
+    let lane_budget = (target_partitions / merge_nodes).max(1);
+    let mut nodes = 0;
+    let mut units = 0;
+    let mut lanes = 0;
+    plan.apply(|node| {
+        if let Some(merge) = node.downcast_ref::<MergeParquetExec>() {
+            nodes += 1;
+            let work_units = merge.work_units();
+            assert!(!work_units.is_empty(), "{sql}: empty merge:\n{explain}");
+            let partitions = merge.properties().partitioning.partition_count();
+            assert_eq!(
+                partitions,
+                work_units.len().min(lane_budget),
+                "{sql}: unexpected local merge lane count:\n{explain}"
+            );
+            assert!(
+                merge.properties().output_ordering().is_none(),
+                "{sql}: independent buckets must not advertise global PK ordering:\n{explain}"
+            );
+            let mut populated_lanes = vec![false; partitions];
+            let mut input_end = 0;
+            for unit in work_units {
+                assert_eq!(unit.input_range.start, input_end, "{sql}:\n{explain}");
+                assert!(!unit.input_range.is_empty(), "{sql}:\n{explain}");
+                assert_eq!(
+                    unit.files.len(),
+                    unit.input_range.len(),
+                    "{sql}: work-unit files must stay aligned with inputs:\n{explain}"
+                );
+                assert!(
+                    unit.lane < partitions,
+                    "{sql}: work-unit lane out of bounds:\n{explain}"
+                );
+                populated_lanes[unit.lane] = true;
+                input_end = unit.input_range.end;
+            }
+            assert_eq!(input_end, merge.children().len(), "{sql}:\n{explain}");
+            assert!(
+                populated_lanes.into_iter().all(|populated| populated),
+                "{sql}: unassigned merge lane:\n{explain}"
+            );
+            units += work_units.len();
+            lanes += partitions;
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })
+    .expect("walking a physical plan cannot fail");
+    assert_eq!(nodes, merge_nodes, "{sql}:\n{explain}");
+    (units, lanes)
 }
 
 /// Filters on columns past the end of the scan's projection run on the
@@ -2519,17 +2590,22 @@ async fn test_merge_inputs_stay_sorted_streams_inner() -> Result<()> {
                 );
                 let plan = ctx.sql(sql).await?.create_physical_plan().await?;
                 assert_eq!(
-                    count_merge_work_units(&plan),
+                    count_merge_nodes(&plan),
                     2,
                     "{label}: one merge per range partition:\n{}",
                     display_plan_ascii(plan.as_ref(), false)
                 );
-                assert_merge_inputs_are_sorted_streams(&plan, "id", &label);
+                assert_eq!(
+                    assert_merge_lane_layout(&plan, 2, SPLIT_TARGET_PARTITIONS, &label),
+                    (2, 2),
+                    "{label}: each single-bucket range has one work unit and lane"
+                );
+                assert_merge_inputs_are_sorted_streams(&plan, &["id"], &label);
                 assert_input_distributions_hold(&plan, &label);
                 assert_stages_keep_input_requirements(&plan, &label);
-                // A plan kept on the coordinator runs each merge in its one
-                // task; forced splitting must distribute the plan, and a
-                // distributed plan must pin each merge to one task.
+                // The one-task cap is independent of local output lanes.
+                // Forced splitting must distribute the plan, while keeping
+                // every range's complete merge subtree in one task.
                 if bytes_per_partition.is_some() || plan.is::<DistributedExec>() {
                     assert_merge_units_pinned(&ctx, sql, 2).await?;
                 }
@@ -2549,9 +2625,9 @@ struct ShapeCase {
     sql: String,
     /// Whether the distributed planner must wrap the plan in `DistributedExec`.
     distributed: bool,
-    /// How many merge-on-read work units (`MergeParquetExec` nodes) the plan
-    /// must contain.
-    merge_units: usize,
+    /// How many range-partition merge nodes the plan must contain, not how
+    /// many bucket work units or local output lanes they hold.
+    merge_nodes: usize,
 }
 
 /// One fresh table per shape of the distribution matrix.
@@ -2670,25 +2746,25 @@ fn shape_matrix_cases(tables: &ShapeTables) -> Vec<ShapeCase> {
             shape: "append-only, no range partition",
             sql: group_by(&tables.flat_append),
             distributed: true,
-            merge_units: 0,
+            merge_nodes: 0,
         },
         ShapeCase {
             shape: "primary key, no range partition",
             sql: group_by(&tables.flat_pk),
             distributed: false,
-            merge_units: 1,
+            merge_nodes: 1,
         },
         ShapeCase {
             shape: "append-only, range partitioned",
             sql: group_by(&tables.partitioned_append),
             distributed: true,
-            merge_units: 0,
+            merge_nodes: 0,
         },
         ShapeCase {
             shape: "primary key, range partitioned",
             sql: group_by(&tables.partitioned_pk),
             distributed: true,
-            merge_units: 3,
+            merge_nodes: 3,
         },
         // A range predicate reaches `scan` for metadata pruning, so the
         // three work units collapse to the one with `part = 0` and the plan
@@ -2701,7 +2777,7 @@ fn shape_matrix_cases(tables: &ShapeTables) -> Vec<ShapeCase> {
                 tables.partitioned_pk
             ),
             distributed: false,
-            merge_units: 1,
+            merge_nodes: 1,
         },
         ShapeCase {
             shape: "primary key, range partitioned, range filter and value filter",
@@ -2710,28 +2786,28 @@ fn shape_matrix_cases(tables: &ShapeTables) -> Vec<ShapeCase> {
                 tables.partitioned_pk
             ),
             distributed: false,
-            merge_units: 1,
+            merge_nodes: 1,
         },
         ShapeCase {
             shape: "primary key, range partitioned, single populated partition",
             sql: group_by(&tables.single_partition_pk),
             distributed: false,
-            merge_units: 1,
+            merge_nodes: 1,
         },
         ShapeCase {
             shape: "primary key, empty table",
             sql: group_by(&tables.empty_pk),
             distributed: false,
-            merge_units: 0,
+            merge_nodes: 0,
         },
     ]
 }
 
-/// Counts merge-on-read work units in a physical plan.
+/// Counts range-partition merge nodes, not their bucket work units or lanes.
 ///
 /// Network boundaries expose the plan of their local stage as a child, so a
 /// single walk reaches the merge operators of distributed stages as well.
-fn count_merge_work_units(plan: &Arc<dyn ExecutionPlan>) -> usize {
+fn count_merge_nodes(plan: &Arc<dyn ExecutionPlan>) -> usize {
     let mut count = 0;
     plan.apply(|node| {
         if node.is::<MergeParquetExec>() {
@@ -2755,9 +2831,9 @@ async fn assert_plan_shape(ctx: &SessionContext, case: &ShapeCase) -> Result<()>
         case.shape, case.distributed,
     );
     assert_eq!(
-        count_merge_work_units(&plan),
-        case.merge_units,
-        "{}: unexpected merge work units\n{explain}",
+        count_merge_nodes(&plan),
+        case.merge_nodes,
+        "{}: unexpected range-partition merge nodes\n{explain}",
         case.shape,
     );
     Ok(())
@@ -2766,12 +2842,12 @@ async fn assert_plan_shape(ctx: &SessionContext, case: &ShapeCase) -> Result<()>
 /// Plans one query per LakeSoul table shape and pins whether the distributed
 /// planner distributes it, without executing anything.
 ///
-/// The shapes differ in the scan leaf they produce: an append-only work unit is
-/// a plain file scan the distributed planner splits over tasks, a primary-key
-/// work unit is a merge operator pinned to one task, and range partitions add
-/// a union of work units per partition value. The assertions are structural —
-/// `DistributedExec` or not, and how many merge work units the plan holds — so
-/// they do not depend on file names, stage ids or plan formatting.
+/// An append-only leaf is a plain file scan the planner splits over tasks.
+/// Each primary-key range instead has a merge subtree capped at one task,
+/// independently of its bucket work units and local output lanes. A union
+/// preserves distribution across ranges. The assertions are structural —
+/// `DistributedExec` or not, and how many range merge nodes the plan holds —
+/// so they do not depend on file names, stage ids or plan formatting.
 #[test]
 fn test_distribution_matrix_by_table_shape() {
     run_distributed_test(test_distribution_matrix_by_table_shape_inner());
@@ -3971,16 +4047,14 @@ async fn seed_bucketed_table(client: MetaDataClientRef) -> Result<String> {
 
 /// Several hash buckets behind a composite primary key, merged on the workers.
 ///
-/// The plain primary-key fixtures rely on the default single bucket, so their
-/// files carry one bucket each and a merge work unit is one bucket's files;
-/// `hash_bucket_num = 4` gives every range partition's merge work unit files
-/// from several buckets, and the same composite key `(k1, k2)` is updated
-/// across three files. The worker-side merge must read every bucket's files
-/// for the key and emit only the latest version, with no duplicate rows.
+/// Each range's merge contains one work unit per populated hash bucket.
+/// The same composite key `(k1, k2)` is updated across three files; its
+/// bucket-local merge must emit only the latest version, without duplicates.
+/// Every child remains a single stream sorted by the complete composite PK.
 ///
-/// The merge work units run with more workers than units (5 workers, 3 units)
-/// and with fewer (2 workers, 3 units): the unit count, not the worker count,
-/// is what must stay pinned to one task each.
+/// The three range merges run with more workers (5) and fewer workers (2).
+/// The first configuration permits two local lanes per merge; the second
+/// permits only one. Both must retain one distributed task per range merge.
 #[test]
 fn test_multi_bucket_composite_pk_merge_on_workers() {
     run_distributed_test(test_multi_bucket_composite_pk_merge_on_workers_inner());
@@ -4034,12 +4108,12 @@ async fn test_multi_bucket_composite_pk_merge_on_workers_inner() -> Result<()> {
         ),
     ];
 
-    // More workers than merge work units: five workers, three units.
+    // Five workers, three range merges, and a target allowing two local lanes.
     {
         let (worker_urls, receipts, mut workers) =
             spawn_workers_with_task_recording(5).await;
         let distributed =
-            distributed_factory_with(client.clone(), worker_urls, 5, false)?;
+            distributed_factory_with(client.clone(), worker_urls, 6, false)?;
         for (sql, expected, ordered) in &queries {
             assert_query_runs_on_workers(
                 &distributed,
@@ -4051,11 +4125,22 @@ async fn test_multi_bucket_composite_pk_merge_on_workers_inner() -> Result<()> {
             .await?;
         }
         let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+        let plan = ctx.sql(&queries[0].0).await?.create_physical_plan().await?;
+        let (units, lanes) = assert_merge_lane_layout(&plan, 3, 6, &queries[0].0);
+        assert!(
+            units > 3,
+            "the fixture must populate multiple bucket work units"
+        );
+        assert!(
+            lanes > 3,
+            "the target must permit parallel local bucket lanes"
+        );
+        assert_merge_inputs_are_sorted_streams(&plan, &["k1", "k2"], &queries[0].0);
         assert_merge_units_pinned(&ctx, &queries[0].0, 3).await?;
         workers.abort_all();
     }
 
-    // Fewer workers than merge work units: two workers, three units.
+    // Two workers, three range merges, and one local lane per range.
     {
         let (worker_urls, mut workers) = spawn_workers(2).await;
         let distributed =
@@ -4070,6 +4155,14 @@ async fn test_multi_bucket_composite_pk_merge_on_workers_inner() -> Result<()> {
             }
         }
         let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+        let plan = ctx.sql(&queries[0].0).await?.create_physical_plan().await?;
+        let (units, lanes) = assert_merge_lane_layout(&plan, 3, 2, &queries[0].0);
+        assert!(
+            units > 3,
+            "the fixture must populate multiple bucket work units"
+        );
+        assert_eq!(lanes, 3, "each range must keep one local lane");
+        assert_merge_inputs_are_sorted_streams(&plan, &["k1", "k2"], &queries[0].0);
         assert_merge_units_pinned(&ctx, &queries[0].0, 3).await?;
         workers.abort_all();
     }
@@ -4394,11 +4487,11 @@ fn sorted_rows(mut rows: Vec<(i32, i32, i32)>) -> Vec<(i32, i32, i32)> {
     rows
 }
 
-/// Plans `sql` on `ctx` and asserts it has exactly `merge_units` merge work
-/// units, none of which is split across distributed tasks
-/// (`assert_merge_work_units_pinned` on the `EXPLAIN ANALYZE` output), and
-/// that the planner distributed the plan at all: a coordinator-only plan
-/// would otherwise pass the pinning check vacuously.
+/// Plans `sql` on `ctx` and asserts it has exactly `merge_nodes` range merge
+/// subtrees, none split across distributed tasks, regardless of their local
+/// output lane counts (`assert_merge_work_units_pinned` on `EXPLAIN ANALYZE`).
+/// The plan must be distributed: a coordinator-only plan would otherwise pass
+/// the task-pinning check vacuously.
 ///
 /// The `EXPLAIN ANALYZE` text must show the merge operators; if a formatting
 /// change ever drops them, the check must fail loudly instead of passing
@@ -4406,7 +4499,7 @@ fn sorted_rows(mut rows: Vec<(i32, i32, i32)>) -> Vec<(i32, i32, i32)> {
 async fn assert_merge_units_pinned(
     ctx: &SessionContext,
     sql: &str,
-    merge_units: usize,
+    merge_nodes: usize,
 ) -> Result<()> {
     let plan = ctx.sql(sql).await?.create_physical_plan().await?;
     let explain = display_plan_ascii(plan.as_ref(), false);
@@ -4415,9 +4508,9 @@ async fn assert_merge_units_pinned(
         "the plan must have distributed stages:\n{explain}"
     );
     assert_eq!(
-        count_merge_work_units(&plan),
-        merge_units,
-        "unexpected merge work units for {sql}:\n{explain}"
+        count_merge_nodes(&plan),
+        merge_nodes,
+        "unexpected range-partition merge nodes for {sql}:\n{explain}"
     );
     let batches =
         collect_within_timeout(ctx, &format!("EXPLAIN ANALYZE {sql}"), EXECUTION_TIMEOUT)

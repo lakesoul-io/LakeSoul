@@ -5,9 +5,11 @@
 //! Implementation of the merge on read execution plan.
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::Arc;
 
 use arrow_schema::{Schema, SchemaRef, SortOptions};
+use async_stream::try_stream;
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::dataframe::DataFrame;
 use datafusion::datasource::physical_plan::FileScanConfigBuilder;
@@ -18,6 +20,7 @@ use datafusion::physical_expr::{
     EquivalenceProperties, LexOrdering, PhysicalExpr, PhysicalSortExpr,
 };
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{ExecutionPlanProperties, Partitioning, PlanProperties};
 use datafusion::prelude::SessionContext;
 use datafusion::{
@@ -30,7 +33,7 @@ use datafusion::{
 use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_common::{DFSchemaRef, DataFusionError, Result as DFResult};
 use datafusion_substrait::substrait::proto::Plan;
-use rootcause::compat::boxed_error::IntoBoxedError;
+use futures::StreamExt;
 
 use self::sorted::merge_operator::MergeOperator;
 use self::sorted::sorted_stream_merger::{SortedStream, build_sorted_stream_merger};
@@ -90,6 +93,15 @@ fn primary_key_ordering(
     )
 }
 
+/// One atomic MOR merge. Child order is file/version order within this unit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeWorkUnit {
+    pub input_range: Range<usize>,
+    pub files: Vec<String>,
+    pub default_column_value: Arc<HashMap<String, String>>,
+    pub lane: usize,
+}
+
 /// [`ExecutionPlan`] implementation for the merge on read operation.
 #[derive(Debug)]
 pub struct MergeParquetExec {
@@ -97,14 +109,14 @@ pub struct MergeParquetExec {
     merged_schema: SchemaRef,
     /// The primary keys of the merge on read operation, which is the sorted columns.
     primary_keys: Arc<Vec<String>>,
-    /// The default column value of the merge on read operation, which is the default value for the partition columns.
-    default_column_value: Arc<HashMap<String, String>>,
     /// The merge operators of the merge on read operation.
     merge_operators: Arc<HashMap<String, String>>,
     /// The input execution plans of the merge on read operation.
     inputs: Vec<Arc<dyn ExecutionPlan>>,
     /// The io config of the merge on read operation.
     io_config: LakeSoulIOConfig, // try use arc
+    /// Atomic bucket merges, assigned to bounded, sequential execution lanes.
+    work_units: Vec<MergeWorkUnit>,
     /// The properties of the merge on read operation.
     properties: Arc<PlanProperties>,
 }
@@ -153,48 +165,12 @@ impl MergeParquetExec {
         flatten_configs: Vec<FileScanConfig>,
         io_config: LakeSoulIOConfig,
     ) -> Result<Self> {
-        // source file parquet scan
-        let mut inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
-        for (i, config) in flatten_configs.into_iter().enumerate() {
-            debug!("flatten_configs[{i}]:{:?}", config);
-            inputs.push(merge_input_scan(config, io_config.primary_keys.as_slice()));
-        }
-        // Compute Nullability
-        // O(nml), n = number of schema fields, m = number of file schema fields, l = number of files
-        //
-        // The default-column values are constants injected by this plan, so a
-        // field missing from every input file does not make it nullable (the
-        // same rule `new_with_inputs` applies to partition columns).
-        let partition_columns: Vec<String> =
-            io_config.default_column_value.keys().cloned().collect();
-        let merged_schema = Self::merged_schema_with_input_nullability(
-            merged_schema,
-            &inputs,
-            &partition_columns,
-            io_config.primary_keys_slice(),
-        );
-
-        let config = io_config.clone();
-        let primary_keys = Arc::new(io_config.primary_keys);
-        let default_column_value = Arc::new(io_config.default_column_value);
-        debug!("default_column_values:{:?}", default_column_value);
-        let merge_operators: Arc<HashMap<String, String>> =
-            Arc::new(io_config.merge_operators);
-
-        Ok(Self {
-            merged_schema: merged_schema.clone(),
-            inputs,
-            primary_keys,
-            default_column_value,
-            merge_operators,
-            io_config: config,
-            properties: Arc::new(PlanProperties::new(
-                EquivalenceProperties::new(merged_schema),
-                Partitioning::UnknownPartitioning(1),
-                EmissionType::Incremental,
-                Boundedness::Bounded,
-            )),
-        })
+        let inputs = flatten_configs
+            .into_iter()
+            .map(|config| merge_input_scan(config, io_config.primary_keys_slice()))
+            .collect();
+        let defaults = Arc::new(io_config.default_column_value.clone());
+        Self::new_with_inputs(merged_schema, inputs, io_config, defaults)
     }
 
     pub fn new_with_inputs(
@@ -203,36 +179,42 @@ impl MergeParquetExec {
         io_config: LakeSoulIOConfig,
         default_column_value: Arc<HashMap<String, String>>,
     ) -> Result<Self> {
-        info!(
-            "MergeParquetExec::new_with_inputs: {:?}, {:?}, {:?}",
-            schema, io_config, default_column_value
-        );
-        let partition_columns: Vec<String> =
-            default_column_value.keys().cloned().collect();
+        let work_units = vec![MergeWorkUnit {
+            input_range: 0..inputs.len(),
+            files: io_config.files_slice().to_vec(),
+            default_column_value,
+            lane: 0,
+        }];
+        Self::new_with_work_units(schema, inputs, io_config, work_units, 1)
+    }
+
+    /// Build bucket-local merges sharing one schema and a bounded set of lanes.
+    pub fn new_with_work_units(
+        schema: SchemaRef,
+        inputs: Vec<Arc<dyn ExecutionPlan>>,
+        io_config: LakeSoulIOConfig,
+        work_units: Vec<MergeWorkUnit>,
+        partition_count: usize,
+    ) -> Result<Self> {
+        let partition_columns: Vec<String> = work_units
+            .iter()
+            .flat_map(|unit| unit.default_column_value.keys().cloned())
+            .collect();
         let schema = Self::merged_schema_with_input_nullability(
             schema,
             &inputs,
             &partition_columns,
             io_config.primary_keys_slice(),
         );
-        let config = io_config.clone();
-        let primary_keys = Arc::new(io_config.primary_keys);
-        let merge_operators = Arc::new(io_config.merge_operators);
-
-        Ok(Self {
-            merged_schema: schema.clone(),
+        Ok(Self::from_parts(
+            schema,
+            Arc::new(io_config.primary_keys.clone()),
+            Arc::new(io_config.merge_operators.clone()),
             inputs,
-            primary_keys,
-            default_column_value,
-            merge_operators,
-            io_config: config,
-            properties: Arc::new(PlanProperties::new(
-                EquivalenceProperties::new(schema),
-                Partitioning::UnknownPartitioning(1),
-                EmissionType::Incremental,
-                Boundedness::Bounded,
-            )),
-        })
+            io_config,
+            work_units,
+            partition_count,
+        )?)
     }
     /// Rebuild a [`MergeParquetExec`] from its encoded parts.
     ///
@@ -243,26 +225,51 @@ impl MergeParquetExec {
     pub fn from_parts(
         merged_schema: SchemaRef,
         primary_keys: Arc<Vec<String>>,
-        default_column_value: Arc<HashMap<String, String>>,
         merge_operators: Arc<HashMap<String, String>>,
         inputs: Vec<Arc<dyn ExecutionPlan>>,
         io_config: LakeSoulIOConfig,
-    ) -> Self {
+        work_units: Vec<MergeWorkUnit>,
+        partition_count: usize,
+    ) -> DFResult<Self> {
+        if partition_count == 0 || work_units.is_empty() {
+            return Err(DataFusionError::Internal(
+                "MergeParquetExec requires at least one lane and work unit".into(),
+            ));
+        }
+        let mut end = 0;
+        for unit in &work_units {
+            if unit.input_range.start != end
+                || unit.input_range.end < end
+                || unit.input_range.end > inputs.len()
+                || unit.lane >= partition_count
+            {
+                return Err(DataFusionError::Internal(
+                    "MergeParquetExec has invalid work-unit spans or lane assignment"
+                        .into(),
+                ));
+            }
+            end = unit.input_range.end;
+        }
+        if end != inputs.len() {
+            return Err(DataFusionError::Internal(
+                "MergeParquetExec work units do not cover all children".into(),
+            ));
+        }
         let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&merged_schema)),
-            Partitioning::UnknownPartitioning(1),
+            Partitioning::UnknownPartitioning(partition_count),
             EmissionType::Incremental,
             Boundedness::Bounded,
         ));
-        Self {
+        Ok(Self {
             merged_schema,
             primary_keys,
-            default_column_value,
             merge_operators,
             inputs,
             io_config,
+            work_units,
             properties,
-        }
+        })
     }
 
     /// The IO configuration backing this merge (files, options, merge flags).
@@ -279,8 +286,8 @@ impl MergeParquetExec {
         self.primary_keys.clone()
     }
 
-    pub fn default_column_value(&self) -> Arc<HashMap<String, String>> {
-        self.default_column_value.clone()
+    pub fn work_units(&self) -> &[MergeWorkUnit] {
+        &self.work_units
     }
 
     pub fn merge_operators(&self) -> Arc<HashMap<String, String>> {
@@ -294,7 +301,12 @@ impl DisplayAs for MergeParquetExec {
         _t: DisplayFormatType,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
-        write!(f, "MergeParquetExec")
+        write!(
+            f,
+            "MergeParquetExec: lanes={}, units={}",
+            self.output_partitioning().partition_count(),
+            self.work_units.len()
+        )
     }
 }
 
@@ -348,13 +360,18 @@ impl ExecutionPlan for MergeParquetExec {
         self: Arc<Self>,
         inputs: Vec<Arc<dyn ExecutionPlan>>,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        if inputs.len() != self.inputs.len() {
+            return Err(DataFusionError::Internal(
+                "MergeParquetExec child replacement must preserve work-unit spans".into(),
+            ));
+        }
         Ok(Arc::new(Self {
             merged_schema: self.schema(),
             inputs,
             primary_keys: self.primary_keys(),
-            default_column_value: self.default_column_value(),
             merge_operators: self.merge_operators(),
             io_config: self.io_config.clone(),
+            work_units: self.work_units.clone(),
             properties: self.properties.clone(),
         }))
     }
@@ -364,110 +381,89 @@ impl ExecutionPlan for MergeParquetExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
-        let span = info_span!(
-            "merge_parquet_execute",
-            partition,
-            input_count = self.inputs.len(),
-            primary_key_count = self.primary_keys.len(),
-            file_format = tracing::field::Empty,
-            outcome = tracing::field::Empty,
-            output_batches = tracing::field::Empty,
-            output_rows = tracing::field::Empty,
-            error = tracing::field::Empty,
-        );
-        let entered = span.enter();
-
-        if partition != 0 {
+        let partition_count = self.output_partitioning().partition_count();
+        if partition >= partition_count {
             return Err(DataFusionError::Internal(format!(
-                "Invalid requested partition {partition}. InsertExec requires a single input partition."
+                "Invalid merge lane {partition}; expected fewer than {partition_count}"
             )));
         }
-
-        let mut work_unit_format = None;
-        let mut mixed_formats = false;
-        let mut stream_init_futs = Vec::with_capacity(self.inputs.len());
-        for i in 0..self.inputs.len() {
-            debug!("inputs[{i}]: {} -> stream", self.inputs[i].name());
-            let input = &self.inputs[i];
-            let input_partition_count = input.output_partitioning().partition_count();
-            if input_partition_count != 1 {
-                return Err(DataFusionError::Internal(format!(
-                    "Invalid input partition count {input_partition_count}. \
-                                InsertExec needs only a single partition."
-                )));
-            }
-            let stream = input.execute(partition, context.clone())?;
-            debug!(
-                input_index = i,
-                input_plan = input.name(),
-                schema = %stream.schema(),
-                "created merge input stream"
-            );
-            // The merge reads whatever physical format the table is stored
-            // in, so without a span of its own a vortex scan is
-            // indistinguishable from a parquet one inside the merge.
-            match input_files(input) {
-                Some(files) => {
-                    match work_unit_format {
-                        None => work_unit_format = Some(files.format),
-                        Some(format) if format.name() != files.format.name() => {
-                            mixed_formats = true;
-                        }
-                        Some(_) => {}
+        let schema = self.schema();
+        let inputs = self.inputs.clone();
+        let units: Vec<_> = self
+            .work_units
+            .iter()
+            .filter(|unit| unit.lane == partition)
+            .cloned()
+            .collect();
+        let primary_keys = self.primary_keys();
+        let merge_operators = self.merge_operators();
+        let io_config = self.io_config.clone();
+        let merged_schema = schema.clone();
+        let stream = try_stream! {
+            for unit in units {
+                // No child of a later unit is executed until this merged stream
+                // has been exhausted and dropped, including its retained buffers.
+                let mut streams = Vec::with_capacity(unit.input_range.len());
+                for input in &inputs[unit.input_range.clone()] {
+                    let input_partition_count = input.output_partitioning().partition_count();
+                    if input_partition_count != 1 {
+                        Err(DataFusionError::Internal(format!(
+                            "Merge input requires one partition, got {input_partition_count}"
+                        )))?;
                     }
-                    stream_init_futs.push(instrument_record_batch_stream(
-                        stream,
-                        info_span!(
+                    let stream = input.execute(0, context.clone())?;
+                    streams.push(match input_files(input) {
+                        Some(files) => instrument_record_batch_stream(
+                            stream,
+                            info_span!(
+                                "file_scan",
+                                file = files.first,
+                                file_format = files.format.name(),
+                                file_count = files.count,
+                                outcome = tracing::field::Empty,
+                                output_batches = tracing::field::Empty,
+                                output_rows = tracing::field::Empty,
+                                error = tracing::field::Empty,
+                            ),
                             "file_scan",
-                            file = files.first,
-                            file_format = files.format.name(),
-                            file_count = files.count,
-                            outcome = tracing::field::Empty,
-                            output_batches = tracing::field::Empty,
-                            output_rows = tracing::field::Empty,
-                            error = tracing::field::Empty,
                         ),
-                        "file_scan",
-                    ));
+                        None => stream,
+                    });
                 }
-                None => stream_init_futs.push(stream),
+                let reservation = MemoryConsumer::new(format!("LakeSoulMerge[{partition}]"))
+                    .with_can_spill(false)
+                    .register(&context.runtime_env().memory_pool);
+                let mut config = io_config.clone();
+                config.set_files(unit.files);
+                let mut merged = merge_stream(
+                    streams,
+                    merged_schema.clone(),
+                    primary_keys.clone(),
+                    unit.default_column_value,
+                    merge_operators.clone(),
+                    context.session_config().batch_size(),
+                    config,
+                    reservation,
+                ).map_err(crate::stream::merge_memory::merge_error)?;
+                while let Some(batch) = merged.next().await {
+                    yield batch?;
+                }
+                drop(merged);
             }
-        }
-
-        if let Some(format) = work_unit_format {
-            span.record(
-                "file_format",
-                if mixed_formats {
-                    "mixed"
-                } else {
-                    format.name()
-                },
-            );
-        }
-
-        let reservation = MemoryConsumer::new(format!("LakeSoulMerge[{partition}]"))
-            .with_can_spill(true) // TODO:(jiax): check this
-            .register(&context.runtime_env().memory_pool);
-
-        let merged_stream = merge_stream(
-            stream_init_futs,
-            self.schema(),
-            self.primary_keys(),
-            self.default_column_value(),
-            self.merge_operators(),
-            context.session_config().batch_size(),
-            self.io_config.clone(),
-            reservation,
-        )
-        .map_err(|e| {
-            error!("{e}");
-            e.into_boxed_error()
-        })?;
-
-        drop(entered);
+        };
         Ok(instrument_record_batch_stream(
-            merged_stream,
-            span,
+            Box::pin(RecordBatchStreamAdapter::new(schema, stream)),
+            info_span!(
+                "merge_parquet_execute",
+                partition,
+                input_count = self.inputs.len(),
+                unit_count = self.work_units.len(),
+                primary_key_count = self.primary_keys.len(),
+                outcome = tracing::field::Empty,
+                output_batches = tracing::field::Empty,
+                output_rows = tracing::field::Empty,
+                error = tracing::field::Empty,
+            ),
             "merge_parquet",
         ))
     }

@@ -253,6 +253,7 @@ mod tests {
     use lakesoul_io::config::LakeSoulIOConfigBuilder;
     use lakesoul_io::file_format::LakeSoulFormatRegistry;
     use lakesoul_io::physical_plan::MergeParquetExec;
+    use lakesoul_io::physical_plan::merge::MergeWorkUnit;
 
     use super::*;
 
@@ -402,14 +403,24 @@ mod tests {
             .with_primary_keys(vec!["v".to_string()])
             .with_merge_op("v".to_string(), "UseLast".to_string())
             .build();
-        Arc::new(MergeParquetExec::from_parts(
-            schema,
-            Arc::new(vec!["v".to_string()]),
-            Arc::new(HashMap::new()),
-            Arc::new(HashMap::new()),
-            inputs,
-            io_config,
-        ))
+        let work_units = vec![MergeWorkUnit {
+            input_range: 0..inputs.len(),
+            files: io_config.files_slice().to_vec(),
+            default_column_value: Arc::new(HashMap::new()),
+            lane: 0,
+        }];
+        Arc::new(
+            MergeParquetExec::from_parts(
+                schema,
+                Arc::new(vec!["v".to_string()]),
+                Arc::new(HashMap::new()),
+                inputs,
+                io_config,
+                work_units,
+                1,
+            )
+            .expect("valid single merge work unit"),
+        )
     }
 
     /// A worker stage over `plan`: a hash `RepartitionExec` below a real

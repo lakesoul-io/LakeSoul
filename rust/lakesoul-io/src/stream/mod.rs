@@ -39,6 +39,7 @@ use crate::physical_plan::merge::sorted::cursor::{ArrayValues, CursorArray, RowV
 
 pub mod default_column;
 pub mod empty_schema;
+pub(crate) mod merge_memory;
 
 #[allow(dead_code)]
 mod projection;
@@ -131,11 +132,7 @@ impl Stream for RowCursorStream {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         Poll::Ready(ready!(self.stream.poll_next(cx)).map(|r| {
-            r.map_err(|e| {
-                error!("{}", e);
-                report!("{}", e)
-            })
-            .and_then(|batch| {
+            r.map_err(rootcause::Report::from).and_then(|batch| {
                 let cursor = self.convert_batch(&batch)?;
                 Ok((cursor, batch))
             })
@@ -151,6 +148,7 @@ pub struct FieldCursorStream<T: CursorArray> {
     stream: FusedStream,
     /// Create new reservations for each array
     reservation: MemoryReservation,
+    buffer_ledger: Option<merge_memory::MergeMemory>,
     phantom: PhantomData<fn(T) -> T>,
 }
 
@@ -170,18 +168,33 @@ impl<T: CursorArray> FieldCursorStream<T> {
             sort,
             stream: FusedStream(stream.fuse()),
             reservation,
+            buffer_ledger: None,
             phantom: Default::default(),
         }
+    }
+
+    pub(crate) fn with_buffer_ledger(
+        mut self,
+        ledger: merge_memory::MergeMemory,
+    ) -> Self {
+        self.buffer_ledger = Some(ledger);
+        self
     }
 
     fn convert_batch(&mut self, batch: &RecordBatch) -> Result<ArrayValues<T::Values>> {
         let value = self.sort.expr.evaluate(batch)?;
         let array = value.into_array(batch.num_rows())?;
+        let array = match &self.buffer_ledger {
+            Some(ledger) => ledger.track_array(&array)?,
+            None => array,
+        };
 
         if let Some(array) = array.as_any().downcast_ref::<T>() {
             let size_in_mem = array.get_buffer_memory_size();
             let array_reservation = self.reservation.new_empty();
-            array_reservation.try_grow(size_in_mem)?;
+            if self.buffer_ledger.is_none() {
+                array_reservation.try_grow(size_in_mem)?;
+            }
             return Ok(ArrayValues::new(
                 self.sort.options,
                 array,
@@ -231,11 +244,7 @@ impl<T: CursorArray> Stream for FieldCursorStream<T> {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         Poll::Ready(ready!(self.stream.poll_next(cx)).map(|r| {
-            r.map_err(|e| {
-                error!("{e}");
-                report!("{e}")
-            })
-            .and_then(|batch| {
+            r.map_err(rootcause::Report::from).and_then(|batch| {
                 let cursor = self.convert_batch(&batch)?;
                 Ok((cursor, batch))
             })

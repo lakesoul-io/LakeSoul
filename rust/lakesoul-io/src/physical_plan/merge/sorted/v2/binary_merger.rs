@@ -10,6 +10,7 @@ use crate::physical_plan::merge::sorted::v2::batch_range::{
 use crate::physical_plan::merge::sorted::v2::record_batch_builder::{
     ColumnMapping, build_record_batch_from_pk_groups,
 };
+use crate::stream::merge_memory::{MergeMemory, send_batch};
 use arrow::record_batch::RecordBatch;
 use arrow_schema::SchemaRef;
 use smallvec::smallvec;
@@ -24,6 +25,7 @@ pub struct BinaryMerger<'a, C: CursorValues> {
     target_batch_size: usize,
     remaining_rows_threshold: usize,
     column_mapping: Arc<ColumnMapping>,
+    buffer_ledger: Option<MergeMemory>,
 }
 
 impl<'a, C: CursorValues> BinaryMerger<'a, C> {
@@ -43,7 +45,13 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
             schema,
             remaining_rows_threshold,
             column_mapping,
+            buffer_ledger: None,
         }
+    }
+
+    pub(crate) fn with_buffer_ledger(mut self, ledger: Option<MergeMemory>) -> Self {
+        self.buffer_ledger = ledger;
+        self
     }
 
     pub async fn merge(&mut self, tx: &Sender<Result<RecordBatch>>) -> Result<()> {
@@ -144,7 +152,7 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
 
             let range = &mut self.ranges[range_idx];
             let batch = range.slice_remaining_and_advance();
-            tx.send(Ok(batch)).await?;
+            send_batch(tx, batch, self.buffer_ledger.as_ref()).await?;
         }
         Ok(())
     }
@@ -162,7 +170,7 @@ impl<'a, C: CursorValues> BinaryMerger<'a, C> {
             &self.column_mapping,
         )?;
         self.pk_groups.clear();
-        tx.send(Ok(batch)).await?;
+        send_batch(tx, batch, self.buffer_ledger.as_ref()).await?;
         Ok(())
     }
 }

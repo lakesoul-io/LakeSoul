@@ -14,6 +14,7 @@ use crate::physical_plan::merge::sorted::v2::binary_merger::BinaryMerger;
 use crate::physical_plan::merge::sorted::v2::deduplicate::DeduplicateStream;
 use crate::physical_plan::merge::sorted::v2::loser_tree_merger::LoserTreeRangeMerge;
 use crate::physical_plan::merge::sorted::v2::record_batch_builder::ColumnMapping;
+use crate::stream::merge_memory::{MergeMemory, merge_error, send_batch};
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use datafusion_common::DataFusionError;
@@ -22,7 +23,6 @@ use futures::stream::{FuturesUnordered, Peekable};
 use futures::{Stream, StreamExt};
 use itertools::Itertools;
 use nohash::BuildNoHashHasher;
-use rootcause::compat::boxed_error::IntoBoxedError;
 use rootcause::{Report, report};
 use std::collections::HashMap;
 use std::future;
@@ -57,6 +57,7 @@ pub struct WindowSlidingMerger<C: CursorValues> {
     ranges: HashMap<usize, BatchRange<C>, BuildNoHashHasher<usize>>,
 
     column_mapping: Arc<ColumnMapping>,
+    buffer_ledger: Option<MergeMemory>,
 }
 
 impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
@@ -118,7 +119,13 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 BuildNoHashHasher::default(),
             ),
             column_mapping,
+            buffer_ledger: None,
         })
+    }
+
+    pub(crate) fn with_buffer_ledger(mut self, ledger: MergeMemory) -> Self {
+        self.buffer_ledger = Some(ledger);
+        self
     }
 
     // Algorithm to merge current batches in `self.ranges`:
@@ -145,7 +152,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
         if self.ranges.len() == 1 {
             let range = self.ranges.values_mut().next().unwrap();
             let batch = range.slice_remaining_and_advance();
-            tx.send(Ok(batch)).await?;
+            send_batch(tx, batch, self.buffer_ledger.as_ref()).await?;
             return Ok(());
         }
         // Step 1. Find the range with the smallest first-row value, as r_star
@@ -189,7 +196,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
         if overlap_ranges.len() == 1 {
             let range = self.ranges.get_mut(&overlap_ranges.pop().unwrap()).unwrap();
             let batch = range.slice_remaining_and_advance();
-            tx.send(Ok(batch)).await?;
+            send_batch(tx, batch, self.buffer_ledger.as_ref()).await?;
             return Ok(());
         }
         // Step 3. Find the minimum value of r.max in `overlap_ranges`, as `window_end`
@@ -254,7 +261,8 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 self.target_batch_size,
                 self.schema.clone(),
                 self.column_mapping.clone(),
-            );
+            )
+            .with_buffer_ledger(self.buffer_ledger.clone());
             merger.merge(tx).await?;
         } else {
             let mut merger = LoserTreeRangeMerge::new(
@@ -262,7 +270,8 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
                 new_overlap_ranges,
                 self.target_batch_size,
                 self.column_mapping.clone(),
-            );
+            )
+            .with_buffer_ledger(self.buffer_ledger.clone());
             merger.merge(tx).await?;
         }
         Ok(())
@@ -273,8 +282,8 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
     pub fn build_merged_stream(mut self) -> Result<SendableRecordBatchStream> {
         let (tx, rx) = mpsc::channel(10);
         let schema = self.schema.clone();
-        // ignore JoinHandle, as when caller needs to cancel, it could just drop the receiver
-        tokio::spawn(async move {
+        // Abort pending input pulls too when LIMIT/cancellation drops the receiver.
+        let task = tokio::spawn(async move {
             let stream_num = self.num_streams;
             Self::handle_error(self.pull_all_from_streams(0..stream_num).await, &tx)
                 .await?;
@@ -308,6 +317,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
         Ok(Box::pin(MergedStream {
             stream: ReceiverStream::new(rx),
             schema,
+            task,
         }))
     }
 
@@ -360,7 +370,7 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
         if let Err(e) = result {
             if !tx.is_closed() {
                 let msg = format!("{}", e);
-                tx.send(Err(report!(e).into())).await?;
+                tx.send(Err(e)).await?;
                 return Err(report!(msg).into());
             } else {
                 return Err(e);
@@ -373,6 +383,13 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
 struct MergedStream {
     stream: ReceiverStream<Result<RecordBatch>>,
     schema: SchemaRef,
+    task: tokio::task::JoinHandle<Result<()>>,
+}
+
+impl Drop for MergedStream {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 impl Stream for MergedStream {
@@ -384,9 +401,7 @@ impl Stream for MergedStream {
     ) -> Poll<Option<Self::Item>> {
         let p = self.stream.poll_next_unpin(cx);
         match p {
-            Poll::Ready(Some(batch)) => Poll::Ready(Some(
-                batch.map_err(|e| DataFusionError::External(e.into_boxed_error())),
-            )),
+            Poll::Ready(Some(batch)) => Poll::Ready(Some(batch.map_err(merge_error))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }

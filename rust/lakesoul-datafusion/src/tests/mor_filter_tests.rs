@@ -72,8 +72,8 @@ fn batch(parts: &[i32], ids: &[i32], values: &[i32]) -> RecordBatch {
     .unwrap()
 }
 
-/// Counts the merge-on-read work units of a plan.
-fn merge_work_units(plan: &Arc<dyn ExecutionPlan>) -> usize {
+/// Counts range-partition merge nodes, not bucket work units or local lanes.
+fn merge_nodes(plan: &Arc<dyn ExecutionPlan>) -> usize {
     let mut count = 0;
     plan.apply(|node| {
         if node.is::<MergeParquetExec>() {
@@ -233,7 +233,7 @@ async fn test_non_key_filters_stay_above_merge_inner() -> Result<()> {
             "{label}: {stale}"
         );
         let stale_plan = plan_of(&ctx, &stale).await;
-        assert_eq!(merge_work_units(&stale_plan), 2, "{label}: {stale}");
+        assert_eq!(merge_nodes(&stale_plan), 2, "{label}: {stale}");
         assert!(has_filter_exec(&stale_plan), "{label}: {stale}");
         assert!(
             leaf_filters(&stale_plan)
@@ -267,11 +267,7 @@ async fn test_non_key_filters_stay_above_merge_inner() -> Result<()> {
             "{label}: {conjunction}"
         );
         let conjunction_plan = plan_of(&ctx, &conjunction).await;
-        assert_eq!(
-            merge_work_units(&conjunction_plan),
-            1,
-            "{label}: {conjunction}"
-        );
+        assert_eq!(merge_nodes(&conjunction_plan), 1, "{label}: {conjunction}");
         assert!(
             leaf_filters(&conjunction_plan)
                 .iter()
@@ -317,8 +313,8 @@ async fn test_non_key_filters_stay_above_merge_inner() -> Result<()> {
 }
 
 /// The PK/no-PK × `pushdown_filters` on/off matrix: a range predicate prunes
-/// unrelated work units in every cell, while row-level pushdown follows the
-/// option.
+/// unrelated range merge subtrees in every cell, independently of their
+/// bucket work units and local lanes; row-level pushdown follows the option.
 #[test]
 fn test_range_pruning_ignores_row_pushdown_flag() {
     Runtime::new()
@@ -338,18 +334,18 @@ async fn test_range_pruning_ignores_row_pushdown_flag_inner() -> Result<()> {
         let ctx = session_with_pushdown(client.clone(), pushdown_filters)?;
         let label = format!("pushdown={pushdown_filters}");
 
-        // Merge-on-read table: the range predicate collapses the three work
-        // units to the `part = 0` one in both modes.
+        // The range predicate prunes the three range merge nodes to the
+        // `part = 0` subtree in both modes, not to a particular lane count.
         let sql = format!("SELECT * FROM {pk_table} WHERE part = 0");
         let plan = plan_of(&ctx, &sql).await;
-        assert_eq!(merge_work_units(&plan), 1, "{label}: {sql}");
+        assert_eq!(merge_nodes(&plan), 1, "{label}: {sql}");
         assert_eq!(row_count(&run_sql(&ctx, &sql).await), 1, "{label}: {sql}");
 
         // Mixed predicate: pruning by `part`, the unsafe `v > 3` stays above
         // the merge.
         let sql = format!("SELECT * FROM {pk_table} WHERE part = 0 AND v > 3");
         let plan = plan_of(&ctx, &sql).await;
-        assert_eq!(merge_work_units(&plan), 1, "{label}: {sql}");
+        assert_eq!(merge_nodes(&plan), 1, "{label}: {sql}");
         assert!(has_filter_exec(&plan), "{label}: {sql}");
         assert!(
             leaf_filters(&plan)

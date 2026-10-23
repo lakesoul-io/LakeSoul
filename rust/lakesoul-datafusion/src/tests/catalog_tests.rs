@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, Int32Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion::assert_batches_eq;
 use datafusion::catalog::{CatalogProvider, SchemaProvider};
+use datafusion::{assert_batches_eq, assert_batches_sorted_eq};
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::session::create_session_context;
 use lakesoul_metadata::MetaDataClient;
@@ -308,14 +308,14 @@ fn test_catalog_sql() {
                     assert!(!record.is_empty());
                 }
                 {
-                    // test select
+                    // test select; no ORDER BY, so rows arrive in lane order
                     let q = format!(
                         "select * from test_catalog_sql.{}.{}",
                         np.namespace, name
                     );
                     let df = sc.sql(&q).await.unwrap();
                     let record = df.collect().await.unwrap();
-                    assert_batches_eq!(expected, &record);
+                    assert_batches_sorted_eq!(expected, &record);
                 }
                 {
                     // drop table
