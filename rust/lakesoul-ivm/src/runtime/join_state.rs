@@ -130,6 +130,44 @@ impl JoinKeyEncoder {
         })
     }
 
+    /// Append only the hidden key to a contribution batch.  Unlike the state
+    /// payload, a join-key probe does not carry the source columns.
+    pub(crate) fn encode_key_only(
+        &self,
+        batch: &RecordBatch,
+    ) -> DataFusionResult<RecordBatch> {
+        let columns = self
+            .keys
+            .iter()
+            .map(|key| {
+                batch.column_by_name(key).cloned().ok_or_else(|| {
+                    DataFusionError::Execution(format!(
+                        "join key {key} is missing from the contribution"
+                    ))
+                })
+            })
+            .collect::<DataFusionResult<Vec<ArrayRef>>>()?;
+        let encoded = self
+            .encoder
+            .encode_columns(&columns)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+        let mut fields = batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| Arc::new(field.as_ref().clone()))
+            .collect::<Vec<_>>();
+        fields.push(Arc::new(Field::new(
+            IVM_JOIN_KEY_COLUMN,
+            DataType::Binary,
+            false,
+        )));
+        let mut output = batch.columns().to_vec();
+        output.push(Arc::new(encoded));
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), output)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))
+    }
+
     /// Append the encoded join key to a source batch.
     pub(crate) fn encode_batch(
         &self,

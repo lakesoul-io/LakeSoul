@@ -3179,6 +3179,118 @@ fn join_is_keyed(view: &JoinView) -> bool {
 }
 
 impl IvmRuntime {
+    /// Symmetric lookup of the left rows whose join keys occur in the right
+    /// delta.  Used by a right-only keyed join window so the left state does
+    /// not have to be scanned in full.
+    async fn lookup_join_left_state(
+        &self,
+        context: &SessionContext,
+        view: &JoinView,
+        left_state: Option<&IvmTable>,
+        delta_right: &DataFrame,
+    ) -> Result<Option<DataFrame>> {
+        use super::join_state::JoinKeyEncoder;
+        use super::keyed_plan::{
+            IVM_STATE_COLUMN_PREFIX, IvmPkLookupExec, bucket_repartition,
+            groups_by_bucket,
+        };
+        use futures::StreamExt;
+        if view.key_exprs.left.iter().any(|expr| !expr.is_empty())
+            || view.key_exprs.right.iter().any(|expr| !expr.is_empty())
+        {
+            return Ok(None);
+        }
+        let right_keys = if view.right_keys.is_empty() {
+            &view.join_keys
+        } else {
+            &view.right_keys
+        };
+        let key_exprs = view
+            .join_keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| col(right_keys[index].as_str()).alias(key.as_str()))
+            .collect::<Vec<_>>();
+        let contribution = delta_right.clone().select(key_exprs)?.distinct()?;
+        if let Some(left_state) = left_state {
+            let encoder = JoinKeyEncoder::new(&view.left, &view.join_keys)?;
+            let batches = contribution.collect().await?;
+            let mut encoded = Vec::with_capacity(batches.len());
+            for batch in batches {
+                encoded.push(encoder.encode_key_only(&batch)?);
+            }
+            let contribution = context.read_batches(encoded)?;
+            let bucket_count = if left_state.bucket_columns.len() == 1
+                && left_state.bucket_columns[0] == super::join_state::IVM_JOIN_KEY_COLUMN
+            {
+                left_state
+                    .hash_bucket_num
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|count| *count > 1)
+                    .unwrap_or(1)
+            } else {
+                1
+            };
+            let plan = contribution.create_physical_plan().await?;
+            let plan = bucket_repartition(
+                plan,
+                super::join_state::IVM_JOIN_KEY_COLUMN,
+                bucket_count,
+            )?;
+            let groups = groups_by_bucket(
+                left_state.current_groups(&self.client).await?,
+                bucket_count,
+            );
+            let lookup = IvmPkLookupExec::new(
+                plan,
+                left_state.clone(),
+                groups,
+                super::join_state::IVM_JOIN_KEY_COLUMN,
+                bucket_count,
+            )?
+            .with_multi_match(true);
+            let streams = datafusion::physical_plan::execute_stream_partitioned(
+                Arc::new(lookup),
+                context.task_ctx(),
+            )?;
+            let mut output = Vec::new();
+            for mut stream in streams {
+                while let Some(batch) = stream.next().await {
+                    output.push(batch?);
+                }
+            }
+            let frame = context.read_batches(output)?;
+            let projections = view
+                .left
+                .schema
+                .fields()
+                .iter()
+                .map(|field| {
+                    col(format!("{IVM_STATE_COLUMN_PREFIX}{}", field.name()))
+                        .alias(field.name())
+                })
+                .collect::<Vec<_>>();
+            return Ok(Some(frame.select(projections)?));
+        }
+        if !view.left.primary_keys.is_empty() {
+            return self
+                .lookup_source_by_join_keys(
+                    context,
+                    &view.left,
+                    contribution,
+                    &view.join_keys,
+                    &view.left.primary_keys,
+                    true,
+                )
+                .await
+                .map(Some);
+        }
+        Ok(None)
+    }
+}
+
+impl IvmRuntime {
     /// Read a source/MV as the keyed state for a join.  The contribution keys
     /// are matched to real table PK columns with `arrow::Row`; bucket routing
     /// uses the table's writer bucket columns when they are part of the key.
@@ -3589,28 +3701,6 @@ impl IvmRuntime {
         }
         let context = refresh_session();
         if keyed {
-            let left_frame = if let Some(state) = &left_side_state {
-                self.current_table_frame(&context, state)?
-            } else {
-                self.current_table_frame(&context, &view.left)?
-            };
-            let right_frame = if let Some(state) = &right_side_state {
-                self.current_table_frame(&context, state)?
-            } else {
-                self.current_table_frame(&context, &view.right)?
-            };
-            let left_now = apply_side_filter(
-                &context,
-                filter_deletes(left_frame, change_column(&view.left))?,
-                &view.left.schema,
-                view.left_filter.as_deref(),
-            )?;
-            let mut right_now = apply_side_filter(
-                &context,
-                filter_deletes(right_frame, change_column(&view.right))?,
-                &view.right.schema,
-                view.right_filter.as_deref(),
-            )?;
             let delta_left = self.groups_table_frame(
                 &context,
                 &view.left,
@@ -3621,17 +3711,84 @@ impl IvmRuntime {
                 &view.right,
                 right_window.added_files.clone(),
             )?;
-            // A left-only window needs the right rows for the left delta keys
-            // only.  Read them through the keyed side-state lookup instead of
-            // scanning the whole right state.
-            if right_window.added_files.is_empty() {
+            let left_changed = !left_window.added_files.is_empty();
+            let right_changed = !right_window.added_files.is_empty();
+            let left_delta = apply_side_filter(
+                &context,
+                filter_deletes(delta_left.clone(), change_column(&view.left))?,
+                &view.left.schema,
+                view.left_filter.as_deref(),
+            )?;
+            let right_delta = apply_side_filter(
+                &context,
+                filter_deletes(delta_right.clone(), change_column(&view.right))?,
+                &view.right.schema,
+                view.right_filter.as_deref(),
+            )?;
+
+            let full_left = || -> Result<DataFrame> {
+                let frame = if let Some(state) = &left_side_state {
+                    self.current_table_frame(&context, state)?
+                } else {
+                    self.current_table_frame(&context, &view.left)?
+                };
+                apply_side_filter(
+                    &context,
+                    filter_deletes(frame, change_column(&view.left))?,
+                    &view.left.schema,
+                    view.left_filter.as_deref(),
+                )
+            };
+            let full_right = || -> Result<DataFrame> {
+                let frame = if let Some(state) = &right_side_state {
+                    self.current_table_frame(&context, state)?
+                } else {
+                    self.current_table_frame(&context, &view.right)?
+                };
+                apply_side_filter(
+                    &context,
+                    filter_deletes(frame, change_column(&view.right))?,
+                    &view.right.schema,
+                    view.right_filter.as_deref(),
+                )
+            };
+
+            // For a one-sided window only the changed side is the full state
+            // read.  The other side is read by the delta's join keys through
+            // the shared PK lookup plan; both-sided windows keep the existing
+            // inclusion-exclusion reads.
+            let left_now = if left_changed && !right_changed {
+                left_delta.clone()
+            } else if right_changed && !left_changed {
+                let mut lookup = self
+                    .lookup_join_left_state(
+                        &context,
+                        view,
+                        left_side_state.as_ref(),
+                        &delta_right,
+                    )
+                    .await?;
+                if let Some(frame) = lookup.take() {
+                    apply_side_filter(
+                        &context,
+                        frame,
+                        &view.left.schema,
+                        view.left_filter.as_deref(),
+                    )?
+                } else {
+                    full_left()?
+                }
+            } else {
+                full_left()?
+            };
+            let right_now = if right_changed && !left_changed {
+                right_delta.clone()
+            } else if left_changed && !right_changed {
+                let mut lookup = None;
                 if let Some(right_state) = &right_side_state {
-                    if let Some(frame) = self
+                    lookup = self
                         .lookup_join_right_state(&context, view, right_state, &delta_left)
-                        .await?
-                    {
-                        right_now = frame;
-                    }
+                        .await?;
                 } else if !view.right.primary_keys.is_empty()
                     && !super::join_state::join_side_needs_state(
                         &view.right,
@@ -3646,8 +3803,8 @@ impl IvmRuntime {
                         .map(|key| col(key.as_str()))
                         .collect::<Vec<_>>();
                     let contribution = delta_left.clone().select(keys)?.distinct()?;
-                    right_now = self
-                        .lookup_source_by_join_keys(
+                    lookup = Some(
+                        self.lookup_source_by_join_keys(
                             &context,
                             &view.right,
                             contribution,
@@ -3655,9 +3812,22 @@ impl IvmRuntime {
                             right_join_keys,
                             true,
                         )
-                        .await?;
+                        .await?,
+                    );
                 }
-            }
+                if let Some(frame) = lookup {
+                    apply_side_filter(
+                        &context,
+                        frame,
+                        &view.right.schema,
+                        view.right_filter.as_deref(),
+                    )?
+                } else {
+                    full_right()?
+                }
+            } else {
+                full_right()?
+            };
             let mv_table = view.state.as_ref().unwrap_or(&view.output);
             let mv_batches = match single_side_join_mv_partitions(
                 mv_table,
