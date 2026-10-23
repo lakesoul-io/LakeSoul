@@ -3179,6 +3179,110 @@ fn join_is_keyed(view: &JoinView) -> bool {
 }
 
 impl IvmRuntime {
+    /// Read a source/MV as the keyed state for a join.  The contribution keys
+    /// are matched to real table PK columns with `arrow::Row`; bucket routing
+    /// uses the table's writer bucket columns when they are part of the key.
+    async fn lookup_source_by_join_keys(
+        &self,
+        context: &SessionContext,
+        table: &IvmTable,
+        contribution: DataFrame,
+        input_columns: &[String],
+        table_columns: &[String],
+        multi_match: bool,
+    ) -> Result<DataFrame> {
+        use super::keyed_plan::{
+            IVM_STATE_COLUMN_PREFIX, IvmPkLookupExec, bucket_repartition_by_columns,
+            groups_by_bucket,
+        };
+        use futures::StreamExt;
+        let bucket_count = table
+            .hash_bucket_num
+            .parse::<usize>()
+            .ok()
+            .filter(|count| *count > 1)
+            .unwrap_or(1);
+        let routed = contribution;
+        let route_columns = if bucket_count > 1
+            && !table.bucket_columns.is_empty()
+            && table
+                .bucket_columns
+                .iter()
+                .all(|column| table_columns.iter().any(|key| key == column))
+        {
+            let mut columns = Vec::with_capacity(table.bucket_columns.len());
+            for bucket_column in &table.bucket_columns {
+                let position = table_columns
+                    .iter()
+                    .position(|key| key == bucket_column)
+                    .ok_or_else(|| {
+                        report!("bucket column {bucket_column} is not a lookup key")
+                    })?;
+                columns.push(input_columns[position].clone());
+            }
+            Some(columns)
+        } else {
+            None
+        };
+        let bucket_count = route_columns.as_ref().map_or(1, |_| bucket_count);
+        eprintln!(
+            "lookup source table={} input={:?} table={:?} schema={:?} route={:?}",
+            table.table_name,
+            input_columns,
+            table_columns,
+            routed.schema(),
+            route_columns
+        );
+        let plan = routed.create_physical_plan().await?;
+        let plan = if let Some(columns) = route_columns.as_deref() {
+            bucket_repartition_by_columns(plan, columns, bucket_count)?
+        } else {
+            plan
+        };
+        let groups =
+            groups_by_bucket(table.current_groups(&self.client).await?, bucket_count);
+        let lookup = IvmPkLookupExec::new_with_columns(
+            plan,
+            table.clone(),
+            groups,
+            input_columns.to_vec(),
+            table_columns.to_vec(),
+            bucket_count,
+        )?
+        .with_multi_match(multi_match);
+        let streams = datafusion::physical_plan::execute_stream_partitioned(
+            Arc::new(lookup),
+            context.task_ctx(),
+        )?;
+        let mut batches = Vec::new();
+        for mut stream in streams {
+            while let Some(batch) = stream.next().await {
+                batches.push(batch?);
+            }
+        }
+        let projections = table
+            .schema
+            .fields()
+            .iter()
+            .map(|field| {
+                col(format!("{IVM_STATE_COLUMN_PREFIX}{}", field.name()))
+                    .alias(field.name())
+            })
+            .collect::<Vec<_>>();
+        let frame = context.read_batches(batches)?;
+        let mut frame = frame.select(projections)?;
+        // An unmatched lookup contributes a null right row.  The source's
+        // change marker is null on that row, so coalesce it to a live marker;
+        // otherwise the generic delete filter would drop the null-padded
+        // side and turn a LEFT JOIN into an inner join.
+        if let Some(kind) = change_column(table) {
+            let value = datafusion::prelude::when(col(kind).is_null(), lit("insert"))
+                .otherwise(col(kind))?;
+            frame = frame.with_column(kind, value)?;
+        }
+        Ok(frame)
+    }
+
     /// Read only the right-side state rows whose join keys occur in the left
     /// delta.  The lookup is a physical plan: contribution keys are encoded,
     /// routed to the side state's hash buckets, and matched with multi-match
@@ -3192,7 +3296,7 @@ impl IvmRuntime {
     ) -> Result<Option<DataFrame>> {
         use super::join_state::JoinKeyEncoder;
         use super::keyed_plan::{
-            IVM_STATE_COLUMN_PREFIX, IvmKeyedStateLookupExec, bucket_repartition,
+            IVM_STATE_COLUMN_PREFIX, IvmPkLookupExec, bucket_repartition,
             groups_by_bucket,
         };
         use futures::StreamExt;
@@ -3237,7 +3341,7 @@ impl IvmRuntime {
         )?;
         let groups = right_state.current_groups(&self.client).await?;
         let groups = groups_by_bucket(groups, bucket_count);
-        let lookup = IvmKeyedStateLookupExec::new(
+        let lookup = IvmPkLookupExec::new(
             plan,
             right_state.clone(),
             groups,
@@ -3458,12 +3562,12 @@ impl IvmRuntime {
                 .await?;
             }
         }
+        let right_join_keys = if view.right_keys.is_empty() {
+            &view.join_keys
+        } else {
+            &view.right_keys
+        };
         if let Some(state) = &right_side_state {
-            let right_join_keys = if view.right_keys.is_empty() {
-                &view.join_keys
-            } else {
-                &view.right_keys
-            };
             if state.current_files(&self.client).await?.is_empty() {
                 self.sync_join_side_state(
                     &view.right,
@@ -3520,13 +3624,39 @@ impl IvmRuntime {
             // A left-only window needs the right rows for the left delta keys
             // only.  Read them through the keyed side-state lookup instead of
             // scanning the whole right state.
-            if right_window.added_files.is_empty()
-                && let Some(right_state) = &right_side_state
-                && let Some(frame) = self
-                    .lookup_join_right_state(&context, view, right_state, &delta_left)
-                    .await?
-            {
-                right_now = frame;
+            if right_window.added_files.is_empty() {
+                if let Some(right_state) = &right_side_state {
+                    if let Some(frame) = self
+                        .lookup_join_right_state(&context, view, right_state, &delta_left)
+                        .await?
+                    {
+                        right_now = frame;
+                    }
+                } else if !view.right.primary_keys.is_empty()
+                    && !super::join_state::join_side_needs_state(
+                        &view.right,
+                        right_join_keys,
+                    )
+                    && view.key_exprs.left.iter().all(|expr| expr.is_empty())
+                    && view.key_exprs.right.iter().all(|expr| expr.is_empty())
+                {
+                    let keys = view
+                        .join_keys
+                        .iter()
+                        .map(|key| col(key.as_str()))
+                        .collect::<Vec<_>>();
+                    let contribution = delta_left.clone().select(keys)?.distinct()?;
+                    right_now = self
+                        .lookup_source_by_join_keys(
+                            &context,
+                            &view.right,
+                            contribution,
+                            &view.join_keys,
+                            right_join_keys,
+                            true,
+                        )
+                        .await?;
+                }
             }
             let mv_table = view.state.as_ref().unwrap_or(&view.output);
             let mv_batches = match single_side_join_mv_partitions(
@@ -3933,6 +4063,36 @@ impl IvmRuntime {
             delta_right
                 .clone()
                 .ok_or_else(|| report!("lookup refresh without a right change"))?
+        } else if !right_changed {
+            // The right source is keyed by the lookup keys, so a left-only
+            // window can read exactly the referenced right rows instead of the
+            // full right state.  Unmatched left keys still produce a null right
+            // side for the LEFT JOIN.
+            if view.key_exprs.left.iter().any(|expr| !expr.is_empty())
+                || view.key_exprs.right.iter().any(|expr| !expr.is_empty())
+            {
+                self.current_table_frame(&context, &view.right)?
+            } else {
+                let delta_left = delta_left
+                    .clone()
+                    .ok_or_else(|| report!("lookup refresh without a left change"))?;
+                let keys = view
+                    .join_keys
+                    .iter()
+                    .map(|key| col(key.as_str()))
+                    .collect::<Vec<_>>();
+                let contribution = delta_left.select(keys)?.distinct()?;
+                let right_keys = view.right_join_keys();
+                self.lookup_source_by_join_keys(
+                    &context,
+                    &view.right,
+                    contribution,
+                    &view.join_keys,
+                    right_keys,
+                    false,
+                )
+                .await?
+            }
         } else {
             self.current_table_frame(&context, &view.right)?
         };

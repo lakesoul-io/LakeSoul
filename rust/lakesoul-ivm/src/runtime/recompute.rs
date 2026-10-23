@@ -3746,7 +3746,7 @@ impl IvmRuntime {
             contrib_plan
         };
         let lookup_plan: Arc<dyn datafusion::physical_plan::ExecutionPlan> = Arc::new(
-            super::keyed_plan::IvmKeyedStateLookupExec::new(
+            super::keyed_plan::IvmPkLookupExec::new(
                 contrib_plan,
                 state.clone(),
                 state_groups_by_bucket,
