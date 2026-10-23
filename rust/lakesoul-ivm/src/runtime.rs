@@ -51,6 +51,7 @@ use crate::table::{
 mod aggregates;
 mod chain;
 mod fallback;
+pub(crate) mod join_state;
 mod joins;
 pub(crate) mod keyed_plan;
 mod lookup_chain;
