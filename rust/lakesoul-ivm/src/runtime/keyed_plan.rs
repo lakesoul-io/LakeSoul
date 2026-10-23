@@ -304,6 +304,8 @@ fn join_state_batch(
     state_batches: &[RecordBatch],
     state_schema: &SchemaRef,
     out_schema: &SchemaRef,
+    multi_match: bool,
+    emit_unmatched: bool,
 ) -> DataFusionResult<RecordBatch> {
     let state = if state_batches.is_empty() {
         None
@@ -323,7 +325,7 @@ fn join_state_batch(
         .ok_or_else(|| {
             DataFusionError::Execution("lookup key is not binary".to_string())
         })?;
-    let mut state_index = HashMap::new();
+    let mut state_index: HashMap<Vec<u8>, Vec<u32>> = HashMap::new();
     if let Some(state) = state.as_ref() {
         let state_key_index = state.schema().index_of(IVM_GROUP_ROW_COLUMN)?;
         let state_keys = state
@@ -335,28 +337,60 @@ fn join_state_batch(
             })?;
         for row in 0..state_keys.len() {
             if !state_keys.is_null(row) {
-                state_index.insert(state_keys.value(row).to_vec(), row as u32);
+                state_index
+                    .entry(state_keys.value(row).to_vec())
+                    .or_default()
+                    .push(row as u32);
             }
         }
     }
-    let indices = (0..contribution_keys.len())
-        .map(|row| {
-            if contribution_keys.is_null(row) {
-                None
-            } else {
-                state_index.get(contribution_keys.value(row)).copied()
+    let mut contribution_rows = Vec::new();
+    let mut state_rows = Vec::new();
+    for row in 0..contribution_keys.len() {
+        let matches = if contribution_keys.is_null(row) {
+            None
+        } else {
+            state_index.get(contribution_keys.value(row))
+        };
+        match matches {
+            Some(rows) if multi_match => {
+                for state_row in rows {
+                    contribution_rows.push(Some(row as u32));
+                    state_rows.push(Some(*state_row));
+                }
             }
-        })
-        .collect::<Vec<_>>();
-    let indices = UInt32Array::from(indices);
-    let mut columns = contribution.columns().to_vec();
+            Some(rows) => {
+                contribution_rows.push(Some(row as u32));
+                state_rows.push(rows.first().copied());
+            }
+            None if emit_unmatched => {
+                contribution_rows.push(Some(row as u32));
+                state_rows.push(None);
+            }
+            None => {}
+        }
+    }
+    let contribution_rows = UInt32Array::from(contribution_rows);
+    let state_rows = UInt32Array::from(state_rows);
+    let mut columns =
+        Vec::with_capacity(contribution.num_columns() + state_schema.fields().len());
+    for index in 0..contribution.num_columns() {
+        columns.push(
+            take(
+                contribution.column(index).as_ref(),
+                &contribution_rows,
+                None,
+            )
+            .map_err(|error| DataFusionError::Execution(error.to_string()))?,
+        );
+    }
     for (index, field) in state_schema.fields().iter().enumerate() {
         let array = match state.as_ref() {
             Some(state) if state.num_rows() > 0 => {
-                take(state.column(index).as_ref(), &indices, None)
+                take(state.column(index).as_ref(), &state_rows, None)
                     .map_err(|error| DataFusionError::Execution(error.to_string()))?
             }
-            _ => arrow::array::new_null_array(field.data_type(), contribution.num_rows()),
+            _ => arrow::array::new_null_array(field.data_type(), contribution_rows.len()),
         };
         columns.push(array);
     }
@@ -379,6 +413,8 @@ pub(crate) struct IvmKeyedStateLookupExec {
     bucket_count: usize,
     schema: SchemaRef,
     gate: Arc<Semaphore>,
+    multi_match: bool,
+    emit_unmatched: bool,
     properties: Arc<PlanProperties>,
 }
 
@@ -420,8 +456,19 @@ impl IvmKeyedStateLookupExec {
             bucket_count,
             schema,
             gate: Arc::new(Semaphore::new(max_active_tasks())),
+            multi_match: false,
+            emit_unmatched: false,
             properties,
         })
+    }
+
+    /// Join-side lookup mode: emit every matching state row and drop a
+    /// contribution row without a match (inner-join semantics).
+    #[allow(dead_code)]
+    pub(crate) fn with_multi_match(mut self, multi_match: bool) -> Self {
+        self.multi_match = multi_match;
+        self.emit_unmatched = !multi_match;
+        self
     }
 }
 
@@ -500,13 +547,17 @@ impl ExecutionPlan for IvmKeyedStateLookupExec {
                 "keyed state lookup expects one child".to_string(),
             ));
         }
-        Ok(Arc::new(Self::new(
+        let mut plan = Self::new(
             children[0].clone(),
             self.table.clone(),
             self.groups_by_bucket.as_ref().clone(),
             self.key_column.clone(),
             self.bucket_count,
-        )?))
+        )?;
+        plan.gate = self.gate.clone();
+        plan.multi_match = self.multi_match;
+        plan.emit_unmatched = self.emit_unmatched;
+        Ok(Arc::new(plan))
     }
 
     fn execute(
@@ -528,6 +579,8 @@ impl ExecutionPlan for IvmKeyedStateLookupExec {
         let state_schema = self.table.schema.clone();
         let out_schema = self.schema.clone();
         let gate = self.gate.clone();
+        let multi_match = self.multi_match;
+        let emit_unmatched = self.emit_unmatched;
         let stream =
             futures::stream::try_unfold((input, groups), move |(mut input, groups)| {
                 let table = table.clone();
@@ -587,6 +640,8 @@ impl ExecutionPlan for IvmKeyedStateLookupExec {
                             &state_batches,
                             &state_schema,
                             &out_schema,
+                            multi_match,
+                            emit_unmatched,
                         )?;
                         tracing::debug!(
                             partition,
