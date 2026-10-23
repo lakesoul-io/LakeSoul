@@ -4475,3 +4475,18 @@ multi-agg state 的增量更新不再在 driver 中收集 state 后执行 SQL me
 
 后续：把同一组 lookup/merge 节点用于 join/window 的 keyed state，并在 join 增量上补
 P2 delta 窗口验证。
+
+### 10.183 Join output keyed state（第一段）
+
+SQL inner join / lookup join 现在会自动创建 `state` 角色的输出状态表，schema、主键、
+CDC 列、bucket layout 与 MV 相同；refresh 的 delete+insert 流同时写入 MV 和 state，
+rebuild 后把 MV 当前状态镜像到 state。这样 join 输出不再只有 MV provider，而是有独立的
+keyed state table 可供后续 lookup/merge 节点读取。
+
+已验证：
+- `tests/states_registry.rs` 的 keyed inner join fixture 同时注册并填充 MV/state；
+- `tests/sql_executor.rs` 的 SQL lookup join 在 bootstrap 与增量后 state 行与 MV 一致；
+- 全量 IVM 回归通过。
+
+下一步仍是 join-key side state：PK=(join_key,row_id)、bucket=join_key 前缀，然后把
+`IvmKeyedStateLookupExec` / `IvmStateMergeExec` 扩展为多列 key + row-replace 模式。
