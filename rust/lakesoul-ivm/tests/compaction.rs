@@ -147,10 +147,7 @@ async fn streaming_compaction_preserves_every_hash_bucket() {
     expected.sort_unstable();
     assert_eq!(logical_rows(&runtime, &table).await, expected);
 
-    runtime
-        .compact_table_streaming(&table)
-        .await
-        .unwrap();
+    runtime.compact_table_streaming(&table).await.unwrap();
 
     assert_eq!(logical_rows(&runtime, &table).await, expected);
     let files_after = table.current_file_count(&client).await.unwrap();

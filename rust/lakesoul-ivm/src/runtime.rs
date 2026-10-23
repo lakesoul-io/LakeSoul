@@ -2970,10 +2970,7 @@ impl IvmRuntime {
     /// loaded snapshot is logically compactable.  The reader and writer share
     /// the process-wide LakeSoulIO runtime and the writer still enforces its
     /// normal memory/file bounds.
-    pub async fn compact_table_streaming(
-        &self,
-        table: &IvmTable,
-    ) -> Result<Vec<String>> {
+    pub async fn compact_table_streaming(&self, table: &IvmTable) -> Result<Vec<String>> {
         use futures::StreamExt;
 
         let context = refresh_session();
@@ -3003,14 +3000,16 @@ impl IvmRuntime {
                 }
                 let mut columns = batch.columns().to_vec();
                 if let Some(index) = kinds {
-                    columns[index] = Arc::new(arrow::array::StringArray::from_iter_values(
-                        (0..batch.num_rows()).map(|_| "insert"),
-                    ));
+                    columns[index] =
+                        Arc::new(arrow::array::StringArray::from_iter_values(
+                            (0..batch.num_rows()).map(|_| "insert"),
+                        ));
                 }
                 if let Some(index) = epoch {
-                    columns[index] = Arc::new(arrow::array::Int64Array::from_iter_values(
-                        (0..batch.num_rows()).map(|_| 0i64),
-                    ));
+                    columns[index] =
+                        Arc::new(arrow::array::Int64Array::from_iter_values(
+                            (0..batch.num_rows()).map(|_| 0i64),
+                        ));
                 }
                 let batch = RecordBatch::try_new(schema.clone(), columns)?;
                 pending_rows += batch.num_rows();
@@ -3031,10 +3030,7 @@ impl IvmRuntime {
             table.truncate(&self.client).await?;
             return Ok(Vec::new());
         }
-        let read_partitions = self
-            .client
-            .get_all_partition_info(&table.table_id)
-            .await?;
+        let read_partitions = self.client.get_all_partition_info(&table.table_id).await?;
         let commit_ids = self
             .client
             .commit_compaction(
