@@ -108,9 +108,13 @@ Deliberately **not** included (later phases):
    after `kubectl apply -f rust/postgres-lakesoul/k8s/base/namespace.yaml`:
    - `kubectl -n lakesoul create secret generic lakesoul-secrets --from-literal=...`
      with the keys `pg-url`, `pg-username`, `pg-password`, `warehouse`,
-     `aws-endpoint`, `aws-bucket`, `aws-access-key-id`, `aws-secret-access-key`.
-     Secrets are referenced through `secretKeyRef`, not inline in CLI args, so
-     plain `kubectl describe` does not print credentials.
+     `aws-endpoint`, `aws-bucket`, `aws-access-key-id`, `aws-secret-access-key`,
+     and optionally `aws-s3-virtual-host-style` (`true` for endpoints that
+     reject path-style requests, such as Huawei OBS `VirtualHostDomainRequired`;
+     unset means path style). The bucket in `warehouse` should be `aws-bucket`:
+     `aws-bucket` overrides the bucket of every stored table path. Secrets are
+     referenced through `secretKeyRef`, not inline in CLI args, so plain
+     `kubectl describe` does not print credentials.
    - the image pull Secret, from SWR's long-term login command
      (`docker login -u <region>@<AK> -p <login key> swr...`; temporary login
      keys expire):

@@ -91,6 +91,12 @@ spec:
                 secretKeyRef:
                   name: lakesoul-secrets
                   key: aws-secret-access-key
+            - name: AWS_S3_VIRTUAL_HOST_STYLE
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-s3-virtual-host-style
+                  optional: true
           resources:
             requests:
               cpu: "${DATAGEN_CPU_REQ}"
