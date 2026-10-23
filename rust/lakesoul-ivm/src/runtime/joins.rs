@@ -3295,23 +3295,69 @@ impl IvmRuntime {
 
         self.ensure_join_state(&view.output, view.state.as_ref())
             .await?;
+        let left_side_state = if keyed {
+            self.ensure_join_side_state(
+                &view.view_id,
+                &view.left,
+                &view.join_keys,
+                StateRole::JoinLeft,
+            )
+            .await?
+        } else {
+            None
+        };
+        let right_side_state = if keyed {
+            self.ensure_join_side_state(
+                &view.view_id,
+                &view.right,
+                if view.right_keys.is_empty() {
+                    &view.join_keys
+                } else {
+                    &view.right_keys
+                },
+                StateRole::JoinRight,
+            )
+            .await?
+        } else {
+            None
+        };
+        if let Some(state) = &left_side_state {
+            // A source row can change its join key, so a full refresh of the
+            // side state is required until the side table carries a stable
+            // row identity delete stream.
+            self.sync_join_side_state(&view.left, state, &view.join_keys)
+                .await?;
+        }
+        if let Some(state) = &right_side_state {
+            let right_join_keys = if view.right_keys.is_empty() {
+                &view.join_keys
+            } else {
+                &view.right_keys
+            };
+            self.sync_join_side_state(&view.right, state, right_join_keys)
+                .await?;
+        }
         let context = refresh_session();
         if keyed {
+            let left_frame = if let Some(state) = &left_side_state {
+                self.current_table_frame(&context, state)?
+            } else {
+                self.current_table_frame(&context, &view.left)?
+            };
+            let right_frame = if let Some(state) = &right_side_state {
+                self.current_table_frame(&context, state)?
+            } else {
+                self.current_table_frame(&context, &view.right)?
+            };
             let left_now = apply_side_filter(
                 &context,
-                filter_deletes(
-                    self.current_table_frame(&context, &view.left)?,
-                    change_column(&view.left),
-                )?,
+                filter_deletes(left_frame, change_column(&view.left))?,
                 &view.left.schema,
                 view.left_filter.as_deref(),
             )?;
             let right_now = apply_side_filter(
                 &context,
-                filter_deletes(
-                    self.current_table_frame(&context, &view.right)?,
-                    change_column(&view.right),
-                )?,
+                filter_deletes(right_frame, change_column(&view.right))?,
                 &view.right.schema,
                 view.right_filter.as_deref(),
             )?;

@@ -389,13 +389,15 @@ async fn states_are_registered_for_each_view_kind() {
         pair_list(&runtime, &window_view.view_id).await,
         vec![("mv", window_mv.table_id.clone())]
     );
-    assert_eq!(
-        pair_list(&runtime, &join_view.view_id).await,
-        vec![
-            ("mv", join_mv.table_id.clone()),
-            ("state", join_state.table_id.clone()),
-        ]
-    );
+    let join_states = pair_list(&runtime, &join_view.view_id).await;
+    let mut roles = join_states
+        .iter()
+        .map(|(role, _)| *role)
+        .collect::<Vec<_>>();
+    roles.sort_unstable();
+    assert_eq!(roles, vec!["join_left", "join_right", "mv", "state"]);
+    assert!(join_states.contains(&("mv", join_mv.table_id.clone())));
+    assert!(join_states.contains(&("state", join_state.table_id.clone())));
 
     // Re-registering the same tables (a fresh refresh or a rebuild) keeps one
     // row per role.

@@ -86,7 +86,7 @@ pub(crate) fn join_side_state_primary_keys(source: &IvmTable) -> Vec<String> {
 /// table, so the source itself is the state.
 pub(crate) fn join_side_needs_state(source: &IvmTable, join_keys: &[String]) -> bool {
     if source.primary_keys.is_empty() {
-        return true;
+        return false;
     }
     let mut source_keys = source.primary_keys.clone();
     let mut join_keys = join_keys.to_vec();
@@ -188,6 +188,125 @@ pub(crate) fn join_key_array(batch: &RecordBatch) -> DataFusionResult<&BinaryArr
         .ok_or_else(|| {
             DataFusionError::Execution(format!("{IVM_JOIN_KEY_COLUMN} is not binary"))
         })
+}
+
+impl super::IvmRuntime {
+    /// Create or reuse one side's keyed state table and register it under the
+    /// view.  The source itself is used when its primary key already equals
+    /// the join key.
+    pub(crate) async fn ensure_join_side_state(
+        &self,
+        view_id: &str,
+        source: &IvmTable,
+        join_keys: &[String],
+        role: crate::metadata::StateRole,
+    ) -> crate::error::Result<Option<IvmTable>> {
+        if !join_side_needs_state(source, join_keys) {
+            return Ok(None);
+        }
+        if let Some(existing) = self.metadata().get_state(view_id, role).await? {
+            return Ok(Some(self.open_table_by_id(&existing.table_id).await?));
+        }
+        let schema = join_side_state_schema_for(source, join_keys)?;
+        let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
+        let mut options = crate::table::IvmTableOptions::new(
+            format!("{}__ivm_join_state_{suffix}", source.table_name),
+            format!("{}__ivm_join_state_{suffix}", source.table_path),
+            schema,
+        )
+        .with_namespace(source.namespace.clone())
+        .with_primary_keys(join_side_state_primary_keys(source))
+        .with_bucket_columns(vec![IVM_JOIN_KEY_COLUMN.to_string()])
+        .with_file_format(source.file_format);
+        options.hash_bucket_num = source.hash_bucket_num.clone();
+        if let Some(cdc) = join_side_state_cdc_column(source) {
+            options = options.with_cdc_column(cdc);
+        }
+        let state = self.create_table(options).await?;
+        self.metadata()
+            .register_state(view_id, role, &state)
+            .await?;
+        Ok(Some(state))
+    }
+
+    /// Replace a side state with the current logical source rows, encoded
+    /// under the hidden `arrow::Row` join key.
+    pub(crate) async fn sync_join_side_state(
+        &self,
+        source: &IvmTable,
+        state: &IvmTable,
+        join_keys: &[String],
+    ) -> crate::error::Result<()> {
+        use futures::StreamExt;
+        let context = super::refresh_session();
+        let frame = self.current_table_frame(&context, source)?;
+        let encoder = JoinKeyEncoder::new(source, join_keys)?;
+        let mut stream = frame.execute_stream().await?;
+        state.truncate(&self.client).await?;
+        let mut pending = Vec::new();
+        let mut pending_rows = 0usize;
+        while let Some(batch) = stream.next().await {
+            let batch = encoder.encode_batch(&batch?)?;
+            pending_rows += batch.num_rows();
+            pending.push(batch);
+            if pending_rows >= crate::table::MAX_STATE_APPEND_ROWS {
+                let schema = pending[0].schema();
+                let batch = arrow::compute::concat_batches(&schema, &pending)?;
+                pending.clear();
+                pending_rows = 0;
+                state.append_batches(&self.client, vec![batch]).await?;
+            }
+        }
+        if !pending.is_empty() {
+            let schema = pending[0].schema();
+            let batch = arrow::compute::concat_batches(&schema, &pending)?;
+            state.append_batches(&self.client, vec![batch]).await?;
+        }
+        Ok(())
+    }
+}
+
+impl super::IvmRuntime {
+    /// Apply a source changelog window to one side state.  The raw delta keeps
+    /// update/delete tombstones, so the state table's CDC column resolves the
+    /// latest source version by its primary key.
+    pub(crate) async fn apply_join_side_delta(
+        &self,
+        source: &IvmTable,
+        state: &IvmTable,
+        window: &super::SourceWindow,
+        join_keys: &[String],
+    ) -> crate::error::Result<()> {
+        use futures::StreamExt;
+        if window.added_files.is_empty() {
+            return Ok(());
+        }
+        let context = super::refresh_session();
+        let frame =
+            self.groups_table_frame(&context, source, window.added_files.clone())?;
+        let encoder = JoinKeyEncoder::new(source, join_keys)?;
+        let mut stream = frame.execute_stream().await?;
+        let mut pending = Vec::new();
+        let mut pending_rows = 0usize;
+        while let Some(batch) = stream.next().await {
+            let batch = encoder.encode_batch(&batch?)?;
+            pending_rows += batch.num_rows();
+            pending.push(batch);
+            if pending_rows >= crate::table::MAX_STATE_APPEND_ROWS {
+                let schema = pending[0].schema();
+                let batch = arrow::compute::concat_batches(&schema, &pending)?;
+                pending.clear();
+                pending_rows = 0;
+                state.append_batches(&self.client, vec![batch]).await?;
+            }
+        }
+        if !pending.is_empty() {
+            let schema = pending[0].schema();
+            let batch = arrow::compute::concat_batches(&schema, &pending)?;
+            state.append_batches(&self.client, vec![batch]).await?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -2093,7 +2093,7 @@ impl std::fmt::Display for PartitionDropped {
 }
 
 /// The changelog window of every partition of one source.
-struct SourceWindow {
+pub(crate) struct SourceWindow {
     added_files: Vec<PartitionFiles>,
     cursors: Vec<Cursor>,
     /// `(source_table_id, partition_desc, from_version, to_version)` of every
