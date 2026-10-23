@@ -269,6 +269,12 @@
       // {
         # Only `cargo build` artifacts are reused; skip the `cargo check` pass.
         cargoCheckCommand = "true";
+        # The dummy source stubs every path crate; the vendored DataFusion
+        # crate is a dependency, not workspace code, so keep it real.
+        extraDummyScript = ''
+          rm -rf $out/rust/third_party
+          cp -r ${./rust/third_party} $out/rust/third_party
+        '';
       });
 
     lakesoulBins = craneLib.buildPackage (lakesoulCraneArgs

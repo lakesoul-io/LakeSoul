@@ -288,6 +288,10 @@ share the `CoreArgs` CLI (`--warehouse-prefix`, `--endpoint`, …).
 These budgets govern DataFusion execution reservations, not process RSS,
 LakeSoul IO pools or writer-internal buffers. Spill files use DataFusion's
 default OS temporary directory (`TMPDIR`, `/var/scratch` in these deployments).
+Builds use a vendored `datafusion-physical-plan` 55.2.0 with the upstream fix
+for apache/datafusion#24883 (`rust/third_party/`, root `Cargo.toml`
+`[patch.crates-io]`): without it, a query whose hash `RepartitionExec` spills
+under a bounded pool can park every task and hang without an error.
 The runtime still registers the warehouse object store independently per
 coordinator session. Pools report the five largest consumers on bounded
 allocation errors. Prometheus exports `lakesoul_memory_pool_reserved_bytes`,
