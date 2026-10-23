@@ -135,7 +135,7 @@ async fn partitioned_state_and_mv_only_refresh_the_changed_date() {
     .with_bucket_columns(vec![IVM_GROUP_ROW_COLUMN.to_string()])
     .with_range_partition_columns(vec!["stat_date".to_string()])
     .with_file_format(PhysicalFormat::Vortex);
-    state_options.hash_bucket_num = "8".to_string();
+    state_options.hash_bucket_num = "16".to_string();
     let state = runtime.create_table(state_options).await.unwrap();
     let view = MultiAggView::new(
         format!("ivm_multi_state_view_{suffix}"),
