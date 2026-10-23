@@ -431,6 +431,7 @@ pub(super) fn analyze_join(
                 right_filter,
                 pair_filter,
                 null_safe,
+                state_table_id: None,
             })
         }
         JoinType::Left => {
@@ -1887,6 +1888,7 @@ fn analyze_outer_join(
             right_value,
             output_columns,
             payload_names,
+            state_table_id: None,
         })
     } else if !left.primary_keys.is_empty() && !right.primary_keys.is_empty() {
         Ok(ViewSpec::LeftJoin {
@@ -2914,6 +2916,7 @@ mod tests {
                 left_filter: None,
                 right_filter: None,
                 pair_filter: None,
+                state_table_id: None,
                 null_safe: false,
             }
         );
@@ -4398,6 +4401,7 @@ mod tests {
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),
                 payload_names: Vec::new(),
+                state_table_id: None,
             }
         );
 
@@ -4465,6 +4469,7 @@ mod tests {
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),
                 payload_names: Vec::new(),
+                state_table_id: None,
             }
         );
 
@@ -4533,6 +4538,7 @@ mod tests {
                 right_value: "v".to_string(),
                 output_columns: Vec::new(),
                 payload_names: Vec::new(),
+                state_table_id: None,
             }
         );
 

@@ -14,10 +14,10 @@ use std::sync::Arc;
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use lakesoul_ivm::{
-    IvmRuntime, IvmTableOptions, JoinView, MinMaxKind, MinMaxView, StateRole,
-    SumCountView, WindowView, keyed_join_output_primary_keys, keyed_join_view_schema_for,
-    min_max_mv_schema_for, sum_count_mv_schema_for, value_count_state_schema_for,
-    window_mv_schema_for,
+    IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmTableOptions, JoinView, MinMaxKind, MinMaxView,
+    StateRole, SumCountView, WindowView, keyed_join_output_primary_keys,
+    keyed_join_view_schema_for, min_max_mv_schema_for, sum_count_mv_schema_for,
+    value_count_state_schema_for, window_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -226,7 +226,7 @@ async fn window_fixture(
 async fn keyed_join_fixture(
     runtime: &IvmRuntime,
     dir: &tempfile::TempDir,
-) -> (lakesoul_ivm::IvmTable, JoinView) {
+) -> (lakesoul_ivm::IvmTable, lakesoul_ivm::IvmTable, JoinView) {
     let suffix = uuid::Uuid::new_v4().simple();
     let left = runtime
         .create_table(
@@ -286,6 +286,16 @@ async fn keyed_join_fixture(
         )
         .await
         .unwrap();
+    let mut state_options = IvmTableOptions::new(
+        format!("ivm_states_join_state_{suffix}"),
+        table_path(dir, "join_state"),
+        output.schema.clone(),
+    )
+    .with_primary_keys(output.primary_keys.clone())
+    .with_bucket_columns(vec![output.primary_keys[0].clone()])
+    .with_cdc_column(IVM_ROW_KINDS_COLUMN);
+    state_options.hash_bucket_num = "8".to_string();
+    let state = runtime.create_table(state_options).await.unwrap();
     let view = JoinView::new_with_join_keys(
         format!("states_join_{suffix}"),
         left.clone(),
@@ -294,7 +304,8 @@ async fn keyed_join_fixture(
         join_keys,
         "lv",
         "rv",
-    );
+    )
+    .with_state(state.clone());
     left.append_batch(
         runtime.client(),
         RecordBatch::try_new(
@@ -310,7 +321,23 @@ async fn keyed_join_fixture(
     )
     .await
     .unwrap();
-    (output, view)
+    right
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                right.schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from(vec![10])),
+                    Arc::new(StringArray::from(vec!["a"])),
+                    Arc::new(Int64Array::from(vec![5])),
+                    Arc::new(StringArray::from(vec!["insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    (output, state, view)
 }
 
 async fn pair_list(runtime: &IvmRuntime, view_id: &str) -> Vec<(&'static str, String)> {
@@ -332,12 +359,20 @@ async fn states_are_registered_for_each_view_kind() {
     let (sum_mv, sum_view) = sum_count_fixture(&runtime, &dir).await;
     let (min_mv, min_state, min_view) = min_max_fixture(&runtime, &dir).await;
     let (window_mv, window_view) = window_fixture(&runtime, &dir).await;
-    let (join_mv, join_view) = keyed_join_fixture(&runtime, &dir).await;
+    let (join_mv, join_state, join_view) = keyed_join_fixture(&runtime, &dir).await;
 
     runtime.refresh_sum_count(&sum_view).await.unwrap().unwrap();
     runtime.refresh_min_max(&min_view).await.unwrap().unwrap();
     runtime.refresh_window(&window_view).await.unwrap().unwrap();
     runtime.refresh_join(&join_view).await.unwrap().unwrap();
+    assert!(
+        !join_state
+            .current_files(runtime.client())
+            .await
+            .unwrap()
+            .is_empty(),
+        "the keyed join output state table must be populated"
+    );
 
     assert_eq!(
         pair_list(&runtime, &sum_view.view_id).await,
@@ -356,7 +391,10 @@ async fn states_are_registered_for_each_view_kind() {
     );
     assert_eq!(
         pair_list(&runtime, &join_view.view_id).await,
-        vec![("mv", join_mv.table_id.clone())]
+        vec![
+            ("mv", join_mv.table_id.clone()),
+            ("state", join_state.table_id.clone()),
+        ]
     );
 
     // Re-registering the same tables (a fresh refresh or a rebuild) keeps one

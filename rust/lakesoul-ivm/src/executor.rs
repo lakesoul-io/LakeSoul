@@ -741,8 +741,10 @@ impl IvmSqlExecutor {
         if stored.is_some() && !same_definition {
             self.drop_generated_state(&view_id).await?;
         }
+        let mut generated_state_id = None;
         let spec = if !fallback && needs_state_table(&probe) {
             let state_table_id = self.ensure_state_table(&mv, &probe).await?;
+            generated_state_id = Some(state_table_id.clone());
             let request = AnalyzeRequest {
                 state_table_id: Some(state_table_id),
                 ..request
@@ -753,6 +755,10 @@ impl IvmSqlExecutor {
         } else {
             probe
         };
+        let mut spec = spec;
+        if let Some(state_table_id) = generated_state_id {
+            spec.set_derived_state_table(&state_table_id)?;
+        }
         if definition_hash(&spec)? != definition {
             return Err(rootcause::report!(
                 "internal error: the definition identity changed during analysis"
@@ -1206,6 +1212,59 @@ impl IvmSqlExecutor {
     /// The value-count state table of the view, reusing the registered one when
     /// its schema still matches and recreating it otherwise.
     async fn ensure_state_table(&self, mv: &IvmTable, spec: &ViewSpec) -> Result<String> {
+        if matches!(spec, ViewSpec::Join { .. } | ViewSpec::LookupJoin { .. }) {
+            let schema = mv.schema.clone();
+            let primary_keys = mv.primary_keys.clone();
+            let bucket_columns = if primary_keys.is_empty() {
+                Vec::new()
+            } else if !mv.bucket_columns.is_empty() {
+                mv.bucket_columns
+                    .iter()
+                    .filter(|column| primary_keys.contains(column))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                vec![primary_keys[0].clone()]
+            };
+            if let Some(existing) = self
+                .runtime
+                .metadata()
+                .get_state(spec.view_id(), StateRole::State)
+                .await?
+            {
+                let table = self.runtime.open_table_by_id(&existing.table_id).await?;
+                if schema_matches(&table.schema, &schema)
+                    && table.primary_keys == primary_keys
+                {
+                    return Ok(table.table_id);
+                }
+                self.runtime
+                    .metadata()
+                    .unregister_state(spec.view_id(), StateRole::State)
+                    .await?;
+                let _ = self
+                    .runtime
+                    .client()
+                    .drop_table(&table.table_name, &table.namespace)
+                    .await;
+            }
+            let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
+            let mut options = IvmTableOptions::new(
+                format!("{}__ivm_state_{suffix}", mv.table_name),
+                format!("{}__ivm_state_{suffix}", mv.table_path),
+                schema,
+            )
+            .with_namespace(mv.namespace.clone())
+            .with_primary_keys(primary_keys)
+            .with_bucket_columns(bucket_columns)
+            .with_file_format(mv.file_format);
+            if options.schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_ok() {
+                options = options.with_cdc_column(IVM_ROW_KINDS_COLUMN);
+            }
+            options.hash_bucket_num = mv.hash_bucket_num.clone();
+            let table = create_ivm_table(self.runtime.client(), options).await?;
+            return Ok(table.table_id);
+        }
         let (source_table_id, group_keys, group_exprs, value_column, value_expr) =
             match spec {
                 ViewSpec::MinMax {
@@ -1428,7 +1487,13 @@ impl Visitor for RelationCollector<'_> {
 }
 
 fn needs_state_table(spec: &ViewSpec) -> bool {
-    matches!(spec, ViewSpec::MinMax { .. } | ViewSpec::DistinctAgg { .. })
+    matches!(
+        spec,
+        ViewSpec::MinMax { .. }
+            | ViewSpec::DistinctAgg { .. }
+            | ViewSpec::Join { .. }
+            | ViewSpec::LookupJoin { .. }
+    )
 }
 
 /// Whether a spec is a global aggregate: its single MV row is rewritten

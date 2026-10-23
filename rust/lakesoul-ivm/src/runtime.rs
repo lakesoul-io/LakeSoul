@@ -270,6 +270,9 @@ pub enum ViewSpec {
         /// non-equality join conditions.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pair_filter: Option<String>,
+        /// Optional keyed output state table, mirroring the output schema and keys.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state_table_id: Option<String>,
         /// Whether a NULL join key matches another NULL join key
         /// (`IS NOT DISTINCT FROM` keys).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -523,6 +526,9 @@ pub enum ViewSpec {
         /// them under these names.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         payload_names: Vec<String>,
+        /// Optional keyed output state table, mirroring the output schema and keys.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state_table_id: Option<String>,
     },
     /// `group_key`, `MIN(value_column)` or `MAX(value_column)` over the source
     /// changelog, backed by a value-count state table.
@@ -1442,6 +1448,17 @@ impl ViewSpec {
                 ..
             } => {
                 *state = state_table_id.to_string();
+                Ok(())
+            }
+            ViewSpec::Join {
+                state_table_id: state,
+                ..
+            }
+            | ViewSpec::LookupJoin {
+                state_table_id: state,
+                ..
+            } => {
+                *state = Some(state_table_id.to_string());
                 Ok(())
             }
             other => Err(report!(
@@ -3229,6 +3246,7 @@ impl IvmRuntime {
                 left_filter,
                 right_filter,
                 pair_filter,
+                state_table_id,
                 null_safe,
             } => SpecView::Join(JoinView {
                 view_id: view_id.clone(),
@@ -3244,6 +3262,10 @@ impl IvmRuntime {
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
                 pair_filter: pair_filter.clone(),
+                state: match state_table_id {
+                    Some(id) => Some(self.open_table_by_id(id).await?),
+                    None => None,
+                },
                 null_safe: *null_safe,
                 refresh_interval_ms,
             }),
@@ -3327,6 +3349,7 @@ impl IvmRuntime {
                 right_value,
                 output_columns,
                 payload_names: _,
+                state_table_id,
             } => SpecView::LookupJoin(LookupJoinView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -3340,6 +3363,10 @@ impl IvmRuntime {
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
                 output_columns: output_columns.clone(),
+                state: match state_table_id {
+                    Some(id) => Some(self.open_table_by_id(id).await?),
+                    None => None,
+                },
                 refresh_interval_ms,
             }),
             ViewSpec::CrossJoin {
@@ -4010,6 +4037,7 @@ impl IvmRuntime {
         })
         .await;
         if result.is_ok() {
+            self.sync_join_state_for_spec(spec).await?;
             crate::observability::record_rebuild(kind, started.elapsed());
         }
         result
