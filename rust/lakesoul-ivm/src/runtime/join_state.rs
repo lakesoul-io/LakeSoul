@@ -64,8 +64,11 @@ pub(crate) fn join_side_state_schema_for(
         .iter()
         .map(|field| Arc::new(field.as_ref().clone()))
         .collect::<Vec<_>>();
-    if source.cdc_column.is_none()
-        && source.schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_err()
+    let source_cdc_present = source
+        .cdc_column
+        .as_ref()
+        .is_some_and(|column| source.schema.field_with_name(column).is_ok());
+    if !source_cdc_present && source.schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_err()
     {
         fields.push(Arc::new(Field::new(
             IVM_ROW_KINDS_COLUMN,
@@ -268,23 +271,12 @@ impl super::IvmRuntime {
         let mut stream = frame.execute_stream().await?;
         state.truncate(&self.client).await?;
         let mut pending = Vec::new();
-        let mut pending_rows = 0usize;
         while let Some(batch) = stream.next().await {
             let batch = encoder.encode_batch(&batch?)?;
-            pending_rows += batch.num_rows();
             pending.push(batch);
-            if pending_rows >= crate::table::MAX_STATE_APPEND_ROWS {
-                let schema = pending[0].schema();
-                let batch = arrow::compute::concat_batches(&schema, &pending)?;
-                pending.clear();
-                pending_rows = 0;
-                state.append_batches(&self.client, vec![batch]).await?;
-            }
         }
         if !pending.is_empty() {
-            let schema = pending[0].schema();
-            let batch = arrow::compute::concat_batches(&schema, &pending)?;
-            state.append_batches(&self.client, vec![batch]).await?;
+            state.append_batches(&self.client, pending).await?;
         }
         Ok(())
     }
@@ -312,52 +304,102 @@ impl super::IvmRuntime {
         let context = super::refresh_session();
         let delta =
             self.groups_table_frame(&context, source, window.added_files.clone())?;
+        let kind = join_side_state_cdc_column(source)
+            .ok_or_else(|| rootcause::report!("join side state has no change column"))?;
+        let encoder = JoinKeyEncoder::new(source, join_keys)?;
+
+        // Read the before image from the source, whose primary-key index is
+        // the source row identity.  Scanning the side state by source PK is
+        // not a keyed lookup: the side state is bucketed by join key.
+        let before = self
+            .before_window_table_frame(&context, source, &window.before_versions)
+            .await?;
         let pk_exprs = source
             .primary_keys
             .iter()
             .map(|key| datafusion::prelude::col(key.as_str()))
             .collect::<Vec<_>>();
-        let delta_pks = delta.clone().select(pk_exprs.clone())?.distinct()?;
+        let delta_pks = delta.clone().select(pk_exprs)?.distinct()?;
         let pk_names = source
             .primary_keys
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
-        let state_frame = self.current_table_frame(&context, state)?;
-        let old = state_frame.join(
-            delta_pks,
-            datafusion::prelude::JoinType::LeftSemi,
-            &pk_names,
-            &pk_names,
-            None,
-        )?;
-        let kind = join_side_state_cdc_column(source)
-            .ok_or_else(|| rootcause::report!("join side state has no change column"))?;
-        let old = old.with_column(kind.as_str(), datafusion::prelude::lit("delete"))?;
-        super::append_dataframe(state, &self.client, old).await?;
-        let encoder = JoinKeyEncoder::new(source, join_keys)?;
-        let mut stream = delta.execute_stream().await?;
-        let mut pending = Vec::new();
-        let mut pending_rows = 0usize;
-        while let Some(batch) = stream.next().await {
-            let batch = encoder.encode_batch(&batch?)?;
-            pending_rows += batch.num_rows();
-            pending.push(batch);
-            if pending_rows >= crate::table::MAX_STATE_APPEND_ROWS {
-                let schema = pending[0].schema();
-                let batch = arrow::compute::concat_batches(&schema, &pending)?;
-                pending.clear();
-                pending_rows = 0;
-                state.append_batches(&self.client, vec![batch]).await?;
+        let old = if source.primary_keys.len() == 1 {
+            // A single source primary key is also the writer's bucket key for
+            // the common case, so an IN filter can use the primary-key index.
+            // Keep the semi-join fallback for a larger key set and for
+            // multi-column identities.
+            let pk = source.primary_keys[0].as_str();
+            let batches = delta_pks.clone().collect().await?;
+            let values = batches
+                .iter()
+                .flat_map(|batch| {
+                    (0..batch.num_rows()).filter_map(move |row| {
+                        datafusion::common::ScalarValue::try_from_array(
+                            batch.column(0),
+                            row,
+                        )
+                        .ok()
+                    })
+                })
+                .collect::<Vec<_>>();
+            if values.is_empty() {
+                before.clone().limit(0, Some(0))?
+            } else if values.len() <= 8192 {
+                let list = values.into_iter().map(datafusion::prelude::lit).collect();
+                before.filter(datafusion::prelude::col(pk).in_list(list, false))?
+            } else {
+                before.join(
+                    delta_pks,
+                    datafusion::prelude::JoinType::LeftSemi,
+                    &pk_names,
+                    &pk_names,
+                    None,
+                )?
             }
+        } else {
+            before.join(
+                delta_pks,
+                datafusion::prelude::JoinType::LeftSemi,
+                &pk_names,
+                &pk_names,
+                None,
+            )?
+        };
+
+        let mut pending = Vec::new();
+        let mut old_stream = old.execute_stream().await?;
+        while let Some(batch) = old_stream.next().await {
+            let batch =
+                set_change_kind(&encoder.encode_batch(&batch?)?, &kind, "delete")?;
+            pending.push(batch);
+        }
+        let mut delta_stream = delta.execute_stream().await?;
+        while let Some(batch) = delta_stream.next().await {
+            pending.push(encoder.encode_batch(&batch?)?);
         }
         if !pending.is_empty() {
-            let schema = pending[0].schema();
-            let batch = arrow::compute::concat_batches(&schema, &pending)?;
-            state.append_batches(&self.client, vec![batch]).await?;
+            state.append_batches(&self.client, pending).await?;
         }
         Ok(())
     }
+}
+
+/// Replace a state change column on a batch (used to turn the source before
+/// image into a retraction under its old encoded join key).
+fn set_change_kind(
+    batch: &RecordBatch,
+    column: &str,
+    value: &str,
+) -> crate::error::Result<RecordBatch> {
+    let index = batch.schema().index_of(column)?;
+    let mut columns = batch.columns().to_vec();
+    columns[index] = Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+        value,
+        batch.num_rows(),
+    )));
+    Ok(RecordBatch::try_new(batch.schema(), columns)?)
 }
 
 #[cfg(test)]

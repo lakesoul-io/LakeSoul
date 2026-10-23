@@ -1487,13 +1487,7 @@ impl Visitor for RelationCollector<'_> {
 }
 
 fn needs_state_table(spec: &ViewSpec) -> bool {
-    matches!(
-        spec,
-        ViewSpec::MinMax { .. }
-            | ViewSpec::DistinctAgg { .. }
-            | ViewSpec::Join { .. }
-            | ViewSpec::LookupJoin { .. }
-    )
+    matches!(spec, ViewSpec::MinMax { .. } | ViewSpec::DistinctAgg { .. })
 }
 
 /// Whether a spec is a global aggregate: its single MV row is rewritten

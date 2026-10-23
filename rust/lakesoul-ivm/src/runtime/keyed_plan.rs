@@ -304,6 +304,7 @@ fn join_state_batch(
     state_batches: &[RecordBatch],
     state_schema: &SchemaRef,
     out_schema: &SchemaRef,
+    key_column: &str,
     multi_match: bool,
     emit_unmatched: bool,
 ) -> DataFusionResult<RecordBatch> {
@@ -317,7 +318,7 @@ fn join_state_batch(
                 .map_err(|error| DataFusionError::Execution(error.to_string()))?,
         )
     };
-    let key_index = contribution.schema().index_of(IVM_GROUP_ROW_COLUMN)?;
+    let key_index = contribution.schema().index_of(key_column)?;
     let contribution_keys = contribution
         .column(key_index)
         .as_any()
@@ -327,7 +328,7 @@ fn join_state_batch(
         })?;
     let mut state_index: HashMap<Vec<u8>, Vec<u32>> = HashMap::new();
     if let Some(state) = state.as_ref() {
-        let state_key_index = state.schema().index_of(IVM_GROUP_ROW_COLUMN)?;
+        let state_key_index = state.schema().index_of(key_column)?;
         let state_keys = state
             .column(state_key_index)
             .as_any()
@@ -464,7 +465,6 @@ impl IvmKeyedStateLookupExec {
 
     /// Join-side lookup mode: emit every matching state row and drop a
     /// contribution row without a match (inner-join semantics).
-    #[allow(dead_code)]
     pub(crate) fn with_multi_match(mut self, multi_match: bool) -> Self {
         self.multi_match = multi_match;
         self.emit_unmatched = !multi_match;
@@ -640,6 +640,7 @@ impl ExecutionPlan for IvmKeyedStateLookupExec {
                             &state_batches,
                             &state_schema,
                             &out_schema,
+                            &key_column,
                             multi_match,
                             emit_unmatched,
                         )?;

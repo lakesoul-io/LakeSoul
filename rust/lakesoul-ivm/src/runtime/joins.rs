@@ -3166,6 +3166,99 @@ fn join_is_keyed(view: &JoinView) -> bool {
 }
 
 impl IvmRuntime {
+    /// Read only the right-side state rows whose join keys occur in the left
+    /// delta.  The lookup is a physical plan: contribution keys are encoded,
+    /// routed to the side state's hash buckets, and matched with multi-match
+    /// semantics (one left key may have many right rows).
+    async fn lookup_join_right_state(
+        &self,
+        context: &SessionContext,
+        view: &JoinView,
+        right_state: &IvmTable,
+        delta_left: &DataFrame,
+    ) -> Result<DataFrame> {
+        use super::join_state::JoinKeyEncoder;
+        use super::keyed_plan::{
+            IVM_STATE_COLUMN_PREFIX, IvmKeyedStateLookupExec, bucket_repartition,
+            groups_by_bucket,
+        };
+        use futures::StreamExt;
+        let right_join_keys = if view.right_keys.is_empty() {
+            &view.join_keys
+        } else {
+            &view.right_keys
+        };
+        // The contribution is encoded under the left names.  This fast path is
+        // valid only when the right state was encoded from the same key names
+        // and neither side uses a computed key expression.
+        if right_join_keys != &view.join_keys
+            || view.key_exprs.left.iter().any(|expr| !expr.is_empty())
+        {
+            return Err(rootcause::report!(
+                "join-side lookup requires identical plain join-key columns"
+            ));
+        }
+        let encoder = JoinKeyEncoder::new(&view.left, &view.join_keys)?;
+        let batches = delta_left.clone().collect().await?;
+        let mut encoded = Vec::with_capacity(batches.len());
+        for batch in batches {
+            encoded.push(encoder.encode_batch(&batch)?);
+        }
+        let contribution = context.read_batches(encoded)?;
+        let bucket_count = if right_state.bucket_columns.len() == 1
+            && right_state.bucket_columns[0] == super::join_state::IVM_JOIN_KEY_COLUMN
+        {
+            right_state
+                .hash_bucket_num
+                .parse::<usize>()
+                .ok()
+                .filter(|count| *count > 1)
+                .unwrap_or(1)
+        } else {
+            1
+        };
+        let plan = contribution.create_physical_plan().await?;
+        let plan = bucket_repartition(
+            plan,
+            super::join_state::IVM_JOIN_KEY_COLUMN,
+            bucket_count,
+        )?;
+        let groups = right_state.current_groups(&self.client).await?;
+        let groups = groups_by_bucket(groups, bucket_count);
+        let lookup = IvmKeyedStateLookupExec::new(
+            plan,
+            right_state.clone(),
+            groups,
+            super::join_state::IVM_JOIN_KEY_COLUMN,
+            bucket_count,
+        )?
+        .with_multi_match(true);
+        let streams = datafusion::physical_plan::execute_stream_partitioned(
+            Arc::new(lookup),
+            context.task_ctx(),
+        )?;
+        let mut batches = Vec::new();
+        for mut stream in streams {
+            while let Some(batch) = stream.next().await {
+                batches.push(batch?);
+            }
+        }
+        let frame = context.read_batches(batches)?;
+        let right_columns = view
+            .right
+            .schema
+            .fields()
+            .iter()
+            .map(|field| {
+                col(format!("{IVM_STATE_COLUMN_PREFIX}{}", field.name()))
+                    .alias(field.name())
+            })
+            .collect::<Vec<_>>();
+        frame.select(right_columns).map_err(Into::into)
+    }
+}
+
+impl IvmRuntime {
     /// Write a join refresh output and, when configured, its keyed output
     /// state table.  The state table has the same schema and primary keys as
     /// the MV, so the pair state can be used as a lookup source by a later
@@ -3372,7 +3465,7 @@ impl IvmRuntime {
                 &view.left.schema,
                 view.left_filter.as_deref(),
             )?;
-            let right_now = apply_side_filter(
+            let mut right_now = apply_side_filter(
                 &context,
                 filter_deletes(right_frame, change_column(&view.right))?,
                 &view.right.schema,
@@ -3388,6 +3481,16 @@ impl IvmRuntime {
                 &view.right,
                 right_window.added_files.clone(),
             )?;
+            // A left-only window needs the right rows for the left delta keys
+            // only.  Read them through the keyed side-state lookup instead of
+            // scanning the whole right state.
+            if right_window.added_files.is_empty()
+                && let Some(right_state) = &right_side_state
+            {
+                right_now = self
+                    .lookup_join_right_state(&context, view, right_state, &delta_left)
+                    .await?;
+            }
             let mv_table = view.state.as_ref().unwrap_or(&view.output);
             let mv_batches = match single_side_join_mv_partitions(
                 mv_table,
@@ -5233,6 +5336,41 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+
+        // A rebuild starts a new generation.  Rebuild the side states from the
+        // source baseline as well; otherwise rows that disappeared before the
+        // rebuild would remain visible to later keyed lookups.
+        if keyed {
+            let left_state = self
+                .ensure_join_side_state(
+                    &view.view_id,
+                    &view.left,
+                    &view.join_keys,
+                    StateRole::JoinLeft,
+                )
+                .await?;
+            if let Some(state) = left_state {
+                self.sync_join_side_state(&view.left, &state, &view.join_keys)
+                    .await?;
+            }
+            let right_keys = if view.right_keys.is_empty() {
+                &view.join_keys
+            } else {
+                &view.right_keys
+            };
+            let right_state = self
+                .ensure_join_side_state(
+                    &view.view_id,
+                    &view.right,
+                    right_keys,
+                    StateRole::JoinRight,
+                )
+                .await?;
+            if let Some(state) = right_state {
+                self.sync_join_side_state(&view.right, &state, right_keys)
+                    .await?;
+            }
+        }
 
         let context = refresh_session();
         let left_empty = left_baseline
