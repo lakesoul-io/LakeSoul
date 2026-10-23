@@ -163,11 +163,16 @@ console ignores `LOCATION`. The current data set was loaded with:
 | `tpch_sf1_nopk` | `--sf 1 --layout nopk` | 50 |
 | `tpch_sf10` | `--sf 10 --buckets 16 --chunks 8 --mem-req 3Gi` | 798 |
 | `tpch_sf10_pkmonth` | `--sf 10 --layout pkmonth --buckets 4 --chunks 8 --mem-req 3Gi` | 5400 |
-| `tpch_sf10_nopk` | `--sf 10 --layout nopk --mem-req 3Gi`, lineitem with `--chunks 4` | 722 |
+| `tpch_sf10_nopk` | `--sf 10 --layout nopk --mem-req 3Gi`, lineitem with `--chunks 4` | 482 |
+
+Every `nopk` table has one file per tpchgen part (8 at SF1, 80 at SF10;
+nation and region one each): `nopk` chunks are key ranges of whole parts, so
+SF10 lineitem in 4 chunks has the same 80 files of ~36 MiB as one statement.
 
 At SF10 the `pkmonth` and `nopk` loads were OOM-killed at the 6Gi default
-limit while writing lineitem, the last table, after the other seven tables
-had been written by the same console process. Rerunning only lineitem in a
-new Job (`--tables lineitem --mem-lim 8Gi`, plus `--chunks 4` for `nopk`)
-succeeded; the script drops and recreates the table. A dropped table keeps its
-files, so delete `warehouse/<schema>/lineitem/` before the rerun.
+limit while writing lineitem, the last table. The `nopk` sink runs one writer
+per part concurrently, so a single statement holds all 80 lineitem parts in
+flight. Rerunning only lineitem in a new Job (`--tables lineitem --mem-lim
+8Gi`, plus `--chunks 4` for `nopk`) succeeded; the script drops and recreates
+the table. A dropped table keeps its files, so delete
+`warehouse/<schema>/lineitem/` before the rerun.

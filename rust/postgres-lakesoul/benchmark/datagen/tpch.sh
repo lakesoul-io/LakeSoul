@@ -17,10 +17,14 @@
 #   CONSOLE_BIN lakesoul-console binary         (default lakesoul-console)
 #   TABLES      space-separated subset          (default: all eight)
 #   CHUNKS      upserts per table               (default 1)
-#               N > 1 writes rows with `<first key> % N = k` per statement,
-#               bounding writer memory to ~1/N of the table (the writer
-#               buffers whole buckets: SF10 lineitem in one statement peaks at
-#               ~17 GiB RSS). Each chunk adds one file per bucket.
+#               N > 1 splits each table into N statements, bounding writer
+#               memory to ~1/N of the table (the writer buffers whole
+#               buckets: SF10 lineitem in one statement peaks at ~17 GiB RSS).
+#               pk layouts write rows with `<first key> % N = k` per
+#               statement, adding one file per bucket per chunk. nopk writes
+#               one file per tpchgen part, so its chunks are key ranges of
+#               whole parts (PARTS must be a multiple of N) and the files
+#               match a single statement's.
 # The console reads LAKESOUL_PG_*, LAKESOUL_WAREHOUSE and AWS_* like the
 # coordinator. Extra arguments are forwarded to the console. The console
 # keeps going after a failed statement, so its output is scanned for errors.
@@ -62,6 +66,10 @@ esac
 if [ -z "${PARTS:-}" ]; then
     PARTS=$(awk -v sf="$SF" 'BEGIN { p = int(sf * 8); print (p < 8 ? 8 : p) }')
 fi
+if [ "$LAYOUT" = nopk ] && [ $((PARTS % CHUNKS)) -ne 0 ]; then
+    echo "LAYOUT=nopk needs PARTS ($PARTS) to be a multiple of CHUNKS ($CHUNKS)" >&2
+    exit 2
+fi
 LOC="${LOCATION%/}/$SCHEMA"
 SQL_FILE="${TMPDIR:-/tmp}/tpch_$SCHEMA.sql"
 
@@ -88,6 +96,43 @@ month_partition() {
     orders) echo "o_ordermonth o_orderdate" ;;
     lineitem) echo "l_shipmonth l_shipdate" ;;
     esac
+}
+
+# tpchgen rows of table $1 at SF 1; partsupp is generated per part.
+part_base() {
+    case "$1" in
+    supplier) echo 10000 ;;
+    customer) echo 150000 ;;
+    part | partsupp) echo 200000 ;;
+    orders | lineitem) echo 1500000 ;;
+    esac
+}
+
+# First key column value of the last row in the first $2 of $PARTS tpchgen
+# parts of table $1. tpchgen gives part p the rows after index
+# int(rows / PARTS) * (p - 1); keys are the 1-based row index, except
+# orders/lineitem: OrderGenerator::make_order_key keeps the low 3 bits and
+# shifts the rest left by 2.
+part_end_key() {
+    awk -v base="$(part_base "$1")" -v sf="$SF" -v parts="$PARTS" -v n="$2" -v t="$1" 'BEGIN {
+        i = int(int(base * sf) / parts) * n
+        if (t == "orders" || t == "lineitem") i = int(i / 8) * 32 + i % 8
+        printf "%.0f\n", i
+    }'
+}
+
+# WHERE clause of chunk $3 (0-based) of table $1 keyed by $2 in the nopk
+# layout: whole tpchgen parts, so each part is still one file.
+part_range() {
+    per=$((PARTS / CHUNKS))
+    cond=""
+    if [ "$3" -gt 0 ]; then
+        cond="$2 > $(part_end_key "$1" $(($3 * per)))"
+    fi
+    if [ "$3" -lt $((CHUNKS - 1)) ]; then
+        cond="${cond:+$cond AND }$2 <= $(part_end_key "$1" $((($3 + 1) * per)))"
+    fi
+    echo "$cond"
 }
 
 {
@@ -129,10 +174,17 @@ SQL
         nation | region) parts=1 ;;
         *) parts=$PARTS ;;
         esac
+        chunks=$CHUNKS
+        # nopk chunks split whole parts; nation/region are a single part.
+        if [ "$LAYOUT" = nopk ] && [ "$parts" -eq 1 ]; then
+            chunks=1
+        fi
         k=0
-        while [ "$k" -lt "$CHUNKS" ]; do
-            if [ "$CHUNKS" -eq 1 ]; then
+        while [ "$k" -lt "$chunks" ]; do
+            if [ "$chunks" -eq 1 ]; then
                 echo "$insert $SCHEMA.$t SELECT $select FROM tpch_$t($SF_FMT, $parts);"
+            elif [ "$LAYOUT" = nopk ]; then
+                echo "$insert $SCHEMA.$t SELECT $select FROM tpch_$t($SF_FMT, $parts) WHERE $(part_range "$t" "$key" "$k");"
             else
                 echo "$insert $SCHEMA.$t SELECT $select FROM tpch_$t($SF_FMT, $parts) WHERE $key % $CHUNKS = $k;"
             fi
