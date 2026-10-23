@@ -615,11 +615,10 @@ impl ExecutionPlan for IvmStreamExec {
         let change_filter = self.change_filter.clone();
         let merge = self.merge;
         builder.spawn_blocking(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|error| DataFusionError::Execution(error.to_string()))?;
-            runtime.block_on(async move {
+            // LakeSoulIO owns the process-wide reader/writer runtime.  Drive
+            // every scan stream on that runtime instead of creating a new
+            // current-thread runtime per DataFusion partition.
+            lakesoul_io::session::GLOBAL_RUNTIME.block_on(async move {
                 table
                     .stream_files_with_group(
                         group,
