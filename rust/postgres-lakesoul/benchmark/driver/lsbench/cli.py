@@ -575,7 +575,7 @@ def parser() -> argparse.ArgumentParser:
     console.add_argument("--query-dir", default=str(Path(__file__).resolve().parents[2] / "workloads/tpch/queries"))
     console.add_argument("--iterations", type=positive_int, default=1)
     console.add_argument("--warmup", type=nonnegative_int, default=0)
-    console.add_argument("--answers", help="answer directory; only row counts are compared")
+    console.add_argument("--answers", help="answer directory; compared as in tpch, using the console's column types")
     console.add_argument("--console-bin", default="lakesoul-console")
     console.add_argument("--worker-threads", type=positive_int, required=True,
                          help="console tokio threads; match the CPU limit (the console default is 2)")

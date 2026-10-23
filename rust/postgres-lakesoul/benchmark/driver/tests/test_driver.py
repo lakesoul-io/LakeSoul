@@ -9,7 +9,7 @@ from pathlib import Path
 
 from lsbench.answers import compare, ordered
 from lsbench.cli import int32, parser, read_mix, substitute_sf
-from lsbench.console import Parser, script
+from lsbench.console import Parser, check, script
 from lsbench.wire import ReadPolicy, Result
 
 
@@ -114,27 +114,46 @@ class CLITests(unittest.TestCase):
 class ConsoleTests(unittest.TestCase):
     @staticmethod
     def feed(lines: list[str], exit_code: int) -> list[dict]:
-        parser = Parser()
+        parser = Parser(keep_values=True)
         outcomes = [parser.line(line, float(i)) for i, line in enumerate(lines)]
         outcomes.append(parser.finish(float(len(lines)), exit_code))
         return [o for o in outcomes if o is not None]
 
     @staticmethod
     def marker(name: str, iteration: int) -> list[str]:
-        return ["+----+", f"| lsbench-marker:{name}:{iteration} |", "+----+",
+        return ['{"columns":[{"name":"lsbench_marker","type":"Utf8"}]}', f'["lsbench-marker:{name}:{iteration}"]',
                 "1 row(s) fetched. ", "Elapsed 0.001 seconds.", ""]
 
-    def test_queries_take_their_own_elapsed_and_errors(self):
-        lines = (["0 row(s) fetched. ", "Elapsed 0.002 seconds."]  # USE
-                 + self.marker("q01", -1) + ["| 4 |", "4 row(s) fetched. ", "Elapsed 1.250 seconds.", ""]
+    def test_queries_take_their_own_elapsed_values_and_errors(self):
+        lines = (['{"columns":[]}', "0 row(s) fetched. ", "Elapsed 0.002 seconds."]  # USE
+                 + self.marker("q01", -1)
+                 + ['{"columns":[{"name":"n","type":"Utf8"},{"name":"v","type":"Decimal128(15, 2)"}]}',
+                    '["Elapsed 9 seconds.\\n4 row(s) fetched.","1.50"]', '[null,"2.00"]',
+                    "2 row(s) fetched. ", "Elapsed 1.250 seconds.", ""]
                  + self.marker("q02", -1) + ["● Schema error: No field named x.", "│ Valid fields are a."]
-                 + self.marker("q03", 0) + ["0 row(s) fetched. ", "Elapsed 0.300 seconds."])
+                 + self.marker("q03", 0) + ['{"columns":[{"name":"n","type":"Int64"}]}',
+                                            "0 row(s) fetched. ", "Elapsed 0.300 seconds."])
         q01, q02, q03 = self.feed(lines, 0)
         self.assertEqual((q01["query"], q01["iteration"], q01["status"], q01["latency_s"], q01["rows"]),
-                         ("q01", -1, "ok", 1.25, 4))
+                         ("q01", -1, "ok", 1.25, 2))
+        self.assertEqual((q01["columns"], q01["types"]), (["n", "v"], ["Utf8", "Decimal128(15, 2)"]))
+        self.assertEqual(q01["values"], [("Elapsed 9 seconds.\n4 row(s) fetched.", "1.50"), (None, "2.00")])
         self.assertEqual((q02["query"], q02["status"], q02["latency_s"]), ("q02", "error", None))
         self.assertIn("No field named x", q02["error"])
-        self.assertEqual((q03["query"], q03["iteration"], q03["status"], q03["rows"]), ("q03", 0, "ok", 0))
+        self.assertEqual((q03["query"], q03["iteration"], q03["status"], q03["rows"], q03["values"]),
+                         ("q03", 0, "ok", 0, []))
+
+    def test_answers_use_column_types(self):
+        outcome = dict(columns=["name", "total"], types=["Utf8", "Decimal128(38, 4)"],
+                       values=[("001", "100.004"), ("b", None)])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "q.csv"
+            path.write_text("name,total\n001,100.00\nb,\n", encoding="utf-8")
+            self.assertEqual(check(outcome, path, "SELECT 1"), (True, None))
+            path.write_text("name,total\n1,100.00\nb,\n", encoding="utf-8")
+            self.assertFalse(check(outcome, path, "SELECT 1")[0])
+            path.write_text("name,total\n001,100.02\nb,\n", encoding="utf-8")
+            self.assertFalse(check(outcome, path, "SELECT 1")[0])
 
     def test_killed_console_marks_the_running_query(self):
         lines = self.marker("q01", 0) + ["memory allocation failed"]

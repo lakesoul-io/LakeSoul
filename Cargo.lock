@@ -5216,6 +5216,7 @@ dependencies = [
  "rand 0.9.5",
  "rootcause",
  "rustyline",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-appender",

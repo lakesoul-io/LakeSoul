@@ -19,7 +19,7 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
 use crate::exec::{exec_command, exec_from_files, exec_from_repl};
-use crate::print::Printer;
+use crate::print::{OutputFormat, Printer};
 
 type Result<T, E = Report> = std::result::Result<T, E>;
 
@@ -44,6 +44,10 @@ struct Cli {
         help = "log dir, end with '/' is not valid"
     )]
     log_dir: String,
+
+    /// Result output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
 
     #[command(flatten)]
     pub core: CoreArgs,
@@ -150,7 +154,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
     register_tpch_udtfs(&ctx)?;
     let files = cli.file;
 
-    let printer = Printer::default();
+    let printer = Printer::new(cli.format);
 
     if let Some(cmd) = cli.command {
         return exec_command(cmd, &printer, &ctx).await;

@@ -67,13 +67,15 @@ python3 -m lsbench console --database tpch_sf1 --out console.jsonl --sf 1 \
 
 `console` does not use PG wire. It writes one statement file (`USE`, an
 optional `SET datafusion.execution.target_partitions`, then a marker `SELECT`
-before every query) and runs it with a single `lakesoul-console` process
-(`--console-bin`, default from `PATH`), so caches persist across iterations
-as in `tpch`. The console needs the metadata and warehouse environment
-(`LAKESOUL_PG_URL`, `LAKESOUL_WAREHOUSE`, `AWS_*`). `latency_s` is the
-console's own `Elapsed` time (millisecond resolution, planning plus
+before every query) and runs it with a single `lakesoul-console --format json`
+process (`--console-bin`, default from `PATH`), so caches persist across
+iterations as in `tpch`. The console needs the metadata and warehouse
+environment (`LAKESOUL_PG_URL`, `LAKESOUL_WAREHOUSE`, `AWS_*`). `latency_s` is
+the console's own `Elapsed` time (millisecond resolution, planning plus
 execution plus printing); `rows` comes from its `N row(s) fetched.` line.
-`--answers` checks row counts only.
+`--answers` compares values with the `tpch` rules above. The console's Arrow
+column types take the place of PostgreSQL type OIDs: integer, float and
+decimal columns get the numeric tolerance, everything else compares as text.
 
 `--worker URL` (repeatable) runs distributed; `--target-partitions` and
 `--bytes-per-partition` then go to the console's flags. Without workers,

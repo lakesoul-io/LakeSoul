@@ -123,10 +123,11 @@ python3 scripts/bench.py console --run-dir results/<run> --bench-tag <tag> --nam
 Without workers, `--target-partitions` becomes `SET
 datafusion.execution.target_partitions` (the console's single-node default
 is 1). The worker Pods keep the resources of the last `deploy`. `--answers`
-compares only row counts, because the console prints formatted tables.
+compares values as in `tpch` (`lakesoul-console --format json` prints typed
+rows).
 
 `console` writes `NAME.jsonl`, `NAME.console.log` (console output without
-result tables), `NAME.console.json` (node, QoS class, resources, allowed
+result rows), `NAME.console.json` (node, QoS class, resources, allowed
 CPUs, worker URLs, termination state), the console's
 `NAME.sampler.console.<pod>.jsonl`, plus the service evidence of `collect`.
 The samples are read from the container log after the Pod completes, so an

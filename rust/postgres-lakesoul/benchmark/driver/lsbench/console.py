@@ -3,33 +3,38 @@ queries itself (single node, or distributed over `--worker` URLs), with no
 PG-wire server in between. One console process runs every iteration, so
 in-process caches persist across iterations as in the `tpch` scenario.
 
-The console prints each statement's result table followed by
-`N row(s) fetched.` and `Elapsed S seconds.`, and prints errors to stderr
-without a summary. A marker `SELECT` before every query names the query that
-the following output belongs to; stdout and stderr share one pipe, so the
-order of lines is preserved.
+The console runs with `--format json`: per statement a
+`{"columns":[{"name":..,"type":..}]}` line and one JSON array of display
+strings per row, then `N row(s) fetched.` and `Elapsed S seconds.`; errors go
+to stderr without a summary. A marker `SELECT` before every query names the
+query that the following output belongs to; stdout and stderr share one pipe,
+so the order of lines is preserved.
 """
 from __future__ import annotations
 
 import asyncio
-import csv
+import json
 import re
 import sys
 import tempfile
 import time
 from pathlib import Path
 
+from .answers import compare
+from .wire import Result
+
 MARKER = "lsbench-marker"
 MARKER_LINE = re.compile(rf"{MARKER}:(q\d\d):(-?\d+)")
 ELAPSED_LINE = re.compile(r"^Elapsed ([0-9.]+) seconds\.$")
 FETCHED_LINE = re.compile(r"^(\d+) row\(s\) fetched\.")
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+NUMERIC_TYPE = re.compile(r"(Int|UInt|Float|Decimal)\d")
 
 
 def is_text(line: str) -> bool:
-    """Neither a result-table line nor the startup banner (box-drawing
-    characters only)."""
-    return bool(line.strip()) and line[0] not in "+|" and re.search(r"[A-Za-z0-9]", line) is not None
+    """Neither result output (JSON lines, or table lines of the default
+    format) nor the startup banner (box-drawing characters only)."""
+    return bool(line.strip()) and line[0] not in "+|[{" and re.search(r"[A-Za-z0-9]", line) is not None
 
 
 def statement(sql: str) -> str:
@@ -55,19 +60,20 @@ def script(database: str, queries: list[tuple[str, str]], warmup: int, iteration
     return "".join(lines)
 
 
-def answer_rows(path: Path) -> int:
-    with path.open(newline="", encoding="utf-8") as stream:
-        return sum(1 for _ in csv.reader(stream)) - 1
-
-
 class Parser:
-    """Turns console output lines into per-query outcomes, in order."""
+    """Turns console output lines into per-query outcomes, in order. With
+    `keep_values`, an ok outcome carries the result as `columns`, `types` and
+    `values`."""
 
-    def __init__(self):
+    def __init__(self, keep_values: bool = False):
+        self.keep_values = keep_values
         self.marker: tuple[str, int] | None = None  # marker printed, its summary not yet
         self.pending: tuple[str, int] | None = None  # query running
         self.started = 0.0
         self.rows: int | None = None
+        self.columns: list[str] = []
+        self.types: list[str] = []
+        self.values: list[tuple[str | None, ...]] = []
         self.errors: list[str] = []
         self.setup_errors: list[str] = []
 
@@ -84,13 +90,30 @@ class Parser:
             if self.marker is not None:
                 self.pending, self.marker = self.marker, None
                 self.started, self.rows, self.errors = now, None, []
+                self.columns, self.types, self.values = [], [], []
                 return None
             if self.pending is None:  # USE / SET
                 return None
             name, iteration = self.pending
             self.pending = None
-            return dict(query=name, iteration=iteration, status="ok", start_unix=self.started,
-                        end_unix=now, latency_s=float(elapsed[1]), rows=self.rows, error=None)
+            outcome = dict(query=name, iteration=iteration, status="ok", start_unix=self.started,
+                           end_unix=now, latency_s=float(elapsed[1]), rows=self.rows, error=None)
+            if self.keep_values:
+                outcome.update(columns=self.columns, types=self.types, values=self.values)
+            return outcome
+        if self.pending is not None and text[:1] in ("{", "["):
+            try:
+                decoded = json.loads(text)
+            except ValueError:
+                decoded = None
+            if isinstance(decoded, dict) and "columns" in decoded:
+                self.columns = [c["name"] for c in decoded["columns"]]
+                self.types = [c["type"] for c in decoded["columns"]]
+                return None
+            if isinstance(decoded, list):
+                if self.keep_values:
+                    self.values.append(tuple(decoded))
+                return None
         fetched = FETCHED_LINE.match(text)
         if fetched:
             self.rows = int(fetched[1])
@@ -119,8 +142,18 @@ class Parser:
                     end_unix=now, latency_s=None, rows=None, error=error)
 
 
+def check(outcome: dict, answer: Path, sql: str) -> tuple[bool, str | None]:
+    """`answers.compare` with the rules of the `tpch` scenario; numeric
+    tolerance applies to integer, float and decimal columns."""
+    oids = [1700 if NUMERIC_TYPE.match(t) else 25 for t in outcome["types"]]
+    result = Result(columns=outcome["columns"], type_oids=oids, values=outcome["values"],
+                    rows=len(outcome["values"]))
+    return compare(result, answer, sql)
+
+
 def command(args, script_path: str) -> list[str]:
-    cmd = [args.console_bin, "--worker-threads", str(args.worker_threads), "--log-dir", args.log_dir]
+    cmd = [args.console_bin, "--format", "json", "--worker-threads", str(args.worker_threads),
+           "--log-dir", args.log_dir]
     for url in args.worker:
         cmd += ["--worker", url]
     if args.worker:
@@ -135,8 +168,7 @@ async def console(args, output) -> None:
     from .cli import sample, tpch_queries
 
     queries = tpch_queries(args)
-    expected = ({name: answer_rows(Path(args.answers) / f"{name}.csv") for name, _ in queries}
-                if args.answers else {})
+    sql = dict(queries)
     text = script(args.database, queries, args.warmup, args.iterations,
                   None if args.worker else args.target_partitions)
     planned = (args.warmup + args.iterations) * len(queries)
@@ -147,25 +179,24 @@ async def console(args, output) -> None:
         print(f"lsbench: {' '.join(cmd)}", file=sys.stderr, flush=True)
         process = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, limit=1 << 24)
-        parser = Parser()
+        parser = Parser(keep_values=bool(args.answers))
         written = 0
 
         def write(outcome: dict) -> None:
             nonlocal written
+            result = {k: outcome.pop(k) for k in ("columns", "types", "values") if k in outcome}
             record = sample(args, outcome["query"], outcome["iteration"], 0)
             record.update(outcome, bytes=None, workers=len(args.worker),
                           target_partitions=args.target_partitions, correct=None, mismatch=None)
-            want = expected.get(outcome["query"])
-            if want is not None and record["status"] == "ok":
-                record["correct"] = record["rows"] == want
-                if not record["correct"]:
-                    record["mismatch"] = f"Row count: actual={record['rows']}, expected={want}"
+            if args.answers and record["status"] == "ok":
+                record["correct"], record["mismatch"] = check(
+                    result, Path(args.answers) / f"{outcome['query']}.csv", sql[outcome["query"]])
             output.write(record)
             written += 1
 
         while line := await process.stdout.readline():
             decoded = line.decode("utf-8", "replace")
-            # Result tables stay out of the pod log; errors and summaries do not.
+            # Result rows stay out of the pod log; errors and summaries do not.
             if is_text(decoded):
                 print(decoded.rstrip("\n"), file=sys.stderr, flush=True)
             if (outcome := parser.line(decoded, time.time())) is not None:

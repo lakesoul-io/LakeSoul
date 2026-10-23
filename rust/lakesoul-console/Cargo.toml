@@ -29,6 +29,8 @@ tracing-subscriber = { workspace = true }
 tracing-appender = "0.2"
 # error
 rootcause = { workspace = true }
+# output
+serde_json = { workspace = true }
 
 [lints]
 workspace = true
