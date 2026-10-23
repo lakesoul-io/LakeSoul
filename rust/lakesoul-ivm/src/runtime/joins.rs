@@ -3470,6 +3470,140 @@ impl IvmRuntime {
         filter_deletes(frame, change_column(table))
     }
 
+    /// Read the output pair rows for affected left/right source keys through
+    /// the shared PK lookup plan.  This replaces the full MV scan used by the
+    /// pair-state delete path.
+    async fn lookup_output_pairs(
+        &self,
+        context: &SessionContext,
+        table: &IvmTable,
+        view: &JoinView,
+        affected_left: &DataFrame,
+        affected_right: &DataFrame,
+    ) -> Result<DataFrame> {
+        let left_columns = view
+            .left
+            .primary_keys
+            .iter()
+            .map(|key| left_pk_alias(key))
+            .collect::<Vec<_>>();
+        let right_columns = view
+            .right
+            .primary_keys
+            .iter()
+            .map(|key| right_pk_alias(key))
+            .collect::<Vec<_>>();
+        let left = self
+            .lookup_output_side(
+                context,
+                table,
+                affected_left,
+                &view.left.primary_keys,
+                &left_columns,
+            )
+            .await?;
+        let right = self
+            .lookup_output_side(
+                context,
+                table,
+                affected_right,
+                &view.right.primary_keys,
+                &right_columns,
+            )
+            .await?;
+        let pairs = left.union(right)?.distinct()?;
+        filter_deletes(pairs, change_column(table))
+    }
+
+    async fn lookup_output_side(
+        &self,
+        context: &SessionContext,
+        table: &IvmTable,
+        input: &DataFrame,
+        input_columns: &[String],
+        table_columns: &[String],
+    ) -> Result<DataFrame> {
+        use super::keyed_plan::{
+            IVM_STATE_COLUMN_PREFIX, IvmPkLookupExec, bucket_repartition_by_columns,
+            groups_by_bucket,
+        };
+        use futures::StreamExt;
+        let empty =
+            context.read_batches(vec![RecordBatch::new_empty(table.schema.clone())])?;
+        if input_columns.is_empty() || table_columns.is_empty() {
+            return Ok(empty);
+        }
+        let bucket_count = table
+            .hash_bucket_num
+            .parse::<usize>()
+            .ok()
+            .filter(|count| *count > 1)
+            .unwrap_or(1);
+        let route_columns = if bucket_count > 1
+            && !table.bucket_columns.is_empty()
+            && table
+                .bucket_columns
+                .iter()
+                .all(|column| table_columns.iter().any(|key| key == column))
+        {
+            let mut columns = Vec::with_capacity(table.bucket_columns.len());
+            for bucket_column in &table.bucket_columns {
+                let position = table_columns
+                    .iter()
+                    .position(|key| key == bucket_column)
+                    .ok_or_else(|| {
+                        report!("bucket column {bucket_column} is not an output key")
+                    })?;
+                columns.push(input_columns[position].clone());
+            }
+            Some(columns)
+        } else {
+            None
+        };
+        let bucket_count = route_columns.as_ref().map_or(1, |_| bucket_count);
+        let plan = input.create_physical_plan().await?;
+        let plan = if let Some(columns) = route_columns.as_deref() {
+            bucket_repartition_by_columns(plan, columns, bucket_count)?
+        } else {
+            plan
+        };
+        let groups =
+            groups_by_bucket(table.current_groups(&self.client).await?, bucket_count);
+        let lookup = IvmPkLookupExec::new_with_columns(
+            plan,
+            table.clone(),
+            groups,
+            input_columns.to_vec(),
+            table_columns.to_vec(),
+            bucket_count,
+        )?
+        .with_multi_match(true);
+        let streams = datafusion::physical_plan::execute_stream_partitioned(
+            Arc::new(lookup),
+            context.task_ctx(),
+        )?;
+        let mut batches = Vec::new();
+        for mut stream in streams {
+            while let Some(batch) = stream.next().await {
+                batches.push(batch?);
+            }
+        }
+        if batches.is_empty() {
+            return Ok(empty);
+        }
+        let frame = context.read_batches(batches)?;
+        let projections = table
+            .schema
+            .fields()
+            .iter()
+            .map(|field| {
+                column_expr(&format!("{IVM_STATE_COLUMN_PREFIX}{}", field.name()))
+                    .alias(field.name())
+            })
+            .collect::<Vec<_>>();
+        Ok(frame.select(projections)?)
+    }
+
     /// Read only the right-side state rows whose join keys occur in the left
     /// delta.  The lookup is a physical plan: contribution keys are encoded,
     /// routed to the side state's hash buckets, and matched with multi-match
@@ -3993,27 +4127,6 @@ impl IvmRuntime {
                 };
                 (left_now, right_now)
             };
-            let mv_table = view.state.as_ref().unwrap_or(&view.output);
-            let mv_batches = match single_side_join_mv_partitions(
-                mv_table,
-                &view.left,
-                &left_window,
-                &view.right,
-                &right_window,
-            ) {
-                Some(restriction) => {
-                    self.current_table_frame_filtered_partitions(
-                        &context,
-                        mv_table,
-                        Vec::new(),
-                        &restriction,
-                    )
-                    .await?
-                }
-                None => self.current_table_frame(&context, mv_table)?,
-            };
-            let mv = mv_batches;
-
             let left_key_names = view
                 .left
                 .primary_keys
@@ -4039,6 +4152,15 @@ impl IvmRuntime {
             let affected_left = delta_left.select(left_key_exprs.clone())?.distinct()?;
             let affected_right =
                 delta_right.select(right_key_exprs.clone())?.distinct()?;
+            let pairs = self
+                .lookup_output_pairs(
+                    &context,
+                    view.state.as_ref().unwrap_or(&view.output),
+                    view,
+                    &affected_left,
+                    &affected_right,
+                )
+                .await?;
             let current = if let Some(current) = fast_current {
                 current
             } else {
@@ -4097,7 +4219,7 @@ impl IvmRuntime {
                 .collect::<Vec<_>>();
 
             // Pair rows already written by this epoch make a replay a no-op.
-            let already = mv
+            let already = pairs
                 .clone()
                 .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
                 .select(pair_exprs.clone())?
@@ -4108,48 +4230,11 @@ impl IvmRuntime {
                 .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
 
             // Retract the previous pairs of the affected rows; rows written by
-            // this epoch are kept so a replay is idempotent. The output keys
-            // pairs by the two row identities, so match the aliases.
-            let left_alias_names = view
-                .left
-                .primary_keys
-                .iter()
-                .map(|key| left_pk_alias(key))
-                .collect::<Vec<_>>();
-            let left_alias_refs = left_alias_names
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            let right_alias_names = view
-                .right
-                .primary_keys
-                .iter()
-                .map(|key| right_pk_alias(key))
-                .collect::<Vec<_>>();
-            let right_alias_refs = right_alias_names
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            let active = mv
+            // this epoch are kept so a replay is idempotent.
+            let active = pairs
                 .clone()
                 .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?;
             let deletes = active
-                .clone()
-                .join(
-                    affected_left,
-                    JoinType::LeftSemi,
-                    &left_alias_refs,
-                    &left_key_names,
-                    None,
-                )?
-                .union(active.join(
-                    affected_right,
-                    JoinType::LeftSemi,
-                    &right_alias_refs,
-                    &right_key_names,
-                    None,
-                )?)?
-                .distinct()?
                 .select(keyed_join_output_columns(
                     &view.parts(),
                     IdentitySource::Stored,
