@@ -4445,3 +4445,33 @@ join（需 before-match 扩展）、chain（需逐阶段键传播）仍记录为
 - **调度/执行**：Rust tokio 调度 + IVM 自建 scan 算子（显式文件列表 + as-of/changelog），
   不阻塞 DataFusion 升级；PG `CREATE/REFRESH MATERIALIZED VIEW` 表面在
   `rust/postgres-lakesoul` 上后续对接。
+
+### 10.182 Keyed state 物理计划（已实现）
+
+multi-agg state 的增量更新不再在 driver 中收集 state 后执行 SQL merge，而是固定为
+三段可组合物理计划：
+
+1. **bucket routing**：`LakeSoulBucketExpr` 计算 writer 使用的 LakeSoul hash，再用
+   `RepartitionExec(Range)` 把 contribution 分到每个 bucket 一个执行分区；
+2. **`IvmKeyedStateLookupExec`**：输入按 bucket 分区，每个分区只读该 bucket 的
+   state 文件组，按 `__ivm_group_row` 生成 PK filter（Vortex 下走 bulk PK index），
+   把 old state 列以 `__ivm_state_` 前缀左连接到 contribution batch；
+3. **`IvmStateMergeExec`**：在流上对每条 contribution 计算新的 accumulator、
+   row count、row kind 和 epoch，输出 next state；MV 列只是 state 的投影。
+
+节点只持有 table/file/name/schema 等 plain 配置，不持有闭包；执行期的并发限制由计划
+持有的 semaphore 实现，默认每个计划最多 4 个 active reader/state task，可通过
+`LAKESOUL_IVM_MAX_ACTIVE_TASKS` 覆盖。跨计划的全局 gate 暂不启用：它与 DataFusion
+扫描消费组合时可能死锁；目前 provider scan 和 keyed lookup 各自限流。
+
+验证：
+
+- `tests/multi_agg_state.rs` 改为 8 个 state bucket，并覆盖“新 group 没有 old state 行”；
+- 全量框架测试 `601 passed`（`cargo test -p lakesoul-ivm --tests --profile test-fast
+  -- --test-threads=4`）；
+- 生产形态 P2 数据上的 group-by SUM Decimal 增量：bootstrap 与单行 delta 均和全量
+  聚合 `equal=true`；单行 lookup 的 state read 为 1 行、bucket partition 0、
+  约 2.9ms，增量总时间主要来自 keyed source before-row 读取。
+
+后续：把同一组 lookup/merge 节点用于 join/window 的 keyed state，并在 join 增量上补
+P2 delta 窗口验证。
