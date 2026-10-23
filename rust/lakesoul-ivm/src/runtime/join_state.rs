@@ -50,14 +50,6 @@ pub(crate) fn join_side_state_schema_for(
             source.table_name, IVM_JOIN_KEY_COLUMN
         )));
     }
-    for key in join_keys {
-        source.schema.field_with_name(key).map_err(|_| {
-            DataFusionError::Execution(format!(
-                "join key {key} is missing from source {}",
-                source.table_name
-            ))
-        })?;
-    }
     let mut fields = source
         .schema
         .fields()
@@ -111,16 +103,29 @@ pub(crate) fn join_side_needs_state(source: &IvmTable, join_keys: &[String]) -> 
 pub(crate) struct JoinKeyEncoder {
     keys: Vec<String>,
     kind_column: Option<String>,
+    payload_schema: SchemaRef,
     encoder: GroupKeyRowEncoder,
 }
 
 impl JoinKeyEncoder {
     pub(crate) fn new(source: &IvmTable, join_keys: &[String]) -> DataFusionResult<Self> {
-        let encoder = GroupKeyRowEncoder::new(&source.schema, join_keys)
+        Self::new_with_schema(source, &source.schema, join_keys)
+    }
+
+    /// Build an encoder over the schema carrying the (possibly computed) key
+    /// columns.  The side-state payload still uses the source schema; only the
+    /// hidden key is computed from this frame.
+    pub(crate) fn new_with_schema(
+        source: &IvmTable,
+        schema: &Schema,
+        join_keys: &[String],
+    ) -> DataFusionResult<Self> {
+        let encoder = GroupKeyRowEncoder::new(schema, join_keys)
             .map_err(|error| DataFusionError::Execution(error.to_string()))?;
         Ok(Self {
             keys: join_keys.to_vec(),
             kind_column: join_side_state_cdc_column(source),
+            payload_schema: source.schema.clone(),
             encoder,
         })
     }
@@ -145,20 +150,31 @@ impl JoinKeyEncoder {
             .encoder
             .encode_columns(&columns)
             .map_err(|error| DataFusionError::Execution(error.to_string()))?;
-        let mut fields = batch
-            .schema()
+        // The side-state payload is exactly the source schema.  A computed
+        // join-key expression may have been materialized on the frame, so
+        // select the payload by source column name instead of forwarding all
+        // batch columns.
+        let mut fields = self
+            .payload_schema
             .fields()
             .iter()
             .map(|field| Arc::new(field.as_ref().clone()))
             .collect::<Vec<_>>();
-        fields.push(Arc::new(Field::new(
-            IVM_JOIN_KEY_COLUMN,
-            DataType::Binary,
-            false,
-        )));
-        let mut output = batch.columns().to_vec();
+        let mut output = self
+            .payload_schema
+            .fields()
+            .iter()
+            .map(|field| {
+                batch.column_by_name(field.name()).cloned().ok_or_else(|| {
+                    DataFusionError::Execution(format!(
+                        "join side payload column {} is missing",
+                        field.name()
+                    ))
+                })
+            })
+            .collect::<DataFusionResult<Vec<ArrayRef>>>()?;
         if let Some(kind_column) = &self.kind_column
-            && batch.schema().field_with_name(kind_column).is_err()
+            && self.payload_schema.field_with_name(kind_column).is_err()
         {
             fields.push(Arc::new(Field::new(
                 kind_column.clone(),
@@ -169,6 +185,11 @@ impl JoinKeyEncoder {
                 std::iter::repeat_n("insert", batch.num_rows()),
             )));
         }
+        fields.push(Arc::new(Field::new(
+            IVM_JOIN_KEY_COLUMN,
+            DataType::Binary,
+            false,
+        )));
         output.push(Arc::new(encoded));
         RecordBatch::try_new(Arc::new(Schema::new(fields)), output)
             .map_err(|error| DataFusionError::Execution(error.to_string()))
@@ -217,6 +238,23 @@ pub(crate) fn join_key_array(batch: &RecordBatch) -> DataFusionResult<&BinaryArr
         })
 }
 
+/// Materialize computed join-key expressions under their join-key names.
+fn materialize_join_keys(
+    context: &datafusion::prelude::SessionContext,
+    frame: datafusion::prelude::DataFrame,
+    exprs: &[String],
+    join_keys: &[String],
+) -> crate::error::Result<datafusion::prelude::DataFrame> {
+    let mut frame = frame;
+    for (index, key) in join_keys.iter().enumerate() {
+        if let Some(expr) = exprs.get(index).filter(|expr| !expr.is_empty()) {
+            let expression = context.state().create_logical_expr(expr, frame.schema())?;
+            frame = frame.with_column(key.as_str(), expression)?;
+        }
+    }
+    Ok(frame)
+}
+
 impl super::IvmRuntime {
     /// Create or reuse one side's keyed state table and register it under the
     /// view.  The source itself is used when its primary key already equals
@@ -263,11 +301,21 @@ impl super::IvmRuntime {
         source: &IvmTable,
         state: &IvmTable,
         join_keys: &[String],
+        key_exprs: &[String],
     ) -> crate::error::Result<()> {
         use futures::StreamExt;
         let context = super::refresh_session();
-        let frame = self.current_table_frame(&context, source)?;
-        let encoder = JoinKeyEncoder::new(source, join_keys)?;
+        let frame = materialize_join_keys(
+            &context,
+            self.current_table_frame(&context, source)?,
+            key_exprs,
+            join_keys,
+        )?;
+        let encoder = JoinKeyEncoder::new_with_schema(
+            source,
+            frame.schema().as_arrow(),
+            join_keys,
+        )?;
         let mut stream = frame.execute_stream().await?;
         state.truncate(&self.client).await?;
         let mut pending = Vec::new();
@@ -296,24 +344,37 @@ impl super::IvmRuntime {
         state: &IvmTable,
         window: &super::SourceWindow,
         join_keys: &[String],
+        key_exprs: &[String],
     ) -> crate::error::Result<()> {
         use futures::StreamExt;
         if window.added_files.is_empty() {
             return Ok(());
         }
         let context = super::refresh_session();
-        let delta =
-            self.groups_table_frame(&context, source, window.added_files.clone())?;
+        let delta = materialize_join_keys(
+            &context,
+            self.groups_table_frame(&context, source, window.added_files.clone())?,
+            key_exprs,
+            join_keys,
+        )?;
         let kind = join_side_state_cdc_column(source)
             .ok_or_else(|| rootcause::report!("join side state has no change column"))?;
-        let encoder = JoinKeyEncoder::new(source, join_keys)?;
+        let encoder = JoinKeyEncoder::new_with_schema(
+            source,
+            delta.schema().as_arrow(),
+            join_keys,
+        )?;
 
         // Read the before image from the source, whose primary-key index is
         // the source row identity.  Scanning the side state by source PK is
         // not a keyed lookup: the side state is bucketed by join key.
-        let before = self
-            .before_window_table_frame(&context, source, &window.before_versions)
-            .await?;
+        let before = materialize_join_keys(
+            &context,
+            self.before_window_table_frame(&context, source, &window.before_versions)
+                .await?,
+            key_exprs,
+            join_keys,
+        )?;
         let pk_exprs = source
             .primary_keys
             .iter()
@@ -448,7 +509,8 @@ mod tests {
         let keys = join_key_array(&encoded).unwrap();
         assert_eq!(keys.value(0), keys.value(1));
         assert_ne!(keys.value(0), keys.value(2));
-        assert_eq!(encoded.num_columns(), 4);
+        // Source columns + rowKinds + hidden join key.
+        assert_eq!(encoded.num_columns(), 5);
     }
 
     #[test]

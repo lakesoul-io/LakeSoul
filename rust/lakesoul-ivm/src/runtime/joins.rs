@@ -3160,6 +3160,19 @@ impl LeftJoinView {
     }
 }
 
+async fn latest_table_timestamp(
+    runtime: &IvmRuntime,
+    table: &IvmTable,
+) -> Result<Option<i64>> {
+    Ok(runtime
+        .client
+        .get_all_partition_info(&table.table_id)
+        .await?
+        .into_iter()
+        .map(|partition| partition.timestamp)
+        .max())
+}
+
 /// Whether a join view takes the keyed (upsert) path.
 fn join_is_keyed(view: &JoinView) -> bool {
     !view.left.primary_keys.is_empty() || !view.right.primary_keys.is_empty()
@@ -3176,7 +3189,7 @@ impl IvmRuntime {
         view: &JoinView,
         right_state: &IvmTable,
         delta_left: &DataFrame,
-    ) -> Result<DataFrame> {
+    ) -> Result<Option<DataFrame>> {
         use super::join_state::JoinKeyEncoder;
         use super::keyed_plan::{
             IVM_STATE_COLUMN_PREFIX, IvmKeyedStateLookupExec, bucket_repartition,
@@ -3193,10 +3206,9 @@ impl IvmRuntime {
         // and neither side uses a computed key expression.
         if right_join_keys != &view.join_keys
             || view.key_exprs.left.iter().any(|expr| !expr.is_empty())
+            || view.key_exprs.right.iter().any(|expr| !expr.is_empty())
         {
-            return Err(rootcause::report!(
-                "join-side lookup requires identical plain join-key columns"
-            ));
+            return Ok(None);
         }
         let encoder = JoinKeyEncoder::new(&view.left, &view.join_keys)?;
         let batches = delta_left.clone().collect().await?;
@@ -3254,7 +3266,7 @@ impl IvmRuntime {
                     .alias(field.name())
             })
             .collect::<Vec<_>>();
-        frame.select(right_columns).map_err(Into::into)
+        Ok(Some(frame.select(right_columns)?))
     }
 }
 
@@ -3292,10 +3304,22 @@ impl IvmRuntime {
         output: &IvmTable,
         state: Option<&IvmTable>,
     ) -> Result<()> {
-        if let Some(state) = state
-            && state.current_files(&self.client).await?.is_empty()
-            && !output.current_files(&self.client).await?.is_empty()
-        {
+        let Some(state) = state else {
+            return Ok(());
+        };
+        let output_files = output.current_files(&self.client).await?;
+        let state_files = state.current_files(&self.client).await?;
+        let state_stale = state_files.is_empty() && !output_files.is_empty();
+        // The MV is written before its optional mirror state.  If the state
+        // commit failed after the MV commit, the state's latest partition
+        // timestamp is behind the MV's; repair it from the MV before applying
+        // the next window.  Equal timestamps are left alone (both writes land
+        // in the same refresh, and a compaction is allowed to be newer).
+        let state_stale = state_stale
+            || (!output_files.is_empty()
+                && latest_table_timestamp(self, state).await?
+                    < latest_table_timestamp(self, output).await?);
+        if state_stale {
             self.sync_join_state(output, state).await?;
         }
         Ok(())
@@ -3416,14 +3440,20 @@ impl IvmRuntime {
         };
         if let Some(state) = &left_side_state {
             if state.current_files(&self.client).await?.is_empty() {
-                self.sync_join_side_state(&view.left, state, &view.join_keys)
-                    .await?;
+                self.sync_join_side_state(
+                    &view.left,
+                    state,
+                    &view.join_keys,
+                    &view.key_exprs.left,
+                )
+                .await?;
             } else {
                 self.apply_join_side_delta(
                     &view.left,
                     state,
                     &left_window,
                     &view.join_keys,
+                    &view.key_exprs.left,
                 )
                 .await?;
             }
@@ -3435,14 +3465,20 @@ impl IvmRuntime {
                 &view.right_keys
             };
             if state.current_files(&self.client).await?.is_empty() {
-                self.sync_join_side_state(&view.right, state, right_join_keys)
-                    .await?;
+                self.sync_join_side_state(
+                    &view.right,
+                    state,
+                    right_join_keys,
+                    &view.key_exprs.right,
+                )
+                .await?;
             } else {
                 self.apply_join_side_delta(
                     &view.right,
                     state,
                     &right_window,
                     right_join_keys,
+                    &view.key_exprs.right,
                 )
                 .await?;
             }
@@ -3486,10 +3522,11 @@ impl IvmRuntime {
             // scanning the whole right state.
             if right_window.added_files.is_empty()
                 && let Some(right_state) = &right_side_state
-            {
-                right_now = self
+                && let Some(frame) = self
                     .lookup_join_right_state(&context, view, right_state, &delta_left)
-                    .await?;
+                    .await?
+            {
+                right_now = frame;
             }
             let mv_table = view.state.as_ref().unwrap_or(&view.output);
             let mv_batches = match single_side_join_mv_partitions(
@@ -5350,8 +5387,13 @@ impl IvmRuntime {
                 )
                 .await?;
             if let Some(state) = left_state {
-                self.sync_join_side_state(&view.left, &state, &view.join_keys)
-                    .await?;
+                self.sync_join_side_state(
+                    &view.left,
+                    &state,
+                    &view.join_keys,
+                    &view.key_exprs.left,
+                )
+                .await?;
             }
             let right_keys = if view.right_keys.is_empty() {
                 &view.join_keys
@@ -5367,8 +5409,13 @@ impl IvmRuntime {
                 )
                 .await?;
             if let Some(state) = right_state {
-                self.sync_join_side_state(&view.right, &state, right_keys)
-                    .await?;
+                self.sync_join_side_state(
+                    &view.right,
+                    &state,
+                    right_keys,
+                    &view.key_exprs.right,
+                )
+                .await?;
             }
         }
 

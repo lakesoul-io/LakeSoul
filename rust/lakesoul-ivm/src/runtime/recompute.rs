@@ -3745,14 +3745,19 @@ impl IvmRuntime {
         } else {
             contrib_plan
         };
-        let lookup_plan: Arc<dyn datafusion::physical_plan::ExecutionPlan> =
-            Arc::new(super::keyed_plan::IvmKeyedStateLookupExec::new(
+        let lookup_plan: Arc<dyn datafusion::physical_plan::ExecutionPlan> = Arc::new(
+            super::keyed_plan::IvmKeyedStateLookupExec::new(
                 contrib_plan,
                 state.clone(),
                 state_groups_by_bucket,
                 IVM_GROUP_ROW_COLUMN,
                 state_bucket_num,
-            )?);
+            )?
+            // A group with no old state row is a new group: emit the
+            // contribution with a null old-state side so the merge plan
+            // can insert it.
+            .with_multi_match(false),
+        );
         let measure_columns = measures
             .iter()
             .map(|(_, column, _)| column.clone())
