@@ -478,6 +478,7 @@ struct IvmStreamExec {
     properties: Arc<PlanProperties>,
     refresh_io: Option<Arc<Mutex<RefreshIo>>>,
     file_counts: Arc<Vec<usize>>,
+    gate: Arc<tokio::sync::Semaphore>,
 }
 
 impl IvmStreamExec {
@@ -511,6 +512,9 @@ impl IvmStreamExec {
             )),
             refresh_io,
             file_counts,
+            gate: Arc::new(tokio::sync::Semaphore::new(
+                crate::runtime::keyed_plan::max_active_tasks(),
+            )),
         }
     }
 }
@@ -614,10 +618,18 @@ impl ExecutionPlan for IvmStreamExec {
         let out_schema = self.out_schema.clone();
         let change_filter = self.change_filter.clone();
         let merge = self.merge;
+        let gate = self.gate.clone();
         builder.spawn_blocking(move || {
             // LakeSoulIO owns the process-wide reader/writer runtime.  Drive
             // every scan stream on that runtime instead of creating a new
-            // current-thread runtime per DataFusion partition.
+            // current-thread runtime per DataFusion partition.  This plan's
+            // gate keeps at most four reader/state tasks active even when the
+            // table has more buckets than the task budget.
+            let _permit = lakesoul_io::session::GLOBAL_RUNTIME.block_on(async {
+                gate.acquire_owned().await.map_err(|error| {
+                    DataFusionError::Execution(format!("scan task gate closed: {error}"))
+                })
+            })?;
             lakesoul_io::session::GLOBAL_RUNTIME.block_on(async move {
                 table
                     .stream_files_with_group(
