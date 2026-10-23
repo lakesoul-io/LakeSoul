@@ -477,3 +477,365 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
 - MIN/MAX/DISTINCT 占比未定：决定 value-count 状态表是否值得。
 - 维表 fanout 分布未定：决定 FK 索引/状态表是否值得，或直接代价回退。
 - 集群调度接口未定：P5 需要与现有调度/compaction 服务对接。
+
+## 7. 多聚合 state：全量基线、增量点查与 compaction
+
+### 7.1 全量基线要持久化
+
+全量基准不能只执行 `COUNT(*)`；需要把同一 source epoch 的
+`GROUP BY` 输出真正写到持久化参考表：
+
+- schema 与 MV 一致（group keys + measures）；
+- 使用与 MV 相同的 LakeSoul writer 和线程配置；
+- 计时包含聚合、writer 排序/分区、文件与 metadata commit；
+- 与增量 MV 按 row/group key 对比，而不是只比较 group 数。
+
+### 7.2 增量 state 用流式 PK lookup
+
+state 表的主键是 `ivm_group_row`（Arrow Row 二进制），并且按该列 bucket。
+增量不能用 driver collect 全部 affected keys，也不能让 state 全分区扫描。
+
+目标执行路径：
+
+```text
+contrib stream (affected groups, bounded batches)
+  -> group_row key batch
+  -> state provider / LakeSoulReader bulk PK filter
+  -> matched state rows
+  -> per-batch state/MV merge
+  -> append_stream / bounded append
+```
+
+约束：
+
+- keys 不回到 driver，不构造全局 IN 列表；
+- state reader 走 `with_state_key_lookup` / `bulk_pk_lookup`；
+- 按 changed range partition 裁剪 state；
+- affected 比例过高时允许回退全 state/分区扫描，但要有成本阈值；
+- 用 `rows_scanned` 证明 state 读量接近 affected groups，而不是 state 总行数。
+
+### 7.3 compaction
+
+- state：写入方提供 `IvmTable::compact` 能力；生产由外部 compaction 任务触发。
+- MV：保持外部 compaction。
+- 测试时在窗口之间显式执行 state/MV compaction，单独统计 compaction
+  时间、RSS、文件数；compaction 不进入增量 refresh 的计时。
+- 多聚合 state 路径也需要接入 state compaction 触发/测试，不能只覆盖
+  `refresh_sum_count`。
+- 测试关注 100 轮后 state/MV 文件数是否稳定，以及 compaction 后下一次
+  增量 lookup 是否仍正确。
+
+### 7.4 首轮实现结果
+
+- 增量 `refresh_multi_agg_state` 已改为消费 `contrib` batch stream：
+  - 每个 batch 从 `ivm_group_row` 构造 batch-local PK 过滤；
+  - `state` 按 changed range partition + PK filter 读取；
+  - 在同一个 DataFusion session 中注册 batch-local contrib/state，执行
+    state merge；
+  - state/MV 输出按有界 chunk 写入，state 与 MV 并行 append。
+- 不把完整 key 集合 collect 到 driver；每个 batch 的 key 集合和 state 结果
+  都是有界的。
+- 小分区真实 delta：25 个窗口全部 `equal=true`，单窗口约 1.2–3.7s。
+- 在测试窗口之间显式执行 state/MV compaction：
+  - 第 10 轮后约 3.6s；
+  - 第 20 轮后约 3.3s；
+  - compaction 不计入 refresh 计时；
+  - compaction 后继续增量，最终仍 `equal=true`。
+- 仍需补：
+  - state reader 的 `rows_scanned` 指标，证明 PK lookup 命中而不是全分区扫描；
+  - full-day 真实/合成增量与持久化 full_ref 对比；
+  - 100 轮文件数与 compaction 稳定性。
+
+### 7.5 persisted full_ref 的首轮结果
+
+测试 harness 新增一个持久化 `full_ref` 表：同一 source epoch 的 61-key
+`GROUP BY` 结果通过 LakeSoul writer 写成 Vortex，包含聚合和提交时间。
+
+4 threads、16 buckets、8GB session pool：
+
+| 项目 | 耗时 |
+|---|---:|
+| 全量聚合 `COUNT(*)`（未物化） | 9.0s |
+| 持久化 full_ref（一份 3.75M 行） | **11.8s** |
+| bootstrap（state + MV 两份输出） | **29.6s** |
+| bootstrap 聚合到第一批输出 | 8.6s |
+| bootstrap state/MV 并行写入 | 20.1s |
+
+full_ref 行数与 MV 均为 3,755,984，逐行 hash `equal=true`。
+小分区 full_ref：494,478 行，物化 0.86s，`equal=true`。
+
+因此公平比较下：
+
+- 全量物化一份结果约 11.8s；
+- bootstrap 两份输出约 29.6s，约 **2.5×**；
+- 之前 7–9s 与 bootstrap 的 5× 差异主要来自“COUNT 未物化”和“两份写入”，
+  不是 group-by 本身。
+
+后续优化重点仍是：
+
+1. 评估 state 只写一份、MV 异步生成；
+2. 复用一次排序写两种 schema；
+3. 减少 15 次 writer chunk 的建立/排序/提交开销；
+4. 检查 MV bucket 倾斜。
+
+### 7.6 full-day 增量首测：暴露 source 全分区扫描
+
+full-day（source 10.9M 行、3.76M group、state/MV/full_ref 各 3.76M 行）
+使用 1% 合成 update/delete/insert 后，增量 refresh **失败**：
+
+- 32GB cgroup：OOM kill；
+- 48GB cgroup：DataFusion 报错：
+
+```text
+HashJoinInput ... can_spill: false
+greedy(used: 6.4 GB, pool_size: 6.4 GB)
+```
+
+错误发生在 refresh 内部，`multi-agg keyed incremental finished` 尚未打印。
+
+结论：
+
+- state 的流式 PK lookup 已经生效；
+- 但 source 的 `before` 和 `current` 仍然按 changed range partition 全量读取，
+  再与 delta keys 做 `LeftSemi`；
+- full-day 的 10.9M source 行 + 1% delta keys 仍会产生多个 1GB 级
+  HashJoinInput，无法靠扩大 heap 解决；
+- 这也说明 source 侧也必须做 **流式 source PK lookup**，不能只优化 state。
+
+下一步：
+
+1. 对 delta stream 按 batch 提取 source primary-key keys；
+2. 通过 source reader 的 PK filter 只读 affected rows：
+   - before version 用 `read_before_window_filtered`；
+   - current 用 changed partition + PK filter；
+3. 每个 delta batch 生成有界 contributions，合并后再走现有 state PK lookup；
+4. 重新测 full-day 1%、5%；
+5. 如果 source delta 本身已经包含完整的新值，可进一步去掉 current source 的全量读。
+
+### 7.7 full-day 1% 增量：source PK lookup + state 分桶并发扫描
+
+在 7.6 的失败之后补了两层优化：
+
+- source 不再把 changed range partition 与 delta keys 做 `LeftSemi`；delta
+  stream 按有界 key chunk 取 source before rows，new rows 直接取 delta 的
+  `insert` 行（去掉 source current 全量读）。
+- state lookup 改走 `IvmTableProvider` 的 lazy scan，而不再直接调用
+  `read_current_filtered`。provider 会按 hash bucket 把 scan 拆成多个
+  DataFusion execution partition；每个 partition 的 Vortex reader 自动使用
+  PK locator。contributions 按
+  `LAKESOUL_IVM_STATE_LOOKUP_BATCH_ROWS`（默认 131072）合并成一个有界
+  batch 后再发起 state scan。
+
+full-day 1% 实测（source 10.9M、3.76M group；16 buckets；target partitions=4；
+48GB cgroup；cache 开启；`LAKESOUL_PK_PROFILE=1`）：
+
+```text
+first incremental:
+  source before lookup: keys=130998 files=64 total=1.3s
+  source chunk total:   1.7s
+  state lookup:         keys=119300, 16 bucket partitions,
+                        files=15/partition, total=5.9s
+  state/MV write:       <1s
+  refresh total:        8.5s
+
+second incremental (PK index cached):
+  source before lookup: 1.9s
+  state lookup:         4.0s
+  refresh total:        6.7s
+```
+
+对比优化前（state 每个 8192-key batch 都重新打开 256 个 state 文件）：
+
+```text
+first incremental state read:  65.5s
+second incremental state read: 59.9s
+```
+
+结论：
+
+- bucket 并发 + 一次大 key batch 让 state lookup 从 ~60s 降到 4–6s；
+- PK index 缓存确实有效，第二次 state lookup 只需 4.0s；
+- 当前每个 bucket partition 仍会收到完整的 119k key filter，下一步可以按
+  bucket 预先分流 key，进一步降低内存和 locator 候选量；
+- 32GB cgroup 在第二次增量前仍会 OOM，48GB 可以完成；内存峰值需要继续
+  优化，不能把 48GB 当成生产结论；
+- full-day 1% 的最终 full/MV 等价校验和 5% 压测仍未在本轮完成。
+### 7.8 按 bucket 预分流 state key，并复查内存
+
+7.7 的实现仍然把完整的 119k key filter 传给每个 bucket partition。每个
+partition 都会构造一份 `InList`，并用完整的 key 集去调用 PK locator，
+既浪费内存也浪费候选计算。
+
+现在在 recompute 侧先用与 writer 相同的 `compute_scalar_hash` 把
+`__ivm_group_row` 分到 bucket，再通过 provider 的 bucket filter 路由：
+每个 bucket partition 只拿到自己的约 7.5k 个 key；某个 bucket 没有 key 时
+直接使用 `false` filter，不再退化成全量 scan。provider 仍保留 DataFusion
+的完整 filter，保证结果正确。
+
+full-day 1% 复测（32GB cgroup，其余配置同 7.7）：
+
+```text
+first incremental:
+  source before lookup: 1.7s
+  state lookup:         2.76s
+  refresh total:        5.63s
+
+second incremental (PK index cached):
+  source before lookup: 2.2s
+  state lookup:         2.66s
+  refresh total:        5.61s
+```
+
+每次 state lookup 的 profile 从：
+
+```text
+keys=119k files=16 total≈0.7–1.1s ×16
+```
+
+变为：
+
+```text
+keys≈7.5k files=16 total≈1.4–1.7s ×16
+```
+
+把完整 key 集复制到 16 个 partition 是 32GB 下第二次增量 OOM 的重要内存
+放大点；按 bucket 预分流后，32GB cgroup 可以完成两轮增量，不再需要 48GB。
+剩余内存占用主要来自：
+
+- 有界的 119k contributions batch；
+- 每个 bucket 的 state 结果约 7.5k 行，最后合并成 119k 行；
+- 每个 DataFusion session 的 8GB 内存池上限（实际按需分配）；
+- state PK index 走本地 cache/mmap，不占 heap。
+
+下一步：5% 的最终等值校验，以及把 source 的 before key 也按 bucket 预分流
+（source 当前已经只有约 1.7s，优先级较低）。
+
+### 7.9 5% 增量结果
+
+同一 full-day fixture，32GB cgroup，16 buckets：
+
+```text
+source chunks: 128,920 / 128,047 / 22,899 keys
+state keys:    237,933
+state lookup:  5.7s
+refresh total: 10.4s
+```
+
+这次运行没有 OOM。full-day 1% 的最终 full/MV 等价校验在 48GB 下通过
+（full_hashes == mv_hashes，3,753,875 个 group）；32GB 下增量 refresh 本身
+完成了，但 pilot 紧接着执行的全量校验 aggregate 在 32GB 时 OOM，因此不能把
+“32GB 能完成校验”写成结论。生产 refresh 的内存峰值和校验/查询的内存峰值需要
+分开评估。
+
+### 7.10 source before 按 bucket 预分流、流式校验与分阶段内存
+
+source 的 before 读取也改为：
+
+- 从 `before_window_groups` 一次解析窗口前的文件组；
+- 用 source primary key 的 `compute_scalar_hash` 按 bucket 分流；
+- 通过 `IvmTableProvider::groups(...).with_bucket_filters(...)` 让每个
+  bucket partition 只拿本桶 key，并自动走 Vortex PK locator。
+
+full-day 1% profile：
+
+```text
+source bucket partitions: keys≈1.3k–12k files=4 total≈0.11–0.15s ×16
+source chunk:             0.9s
+state lookup:             2.07s
+refresh total:            3.7s
+```
+
+校验不再把 3.75M 个 md5 字符串收进 `Vec` 再排序，而是流式读取哈希结果，
+累加两个独立的 64-bit digest 和行数；full/MV digest 相等即通过。这样校验
+不需要在 driver 上保留全量哈希集合。
+
+full-day 1% 分阶段 RSS（32GB cgroup，pilot 进程自身采样；start/peak/end）：
+
+| 阶段 | start | peak | end |
+|---|---:|---:|---:|
+| initial full aggregate | 9.6GB | 20.6GB | 13.0GB |
+| bootstrap refresh | 13.1GB | 20.3GB | 13.0GB |
+| bootstrap validation | 15.8GB | 24.5GB | 16.5GB |
+| incremental refresh | 19.2GB | 19.3GB | 19.0GB |
+| incremental validation | 19.0GB | 23.2GB | 20.9GB |
+
+结论：
+
+- 流式校验后，32GB cgroup 可以完成 full-day 1% 的最终 full/MV 校验；
+- refresh 本身的峰值增量很小（约 0.1GB），但校验阶段仍有约 4GB 峰值增量；
+- process baseline 已包含 source load、bootstrap 表和 DataFusion session，不能把
+  peak 直接当成单个阶段 allocations；
+- 5% 已补测；refresh/validation 仍需继续观察，见 7.11。
+
+### 7.11 5% source bucket + 流式校验
+
+5% 增量复测（source bucket、流式校验、32GB）：
+
+```text
+source chunks: 130,233 / 129,220 / 20,413 keys
+source chunk:  2.2s / 2.5s / 2.8s
+state keys:    237,933
+state lookup:  7.05s
+refresh total: 16.52s
+validation:    full/mv rows=3,744,932, digest equal
+memory:
+  refresh:     start 23.6GB, peak 30.1GB, end 26.6GB
+  validation:  start 26.6GB, peak 31.1GB, end 27.6GB
+```
+
+5% 在 32GB cgroup 下完成了 refresh 和流式校验，但峰值已经接近上限；生产上
+不能假设 5% 变化仍能保持较大 headroom。
+
+### 7.12 内存配置复查与 jemalloc
+
+配置复查结论：
+
+- DataFusion refresh session 使用 `LAKESOUL_IVM_MEMORY_LIMIT_MB`（本次 8192，
+  对应 6.4GB pool），并新增 `LAKESOUL_IVM_BATCH_SIZE`（本次 4096）；
+- LakeSoul writer 的 spill pool 由 `LAKESOUL_IVM_WRITE_POOL_SIZE` 控制（本次
+  2048MB），state/MV 并行写时各自一个 writer；
+- reader spill pool 由 `LAKESOUL_IVM_READ_POOL_SIZE` 控制（本次 512MB），
+  注意它是 **每个 reader/partition** 的预算，16 个 bucket 的理论上限是
+  16×512MB，不是全局 512MB；
+- 实测把 write pool 降到 512MB 时，bootstrap 的 ExternalSorter 需要
+  508.4MB，但 pool 只剩 502MB，直接报 `Resources exhausted`；writer pool
+  至少要留出约 1GB 余量，2048MB 可稳定通过。
+
+使用：
+
+```sh
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so
+export MALLOC_CONF=background_thread:true
+```
+
+并设置 batch=4096、read pool=512MB、write pool=2048MB 后，full-day 复测：
+
+1%：
+
+| 阶段 | start | peak | end |
+|---|---:|---:|---:|
+| initial full aggregate | 1.9GB | 14.1GB | 4.1GB |
+| bootstrap refresh | 4.9GB | 16.5GB | 1.6GB |
+| bootstrap validation | 2.1GB | 15.6GB | 1.9GB |
+| incremental refresh | 6.7GB | 6.7GB | 2.9GB |
+| incremental validation | 2.9GB | 15.6GB | 2.0GB |
+
+5%：
+
+| 阶段 | start | peak | end |
+|---|---:|---:|---:|
+| incremental refresh | 8.0GB | 19.9GB | 4.1GB |
+| incremental validation | 4.1GB | 16.1GB | 1.8GB |
+
+与没有 jemalloc、batch=8192、read/write pool=2048MB 的旧结果相比：
+
+- 1% incremental refresh peak 从 19.3GB 降到 6.7GB；
+- 1% validation peak 从 23.2GB 降到 15.6GB；
+- 5% refresh peak 从 30.1GB 降到 19.9GB；
+- 5% validation peak 从 31.1GB 降到 16.1GB。
+
+这说明此前“偏高”很大一部分是 allocator 保留已释放页造成的 RSS 碎片，
+而不是 DataFusion/writer 的活跃内存。jemalloc 会及时归还页面，配合更小的
+batch 和 reader pool 后内存明显下降。生产环境仍应把 reader pool 按 bucket
+数计入总预算，不能只按单个 512MB 计算。
+

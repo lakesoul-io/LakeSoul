@@ -8,8 +8,9 @@
 
 use super::*;
 
-use arrow::array::{ArrayRef, Int64Array, StringArray};
-use datafusion::prelude::col;
+use arrow::array::{ArrayRef, BinaryArray, Int64Array, StringArray};
+use datafusion::common::ScalarValue;
+use datafusion::prelude::{col, lit};
 
 use crate::metadata::PartitionVersion;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
@@ -3096,6 +3097,362 @@ impl IvmRuntime {
             .map_err(|error| DataFusionError::Execution(error.to_string()))
     }
 
+    /// Build a state PK filter from the Arrow Row keys of one contrib batch.
+    ///
+    /// The list is deliberately batch-local: the key frame is consumed as a
+    /// stream, so the driver never materializes all affected groups.
+    fn state_key_filters(batch: &RecordBatch) -> DataFusionResult<Vec<Expr>> {
+        let index = batch
+            .schema()
+            .index_of(IVM_GROUP_ROW_COLUMN)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+        let keys = batch
+            .column(index)
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or_else(|| {
+                DataFusionError::Execution(format!(
+                    "{IVM_GROUP_ROW_COLUMN} is not binary"
+                ))
+            })?;
+        let list = keys
+            .iter()
+            .flatten()
+            .map(|key| lit(ScalarValue::Binary(Some(key.to_vec()))))
+            .collect::<Vec<_>>();
+        if list.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Ok(vec![col(IVM_GROUP_ROW_COLUMN).in_list(list, false)])
+        }
+    }
+
+    /// Split the state group-row keys into the hash buckets the writer used.
+    ///
+    /// Each provider bucket partition then receives only its own key filter,
+    /// instead of every partition carrying the full refresh key list.
+    fn state_bucket_filters(
+        batch: &RecordBatch,
+        bucket_num: u32,
+    ) -> Result<std::collections::HashMap<u32, Vec<Expr>>> {
+        let index = batch
+            .schema()
+            .index_of(IVM_GROUP_ROW_COLUMN)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+        let rows = batch
+            .column(index)
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or_else(|| report!("{IVM_GROUP_ROW_COLUMN} is not binary"))?;
+        let values = (0..rows.len())
+            .map(|row| ScalarValue::Binary(Some(rows.value(row).to_vec())))
+            .collect::<Vec<_>>();
+        Self::bucket_filters_for_values(IVM_GROUP_ROW_COLUMN, &values, bucket_num)
+    }
+
+    /// Build per-bucket reader filters for primary-key values.
+    fn bucket_filters_for_values(
+        column: &str,
+        values: &[ScalarValue],
+        bucket_num: u32,
+    ) -> Result<std::collections::HashMap<u32, Vec<Expr>>> {
+        let mut buckets: std::collections::HashMap<u32, Vec<ScalarValue>> =
+            (0..bucket_num).map(|bucket| (bucket, Vec::new())).collect();
+        for value in values {
+            let bucket = lakesoul_io::helpers::compute_scalar_hash(value) % bucket_num;
+            buckets.entry(bucket).or_default().push(value.clone());
+        }
+        Ok(buckets
+            .into_iter()
+            .map(|(bucket, values)| {
+                let filter = if values.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![
+                        col(column).in_list(values.into_iter().map(lit).collect(), false),
+                    ]
+                };
+                (bucket, filter)
+            })
+            .collect())
+    }
+
+    /// Build a source PK filter from a bounded batch of key values.
+    fn source_key_filters(
+        primary_key: &str,
+        values: &[ScalarValue],
+    ) -> DataFusionResult<Vec<Expr>> {
+        let list = values.iter().cloned().map(lit).collect::<Vec<_>>();
+        if list.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Ok(vec![col(primary_key).in_list(list, false)])
+        }
+    }
+
+    /// Read source before rows for one bounded key chunk and aggregate them
+    /// with the window's delta rows into grouped contributions.
+    async fn source_chunk_contributions(
+        &self,
+        context: &SessionContext,
+        source: &IvmTable,
+        before_groups: &[PartitionFiles],
+        contrib_sql: &str,
+        primary_key: &str,
+        keys: &[ScalarValue],
+        delta_batches: &[RecordBatch],
+    ) -> Result<Vec<RecordBatch>> {
+        let filters = Self::source_key_filters(primary_key, keys)?;
+        if filters.is_empty() {
+            return Ok(Vec::new());
+        }
+        let chunk_started = std::time::Instant::now();
+        let before_started = std::time::Instant::now();
+        let source_bucket_num = if source.bucket_columns.len() == 1
+            && source.bucket_columns[0] == primary_key
+        {
+            source
+                .hash_bucket_num
+                .parse::<u32>()
+                .ok()
+                .filter(|count| *count > 1)
+        } else {
+            None
+        };
+        let provider = self.table_provider_groups(source, before_groups.to_vec());
+        let provider = if let Some(bucket_num) = source_bucket_num {
+            provider.with_bucket_filters(Self::bucket_filters_for_values(
+                primary_key,
+                keys,
+                bucket_num,
+            )?)
+        } else {
+            provider
+        };
+        let lookup_context = refresh_session();
+        lookup_context.register_table("source_before", Arc::new(provider))?;
+        let mut before_frame = lookup_context.table("source_before").await?;
+        for filter in filters {
+            before_frame = before_frame.filter(filter)?;
+        }
+        let before = before_frame.collect().await?;
+        let before_elapsed = before_started.elapsed();
+        let before_rows = before.iter().map(|batch| batch.num_rows()).sum::<usize>();
+        let empty = RecordBatch::new_empty(source.schema.clone());
+        let old_batch = if before.is_empty() {
+            empty
+        } else if before.len() == 1 {
+            before.into_iter().next().expect("one before batch")
+        } else {
+            arrow::compute::concat_batches(&source.schema, &before)?
+        };
+        let new_frame = context.read_batches(delta_batches.to_vec())?;
+        let new_frame = filter_deletes(new_frame, change_column(source))?;
+        let _ = context.deregister_table("old")?;
+        let _ = context.deregister_table("new")?;
+        context.register_batch("old", old_batch)?;
+        context.register_table("new", new_frame.into_view())?;
+        use futures::StreamExt;
+        let mut stream = context.sql(contrib_sql).await?.execute_stream().await?;
+        let mut output = Vec::new();
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            if batch.num_rows() > 0 {
+                output.push(batch);
+            }
+        }
+        let output_rows = output.iter().map(|batch| batch.num_rows()).sum::<usize>();
+        if output.len() > 1 {
+            let schema = output[0].schema();
+            output = vec![arrow::compute::concat_batches(&schema, &output)?];
+        }
+        tracing::info!(
+            keys = keys.len(),
+            before_rows,
+            before_elapsed = ?before_elapsed,
+            output_rows,
+            elapsed = ?chunk_started.elapsed(),
+            "keyed source chunk finished"
+        );
+        Ok(output)
+    }
+
+    /// Read the source rows that changed in one window through primary-key
+    /// lookups and produce the grouped contributions for that window.
+    ///
+    /// The delta is consumed as a stream.  For each delta batch only its source
+    /// rows are read from the before/current versions; the resulting grouped
+    /// contributions are bounded by the delta, not by the source table.
+    async fn keyed_source_contributions(
+        &self,
+        source: &IvmTable,
+        view: &MultiAggView,
+        window: &SourceWindow,
+        delta: &DataFrame,
+        measures: &[(String, String, DataType)],
+    ) -> Result<Vec<RecordBatch>> {
+        if view.source.primary_keys.len() != 1 {
+            return Err(report!(
+                "keyed source contribution lookup needs exactly one source primary key"
+            ));
+        }
+        let primary_key = view.source.primary_keys[0].as_str();
+        let before_groups = source
+            .before_window_groups(&self.client, &window.before_versions)
+            .await?;
+        let context = refresh_session();
+        let encoder = Arc::new(GroupKeyRowEncoder::new(
+            &view.source.schema,
+            &view.group_keys,
+        )?);
+        let mut input_types = Vec::with_capacity(view.group_keys.len());
+        for key in &view.group_keys {
+            input_types
+                .push(view.source.schema.field_with_name(key)?.data_type().clone());
+        }
+        let udf_encoder = encoder.clone();
+        context.register_udf(datafusion::logical_expr::create_udf(
+            "ivm_group_row",
+            input_types,
+            DataType::Binary,
+            datafusion::logical_expr::Volatility::Immutable,
+            Arc::new(move |args: &[datafusion::logical_expr::ColumnarValue]| {
+                let arrays =
+                    datafusion::logical_expr::ColumnarValue::values_to_arrays(args)?;
+                let rows = udf_encoder
+                    .encode_columns(&arrays)
+                    .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+                Ok(datafusion::logical_expr::ColumnarValue::Array(Arc::new(
+                    rows,
+                )))
+            }),
+        ));
+        let keys = quoted_list(&view.group_keys);
+        let contributions = measures
+            .iter()
+            .map(|(inner, column, data_type)| {
+                Ok(format!(
+                    "cast(coalesce(sum({inner} * w), 0) as {}) as d_{column}",
+                    Self::data_type_sql(data_type)?
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .join(", ");
+        let contrib_sql = format!(
+            "select {keys}, ivm_group_row({keys}) as \"{IVM_GROUP_ROW_COLUMN}\", \
+                    {contributions}, cast(coalesce(sum(w), 0) as bigint) as d_rows \
+             from (select *, -1 as w from old union all select *, 1 as w from new) t \
+             group by {keys}"
+        );
+        use futures::StreamExt;
+        const KEY_CHUNK_ROWS: usize = 131_072;
+        let key_index = delta
+            .schema()
+            .index_of_column(&datafusion::common::Column::from_name(primary_key))
+            .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+        let mut delta_stream = delta.clone().execute_stream().await?;
+        let mut pending: Vec<ScalarValue> = Vec::with_capacity(KEY_CHUNK_ROWS);
+        let mut pending_delta: Vec<RecordBatch> = Vec::new();
+        let mut output = Vec::new();
+        while let Some(batch) = delta_stream.next().await {
+            let batch = batch?;
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            let array = batch.column(key_index);
+            let batch_keys = (0..array.len())
+                .map(|row| ScalarValue::try_from_array(array, row))
+                .collect::<DataFusionResult<Vec<_>>>()?;
+            if !pending.is_empty() && pending.len() + batch_keys.len() > KEY_CHUNK_ROWS {
+                output.extend(
+                    self.source_chunk_contributions(
+                        &context,
+                        source,
+                        &before_groups,
+                        &contrib_sql,
+                        primary_key,
+                        &pending,
+                        &pending_delta,
+                    )
+                    .await?,
+                );
+                pending.clear();
+                pending_delta.clear();
+            }
+            pending.extend(batch_keys);
+            pending_delta.push(batch);
+        }
+        if !pending.is_empty() {
+            output.extend(
+                self.source_chunk_contributions(
+                    &context,
+                    source,
+                    &before_groups,
+                    &contrib_sql,
+                    primary_key,
+                    &pending,
+                    &pending_delta,
+                )
+                .await?,
+            );
+        }
+        if output.len() > 1 {
+            // One state update per group: chunks are only a bound on source
+            // lookup size, not a reason to apply the same group twice.
+            let frame = context.read_batches(output)?;
+            let _ = context.deregister_table("contrib_chunks")?;
+            context.register_table("contrib_chunks", frame.into_view())?;
+            let row = quote_ident(IVM_GROUP_ROW_COLUMN);
+            let sums = measures
+                .iter()
+                .map(|(_, column, _)| {
+                    let alias = quote_ident(&format!("d_{column}"));
+                    format!("sum({alias}) as {alias}")
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let merge_sql = format!(
+                "select {keys}, {row}, {sums}, sum(d_rows) as d_rows \
+                 from contrib_chunks group by {keys}, {row}"
+            );
+            let mut stream = context.sql(&merge_sql).await?.execute_stream().await?;
+            let mut merged = Vec::new();
+            while let Some(batch) = stream.next().await {
+                let batch = batch?;
+                if batch.num_rows() > 0 {
+                    merged.push(batch);
+                }
+            }
+            if merged.len() > 1 {
+                let schema = merged[0].schema();
+                merged = vec![arrow::compute::concat_batches(&schema, &merged)?];
+            }
+            output = merged;
+        }
+        Ok(output)
+    }
+
+    /// Project the state merge output onto the user MV schema.
+    fn state_to_mv_batch(
+        batch: &RecordBatch,
+        schema: &SchemaRef,
+    ) -> DataFusionResult<RecordBatch> {
+        let columns = schema
+            .fields()
+            .iter()
+            .map(|field| {
+                batch.column_by_name(field.name()).cloned().ok_or_else(|| {
+                    DataFusionError::Execution(format!(
+                        "state merge is missing {}",
+                        field.name()
+                    ))
+                })
+            })
+            .collect::<DataFusionResult<Vec<_>>>()?;
+        RecordBatch::try_new(schema.clone(), columns)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))
+    }
+
     fn data_type_sql(data_type: &DataType) -> Result<String> {
         Ok(match data_type {
             DataType::Decimal128(precision, scale) => {
@@ -3187,7 +3544,27 @@ impl IvmRuntime {
             })
             .collect();
         let empty_old = dataframe(&context, Vec::new(), &view.source.schema)?;
-        let (old, new, bootstrap_new) = if keyed && !versions.is_empty() {
+        let keyed_contributions =
+            if keyed && !versions.is_empty() && view.source.primary_keys.len() == 1 {
+                let delta = delta
+                    .as_ref()
+                    .ok_or_else(|| report!("multi-agg refresh without a delta"))?;
+                Some(
+                    self.keyed_source_contributions(
+                        &view.source,
+                        view,
+                        &window,
+                        delta,
+                        &measures,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+        let (old, new, bootstrap_new) = if keyed_contributions.is_some() {
+            (empty_old.clone(), empty_old, None)
+        } else if keyed && !versions.is_empty() {
             let delta = delta
                 .as_ref()
                 .ok_or_else(|| report!("multi-agg refresh without a delta"))?;
@@ -3378,23 +3755,64 @@ impl IvmRuntime {
             self.advance_cursors(&view.view_id, window.cursors).await?;
             return Ok(Some(epoch));
         }
-        let contrib = context.sql(&contrib_sql).await?;
+        use futures::StreamExt;
+        let contrib = if let Some(batches) = keyed_contributions {
+            if batches.is_empty() {
+                context.sql(&contrib_sql).await?
+            } else {
+                context.read_batches(batches)?
+            }
+        } else {
+            context.sql(&contrib_sql).await?
+        };
+        let mut contrib_stream = contrib.execute_stream().await?;
+        let state_lookup_batch_rows =
+            std::env::var("LAKESOUL_IVM_STATE_LOOKUP_BATCH_ROWS")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(131_072)
+                .max(1);
+        let mut contribution_batches = Vec::new();
+        let mut contribution_schema = None;
+        while let Some(batch) = contrib_stream.next().await {
+            let batch = batch?;
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            contribution_schema.get_or_insert_with(|| batch.schema());
+            contribution_batches.push(batch);
+        }
+        let mut contribution_chunks = Vec::new();
+        let mut pending_contrib = Vec::new();
+        let mut pending_rows = 0usize;
+        for batch in contribution_batches {
+            pending_rows += batch.num_rows();
+            pending_contrib.push(batch);
+            if pending_rows >= state_lookup_batch_rows {
+                contribution_chunks.push(arrow::compute::concat_batches(
+                    contribution_schema.as_ref().expect("contribution schema"),
+                    &pending_contrib,
+                )?);
+                pending_contrib.clear();
+                pending_rows = 0;
+            }
+        }
+        if !pending_contrib.is_empty() {
+            contribution_chunks.push(arrow::compute::concat_batches(
+                contribution_schema.as_ref().expect("contribution schema"),
+                &pending_contrib,
+            )?);
+        }
         let merge_context = refresh_session();
-        merge_context.register_table("contrib", contrib.into_view())?;
         let state_partitions =
             self.changed_partition_restriction(&window, &state.range_partition_columns);
-        let state_frame = if let Some(restriction) = state_partitions.as_deref() {
-            self.current_table_frame_filtered_partitions(
-                &merge_context,
-                state,
-                Vec::new(),
-                restriction,
-            )
-            .await?
+        let state_groups = if let Some(restriction) = state_partitions.as_deref() {
+            state
+                .current_groups_for_partitions(&self.client, restriction)
+                .await?
         } else {
-            self.current_table_frame(&merge_context, state)?
+            state.current_groups(&self.client).await?
         };
-        merge_context.register_table("state", state_frame.into_view())?;
         let row = quote_ident(IVM_GROUP_ROW_COLUMN);
         let row_count = quote_ident(IVM_ROW_COUNT_COLUMN);
         let row_kinds = quote_ident(IVM_ROW_KINDS_COLUMN);
@@ -3403,12 +3821,6 @@ impl IvmRuntime {
             .group_keys
             .iter()
             .map(|key| format!("c.{}", quote_ident(key)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let key_output = view
-            .group_keys
-            .iter()
-            .map(|key| quote_ident(key))
             .collect::<Vec<_>>()
             .join(", ");
         let mut measure_parts = Vec::new();
@@ -3429,22 +3841,121 @@ impl IvmRuntime {
              {epoch} as {epoch_column} \
              from contrib c left join state s on c.{row} = s.{row}"
         );
-        let mv_sql = format!(
-            "select {key_output}, {}, {row_kinds}, {epoch_column} from ({state_sql}) t",
-            measures
-                .iter()
-                .map(|(_, column, _)| quote_ident(column))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        let state_stream = merge_context
-            .sql(&state_sql)
-            .await?
-            .execute_stream()
+        let state_schema = state.schema.clone();
+        let mv_schema = view.mv.schema.clone();
+        let mut state_chunk: Vec<RecordBatch> = Vec::new();
+        let mut mv_chunk: Vec<RecordBatch> = Vec::new();
+        let mut chunk_rows = 0usize;
+        let mut commit_ids: Vec<String> = Vec::new();
+        let mut state_writes = 0usize;
+        let mut mv_writes = 0usize;
+        let mut state_keys = 0usize;
+        let mut state_rows = 0usize;
+        let mut state_read_elapsed = std::time::Duration::ZERO;
+        let write_started = std::time::Instant::now();
+        for batch in contribution_chunks {
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            state_keys += batch.num_rows();
+            let read_started = std::time::Instant::now();
+            let state_batch = {
+                let filters = Self::state_key_filters(&batch)?;
+                let bucket_num = if state.bucket_columns.len() == 1
+                    && state.bucket_columns[0] == IVM_GROUP_ROW_COLUMN
+                {
+                    state
+                        .hash_bucket_num
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|count| *count > 1)
+                } else {
+                    None
+                };
+                let provider = self.table_provider_groups(state, state_groups.clone());
+                let provider = if let Some(bucket_num) = bucket_num {
+                    provider.with_bucket_filters(Self::state_bucket_filters(
+                        &batch, bucket_num,
+                    )?)
+                } else {
+                    provider
+                };
+                let lookup_context = refresh_session();
+                lookup_context.register_table("state_lookup", Arc::new(provider))?;
+                let mut frame = lookup_context.table("state_lookup").await?;
+                for filter in filters {
+                    frame = frame.filter(filter)?;
+                }
+                let state_batches = frame.collect().await?;
+                state_rows += state_batches
+                    .iter()
+                    .map(|batch| batch.num_rows())
+                    .sum::<usize>();
+                if state_batches.is_empty() {
+                    RecordBatch::new_empty(state_schema.clone())
+                } else if state_batches.len() == 1 {
+                    state_batches.into_iter().next().expect("one state batch")
+                } else {
+                    arrow::compute::concat_batches(&state_schema, &state_batches)?
+                }
+            };
+            state_read_elapsed += read_started.elapsed();
+            let _ = merge_context.deregister_table("contrib")?;
+            let _ = merge_context.deregister_table("state")?;
+            merge_context.register_batch("contrib", batch)?;
+            merge_context.register_batch("state", state_batch)?;
+            let mut output = merge_context
+                .sql(&state_sql)
+                .await?
+                .execute_stream()
+                .await?;
+            while let Some(batch) = output.next().await {
+                let batch = batch?;
+                if batch.num_rows() == 0 {
+                    continue;
+                }
+                let mv_batch = Self::state_to_mv_batch(&batch, &mv_schema)?;
+                chunk_rows += batch.num_rows();
+                state_chunk.push(batch);
+                mv_chunk.push(mv_batch);
+                if chunk_rows >= crate::table::MAX_STATE_APPEND_ROWS {
+                    let (state_ids, mv_ids) = futures::future::try_join(
+                        state.append_batches(
+                            &self.client,
+                            std::mem::take(&mut state_chunk),
+                        ),
+                        view.mv
+                            .append_batches(&self.client, std::mem::take(&mut mv_chunk)),
+                    )
+                    .await?;
+                    commit_ids.extend(state_ids);
+                    commit_ids.extend(mv_ids);
+                    state_writes += 1;
+                    mv_writes += 1;
+                    chunk_rows = 0;
+                }
+            }
+        }
+        if !state_chunk.is_empty() {
+            let (state_ids, mv_ids) = futures::future::try_join(
+                state.append_batches(&self.client, state_chunk),
+                view.mv.append_batches(&self.client, mv_chunk),
+            )
             .await?;
-        let mv_stream = merge_context.sql(&mv_sql).await?.execute_stream().await?;
-        let mut commit_ids = state.append_stream(&self.client, state_stream).await?;
-        commit_ids.extend(view.mv.append_stream(&self.client, mv_stream).await?);
+            commit_ids.extend(state_ids);
+            commit_ids.extend(mv_ids);
+            state_writes += 1;
+            mv_writes += 1;
+        }
+        tracing::info!(
+            state_keys,
+            state_rows,
+            state_read_elapsed = ?state_read_elapsed,
+            state_writes,
+            mv_writes,
+            elapsed = ?write_started.elapsed(),
+            "multi-agg keyed incremental finished"
+        );
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
             .mark_epoch_committed(&record, &mv_versions, &commit_ids)

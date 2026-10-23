@@ -72,6 +72,13 @@ fn with_spill_pool(
     let directory = std::env::var("LAKESOUL_IVM_SPILL_DIR")
         .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
     let _ = std::fs::create_dir_all(&directory);
+    tracing::debug!(
+        size_env,
+        size,
+        threads,
+        %directory,
+        "IVM IO spill pool configured"
+    );
     builder
         .with_thread_num(threads)
         .with_option(OPTION_KEY_POOL_SIZE, size)
@@ -104,8 +111,15 @@ fn with_state_key_lookup(
     builder: lakesoul_io::config::LakeSoulIOConfigBuilder,
     file_format: PhysicalFormat,
 ) -> lakesoul_io::config::LakeSoulIOConfigBuilder {
+    let configured = std::env::var("LAKESOUL_IVM_STATE_INDEX").ok();
+    if matches!(
+        configured.as_deref(),
+        Some("0") | Some("false") | Some("off")
+    ) {
+        return builder;
+    }
     let vortex = !matches!(file_format, PhysicalFormat::Parquet);
-    if !vortex && std::env::var("LAKESOUL_IVM_STATE_INDEX").is_err() {
+    if !vortex && configured.is_none() {
         return builder;
     }
     builder
