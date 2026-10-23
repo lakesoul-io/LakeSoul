@@ -428,7 +428,6 @@ impl IvmTableProvider {
         change_filter: Option<String>,
         merge: bool,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let table = self.table.clone();
         let partitions = groups.len().max(1);
         let file_counts = Arc::new(
             groups
@@ -437,62 +436,14 @@ impl IvmTableProvider {
                 .collect::<Vec<_>>(),
         );
         let refresh_io = observability::current_refresh_io();
-        let groups = Arc::new(groups);
-        let stream_schema = out_schema.clone();
-        let plan_schema = out_schema.clone();
-        let factory = Arc::new(
-            move |partition: usize| -> DataFusionResult<SendableRecordBatchStream> {
-                let mut builder =
-                    RecordBatchReceiverStreamBuilder::new(stream_schema.clone(), 2);
-                let tx = builder.tx();
-                let table = table.clone();
-                let group =
-                    groups
-                        .get(partition)
-                        .cloned()
-                        .unwrap_or_else(|| PartitionFiles {
-                            partition_desc: DEFAULT_PARTITION_DESC.to_string(),
-                            files: Vec::new(),
-                        });
-                if group.files.is_empty() {
-                    drop(tx);
-                    return Ok(builder.build());
-                }
-                let reader_projection = reader_projection.clone();
-                let out_schema = out_schema.clone();
-                let filters = filters_per_group
-                    .get(partition)
-                    .cloned()
-                    .unwrap_or_default();
-                let change_filter = change_filter.clone();
-                builder.spawn_blocking(move || {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(|error| DataFusionError::Execution(error.to_string()))?;
-                    runtime.block_on(async move {
-                        table
-                            .stream_files_with_group(
-                                group,
-                                filters,
-                                reader_projection.as_ref(),
-                                Some(&out_schema),
-                                change_filter.as_deref(),
-                                merge,
-                                tx,
-                            )
-                            .await
-                            .map_err(|error| {
-                                DataFusionError::Execution(error.to_string())
-                            })
-                    })
-                });
-                Ok(builder.build())
-            },
-        );
         Ok(Arc::new(IvmStreamExec::new(
-            plan_schema,
-            factory,
+            self.table.clone(),
+            Arc::new(groups),
+            Arc::new(filters_per_group),
+            reader_projection,
+            out_schema,
+            change_filter,
+            merge,
             partitions,
             refresh_io,
             file_counts,
@@ -511,34 +462,53 @@ fn project_schema(schema: &SchemaRef, indices: &[usize]) -> SchemaRef {
 }
 
 /// A one-partition, re-executable streaming scan.
+///
+/// The plan owns only plain values and table/file references.  It deliberately
+/// does not capture a closure: the execution configuration must remain
+/// serializable for a future distributed scheduler.
 struct IvmStreamExec {
+    table: IvmTable,
+    groups: Arc<Vec<PartitionFiles>>,
+    filters_per_group: Arc<Vec<Vec<Expr>>>,
+    reader_projection: Option<SchemaRef>,
+    out_schema: SchemaRef,
+    change_filter: Option<String>,
+    merge: bool,
     schema: SchemaRef,
-    factory:
-        Arc<dyn Fn(usize) -> DataFusionResult<SendableRecordBatchStream> + Send + Sync>,
     properties: Arc<PlanProperties>,
     refresh_io: Option<Arc<Mutex<RefreshIo>>>,
     file_counts: Arc<Vec<usize>>,
 }
 
 impl IvmStreamExec {
+    #[allow(clippy::too_many_arguments)]
     fn new(
-        schema: SchemaRef,
-        factory: Arc<
-            dyn Fn(usize) -> DataFusionResult<SendableRecordBatchStream> + Send + Sync,
-        >,
+        table: IvmTable,
+        groups: Arc<Vec<PartitionFiles>>,
+        filters_per_group: Arc<Vec<Vec<Expr>>>,
+        reader_projection: Option<SchemaRef>,
+        out_schema: SchemaRef,
+        change_filter: Option<String>,
+        merge: bool,
         partitions: usize,
         refresh_io: Option<Arc<Mutex<RefreshIo>>>,
         file_counts: Arc<Vec<usize>>,
     ) -> Self {
         Self {
+            table,
+            groups,
+            filters_per_group,
+            reader_projection,
+            schema: out_schema.clone(),
+            out_schema: out_schema.clone(),
+            change_filter,
+            merge,
             properties: Arc::new(PlanProperties::new(
-                EquivalenceProperties::new(schema.clone()),
+                EquivalenceProperties::new(out_schema),
                 Partitioning::UnknownPartitioning(partitions.max(1)),
                 EmissionType::Incremental,
                 Boundedness::Bounded,
             )),
-            schema,
-            factory,
             refresh_io,
             file_counts,
         }
@@ -619,7 +589,53 @@ impl ExecutionPlan for IvmStreamExec {
         partition: usize,
         _context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
-        let input = (self.factory)(partition)?;
+        let mut builder =
+            RecordBatchReceiverStreamBuilder::new(self.schema.clone(), 2);
+        let tx = builder.tx();
+        let group = self
+            .groups
+            .get(partition)
+            .cloned()
+            .unwrap_or_else(|| PartitionFiles {
+                partition_desc: DEFAULT_PARTITION_DESC.to_string(),
+                files: Vec::new(),
+            });
+        if group.files.is_empty() {
+            drop(tx);
+            return Ok(builder.build());
+        }
+
+        let table = self.table.clone();
+        let filters = self
+            .filters_per_group
+            .get(partition)
+            .cloned()
+            .unwrap_or_default();
+        let reader_projection = self.reader_projection.clone();
+        let out_schema = self.out_schema.clone();
+        let change_filter = self.change_filter.clone();
+        let merge = self.merge;
+        builder.spawn_blocking(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+            runtime.block_on(async move {
+                table
+                    .stream_files_with_group(
+                        group,
+                        filters,
+                        reader_projection.as_ref(),
+                        Some(&out_schema),
+                        change_filter.as_deref(),
+                        merge,
+                        tx,
+                    )
+                    .await
+                    .map_err(|error| DataFusionError::Execution(error.to_string()))
+            })
+        });
+        let input = builder.build();
         let Some(refresh_io) = &self.refresh_io else {
             return Ok(input);
         };
