@@ -2962,6 +2962,91 @@ impl IvmRuntime {
         create_ivm_table(&self.client, options).await
     }
 
+    /// Compact a table through the streaming provider instead of collecting
+    /// its entire current state in the driver.
+    ///
+    /// This is used by the pilot source loader: loading appends bounded
+    /// batches, so source tables accumulate many small files even though the
+    /// loaded snapshot is logically compactable.  The reader and writer share
+    /// the process-wide LakeSoulIO runtime and the writer still enforces its
+    /// normal memory/file bounds.
+    pub async fn compact_table_streaming(
+        &self,
+        table: &IvmTable,
+    ) -> Result<Vec<String>> {
+        use futures::StreamExt;
+
+        let context = refresh_session();
+        let frame = self.current_table_frame(&context, table)?;
+        // `DataFrame::execute_stream` only exposes the first output
+        // partition.  A keyed table is split into one partition per hash
+        // bucket, so using it here silently compacted a single bucket and
+        // replaced the whole table snapshot with that bucket's rows.  Read
+        // every partition, streaming one bucket at a time so the driver
+        // memory stays bounded.
+        let streams = frame.execute_stream_partitioned().await?;
+        if streams.is_empty() {
+            table.truncate(&self.client).await?;
+            return Ok(Vec::new());
+        }
+        let schema = table.schema.clone();
+        let kinds = schema.index_of(IVM_ROW_KINDS_COLUMN).ok();
+        let epoch = schema.index_of(IVM_EPOCH_COLUMN).ok();
+        let mut pending = Vec::new();
+        let mut pending_rows = 0usize;
+        let mut files = Vec::new();
+        for mut stream in streams {
+            while let Some(batch) = stream.next().await {
+                let batch = batch?;
+                if batch.num_rows() == 0 {
+                    continue;
+                }
+                let mut columns = batch.columns().to_vec();
+                if let Some(index) = kinds {
+                    columns[index] = Arc::new(arrow::array::StringArray::from_iter_values(
+                        (0..batch.num_rows()).map(|_| "insert"),
+                    ));
+                }
+                if let Some(index) = epoch {
+                    columns[index] = Arc::new(arrow::array::Int64Array::from_iter_values(
+                        (0..batch.num_rows()).map(|_| 0i64),
+                    ));
+                }
+                let batch = RecordBatch::try_new(schema.clone(), columns)?;
+                pending_rows += batch.num_rows();
+                pending.push(batch);
+                if pending_rows >= crate::table::MAX_STATE_APPEND_ROWS {
+                    let batch = arrow::compute::concat_batches(&schema, &pending)?;
+                    pending.clear();
+                    pending_rows = 0;
+                    files.extend(table.write_batch(batch).await?);
+                }
+            }
+        }
+        if !pending.is_empty() {
+            let batch = arrow::compute::concat_batches(&schema, &pending)?;
+            files.extend(table.write_batch(batch).await?);
+        }
+        if files.is_empty() {
+            table.truncate(&self.client).await?;
+            return Ok(Vec::new());
+        }
+        let read_partitions = self
+            .client
+            .get_all_partition_info(&table.table_id)
+            .await?;
+        let commit_ids = self
+            .client
+            .commit_compaction(
+                &table.table_name,
+                &table.namespace,
+                files,
+                read_partitions,
+            )
+            .await?;
+        Ok(commit_ids)
+    }
+
     /// Open an existing table by name.
     pub async fn open_table(
         &self,
