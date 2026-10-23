@@ -119,6 +119,45 @@ async fn compaction_preserves_the_logical_state_and_shrinks_files() {
 }
 
 #[test_log::test(tokio::test)]
+async fn streaming_compaction_preserves_every_hash_bucket() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let mut options = IvmTableOptions::new(
+        format!("ivm_compact_streaming_{suffix}"),
+        format!("file://{}/table", dir.path().display()),
+        schema(),
+    )
+    .with_primary_keys(vec!["k".to_string()])
+    .with_cdc_column(CHANGE_COLUMN)
+    .with_file_format(PhysicalFormat::Parquet);
+    options.hash_bucket_num = "4".to_string();
+    let table = runtime.create_table(options).await.unwrap();
+    let client = runtime.client().clone();
+
+    let mut expected = Vec::new();
+    for start in (0..100).step_by(10) {
+        let rows = (start..start + 10)
+            .map(|key| (key, key * 10, "insert"))
+            .collect::<Vec<_>>();
+        expected.extend(rows.iter().map(|row| (row.0, row.1)));
+        table.append_batch(&client, batch(&rows)).await.unwrap();
+    }
+    expected.sort_unstable();
+    assert_eq!(logical_rows(&runtime, &table).await, expected);
+
+    runtime.compact_table_streaming(&table).await.unwrap();
+
+    assert_eq!(logical_rows(&runtime, &table).await, expected);
+    let files_after = table.current_file_count(&client).await.unwrap();
+    assert!(
+        files_after <= 4,
+        "expected at most one file per bucket after streaming compaction, got {files_after}"
+    );
+}
+
+#[test_log::test(tokio::test)]
 async fn compaction_of_an_empty_state_publishes_an_empty_snapshot() {
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();

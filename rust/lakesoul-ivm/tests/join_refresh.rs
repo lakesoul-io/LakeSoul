@@ -470,3 +470,124 @@ async fn join_pending_window_is_skipped_when_output_was_written() {
         .await
         .unwrap();
 }
+
+#[test_log::test(tokio::test)]
+async fn a_missing_output_state_mirror_is_repaired_from_the_mv() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let view_id = format!("join_state_repair_{suffix}");
+    let left_name = format!("ivm_left_state_repair_{suffix}");
+    let right_name = format!("ivm_right_state_repair_{suffix}");
+    let output_name = format!("ivm_join_state_repair_{suffix}");
+    let state_name = format!("ivm_join_state_mirror_{suffix}");
+
+    let left = runtime
+        .create_table(IvmTableOptions::new(
+            left_name.clone(),
+            table_path(&dir, "left"),
+            source_schema(),
+        ))
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(IvmTableOptions::new(
+            right_name.clone(),
+            table_path(&dir, "right"),
+            source_schema(),
+        ))
+        .await
+        .unwrap();
+    let output = runtime
+        .create_table(IvmTableOptions::new(
+            output_name.clone(),
+            table_path(&dir, "join"),
+            join_view_schema_for(
+                &left.schema,
+                &right.schema,
+                &["k".to_string()],
+                "v",
+                "v",
+            )
+            .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let state = runtime
+        .create_table(IvmTableOptions::new(
+            state_name.clone(),
+            table_path(&dir, "state"),
+            output.schema.clone(),
+        ))
+        .await
+        .unwrap();
+    let view = JoinView::new(
+        view_id,
+        left.clone(),
+        right.clone(),
+        output.clone(),
+        "k",
+        "v",
+        "v",
+    )
+    .with_state(state.clone());
+
+    left.append_batch(runtime.client(), source_batch(&[(2, 20)]))
+        .await
+        .unwrap();
+    right
+        .append_batch(runtime.client(), source_batch(&[(2, 200)]))
+        .await
+        .unwrap();
+    runtime.refresh_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        join_rows(&runtime, &state).await,
+        join_rows(&runtime, &output).await
+    );
+
+    // Simulate a state commit that failed after the MV commit: the mirror is
+    // empty, while the MV still has the published pair.  The next refresh must
+    // repair the mirror before applying its new window.
+    state.truncate(runtime.client()).await.unwrap();
+    assert!(
+        state
+            .current_files(runtime.client())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    left.append_batch(runtime.client(), source_batch(&[(3, 30)]))
+        .await
+        .unwrap();
+    right
+        .append_batch(runtime.client(), source_batch(&[(3, 300)]))
+        .await
+        .unwrap();
+    runtime.refresh_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        join_rows(&runtime, &state).await,
+        join_rows(&runtime, &output).await
+    );
+
+    runtime
+        .client()
+        .drop_table(&left_name, "default")
+        .await
+        .unwrap();
+    runtime
+        .client()
+        .drop_table(&right_name, "default")
+        .await
+        .unwrap();
+    runtime
+        .client()
+        .drop_table(&output_name, "default")
+        .await
+        .unwrap();
+    runtime
+        .client()
+        .drop_table(&state_name, "default")
+        .await
+        .unwrap();
+}

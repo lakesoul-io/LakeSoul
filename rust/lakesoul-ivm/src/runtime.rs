@@ -51,7 +51,9 @@ use crate::table::{
 mod aggregates;
 mod chain;
 mod fallback;
+pub(crate) mod join_state;
 mod joins;
+pub(crate) mod keyed_plan;
 mod lookup_chain;
 mod multi_join;
 mod recompute;
@@ -269,6 +271,9 @@ pub enum ViewSpec {
         /// non-equality join conditions.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pair_filter: Option<String>,
+        /// Optional keyed output state table, mirroring the output schema and keys.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state_table_id: Option<String>,
         /// Whether a NULL join key matches another NULL join key
         /// (`IS NOT DISTINCT FROM` keys).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -522,6 +527,9 @@ pub enum ViewSpec {
         /// them under these names.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         payload_names: Vec<String>,
+        /// Optional keyed output state table, mirroring the output schema and keys.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state_table_id: Option<String>,
     },
     /// `group_key`, `MIN(value_column)` or `MAX(value_column)` over the source
     /// changelog, backed by a value-count state table.
@@ -1443,6 +1451,17 @@ impl ViewSpec {
                 *state = state_table_id.to_string();
                 Ok(())
             }
+            ViewSpec::Join {
+                state_table_id: state,
+                ..
+            }
+            | ViewSpec::LookupJoin {
+                state_table_id: state,
+                ..
+            } => {
+                *state = Some(state_table_id.to_string());
+                Ok(())
+            }
             other => Err(report!(
                 "a derived {} view does not use a state table",
                 other.kind()
@@ -2074,7 +2093,7 @@ impl std::fmt::Display for PartitionDropped {
 }
 
 /// The changelog window of every partition of one source.
-struct SourceWindow {
+pub(crate) struct SourceWindow {
     added_files: Vec<PartitionFiles>,
     cursors: Vec<Cursor>,
     /// `(source_table_id, partition_desc, from_version, to_version)` of every
@@ -2961,6 +2980,87 @@ impl IvmRuntime {
         create_ivm_table(&self.client, options).await
     }
 
+    /// Compact a table through the streaming provider instead of collecting
+    /// its entire current state in the driver.
+    ///
+    /// This is used by the pilot source loader: loading appends bounded
+    /// batches, so source tables accumulate many small files even though the
+    /// loaded snapshot is logically compactable.  The reader and writer share
+    /// the process-wide LakeSoulIO runtime and the writer still enforces its
+    /// normal memory/file bounds.
+    pub async fn compact_table_streaming(&self, table: &IvmTable) -> Result<Vec<String>> {
+        use futures::StreamExt;
+
+        let context = refresh_session();
+        let frame = self.current_table_frame(&context, table)?;
+        // `DataFrame::execute_stream` only exposes the first output
+        // partition.  A keyed table is split into one partition per hash
+        // bucket, so using it here silently compacted a single bucket and
+        // replaced the whole table snapshot with that bucket's rows.  Read
+        // every partition, streaming one bucket at a time so the driver
+        // memory stays bounded.
+        let streams = frame.execute_stream_partitioned().await?;
+        if streams.is_empty() {
+            table.truncate(&self.client).await?;
+            return Ok(Vec::new());
+        }
+        let schema = table.schema.clone();
+        let kinds = schema.index_of(IVM_ROW_KINDS_COLUMN).ok();
+        let epoch = schema.index_of(IVM_EPOCH_COLUMN).ok();
+        let mut pending = Vec::new();
+        let mut pending_rows = 0usize;
+        let mut files = Vec::new();
+        for mut stream in streams {
+            while let Some(batch) = stream.next().await {
+                let batch = batch?;
+                if batch.num_rows() == 0 {
+                    continue;
+                }
+                let mut columns = batch.columns().to_vec();
+                if let Some(index) = kinds {
+                    columns[index] =
+                        Arc::new(arrow::array::StringArray::from_iter_values(
+                            (0..batch.num_rows()).map(|_| "insert"),
+                        ));
+                }
+                if let Some(index) = epoch {
+                    columns[index] =
+                        Arc::new(arrow::array::Int64Array::from_iter_values(
+                            (0..batch.num_rows()).map(|_| 0i64),
+                        ));
+                }
+                let batch = RecordBatch::try_new(schema.clone(), columns)?;
+                pending_rows += batch.num_rows();
+                pending.push(batch);
+                if pending_rows >= crate::table::MAX_STATE_APPEND_ROWS {
+                    let batch = arrow::compute::concat_batches(&schema, &pending)?;
+                    pending.clear();
+                    pending_rows = 0;
+                    files.extend(table.write_batch(batch).await?);
+                }
+            }
+        }
+        if !pending.is_empty() {
+            let batch = arrow::compute::concat_batches(&schema, &pending)?;
+            files.extend(table.write_batch(batch).await?);
+        }
+        if files.is_empty() {
+            table.truncate(&self.client).await?;
+            return Ok(Vec::new());
+        }
+        let read_partitions = self.client.get_all_partition_info(&table.table_id).await?;
+        let commit_ids = self
+            .client
+            .commit_compaction(
+                &table.table_name,
+                &table.namespace,
+                files,
+                read_partitions,
+            )
+            .await?;
+        Ok(commit_ids)
+    }
+
     /// Open an existing table by name.
     pub async fn open_table(
         &self,
@@ -3147,6 +3247,7 @@ impl IvmRuntime {
                 left_filter,
                 right_filter,
                 pair_filter,
+                state_table_id,
                 null_safe,
             } => SpecView::Join(JoinView {
                 view_id: view_id.clone(),
@@ -3162,6 +3263,10 @@ impl IvmRuntime {
                 left_filter: left_filter.clone(),
                 right_filter: right_filter.clone(),
                 pair_filter: pair_filter.clone(),
+                state: match state_table_id {
+                    Some(id) => Some(self.open_table_by_id(id).await?),
+                    None => None,
+                },
                 null_safe: *null_safe,
                 refresh_interval_ms,
             }),
@@ -3245,6 +3350,7 @@ impl IvmRuntime {
                 right_value,
                 output_columns,
                 payload_names: _,
+                state_table_id,
             } => SpecView::LookupJoin(LookupJoinView {
                 view_id: view_id.clone(),
                 left: self.open_table_by_id(left_table_id).await?,
@@ -3258,6 +3364,10 @@ impl IvmRuntime {
                 left_value: left_value.clone(),
                 right_value: right_value.clone(),
                 output_columns: output_columns.clone(),
+                state: match state_table_id {
+                    Some(id) => Some(self.open_table_by_id(id).await?),
+                    None => None,
+                },
                 refresh_interval_ms,
             }),
             ViewSpec::CrossJoin {
@@ -3928,6 +4038,7 @@ impl IvmRuntime {
         })
         .await;
         if result.is_ok() {
+            self.sync_join_state_for_spec(spec).await?;
             crate::observability::record_rebuild(kind, started.elapsed());
         }
         result

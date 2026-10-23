@@ -799,6 +799,19 @@ impl IvmTable {
             .await
     }
 
+    /// Read explicit partition groups with pushed primary-key filters.
+    ///
+    /// The keyed-state physical plans use this to resolve one bucket's state
+    /// rows for the keys of one contribution batch without materializing the
+    /// whole state table.
+    pub(crate) async fn read_partition_files_filtered(
+        &self,
+        groups: Vec<PartitionFiles>,
+        filters: Vec<Expr>,
+    ) -> Result<Vec<RecordBatch>> {
+        self.read_groups_with_options(groups, filters, None).await
+    }
+
     /// Read delta files **without** merge-on-read.
     ///
     /// A table written by an internal view stores a delete row with the old

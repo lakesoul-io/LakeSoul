@@ -716,6 +716,9 @@ async fn a_lookup_join_materializes_a_key_that_is_also_the_primary_key() {
         read_lookup_pairs(runtime, &mv).await,
         vec![(1, "a".to_string(), Some(10)), (2, "b".to_string(), None),]
     );
+    // A keyed join output already has the pair identity on the MV, so SQL
+    // does not create a second copy as an output state table.
+    assert!(state_table_id(runtime, &mv.table_id).await.is_none());
 
     // The right payload updates and then disappears.
     right

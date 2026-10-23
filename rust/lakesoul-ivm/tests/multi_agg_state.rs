@@ -125,25 +125,18 @@ async fn partitioned_state_and_mv_only_refresh_the_changed_date() {
         )
         .await
         .unwrap();
-    let state = runtime
-        .create_table(
-            IvmTableOptions::new(
-                state_name.clone(),
-                table_path(&dir, "state"),
-                multi_agg_state_schema_for(
-                    &source.schema,
-                    &group_keys,
-                    &aggregate_columns,
-                )
-                .unwrap(),
-            )
-            .with_primary_keys(vec![IVM_GROUP_ROW_COLUMN.to_string()])
-            .with_bucket_columns(vec![IVM_GROUP_ROW_COLUMN.to_string()])
-            .with_range_partition_columns(vec!["stat_date".to_string()])
-            .with_file_format(PhysicalFormat::Vortex),
-        )
-        .await
-        .unwrap();
+    let mut state_options = IvmTableOptions::new(
+        state_name.clone(),
+        table_path(&dir, "state"),
+        multi_agg_state_schema_for(&source.schema, &group_keys, &aggregate_columns)
+            .unwrap(),
+    )
+    .with_primary_keys(vec![IVM_GROUP_ROW_COLUMN.to_string()])
+    .with_bucket_columns(vec![IVM_GROUP_ROW_COLUMN.to_string()])
+    .with_range_partition_columns(vec!["stat_date".to_string()])
+    .with_file_format(PhysicalFormat::Vortex);
+    state_options.hash_bucket_num = "16".to_string();
+    let state = runtime.create_table(state_options).await.unwrap();
     let view = MultiAggView::new(
         format!("ivm_multi_state_view_{suffix}"),
         source.clone(),
@@ -168,6 +161,21 @@ async fn partitioned_state_and_mv_only_refresh_the_changed_date() {
         vec![(0, 1, 10), (0, 2, 20), (1, 1, 30), (1, 2, 40)]
     );
 
+    // A key that has no old state row exercises the null side of the keyed
+    // lookup and the new-state insert path.
+    source
+        .append_batch(runtime.client(), source_batch(&[(5, 0, 5, 50)]))
+        .await
+        .unwrap();
+    runtime
+        .refresh_multi_agg_state(&view, &state)
+        .await
+        .unwrap();
+    assert_eq!(
+        mv_values(&runtime, &mv).await,
+        vec![(0, 1, 10), (0, 2, 20), (0, 5, 50), (1, 1, 30), (1, 2, 40)]
+    );
+
     // Update a row in the first date only.  The second state/MV partition must
     // stay untouched, while the first one is recomputed from the delta.
     source
@@ -180,7 +188,7 @@ async fn partitioned_state_and_mv_only_refresh_the_changed_date() {
         .unwrap();
     assert_eq!(
         mv_values(&runtime, &mv).await,
-        vec![(0, 1, 7), (0, 2, 20), (1, 1, 30), (1, 2, 40)]
+        vec![(0, 1, 7), (0, 2, 20), (0, 5, 50), (1, 1, 30), (1, 2, 40)]
     );
 
     // Compaction is an out-of-band maintenance step.  It must preserve both
@@ -189,7 +197,7 @@ async fn partitioned_state_and_mv_only_refresh_the_changed_date() {
     mv.compact(runtime.client()).await.unwrap();
     assert_eq!(
         mv_values(&runtime, &mv).await,
-        vec![(0, 1, 7), (0, 2, 20), (1, 1, 30), (1, 2, 40)]
+        vec![(0, 1, 7), (0, 2, 20), (0, 5, 50), (1, 1, 30), (1, 2, 40)]
     );
     source
         .append_batch(runtime.client(), source_batch(&[(2, 0, 2, 9)]))
@@ -201,7 +209,7 @@ async fn partitioned_state_and_mv_only_refresh_the_changed_date() {
         .unwrap();
     assert_eq!(
         mv_values(&runtime, &mv).await,
-        vec![(0, 1, 7), (0, 2, 9), (1, 1, 30), (1, 2, 40)]
+        vec![(0, 1, 7), (0, 2, 9), (0, 5, 50), (1, 1, 30), (1, 2, 40)]
     );
 
     let state_partitions = runtime

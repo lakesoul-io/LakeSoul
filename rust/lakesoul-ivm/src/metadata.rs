@@ -221,8 +221,12 @@ pub enum StateRole {
     /// keep their accumulator in the output, e.g. SUM/COUNT).
     Mv,
     /// An auxiliary state table (the value-count table of MIN/MAX and
-    /// DISTINCT views).
+    /// DISTINCT views, or a join output state).
     State,
+    /// A join source state keyed by the encoded join key.
+    JoinLeft,
+    /// A join source state keyed by the encoded join key.
+    JoinRight,
 }
 
 impl StateRole {
@@ -231,6 +235,8 @@ impl StateRole {
         match self {
             StateRole::Mv => "mv",
             StateRole::State => "state",
+            StateRole::JoinLeft => "join_left",
+            StateRole::JoinRight => "join_right",
         }
     }
 
@@ -238,6 +244,8 @@ impl StateRole {
         match value {
             "mv" => Ok(StateRole::Mv),
             "state" => Ok(StateRole::State),
+            "join_left" => Ok(StateRole::JoinLeft),
+            "join_right" => Ok(StateRole::JoinRight),
             other => Err(rootcause::report!("unknown state role {other:?}")),
         }
     }

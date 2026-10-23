@@ -728,6 +728,10 @@ pub fn definition_hash(spec: &ViewSpec) -> Result<String> {
         | ViewSpec::DistinctAgg { state_table_id, .. } => {
             *state_table_id = String::new();
         }
+        ViewSpec::Join { state_table_id, .. }
+        | ViewSpec::LookupJoin { state_table_id, .. } => {
+            *state_table_id = None;
+        }
         // The rejection reason depends on the analyzer's message, not on the
         // view's meaning.
         ViewSpec::Fallback {
