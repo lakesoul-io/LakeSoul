@@ -267,6 +267,7 @@ Metadata DB variables (`LAKESOUL_PG_URL/USERNAME/PASSWORD`) are unchanged.
 | `LAKESOUL_MEMORY_LIMIT` / `--memory-limit` | `0` (unbounded) | Process-wide DataFusion execution budget shared by every connection. Integer bytes or case-insensitive `K/M/G` (decimal), `Ki/Mi/Gi` (binary), e.g. `512Mi`. |
 | `LAKESOUL_MEMORY_POOL` / `--memory-pool` | `fair` | `fair` (FairSpillPool) or `greedy` (GreedyMemoryPool), used only with a nonzero limit. |
 | `LAKESOUL_VORTEX_DECODE_BUDGET` / `--vortex-decode-budget` | ¼ of the memory limit; unbounded when the limit is `0` | Process-wide bytes of decoded Vortex splits in flight, separate from the execution budget. A scan starts decoding a split only once the split's estimated size fits, and a decoded batch counts until it and every slice of it are dropped. Each scan can always have one split in flight, so a full budget slows scans but cannot deadlock them. `0` is unbounded. Same syntax as the memory limit. |
+| `DATAFUSION_EXECUTION_BATCH_SIZE` | `8192` | Rows per execution batch for coordinator and console sessions; `SET datafusion.execution.batch_size` overrides it per session. Batches buffered outside the execution budget (spill merges, IO) scale with it, so a smaller value lowers RSS above `LAKESOUL_MEMORY_LIMIT` (SF10 q09 at a 1Gi budget: 2.2 GiB peak at 8192, 0.76 GiB at 2048), though not for every query. Workers ignore it, see below. |
 
 Worker (`/app/lakesoul-worker`): `LAKESOUL_WORKER_BIND` (0.0.0.0),
 `LAKESOUL_WORKER_PORT` (50051), `LAKESOUL_WORKER_METRICS_ADDR`,
@@ -278,6 +279,7 @@ share the `CoreArgs` CLI (`--warehouse-prefix`, `--endpoint`, …).
 | `LAKESOUL_MEMORY_LIMIT` / `--memory-limit` | `0` (unbounded) | Independent per-worker-process DataFusion execution budget shared by every task; same byte/suffix syntax as the coordinator. |
 | `LAKESOUL_MEMORY_POOL` / `--memory-pool` | `fair` | `fair` or `greedy`, used only with a nonzero limit. |
 | `LAKESOUL_VORTEX_DECODE_BUDGET` / `--vortex-decode-budget` | ¼ of the memory limit; unbounded when the limit is `0` | Per-worker-process budget for decoded Vortex splits in flight; same meaning as on the coordinator. |
+| `datafusion.execution.batch_size` | `8192` | Not read from the worker's environment: datafusion-distributed starts every worker task from DataFusion's defaults. The coordinator session's `distributed.shuffle_batch_size` (sent with each task; `0` keeps 8192) overrides it. |
 
 | Local disk cache (coordinator, worker, console) | Default | Meaning |
 |---|---|---|

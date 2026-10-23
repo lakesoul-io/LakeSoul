@@ -50,7 +50,6 @@ pub fn create_lakesoul_session_config() -> Result<SessionConfig> {
     let mut session_config = SessionConfig::from_env()?
         .with_information_schema(true)
         .with_create_default_catalog_and_schema(false)
-        .with_batch_size(8192)
         .with_default_catalog_and_schema(
             session::DEFAULT_CATALOG.to_string(),
             session::DEFAULT_SCHEMA.to_string(),
