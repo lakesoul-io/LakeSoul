@@ -726,17 +726,6 @@ impl IvmRuntime {
                 windows[index].added_files.clone(),
             )?;
             if keyed {
-                // The delta keys select the affected rows through the
-                // semi-join below; the current source stays streaming.
-                let source_now = filter_deletes(
-                    self.current_table_frame(&context, table)?,
-                    change_column(table),
-                )?;
-                let key_names = table
-                    .primary_keys
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>();
                 let key_exprs = table
                     .primary_keys
                     .iter()
@@ -746,16 +735,20 @@ impl IvmRuntime {
                     .select(key_exprs)?
                     .distinct()?
                     .with_column(IVM_SOURCE_COLUMN, lit(index as i32))?;
-                let rows = source_now.join(
-                    affected.clone(),
-                    JoinType::LeftSemi,
-                    &key_names,
-                    &key_names,
-                    None,
-                )?;
+                // Read only the current rows for this source's changed keys.
+                let source_now = self
+                    .lookup_source_by_join_keys(
+                        &context,
+                        table,
+                        affected.clone(),
+                        &table.primary_keys,
+                        &table.primary_keys,
+                        true,
+                    )
+                    .await?;
                 let rows = match &filter {
-                    Some(filter) => rows.filter(filter.clone())?,
-                    None => rows,
+                    Some(filter) => source_now.filter(filter.clone())?,
+                    None => source_now,
                 };
                 inserts.push(
                     rows.select(union_source_projection(&context, source, None, index)?)?,
@@ -790,18 +783,6 @@ impl IvmRuntime {
             .collect::<Vec<_>>();
 
         if keyed {
-            let mv = match union_mv_partitions(&view.mv, &view.sources, &windows) {
-                Some(restriction) => {
-                    self.current_table_frame_filtered_partitions(
-                        &context,
-                        &view.mv,
-                        Vec::new(),
-                        &restriction,
-                    )
-                    .await?
-                }
-                None => self.current_table_frame(&context, &view.mv)?,
-            };
             let mut pair_names = vec![IVM_SOURCE_COLUMN.to_string()];
             pair_names.extend(view.sources[0].table.primary_keys.iter().cloned());
             let pair_refs = pair_names.iter().map(String::as_str).collect::<Vec<_>>();
@@ -809,6 +790,31 @@ impl IvmRuntime {
                 .iter()
                 .map(|column| col(column.as_str()))
                 .collect::<Vec<_>>();
+            let changed = union_frames(changed)?;
+            let mv = if view.mv.primary_keys == pair_names {
+                self.lookup_source_by_join_keys(
+                    &context,
+                    &view.mv,
+                    changed.clone(),
+                    &pair_names,
+                    &view.mv.primary_keys,
+                    true,
+                )
+                .await?
+            } else {
+                match union_mv_partitions(&view.mv, &view.sources, &windows) {
+                    Some(restriction) => {
+                        self.current_table_frame_filtered_partitions(
+                            &context,
+                            &view.mv,
+                            Vec::new(),
+                            &restriction,
+                        )
+                        .await?
+                    }
+                    None => self.current_table_frame(&context, &view.mv)?,
+                }
+            };
             let already = mv
                 .clone()
                 .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
@@ -819,7 +825,6 @@ impl IvmRuntime {
                 .select(output_exprs.clone())?
                 .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
                 .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-            let changed = union_frames(changed)?;
             let deletes = mv
                 .join(changed, JoinType::LeftSemi, &pair_refs, &pair_refs, None)?
                 .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?
