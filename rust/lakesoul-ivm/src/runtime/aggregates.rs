@@ -3290,9 +3290,11 @@ impl IvmRuntime {
             )
         };
         let state_frame = context.sql(&state_sql).await?;
-        view.state
-            .append_stream(&self.client, state_frame.execute_stream().await?)
-            .await?;
+        commit_ids.extend(
+            view.state
+                .append_stream(&self.client, state_frame.execute_stream().await?)
+                .await?,
+        );
 
         context.register_table("state_now", Arc::new(self.table_provider(view.state)))?;
         let rebuild = format!(
