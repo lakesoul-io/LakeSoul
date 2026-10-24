@@ -907,19 +907,6 @@ impl IvmRuntime {
             self.current_table_frame(&context, &view.right)?,
             &right_columns,
         )?;
-        let mv = match &mv_partitions {
-            Some(restriction) => {
-                self.current_table_frame_filtered_partitions(
-                    &context,
-                    &view.mv,
-                    Vec::new(),
-                    restriction,
-                )
-                .await?
-            }
-            None => self.current_table_frame(&context, &view.mv)?,
-        };
-
         let left_before = filter_deletes(left_before, change_column(&view.left))?;
         let right_before = filter_deletes(right_before, change_column(&view.right))?;
         let left_now = apply_side_filter(
@@ -1074,6 +1061,34 @@ impl IvmRuntime {
                     .select(left_key_exprs.clone())?
                     .distinct()?;
             affected_from_left.union(affected_from_right)?.distinct()?
+        };
+
+        // The MV only supplies the old rows for the affected left keys.
+        // Read those keys through the shared PK lookup instead of scanning
+        // the whole MV when its key matches the left key.
+        let mv = if view.mv.primary_keys == view.left.primary_keys {
+            self.lookup_source_by_join_keys(
+                &context,
+                &view.mv,
+                affected.clone(),
+                &view.left.primary_keys,
+                &view.mv.primary_keys,
+                true,
+            )
+            .await?
+        } else {
+            match &mv_partitions {
+                Some(restriction) => {
+                    self.current_table_frame_filtered_partitions(
+                        &context,
+                        &view.mv,
+                        Vec::new(),
+                        restriction,
+                    )
+                    .await?
+                }
+                None => self.current_table_frame(&context, &view.mv)?,
+            }
         };
 
         let join_type = if view.anti {
