@@ -3977,7 +3977,6 @@ impl IvmRuntime {
         })
         .await;
         if result.is_ok() {
-            self.sync_join_state_for_spec(spec).await?;
             self.compact_view_states(spec.view_id()).await?;
             crate::observability::record_rebuild(kind, started.elapsed());
         }

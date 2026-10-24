@@ -15,8 +15,8 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::memory::MemTable;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmTable, IvmTableOptions, RowView, TopKView,
-    top_k_mv_schema_for,
+    IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmTable, IvmTableOptions, RowView, StateRole,
+    TopKView, top_k_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -771,4 +771,141 @@ async fn keyed_group_source_refreshes() {
         top_k_rows(&fixture).await,
         HashSet::from([(1, "a".to_string(), 5, 101), (2, "b".to_string(), 20, 200),])
     );
+}
+
+/// A rank state created before column trimming is rebuilt when its persisted
+/// schema no longer matches the projected rank schema.
+#[test_log::test(tokio::test)]
+async fn rank_state_schema_is_migrated() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_migrate_src_{suffix}"),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let output_columns = vec!["k".to_string(), "ord".to_string()];
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_migrate_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                top_k_mv_schema_for(&source.schema, &["k".to_string()], &output_columns)
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = TopKView::new(
+        format!("topk_migrate_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        vec!["k".to_string()],
+        vec!["ord".to_string()],
+        1,
+    )
+    .with_output_columns(output_columns);
+
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 10, 100, "insert"), (2, "b", 20, 200, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&view).await.unwrap().unwrap();
+
+    let old = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_old_rank_{suffix}"),
+                table_path(&dir, "old_rank"),
+                source.schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_bucket_columns(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    runtime
+        .metadata()
+        .unregister_state(&view.view_id, StateRole::RankState)
+        .await
+        .unwrap();
+    runtime
+        .metadata()
+        .register_state(&view.view_id, StateRole::RankState, &old)
+        .await
+        .unwrap();
+
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(3, "c", 30, 300, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_top_k(&view).await.unwrap().unwrap();
+
+    let states = runtime.list_states(&view.view_id).await.unwrap();
+    let rank = states
+        .iter()
+        .find(|state| state.role == StateRole::RankState)
+        .unwrap();
+    let rank_table = runtime.open_table_by_id(&rank.table_id).await.unwrap();
+    assert_eq!(
+        rank_table
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>(),
+        vec![
+            "k".to_string(),
+            "ord".to_string(),
+            CHANGE_COLUMN.to_string()
+        ]
+    );
+
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(&mv)))
+        .unwrap();
+    let batches = context
+        .sql(&format!(
+            "select k, ord from mv where \"{IVM_ROW_KINDS_COLUMN}\" = 'insert' order by k"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in batches {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let orders = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((keys.value(row), orders.value(row)));
+        }
+    }
+    assert_eq!(rows, vec![(1, 10), (2, 20), (3, 30)]);
 }

@@ -3863,26 +3863,6 @@ impl IvmRuntime {
             .commit_ids)
     }
 
-    /// Populate the output state table after a rebuild.
-    pub(crate) async fn sync_join_state_for_spec(&self, spec: &ViewSpec) -> Result<()> {
-        let (output_id, state_id) = match spec {
-            ViewSpec::Join {
-                output_table_id,
-                state_table_id: Some(state_id),
-                ..
-            }
-            | ViewSpec::LookupJoin {
-                output_table_id,
-                state_table_id: Some(state_id),
-                ..
-            } => (output_table_id, state_id),
-            _ => return Ok(()),
-        };
-        let output = self.open_table_by_id(output_id).await?;
-        let state = self.open_table_by_id(state_id).await?;
-        self.sync_join_state(&output, &state).await.map(|_| ())
-    }
-
     /// Persist a join view spec (idempotent).
     pub async fn register_join_view(&self, view: &JoinView) -> Result<()> {
         let mut tables = vec![(StateRole::Mv, &view.output)];
@@ -4819,6 +4799,10 @@ impl IvmRuntime {
             .await?
             .commit_ids,
         );
+
+        if let Some(state) = &view.state {
+            commit_ids.extend(self.sync_join_state(&view.output, state).await?);
+        }
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
         self.metadata
@@ -6222,14 +6206,17 @@ impl IvmRuntime {
             );
         }
 
-        // The right-key pair index mirrors the rebuilt output; refresh it
-        // after truncating/refilling the MV.
+        // The right-key pair index and optional output-state mirror are part
+        // of the same rebuilt epoch.
         if keyed {
             let (index, ids) = self.ensure_join_pair_index(view, &view.output).await?;
             commit_ids.extend(ids);
             if let Some(index) = index {
                 commit_ids.extend(self.sync_join_pair_index(&view.output, &index).await?);
             }
+        }
+        if let Some(state) = &view.state {
+            commit_ids.extend(self.sync_join_state(&view.output, state).await?);
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
