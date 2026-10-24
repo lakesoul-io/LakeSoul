@@ -1980,16 +1980,102 @@ impl IvmRuntime {
             }
             None => self.current_table_frame(&context, &view.mv)?,
         };
-
-        // The refresh SQL computes the affected partitions itself and only
-        // aggregates those source partitions; register the full source as a
-        // streaming provider.
         context.register_table("delta", delta.clone().into_view())?;
         context.register_table("mv", mv.clone().into_view())?;
-        let src = self.current_table_frame(&context, &view.source)?;
-
-        // Phase 2: recompute the affected partitions from their pruned
-        // current source rows.  `delta` and `mv` are already registered.
+        // A source range partition can be pruned when the window partitions
+        // carry that range column; otherwise rows from other range
+        // partitions can still belong to an affected window partition.
+        let source_partitions = if !view.source.range_partition_columns.is_empty()
+            && view
+                .source
+                .range_partition_columns
+                .iter()
+                .all(|column| view.partition_keys.contains(column))
+            && view
+                .source
+                .range_partition_columns
+                .iter()
+                .all(|column| view.source.primary_keys.contains(column))
+        {
+            self.changed_partition_restriction(
+                &window,
+                &view.source.range_partition_columns,
+            )
+        } else {
+            None
+        };
+        let src = if let Some(restriction) = source_partitions {
+            self.current_table_frame_filtered_partitions(
+                &context,
+                &view.source,
+                Vec::new(),
+                &restriction,
+            )
+            .await?
+        } else if !view.partition_keys.is_empty()
+            && view.source.primary_keys.starts_with(&view.partition_keys)
+        {
+            let part_exprs = view
+                .partition_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let pk_exprs = view
+                .source
+                .primary_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let delta_keys = delta.clone().select(pk_exprs)?.distinct()?;
+            let old_parts = mv
+                .clone()
+                .join(
+                    delta_keys,
+                    JoinType::LeftSemi,
+                    &view
+                        .source
+                        .primary_keys
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                    &view
+                        .source
+                        .primary_keys
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                    None,
+                )?
+                .select(part_exprs.clone())?
+                .distinct()?;
+            let affected = delta
+                .clone()
+                .select(part_exprs.clone())?
+                .distinct()?
+                .union(old_parts)?
+                .distinct()?;
+            let null_part = view
+                .partition_keys
+                .iter()
+                .map(|key| col(key.as_str()).is_null())
+                .reduce(|left, right| left.or(right))
+                .ok_or_else(|| report!("window view has no partition keys"))?;
+            if count_frame_rows(affected.clone().filter(null_part)?).await? == 0 {
+                self.lookup_source_by_join_keys(
+                    &context,
+                    &view.source,
+                    affected,
+                    &view.partition_keys,
+                    &view.partition_keys,
+                    true,
+                )
+                .await?
+            } else {
+                self.current_table_frame(&context, &view.source)?
+            }
+        } else {
+            self.current_table_frame(&context, &view.source)?
+        };
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&window_refresh_sql(view, epoch)).await?;
         commit_ids.extend(
@@ -2218,9 +2304,7 @@ impl IvmRuntime {
         let mv_partitions =
             super::mv_partitions_for_source(&view.mv, &view.source, &window);
         let delta =
-            self.groups_table_frame(&context, &view.source, window.added_files)?;
-        context.register_table("delta", delta.into_view())?;
-        context.register_table("src", Arc::new(self.table_provider(&view.source)))?;
+            self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
         let mv = match mv_partitions {
             Some(restriction) => {
                 self.current_table_frame_filtered_partitions(
@@ -2233,7 +2317,105 @@ impl IvmRuntime {
             }
             None => self.current_table_frame(&context, &view.mv)?,
         };
-        context.register_table("mv", mv.into_view())?;
+        context.register_table("delta", delta.clone().into_view())?;
+        context.register_table("mv", mv.clone().into_view())?;
+        // A source range partition can be pruned when the top-k groups
+        // carry that range column.
+        let source_partitions = if !view.source.range_partition_columns.is_empty()
+            && view
+                .source
+                .range_partition_columns
+                .iter()
+                .all(|column| view.group_keys.contains(column))
+            && view
+                .source
+                .range_partition_columns
+                .iter()
+                .all(|column| view.source.primary_keys.contains(column))
+        {
+            self.changed_partition_restriction(
+                &window,
+                &view.source.range_partition_columns,
+            )
+        } else {
+            None
+        };
+        // The affected groups are the delta groups plus the old groups of the
+        // changed source keys.  If the groups are a source-PK prefix, fetch
+        // only those source rows; otherwise rank over the full source.
+        let src = if let Some(restriction) = source_partitions {
+            self.current_table_frame_filtered_partitions(
+                &context,
+                &view.source,
+                Vec::new(),
+                &restriction,
+            )
+            .await?
+        } else if !view.group_keys.is_empty()
+            && view.source.primary_keys.starts_with(&view.group_keys)
+        {
+            let group_exprs = view
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let pk_exprs = view
+                .source
+                .primary_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let delta_keys = delta.clone().select(pk_exprs)?.distinct()?;
+            let old_groups = mv
+                .clone()
+                .join(
+                    delta_keys,
+                    JoinType::LeftSemi,
+                    &view
+                        .source
+                        .primary_keys
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                    &view
+                        .source
+                        .primary_keys
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                    None,
+                )?
+                .select(group_exprs.clone())?
+                .distinct()?;
+            let affected = delta
+                .clone()
+                .select(group_exprs.clone())?
+                .distinct()?
+                .union(old_groups)?
+                .distinct()?;
+            let null_group = view
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()).is_null())
+                .reduce(|left, right| left.or(right))
+                .ok_or_else(|| report!("top-k view has no group keys"))?;
+            if count_frame_rows(affected.clone().filter(null_group)?).await? == 0 {
+                self.lookup_source_by_join_keys(
+                    &context,
+                    &view.source,
+                    affected,
+                    &view.group_keys,
+                    &view.group_keys,
+                    true,
+                )
+                .await?
+            } else {
+                self.current_table_frame(&context, &view.source)?
+            }
+        } else {
+            self.current_table_frame(&context, &view.source)?
+        };
+        context.register_table("src", src.into_view())?;
         let frame = context.sql(&top_k_refresh_sql(view, epoch)).await?;
         commit_ids.extend(
             view.mv
