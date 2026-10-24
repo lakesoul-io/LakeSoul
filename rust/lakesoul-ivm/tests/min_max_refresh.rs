@@ -531,6 +531,7 @@ async fn state_compaction_bounds_the_state_files() {
             .await
             .unwrap();
         runtime.refresh_min_max(&view).await.unwrap().unwrap();
+        runtime.compact_view_states(&view.view_id).await.unwrap();
         let files = view
             .state
             .current_file_count(runtime.client())

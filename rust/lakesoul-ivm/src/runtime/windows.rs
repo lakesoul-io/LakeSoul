@@ -2184,15 +2184,17 @@ impl IvmRuntime {
         )?;
         if let Some(rank) = &rank_state {
             let change = change_column(&view.source).unwrap_or(IVM_ROW_KINDS_COLUMN);
-            self.update_rank_state(
-                rank,
-                change,
-                &rank_keys,
-                &view.source.primary_keys,
-                before.clone(),
-                delta.clone(),
-            )
-            .await?;
+            commit_ids.extend(
+                self.update_rank_state(
+                    rank,
+                    change,
+                    &rank_keys,
+                    &view.source.primary_keys,
+                    before.clone(),
+                    delta.clone(),
+                )
+                .await?,
+            );
         }
         let mv = if view.partition_keys.is_empty() {
             match mv_partitions {
@@ -2758,7 +2760,7 @@ impl IvmRuntime {
         source_keys: &[String],
         before: DataFrame,
         delta: DataFrame,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         let key_exprs = key_columns
             .iter()
             .map(|key| col(key.as_str()))
@@ -2809,8 +2811,7 @@ impl IvmRuntime {
         )?;
         state
             .append_stream(&self.client, frame.execute_stream().await?)
-            .await?;
-        Ok(())
+            .await
     }
 
     /// Refresh a top-k view by recomputing its affected groups.
@@ -2870,15 +2871,17 @@ impl IvmRuntime {
         )?;
         if let Some(rank) = &rank_state {
             let change = change_column(&view.source).unwrap_or(IVM_ROW_KINDS_COLUMN);
-            self.update_rank_state(
-                rank,
-                change,
-                &rank_keys,
-                &view.source.primary_keys,
-                before.clone(),
-                delta.clone(),
-            )
-            .await?;
+            commit_ids.extend(
+                self.update_rank_state(
+                    rank,
+                    change,
+                    &rank_keys,
+                    &view.source.primary_keys,
+                    before.clone(),
+                    delta.clone(),
+                )
+                .await?,
+            );
         }
         let mv = if view.group_keys.is_empty() {
             match mv_partitions {

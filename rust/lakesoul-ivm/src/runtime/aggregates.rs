@@ -2973,7 +2973,6 @@ impl IvmRuntime {
         if window.added_files.is_empty() {
             return Ok(None);
         }
-        self.maybe_compact_state(view.state).await?;
         let record = match self
             .begin_window(view.view_id, &window.identity, view.mv)
             .await?
@@ -3082,9 +3081,11 @@ impl IvmRuntime {
                  order by {state_key_list}, \"rowKinds\""
             ))
             .await?;
-        view.state
-            .append_stream(&self.client, state_frame.execute_stream().await?)
-            .await?;
+        commit_ids.extend(
+            view.state
+                .append_stream(&self.client, state_frame.execute_stream().await?)
+                .await?,
+        );
 
         let affected = context
             .sql(&format!(

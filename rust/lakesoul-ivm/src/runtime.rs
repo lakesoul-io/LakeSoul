@@ -2638,6 +2638,20 @@ impl IvmRuntime {
         Ok(())
     }
 
+    /// Compact every auxiliary state table registered for a view when it has
+    /// accumulated enough files.  This is the single generic compaction entry
+    /// point; operators only write state, they do not own compaction policy.
+    pub async fn compact_view_states(&self, view_id: &str) -> Result<()> {
+        for state in self.metadata.list_states(view_id).await? {
+            if state.role == StateRole::Mv {
+                continue;
+            }
+            let table = self.open_table_by_id(&state.table_id).await?;
+            self.maybe_compact_state(&table).await?;
+        }
+        Ok(())
+    }
+
     /// The estimated live row count of a view, when known.
     pub(crate) fn known_view_rows(&self, view_id: &str) -> Option<u64> {
         self.view_rows
@@ -3903,6 +3917,9 @@ impl IvmRuntime {
             matches!(result, Ok(Some(_))),
             started.elapsed(),
         );
+        if result.is_ok() {
+            self.compact_view_states(spec.view_id()).await?;
+        }
         result
     }
 
@@ -3961,6 +3978,7 @@ impl IvmRuntime {
         .await;
         if result.is_ok() {
             self.sync_join_state_for_spec(spec).await?;
+            self.compact_view_states(spec.view_id()).await?;
             crate::observability::record_rebuild(kind, started.elapsed());
         }
         result
