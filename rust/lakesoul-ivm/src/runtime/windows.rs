@@ -2568,6 +2568,17 @@ impl IvmRuntime {
         let generation = self.metadata.bump_generation(&view.view_id).await?;
         self.metadata.delete_cursors(&view.view_id).await?;
         let state = self.ensure_window_state(view).await?;
+        let rank_columns = window_rank_columns(view, &refresh_session())?;
+        let rank_state = self
+            .ensure_rank_state(
+                &view.view_id,
+                &view.source,
+                "window",
+                &view.partition_keys,
+                &view.partition_keys,
+                &rank_columns,
+            )
+            .await?;
         view.mv.truncate(&self.client).await?;
         state.truncate(&self.client).await?;
 
@@ -2611,6 +2622,10 @@ impl IvmRuntime {
         .await?;
         commit_ids.extend(mv_ids);
         commit_ids.extend(state_ids);
+        if let Some(rank) = &rank_state {
+            rank.truncate(&self.client).await?;
+            commit_ids.extend(self.sync_rank_state(&view.source, rank).await?);
+        }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
@@ -2746,9 +2761,13 @@ impl IvmRuntime {
         Ok(Some(state))
     }
 
-    async fn sync_rank_state(&self, source: &IvmTable, state: &IvmTable) -> Result<()> {
+    async fn sync_rank_state(
+        &self,
+        source: &IvmTable,
+        state: &IvmTable,
+    ) -> Result<Vec<String>> {
         if source.current_files(&self.client).await?.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let context = refresh_session();
         context.register_table("src", Arc::new(self.table_provider(source)))?;
@@ -2767,8 +2786,7 @@ impl IvmRuntime {
         }
         state
             .append_stream(&self.client, frame.execute_stream().await?)
-            .await?;
-        Ok(())
+            .await
     }
 
     /// Apply the current window's source changes to the rank state.  Only the
@@ -3151,6 +3169,17 @@ impl IvmRuntime {
         let generation = self.metadata.bump_generation(&view.view_id).await?;
         self.metadata.delete_cursors(&view.view_id).await?;
         let state = self.ensure_top_k_state(view).await?;
+        let rank_columns = top_k_rank_columns(view, &refresh_session())?;
+        let rank_state = self
+            .ensure_rank_state(
+                &view.view_id,
+                &view.source,
+                "topk",
+                &view.group_keys,
+                &view.group_keys,
+                &rank_columns,
+            )
+            .await?;
         view.mv.truncate(&self.client).await?;
         state.truncate(&self.client).await?;
 
@@ -3194,6 +3223,10 @@ impl IvmRuntime {
         .await?;
         commit_ids.extend(mv_ids);
         commit_ids.extend(state_ids);
+        if let Some(rank) = &rank_state {
+            rank.truncate(&self.client).await?;
+            commit_ids.extend(self.sync_rank_state(&view.source, rank).await?);
+        }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
