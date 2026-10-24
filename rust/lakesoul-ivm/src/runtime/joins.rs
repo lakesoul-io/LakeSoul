@@ -3435,6 +3435,7 @@ impl IvmRuntime {
             bucket_count,
         )?
         .with_multi_match(multi_match);
+        let output_schema = datafusion::physical_plan::ExecutionPlan::schema(&lookup);
         let streams = datafusion::physical_plan::execute_stream_partitioned(
             Arc::new(lookup),
             context.task_ctx(),
@@ -3444,6 +3445,11 @@ impl IvmRuntime {
             while let Some(batch) = stream.next().await {
                 batches.push(batch?);
             }
+        }
+        if batches.is_empty() {
+            // Keep the prefixed lookup schema so an empty affected-key set
+            // still produces a typed DataFrame for the caller's projection.
+            batches.push(RecordBatch::new_empty(output_schema));
         }
         let projections = table
             .schema
