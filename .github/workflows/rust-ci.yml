@@ -114,6 +114,7 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           shared-key: "rust-test-fast"
+          key: ${{ hashFiles('Cargo.toml') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
@@ -168,6 +169,7 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           shared-key: "rust-clippy"
+          key: ${{ hashFiles('Cargo.toml') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Run Clippy
         run: cargo clippy --no-deps --all-features -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python -p lakesoul-io
