@@ -43,6 +43,33 @@ class AnswerTests(unittest.TestCase):
         self.assertFalse(self.check_answer([("1",), ("2",)], "n\n2\n1\n", sql="SELECT value ORDER BY value")[0])
         self.assertTrue(self.check_answer([("1",), ("2",)], "n\n2\n1\n")[0])
 
+    def test_ordered_ties_compare_as_multisets(self):
+        # TPC-H q11 orders by `value` only; rows with equal values may come in
+        # any order, but every row and the order between distinct keys count.
+        sql = "SELECT ps_partkey, sum(x) AS value FROM t GROUP BY ps_partkey ORDER BY value DESC"
+        expected = "ps_partkey,value\n7,9.00\n1,5.00\n2,5.00\n3,4.00\n"
+
+        def check(values, sql=sql):
+            return self.check_answer(values, expected, sql=sql, columns=["ps_partkey", "value"],
+                                     oids=[20, 1700])
+
+        self.assertEqual(check([("7", "9.00"), ("2", "5.00"), ("1", "5.00"), ("3", "4.00")]), (True, None))
+        correct, mismatch = check([("7", "9.00"), ("2", "5.00"), ("8", "5.00"), ("3", "4.00")])
+        self.assertFalse(correct)
+        self.assertIn("Ordered rows 2-3 with equal sort keys", mismatch)
+        self.assertFalse(check([("7", "9.00"), ("3", "4.00"), ("1", "5.00"), ("2", "5.00")])[0])
+        # Keys that are not plain output columns keep exact row order.
+        self.assertFalse(check([("7", "9.00"), ("2", "5.00"), ("1", "5.00"), ("3", "4.00")],
+                               sql="SELECT ps_partkey, value FROM t ORDER BY value + 0 DESC")[0])
+
+    def test_tie_cut_by_limit_must_keep_the_reference_rows(self):
+        sql = "SELECT k, v FROM t ORDER BY v DESC LIMIT 2"
+        expected = "k,v\n1,9\n2,5\n"
+        self.assertTrue(self.check_answer([("1", "9"), ("2", "5")], expected, sql=sql, columns=["k", "v"],
+                                          oids=[20, 20])[0])
+        self.assertFalse(self.check_answer([("1", "9"), ("3", "5")], expected, sql=sql, columns=["k", "v"],
+                                           oids=[20, 20])[0])
+
     def test_duplicates_preserved(self):
         self.assertFalse(self.check_answer([("1",), ("1",)], "n\n1\n2\n")[0])
         self.assertTrue(self.check_answer([("1",), ("1",)], "n\n1\n1\n")[0])

@@ -14,8 +14,9 @@ ABS_TOL = Decimal("0.01")
 REL_TOL = Decimal("0.000001")
 
 
-def ordered(sql: str) -> bool:
-    """Find a top-level ORDER BY, excluding literals, identifiers and comments."""
+def order_by(sql: str) -> int | None:
+    """Offset just past a top-level ORDER BY, excluding literals, identifiers
+    and comments; None without one."""
     pos, depth = 0, 0
     previous = ""
     while pos < len(sql):
@@ -66,14 +67,36 @@ def ordered(sql: str) -> bool:
             assert match is not None
             word = match.group().lower()
             if depth == 0 and previous == "order" and word == "by":
-                return True
+                return pos + len(match.group())
             previous = word if depth == 0 else ""
             pos += len(match.group())
         else:
             if not sql[pos].isspace():
                 previous = ""
             pos += 1
-    return False
+    return None
+
+
+def ordered(sql: str) -> bool:
+    return order_by(sql) is not None
+
+
+SORT_KEY = re.compile(r"\s*([A-Za-z_][A-Za-z_0-9]*)(?:\s+(?:asc|desc))?(?:\s+nulls\s+(?:first|last))?\s*",
+                      re.IGNORECASE)
+
+
+def sort_columns(sql: str, start: int, columns: list[str]) -> list[int] | None:
+    """Result positions of the ORDER BY keys starting at `start`, or None
+    unless every key is a bare name of exactly one output column."""
+    clause = re.split(r"\b(?:limit|offset|fetch)\b|;", sql[start:], maxsplit=1, flags=re.IGNORECASE)[0]
+    names = [column.lower() for column in columns]
+    positions = []
+    for item in clause.split(","):
+        match = SORT_KEY.fullmatch(item)
+        if match is None or names.count(match.group(1).lower()) != 1:
+            return None
+        positions.append(names.index(match.group(1).lower()))
+    return positions
 
 
 def normalize(row, numeric):
@@ -124,11 +147,32 @@ def compare(result: Result, answer: Path, sql: str) -> tuple[bool, str | None]:
     numeric = {index for index, oid in enumerate(result.type_oids) if oid in NUMERIC_OIDS}
     actual_rows = [normalize(row, numeric) for row in result.values]
     expected_rows = [normalize(row, numeric) for row in expected]
-    if ordered(sql):
-        for index, (actual, reference) in enumerate(zip(actual_rows, expected_rows), 1):
-            if not rows_equal(actual, reference):
-                return False, f"Ordered row {index}: actual={actual!r}, expected={reference!r}"[:400]
+    if (start := order_by(sql)) is not None:
+        keys = sort_columns(sql, start, result.columns)
+        # SQL leaves the order of rows with equal sort keys unspecified. When
+        # the keys are known output columns, each run of expected rows with
+        # equal keys must match the same positions as a multiset; otherwise
+        # every row must match in order.
+        pos = 0
+        while pos < len(expected_rows):
+            end = pos + 1
+            if keys is not None:
+                key = [expected_rows[pos][k] for k in keys]
+                while end < len(expected_rows) and [expected_rows[end][k] for k in keys] == key:
+                    end += 1
+            if end - pos == 1:
+                if not rows_equal(actual_rows[pos], expected_rows[pos]):
+                    return False, f"Ordered row {pos + 1}: actual={actual_rows[pos]!r}, expected={expected_rows[pos]!r}"[:400]
+            elif (mismatch := unmatched(actual_rows[pos:end], expected_rows[pos:end], numeric)) is not None:
+                return False, f"Ordered rows {pos + 1}-{end} with equal sort keys: {mismatch}"[:400]
+            pos = end
         return True, None
+    mismatch = unmatched(actual_rows, expected_rows, numeric)
+    return mismatch is None, mismatch
+
+
+def unmatched(actual_rows: list[tuple], expected_rows: list[tuple], numeric: set[int]) -> str | None:
+    """First row of a multiset difference under numeric tolerance, or None."""
     # Remove exact matches first; most large answer sets need no fuzzy matching.
     actual_counts, expected_counts = Counter(actual_rows), Counter(expected_rows)
     common = actual_counts & expected_counts
@@ -142,7 +186,7 @@ def compare(result: Result, answer: Path, sql: str) -> tuple[bool, str | None]:
                 groups[key][side].extend([row] * count)
     for actual, reference in groups.values():
         if len(actual) != len(reference):
-            return False, f"Unmatched multiset row: {(actual or reference)[0]!r}"[:400]
+            return f"Unmatched multiset row: {(actual or reference)[0]!r}"[:400]
         # Iterative augmenting paths ensure duplicates/overlapping tolerances do
         # not produce the false negatives of a greedy multiset comparison.
         owners: dict[int, int] = {}
@@ -163,7 +207,7 @@ def compare(result: Result, answer: Path, sql: str) -> tuple[bool, str | None]:
                         previous[owner] = (left, right)
                         pending.append(owner)
             if found is None:
-                return False, f"Unmatched multiset row: {actual[root]!r}"[:400]
+                return f"Unmatched multiset row: {actual[root]!r}"[:400]
             left, right = found
             while True:
                 owners[right] = left
@@ -171,4 +215,4 @@ def compare(result: Result, answer: Path, sql: str) -> tuple[bool, str | None]:
                 if link is None:
                     break
                 left, right = link
-    return True, None
+    return None

@@ -48,7 +48,12 @@ Numeric PostgreSQL types use absolute tolerance <= 0.01 **or** relative error
 <= 1e-6 against the reference value. Comparison is order-sensitive only when
 SQL contains a top-level `ORDER BY`; otherwise it compares multisets, including
 duplicate rows. Comments, strings, quoted identifiers and nested subqueries
-do not falsely trigger ordered comparison. The driver records `correct` and
+do not falsely trigger ordered comparison. SQL leaves the order of rows with
+equal sort keys unspecified: when every `ORDER BY` key is the bare name of an
+output column, each run of reference rows with equal keys must match the same
+result positions as a multiset (TPC-H q11 has two such ties at SF10). Any other
+key (an expression, an ordinal) compares every row in order, and a tie cut by
+`LIMIT` must still return the reference rows. The driver records `correct` and
 `mismatch`; mismatches do not abort the remaining queries or change the
 process exit code.
 
