@@ -3375,7 +3375,7 @@ impl IvmRuntime {
     /// Read a source/MV as the keyed state for a join.  The contribution keys
     /// are matched to real table PK columns with `arrow::Row`; bucket routing
     /// uses the table's writer bucket columns when they are part of the key.
-    async fn lookup_source_by_join_keys(
+    pub(crate) async fn lookup_source_by_join_keys(
         &self,
         context: &SessionContext,
         table: &IvmTable,
