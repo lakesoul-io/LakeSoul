@@ -20,6 +20,12 @@ pub use sort_writer::SortAsyncWriter;
 mod partitioning_writer;
 pub use partitioning_writer::PartitioningAsyncWriter;
 
+mod rolling_writer;
+pub use rolling_writer::{
+    ENV_FILE_ROLLING_BYTES, ENV_FILE_ROLLING_ROWS, RollingAsyncWriter, rolling_enabled,
+    rolling_settings,
+};
+
 mod sendable_writer;
 pub use sendable_writer::AsyncSendableMutableLakeSoulWriter;
 

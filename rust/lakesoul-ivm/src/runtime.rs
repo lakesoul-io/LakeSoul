@@ -2676,20 +2676,18 @@ pub(crate) struct WrittenFiles {
 
 /// Execute a refresh data frame and write its batches as they arrive.
 ///
-/// The driver never holds the whole output: up to
-/// [`crate::table::MAX_STATE_APPEND_ROWS`] rows are buffered and written,
-/// while DataFusion streams the rest of the physical plan.  Publication is
-/// left to the caller, so a distributed refresh can have workers write and the
-/// driver commit every file once.
+/// The driver never holds the whole output: DataFusion streams batches into
+/// one rolling writer, which flushes a bounded sort/write window at a time.
+/// Publication is left to the caller, so a distributed refresh can have
+/// workers write and the driver commit every file once.
 pub(crate) async fn write_dataframe(
     table: &IvmTable,
     frame: DataFrame,
 ) -> Result<WrittenFiles> {
     use futures::StreamExt;
     let mut stream = frame.execute_stream().await?;
-    let mut files = Vec::new();
-    let mut pending: Vec<RecordBatch> = Vec::new();
-    let mut buffer_rows = 0usize;
+    let mut writer = table.writer().await?;
+    let mut written_rows = 0u64;
     let mut inserts = 0u64;
     let mut deletes = 0u64;
     while let Some(batch) = stream.next().await {
@@ -2697,6 +2695,7 @@ pub(crate) async fn write_dataframe(
         if batch.num_rows() == 0 {
             continue;
         }
+        written_rows += batch.num_rows() as u64;
         if let Ok(index) = batch.schema().index_of(IVM_ROW_KINDS_COLUMN)
             && let Some(kinds) = batch
                 .column(index)
@@ -2711,21 +2710,10 @@ pub(crate) async fn write_dataframe(
                 }
             }
         }
-        buffer_rows += batch.num_rows();
-        pending.push(batch);
-        if buffer_rows >= crate::table::MAX_STATE_APPEND_ROWS {
-            let schema = pending[0].schema();
-            let coalesced = arrow::compute::concat_batches(&schema, &pending)?;
-            files.extend(table.write_batch(coalesced).await?);
-            pending.clear();
-            buffer_rows = 0;
-        }
+        writer.write_record_batch(batch).await?;
     }
-    if !pending.is_empty() {
-        let schema = pending[0].schema();
-        let coalesced = arrow::compute::concat_batches(&schema, &pending)?;
-        files.extend(table.write_batch(coalesced).await?);
-    }
+    let outputs = writer.flush_and_close().await?;
+    let files = table.output_files(outputs, written_rows);
     Ok(WrittenFiles {
         files,
         rows: inserts + deletes,
@@ -3007,9 +2995,8 @@ impl IvmRuntime {
         let schema = table.schema.clone();
         let kinds = schema.index_of(IVM_ROW_KINDS_COLUMN).ok();
         let epoch = schema.index_of(IVM_EPOCH_COLUMN).ok();
-        let mut pending = Vec::new();
-        let mut pending_rows = 0usize;
-        let mut files = Vec::new();
+        let mut writer = table.writer().await?;
+        let mut written_rows = 0u64;
         for mut stream in streams {
             while let Some(batch) = stream.next().await {
                 let batch = batch?;
@@ -3029,21 +3016,14 @@ impl IvmRuntime {
                             (0..batch.num_rows()).map(|_| 0i64),
                         ));
                 }
-                let batch = RecordBatch::try_new(schema.clone(), columns)?;
-                pending_rows += batch.num_rows();
-                pending.push(batch);
-                if pending_rows >= crate::table::MAX_STATE_APPEND_ROWS {
-                    let batch = arrow::compute::concat_batches(&schema, &pending)?;
-                    pending.clear();
-                    pending_rows = 0;
-                    files.extend(table.write_batch(batch).await?);
-                }
+                written_rows += batch.num_rows() as u64;
+                writer
+                    .write_record_batch(RecordBatch::try_new(schema.clone(), columns)?)
+                    .await?;
             }
         }
-        if !pending.is_empty() {
-            let batch = arrow::compute::concat_batches(&schema, &pending)?;
-            files.extend(table.write_batch(batch).await?);
-        }
+        let outputs = writer.flush_and_close().await?;
+        let files = table.output_files(outputs, written_rows);
         if files.is_empty() {
             table.truncate(&self.client).await?;
             return Ok(Vec::new());

@@ -136,6 +136,15 @@ pub struct LakeSoulIOConfig {
     /// Maximum file size in bytes
     #[educe(Default  = None)]
     pub(crate) max_file_size: Option<u64>,
+    /// Target number of rows in one sort/write window.  When reached, the
+    /// writer flushes the current sorted window and starts a new one.  Zero
+    /// disables row-based rolling.
+    #[educe(Default = 1_000_000)]
+    pub(crate) file_rolling_rows: usize,
+    /// Target number of Arrow bytes in one sort/write window.  Zero disables
+    /// byte-based rolling.
+    #[educe(Default = 256 * 1024 * 1024)]
+    pub(crate) file_rolling_bytes: u64,
     /// Random number generator seed
     #[educe(Default = 1234)]
     pub(crate) seed: u64,
@@ -297,6 +306,16 @@ impl LakeSoulIOConfig {
             .map(|x| x.parse::<ByteSize>().unwrap().bytes())
     }
 
+    /// Target rows in one sorted write window.
+    pub fn file_rolling_rows(&self) -> usize {
+        self.file_rolling_rows
+    }
+
+    /// Target Arrow bytes in one sorted write window.
+    pub fn file_rolling_bytes(&self) -> u64 {
+        self.file_rolling_bytes
+    }
+
     /// Returns the maximum file size in bytes if set
     pub fn max_file_size_option(&self) -> Option<u64> {
         self.option(OPTION_KEY_MAX_FILE_SIZE)
@@ -444,6 +463,8 @@ impl Debug for LakeSoulIOConfig {
         field!(use_dynamic_partition);
         field!(inferring_schema);
         field!(max_file_size);
+        field!(file_rolling_rows);
+        field!(file_rolling_bytes);
         field!(seed);
         field!(memory_buffer_capacity);
         field!(multipart_chunk_size);
@@ -905,6 +926,18 @@ impl LakeSoulIOConfigBuilder {
     /// * `size` - The maximum file size to set
     pub fn with_max_file_size(mut self, size: u64) -> Self {
         self.config.max_file_size = Some(size);
+        self
+    }
+
+    /// Set the number of rows in one sorted write window (0 disables).
+    pub fn with_file_rolling_rows(mut self, rows: usize) -> Self {
+        self.config.file_rolling_rows = rows;
+        self
+    }
+
+    /// Set the Arrow memory budget in one sorted write window (0 disables).
+    pub fn with_file_rolling_bytes(mut self, bytes: u64) -> Self {
+        self.config.file_rolling_bytes = bytes;
         self
     }
 
