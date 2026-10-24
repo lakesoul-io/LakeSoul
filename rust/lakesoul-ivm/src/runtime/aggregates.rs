@@ -1437,6 +1437,7 @@ fn sum_count_refresh_sql(
     keyed: bool,
     epoch: i64,
     changelog: bool,
+    active_keyed: bool,
 ) -> String {
     let keys = quoted_list(&view.group_keys);
     let aggregate_filter = view
@@ -1679,11 +1680,12 @@ fn sum_count_refresh_sql(
     } else {
         String::new()
     };
+    let active_source = if active_keyed { "active_input" } else { "mv" };
     format!(
         "with delta_pks as (select distinct {pks} from delta), \
          {delta_part}, {d2}, \
          already as (select distinct {keys} from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
-         active as (select * from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
+         active as (select * from {active_source} where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
          merged as (select {coalesced_keys}, s.sum_v, s.count_v, s.{nonnull_c} as s_nonnull, \
                            s.\"__ivm_epoch\" as s_epoch, d2.dsum, d2.dcount, d2.dnonnull, \
                            coalesce(s.{nonnull_c} + d2.dnonnull, s.{nonnull_c}, d2.dnonnull) as n_nonnull \
@@ -1705,6 +1707,7 @@ fn sum_count_refresh_sql(
         pks = quoted_list(&view.source.primary_keys),
         nonnull_c = quote_ident(IVM_NONNULL_COUNT_COLUMN),
         order = quoted_list(&refresh_order_columns(&view.mv, &view.group_keys)),
+        active_source = active_source,
     )
 }
 
@@ -2504,6 +2507,46 @@ impl IvmRuntime {
             dataframe(&context, Vec::new(), old_schema)?
         };
 
+        let mut active_keyed =
+            view.having.is_none() && view.mv.primary_keys == view.group_keys;
+        if active_keyed {
+            let key_exprs = view
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let mut affected = delta.clone().select(key_exprs.clone())?.distinct()?;
+            if keyed && !changelog {
+                affected = affected
+                    .union(old_frame.clone().select(key_exprs)?.distinct()?)?
+                    .distinct()?;
+            }
+            // The shared PK lookup treats NULL keys as "no lookup", while a
+            // grouped aggregate here can legitimately have a NULL group key.
+            // Fall back to the full MV scan for those windows.
+            let null_key = view
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()).is_null())
+                .reduce(|left, right| left.or(right))
+                .ok_or_else(|| report!("sum/count view has no group keys"))?;
+            let null_rows = count_frame_rows(affected.clone().filter(null_key)?).await?;
+            if null_rows == 0 {
+                let active = self
+                    .lookup_source_by_join_keys(
+                        &context,
+                        &view.mv,
+                        affected,
+                        &view.group_keys,
+                        &view.mv.primary_keys,
+                        true,
+                    )
+                    .await?;
+                context.register_table("active_input", active.into_view())?;
+            } else {
+                active_keyed = false;
+            }
+        }
         context.register_table("delta", delta.into_view())?;
         if keyed && !changelog {
             context.register_table("old", old_frame.into_view())?;
@@ -2532,7 +2575,7 @@ impl IvmRuntime {
             None => self.current_table_frame(&context, &view.mv)?,
         };
         context.register_table("mv", mv.into_view())?;
-        let sql = sum_count_refresh_sql(view, keyed, epoch, changelog);
+        let sql = sum_count_refresh_sql(view, keyed, epoch, changelog, active_keyed);
         let frame = context.sql(&sql).await?;
         commit_ids.extend(
             view.mv
