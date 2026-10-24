@@ -2677,7 +2677,7 @@ impl IvmRuntime {
             &view.group_keys,
             &view.group_exprs,
         )?;
-        context.register_table("delta", delta.into_view())?;
+        context.register_table("delta", delta.clone().into_view())?;
         let old = project_group_keys_frame(
             &context,
             self.before_window_table_frame(
@@ -2690,14 +2690,64 @@ impl IvmRuntime {
             &view.group_keys,
             &view.group_exprs,
         )?;
-        context.register_table("old", old.into_view())?;
-        let src = project_group_keys_frame(
-            &context,
-            self.current_table_frame(&context, &view.source)?,
-            &view.source.schema,
-            &view.group_keys,
-            &view.group_exprs,
-        )?;
+        context.register_table("old", old.clone().into_view())?;
+        let src = if view.group_exprs.is_empty()
+            && !view.group_keys.is_empty()
+            && view.source.primary_keys.starts_with(&view.group_keys)
+        {
+            let key_exprs = view
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let affected_keys = delta
+                .clone()
+                .select(key_exprs.clone())?
+                .distinct()?
+                .union(old.clone().select(key_exprs)?.distinct()?)?
+                .distinct()?;
+            let null_key = view
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()).is_null())
+                .reduce(|left, right| left.or(right))
+                .ok_or_else(|| report!("grouping-sets view has no group keys"))?;
+            if count_frame_rows(affected_keys.clone().filter(null_key)?).await? == 0 {
+                let source_now = self
+                    .lookup_source_by_join_keys(
+                        &context,
+                        &view.source,
+                        affected_keys,
+                        &view.group_keys,
+                        &view.group_keys,
+                        true,
+                    )
+                    .await?;
+                project_group_keys_frame(
+                    &context,
+                    source_now,
+                    &view.source.schema,
+                    &view.group_keys,
+                    &view.group_exprs,
+                )?
+            } else {
+                project_group_keys_frame(
+                    &context,
+                    self.current_table_frame(&context, &view.source)?,
+                    &view.source.schema,
+                    &view.group_keys,
+                    &view.group_exprs,
+                )?
+            }
+        } else {
+            project_group_keys_frame(
+                &context,
+                self.current_table_frame(&context, &view.source)?,
+                &view.source.schema,
+                &view.group_keys,
+                &view.group_exprs,
+            )?
+        };
         context.register_table("src", src.into_view())?;
         context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
         let frame = context.sql(&grouping_sets_refresh_sql(view, epoch)).await?;
