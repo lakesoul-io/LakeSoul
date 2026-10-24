@@ -2016,15 +2016,72 @@ impl IvmRuntime {
         let context = refresh_session();
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
-        let mv = if !view.partition_keys.is_empty()
-            && view.source.primary_keys.starts_with(&view.partition_keys)
-        {
+        let mv = if view.partition_keys.is_empty() {
+            match mv_partitions {
+                Some(restriction) => {
+                    self.current_table_frame_filtered_partitions(
+                        &context,
+                        &state,
+                        Vec::new(),
+                        &restriction,
+                    )
+                    .await?
+                }
+                None => self.current_table_frame(&context, &state)?,
+            }
+        } else {
             let part_exprs = view
                 .partition_keys
                 .iter()
                 .map(|key| col(key.as_str()))
                 .collect::<Vec<_>>();
-            let affected = delta.clone().select(part_exprs)?.distinct()?;
+            let affected = if view.source.primary_keys.starts_with(&view.partition_keys) {
+                // A source key carries the partition columns, so the delta
+                // partition values are also the old partition values.
+                delta.clone().select(part_exprs.clone())?.distinct()?
+            } else {
+                // The old partition of a changed source key comes from the
+                // before-image, not from a full MV scan.
+                let pk_exprs = view
+                    .source
+                    .primary_keys
+                    .iter()
+                    .map(|key| col(key.as_str()))
+                    .collect::<Vec<_>>();
+                let mut before_columns = view.source.primary_keys.clone();
+                for key in &view.partition_keys {
+                    if !before_columns.contains(key) {
+                        before_columns.push(key.clone());
+                    }
+                }
+                let before = filter_deletes(
+                    self.before_window_table_frame(
+                        &context,
+                        &view.source,
+                        &window.before_versions,
+                    )
+                    .await?,
+                    change_column(&view.source),
+                )?;
+                let before = project_frame(before, &before_columns)?;
+                let delta_keys = delta.clone().select(pk_exprs)?.distinct()?;
+                let pk_refs = view
+                    .source
+                    .primary_keys
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                let old_parts = before
+                    .join(delta_keys, JoinType::LeftSemi, &pk_refs, &pk_refs, None)?
+                    .select(part_exprs.clone())?
+                    .distinct()?;
+                delta
+                    .clone()
+                    .select(part_exprs.clone())?
+                    .distinct()?
+                    .union(old_parts)?
+                    .distinct()?
+            };
             let null_part = view
                 .partition_keys
                 .iter()
@@ -2054,19 +2111,6 @@ impl IvmRuntime {
                     }
                     None => self.current_table_frame(&context, &state)?,
                 }
-            }
-        } else {
-            match mv_partitions {
-                Some(restriction) => {
-                    self.current_table_frame_filtered_partitions(
-                        &context,
-                        &state,
-                        Vec::new(),
-                        &restriction,
-                    )
-                    .await?
-                }
-                None => self.current_table_frame(&context, &state)?,
             }
         };
         context.register_table("delta", delta.clone().into_view())?;
@@ -2451,15 +2495,68 @@ impl IvmRuntime {
             super::mv_partitions_for_source(&view.mv, &view.source, &window);
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
-        let mv = if !view.group_keys.is_empty()
-            && view.source.primary_keys.starts_with(&view.group_keys)
-        {
+        let mv = if view.group_keys.is_empty() {
+            match mv_partitions {
+                Some(restriction) => {
+                    self.current_table_frame_filtered_partitions(
+                        &context,
+                        &state,
+                        Vec::new(),
+                        &restriction,
+                    )
+                    .await?
+                }
+                None => self.current_table_frame(&context, &state)?,
+            }
+        } else {
             let group_exprs = view
                 .group_keys
                 .iter()
                 .map(|key| col(key.as_str()))
                 .collect::<Vec<_>>();
-            let affected = delta.clone().select(group_exprs)?.distinct()?;
+            let affected = if view.source.primary_keys.starts_with(&view.group_keys) {
+                delta.clone().select(group_exprs.clone())?.distinct()?
+            } else {
+                let pk_exprs = view
+                    .source
+                    .primary_keys
+                    .iter()
+                    .map(|key| col(key.as_str()))
+                    .collect::<Vec<_>>();
+                let mut before_columns = view.source.primary_keys.clone();
+                for key in &view.group_keys {
+                    if !before_columns.contains(key) {
+                        before_columns.push(key.clone());
+                    }
+                }
+                let before = filter_deletes(
+                    self.before_window_table_frame(
+                        &context,
+                        &view.source,
+                        &window.before_versions,
+                    )
+                    .await?,
+                    change_column(&view.source),
+                )?;
+                let before = project_frame(before, &before_columns)?;
+                let delta_keys = delta.clone().select(pk_exprs)?.distinct()?;
+                let pk_refs = view
+                    .source
+                    .primary_keys
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                let old_groups = before
+                    .join(delta_keys, JoinType::LeftSemi, &pk_refs, &pk_refs, None)?
+                    .select(group_exprs.clone())?
+                    .distinct()?;
+                delta
+                    .clone()
+                    .select(group_exprs.clone())?
+                    .distinct()?
+                    .union(old_groups)?
+                    .distinct()?
+            };
             let null_group = view
                 .group_keys
                 .iter()
@@ -2489,19 +2586,6 @@ impl IvmRuntime {
                     }
                     None => self.current_table_frame(&context, &state)?,
                 }
-            }
-        } else {
-            match mv_partitions {
-                Some(restriction) => {
-                    self.current_table_frame_filtered_partitions(
-                        &context,
-                        &state,
-                        Vec::new(),
-                        &restriction,
-                    )
-                    .await?
-                }
-                None => self.current_table_frame(&context, &state)?,
             }
         };
         context.register_table("delta", delta.clone().into_view())?;

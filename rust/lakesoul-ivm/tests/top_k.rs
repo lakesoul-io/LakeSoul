@@ -738,6 +738,16 @@ async fn keyed_group_source_refreshes() {
         .await
         .unwrap()
         .unwrap();
+    let mut roles = fixture
+        .runtime
+        .list_states(&fixture.view.view_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|state| state.role.as_str())
+        .collect::<Vec<_>>();
+    roles.sort_unstable();
+    assert_eq!(roles, vec!["mv", "state"]);
     assert_eq!(
         top_k_rows(&fixture).await,
         HashSet::from([(1, "a".to_string(), 10, 100), (2, "b".to_string(), 20, 200),])
