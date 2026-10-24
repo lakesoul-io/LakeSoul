@@ -229,6 +229,8 @@ pub enum StateRole {
     JoinRight,
     /// A pair-state index keyed by the right source identity.
     JoinPairIndex,
+    /// The source-row state used to recompute window/top-k ranks.
+    RankState,
 }
 
 impl StateRole {
@@ -240,6 +242,7 @@ impl StateRole {
             StateRole::JoinLeft => "join_left",
             StateRole::JoinRight => "join_right",
             StateRole::JoinPairIndex => "join_pair_index",
+            StateRole::RankState => "rank_state",
         }
     }
 
@@ -250,6 +253,7 @@ impl StateRole {
             "join_left" => Ok(StateRole::JoinLeft),
             "join_right" => Ok(StateRole::JoinRight),
             "join_pair_index" => Ok(StateRole::JoinPairIndex),
+            "rank_state" => Ok(StateRole::RankState),
             other => Err(rootcause::report!("unknown state role {other:?}")),
         }
     }

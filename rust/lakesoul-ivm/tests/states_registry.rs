@@ -391,7 +391,7 @@ async fn states_are_registered_for_each_view_kind() {
             .iter()
             .map(|(role, _)| *role)
             .collect::<Vec<_>>(),
-        vec!["mv", "state"]
+        vec!["mv", "rank_state", "state"]
     );
     assert!(window_states.contains(&("mv", window_mv.table_id.clone())));
     let join_states = pair_list(&runtime, &join_view.view_id).await;
