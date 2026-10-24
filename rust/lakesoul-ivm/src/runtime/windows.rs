@@ -1901,6 +1901,147 @@ fn validate_top_k_view(view: &TopKView) -> Result<()> {
     Ok(())
 }
 
+fn push_rank_column(columns: &mut Vec<String>, column: impl Into<String>) {
+    let column = column.into();
+    if !columns.contains(&column) {
+        columns.push(column);
+    }
+}
+
+fn add_rank_expression_columns(
+    columns: &mut Vec<String>,
+    context: &SessionContext,
+    schema: &SchemaRef,
+    expression: &str,
+) -> Result<()> {
+    for column in filter_columns(context, schema, expression)? {
+        push_rank_column(columns, column);
+    }
+    Ok(())
+}
+
+fn window_rank_columns(
+    view: &WindowView,
+    context: &SessionContext,
+) -> Result<Vec<String>> {
+    let mut columns = view.source.primary_keys.clone();
+    for column in view
+        .partition_keys
+        .iter()
+        .chain(view.payload_columns.iter())
+    {
+        push_rank_column(&mut columns, column.clone());
+    }
+    let mut fallback = false;
+    macro_rules! add {
+        ($expression:expr) => {
+            if add_rank_expression_columns(
+                &mut columns,
+                context,
+                &view.source.schema,
+                $expression,
+            )
+            .is_err()
+            {
+                fallback = true;
+            }
+        };
+    }
+    for order in &view.order_keys {
+        add!(order);
+    }
+    for expression in &view.order_by {
+        add!(expression);
+    }
+    if let Some(filter) = view.filter.as_deref() {
+        add!(filter);
+    }
+    for column in &view.columns {
+        if let Some(value) = column.value_column.as_deref() {
+            push_rank_column(&mut columns, value.to_string());
+        }
+        if let Some(args) = column.window_args.as_deref() {
+            add!(args);
+        }
+        if let Some(filter) = column.window_filter.as_deref() {
+            add!(filter);
+        }
+    }
+    if let Some(change) = change_column(&view.source) {
+        push_rank_column(&mut columns, change.to_string());
+    }
+    if !fallback && let Ok(schema) = project_schema(&view.source.schema, &columns) {
+        return Ok(schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect());
+    }
+    Ok(view
+        .source
+        .schema
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect())
+}
+
+fn top_k_rank_columns(view: &TopKView, context: &SessionContext) -> Result<Vec<String>> {
+    let mut columns = view.source.primary_keys.clone();
+    for column in top_k_output_columns(view)
+        .iter()
+        .chain(view.group_keys.iter())
+    {
+        if view.source.schema.field_with_name(column).is_ok() {
+            push_rank_column(&mut columns, column.clone());
+        }
+    }
+    let mut fallback = false;
+    macro_rules! add {
+        ($expression:expr) => {
+            if add_rank_expression_columns(
+                &mut columns,
+                context,
+                &view.source.schema,
+                $expression,
+            )
+            .is_err()
+            {
+                fallback = true;
+            }
+        };
+    }
+    for order in &view.order_keys {
+        add!(order);
+    }
+    for expression in &view.order_by {
+        add!(expression);
+    }
+    if let Some(filter) = view.filter.as_deref() {
+        add!(filter);
+    }
+    for expression in &view.output_exprs {
+        add!(expression);
+    }
+    if let Some(change) = change_column(&view.source) {
+        push_rank_column(&mut columns, change.to_string());
+    }
+    if !fallback && let Ok(schema) = project_schema(&view.source.schema, &columns) {
+        return Ok(schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect());
+    }
+    Ok(view
+        .source
+        .schema
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect())
+}
+
 impl IvmRuntime {
     /// Persist a window view spec (idempotent).
     pub async fn register_window_view(&self, view: &WindowView) -> Result<()> {
@@ -2000,6 +2141,7 @@ impl IvmRuntime {
                 .iter()
                 .chain(view.source.primary_keys.iter()),
         );
+        let rank_columns = window_rank_columns(view, &refresh_session())?;
         let rank_state = self
             .ensure_rank_state(
                 &view.view_id,
@@ -2007,6 +2149,7 @@ impl IvmRuntime {
                 "window",
                 &view.partition_keys,
                 &view.partition_keys,
+                &rank_columns,
             )
             .await?;
         let record = match self
@@ -2537,6 +2680,7 @@ impl IvmRuntime {
         name_suffix: &str,
         key_columns: &[String],
         bucket_columns: &[String],
+        columns: &[String],
     ) -> Result<Option<IvmTable>> {
         let change = change_column(source).map(str::to_string).or_else(|| {
             source
@@ -2563,7 +2707,7 @@ impl IvmRuntime {
         let mut options = IvmTableOptions::new(
             format!("{}__ivm_{name_suffix}_rank_{view_id}", source.table_name),
             format!("{}__ivm_{name_suffix}_rank_{view_id}", source.table_path),
-            source.schema.clone(),
+            project_schema(&source.schema, columns)?,
         )
         .with_namespace(source.namespace.clone())
         .with_primary_keys(keys)
@@ -2584,7 +2728,13 @@ impl IvmRuntime {
         }
         let context = refresh_session();
         context.register_table("src", Arc::new(self.table_provider(source)))?;
-        let mut frame = context.sql("select * from src").await?;
+        let columns = state
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>();
+        let mut frame = project_frame(context.sql("select * from src").await?, &columns)?;
         if let Some(change) = change_column(source) {
             frame = frame.filter(column_expr(change).not_eq(lit("delete")))?;
         } else if source.schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_ok() {
@@ -2619,6 +2769,14 @@ impl IvmRuntime {
             .map(|key| col(key.as_str()))
             .collect::<Vec<_>>();
         let source_refs = source_keys.iter().map(String::as_str).collect::<Vec<_>>();
+        let state_columns = state
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>();
+        let before = project_frame(before, &state_columns)?;
+        let delta = project_frame(delta, &state_columns)?;
         let before = before.filter(column_expr(change).not_eq(lit("delete")))?;
         let current = delta
             .clone()
@@ -2672,6 +2830,7 @@ impl IvmRuntime {
                 .iter()
                 .chain(view.source.primary_keys.iter()),
         );
+        let rank_columns = top_k_rank_columns(view, &refresh_session())?;
         let rank_state = self
             .ensure_rank_state(
                 &view.view_id,
@@ -2679,6 +2838,7 @@ impl IvmRuntime {
                 "topk",
                 &view.group_keys,
                 &view.group_keys,
+                &rank_columns,
             )
             .await?;
         let record = match self
