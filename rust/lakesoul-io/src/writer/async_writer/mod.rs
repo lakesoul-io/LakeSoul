@@ -76,6 +76,15 @@ pub trait AsyncBatchWriter {
     /// Flush the writer and close it.
     async fn flush_and_close(self: Box<Self>) -> Result<Vec<FlushOutput>>;
 
+    /// Flush the writer, close it, and return the final metrics snapshot.
+    async fn flush_and_close_with_metrics(
+        self: Box<Self>,
+    ) -> Result<(Vec<FlushOutput>, Option<MetricsSet>)> {
+        let metrics = self.metrics();
+        let output = self.flush_and_close().await?;
+        Ok((output, metrics))
+    }
+
     /// Flush the writer, this can only be called once.
     async fn flush(&mut self) -> Result<Vec<FlushOutput>> {
         unimplemented!()

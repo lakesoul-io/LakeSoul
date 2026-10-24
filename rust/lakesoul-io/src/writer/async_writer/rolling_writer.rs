@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+use datafusion_physical_plan::metrics::MetricsSet;
 
 use crate::{
     Result,
@@ -51,6 +52,7 @@ pub struct RollingAsyncWriter {
     pending_rows: usize,
     pending_bytes: u64,
     outputs: Vec<FlushOutput>,
+    metrics: MetricsSet,
 }
 
 impl RollingAsyncWriter {
@@ -76,6 +78,7 @@ impl RollingAsyncWriter {
             pending_rows: 0,
             pending_bytes: 0,
             outputs: Vec::new(),
+            metrics: MetricsSet::new(),
         })
     }
 
@@ -110,7 +113,13 @@ impl RollingAsyncWriter {
         for batch in self.pending.drain(..) {
             writer.write_record_batch(batch).await?;
         }
-        self.outputs.extend(writer.flush_and_close().await?);
+        let (outputs, metrics) = writer.flush_and_close_with_metrics().await?;
+        if let Some(metrics) = metrics {
+            for metric in metrics.iter() {
+                self.metrics.push(metric.clone());
+            }
+        }
+        self.outputs.extend(outputs);
         self.pending_rows = 0;
         self.pending_bytes = 0;
         Ok(())
@@ -156,10 +165,19 @@ impl AsyncBatchWriter for RollingAsyncWriter {
         Ok(())
     }
 
+    async fn flush(&mut self) -> Result<Vec<FlushOutput>> {
+        self.flush_window().await?;
+        Ok(std::mem::take(&mut self.outputs))
+    }
+
     async fn flush_and_close(self: Box<Self>) -> Result<Vec<FlushOutput>> {
         let mut this = *self;
         this.flush_window().await?;
         Ok(this.outputs)
+    }
+
+    async fn close(self: Box<Self>) -> Result<()> {
+        Ok(())
     }
 
     async fn abort_and_close(self: Box<Self>) -> Result<()> {
@@ -174,6 +192,10 @@ impl AsyncBatchWriter for RollingAsyncWriter {
 
     fn buffered_size(&self) -> u64 {
         self.pending_bytes
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone())
     }
 
     fn io_session(&self) -> &Arc<LakeSoulIOSession> {
