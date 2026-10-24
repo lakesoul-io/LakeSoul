@@ -21,7 +21,7 @@ use arrow::record_batch::RecordBatch;
 use arrow_array::Array;
 use arrow_schema::SchemaRef;
 use datafusion::error::DataFusionError;
-use datafusion::prelude::Expr;
+use datafusion::prelude::{Expr, SessionContext};
 use lakesoul_common::ser::arrow_java::{
     schema_from_table_info_metadata, schema_to_metadata_str,
 };
@@ -39,6 +39,7 @@ use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo, TableIn
 
 use crate::error::Result;
 use crate::metadata::PartitionVersion;
+use crate::provider::IvmTableProvider;
 /// The channel a streaming scan sends its batches through.
 type BatchSender =
     tokio::sync::mpsc::Sender<std::result::Result<RecordBatch, DataFusionError>>;
@@ -677,60 +678,63 @@ impl IvmTable {
     /// replaces the partition snapshot, so the old files stop being read and
     /// are reclaimed by the table's retention cleanup.
     pub async fn compact(&self, client: &MetaDataClient) -> Result<Vec<String>> {
-        let batches = self.read_current(client).await?;
-        let rows = self.compacted_batches(batches)?;
-        if rows.iter().all(|batch| batch.num_rows() == 0) {
+        use futures::StreamExt;
+
+        // Read current state through the streaming provider: a single large
+        // `read_current()` would materialize the entire table before the
+        // writer even starts.  Execute all hash/range partitions so this is
+        // not accidentally limited to the first bucket.
+        let context = SessionContext::new();
+        let provider = IvmTableProvider::current(self.clone(), client.clone());
+        let frame = context.read_table(Arc::new(provider))?;
+        let streams = frame.execute_stream_partitioned().await?;
+        if streams.is_empty() {
             self.truncate(client).await?;
             return Ok(Vec::new());
         }
-        let files = self.write_batches(rows).await?;
+        let kinds = self.schema.index_of(IVM_ROW_KINDS_COLUMN).ok();
+        let epoch = self.schema.index_of(IVM_EPOCH_COLUMN).ok();
+        let mut writer = self.writer().await?;
+        let mut written_rows = 0u64;
+        for mut stream in streams {
+            while let Some(batch) = stream.next().await {
+                let batch = batch?;
+                if batch.num_rows() == 0 {
+                    continue;
+                }
+                let mut columns = batch.columns().to_vec();
+                if let Some(index) = kinds {
+                    columns[index] =
+                        Arc::new(arrow::array::StringArray::from_iter_values(
+                            (0..batch.num_rows()).map(|_| "insert"),
+                        ));
+                }
+                if let Some(index) = epoch {
+                    columns[index] =
+                        Arc::new(arrow::array::Int64Array::from_iter_values(
+                            (0..batch.num_rows()).map(|_| 0i64),
+                        ));
+                }
+                written_rows += batch.num_rows() as u64;
+                writer
+                    .write_record_batch(RecordBatch::try_new(
+                        self.schema.clone(),
+                        columns,
+                    )?)
+                    .await?;
+            }
+        }
+        let outputs = writer.flush_and_close().await?;
+        let files = self.output_files(outputs, written_rows);
+        if files.is_empty() {
+            self.truncate(client).await?;
+            return Ok(Vec::new());
+        }
         let read_partitions = client.get_all_partition_info(&self.table_id).await?;
         let commit_ids = client
             .commit_compaction(&self.table_name, &self.namespace, files, read_partitions)
             .await?;
         Ok(commit_ids)
-    }
-
-    /// The logical rows to rewrite: tombstones dropped, bookkeeping reset.
-    fn compacted_batches(&self, batches: Vec<RecordBatch>) -> Result<Vec<RecordBatch>> {
-        let schema = self.schema.clone();
-        let kinds = schema.index_of(IVM_ROW_KINDS_COLUMN).ok();
-        let epoch = schema.index_of(IVM_EPOCH_COLUMN).ok();
-        let mut out = Vec::new();
-        for batch in batches {
-            let filtered = match kinds {
-                Some(index) => {
-                    let values = batch
-                        .column(index)
-                        .as_any()
-                        .downcast_ref::<arrow_array::StringArray>()
-                        .ok_or_else(|| {
-                            rootcause::report!("row kind column is not a string column")
-                        })?;
-                    let mask = arrow_array::BooleanArray::from_iter(
-                        (0..values.len()).map(|row| Some(values.value(row) != "delete")),
-                    );
-                    arrow::compute::filter_record_batch(&batch, &mask)?
-                }
-                None => batch,
-            };
-            if filtered.num_rows() == 0 {
-                continue;
-            }
-            let mut columns = filtered.columns().to_vec();
-            if let Some(index) = kinds {
-                columns[index] = Arc::new(arrow_array::StringArray::from_iter_values(
-                    (0..filtered.num_rows()).map(|_| "insert"),
-                ));
-            }
-            if let Some(index) = epoch {
-                columns[index] = Arc::new(arrow_array::Int64Array::from_iter_values(
-                    (0..filtered.num_rows()).map(|_| 0i64),
-                ));
-            }
-            out.push(RecordBatch::try_new(schema.clone(), columns)?);
-        }
-        Ok(out)
     }
 
     /// Read the given data files with this table's schema and merge key.
