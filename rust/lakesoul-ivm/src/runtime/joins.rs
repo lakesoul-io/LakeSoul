@@ -3730,21 +3730,26 @@ impl IvmRuntime {
     }
 
     /// Mirror the current logical output into a newly attached state table.
-    async fn sync_join_state(&self, output: &IvmTable, state: &IvmTable) -> Result<()> {
+    async fn sync_join_state(
+        &self,
+        output: &IvmTable,
+        state: &IvmTable,
+    ) -> Result<Vec<String>> {
         let context = refresh_session();
         let frame = self.current_table_frame(&context, output)?;
         state.truncate(&self.client).await?;
-        append_dataframe(state, &self.client, frame).await?;
-        Ok(())
+        Ok(append_dataframe(state, &self.client, frame)
+            .await?
+            .commit_ids)
     }
 
     async fn ensure_join_state(
         &self,
         output: &IvmTable,
         state: Option<&IvmTable>,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         let Some(state) = state else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         let output_files = output.current_files(&self.client).await?;
         let state_files = state.current_files(&self.client).await?;
@@ -3759,9 +3764,10 @@ impl IvmRuntime {
                 && latest_table_timestamp(self, state).await?
                     < latest_table_timestamp(self, output).await?);
         if state_stale {
-            self.sync_join_state(output, state).await?;
+            self.sync_join_state(output, state).await
+        } else {
+            Ok(Vec::new())
         }
-        Ok(())
     }
 
     /// Create or reuse the right-key pair index for a keyed join output.
@@ -3774,9 +3780,9 @@ impl IvmRuntime {
         &self,
         view: &JoinView,
         output: &IvmTable,
-    ) -> Result<Option<IvmTable>> {
+    ) -> Result<(Option<IvmTable>, Vec<String>)> {
         if view.left.primary_keys.is_empty() || view.right.primary_keys.is_empty() {
-            return Ok(None);
+            return Ok((None, Vec::new()));
         }
         if output
             .schema
@@ -3787,7 +3793,7 @@ impl IvmRuntime {
                 .field_with_name(&left_pk_alias(&view.left.primary_keys[0]))
                 .is_err()
         {
-            return Ok(None);
+            return Ok((None, Vec::new()));
         }
         let mut primary_keys = view
             .right
@@ -3809,7 +3815,7 @@ impl IvmRuntime {
         {
             let table = self.open_table_by_id(&existing.table_id).await?;
             if table.schema == output.schema && table.primary_keys == primary_keys {
-                return Ok(Some(table));
+                return Ok((Some(table), Vec::new()));
             }
             self.metadata
                 .unregister_state(&view.view_id, StateRole::JoinPairIndex)
@@ -3838,21 +3844,23 @@ impl IvmRuntime {
             .register_state(&view.view_id, StateRole::JoinPairIndex, &index)
             .await?;
         if !output.current_files(&self.client).await?.is_empty() {
-            self.sync_join_pair_index(output, &index).await?;
+            let ids = self.sync_join_pair_index(output, &index).await?;
+            return Ok((Some(index), ids));
         }
-        Ok(Some(index))
+        Ok((Some(index), Vec::new()))
     }
 
     async fn sync_join_pair_index(
         &self,
         output: &IvmTable,
         index: &IvmTable,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         let context = refresh_session();
         let frame = self.current_table_frame(&context, output)?;
         index.truncate(&self.client).await?;
-        append_dataframe(index, &self.client, frame).await?;
-        Ok(())
+        Ok(append_dataframe(index, &self.client, frame)
+            .await?
+            .commit_ids)
     }
 
     /// Populate the output state table after a rebuild.
@@ -3872,7 +3880,7 @@ impl IvmRuntime {
         };
         let output = self.open_table_by_id(output_id).await?;
         let state = self.open_table_by_id(state_id).await?;
-        self.sync_join_state(&output, &state).await
+        self.sync_join_state(&output, &state).await.map(|_| ())
     }
 
     /// Persist a join view spec (idempotent).
@@ -3940,13 +3948,16 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        self.ensure_join_state(&view.output, view.state.as_ref())
-            .await?;
-        let pair_index = if keyed {
+        commit_ids.extend(
+            self.ensure_join_state(&view.output, view.state.as_ref())
+                .await?,
+        );
+        let (pair_index, pair_index_ids) = if keyed {
             self.ensure_join_pair_index(view, &view.output).await?
         } else {
-            None
+            (None, Vec::new())
         };
+        commit_ids.extend(pair_index_ids);
         let left_side_state = if keyed {
             self.ensure_join_side_state(
                 &view.view_id,
@@ -3974,14 +3985,14 @@ impl IvmRuntime {
             None
         };
         if let Some(state) = &left_side_state {
-            if state.current_files(&self.client).await?.is_empty() {
+            let ids = if state.current_files(&self.client).await?.is_empty() {
                 self.sync_join_side_state(
                     &view.left,
                     state,
                     &view.join_keys,
                     &view.key_exprs.left,
                 )
-                .await?;
+                .await?
             } else {
                 self.apply_join_side_delta(
                     &view.left,
@@ -3990,8 +4001,9 @@ impl IvmRuntime {
                     &view.join_keys,
                     &view.key_exprs.left,
                 )
-                .await?;
-            }
+                .await?
+            };
+            commit_ids.extend(ids);
         }
         let right_join_keys = if view.right_keys.is_empty() {
             &view.join_keys
@@ -3999,14 +4011,14 @@ impl IvmRuntime {
             &view.right_keys
         };
         if let Some(state) = &right_side_state {
-            if state.current_files(&self.client).await?.is_empty() {
+            let ids = if state.current_files(&self.client).await?.is_empty() {
                 self.sync_join_side_state(
                     &view.right,
                     state,
                     right_join_keys,
                     &view.key_exprs.right,
                 )
-                .await?;
+                .await?
             } else {
                 self.apply_join_side_delta(
                     &view.right,
@@ -4015,8 +4027,9 @@ impl IvmRuntime {
                     right_join_keys,
                     &view.key_exprs.right,
                 )
-                .await?;
-            }
+                .await?
+            };
+            commit_ids.extend(ids);
         }
         let context = refresh_session();
         if keyed {
@@ -4490,8 +4503,10 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        self.ensure_join_state(&view.output, view.state.as_ref())
-            .await?;
+        commit_ids.extend(
+            self.ensure_join_state(&view.output, view.state.as_ref())
+                .await?,
+        );
         let context = refresh_session();
         let left_changed = !left_window.added_files.is_empty();
         let right_changed = !right_window.added_files.is_empty();
@@ -6084,13 +6099,15 @@ impl IvmRuntime {
                 )
                 .await?;
             if let Some(state) = left_state {
-                self.sync_join_side_state(
-                    &view.left,
-                    &state,
-                    &view.join_keys,
-                    &view.key_exprs.left,
-                )
-                .await?;
+                commit_ids.extend(
+                    self.sync_join_side_state(
+                        &view.left,
+                        &state,
+                        &view.join_keys,
+                        &view.key_exprs.left,
+                    )
+                    .await?,
+                );
             }
             let right_keys = if view.right_keys.is_empty() {
                 &view.join_keys
@@ -6106,13 +6123,15 @@ impl IvmRuntime {
                 )
                 .await?;
             if let Some(state) = right_state {
-                self.sync_join_side_state(
-                    &view.right,
-                    &state,
-                    right_keys,
-                    &view.key_exprs.right,
-                )
-                .await?;
+                commit_ids.extend(
+                    self.sync_join_side_state(
+                        &view.right,
+                        &state,
+                        right_keys,
+                        &view.key_exprs.right,
+                    )
+                    .await?,
+                );
             }
         }
 
@@ -6205,10 +6224,12 @@ impl IvmRuntime {
 
         // The right-key pair index mirrors the rebuilt output; refresh it
         // after truncating/refilling the MV.
-        if keyed
-            && let Some(index) = self.ensure_join_pair_index(view, &view.output).await?
-        {
-            self.sync_join_pair_index(&view.output, &index).await?;
+        if keyed {
+            let (index, ids) = self.ensure_join_pair_index(view, &view.output).await?;
+            commit_ids.extend(ids);
+            if let Some(index) = index {
+                commit_ids.extend(self.sync_join_pair_index(&view.output, &index).await?);
+            }
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;

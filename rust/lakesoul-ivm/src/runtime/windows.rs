@@ -2694,22 +2694,44 @@ impl IvmRuntime {
         let Some(change) = change else {
             return Ok(None);
         };
+        let expected_schema = project_schema(&source.schema, columns)?;
         let states = self.metadata.list_states(view_id).await?;
         if let Some(existing) = states
             .iter()
             .find(|state| state.role == StateRole::RankState)
         {
             let state = self.open_table_by_id(&existing.table_id).await?;
-            if state.current_files(&self.client).await?.is_empty() {
-                self.sync_rank_state(source, &state).await?;
+            if state.schema.as_ref() == expected_schema.as_ref() {
+                if state.current_files(&self.client).await?.is_empty() {
+                    self.sync_rank_state(source, &state).await?;
+                }
+                return Ok(Some(state));
             }
-            return Ok(Some(state));
+            // The rank-state schema changed (for example before column
+            // trimming).  Drop the old physical table and rebuild it below.
+            self.metadata
+                .unregister_state(view_id, StateRole::RankState)
+                .await?;
+            let _ = self
+                .client
+                .drop_table(&state.table_name, &state.namespace)
+                .await;
         }
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
         let keys = distinct_keys(key_columns.iter().chain(source.primary_keys.iter()));
         let mut options = IvmTableOptions::new(
-            format!("{}__ivm_{name_suffix}_rank_{view_id}", source.table_name),
-            format!("{}__ivm_{name_suffix}_rank_{view_id}", source.table_path),
-            project_schema(&source.schema, columns)?,
+            format!(
+                "{}__ivm_{name_suffix}_rank_{view_id}_{stamp}",
+                source.table_name
+            ),
+            format!(
+                "{}__ivm_{name_suffix}_rank_{view_id}_{stamp}",
+                source.table_path
+            ),
+            expected_schema,
         )
         .with_namespace(source.namespace.clone())
         .with_primary_keys(keys)

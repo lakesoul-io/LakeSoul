@@ -340,7 +340,7 @@ impl super::IvmRuntime {
         state: &IvmTable,
         join_keys: &[String],
         key_exprs: &[String],
-    ) -> crate::error::Result<()> {
+    ) -> crate::error::Result<Vec<String>> {
         use futures::StreamExt;
         let context = super::refresh_session();
         let frame = materialize_join_keys(
@@ -361,10 +361,10 @@ impl super::IvmRuntime {
             let batch = encoder.encode_batch(&batch?)?;
             pending.push(batch);
         }
-        if !pending.is_empty() {
-            state.append_batches(&self.client, pending).await?;
+        if pending.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(())
+        state.append_batches(&self.client, pending).await
     }
 }
 
@@ -383,10 +383,10 @@ impl super::IvmRuntime {
         window: &super::SourceWindow,
         join_keys: &[String],
         key_exprs: &[String],
-    ) -> crate::error::Result<()> {
+    ) -> crate::error::Result<Vec<String>> {
         use futures::StreamExt;
         if window.added_files.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let context = super::refresh_session();
         let delta = materialize_join_keys(
@@ -504,10 +504,10 @@ impl super::IvmRuntime {
         while let Some(batch) = delta_stream.next().await {
             pending.push(encoder.encode_batch(&batch?)?);
         }
-        if !pending.is_empty() {
-            state.append_batches(&self.client, pending).await?;
+        if pending.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(())
+        state.append_batches(&self.client, pending).await
     }
 }
 
