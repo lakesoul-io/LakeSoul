@@ -668,3 +668,97 @@ async fn top_k_with_offset_shifts_the_window() {
         HashSet::from([(2, "a".to_string(), 2, 20), (3, "a".to_string(), 3, 30),])
     );
 }
+
+/// A group key that is also the source primary key exercises the keyed source
+/// lookup path.
+#[test_log::test(tokio::test)]
+async fn keyed_group_source_refreshes() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_keyed_src_{suffix}"),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let output_columns = vec![
+        "k".to_string(),
+        "g".to_string(),
+        "ord".to_string(),
+        "amount".to_string(),
+    ];
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_topk_keyed_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                top_k_mv_schema_for(&source.schema, &["k".to_string()], &output_columns)
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = TopKView::new(
+        format!("topk_keyed_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        vec!["k".to_string()],
+        vec!["ord".to_string()],
+        1,
+    )
+    .with_output_columns(output_columns);
+    let fixture = Fixture {
+        runtime,
+        dir,
+        source: source.clone(),
+        mv: mv.clone(),
+        view: view.clone(),
+    };
+
+    fixture
+        .source
+        .append_batch(
+            fixture.runtime.client(),
+            source_batch(&[(1, "a", 10, 100, "insert"), (2, "b", 20, 200, "insert")]),
+        )
+        .await
+        .unwrap();
+    fixture
+        .runtime
+        .refresh_top_k(&fixture.view)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        top_k_rows(&fixture).await,
+        HashSet::from([(1, "a".to_string(), 10, 100), (2, "b".to_string(), 20, 200),])
+    );
+
+    fixture
+        .source
+        .append_batch(
+            fixture.runtime.client(),
+            source_batch(&[(1, "a", 5, 101, "insert")]),
+        )
+        .await
+        .unwrap();
+    fixture
+        .runtime
+        .refresh_top_k(&fixture.view)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        top_k_rows(&fixture).await,
+        HashSet::from([(1, "a".to_string(), 5, 101), (2, "b".to_string(), 20, 200),])
+    );
+}

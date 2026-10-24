@@ -591,12 +591,24 @@ impl TopKView {
     }
 }
 
+/// Distinct key names in first-seen order.  A window partition key can also
+/// be a source primary key; the MV schema must not repeat it.
+fn distinct_keys<'a>(columns: impl IntoIterator<Item = &'a String>) -> Vec<String> {
+    let mut keys = Vec::new();
+    for column in columns {
+        if !keys.contains(column) {
+            keys.push(column.clone());
+        }
+    }
+    keys
+}
+
 /// The schema of a [`WindowView`] materialized view keyed by `Int64`: the
 /// partition keys, the source primary keys, the row number, the row kind and
 /// the epoch.
 pub fn window_mv_schema(partition_keys: &[String], row_keys: &[String]) -> SchemaRef {
     let mut fields = Vec::new();
-    for column in partition_keys.iter().chain(row_keys.iter()) {
+    for column in distinct_keys(partition_keys.iter().chain(row_keys.iter())) {
         fields.push(Field::new(column, DataType::Int64, false));
     }
     fields.push(Field::new(IVM_ROW_NUMBER_COLUMN, DataType::Int64, false));
@@ -633,11 +645,7 @@ pub fn window_columns_mv_schema_for_with_payload(
     payload_columns: &[String],
     columns: &[WindowColumn],
 ) -> Result<SchemaRef> {
-    let keys = partition_keys
-        .iter()
-        .chain(row_keys.iter())
-        .cloned()
-        .collect::<Vec<_>>();
+    let keys = distinct_keys(partition_keys.iter().chain(row_keys.iter()));
     let mut fields = key_fields(source_schema, &keys)?;
     fields.extend(
         project_schema(source_schema, payload_columns)?
@@ -1311,13 +1319,17 @@ fn validate_window_column(
 /// `PERCENT_RANK`/`CUME_DIST` they would break the ties that must share a
 /// value, and for framed aggregates they would change the `RANGE` peers.
 fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
-    let parts = quoted_list(&view.partition_keys);
-    let keys_select = if view.partition_keys.is_empty() {
-        String::new()
-    } else {
-        format!("{parts}, ")
-    };
-    let pks = quoted_list(&view.source.primary_keys);
+    let key_columns = distinct_keys(
+        view.partition_keys
+            .iter()
+            .chain(view.source.primary_keys.iter()),
+    );
+    let keys_select = key_columns
+        .iter()
+        .map(|key| quote_ident(key))
+        .collect::<Vec<_>>()
+        .join(", ")
+        + ", ";
     let over_base = window_over_base(
         &view.source.primary_keys,
         &view.partition_keys,
@@ -1355,7 +1367,7 @@ fn window_function_cte(view: &WindowView, source_alias: &str) -> String {
         format!("{payloads}, ")
     };
     format!(
-        "computed as (select {pks}, {keys_select}{payloads_select}{computed} \
+        "computed as (select {keys_select}{payloads_select}{computed} \
          from {source_alias} where {filter})"
     )
 }
@@ -1449,39 +1461,19 @@ fn window_column_expr(column: &WindowColumn, over: &str) -> String {
 /// primary keys changed.
 fn window_affected_cte(view: &WindowView) -> String {
     let parts = quoted_list(&view.partition_keys);
-    let pks = quoted_list(&view.source.primary_keys);
-    let mv_pks = view
-        .source
-        .primary_keys
+    let mv_parts = view
+        .partition_keys
         .iter()
-        .map(|key| {
-            format!(
-                "{} as {}",
-                quote_ident(key),
-                quote_ident(&format!("__mv_{key}"))
-            )
-        })
+        .map(|key| format!("m.{}", quote_ident(key)))
         .collect::<Vec<_>>()
         .join(", ");
-    let mv_delta_match = view
-        .source
-        .primary_keys
-        .iter()
-        .map(|key| {
-            format!(
-                "m.{} = d.{}",
-                quote_ident(&format!("__mv_{key}")),
-                quote_ident(key)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" and ");
+    let pks = quoted_list(&view.source.primary_keys);
+    let pk_match = key_join_condition("m", "d", &view.source.primary_keys);
     format!(
         "delta_parts as (select distinct {parts} from delta), \
          delta_rows as (select distinct {pks} from delta), \
-         old_parts as (select distinct {parts} \
-                       from (select {parts}, {mv_pks} from mv) m \
-                       join delta_rows d on {mv_delta_match}), \
+         old_parts as (select distinct {mv_parts} \
+                       from mv m join delta_rows d on {pk_match}), \
          affected as (select * from delta_parts union select * from old_parts)"
     )
 }
@@ -1499,7 +1491,6 @@ fn order_items(order_by: &[String], order_keys: &[String]) -> Vec<String> {
 /// SQL for one window refresh window: recompute the affected partitions and
 /// rewrite their MV rows (`delete` then `insert`).
 fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
-    let parts = quoted_list(&view.partition_keys);
     let pks = quoted_list(&view.source.primary_keys);
     let names = view
         .columns
@@ -1512,17 +1503,19 @@ fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
         .map(|column| format!("c.{}", quote_ident(column)))
         .collect::<Vec<_>>()
         .join(", ");
-    let computed_pks = view
-        .source
-        .primary_keys
+    let key_columns = distinct_keys(
+        view.partition_keys
+            .iter()
+            .chain(view.source.primary_keys.iter()),
+    );
+    let computed_key_select = key_columns
         .iter()
         .map(|key| format!("c.{}", quote_ident(key)))
         .collect::<Vec<_>>()
         .join(", ");
-    let computed_parts = view
-        .partition_keys
+    let active_key_select = key_columns
         .iter()
-        .map(|key| format!("c.{}", quote_ident(key)))
+        .map(|key| format!("active.{}", quote_ident(key)))
         .collect::<Vec<_>>()
         .join(", ");
     let part_match_computed =
@@ -1538,11 +1531,7 @@ fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
     } else {
         String::new()
     };
-    let computed_parts_select = if keyed {
-        format!("{computed_parts}, ")
-    } else {
-        String::new()
-    };
+
     let payloads = quoted_list(&view.payload_columns);
     let payloads_select = if view.payload_columns.is_empty() {
         String::new()
@@ -1559,11 +1548,6 @@ fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
         String::new()
     } else {
         format!("{computed_payloads}, ")
-    };
-    let parts_select = if keyed {
-        format!("{parts}, ")
-    } else {
-        String::new()
     };
     let computed_where = if keyed {
         format!(
@@ -1583,12 +1567,12 @@ fn window_refresh_sql(view: &WindowView, epoch: i64) -> String {
                      where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
          active as (select * from mv \
                     where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
-         inserts as (select {computed_parts_select}{computed_pks}, \
+         inserts as (select {computed_key_select}, \
                             {computed_payloads_select}{computed_columns}, \
                             'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from computed c \
                      {computed_where}not exists (select 1 from already a where {pk_match_computed})), \
-         deletes as (select {parts_select}{pks}, {payloads_select}{columns}, \
+         deletes as (select {active_key_select}, {payloads_select}{columns}, \
                             'delete' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
                      from active \
                      {active_where}) \
@@ -1606,12 +1590,18 @@ fn top_k_affected_cte(view: &TopKView) -> String {
         return "affected as (select 1 as \"__ivm_global\")".to_string();
     }
     let groups = quoted_list(&view.group_keys);
+    let mv_groups = view
+        .group_keys
+        .iter()
+        .map(|key| format!("m.{}", quote_ident(key)))
+        .collect::<Vec<_>>()
+        .join(", ");
     let pks = quoted_list(&view.source.primary_keys);
     let pk_match = key_join_condition("m", "d", &view.source.primary_keys);
     format!(
         "delta_groups as (select distinct {groups} from delta), \
          delta_rows as (select distinct {pks} from delta), \
-         old_groups as (select distinct {groups} from mv m \
+         old_groups as (select distinct {mv_groups} from mv m \
                         join delta_rows d on {pk_match}), \
          affected as (select * from delta_groups union select * from old_groups)"
     )
@@ -1754,12 +1744,15 @@ fn top_k_rebuild_sql(view: &TopKView, epoch: i64) -> String {
 
 /// SQL for a full window rebuild.
 fn window_rebuild_sql(view: &WindowView, epoch: i64) -> String {
-    let parts_select = if view.partition_keys.is_empty() {
-        String::new()
-    } else {
-        format!("{}, ", quoted_list(&view.partition_keys))
-    };
-    let pks = quoted_list(&view.source.primary_keys);
+    let keys_select = distinct_keys(
+        view.partition_keys
+            .iter()
+            .chain(view.source.primary_keys.iter()),
+    )
+    .iter()
+    .map(|key| quote_ident(key))
+    .collect::<Vec<_>>()
+    .join(", ");
     let columns = quoted_list(
         &view
             .columns
@@ -1774,7 +1767,7 @@ fn window_rebuild_sql(view: &WindowView, epoch: i64) -> String {
     };
     format!(
         "with {computed} \
-         select {parts_select}{pks}, {payloads_select}{columns}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
+         select {keys_select}, {payloads_select}{columns}, 'insert' as \"rowKinds\", {epoch} as \"__ivm_epoch\" \
          from computed",
         computed = window_function_cte(view, "src"),
     )

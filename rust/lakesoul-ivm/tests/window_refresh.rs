@@ -573,3 +573,104 @@ async fn window_view_requires_a_keyed_source_and_valid_columns() {
 
     drop(dir);
 }
+
+/// A partition key that is also the source primary key exercises the keyed
+/// source path and the schema/SQL key deduplication.
+#[test_log::test(tokio::test)]
+async fn keyed_partition_source_refreshes() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_window_keyed_src_{suffix}"),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let columns = vec![WindowColumn::new(WindowFunction::RowNumber)];
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_window_keyed_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                window_columns_mv_schema_for(
+                    &source_schema(),
+                    &["k".to_string()],
+                    &["k".to_string()],
+                    &columns,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = WindowView::new_with_columns(
+        format!("window_keyed_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        vec!["k".to_string()],
+        vec!["k".to_string()],
+        columns,
+    );
+
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, 10, 100, "insert"), (2, 20, 200, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_window(&view).await.unwrap().unwrap();
+
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(&mv)))
+        .unwrap();
+    let read = async || {
+        let batches = context
+            .sql(&format!(
+                "select k, {IVM_ROW_NUMBER_COLUMN} from mv \
+                 where \"{IVM_ROW_KINDS_COLUMN}\" = 'insert' order by k"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+        for batch in batches {
+            let keys = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let numbers = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                rows.push((keys.value(row), numbers.value(row)));
+            }
+        }
+        rows
+    };
+    assert_eq!(read().await, vec![(1, 1), (2, 1)]);
+
+    source
+        .append_batch(runtime.client(), source_batch(&[(1, 10, 101, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_window(&view).await.unwrap().unwrap();
+    assert_eq!(read().await, vec![(1, 1), (2, 1)]);
+
+    runtime.rebuild_window(&view).await.unwrap();
+    assert_eq!(read().await, vec![(1, 1), (2, 1)]);
+}
