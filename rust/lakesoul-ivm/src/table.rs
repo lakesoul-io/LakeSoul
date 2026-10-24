@@ -21,7 +21,7 @@ use arrow::record_batch::RecordBatch;
 use arrow_array::Array;
 use arrow_schema::SchemaRef;
 use datafusion::error::DataFusionError;
-use datafusion::prelude::Expr;
+use datafusion::prelude::{Expr, SessionContext};
 use lakesoul_common::ser::arrow_java::{
     schema_from_table_info_metadata, schema_to_metadata_str,
 };
@@ -32,13 +32,14 @@ use lakesoul_io::{
     },
     file_format::PhysicalFormat,
     reader::LakeSoulReader,
-    writer::create_writer_with_io_config,
+    writer::{SendableWriter, async_writer::FlushOutput, create_writer_with_io_config},
 };
 use lakesoul_metadata::{MetaDataClient, transfusion::DataFileInfo};
 use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo, TableInfo};
 
 use crate::error::Result;
 use crate::metadata::PartitionVersion;
+use crate::provider::IvmTableProvider;
 /// The channel a streaming scan sends its batches through.
 type BatchSender =
     tokio::sync::mpsc::Sender<std::result::Result<RecordBatch, DataFusionError>>;
@@ -509,18 +510,7 @@ impl IvmTable {
         self.commit_files(client, files).await
     }
 
-    /// Write one batch to new data files without publishing them.
-    ///
-    /// Keyed tables write through the partitioning writer with stable sort, so
-    /// rows with the same key keep their input order (a `delete` written before
-    /// an `insert` still wins in merge-on-read).  The returned files can be
-    /// committed by a coordinator with [`Self::commit_files`], which is what a
-    /// distributed refresh does: workers write, the driver publishes once.
-    pub async fn write_batch(&self, batch: RecordBatch) -> Result<Vec<DataFileInfo>> {
-        if batch.num_rows() == 0 {
-            return Ok(Vec::new());
-        }
-
+    fn writer_builder(&self) -> LakeSoulIOConfigBuilder {
         let mut builder = with_spill_pool(
             LakeSoulIOConfig::builder()
                 .with_prefix(self.table_path.clone())
@@ -542,16 +532,24 @@ impl IvmTable {
                 .set_dynamic_partition(true)
                 .with_option(OPTION_KEY_STABLE_SORT, "true");
         }
+        builder
+    }
 
-        let written_rows = batch.num_rows() as u64;
-        let mut writer = create_writer_with_io_config(builder.build()).await?;
-        writer.write_record_batch(batch).await?;
-        let outputs = writer.flush_and_close().await?;
+    /// Create one rolling writer for a refresh/compaction output.
+    pub(crate) async fn writer(&self) -> Result<SendableWriter> {
+        create_writer_with_io_config(self.writer_builder().build()).await
+    }
+
+    /// Convert writer outputs to metadata file entries and record metrics.
+    pub(crate) fn output_files(
+        &self,
+        outputs: Vec<FlushOutput>,
+        rows: u64,
+    ) -> Vec<DataFileInfo> {
         let written_bytes = outputs
             .iter()
             .map(|output| output.object_meta.size)
             .sum::<u64>();
-
         let modification_time = crate::now_ms();
         let files = outputs
             .into_iter()
@@ -565,9 +563,27 @@ impl IvmTable {
                 file_exist_cols: output.file_exist_cols.join(","),
             })
             .collect::<Vec<_>>();
-        crate::observability::add_rows_written(written_rows);
+        crate::observability::add_rows_written(rows);
         crate::observability::add_bytes_written(written_bytes);
-        Ok(files)
+        files
+    }
+
+    /// Write one batch to new data files without publishing them.
+    ///
+    /// Keyed tables write through the partitioning writer with stable sort, so
+    /// rows with the same key keep their input order (a `delete` written before
+    /// an `insert` still wins in merge-on-read).  The returned files can be
+    /// committed by a coordinator with [`Self::commit_files`], which is what a
+    /// distributed refresh does: workers write, the driver publishes once.
+    pub async fn write_batch(&self, batch: RecordBatch) -> Result<Vec<DataFileInfo>> {
+        if batch.num_rows() == 0 {
+            return Ok(Vec::new());
+        }
+        let rows = batch.num_rows() as u64;
+        let mut writer = self.writer().await?;
+        writer.write_record_batch(batch).await?;
+        let outputs = writer.flush_and_close().await?;
+        Ok(self.output_files(outputs, rows))
     }
 
     /// Publish already written files in one metadata commit.
@@ -588,11 +604,9 @@ impl IvmTable {
     /// Append refresh output as few state files as possible.
     ///
     /// A SQL refresh can emit many small record batches (the executor's
-    /// batch size), and every [`Self::append_batch`] call becomes its own
-    /// file per hash bucket.  Concatenating up to [`MAX_STATE_APPEND_ROWS`]
-    /// rows per append keeps the row order (the refresh already sorted the
-    /// output) while cutting the state file count by an order of magnitude
-    /// for initial and rebuild refreshes.
+    /// batch size).  One rolling writer consumes the batches and flushes a
+    /// bounded sort/write window into files, so a large bootstrap does not
+    /// need to hold or sort the whole result in one writer.
     pub async fn append_batches(
         &self,
         client: &MetaDataClient,
@@ -604,8 +618,8 @@ impl IvmTable {
 
     /// Publish a refresh output stream without collecting the whole result.
     ///
-    /// The stream runs the DataFusion plan; batches are written and committed
-    /// in bounded chunks so refresh memory stays independent of the MV/state
+    /// The stream runs the DataFusion plan; batches are written through one
+    /// rolling writer so refresh memory stays independent of the MV/state
     /// size.
     pub async fn append_stream<S>(
         &self,
@@ -616,57 +630,38 @@ impl IvmTable {
         S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
     {
         use futures::StreamExt;
-        let mut files = Vec::new();
-        let mut pending: Vec<RecordBatch> = Vec::new();
-        let mut pending_rows = 0usize;
+        let mut writer = self.writer().await?;
+        let mut rows = 0u64;
         while let Some(batch) = stream.next().await {
             let batch = batch
                 .map_err(|error| rootcause::report!("refresh output batch: {error}"))?;
             if batch.num_rows() == 0 {
                 continue;
             }
-            pending_rows += batch.num_rows();
-            pending.push(batch);
-            if pending_rows >= MAX_STATE_APPEND_ROWS {
-                files.extend(self.write_batches(std::mem::take(&mut pending)).await?);
-                pending_rows = 0;
-            }
+            rows += batch.num_rows() as u64;
+            writer.write_record_batch(batch).await?;
         }
-        if !pending.is_empty() {
-            files.extend(self.write_batches(pending).await?);
-        }
+        let outputs = writer.flush_and_close().await?;
+        let files = self.output_files(outputs, rows);
         self.commit_files(client, files).await
     }
 
-    /// Write refresh output as few state files as possible, without publishing.
+    /// Write refresh output through one rolling writer, without publishing.
     pub async fn write_batches(
         &self,
         batches: Vec<RecordBatch>,
     ) -> Result<Vec<DataFileInfo>> {
-        let mut files = Vec::new();
-        let mut pending: Vec<RecordBatch> = Vec::new();
-        let mut pending_rows = 0usize;
+        let mut rows = 0u64;
+        let mut writer = self.writer().await?;
         for batch in batches {
             if batch.num_rows() == 0 {
                 continue;
             }
-            if pending_rows + batch.num_rows() > MAX_STATE_APPEND_ROWS && pending_rows > 0
-            {
-                let schema = pending[0].schema();
-                let coalesced = arrow::compute::concat_batches(&schema, &pending)?;
-                files.extend(self.write_batch(coalesced).await?);
-                pending.clear();
-                pending_rows = 0;
-            }
-            pending_rows += batch.num_rows();
-            pending.push(batch);
+            rows += batch.num_rows() as u64;
+            writer.write_record_batch(batch).await?;
         }
-        if pending_rows > 0 {
-            let schema = pending[0].schema();
-            let coalesced = arrow::compute::concat_batches(&schema, &pending)?;
-            files.extend(self.write_batch(coalesced).await?);
-        }
-        Ok(files)
+        let outputs = writer.flush_and_close().await?;
+        Ok(self.output_files(outputs, rows))
     }
 
     /// The current data file count across all partitions.
@@ -683,60 +678,63 @@ impl IvmTable {
     /// replaces the partition snapshot, so the old files stop being read and
     /// are reclaimed by the table's retention cleanup.
     pub async fn compact(&self, client: &MetaDataClient) -> Result<Vec<String>> {
-        let batches = self.read_current(client).await?;
-        let rows = self.compacted_batches(batches)?;
-        if rows.iter().all(|batch| batch.num_rows() == 0) {
+        use futures::StreamExt;
+
+        // Read current state through the streaming provider: a single large
+        // `read_current()` would materialize the entire table before the
+        // writer even starts.  Execute all hash/range partitions so this is
+        // not accidentally limited to the first bucket.
+        let context = SessionContext::new();
+        let provider = IvmTableProvider::current(self.clone(), client.clone());
+        let frame = context.read_table(Arc::new(provider))?;
+        let streams = frame.execute_stream_partitioned().await?;
+        if streams.is_empty() {
             self.truncate(client).await?;
             return Ok(Vec::new());
         }
-        let files = self.write_batches(rows).await?;
+        let kinds = self.schema.index_of(IVM_ROW_KINDS_COLUMN).ok();
+        let epoch = self.schema.index_of(IVM_EPOCH_COLUMN).ok();
+        let mut writer = self.writer().await?;
+        let mut written_rows = 0u64;
+        for mut stream in streams {
+            while let Some(batch) = stream.next().await {
+                let batch = batch?;
+                if batch.num_rows() == 0 {
+                    continue;
+                }
+                let mut columns = batch.columns().to_vec();
+                if let Some(index) = kinds {
+                    columns[index] =
+                        Arc::new(arrow::array::StringArray::from_iter_values(
+                            (0..batch.num_rows()).map(|_| "insert"),
+                        ));
+                }
+                if let Some(index) = epoch {
+                    columns[index] =
+                        Arc::new(arrow::array::Int64Array::from_iter_values(
+                            (0..batch.num_rows()).map(|_| 0i64),
+                        ));
+                }
+                written_rows += batch.num_rows() as u64;
+                writer
+                    .write_record_batch(RecordBatch::try_new(
+                        self.schema.clone(),
+                        columns,
+                    )?)
+                    .await?;
+            }
+        }
+        let outputs = writer.flush_and_close().await?;
+        let files = self.output_files(outputs, written_rows);
+        if files.is_empty() {
+            self.truncate(client).await?;
+            return Ok(Vec::new());
+        }
         let read_partitions = client.get_all_partition_info(&self.table_id).await?;
         let commit_ids = client
             .commit_compaction(&self.table_name, &self.namespace, files, read_partitions)
             .await?;
         Ok(commit_ids)
-    }
-
-    /// The logical rows to rewrite: tombstones dropped, bookkeeping reset.
-    fn compacted_batches(&self, batches: Vec<RecordBatch>) -> Result<Vec<RecordBatch>> {
-        let schema = self.schema.clone();
-        let kinds = schema.index_of(IVM_ROW_KINDS_COLUMN).ok();
-        let epoch = schema.index_of(IVM_EPOCH_COLUMN).ok();
-        let mut out = Vec::new();
-        for batch in batches {
-            let filtered = match kinds {
-                Some(index) => {
-                    let values = batch
-                        .column(index)
-                        .as_any()
-                        .downcast_ref::<arrow_array::StringArray>()
-                        .ok_or_else(|| {
-                            rootcause::report!("row kind column is not a string column")
-                        })?;
-                    let mask = arrow_array::BooleanArray::from_iter(
-                        (0..values.len()).map(|row| Some(values.value(row) != "delete")),
-                    );
-                    arrow::compute::filter_record_batch(&batch, &mask)?
-                }
-                None => batch,
-            };
-            if filtered.num_rows() == 0 {
-                continue;
-            }
-            let mut columns = filtered.columns().to_vec();
-            if let Some(index) = kinds {
-                columns[index] = Arc::new(arrow_array::StringArray::from_iter_values(
-                    (0..filtered.num_rows()).map(|_| "insert"),
-                ));
-            }
-            if let Some(index) = epoch {
-                columns[index] = Arc::new(arrow_array::Int64Array::from_iter_values(
-                    (0..filtered.num_rows()).map(|_| 0i64),
-                ));
-            }
-            out.push(RecordBatch::try_new(schema.clone(), columns)?);
-        }
-        Ok(out)
     }
 
     /// Read the given data files with this table's schema and merge key.

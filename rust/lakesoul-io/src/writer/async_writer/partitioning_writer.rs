@@ -506,6 +506,17 @@ impl AsyncBatchWriter for PartitioningAsyncWriter {
     }
 
     #[instrument(skip(self), err)]
+    async fn flush_and_close_with_metrics(
+        mut self: Box<Self>,
+    ) -> Result<(Vec<FlushOutput>, Option<MetricsSet>)> {
+        let this = &mut *self;
+        let output = this.flush().await?;
+        let metrics = this.metrics();
+        self.close().await?;
+        Ok((output, metrics))
+    }
+
+    #[instrument(skip(self), err)]
     async fn abort_and_close(mut self: Box<Self>) -> Result<()> {
         let this = &mut *self;
         this.abort().await?;

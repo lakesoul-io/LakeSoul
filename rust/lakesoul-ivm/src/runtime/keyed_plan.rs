@@ -26,6 +26,7 @@ use arrow::array::{
 use arrow::compute::{SortOptions, cast, take};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
+use arrow::row::{RowConverter, SortField};
 use datafusion::common::{ScalarValue, tree_node::TreeNodeRecursion};
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::physical_expr::expressions::Column as PhysicalColumn;
@@ -137,6 +138,100 @@ impl PhysicalExpr for LakeSoulBucketExpr {
     }
 }
 
+/// LakeSoul's composite hash, computed over the writer's bucket columns.
+#[derive(Debug)]
+struct LakeSoulColumnsBucketExpr {
+    keys: Vec<Arc<dyn PhysicalExpr>>,
+    bucket_count: u32,
+}
+
+impl PartialEq for LakeSoulColumnsBucketExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.bucket_count == other.bucket_count
+            && self
+                .keys
+                .iter()
+                .zip(other.keys.iter())
+                .all(|(left, right)| left.as_ref().eq(right.as_ref()))
+            && self.keys.len() == other.keys.len()
+    }
+}
+
+impl Eq for LakeSoulColumnsBucketExpr {}
+
+impl std::hash::Hash for LakeSoulColumnsBucketExpr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.bucket_count.hash(state);
+        for key in &self.keys {
+            key.as_ref().hash(state);
+        }
+    }
+}
+
+impl Display for LakeSoulColumnsBucketExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "lakesoul_columns_bucket({:?}, {})",
+            self.keys, self.bucket_count
+        )
+    }
+}
+
+impl PhysicalExpr for LakeSoulColumnsBucketExpr {
+    fn data_type(&self, _input_schema: &Schema) -> datafusion::error::Result<DataType> {
+        Ok(DataType::UInt32)
+    }
+
+    fn nullable(&self, _input_schema: &Schema) -> datafusion::error::Result<bool> {
+        Ok(false)
+    }
+
+    fn evaluate(
+        &self,
+        batch: &RecordBatch,
+    ) -> datafusion::error::Result<datafusion::logical_expr::ColumnarValue> {
+        let arrays = self
+            .keys
+            .iter()
+            .map(|key| key.evaluate(batch)?.into_array(batch.num_rows()))
+            .collect::<datafusion::error::Result<Vec<ArrayRef>>>()?;
+        let mut hashes = vec![0u32; batch.num_rows()];
+        lakesoul_io::utils::hash::create_hashes(&arrays, &mut hashes)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+        let buckets = hashes
+            .into_iter()
+            .map(|hash| hash % self.bucket_count)
+            .collect::<Vec<_>>();
+        Ok(datafusion::logical_expr::ColumnarValue::Array(Arc::new(
+            UInt32Array::from(buckets),
+        )))
+    }
+
+    fn fmt_sql(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(self, f)
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        self.keys.iter().collect()
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> datafusion::error::Result<Arc<dyn PhysicalExpr>> {
+        if children.len() != self.keys.len() {
+            return Err(DataFusionError::Internal(
+                "composite bucket expression child count mismatch".to_string(),
+            ));
+        }
+        Ok(Arc::new(Self {
+            keys: children,
+            bucket_count: self.bucket_count,
+        }))
+    }
+}
+
 /// Add a LakeSoul bucket-id column, range-repartition into exactly one
 /// execution partition per bucket, then remove the helper column.
 pub(crate) fn bucket_repartition(
@@ -190,6 +285,76 @@ pub(crate) fn bucket_repartition(
     Ok(Arc::new(ProjectionExec::try_new(out, repartitioned)?))
 }
 
+/// Bucket-repartition contribution rows by one or more real key columns using
+/// the LakeSoul writer's composite hash.  The helper bucket column is removed
+/// before the lookup plan sees the stream.
+pub(crate) fn bucket_repartition_by_columns(
+    input: Arc<dyn ExecutionPlan>,
+    key_columns: &[String],
+    bucket_count: usize,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    if bucket_count < 2 || key_columns.is_empty() {
+        return Ok(input);
+    }
+    let input_schema = input.schema();
+    let keys = key_columns
+        .iter()
+        .map(|column| {
+            let index = input_schema.index_of(column)?;
+            Ok(Arc::new(PhysicalColumn::new(column, index)) as Arc<dyn PhysicalExpr>)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let bucket = Arc::new(LakeSoulColumnsBucketExpr {
+        keys,
+        bucket_count: bucket_count as u32,
+    }) as Arc<dyn PhysicalExpr>;
+    bucket_repartition_with_expr(input, bucket, bucket_count)
+}
+
+fn bucket_repartition_with_expr(
+    input: Arc<dyn ExecutionPlan>,
+    bucket: Arc<dyn PhysicalExpr>,
+    bucket_count: usize,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    if bucket_count < 2 {
+        return Ok(input);
+    }
+    let input_schema = input.schema();
+    let mut projected = Vec::with_capacity(input_schema.fields().len() + 1);
+    for (index, field) in input_schema.fields().iter().enumerate() {
+        projected.push((
+            Arc::new(PhysicalColumn::new(field.name(), index)) as Arc<dyn PhysicalExpr>,
+            field.name().clone(),
+        ));
+    }
+    projected.push((bucket, IVM_BUCKET_COLUMN.to_string()));
+    let with_bucket = Arc::new(ProjectionExec::try_new(projected, input)?);
+
+    let bucket_index = with_bucket.schema().index_of(IVM_BUCKET_COLUMN)?;
+    let ordering = LexOrdering::new(vec![PhysicalSortExpr::new(
+        Arc::new(PhysicalColumn::new(IVM_BUCKET_COLUMN, bucket_index)),
+        SortOptions::default(),
+    )])
+    .ok_or_else(|| DataFusionError::Internal("empty bucket ordering".to_string()))?;
+    let split_points = (1..bucket_count)
+        .map(|bucket| SplitPoint::new(vec![ScalarValue::UInt32(Some(bucket as u32))]))
+        .collect();
+    let range = RangePartitioning::try_new(ordering, split_points)?;
+    let repartitioned = Arc::new(RepartitionExec::try_new(
+        with_bucket,
+        Partitioning::Range(range),
+    )?);
+
+    let mut out = Vec::with_capacity(input_schema.fields().len());
+    for (index, field) in input_schema.fields().iter().enumerate() {
+        out.push((
+            Arc::new(PhysicalColumn::new(field.name(), index)) as Arc<dyn PhysicalExpr>,
+            field.name().clone(),
+        ));
+    }
+    Ok(Arc::new(ProjectionExec::try_new(out, repartitioned)?))
+}
+
 // ---------------------------------------------------------------------------
 // Keyed state lookup and merge plans
 // ---------------------------------------------------------------------------
@@ -202,6 +367,11 @@ pub(crate) const IVM_STATE_COLUMN_PREFIX: &str = "__ivm_state_";
 /// Number of state reads that may execute concurrently in one plan.  The
 /// physical plan is partitioned by hash bucket, which can be more than the
 /// four active reader/state tasks the pilot is allowed to run.
+/// Maximum number of contribution keys in one PK lookup read.  Chunking keeps
+/// the reader filter/index request bounded instead of materializing one huge
+/// IN expression.
+pub(crate) const PK_LOOKUP_CHUNK_ROWS: usize = 4096;
+
 pub(crate) fn max_active_tasks() -> usize {
     std::env::var("LAKESOUL_IVM_MAX_ACTIVE_TASKS")
         .or_else(|_| std::env::var("LAKESOUL_IVM_MAX_ACTIVE_LOOKUPS"))
@@ -209,6 +379,30 @@ pub(crate) fn max_active_tasks() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(4)
         .max(1)
+}
+
+async fn read_lookup_chunk(
+    table: IvmTable,
+    groups: Vec<PartitionFiles>,
+    filters: Vec<datafusion::prelude::Expr>,
+    gate: Arc<Semaphore>,
+) -> DataFusionResult<Vec<RecordBatch>> {
+    if groups.is_empty() || filters.is_empty() {
+        return Ok(Vec::new());
+    }
+    let permit = gate.acquire_owned().await.map_err(|error| {
+        DataFusionError::Execution(format!("state lookup gate closed: {error}"))
+    })?;
+    let joined = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        lakesoul_io::session::GLOBAL_RUNTIME
+            .block_on(table.read_partition_files_filtered(groups, filters))
+    })
+    .await
+    .map_err(|error| {
+        DataFusionError::Execution(format!("state lookup task failed: {error}"))
+    })?;
+    joined.map_err(|error| DataFusionError::Execution(error.to_string()))
 }
 
 /// Split state file groups into the hash buckets the writer used.
@@ -257,6 +451,47 @@ pub(crate) fn groups_by_bucket(
     out
 }
 
+/// How the contribution rows identify a row in the looked-up table.
+///
+/// `BinaryRow` is used by side/aggregate state tables, whose hidden key is an
+/// `arrow::Row` encoding. `Columns` is used by source and MV tables, where the
+/// lookup key is one or more real primary-key columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PkLookupKey {
+    BinaryRow {
+        column: String,
+    },
+    Columns {
+        input_columns: Vec<String>,
+        table_columns: Vec<String>,
+    },
+}
+
+impl PkLookupKey {
+    /// The same key expressed on the table side.  Contribution and table
+    /// columns can have different names for a differently-named join key.
+    fn for_table(&self) -> Self {
+        match self {
+            Self::BinaryRow { column } => Self::BinaryRow {
+                column: column.clone(),
+            },
+            Self::Columns { table_columns, .. } => Self::Columns {
+                input_columns: table_columns.clone(),
+                table_columns: table_columns.clone(),
+            },
+        }
+    }
+
+    fn display(&self) -> String {
+        match self {
+            Self::BinaryRow { column } => format!("binary({column})"),
+            Self::Columns { input_columns, .. } => {
+                format!("columns({})", input_columns.join(","))
+            }
+        }
+    }
+}
+
 fn state_key_filter(
     batch: &RecordBatch,
     key_column: &str,
@@ -299,12 +534,143 @@ fn state_output_schema(input: &SchemaRef, state: &SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(fields))
 }
 
-fn join_state_batch(
+fn key_filter_exprs(
+    batch: &RecordBatch,
+    key: &PkLookupKey,
+) -> DataFusionResult<Vec<datafusion::prelude::Expr>> {
+    match key {
+        PkLookupKey::BinaryRow { column } => state_key_filter(batch, column),
+        PkLookupKey::Columns {
+            input_columns,
+            table_columns,
+        } => {
+            let mut rows = Vec::new();
+            for row in 0..batch.num_rows() {
+                let mut values = Vec::with_capacity(input_columns.len());
+                let mut null = false;
+                for column in input_columns {
+                    let index = batch.schema().index_of(column)?;
+                    if batch.column(index).is_null(row) {
+                        null = true;
+                        break;
+                    }
+                    values.push(ScalarValue::try_from_array(
+                        batch.column(index).as_ref(),
+                        row,
+                    )?);
+                }
+                if !null {
+                    rows.push(values);
+                }
+            }
+            if rows.is_empty() {
+                return Ok(Vec::new());
+            }
+            if table_columns.len() == 1 {
+                let list = rows
+                    .into_iter()
+                    .map(|mut values| lit(values.remove(0)))
+                    .collect();
+                return Ok(vec![col(table_columns[0].as_str()).in_list(list, false)]);
+            }
+            let mut filter: Option<datafusion::prelude::Expr> = None;
+            for values in rows {
+                let mut conjunction =
+                    col(table_columns[0].as_str()).eq(lit(values[0].clone()));
+                for (column, value) in table_columns.iter().zip(values).skip(1) {
+                    conjunction = conjunction.and(col(column.as_str()).eq(lit(value)));
+                }
+                filter = Some(match filter {
+                    Some(existing) => existing.or(conjunction),
+                    None => conjunction,
+                });
+            }
+            Ok(filter.into_iter().collect())
+        }
+    }
+}
+
+fn key_rows(
+    batch: &RecordBatch,
+    key: &PkLookupKey,
+    table_schema: &SchemaRef,
+) -> DataFusionResult<Vec<Option<Vec<u8>>>> {
+    match key {
+        PkLookupKey::BinaryRow { column } => {
+            let index = batch.schema().index_of(column)?;
+            let keys = batch
+                .column(index)
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .ok_or_else(|| {
+                    DataFusionError::Execution(format!(
+                        "lookup key {column} is not a binary column"
+                    ))
+                })?;
+            Ok((0..keys.len())
+                .map(|row| {
+                    if keys.is_null(row) {
+                        None
+                    } else {
+                        Some(keys.value(row).to_vec())
+                    }
+                })
+                .collect())
+        }
+        PkLookupKey::Columns {
+            input_columns,
+            table_columns,
+        } => {
+            let fields = table_columns
+                .iter()
+                .map(|column| {
+                    table_schema
+                        .field_with_name(column)
+                        .map(|field| SortField::new(field.data_type().clone()))
+                        .map_err(|error| {
+                            DataFusionError::Execution(format!(
+                                "lookup key {column} is missing from the table: {error}"
+                            ))
+                        })
+                })
+                .collect::<DataFusionResult<Vec<_>>>()?;
+            let converter = RowConverter::new(fields)
+                .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+            let arrays = input_columns
+                .iter()
+                .map(|column| {
+                    batch.column_by_name(column).cloned().ok_or_else(|| {
+                        DataFusionError::Execution(format!(
+                            "lookup key {column} is missing from the contribution"
+                        ))
+                    })
+                })
+                .collect::<DataFusionResult<Vec<ArrayRef>>>()?;
+            let nulls = (0..batch.num_rows())
+                .map(|row| arrays.iter().any(|array| array.is_null(row)))
+                .collect::<Vec<_>>();
+            let rows = converter
+                .convert_columns(&arrays)
+                .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+            Ok((0..batch.num_rows())
+                .map(|row| {
+                    if nulls[row] {
+                        None
+                    } else {
+                        Some(rows.row(row).as_ref().to_vec())
+                    }
+                })
+                .collect())
+        }
+    }
+}
+
+fn lookup_batch(
     contribution: &RecordBatch,
     state_batches: &[RecordBatch],
     state_schema: &SchemaRef,
     out_schema: &SchemaRef,
-    key_column: &str,
+    key: &PkLookupKey,
     multi_match: bool,
     emit_unmatched: bool,
 ) -> DataFusionResult<RecordBatch> {
@@ -318,41 +684,23 @@ fn join_state_batch(
                 .map_err(|error| DataFusionError::Execution(error.to_string()))?,
         )
     };
-    let key_index = contribution.schema().index_of(key_column)?;
-    let contribution_keys = contribution
-        .column(key_index)
-        .as_any()
-        .downcast_ref::<BinaryArray>()
-        .ok_or_else(|| {
-            DataFusionError::Execution("lookup key is not binary".to_string())
-        })?;
+    let contribution_keys = key_rows(contribution, key, state_schema)?;
     let mut state_index: HashMap<Vec<u8>, Vec<u32>> = HashMap::new();
     if let Some(state) = state.as_ref() {
-        let state_key_index = state.schema().index_of(key_column)?;
-        let state_keys = state
-            .column(state_key_index)
-            .as_any()
-            .downcast_ref::<BinaryArray>()
-            .ok_or_else(|| {
-                DataFusionError::Execution("state key is not binary".to_string())
-            })?;
-        for row in 0..state_keys.len() {
-            if !state_keys.is_null(row) {
-                state_index
-                    .entry(state_keys.value(row).to_vec())
-                    .or_default()
-                    .push(row as u32);
+        let table_key = key.for_table();
+        for (row, key) in key_rows(state, &table_key, state_schema)?
+            .into_iter()
+            .enumerate()
+        {
+            if let Some(key) = key {
+                state_index.entry(key).or_default().push(row as u32);
             }
         }
     }
     let mut contribution_rows = Vec::new();
     let mut state_rows = Vec::new();
-    for row in 0..contribution_keys.len() {
-        let matches = if contribution_keys.is_null(row) {
-            None
-        } else {
-            state_index.get(contribution_keys.value(row))
-        };
+    for (row, key) in contribution_keys.into_iter().enumerate() {
+        let matches = key.as_ref().and_then(|key| state_index.get(key));
         match matches {
             Some(rows) if multi_match => {
                 for state_row in rows {
@@ -406,11 +754,11 @@ fn join_state_batch(
 /// execution-time concurrency gate is process-local and is not part of the
 /// serializable descriptor.  One execution partition corresponds to one
 /// LakeSoul bucket after [`bucket_repartition`].
-pub(crate) struct IvmKeyedStateLookupExec {
+pub(crate) struct IvmPkLookupExec {
     input: Arc<dyn ExecutionPlan>,
     table: IvmTable,
     groups_by_bucket: Arc<Vec<Vec<PartitionFiles>>>,
-    key_column: String,
+    key: PkLookupKey,
     bucket_count: usize,
     schema: SchemaRef,
     gate: Arc<Semaphore>,
@@ -419,7 +767,7 @@ pub(crate) struct IvmKeyedStateLookupExec {
     properties: Arc<PlanProperties>,
 }
 
-impl IvmKeyedStateLookupExec {
+impl IvmPkLookupExec {
     pub(crate) fn new(
         input: Arc<dyn ExecutionPlan>,
         table: IvmTable,
@@ -427,21 +775,60 @@ impl IvmKeyedStateLookupExec {
         key_column: impl Into<String>,
         bucket_count: usize,
     ) -> DataFusionResult<Self> {
+        Self::new_with_key(
+            input,
+            table,
+            groups_by_bucket,
+            PkLookupKey::BinaryRow {
+                column: key_column.into(),
+            },
+            bucket_count,
+        )
+    }
+
+    /// Generic PK lookup by real table columns.  Contribution columns are
+    /// matched to table primary-key columns with `arrow::Row`.
+    pub(crate) fn new_with_columns(
+        input: Arc<dyn ExecutionPlan>,
+        table: IvmTable,
+        groups_by_bucket: Vec<Vec<PartitionFiles>>,
+        input_columns: Vec<String>,
+        table_columns: Vec<String>,
+        bucket_count: usize,
+    ) -> DataFusionResult<Self> {
+        Self::new_with_key(
+            input,
+            table,
+            groups_by_bucket,
+            PkLookupKey::Columns {
+                input_columns,
+                table_columns,
+            },
+            bucket_count,
+        )
+    }
+
+    fn new_with_key(
+        input: Arc<dyn ExecutionPlan>,
+        table: IvmTable,
+        groups_by_bucket: Vec<Vec<PartitionFiles>>,
+        key: PkLookupKey,
+        bucket_count: usize,
+    ) -> DataFusionResult<Self> {
         let bucket_count = bucket_count.max(1);
         let input_partitions = input.output_partitioning().partition_count();
         if bucket_count > 1 && input_partitions != bucket_count {
             return Err(DataFusionError::Internal(format!(
-                "keyed state lookup needs {bucket_count} input partitions, got {input_partitions}"
+                "PK lookup needs {bucket_count} input partitions, got {input_partitions}"
             )));
         }
-        // An unbucketed state table is read by every contribution partition;
-        // its one state group is shared rather than duplicated.
+        // An unbucketed table is read by every contribution partition; its
+        // one group is shared rather than duplicated.
         let output_partitions = if bucket_count == 1 {
             input_partitions
         } else {
             bucket_count
         };
-        let key_column = key_column.into();
         let schema = state_output_schema(&input.schema(), &table.schema);
         let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(schema.clone()),
@@ -453,7 +840,7 @@ impl IvmKeyedStateLookupExec {
             input,
             table,
             groups_by_bucket: Arc::new(groups_by_bucket),
-            key_column,
+            key,
             bucket_count,
             schema,
             gate: Arc::new(Semaphore::new(max_active_tasks())),
@@ -462,7 +849,6 @@ impl IvmKeyedStateLookupExec {
             properties,
         })
     }
-
     /// Join-side lookup mode: emit every matching state row and drop a
     /// contribution row without a match (inner-join semantics).
     pub(crate) fn with_multi_match(mut self, multi_match: bool) -> Self {
@@ -472,13 +858,13 @@ impl IvmKeyedStateLookupExec {
     }
 }
 
-impl std::fmt::Debug for IvmKeyedStateLookupExec {
+impl std::fmt::Debug for IvmPkLookupExec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "IvmKeyedStateLookupExec")
+        write!(f, "IvmPkLookupExec")
     }
 }
 
-impl DisplayAs for IvmKeyedStateLookupExec {
+impl DisplayAs for IvmPkLookupExec {
     fn fmt_as(
         &self,
         _format: DisplayFormatType,
@@ -486,13 +872,14 @@ impl DisplayAs for IvmKeyedStateLookupExec {
     ) -> std::fmt::Result {
         write!(
             f,
-            "IvmKeyedStateLookupExec buckets={} key={}",
-            self.bucket_count, self.key_column
+            "IvmPkLookupExec buckets={} key={}",
+            self.bucket_count,
+            self.key.display()
         )
     }
 }
 
-impl ExecutionPlanProperties for IvmKeyedStateLookupExec {
+impl ExecutionPlanProperties for IvmPkLookupExec {
     fn output_partitioning(&self) -> &Partitioning {
         &self.properties.partitioning
     }
@@ -514,9 +901,9 @@ impl ExecutionPlanProperties for IvmKeyedStateLookupExec {
     }
 }
 
-impl ExecutionPlan for IvmKeyedStateLookupExec {
+impl ExecutionPlan for IvmPkLookupExec {
     fn name(&self) -> &str {
-        "IvmKeyedStateLookupExec"
+        "IvmPkLookupExec"
     }
 
     fn schema(&self) -> SchemaRef {
@@ -547,11 +934,11 @@ impl ExecutionPlan for IvmKeyedStateLookupExec {
                 "keyed state lookup expects one child".to_string(),
             ));
         }
-        let mut plan = Self::new(
+        let mut plan = Self::new_with_key(
             children[0].clone(),
             self.table.clone(),
             self.groups_by_bucket.as_ref().clone(),
-            self.key_column.clone(),
+            self.key.clone(),
             self.bucket_count,
         )?;
         plan.gate = self.gate.clone();
@@ -575,7 +962,7 @@ impl ExecutionPlan for IvmKeyedStateLookupExec {
                 .unwrap_or_default()
         };
         let table = self.table.clone();
-        let key_column = self.key_column.clone();
+        let key = self.key.clone();
         let state_schema = self.table.schema.clone();
         let out_schema = self.schema.clone();
         let gate = self.gate.clone();
@@ -584,7 +971,7 @@ impl ExecutionPlan for IvmKeyedStateLookupExec {
         let stream =
             futures::stream::try_unfold((input, groups), move |(mut input, groups)| {
                 let table = table.clone();
-                let key_column = key_column.clone();
+                let key = key.clone();
                 let state_schema = state_schema.clone();
                 let out_schema = out_schema.clone();
                 let gate = gate.clone();
@@ -597,53 +984,40 @@ impl ExecutionPlan for IvmKeyedStateLookupExec {
                             Some(Ok(batch)) => batch,
                         };
                         let started = std::time::Instant::now();
-                        let filters = state_key_filter(&batch, &key_column)?;
-                        let state_batches = if groups.is_empty() || filters.is_empty() {
-                            Vec::new()
-                        } else {
-                            let permit =
-                                gate.clone().acquire_owned().await.map_err(|error| {
-                                    DataFusionError::Execution(format!(
-                                        "state lookup gate closed: {error}"
-                                    ))
-                                })?;
-                            // LakeSoulReader is not `Send`; run the state read
-                            // on the shared LakeSoulIO runtime and keep the
-                            // outer DataFusion stream `Send`.
-                            let table_for_read = table.clone();
-                            let groups_for_read = groups.clone();
-                            let joined = tokio::task::spawn_blocking(move || {
-                                let _permit = permit;
-                                lakesoul_io::session::GLOBAL_RUNTIME.block_on(
-                                    table_for_read.read_partition_files_filtered(
-                                        groups_for_read,
-                                        filters,
-                                    ),
-                                )
-                            })
-                            .await
-                            .map_err(|error| {
-                                DataFusionError::Execution(format!(
-                                    "state lookup task failed: {error}"
-                                ))
-                            })?;
-                            joined.map_err(|error| {
-                                DataFusionError::Execution(error.to_string())
-                            })?
+                        let mut outputs = Vec::new();
+                        let mut state_rows = 0usize;
+                        for offset in (0..batch.num_rows()).step_by(PK_LOOKUP_CHUNK_ROWS)
+                        {
+                            let length =
+                                PK_LOOKUP_CHUNK_ROWS.min(batch.num_rows() - offset);
+                            let chunk = batch.slice(offset, length);
+                            let filters = key_filter_exprs(&chunk, &key)?;
+                            let state_batches = read_lookup_chunk(
+                                table.clone(),
+                                groups.clone(),
+                                filters,
+                                gate.clone(),
+                            )
+                            .await?;
+                            state_rows += state_batches
+                                .iter()
+                                .map(RecordBatch::num_rows)
+                                .sum::<usize>();
+                            outputs.push(lookup_batch(
+                                &chunk,
+                                &state_batches,
+                                &state_schema,
+                                &out_schema,
+                                &key,
+                                multi_match,
+                                emit_unmatched,
+                            )?);
+                        }
+                        let output = match outputs.len() {
+                            0 => RecordBatch::new_empty(out_schema.clone()),
+                            1 => outputs.pop().expect("one lookup output"),
+                            _ => arrow::compute::concat_batches(&out_schema, &outputs)?,
                         };
-                        let state_rows = state_batches
-                            .iter()
-                            .map(RecordBatch::num_rows)
-                            .sum::<usize>();
-                        let output = join_state_batch(
-                            &batch,
-                            &state_batches,
-                            &state_schema,
-                            &out_schema,
-                            &key_column,
-                            multi_match,
-                            emit_unmatched,
-                        )?;
                         tracing::debug!(
                             partition,
                             contribution_rows = batch.num_rows(),
@@ -663,7 +1037,7 @@ impl ExecutionPlan for IvmKeyedStateLookupExec {
 }
 
 /// Compute the next state rows from the contribution and the old state
-/// columns produced by [`IvmKeyedStateLookupExec`].
+/// columns produced by [`IvmPkLookupExec`].
 ///
 /// This is a streaming physical node: it has no driver-side collect and no
 /// SQL string captured from the view.  The only dynamic values are the state
@@ -1013,6 +1387,113 @@ mod tests {
         let out = out.as_any().downcast_ref::<Decimal128Array>().unwrap();
         assert_eq!(out.value(0), 150);
         assert_eq!(out.value(1), 25);
+    }
+
+    #[test]
+    fn matches_composite_pk_with_arrow_row() {
+        let contribution_schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("b", DataType::Utf8, false),
+            Field::new("d", DataType::Int32, false),
+        ]));
+        let contribution = RecordBatch::try_new(
+            contribution_schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 1, 2])),
+                Arc::new(StringArray::from(vec!["x", "y", "x"])),
+                Arc::new(Int32Array::from(vec![10, 20, 30])),
+            ],
+        )
+        .unwrap();
+        let state_schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("b", DataType::Utf8, false),
+            Field::new("v", DataType::Int64, false),
+        ]));
+        let state = RecordBatch::try_new(
+            state_schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 1, 3])),
+                Arc::new(StringArray::from(vec!["x", "y", "z"])),
+                Arc::new(Int64Array::from(vec![100, 200, 300])),
+            ],
+        )
+        .unwrap();
+        let out_schema = state_output_schema(&contribution_schema, &state_schema);
+        let output = lookup_batch(
+            &contribution,
+            &[state],
+            &state_schema,
+            &out_schema,
+            &PkLookupKey::Columns {
+                input_columns: vec!["a".into(), "b".into()],
+                table_columns: vec!["a".into(), "b".into()],
+            },
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(output.num_rows(), 3);
+        let values = output
+            .column_by_name(&format!("{IVM_STATE_COLUMN_PREFIX}v"))
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(values.value(0), 100);
+        assert_eq!(values.value(1), 200);
+        assert!(values.is_null(2));
+    }
+
+    #[tokio::test]
+    async fn routes_composite_keys_with_the_writer_hash() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("b", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 1, 2, 3])),
+                Arc::new(StringArray::from(vec!["x", "y", "x", "z"])),
+            ],
+        )?;
+        let context = SessionContext::new();
+        let frame = context.read_batch(batch.clone())?;
+        let input = frame.create_physical_plan().await?;
+        let plan =
+            bucket_repartition_by_columns(input, &["a".to_string(), "b".to_string()], 4)?;
+        let task_context = context.task_ctx();
+        let mut seen = 0;
+        for partition in 0..plan.output_partitioning().partition_count() {
+            let mut stream = plan.execute(partition, task_context.clone())?;
+            while let Some(batch) = stream.next().await {
+                let batch = batch?;
+                for row in 0..batch.num_rows() {
+                    let a = batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap();
+                    let b = batch
+                        .column(1)
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .unwrap();
+                    let mut hashes = vec![0u32; 1];
+                    let arrays: Vec<ArrayRef> = vec![
+                        Arc::new(Int64Array::from(vec![a.value(row)])),
+                        Arc::new(StringArray::from(vec![b.value(row)])),
+                    ];
+                    lakesoul_io::utils::hash::create_hashes(&arrays, &mut hashes)
+                        .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+                    assert_eq!(partition, (hashes[0] % 4) as usize);
+                    seen += 1;
+                }
+            }
+        }
+        assert_eq!(seen, 4);
+        Ok(())
     }
 
     #[tokio::test]

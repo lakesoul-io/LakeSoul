@@ -227,6 +227,8 @@ pub enum StateRole {
     JoinLeft,
     /// A join source state keyed by the encoded join key.
     JoinRight,
+    /// A pair-state index keyed by the right source identity.
+    JoinPairIndex,
 }
 
 impl StateRole {
@@ -237,6 +239,7 @@ impl StateRole {
             StateRole::State => "state",
             StateRole::JoinLeft => "join_left",
             StateRole::JoinRight => "join_right",
+            StateRole::JoinPairIndex => "join_pair_index",
         }
     }
 
@@ -246,6 +249,7 @@ impl StateRole {
             "state" => Ok(StateRole::State),
             "join_left" => Ok(StateRole::JoinLeft),
             "join_right" => Ok(StateRole::JoinRight),
+            "join_pair_index" => Ok(StateRole::JoinPairIndex),
             other => Err(rootcause::report!("unknown state role {other:?}")),
         }
     }

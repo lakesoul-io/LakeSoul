@@ -66,7 +66,8 @@ use crate::session::LakeSoulIOSession;
 use crate::utils::random_str;
 use crate::writer::async_writer::FlushOutput;
 use async_writer::{
-    AsyncBatchWriter, FileSinkWriter, PartitioningAsyncWriter, SortAsyncWriter,
+    AsyncBatchWriter, FileSinkWriter, PartitioningAsyncWriter, RollingAsyncWriter,
+    SortAsyncWriter, rolling_settings,
 };
 
 pub mod async_writer;
@@ -76,8 +77,25 @@ pub type SendableWriter = Box<dyn AsyncBatchWriter + Send>;
 pub async fn create_writer_with_io_config(
     io_config: LakeSoulIOConfig,
 ) -> Result<Box<dyn AsyncBatchWriter + Send>> {
+    // An explicit output file path cannot be reused by multiple rolling
+    // windows; leave those callers on the single-file writer.
+    if !io_config.files.is_empty() {
+        let io_session = Arc::new(LakeSoulIOSession::try_new(io_config)?);
+        return create_writer(io_session).await;
+    }
+    let (rolling_rows, rolling_bytes) = rolling_settings(&io_config);
+    let mut io_config = io_config;
+    io_config.file_rolling_rows = rolling_rows;
+    io_config.file_rolling_bytes = rolling_bytes;
     let io_session = Arc::new(LakeSoulIOSession::try_new(io_config)?);
-    create_writer(io_session).await
+    if rolling_rows == 0 && rolling_bytes == 0 {
+        return create_writer(io_session).await;
+    }
+    Ok(Box::new(RollingAsyncWriter::with_limits(
+        io_session,
+        rolling_rows,
+        rolling_bytes,
+    )?))
 }
 
 pub async fn create_writer(
@@ -576,6 +594,50 @@ mod tests {
 
                 assert_eq!(expected_data, actual_data);
             }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_rolling_writer_splits_sorted_windows() -> Result<()> {
+        let runtime = Arc::new(Builder::new_multi_thread().enable_all().build().unwrap());
+        runtime.clone().block_on(async move {
+            let col = Arc::new(Int64Array::from_iter_values(0..12)) as ArrayRef;
+            let to_write = RecordBatch::try_from_iter([("id", col)])?;
+            let temp_dir = tempfile::tempdir()?;
+            let prefix = temp_dir
+                .path()
+                .join("rolling")
+                .into_os_string()
+                .into_string()
+                .unwrap();
+            let writer_io_config = LakeSoulIOConfigBuilder::new()
+                .with_prefix(prefix)
+                .with_thread_num(2)
+                .with_batch_size(256)
+                .with_schema(to_write.schema())
+                .with_primary_keys(vec!["id".to_string()])
+                .with_physical_format(PhysicalFormat::Vortex)
+                .with_file_rolling_rows(5)
+                .with_file_rolling_bytes(0)
+                .set_dynamic_partition(true)
+                .build();
+
+            let mut writer = create_writer_with_io_config(writer_io_config).await?;
+            writer.write_record_batch(to_write).await?;
+            let outputs = writer.flush_and_close().await?;
+            eprintln!(
+                "rolling outputs={:?}",
+                outputs
+                    .iter()
+                    .map(|o| (o.file_path.clone(), o.row_count))
+                    .collect::<Vec<_>>()
+            );
+            assert!(outputs.len() >= 3, "expected at least three rolling files");
+            assert_eq!(
+                outputs.iter().map(|output| output.row_count).sum::<usize>(),
+                12
+            );
             Ok(())
         })
     }

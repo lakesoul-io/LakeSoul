@@ -130,6 +130,44 @@ impl JoinKeyEncoder {
         })
     }
 
+    /// Append only the hidden key to a contribution batch.  Unlike the state
+    /// payload, a join-key probe does not carry the source columns.
+    pub(crate) fn encode_key_only(
+        &self,
+        batch: &RecordBatch,
+    ) -> DataFusionResult<RecordBatch> {
+        let columns = self
+            .keys
+            .iter()
+            .map(|key| {
+                batch.column_by_name(key).cloned().ok_or_else(|| {
+                    DataFusionError::Execution(format!(
+                        "join key {key} is missing from the contribution"
+                    ))
+                })
+            })
+            .collect::<DataFusionResult<Vec<ArrayRef>>>()?;
+        let encoded = self
+            .encoder
+            .encode_columns(&columns)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+        let mut fields = batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| Arc::new(field.as_ref().clone()))
+            .collect::<Vec<_>>();
+        fields.push(Arc::new(Field::new(
+            IVM_JOIN_KEY_COLUMN,
+            DataType::Binary,
+            false,
+        )));
+        let mut output = batch.columns().to_vec();
+        output.push(Arc::new(encoded));
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), output)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))
+    }
+
     /// Append the encoded join key to a source batch.
     pub(crate) fn encode_batch(
         &self,
@@ -365,76 +403,102 @@ impl super::IvmRuntime {
             join_keys,
         )?;
 
-        // Read the before image from the source, whose primary-key index is
-        // the source row identity.  Scanning the side state by source PK is
-        // not a keyed lookup: the side state is bucketed by join key.
-        let before = materialize_join_keys(
-            &context,
-            self.before_window_table_frame(&context, source, &window.before_versions)
-                .await?,
-            key_exprs,
-            join_keys,
-        )?;
-        let pk_exprs = source
-            .primary_keys
-            .iter()
-            .map(|key| datafusion::prelude::col(key.as_str()))
-            .collect::<Vec<_>>();
-        let delta_pks = delta.clone().select(pk_exprs)?.distinct()?;
+        // Read the before image from the source through the generic PK lookup
+        // plan.  The source primary key is the lookup key; the plan handles
+        // single/composite keys, bucket routing and the reader's PK index.
         let pk_names = source
             .primary_keys
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
-        let old = if source.primary_keys.len() == 1 {
-            // A single source primary key is also the writer's bucket key for
-            // the common case, so an IN filter can use the primary-key index.
-            // Keep the semi-join fallback for a larger key set and for
-            // multi-column identities.
-            let pk = source.primary_keys[0].as_str();
-            let batches = delta_pks.clone().collect().await?;
-            let values = batches
+        if pk_names.is_empty() {
+            return Err(rootcause::report!("join side state needs a keyed source"));
+        }
+        let pk_exprs = pk_names
+            .iter()
+            .map(|key| datafusion::prelude::col(*key))
+            .collect::<Vec<_>>();
+        let contribution = delta.clone().select(pk_exprs)?.distinct()?;
+        let bucket_count = source
+            .hash_bucket_num
+            .parse::<usize>()
+            .ok()
+            .filter(|count| *count > 1)
+            .unwrap_or(1);
+        let route_columns = if bucket_count > 1
+            && !source.bucket_columns.is_empty()
+            && source
+                .bucket_columns
                 .iter()
-                .flat_map(|batch| {
-                    (0..batch.num_rows()).filter_map(move |row| {
-                        datafusion::common::ScalarValue::try_from_array(
-                            batch.column(0),
-                            row,
-                        )
-                        .ok()
-                    })
+                .all(|column| pk_names.contains(&column.as_str()))
+        {
+            Some(source.bucket_columns.clone())
+        } else {
+            None
+        };
+        let bucket_count = route_columns.as_ref().map_or(1, |_| bucket_count);
+        let plan = contribution.create_physical_plan().await?;
+        let plan = if let Some(columns) = route_columns.as_deref() {
+            super::keyed_plan::bucket_repartition_by_columns(plan, columns, bucket_count)?
+        } else {
+            plan
+        };
+        let before_groups = source
+            .before_window_groups(&self.client, &window.before_versions)
+            .await?;
+        let groups = super::keyed_plan::groups_by_bucket(before_groups, bucket_count);
+        let lookup = super::keyed_plan::IvmPkLookupExec::new_with_columns(
+            plan,
+            source.clone(),
+            groups,
+            pk_names.iter().map(|key| key.to_string()).collect(),
+            pk_names.iter().map(|key| key.to_string()).collect(),
+            bucket_count,
+        )?
+        .with_multi_match(true);
+        let streams = datafusion::physical_plan::execute_stream_partitioned(
+            std::sync::Arc::new(lookup),
+            context.task_ctx(),
+        )?;
+        let mut before_batches = Vec::new();
+        for mut stream in streams {
+            while let Some(batch) = stream.next().await {
+                before_batches.push(batch?);
+            }
+        }
+        let old = if before_batches.is_empty() {
+            None
+        } else {
+            let frame = context.read_batches(before_batches)?;
+            let projections = source
+                .schema
+                .fields()
+                .iter()
+                .map(|field| {
+                    datafusion::prelude::col(format!(
+                        "{}{}",
+                        super::keyed_plan::IVM_STATE_COLUMN_PREFIX,
+                        field.name()
+                    ))
+                    .alias(field.name())
                 })
                 .collect::<Vec<_>>();
-            if values.is_empty() {
-                before.clone().limit(0, Some(0))?
-            } else if values.len() <= 8192 {
-                let list = values.into_iter().map(datafusion::prelude::lit).collect();
-                before.filter(datafusion::prelude::col(pk).in_list(list, false))?
-            } else {
-                before.join(
-                    delta_pks,
-                    datafusion::prelude::JoinType::LeftSemi,
-                    &pk_names,
-                    &pk_names,
-                    None,
-                )?
-            }
-        } else {
-            before.join(
-                delta_pks,
-                datafusion::prelude::JoinType::LeftSemi,
-                &pk_names,
-                &pk_names,
-                None,
-            )?
+            Some(materialize_join_keys(
+                &context,
+                frame.select(projections)?,
+                key_exprs,
+                join_keys,
+            )?)
         };
 
         let mut pending = Vec::new();
-        let mut old_stream = old.execute_stream().await?;
-        while let Some(batch) = old_stream.next().await {
-            let batch =
-                set_change_kind(&encoder.encode_batch(&batch?)?, &kind, "delete")?;
-            pending.push(batch);
+        if let Some(old) = old {
+            let mut old_stream = old.execute_stream().await?;
+            while let Some(batch) = old_stream.next().await {
+                let batch =
+                    set_change_kind(&encoder.encode_batch(&batch?)?, &kind, "delete")?;
+                pending.push(batch);
+            }
         }
         let mut delta_stream = delta.execute_stream().await?;
         while let Some(batch) = delta_stream.next().await {

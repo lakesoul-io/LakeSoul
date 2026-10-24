@@ -325,6 +325,21 @@ async fn lookup_join_refreshes_both_sides() {
         full_lookup_rows(runtime, left, right).await
     );
 
+    // A left-only payload update for a key with no right row must keep the
+    // NULL-padded left row: the keyed right lookup emits an unmatched row and
+    // the refresh must not filter it as a CDC tombstone.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[(2, Some("b"), "L2x", "insert")]),
+    )
+    .await
+    .unwrap();
+    runtime.refresh_lookup_join(view).await.unwrap().unwrap();
+    assert_eq!(
+        lookup_rows(runtime, output).await,
+        full_lookup_rows(runtime, left, right).await
+    );
+
     // A new right row fills the previously NULL match.
     right
         .append_batch(runtime.client(), right_batch(&[("b", 20, "insert")]))

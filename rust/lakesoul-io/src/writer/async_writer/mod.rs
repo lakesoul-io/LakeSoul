@@ -20,6 +20,12 @@ pub use sort_writer::SortAsyncWriter;
 mod partitioning_writer;
 pub use partitioning_writer::PartitioningAsyncWriter;
 
+mod rolling_writer;
+pub use rolling_writer::{
+    ENV_FILE_ROLLING_BYTES, ENV_FILE_ROLLING_ROWS, RollingAsyncWriter, rolling_enabled,
+    rolling_settings,
+};
+
 mod sendable_writer;
 pub use sendable_writer::AsyncSendableMutableLakeSoulWriter;
 
@@ -69,6 +75,15 @@ pub trait AsyncBatchWriter {
 
     /// Flush the writer and close it.
     async fn flush_and_close(self: Box<Self>) -> Result<Vec<FlushOutput>>;
+
+    /// Flush the writer, close it, and return the final metrics snapshot.
+    async fn flush_and_close_with_metrics(
+        self: Box<Self>,
+    ) -> Result<(Vec<FlushOutput>, Option<MetricsSet>)> {
+        let metrics = self.metrics();
+        let output = self.flush_and_close().await?;
+        Ok((output, metrics))
+    }
 
     /// Flush the writer, this can only be called once.
     async fn flush(&mut self) -> Result<Vec<FlushOutput>> {
