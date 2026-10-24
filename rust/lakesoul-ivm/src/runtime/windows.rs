@@ -1922,6 +1922,60 @@ impl IvmRuntime {
             .await
     }
 
+    /// The persisted partition index for a window view.
+    ///
+    /// The index has the MV schema and is keyed by `(partition keys, source
+    /// primary keys)`, so the refresh can read only the rows belonging to the
+    /// affected partitions instead of scanning the MV.  It is created lazily
+    /// and registered as the view's `State` table; the view spec itself stays
+    /// unchanged for backward compatibility.
+    async fn ensure_window_state(&self, view: &WindowView) -> Result<IvmTable> {
+        let states = self.metadata.list_states(&view.view_id).await?;
+        if let Some(existing) = states.iter().find(|state| state.role == StateRole::State)
+        {
+            let state = self.open_table_by_id(&existing.table_id).await?;
+            if state.current_files(&self.client).await?.is_empty() {
+                self.sync_window_state(view, &state).await?;
+            }
+            return Ok(state);
+        }
+        let keys = distinct_keys(
+            view.partition_keys
+                .iter()
+                .chain(view.source.primary_keys.iter()),
+        );
+        let mut options = IvmTableOptions::new(
+            format!("{}__ivm_window_state", view.mv.table_name),
+            format!("{}__ivm_window_state", view.mv.table_path),
+            view.mv.schema.clone(),
+        )
+        .with_namespace(view.mv.namespace.clone())
+        .with_primary_keys(keys)
+        .with_bucket_columns(view.partition_keys.clone())
+        .with_range_partition_columns(view.mv.range_partition_columns.clone())
+        .with_file_format(view.mv.file_format);
+        options.hash_bucket_num = view.mv.hash_bucket_num.clone();
+        let state = self.create_table(options).await?;
+        self.register_state_tables(&view.view_id, &[(StateRole::State, &state)])
+            .await?;
+        self.sync_window_state(view, &state).await?;
+        Ok(state)
+    }
+
+    /// Seed a newly created/empty window partition index from the current MV.
+    async fn sync_window_state(&self, view: &WindowView, state: &IvmTable) -> Result<()> {
+        if view.mv.current_files(&self.client).await?.is_empty() {
+            return Ok(());
+        }
+        let context = refresh_session();
+        context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
+        let frame = context.sql("select * from mv").await?;
+        state
+            .append_stream(&self.client, frame.execute_stream().await?)
+            .await?;
+        Ok(())
+    }
+
     /// Refresh a `ROW_NUMBER()` view by recomputing its affected partitions.
     ///
     /// A row number depends on every row of its partition, so the delta only
@@ -1940,6 +1994,7 @@ impl IvmRuntime {
         if window.added_files.is_empty() {
             return Ok(None);
         }
+        let state = self.ensure_window_state(view).await?;
         let record = match self
             .begin_window(&view.view_id, &window.identity, &view.mv)
             .await?
@@ -1961,17 +2016,58 @@ impl IvmRuntime {
         let context = refresh_session();
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
-        let mv = match mv_partitions {
-            Some(restriction) => {
-                self.current_table_frame_filtered_partitions(
+        let mv = if !view.partition_keys.is_empty()
+            && view.source.primary_keys.starts_with(&view.partition_keys)
+        {
+            let part_exprs = view
+                .partition_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let affected = delta.clone().select(part_exprs)?.distinct()?;
+            let null_part = view
+                .partition_keys
+                .iter()
+                .map(|key| col(key.as_str()).is_null())
+                .reduce(|left, right| left.or(right))
+                .ok_or_else(|| report!("window view has no partition keys"))?;
+            if count_frame_rows(affected.clone().filter(null_part)?).await? == 0 {
+                self.lookup_source_by_join_keys(
                     &context,
-                    &view.mv,
-                    Vec::new(),
-                    &restriction,
+                    &state,
+                    affected,
+                    &view.partition_keys,
+                    &view.partition_keys,
+                    true,
                 )
                 .await?
+            } else {
+                match mv_partitions {
+                    Some(restriction) => {
+                        self.current_table_frame_filtered_partitions(
+                            &context,
+                            &state,
+                            Vec::new(),
+                            &restriction,
+                        )
+                        .await?
+                    }
+                    None => self.current_table_frame(&context, &state)?,
+                }
             }
-            None => self.current_table_frame(&context, &view.mv)?,
+        } else {
+            match mv_partitions {
+                Some(restriction) => {
+                    self.current_table_frame_filtered_partitions(
+                        &context,
+                        &state,
+                        Vec::new(),
+                        &restriction,
+                    )
+                    .await?
+                }
+                None => self.current_table_frame(&context, &state)?,
+            }
         };
         context.register_table("delta", delta.clone().into_view())?;
         context.register_table("mv", mv.clone().into_view())?;
@@ -2071,11 +2167,14 @@ impl IvmRuntime {
         };
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&window_refresh_sql(view, epoch)).await?;
-        commit_ids.extend(
+        let (mv_ids, state_ids) = futures::future::try_join(
             view.mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
-        );
+                .append_stream(&self.client, frame.clone().execute_stream().await?),
+            state.append_stream(&self.client, frame.execute_stream().await?),
+        )
+        .await?;
+        commit_ids.extend(mv_ids);
+        commit_ids.extend(state_ids);
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
@@ -2217,7 +2316,9 @@ impl IvmRuntime {
             .await?;
         let generation = self.metadata.bump_generation(&view.view_id).await?;
         self.metadata.delete_cursors(&view.view_id).await?;
+        let state = self.ensure_window_state(view).await?;
         view.mv.truncate(&self.client).await?;
+        state.truncate(&self.client).await?;
 
         let baseline = self.source_baseline(&view.source).await?;
         let mv_versions_before =
@@ -2251,11 +2352,14 @@ impl IvmRuntime {
             Arc::new(self.table_provider_groups(&view.source, baseline.groups.clone())),
         )?;
         let frame = context.sql(&window_rebuild_sql(view, epoch)).await?;
-        commit_ids.extend(
+        let (mv_ids, state_ids) = futures::future::try_join(
             view.mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
-        );
+                .append_stream(&self.client, frame.clone().execute_stream().await?),
+            state.append_stream(&self.client, frame.execute_stream().await?),
+        )
+        .await?;
+        commit_ids.extend(mv_ids);
+        commit_ids.extend(state_ids);
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.metadata
