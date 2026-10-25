@@ -130,6 +130,16 @@ impl JoinKeyEncoder {
         })
     }
 
+    /// Encode the join key from already-projected key arrays.
+    pub(crate) fn encode_columns(
+        &self,
+        columns: &[ArrayRef],
+    ) -> DataFusionResult<ArrayRef> {
+        Ok(Arc::new(self.encoder.encode_columns(columns).map_err(
+            |error| DataFusionError::Execution(error.to_string()),
+        )?))
+    }
+
     /// Append only the hidden key to a contribution batch.  Unlike the state
     /// payload, a join-key probe does not carry the source columns.
     pub(crate) fn encode_key_only(

@@ -3178,6 +3178,43 @@ fn join_is_keyed(view: &JoinView) -> bool {
     !view.left.primary_keys.is_empty() || !view.right.primary_keys.is_empty()
 }
 
+/// Add the encoded join-key column to a contribution frame without collecting
+/// the delta key batches in the driver.
+fn encode_join_key_frame(
+    context: &SessionContext,
+    frame: DataFrame,
+    source: &IvmTable,
+    join_keys: &[String],
+    encoder: super::join_state::JoinKeyEncoder,
+) -> Result<DataFrame> {
+    let input_types = join_keys
+        .iter()
+        .map(|key| Ok(source.schema.field_with_name(key)?.data_type().clone()))
+        .collect::<Result<Vec<_>>>()?;
+    let encoder = Arc::new(encoder);
+    let name = format!("ivm_join_key_probe_{}", uuid::Uuid::new_v4().simple());
+    let udf = datafusion::logical_expr::create_udf(
+        &name,
+        input_types,
+        arrow::datatypes::DataType::Binary,
+        datafusion::logical_expr::Volatility::Immutable,
+        Arc::new(move |args: &[datafusion::logical_expr::ColumnarValue]| {
+            let arrays = datafusion::logical_expr::ColumnarValue::values_to_arrays(args)?;
+            Ok(datafusion::logical_expr::ColumnarValue::Array(
+                encoder.encode_columns(&arrays)?,
+            ))
+        }),
+    );
+    let key = udf.call(
+        join_keys
+            .iter()
+            .map(|key| col(key.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    context.register_udf(udf);
+    Ok(frame.with_column(super::join_state::IVM_JOIN_KEY_COLUMN, key)?)
+}
+
 impl IvmRuntime {
     /// Symmetric lookup of the left rows whose join keys occur in the right
     /// delta.  Used by a right-only keyed join window so the left state does
@@ -3212,12 +3249,13 @@ impl IvmRuntime {
         let contribution = delta_right.clone().select(key_exprs)?.distinct()?;
         if let Some(left_state) = left_state {
             let encoder = JoinKeyEncoder::new(&view.left, &view.join_keys)?;
-            let batches = contribution.collect().await?;
-            let mut encoded = Vec::with_capacity(batches.len());
-            for batch in batches {
-                encoded.push(encoder.encode_key_only(&batch)?);
-            }
-            let contribution = context.read_batches(encoded)?;
+            let contribution = encode_join_key_frame(
+                context,
+                contribution,
+                &view.left,
+                &view.join_keys,
+                encoder,
+            )?;
             let bucket_count = if left_state.bucket_columns.len() == 1
                 && left_state.bucket_columns[0] == super::join_state::IVM_JOIN_KEY_COLUMN
             {
@@ -3580,12 +3618,22 @@ impl IvmRuntime {
             return Ok(None);
         }
         let encoder = JoinKeyEncoder::new(&view.left, &view.join_keys)?;
-        let batches = delta_left.clone().collect().await?;
-        let mut encoded = Vec::with_capacity(batches.len());
-        for batch in batches {
-            encoded.push(encoder.encode_batch(&batch)?);
-        }
-        let contribution = context.read_batches(encoded)?;
+        let contribution = delta_left
+            .clone()
+            .select(
+                view.join_keys
+                    .iter()
+                    .map(|key| col(key.as_str()))
+                    .collect::<Vec<_>>(),
+            )?
+            .distinct()?;
+        let contribution = encode_join_key_frame(
+            context,
+            contribution,
+            &view.left,
+            &view.join_keys,
+            encoder,
+        )?;
         let bucket_count = if right_state.bucket_columns.len() == 1
             && right_state.bucket_columns[0] == super::join_state::IVM_JOIN_KEY_COLUMN
         {
