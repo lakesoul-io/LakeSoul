@@ -2747,7 +2747,67 @@ impl IvmRuntime {
             )?
         };
         context.register_table("src", src.into_view())?;
-        context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
+        let mv = if view.group_keys.is_empty() {
+            self.current_table_frame(&context, &view.mv)?
+        } else {
+            let key_exprs = view
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let affected_keys = delta
+                .select(key_exprs.clone())?
+                .distinct()?
+                .union(old.select(key_exprs)?.distinct()?)?
+                .distinct()?;
+            let null_key = view
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()).is_null())
+                .reduce(|left, right| left.or(right))
+                .ok_or_else(|| report!("grouping-sets view has no group keys"))?;
+            if count_frame_rows(affected_keys.clone().filter(null_key)?).await? > 0 {
+                self.current_table_frame(&context, &view.mv)?
+            } else {
+                let mut keyed: Option<DataFrame> = None;
+                for (index, set) in view.groupings.iter().enumerate() {
+                    let columns = set
+                        .iter()
+                        .map(|position| view.group_keys[*position].clone())
+                        .collect::<Vec<_>>();
+                    let mut contribution = affected_keys
+                        .clone()
+                        .select(
+                            columns
+                                .iter()
+                                .map(|key| col(key.as_str()))
+                                .collect::<Vec<_>>(),
+                        )?
+                        .distinct()?;
+                    contribution = contribution
+                        .with_column(IVM_GROUPING_COLUMN, lit(index as i64))?;
+                    let mut input_columns = vec![IVM_GROUPING_COLUMN.to_string()];
+                    input_columns.extend(columns.clone());
+                    let table_columns = input_columns.clone();
+                    let frame = self
+                        .lookup_source_by_join_keys(
+                            &context,
+                            &view.mv,
+                            contribution,
+                            &input_columns,
+                            &table_columns,
+                            true,
+                        )
+                        .await?;
+                    keyed = Some(match keyed {
+                        Some(existing) => existing.union(frame)?,
+                        None => frame,
+                    });
+                }
+                keyed.ok_or_else(|| report!("grouping-sets view has no groupings"))?
+            }
+        };
+        context.register_table("mv", mv.into_view())?;
         let frame = context.sql(&grouping_sets_refresh_sql(view, epoch)).await?;
         commit_ids.extend(
             view.mv
