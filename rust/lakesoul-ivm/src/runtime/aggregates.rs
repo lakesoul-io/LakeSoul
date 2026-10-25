@@ -2517,6 +2517,7 @@ impl IvmRuntime {
             dataframe(&context, Vec::new(), old_schema)?
         };
 
+        let mut keyed_mv: Option<DataFrame> = None;
         let mut active_keyed =
             view.having.is_none() && view.mv.primary_keys == view.group_keys;
         if active_keyed {
@@ -2542,6 +2543,7 @@ impl IvmRuntime {
                 .ok_or_else(|| report!("sum/count view has no group keys"))?;
             let null_rows = count_frame_rows(affected.clone().filter(null_key)?).await?;
             if null_rows == 0 {
+                keyed_mv = Some(affected.clone());
                 let active = self
                     .lookup_source_by_join_keys(
                         &context,
@@ -2572,17 +2574,29 @@ impl IvmRuntime {
             )?;
             context.register_table("src", src.into_view())?;
         }
-        let mv = match &mv_partitions {
-            Some(partitions) => {
-                self.current_table_frame_filtered_partitions(
-                    &context,
-                    &view.mv,
-                    Vec::new(),
-                    partitions,
-                )
-                .await?
+        let mv = if let Some(affected) = keyed_mv {
+            self.lookup_source_by_join_keys(
+                &context,
+                &view.mv,
+                affected,
+                &view.group_keys,
+                &view.mv.primary_keys,
+                true,
+            )
+            .await?
+        } else {
+            match &mv_partitions {
+                Some(partitions) => {
+                    self.current_table_frame_filtered_partitions(
+                        &context,
+                        &view.mv,
+                        Vec::new(),
+                        partitions,
+                    )
+                    .await?
+                }
+                None => self.current_table_frame(&context, &view.mv)?,
             }
-            None => self.current_table_frame(&context, &view.mv)?,
         };
         context.register_table("mv", mv.into_view())?;
         let sql = sum_count_refresh_sql(view, keyed, epoch, changelog, active_keyed);
@@ -3170,8 +3184,21 @@ impl IvmRuntime {
             context
                 .register_table("state_now", Arc::new(self.table_provider(view.state)))?;
         }
-        context.register_table("affected", affected.into_view())?;
-        context.register_table("mv", Arc::new(self.table_provider(view.mv)))?;
+        context.register_table("affected", affected.clone().into_view())?;
+        let mv = if view.mv.primary_keys == view.group_keys {
+            self.lookup_source_by_join_keys(
+                &context,
+                view.mv,
+                affected,
+                view.group_keys,
+                &view.mv.primary_keys,
+                true,
+            )
+            .await?
+        } else {
+            self.current_table_frame(&context, view.mv)?
+        };
+        context.register_table("mv", mv.into_view())?;
         let frame = context.sql(&value_count_mv_sql(view, epoch)).await?;
         commit_ids.extend(
             view.mv
