@@ -5998,12 +5998,7 @@ impl IvmRuntime {
         } else {
             None
         };
-        let one_sided = if keyed
-            && right_window.added_files.is_empty()
-            && !left_window.added_files.is_empty()
-        {
-            None
-        } else if keyed {
+        let one_sided = if keyed {
             self.keyed_one_sided_join_sides(
                 &context,
                 &probe,
@@ -6263,6 +6258,84 @@ impl IvmRuntime {
             }
         };
 
+        // A left-only keyed window can remove a match for an unchanged right
+        // row.  The old pairs (read above) identify those right identities;
+        // re-read their current matches so the right row can be emitted with
+        // a NULL left side when no left row references it any more.
+        let mut affected_right_for_deletes = affected_right.clone();
+        let right_recovery = if one_sided_keyed && left_changed && !right_changed {
+            let right_ids = mv
+                .clone()
+                .select(
+                    right_alias_names
+                        .iter()
+                        .map(|alias| col(alias.as_str()))
+                        .collect::<Vec<_>>(),
+                )?
+                .filter(
+                    right_alias_names
+                        .iter()
+                        .map(|alias| col(alias.as_str()).is_not_null())
+                        .reduce(|left, right| left.and(right))
+                        .ok_or_else(|| report!("full join has no right identity"))?,
+                )?
+                .distinct()?;
+            let right_source_ids = right_ids.clone().select(
+                right_alias_names
+                    .iter()
+                    .zip(&view.right.primary_keys)
+                    .map(|(alias, key)| col(alias.as_str()).alias(key.as_str()))
+                    .collect::<Vec<_>>(),
+            )?;
+            let right_rows = self
+                .lookup_source_by_join_keys(
+                    &context,
+                    &view.right,
+                    right_source_ids.clone(),
+                    &view.right.primary_keys,
+                    &view.right.primary_keys,
+                    true,
+                )
+                .await?;
+            let right_rows = apply_side_filter(
+                &context,
+                right_rows,
+                &view.right.schema,
+                view.right_filter.as_deref(),
+            )?;
+            let contribution = right_rows
+                .clone()
+                .select(
+                    right_join_names
+                        .iter()
+                        .enumerate()
+                        .map(|(index, key)| {
+                            col(key.as_str()).alias(view.join_keys[index].as_str())
+                        })
+                        .collect::<Vec<_>>(),
+                )?
+                .distinct()?;
+            let left_for_right = self
+                .lookup_left_rows_for_keys(
+                    &context,
+                    &probe,
+                    left_state.as_ref(),
+                    contribution,
+                )
+                .await?;
+            let left_for_right = apply_side_filter(
+                &context,
+                left_for_right,
+                &view.left.schema,
+                view.left_filter.as_deref(),
+            )?;
+            affected_right_for_deletes =
+                affected_right_for_deletes.union(right_source_ids)?;
+            Some((left_for_right, right_rows))
+        } else {
+            None
+        };
+
         // Rewrite all pairs of the affected rows on either side; identical
         // pairs are deduplicated.
         let left_rows = left_now.clone().join(
@@ -6304,7 +6377,16 @@ impl IvmRuntime {
             JoinType::Left,
             false,
         )?;
-        let right_pairs = if one_sided_keyed && !right_changed {
+        let right_pairs = if let Some((left_for_right, right_rows)) = right_recovery {
+            Some(keyed_join_projection(
+                &context,
+                left_for_right,
+                right_rows,
+                &view.parts(),
+                JoinType::Right,
+                true,
+            )?)
+        } else if one_sided_keyed && !right_changed {
             None
         } else {
             Some(keyed_join_projection(
@@ -6344,7 +6426,7 @@ impl IvmRuntime {
             )?)?
             .union(
                 mv.join(
-                    affected_right,
+                    affected_right_for_deletes,
                     JoinType::LeftSemi,
                     &right_alias_refs,
                     &right_key_names,
