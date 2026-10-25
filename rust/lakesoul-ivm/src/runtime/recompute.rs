@@ -2440,6 +2440,11 @@ impl Drop for StageGuard {
     }
 }
 
+struct KeyedContributions {
+    frame: DataFrame,
+    _guard: StageGuard,
+}
+
 impl IvmRuntime {
     /// Persist a variance view spec (idempotent).
     pub async fn register_variance_view(&self, view: &VarianceView) -> Result<()> {
@@ -3236,10 +3241,12 @@ impl IvmRuntime {
         primary_key: &str,
         keys: &[ScalarValue],
         delta_batches: &[RecordBatch],
-    ) -> Result<Vec<RecordBatch>> {
+        stage_dir: &std::path::Path,
+        prefix: &str,
+    ) -> Result<Option<SchemaRef>> {
         let filters = Self::source_key_filters(primary_key, keys)?;
         if filters.is_empty() {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         let chunk_started = std::time::Instant::now();
         let before_started = std::time::Instant::now();
@@ -3295,10 +3302,20 @@ impl IvmRuntime {
             }
         }
         let output_rows = output.iter().map(|batch| batch.num_rows()).sum::<usize>();
-        if output.len() > 1 {
-            let schema = output[0].schema();
-            output = vec![arrow::compute::concat_batches(&schema, &output)?];
+        if output.is_empty() {
+            return Ok(None);
         }
+        let schema = output[0].schema();
+        let frame = context.read_batches(output)?;
+        let path = stage_dir.join(format!("{prefix}.parquet"));
+        let uri = format!("file://{}", path.display());
+        frame
+            .write_parquet(
+                &uri,
+                datafusion::dataframe::DataFrameWriteOptions::new(),
+                None,
+            )
+            .await?;
         tracing::info!(
             keys = keys.len(),
             before_rows,
@@ -3307,7 +3324,7 @@ impl IvmRuntime {
             elapsed = ?chunk_started.elapsed(),
             "keyed source chunk finished"
         );
-        Ok(output)
+        Ok(Some(schema))
     }
 
     /// Read the source rows that changed in one window through primary-key
@@ -3318,12 +3335,13 @@ impl IvmRuntime {
     /// contributions are bounded by the delta, not by the source table.
     async fn keyed_source_contributions(
         &self,
+        caller_context: &SessionContext,
         source: &IvmTable,
         view: &MultiAggView,
         window: &SourceWindow,
         delta: &DataFrame,
         measures: &[(String, String, DataType)],
-    ) -> Result<Vec<RecordBatch>> {
+    ) -> Result<KeyedContributions> {
         if view.source.primary_keys.len() != 1 {
             return Err(report!(
                 "keyed source contribution lookup needs exactly one source primary key"
@@ -3333,6 +3351,14 @@ impl IvmRuntime {
         let before_groups = source
             .before_window_groups(&self.client, &window.before_versions)
             .await?;
+        let stage_dir = std::env::temp_dir().join(format!(
+            "lakesoul-ivm-contrib-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&stage_dir)?;
+        let stage_guard = StageGuard {
+            dir: stage_dir.clone(),
+        };
         let context = refresh_session();
         let encoder = Arc::new(GroupKeyRowEncoder::new(
             &view.source.schema,
@@ -3386,7 +3412,8 @@ impl IvmRuntime {
         let mut delta_stream = delta.clone().execute_stream().await?;
         let mut pending: Vec<ScalarValue> = Vec::with_capacity(KEY_CHUNK_ROWS);
         let mut pending_delta: Vec<RecordBatch> = Vec::new();
-        let mut output = Vec::new();
+        let mut output_schema: Option<SchemaRef> = None;
+        let mut chunk_index = 0usize;
         while let Some(batch) = delta_stream.next().await {
             let batch = batch?;
             if batch.num_rows() == 0 {
@@ -3397,8 +3424,8 @@ impl IvmRuntime {
                 .map(|row| ScalarValue::try_from_array(array, row))
                 .collect::<DataFusionResult<Vec<_>>>()?;
             if !pending.is_empty() && pending.len() + batch_keys.len() > KEY_CHUNK_ROWS {
-                output.extend(
-                    self.source_chunk_contributions(
+                if let Some(schema) = self
+                    .source_chunk_contributions(
                         &context,
                         source,
                         &before_groups,
@@ -3406,18 +3433,23 @@ impl IvmRuntime {
                         primary_key,
                         &pending,
                         &pending_delta,
+                        &stage_dir,
+                        &format!("chunk_{chunk_index}"),
                     )
-                    .await?,
-                );
+                    .await?
+                {
+                    output_schema = Some(schema);
+                    chunk_index += 1;
+                }
                 pending.clear();
                 pending_delta.clear();
             }
             pending.extend(batch_keys);
             pending_delta.push(batch);
         }
-        if !pending.is_empty() {
-            output.extend(
-                self.source_chunk_contributions(
+        if !pending.is_empty()
+            && let Some(schema) = self
+                .source_chunk_contributions(
                     &context,
                     source,
                     &before_groups,
@@ -3425,44 +3457,92 @@ impl IvmRuntime {
                     primary_key,
                     &pending,
                     &pending_delta,
+                    &stage_dir,
+                    &format!("chunk_{chunk_index}"),
                 )
-                .await?,
-            );
+                .await?
+        {
+            output_schema = Some(schema);
+            chunk_index += 1;
         }
-        if output.len() > 1 {
-            // One state update per group: chunks are only a bound on source
-            // lookup size, not a reason to apply the same group twice.
-            let frame = context.read_batches(output)?;
-            let _ = context.deregister_table("contrib_chunks")?;
-            context.register_table("contrib_chunks", frame.into_view())?;
-            let row = quote_ident(IVM_GROUP_ROW_COLUMN);
-            let sums = measures
-                .iter()
-                .map(|(_, column, _)| {
-                    let alias = quote_ident(&format!("d_{column}"));
-                    format!("sum({alias}) as {alias}")
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            let merge_sql = format!(
-                "select {keys}, {row}, {sums}, sum(d_rows) as d_rows \
-                 from contrib_chunks group by {keys}, {row}"
-            );
-            let mut stream = context.sql(&merge_sql).await?.execute_stream().await?;
-            let mut merged = Vec::new();
-            while let Some(batch) = stream.next().await {
-                let batch = batch?;
-                if batch.num_rows() > 0 {
-                    merged.push(batch);
+        let schema = match output_schema {
+            Some(schema) => schema,
+            None => {
+                let mut fields = Vec::new();
+                for key in &view.group_keys {
+                    let field = view.source.schema.field_with_name(key)?;
+                    fields.push(Arc::new(Field::new(
+                        key,
+                        field.data_type().clone(),
+                        true,
+                    )));
                 }
+                fields.push(Arc::new(Field::new(
+                    IVM_GROUP_ROW_COLUMN,
+                    DataType::Binary,
+                    false,
+                )));
+                for (_, column, data_type) in measures {
+                    fields.push(Arc::new(Field::new(
+                        format!("d_{column}"),
+                        data_type.clone(),
+                        true,
+                    )));
+                }
+                fields.push(Arc::new(Field::new("d_rows", DataType::Int64, true)));
+                Arc::new(Schema::new(fields))
             }
-            if merged.len() > 1 {
-                let schema = merged[0].schema();
-                merged = vec![arrow::compute::concat_batches(&schema, &merged)?];
+        };
+        let frame = if chunk_index == 0 {
+            caller_context.read_batches(vec![RecordBatch::new_empty(schema)])?
+        } else {
+            let mut frame: Option<DataFrame> = None;
+            for index in 0..chunk_index {
+                let path = stage_dir.join(format!("chunk_{index}.parquet"));
+                let uri = format!("file://{}", path.display());
+                let name = format!("contrib_chunk_{index}");
+                caller_context
+                    .register_parquet(
+                        &name,
+                        &uri,
+                        datafusion::prelude::ParquetReadOptions {
+                            schema: Some(schema.as_ref()),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+                let next = caller_context.table(&name).await?;
+                frame = Some(match frame {
+                    Some(existing) => existing.union(next)?,
+                    None => next,
+                });
             }
-            output = merged;
-        }
-        Ok(output)
+            let frame = frame.ok_or_else(|| report!("keyed contribution is missing"))?;
+            if chunk_index > 1 {
+                let row = quote_ident(IVM_GROUP_ROW_COLUMN);
+                let sums = measures
+                    .iter()
+                    .map(|(_, column, _)| {
+                        let alias = quote_ident(&format!("d_{column}"));
+                        format!("sum({alias}) as {alias}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                caller_context.register_table("contrib_chunks", frame.into_view())?;
+                caller_context
+                    .sql(&format!(
+                        "select {keys}, {row}, {sums}, sum(d_rows) as d_rows \
+                         from contrib_chunks group by {keys}, {row}"
+                    ))
+                    .await?
+            } else {
+                frame
+            }
+        };
+        Ok(KeyedContributions {
+            frame,
+            _guard: stage_guard,
+        })
     }
 
     /// Project the state merge output onto the user MV schema.
@@ -3584,6 +3664,7 @@ impl IvmRuntime {
                     .ok_or_else(|| report!("multi-agg refresh without a delta"))?;
                 Some(
                     self.keyed_source_contributions(
+                        &context,
                         &view.source,
                         view,
                         &window,
@@ -3789,12 +3870,8 @@ impl IvmRuntime {
             return Ok(Some(epoch));
         }
         use futures::StreamExt;
-        let contrib = if let Some(batches) = keyed_contributions {
-            if batches.is_empty() {
-                context.sql(&contrib_sql).await?
-            } else {
-                context.read_batches(batches)?
-            }
+        let contrib = if let Some(keyed) = &keyed_contributions {
+            keyed.frame.clone()
         } else {
             context.sql(&contrib_sql).await?
         };
