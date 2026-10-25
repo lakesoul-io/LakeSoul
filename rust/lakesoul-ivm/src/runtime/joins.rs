@@ -3385,7 +3385,7 @@ impl IvmRuntime {
 impl IvmRuntime {
     /// Read all right rows matching the left delta's join keys.  Side state is
     /// used when present; otherwise the right source is the keyed state.
-    async fn lookup_right_rows_for_left_keys(
+    pub(crate) async fn lookup_right_rows_for_left_keys(
         &self,
         context: &SessionContext,
         view: &JoinView,
@@ -3491,7 +3491,7 @@ impl IvmRuntime {
 
     /// Read all current left rows for a join-key contribution, using the side
     /// state when present and the source as the keyed table otherwise.
-    async fn lookup_left_rows_for_keys(
+    pub(crate) async fn lookup_left_rows_for_keys(
         &self,
         context: &SessionContext,
         view: &JoinView,
@@ -3679,7 +3679,7 @@ impl IvmRuntime {
     /// Ensure and fully re-seed both join side states from the current source
     /// rows.  Rebuilds use this so later keyed lookups cannot see rows from an
     /// older generation.
-    async fn sync_full_join_side_states(
+    pub(crate) async fn sync_full_join_side_states(
         &self,
         view_id: &str,
         left: &IvmTable,
@@ -3785,7 +3785,7 @@ impl IvmRuntime {
     /// without a delete tombstone for the old key.  The unchanged side must be
     /// probed with both keys, otherwise the old match's output row is left
     /// behind.  Keys are returned under the left-side join names.
-    async fn join_keys_including_before(
+    pub(crate) async fn join_keys_including_before(
         &self,
         context: &SessionContext,
         source: &IvmTable,
@@ -5998,7 +5998,12 @@ impl IvmRuntime {
         } else {
             None
         };
-        let one_sided = if keyed {
+        let one_sided = if keyed
+            && right_window.added_files.is_empty()
+            && !left_window.added_files.is_empty()
+        {
+            None
+        } else if keyed {
             self.keyed_one_sided_join_sides(
                 &context,
                 &probe,

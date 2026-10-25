@@ -246,17 +246,19 @@ impl JoinKeyEncoder {
 
 /// The CDC column of a side state table, if the source has one.
 pub(crate) fn join_side_state_cdc_column(source: &IvmTable) -> Option<String> {
+    let actual = |name: &str| {
+        source
+            .schema
+            .fields()
+            .iter()
+            .find(|field| field.name().eq_ignore_ascii_case(name))
+            .map(|field| field.name().clone())
+    };
     source
         .cdc_column
-        .clone()
-        .filter(|column| source.schema.field_with_name(column).is_ok())
-        .or_else(|| {
-            source
-                .schema
-                .field_with_name(IVM_ROW_KINDS_COLUMN)
-                .ok()
-                .map(|_| IVM_ROW_KINDS_COLUMN.to_string())
-        })
+        .as_deref()
+        .and_then(actual)
+        .or_else(|| actual(IVM_ROW_KINDS_COLUMN))
         .or_else(|| Some(IVM_ROW_KINDS_COLUMN.to_string()))
 }
 
@@ -459,17 +461,27 @@ impl super::IvmRuntime {
             true,
         );
         let before = context.read_table(std::sync::Arc::new(provider))?;
+        let before_schema = before.schema().clone();
         let projections = source
             .schema
             .fields()
             .iter()
             .map(|field| {
-                datafusion::prelude::col(format!(
+                let prefixed = format!(
                     "{}{}",
                     super::keyed_plan::IVM_STATE_COLUMN_PREFIX,
                     field.name()
-                ))
-                .alias(field.name())
+                );
+                let actual = before_schema
+                    .fields()
+                    .iter()
+                    .find(|candidate| {
+                        candidate.name() == &prefixed
+                            || candidate.name().eq_ignore_ascii_case(&prefixed)
+                    })
+                    .map(|candidate| candidate.name().clone())
+                    .unwrap_or(prefixed);
+                super::column_expr(&actual).alias(field.name())
             })
             .collect::<Vec<_>>();
         let old = materialize_join_keys(
