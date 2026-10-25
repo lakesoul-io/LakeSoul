@@ -829,6 +829,9 @@ impl IvmTable {
                     }
                 };
                 for group in groups {
+                    if group.files.is_empty() {
+                        continue;
+                    }
                     if let Err(error) = table
                         .stream_files_with_group(
                             group,
