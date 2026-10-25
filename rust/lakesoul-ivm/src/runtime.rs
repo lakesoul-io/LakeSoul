@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 use crate::metadata::{
     BeginEpoch, Consumer, Cursor, EpochRecord, IvmMetadata, PartitionVersion,
-    SourceVersionRange, StateRole, StateTable,
+    SourceVersionRange, StateRole, StateTable, StateVersion,
 };
 use crate::provider::IvmTableProvider;
 pub use crate::table::{IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN};
@@ -2141,7 +2141,7 @@ pub fn window_key(identity: &[(String, String, i64, i64)]) -> String {
 /// Whether the refresh window still has to be applied.
 enum WindowStart {
     /// The caller must apply the window with `EpochRecord::epoch`.
-    Apply(EpochRecord),
+    Apply(Box<EpochRecord>),
     /// The window was already applied; only the cursor has to advance.
     AlreadyApplied(i64),
 }
@@ -2625,6 +2625,53 @@ fn state_compaction_threshold() -> usize {
 }
 
 impl IvmRuntime {
+    /// The partition versions of every auxiliary state table of a view.
+    ///
+    /// The MV is represented separately by `mv_versions`; state roles are
+    /// sorted so the persisted snapshot is deterministic across retries.
+    pub(crate) async fn state_versions(
+        &self,
+        view_id: &str,
+    ) -> Result<Vec<StateVersion>> {
+        let mut versions = Vec::new();
+        for state in self.metadata.list_states(view_id).await? {
+            if state.role == StateRole::Mv {
+                continue;
+            }
+            let table = self.open_table_by_id(&state.table_id).await?;
+            versions.push(StateVersion {
+                role: state.role,
+                table_id: state.table_id,
+                versions: output_partition_versions(&self.client, &table).await?,
+            });
+        }
+        versions.sort_by(|left, right| {
+            (left.role.as_str(), &left.table_id)
+                .cmp(&(right.role.as_str(), &right.table_id))
+        });
+        Ok(versions)
+    }
+
+    /// Mark an epoch committed together with the current auxiliary state
+    /// versions.  All refresh paths go through this runtime method so a
+    /// pending epoch can later verify that every state write completed.
+    pub(crate) async fn mark_epoch_committed(
+        &self,
+        record: &EpochRecord,
+        mv_versions: &[PartitionVersion],
+        commit_ids: &[String],
+    ) -> Result<()> {
+        let state_versions = self.state_versions(&record.view_id).await?;
+        self.metadata
+            .mark_epoch_committed_with_states(
+                record,
+                mv_versions,
+                commit_ids,
+                &state_versions,
+            )
+            .await
+    }
+
     /// Compact an auxiliary state table when it accumulated enough files.
     pub(crate) async fn maybe_compact_state(&self, state: &IvmTable) -> Result<()> {
         let threshold = state_compaction_threshold();
@@ -4385,8 +4432,7 @@ impl IvmRuntime {
             .append_stream(&self.client, frame.execute_stream().await?)
             .await?;
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         // The cursor advances past the deletion: the partition is not reported
         // again, and a partition recreated later starts above it.
@@ -4563,10 +4609,17 @@ impl IvmRuntime {
             )
             .collect::<Vec<_>>();
         let mv_versions_before = output_partition_versions(&self.client, output).await?;
+        let state_versions_before = self.state_versions(view_id).await?;
 
         let record = match self
             .metadata
-            .begin_epoch(view_id, &window_key, &to_versions, &mv_versions_before)
+            .begin_epoch_with_states(
+                view_id,
+                &window_key,
+                &to_versions,
+                &mv_versions_before,
+                &state_versions_before,
+            )
             .await?
         {
             BeginEpoch::Committed(record) => {
@@ -4576,8 +4629,34 @@ impl IvmRuntime {
             BeginEpoch::Pending(record) => {
                 let current = output_partition_versions(&self.client, output).await?;
                 if current != record.mv_versions_before {
-                    self.metadata
-                        .mark_epoch_committed(&record, &current, &record.commit_ids)
+                    // A previous attempt wrote the MV but did not mark the
+                    // epoch.  Check the auxiliary states as well: marking the
+                    // epoch while a window/rank/join index is behind would
+                    // make later keyed reads silently stale.
+                    let current_states = if record.state_versions.is_empty()
+                        && record.state_versions_before.is_empty()
+                    {
+                        Vec::new()
+                    } else {
+                        self.state_versions(view_id).await?
+                    };
+                    let state_incomplete = if !record.state_versions.is_empty() {
+                        current_states != record.state_versions
+                    } else {
+                        // Older pending rows have no after snapshot.  If the
+                        // pre-window snapshot is known, an unchanged state
+                        // means the auxiliary write never landed.
+                        !record.state_versions_before.is_empty()
+                            && current_states == record.state_versions_before
+                    };
+                    if state_incomplete {
+                        return Err(report!(
+                            "view {view_id} window {window_key} has a committed MV \
+                             but incomplete auxiliary state; a rebuild is required"
+                        )
+                        .attach(RebuildRequired));
+                    }
+                    self.mark_epoch_committed(&record, &current, &record.commit_ids)
                         .await?;
                     return Ok(WindowStart::AlreadyApplied(record.epoch));
                 }
@@ -4606,7 +4685,7 @@ impl IvmRuntime {
             }
         }
 
-        Ok(WindowStart::Apply(record))
+        Ok(WindowStart::Apply(Box::new(record)))
     }
 
     async fn advance_cursors(&self, view_id: &str, cursors: Vec<Cursor>) -> Result<()> {

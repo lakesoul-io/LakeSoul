@@ -27,12 +27,16 @@ use arrow::compute::{SortOptions, cast, take};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
+use async_trait::async_trait;
+use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::{ScalarValue, tree_node::TreeNodeRecursion};
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
+use datafusion::logical_expr::TableType;
 use datafusion::physical_expr::expressions::Column as PhysicalColumn;
 use datafusion::physical_expr::{
     EquivalenceProperties, LexOrdering, PhysicalExpr, PhysicalSortExpr,
 };
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
@@ -42,7 +46,7 @@ use datafusion::physical_plan::{
     PlanProperties, SendableRecordBatchStream,
 };
 use datafusion::physical_plan::{RangePartitioning, SplitPoint};
-use datafusion::prelude::{col, lit};
+use datafusion::prelude::{DataFrame, col, lit};
 use futures::StreamExt;
 use tokio::sync::Semaphore;
 
@@ -1116,6 +1120,244 @@ impl ExecutionPlan for IvmPkLookupExec {
             self.schema.clone(),
             stream,
         )))
+    }
+}
+
+/// A lazy table provider for a keyed lookup.
+///
+/// The contribution plan is rebuilt on every scan.  A refresh query may
+/// reference the same lookup frame more than once (for example a join's
+/// `already` and `deletes` sides); reusing one physical lookup plan would
+/// consume its input partitions on the first execution.
+pub(crate) struct IvmLookupTable {
+    contribution: DataFrame,
+    table: IvmTable,
+    groups_by_bucket: Vec<Vec<PartitionFiles>>,
+    key: PkLookupKey,
+    bucket_count: usize,
+    route_columns: Option<Vec<String>>,
+    bucket_key: Option<String>,
+    multi_match: bool,
+    schema: SchemaRef,
+}
+
+impl IvmLookupTable {
+    pub(crate) fn columns(
+        contribution: DataFrame,
+        table: IvmTable,
+        groups_by_bucket: Vec<Vec<PartitionFiles>>,
+        input_columns: Vec<String>,
+        table_columns: Vec<String>,
+        bucket_count: usize,
+        route_columns: Option<Vec<String>>,
+        multi_match: bool,
+    ) -> Self {
+        let input_schema = Arc::new(contribution.schema().as_arrow().clone());
+        let schema = state_output_schema(&input_schema, &table.schema);
+        Self {
+            contribution,
+            table,
+            groups_by_bucket,
+            key: PkLookupKey::Columns {
+                input_columns,
+                table_columns,
+            },
+            bucket_count,
+            route_columns,
+            bucket_key: None,
+            multi_match,
+            schema,
+        }
+    }
+
+    pub(crate) fn binary(
+        contribution: DataFrame,
+        table: IvmTable,
+        groups_by_bucket: Vec<Vec<PartitionFiles>>,
+        key_column: String,
+        bucket_count: usize,
+        multi_match: bool,
+    ) -> Self {
+        let input_schema = Arc::new(contribution.schema().as_arrow().clone());
+        let schema = state_output_schema(&input_schema, &table.schema);
+        Self {
+            contribution,
+            table,
+            groups_by_bucket,
+            key: PkLookupKey::BinaryRow {
+                column: key_column.clone(),
+            },
+            bucket_count,
+            route_columns: None,
+            bucket_key: (bucket_count > 1).then_some(key_column),
+            multi_match,
+            schema,
+        }
+    }
+
+    async fn build_plan(&self) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let plan = self.contribution.create_physical_plan().await?;
+        let plan = if let Some(columns) = self.route_columns.as_deref() {
+            bucket_repartition_by_columns(plan, columns, self.bucket_count)
+                .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?
+        } else if let Some(key) = self.bucket_key.as_deref() {
+            bucket_repartition(plan, key, self.bucket_count)
+                .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?
+        } else {
+            plan
+        };
+        let lookup = match self.key.clone() {
+            PkLookupKey::BinaryRow { column } => IvmPkLookupExec::new(
+                plan,
+                self.table.clone(),
+                self.groups_by_bucket.clone(),
+                column,
+                self.bucket_count,
+            )?,
+            PkLookupKey::Columns {
+                input_columns,
+                table_columns,
+            } => IvmPkLookupExec::new_with_columns(
+                plan,
+                self.table.clone(),
+                self.groups_by_bucket.clone(),
+                input_columns,
+                table_columns,
+                self.bucket_count,
+            )?,
+        };
+        Ok(Arc::new(lookup.with_multi_match(self.multi_match)))
+    }
+}
+
+impl std::fmt::Debug for IvmLookupTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IvmLookupTable")
+    }
+}
+
+/// A one-partition plan that hides its inner plan from physical optimizers.
+struct IvmHiddenPlanExec {
+    plan: Arc<dyn ExecutionPlan>,
+    properties: Arc<PlanProperties>,
+}
+
+impl IvmHiddenPlanExec {
+    fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
+        let schema = plan.schema();
+        let properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(schema),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        Self { plan, properties }
+    }
+}
+
+impl std::fmt::Debug for IvmHiddenPlanExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IvmHiddenPlanExec")
+    }
+}
+
+impl DisplayAs for IvmHiddenPlanExec {
+    fn fmt_as(
+        &self,
+        _format: DisplayFormatType,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        write!(f, "IvmHiddenPlanExec")
+    }
+}
+
+impl ExecutionPlan for IvmHiddenPlanExec {
+    fn name(&self) -> &str {
+        "IvmHiddenPlanExec"
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.plan.schema()
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        Vec::new()
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if !children.is_empty() {
+            return Err(DataFusionError::Internal(
+                "hidden lookup plan expects no children".to_string(),
+            ));
+        }
+        Ok(self)
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<datafusion::execution::TaskContext>,
+    ) -> DataFusionResult<SendableRecordBatchStream> {
+        if partition != 0 {
+            return Err(DataFusionError::Execution(
+                "hidden lookup plan has one partition".to_string(),
+            ));
+        }
+        self.plan.execute(0, context)
+    }
+}
+
+#[async_trait]
+impl TableProvider for IvmLookupTable {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Temporary
+    }
+
+    async fn scan(
+        &self,
+        _state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        _filters: &[datafusion::prelude::Expr],
+        _limit: Option<usize>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let lookup = self.build_plan().await?;
+        let hidden: Arc<dyn ExecutionPlan> = Arc::new(IvmHiddenPlanExec::new(Arc::new(
+            CoalescePartitionsExec::new(lookup),
+        )));
+        let Some(projection) = projection else {
+            return Ok(hidden);
+        };
+        let schema = hidden.schema();
+        let exprs = projection
+            .iter()
+            .map(|index| {
+                let field = schema.field(*index);
+                (
+                    Arc::new(PhysicalColumn::new(field.name(), *index))
+                        as Arc<dyn PhysicalExpr>,
+                    field.name().clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        Ok(Arc::new(ProjectionExec::try_new(exprs, hidden)?))
     }
 }
 

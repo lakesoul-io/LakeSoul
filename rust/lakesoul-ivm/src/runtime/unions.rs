@@ -864,8 +864,7 @@ impl IvmRuntime {
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         for window in &windows {
             self.advance_cursors(&view.view_id, window.cursors.clone())
@@ -962,8 +961,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         for baseline in &baselines {
             self.advance_cursors(&view.view_id, baseline.cursors.clone())
@@ -1061,8 +1059,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         for window in &windows {
             self.advance_cursors(&view.view_id, window.cursors.clone())
@@ -1137,8 +1134,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         for baseline in &baselines {
             self.advance_cursors(&view.view_id, baseline.cursors.clone())

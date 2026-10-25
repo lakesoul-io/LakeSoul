@@ -2428,8 +2428,7 @@ impl IvmRuntime {
         commit_ids.extend(state_ids);
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
         Ok(Some(epoch))
@@ -2488,8 +2487,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
         Ok(Some(epoch))
@@ -2546,8 +2544,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, baseline.cursors)
             .await?;
@@ -2628,8 +2625,7 @@ impl IvmRuntime {
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, baseline.cursors)
             .await?;
@@ -3151,8 +3147,7 @@ impl IvmRuntime {
         commit_ids.extend(state_ids);
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
         Ok(Some(epoch))
@@ -3229,8 +3224,7 @@ impl IvmRuntime {
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, baseline.cursors)
             .await?;

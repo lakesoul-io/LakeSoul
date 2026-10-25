@@ -349,22 +349,19 @@ impl super::IvmRuntime {
             key_exprs,
             join_keys,
         )?;
-        let encoder = JoinKeyEncoder::new_with_schema(
+        let encoder = std::sync::Arc::new(JoinKeyEncoder::new_with_schema(
             source,
             frame.schema().as_arrow(),
             join_keys,
-        )?;
-        let mut stream = frame.execute_stream().await?;
+        )?);
         state.truncate(&self.client).await?;
-        let mut pending = Vec::new();
-        while let Some(batch) = stream.next().await {
-            let batch = encoder.encode_batch(&batch?)?;
-            pending.push(batch);
-        }
-        if pending.is_empty() {
-            return Ok(Vec::new());
-        }
-        state.append_batches(&self.client, pending).await
+        let stream = frame.execute_stream().await?.map(move |batch| {
+            let batch = batch?;
+            encoder.encode_batch(&batch).map_err(|error| {
+                datafusion::error::DataFusionError::Execution(format!("{error:?}"))
+            })
+        });
+        state.append_stream(&self.client, Box::pin(stream)).await
     }
 }
 
@@ -437,77 +434,70 @@ impl super::IvmRuntime {
             None
         };
         let bucket_count = route_columns.as_ref().map_or(1, |_| bucket_count);
-        let plan = contribution.create_physical_plan().await?;
-        let plan = if let Some(columns) = route_columns.as_deref() {
-            super::keyed_plan::bucket_repartition_by_columns(plan, columns, bucket_count)?
-        } else {
-            plan
-        };
         let before_groups = source
             .before_window_groups(&self.client, &window.before_versions)
             .await?;
         let groups = super::keyed_plan::groups_by_bucket(before_groups, bucket_count);
-        let lookup = super::keyed_plan::IvmPkLookupExec::new_with_columns(
-            plan,
+        let provider = super::keyed_plan::IvmLookupTable::columns(
+            contribution,
             source.clone(),
             groups,
             pk_names.iter().map(|key| key.to_string()).collect(),
             pk_names.iter().map(|key| key.to_string()).collect(),
             bucket_count,
-        )?
-        .with_multi_match(true);
-        let streams = datafusion::physical_plan::execute_stream_partitioned(
-            std::sync::Arc::new(lookup),
-            context.task_ctx(),
+            route_columns,
+            true,
+        );
+        let before = context.read_table(std::sync::Arc::new(provider))?;
+        let projections = source
+            .schema
+            .fields()
+            .iter()
+            .map(|field| {
+                datafusion::prelude::col(format!(
+                    "{}{}",
+                    super::keyed_plan::IVM_STATE_COLUMN_PREFIX,
+                    field.name()
+                ))
+                .alias(field.name())
+            })
+            .collect::<Vec<_>>();
+        let old = materialize_join_keys(
+            &context,
+            before.select(projections)?,
+            key_exprs,
+            join_keys,
         )?;
-        let mut before_batches = Vec::new();
-        for mut stream in streams {
-            while let Some(batch) = stream.next().await {
-                before_batches.push(batch?);
-            }
-        }
-        let old = if before_batches.is_empty() {
-            None
-        } else {
-            let frame = context.read_batches(before_batches)?;
-            let projections = source
-                .schema
-                .fields()
-                .iter()
-                .map(|field| {
-                    datafusion::prelude::col(format!(
-                        "{}{}",
-                        super::keyed_plan::IVM_STATE_COLUMN_PREFIX,
-                        field.name()
-                    ))
-                    .alias(field.name())
-                })
-                .collect::<Vec<_>>();
-            Some(materialize_join_keys(
-                &context,
-                frame.select(projections)?,
-                key_exprs,
-                join_keys,
-            )?)
-        };
 
-        let mut pending = Vec::new();
-        if let Some(old) = old {
-            let mut old_stream = old.execute_stream().await?;
-            while let Some(batch) = old_stream.next().await {
-                let batch =
-                    set_change_kind(&encoder.encode_batch(&batch?)?, &kind, "delete")?;
-                pending.push(batch);
-            }
-        }
-        let mut delta_stream = delta.execute_stream().await?;
-        while let Some(batch) = delta_stream.next().await {
-            pending.push(encoder.encode_batch(&batch?)?);
-        }
-        if pending.is_empty() {
-            return Ok(Vec::new());
-        }
-        state.append_batches(&self.client, pending).await
+        let encoder = std::sync::Arc::new(encoder);
+        let mut streams: Vec<
+            std::pin::Pin<
+                Box<
+                    dyn futures::Stream<Item = datafusion::error::Result<RecordBatch>>
+                        + Send,
+                >,
+            >,
+        > = Vec::new();
+        let old_encoder = encoder.clone();
+        let old_stream = old.execute_stream().await?;
+        streams.push(Box::pin(old_stream.map(move |batch| {
+            let batch = batch?;
+            set_change_kind(&old_encoder.encode_batch(&batch)?, &kind, "delete").map_err(
+                |error| {
+                    datafusion::error::DataFusionError::Execution(format!("{error:?}"))
+                },
+            )
+        })));
+        let delta_encoder = encoder;
+        let delta_stream = delta.execute_stream().await?;
+        streams.push(Box::pin(delta_stream.map(move |batch| {
+            let batch = batch?;
+            delta_encoder.encode_batch(&batch).map_err(|error| {
+                datafusion::error::DataFusionError::Execution(format!("{error:?}"))
+            })
+        })));
+        let stream = Box::pin(futures::stream::iter(streams).flatten());
+        state.append_stream(&self.client, stream).await
     }
 }
 

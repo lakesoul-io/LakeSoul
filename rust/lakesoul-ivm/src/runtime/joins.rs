@@ -3191,10 +3191,8 @@ impl IvmRuntime {
     ) -> Result<Option<DataFrame>> {
         use super::join_state::JoinKeyEncoder;
         use super::keyed_plan::{
-            IVM_STATE_COLUMN_PREFIX, IvmPkLookupExec, bucket_repartition,
-            groups_by_bucket,
+            IVM_STATE_COLUMN_PREFIX, IvmLookupTable, groups_by_bucket,
         };
-        use futures::StreamExt;
         if view.key_exprs.left.iter().any(|expr| !expr.is_empty())
             || view.key_exprs.right.iter().any(|expr| !expr.is_empty())
         {
@@ -3232,35 +3230,19 @@ impl IvmRuntime {
             } else {
                 1
             };
-            let plan = contribution.create_physical_plan().await?;
-            let plan = bucket_repartition(
-                plan,
-                super::join_state::IVM_JOIN_KEY_COLUMN,
-                bucket_count,
-            )?;
             let groups = groups_by_bucket(
                 left_state.current_groups(&self.client).await?,
                 bucket_count,
             );
-            let lookup = IvmPkLookupExec::new(
-                plan,
+            let provider = IvmLookupTable::binary(
+                contribution,
                 left_state.clone(),
                 groups,
-                super::join_state::IVM_JOIN_KEY_COLUMN,
+                super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
                 bucket_count,
-            )?
-            .with_multi_match(true);
-            let streams = datafusion::physical_plan::execute_stream_partitioned(
-                Arc::new(lookup),
-                context.task_ctx(),
-            )?;
-            let mut output = Vec::new();
-            for mut stream in streams {
-                while let Some(batch) = stream.next().await {
-                    output.push(batch?);
-                }
-            }
-            let frame = context.read_batches(output)?;
+                true,
+            );
+            let frame = context.read_table(Arc::new(provider))?;
             let projections = view
                 .left
                 .schema
@@ -3385,10 +3367,8 @@ impl IvmRuntime {
         multi_match: bool,
     ) -> Result<DataFrame> {
         use super::keyed_plan::{
-            IVM_STATE_COLUMN_PREFIX, IvmPkLookupExec, bucket_repartition_by_columns,
-            groups_by_bucket,
+            IVM_STATE_COLUMN_PREFIX, IvmLookupTable, groups_by_bucket,
         };
-        use futures::StreamExt;
         let bucket_count = table
             .hash_bucket_num
             .parse::<usize>()
@@ -3418,39 +3398,19 @@ impl IvmRuntime {
             None
         };
         let bucket_count = route_columns.as_ref().map_or(1, |_| bucket_count);
-        let plan = routed.create_physical_plan().await?;
-        let plan = if let Some(columns) = route_columns.as_deref() {
-            bucket_repartition_by_columns(plan, columns, bucket_count)?
-        } else {
-            plan
-        };
         let groups =
             groups_by_bucket(table.current_groups(&self.client).await?, bucket_count);
-        let lookup = IvmPkLookupExec::new_with_columns(
-            plan,
+        let provider = IvmLookupTable::columns(
+            routed,
             table.clone(),
             groups,
             input_columns.to_vec(),
             table_columns.to_vec(),
             bucket_count,
-        )?
-        .with_multi_match(multi_match);
-        let output_schema = datafusion::physical_plan::ExecutionPlan::schema(&lookup);
-        let streams = datafusion::physical_plan::execute_stream_partitioned(
-            Arc::new(lookup),
-            context.task_ctx(),
-        )?;
-        let mut batches = Vec::new();
-        for mut stream in streams {
-            while let Some(batch) = stream.next().await {
-                batches.push(batch?);
-            }
-        }
-        if batches.is_empty() {
-            // Keep the prefixed lookup schema so an empty affected-key set
-            // still produces a typed DataFrame for the caller's projection.
-            batches.push(RecordBatch::new_empty(output_schema));
-        }
+            route_columns,
+            multi_match,
+        );
+        let frame = context.read_table(Arc::new(provider))?;
         let projections = table
             .schema
             .fields()
@@ -3460,7 +3420,6 @@ impl IvmRuntime {
                     .alias(field.name())
             })
             .collect::<Vec<_>>();
-        let frame = context.read_batches(batches)?;
         let mut frame = frame.select(projections)?;
         // An unmatched lookup contributes a null right row.  The source's
         // change marker is null on that row, so coalesce it to a live marker;
@@ -3531,10 +3490,8 @@ impl IvmRuntime {
         table_columns: &[String],
     ) -> Result<DataFrame> {
         use super::keyed_plan::{
-            IVM_STATE_COLUMN_PREFIX, IvmPkLookupExec, bucket_repartition_by_columns,
-            groups_by_bucket,
+            IVM_STATE_COLUMN_PREFIX, IvmLookupTable, groups_by_bucket,
         };
-        use futures::StreamExt;
         let empty =
             context.read_batches(vec![RecordBatch::new_empty(table.schema.clone())])?;
         if input_columns.is_empty() || table_columns.is_empty() {
@@ -3568,37 +3525,19 @@ impl IvmRuntime {
             None
         };
         let bucket_count = route_columns.as_ref().map_or(1, |_| bucket_count);
-        let plan = input.create_physical_plan().await?;
-        let plan = if let Some(columns) = route_columns.as_deref() {
-            bucket_repartition_by_columns(plan, columns, bucket_count)?
-        } else {
-            plan
-        };
         let groups =
             groups_by_bucket(table.current_groups(&self.client).await?, bucket_count);
-        let lookup = IvmPkLookupExec::new_with_columns(
-            plan,
+        let provider = IvmLookupTable::columns(
+            input.clone(),
             table.clone(),
             groups,
             input_columns.to_vec(),
             table_columns.to_vec(),
             bucket_count,
-        )?
-        .with_multi_match(true);
-        let streams = datafusion::physical_plan::execute_stream_partitioned(
-            Arc::new(lookup),
-            context.task_ctx(),
-        )?;
-        let mut batches = Vec::new();
-        for mut stream in streams {
-            while let Some(batch) = stream.next().await {
-                batches.push(batch?);
-            }
-        }
-        if batches.is_empty() {
-            return Ok(empty);
-        }
-        let frame = context.read_batches(batches)?;
+            route_columns,
+            true,
+        );
+        let frame = context.read_table(Arc::new(provider))?;
         let projections = table
             .schema
             .fields()
@@ -3624,10 +3563,8 @@ impl IvmRuntime {
     ) -> Result<Option<DataFrame>> {
         use super::join_state::JoinKeyEncoder;
         use super::keyed_plan::{
-            IVM_STATE_COLUMN_PREFIX, IvmPkLookupExec, bucket_repartition,
-            groups_by_bucket,
+            IVM_STATE_COLUMN_PREFIX, IvmLookupTable, groups_by_bucket,
         };
-        use futures::StreamExt;
         let right_join_keys = if view.right_keys.is_empty() {
             &view.join_keys
         } else {
@@ -3661,33 +3598,17 @@ impl IvmRuntime {
         } else {
             1
         };
-        let plan = contribution.create_physical_plan().await?;
-        let plan = bucket_repartition(
-            plan,
-            super::join_state::IVM_JOIN_KEY_COLUMN,
-            bucket_count,
-        )?;
         let groups = right_state.current_groups(&self.client).await?;
         let groups = groups_by_bucket(groups, bucket_count);
-        let lookup = IvmPkLookupExec::new(
-            plan,
+        let provider = IvmLookupTable::binary(
+            contribution,
             right_state.clone(),
             groups,
-            super::join_state::IVM_JOIN_KEY_COLUMN,
+            super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
             bucket_count,
-        )?
-        .with_multi_match(true);
-        let streams = datafusion::physical_plan::execute_stream_partitioned(
-            Arc::new(lookup),
-            context.task_ctx(),
-        )?;
-        let mut batches = Vec::new();
-        for mut stream in streams {
-            while let Some(batch) = stream.next().await {
-                batches.push(batch?);
-            }
-        }
-        let frame = context.read_batches(batches)?;
+            true,
+        );
+        let frame = context.read_table(Arc::new(provider))?;
         let right_columns = view
             .right
             .schema
@@ -3815,6 +3736,20 @@ impl IvmRuntime {
         {
             let table = self.open_table_by_id(&existing.table_id).await?;
             if table.schema == output.schema && table.primary_keys == primary_keys {
+                let output_files = output.current_files(&self.client).await?;
+                let index_files = table.current_files(&self.client).await?;
+                let stale = index_files.is_empty() && !output_files.is_empty()
+                    || (!output_files.is_empty()
+                        && latest_table_timestamp(self, &table).await?
+                            < latest_table_timestamp(self, output).await?);
+                if stale {
+                    // The MV is committed before this duplicate index.  A
+                    // crash between those two writes leaves a non-empty but
+                    // behind index; repair it from the MV instead of using
+                    // stale right-key rows for the next delete lookup.
+                    let ids = self.sync_join_pair_index(output, &table).await?;
+                    return Ok((Some(table), ids));
+                }
                 return Ok((Some(table), Vec::new()));
             }
             self.metadata
@@ -4432,8 +4367,7 @@ impl IvmRuntime {
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, left_window.cursors)
             .await?;
@@ -4712,8 +4646,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, left_window.cursors)
             .await?;
@@ -4805,8 +4738,7 @@ impl IvmRuntime {
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, left_baseline.cursors)
             .await?;
@@ -5076,8 +5008,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, left_window.cursors)
             .await?;
@@ -5177,8 +5108,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, left_baseline.cursors)
             .await?;
@@ -5523,8 +5453,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, left_window.cursors)
             .await?;
@@ -5637,8 +5566,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, left_baseline.cursors)
             .await?;
@@ -5889,8 +5817,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, left_window.cursors)
             .await?;
@@ -5991,8 +5918,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, left_baseline.cursors)
             .await?;
@@ -6220,8 +6146,7 @@ impl IvmRuntime {
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, left_baseline.cursors)
             .await?;

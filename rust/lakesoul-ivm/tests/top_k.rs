@@ -669,6 +669,88 @@ async fn top_k_with_offset_shifts_the_window() {
     );
 }
 
+/// A pending epoch whose MV is ahead of the auxiliary index must not be
+/// accepted as committed: keyed reads would otherwise use stale state.
+#[test_log::test(tokio::test)]
+async fn pending_epoch_with_missing_auxiliary_state_requires_rebuild() {
+    let fixture = fixture(
+        vec![
+            "k".to_string(),
+            "g".to_string(),
+            "ord".to_string(),
+            "amount".to_string(),
+        ],
+        1,
+    )
+    .await;
+    fixture
+        .source
+        .append_batch(
+            fixture.runtime.client(),
+            source_batch(&[(1, "a", 10, 100, "insert"), (2, "a", 20, 200, "insert")]),
+        )
+        .await
+        .unwrap();
+    fixture
+        .runtime
+        .refresh_top_k(&fixture.view)
+        .await
+        .unwrap()
+        .unwrap();
+    let record = fixture
+        .runtime
+        .latest_epoch(&fixture.view.view_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!record.state_versions.is_empty());
+
+    fixture
+        .runtime
+        .metadata()
+        .upsert_cursor(
+            &fixture.view.view_id,
+            &fixture.source.table_id,
+            lakesoul_io::constant::DEFAULT_PARTITION_DESC,
+            -1,
+            0,
+        )
+        .await
+        .unwrap();
+    fixture
+        .runtime
+        .metadata()
+        .set_epoch_pending(&fixture.view.view_id, record.generation, record.epoch)
+        .await
+        .unwrap();
+    let state = fixture
+        .runtime
+        .list_states(&fixture.view.view_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|state| state.role == StateRole::State)
+        .unwrap();
+    fixture
+        .runtime
+        .open_table_by_id(&state.table_id)
+        .await
+        .unwrap()
+        .truncate(fixture.runtime.client())
+        .await
+        .unwrap();
+
+    let error = fixture
+        .runtime
+        .refresh_top_k(&fixture.view)
+        .await
+        .expect_err("a pending epoch with a missing state must not be accepted");
+    assert!(
+        format!("{error:?}").contains("incomplete auxiliary state"),
+        "unexpected error: {error:?}"
+    );
+}
+
 /// A group key that is also the source primary key exercises the keyed source
 /// lookup path.
 #[test_log::test(tokio::test)]
@@ -748,6 +830,19 @@ async fn keyed_group_source_refreshes() {
         .collect::<Vec<_>>();
     roles.sort_unstable();
     assert_eq!(roles, vec!["mv", "rank_state", "state"]);
+    let epoch = fixture
+        .runtime
+        .latest_epoch(&fixture.view.view_id)
+        .await
+        .unwrap()
+        .expect("top-k refresh should publish an epoch");
+    let mut state_roles = epoch
+        .state_versions
+        .iter()
+        .map(|state| state.role.as_str())
+        .collect::<Vec<_>>();
+    state_roles.sort_unstable();
+    assert_eq!(state_roles, vec!["rank_state", "state"]);
     assert_eq!(
         top_k_rows(&fixture).await,
         HashSet::from([(1, "a".to_string(), 10, 100), (2, "b".to_string(), 20, 200),])

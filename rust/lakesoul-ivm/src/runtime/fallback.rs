@@ -572,8 +572,7 @@ impl IvmRuntime {
             None => self.recompute_fallback(view, epoch).await?,
         };
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, window_cursors(&windows))
             .await?;
@@ -840,8 +839,7 @@ impl IvmRuntime {
         };
         crate::observability::record_fallback_partitions(dropped.partitions.len() as u64);
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, cursors).await?;
         Ok(Some(epoch))
@@ -891,8 +889,7 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let commit_ids = self.recompute_fallback(view, epoch).await?;
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         for baseline in &baselines {
             self.advance_cursors(&view.view_id, baseline.cursors.clone())

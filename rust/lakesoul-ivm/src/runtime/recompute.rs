@@ -2615,8 +2615,7 @@ impl IvmRuntime {
                     .await?,
             );
             let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
-            self.metadata
-                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                 .await?;
             self.advance_cursors(parts.view_id, window.cursors).await?;
             if let Some(lookup_window) = lookup_window {
@@ -2698,8 +2697,7 @@ impl IvmRuntime {
         commit_ids.extend(parts.mv.append_stream(&self.client, stream).await?);
 
         let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(parts.view_id, window.cursors).await?;
         if let Some(lookup_window) = lookup_window {
@@ -2798,8 +2796,7 @@ impl IvmRuntime {
                     .await?,
             );
             let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
-            self.metadata
-                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                 .await?;
             self.advance_cursors(parts.view_id, baseline.cursors)
                 .await?;
@@ -2830,8 +2827,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(parts.view_id, baseline.cursors)
             .await?;
@@ -3696,8 +3692,7 @@ impl IvmRuntime {
                 "multi-agg bootstrap finished"
             );
             let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-            self.metadata
-                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                 .await?;
             self.advance_cursors(&view.view_id, window.cursors).await?;
             return Ok(Some(epoch));
@@ -3832,8 +3827,7 @@ impl IvmRuntime {
             "multi-agg keyed incremental finished"
         );
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
         Ok(Some(epoch))
