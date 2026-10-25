@@ -2653,8 +2653,8 @@ impl IvmRuntime {
             });
         }
         versions.sort_by(|left, right| {
-            (left.role.as_str(), &left.table_id)
-                .cmp(&(right.role.as_str(), &right.table_id))
+            (left.role.role_name(), &left.table_id)
+                .cmp(&(right.role.role_name(), &right.table_id))
         });
         Ok(versions)
     }
