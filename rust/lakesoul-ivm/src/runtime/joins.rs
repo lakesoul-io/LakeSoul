@@ -3716,7 +3716,7 @@ impl IvmRuntime {
     /// This is the same lookup shape used by join side-state maintenance: the
     /// contribution carries only source identities, and the as-of partition
     /// groups are addressed through the shared PK lookup plan.
-    async fn lookup_source_before_by_pks(
+    pub(crate) async fn lookup_source_before_by_pks(
         &self,
         context: &SessionContext,
         source: &IvmTable,

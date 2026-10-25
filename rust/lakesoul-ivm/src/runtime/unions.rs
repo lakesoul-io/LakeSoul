@@ -1069,11 +1069,22 @@ impl IvmRuntime {
                 windows[index].added_files.clone(),
             )?;
             if keyed {
+                let contribution = delta
+                    .clone()
+                    .select(
+                        table
+                            .primary_keys
+                            .iter()
+                            .map(|key| col(key.as_str()))
+                            .collect::<Vec<_>>(),
+                    )?
+                    .distinct()?;
                 let before = self
-                    .before_window_table_frame(
+                    .lookup_source_before_by_pks(
                         &context,
                         table,
-                        &windows[index].before_versions,
+                        &windows[index],
+                        contribution,
                     )
                     .await?;
                 context.register_table(format!("old{index}"), before.into_view())?;
