@@ -2772,6 +2772,24 @@ impl IvmRuntime {
             if state.schema.as_ref() == expected_schema.as_ref() {
                 if state.current_files(&self.client).await?.is_empty() {
                     self.sync_rank_state(source, &state).await?;
+                } else if let Some(epoch) = self.latest_epoch(view_id).await? {
+                    let expected = epoch
+                        .state_versions
+                        .iter()
+                        .find(|version| {
+                            version.role == StateRole::RankState
+                                && version.table_id == state.table_id
+                        })
+                        .map(|version| version.versions.clone());
+                    let current = output_partition_versions(&self.client, &state).await?;
+                    if expected.as_ref() != Some(&current) {
+                        // The rank state is ahead of or behind the last
+                        // committed epoch (for example after a crash or a
+                        // compaction).  Re-seed it from the source so the next
+                        // window starts from a known current row set.
+                        state.truncate(&self.client).await?;
+                        self.sync_rank_state(source, &state).await?;
+                    }
                 }
                 return Ok(Some(state));
             }
