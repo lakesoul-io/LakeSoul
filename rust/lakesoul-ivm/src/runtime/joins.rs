@@ -4554,14 +4554,30 @@ impl IvmRuntime {
             None => None,
         };
 
-        // A left-only change is just the delta.  A right change can affect
-        // left rows through a changed join key, so read the current left
-        // state as a streaming provider and let the semi-joins below select
-        // the affected rows; no affected-key set is materialized.
+        // A left-only change is just the delta.  For a right-only change the
+        // left source is usually keyed by the lookup keys, so probe it with
+        // the changed right keys instead of scanning the full left state.
         let left_now = if !right_changed {
             delta_left
                 .clone()
                 .ok_or_else(|| report!("lookup refresh without a left change"))?
+        } else if !left_changed
+            && view.left.primary_keys == view.join_keys
+            && view.key_exprs.left.iter().all(|expr| expr.is_empty())
+            && view.key_exprs.right.iter().all(|expr| expr.is_empty())
+        {
+            let changed_keys = changed_keys
+                .clone()
+                .ok_or_else(|| report!("lookup refresh without changed keys"))?;
+            self.lookup_source_by_join_keys(
+                &context,
+                &view.left,
+                changed_keys,
+                &view.join_keys,
+                &view.left.primary_keys,
+                true,
+            )
+            .await?
         } else {
             self.current_table_frame(&context, &view.left)?
         };
@@ -4652,10 +4668,26 @@ impl IvmRuntime {
         }
         let affected = affected.distinct()?;
 
-        // Read the output state as a streaming provider; the semi-joins below
-        // select the affected rows without an IN list of collected keys.
-        let mv = self
-            .current_table_frame(&context, view.state.as_ref().unwrap_or(&view.output))?;
+        // Read the output state.  A right-only window can probe the output by
+        // its left primary key when that is the output identity; otherwise the
+        // semi-joins below select the affected rows from the streaming state.
+        let state_table = view.state.as_ref().unwrap_or(&view.output);
+        let mv = if !left_changed
+            && state_table.primary_keys == view.left.primary_keys
+            && view.key_exprs.left.iter().all(|expr| expr.is_empty())
+        {
+            self.lookup_source_by_join_keys(
+                &context,
+                state_table,
+                affected.clone(),
+                &view.left.primary_keys,
+                &state_table.primary_keys,
+                true,
+            )
+            .await?
+        } else {
+            self.current_table_frame(&context, state_table)?
+        };
 
         // Rows written by this epoch make a replay a no-op.
         let already = mv
