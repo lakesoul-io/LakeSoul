@@ -626,15 +626,21 @@ fn key_filter_exprs(
             {
                 return Ok(PkFilters::ScanAll(vec![lit(true)]));
             }
-            let chosen = values_by_column
-                .into_iter()
-                .enumerate()
-                .min_by_key(|(_, values)| values.len())
-                .expect("composite key has at least one column");
-            Ok(PkFilters::Pushdown(vec![
-                col(table_columns[chosen.0].as_str())
-                    .in_list(chosen.1.into_iter().map(lit).collect(), false),
-            ]))
+            // Apply all key columns, not only the shortest IN list.  The
+            // reader still performs the exact Arrow-row match, but the
+            // conjunctive filters keep the state rows read for a composite
+            // chunk close to the contribution cardinality.
+            Ok(PkFilters::Pushdown(
+                values_by_column
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(_, values)| !values.is_empty())
+                    .map(|(index, values)| {
+                        col(table_columns[index].as_str())
+                            .in_list(values.into_iter().map(lit).collect(), false)
+                    })
+                    .collect(),
+            ))
         }
     }
 }
@@ -1035,18 +1041,20 @@ impl ExecutionPlan for IvmPkLookupExec {
                         let started = std::time::Instant::now();
                         let mut outputs = Vec::new();
                         let mut state_rows = 0usize;
-                        let columns_key = matches!(&key, PkLookupKey::Columns { .. });
-                        // Real-column keys build bounded IN lists (or fall
-                        // back to one bucket scan), so one read for the whole
-                        // contribution batch is enough.  Binary side-state
-                        // keys keep chunking because their IN list is not
-                        // bounded.
-                        let batch_filters = match key_filter_exprs(&batch, &key)? {
-                            PkFilters::ScanAll(filters) => Some(filters),
-                            PkFilters::Pushdown(filters) if columns_key => Some(filters),
-                            PkFilters::Pushdown(_) => None,
-                        };
-                        if let Some(filters) = batch_filters {
+                        let mut chunks = 0usize;
+                        // Every key type is contribution-chunked.  This
+                        // bounds the contribution frame and the exact-match
+                        // map; state reads remain filtered by all key
+                        // columns for composite keys.
+                        for offset in (0..batch.num_rows()).step_by(PK_LOOKUP_CHUNK_ROWS)
+                        {
+                            let length =
+                                PK_LOOKUP_CHUNK_ROWS.min(batch.num_rows() - offset);
+                            let chunk = batch.slice(offset, length);
+                            let filters = match key_filter_exprs(&chunk, &key)? {
+                                PkFilters::Pushdown(filters)
+                                | PkFilters::ScanAll(filters) => filters,
+                            };
                             let state_batches = read_lookup_chunk(
                                 table.clone(),
                                 groups.clone(),
@@ -1054,12 +1062,12 @@ impl ExecutionPlan for IvmPkLookupExec {
                                 gate.clone(),
                             )
                             .await?;
-                            state_rows = state_batches
+                            state_rows += state_batches
                                 .iter()
                                 .map(RecordBatch::num_rows)
                                 .sum::<usize>();
                             outputs.push(lookup_batch(
-                                &batch,
+                                &chunk,
                                 &state_batches,
                                 &state_schema,
                                 &out_schema,
@@ -1067,38 +1075,7 @@ impl ExecutionPlan for IvmPkLookupExec {
                                 multi_match,
                                 emit_unmatched,
                             )?);
-                        } else {
-                            for offset in
-                                (0..batch.num_rows()).step_by(PK_LOOKUP_CHUNK_ROWS)
-                            {
-                                let length =
-                                    PK_LOOKUP_CHUNK_ROWS.min(batch.num_rows() - offset);
-                                let chunk = batch.slice(offset, length);
-                                let filters = match key_filter_exprs(&chunk, &key)? {
-                                    PkFilters::Pushdown(filters)
-                                    | PkFilters::ScanAll(filters) => filters,
-                                };
-                                let state_batches = read_lookup_chunk(
-                                    table.clone(),
-                                    groups.clone(),
-                                    filters,
-                                    gate.clone(),
-                                )
-                                .await?;
-                                state_rows += state_batches
-                                    .iter()
-                                    .map(RecordBatch::num_rows)
-                                    .sum::<usize>();
-                                outputs.push(lookup_batch(
-                                    &chunk,
-                                    &state_batches,
-                                    &state_schema,
-                                    &out_schema,
-                                    &key,
-                                    multi_match,
-                                    emit_unmatched,
-                                )?);
-                            }
+                            chunks += 1;
                         }
                         let output = match outputs.len() {
                             0 => RecordBatch::new_empty(out_schema.clone()),
@@ -1108,6 +1085,7 @@ impl ExecutionPlan for IvmPkLookupExec {
                         tracing::debug!(
                             partition,
                             contribution_rows = batch.num_rows(),
+                            chunks,
                             state_rows,
                             elapsed = ?started.elapsed(),
                             "keyed state lookup batch finished"
@@ -1715,7 +1693,7 @@ mod tests {
     }
 
     #[test]
-    fn composite_key_filters_use_one_selective_in_list() {
+    fn composite_key_filters_use_all_key_columns() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int64, false),
             Field::new("b", DataType::Utf8, false),
@@ -1735,8 +1713,12 @@ mod tests {
         let PkFilters::Pushdown(filters) = key_filter_exprs(&batch, &key).unwrap() else {
             panic!("small composite key should use pushed-down filters");
         };
-        assert_eq!(filters.len(), 1);
-        assert!(format!("{}", filters[0]).contains("IN"));
+        assert_eq!(filters.len(), 2);
+        assert!(
+            filters
+                .iter()
+                .all(|filter| format!("{filter}").contains("IN"))
+        );
     }
 
     #[test]
