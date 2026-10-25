@@ -59,12 +59,9 @@ async fn opt_in_mv_compaction_preserves_rows_and_bounds_files() {
         .unwrap();
 
     for round in 0..3 {
-        mv.append_batch(
-            runtime.client(),
-            batch(&[(1, round), (2, round + 1)]),
-        )
-        .await
-        .unwrap();
+        mv.append_batch(runtime.client(), batch(&[(1, round), (2, round + 1)]))
+            .await
+            .unwrap();
     }
     assert!(mv.current_file_count(runtime.client()).await.unwrap() >= 2);
     runtime.compact_view_states(&view_id).await.unwrap();
@@ -92,5 +89,8 @@ async fn opt_in_mv_compaction_preserves_rows_and_bounds_files() {
             })
         })
         .collect::<Vec<_>>();
-    assert_eq!(rows, vec![("1".into(), "2".into()), ("2".into(), "3".into())]);
+    assert_eq!(
+        rows,
+        vec![("1".into(), "2".into()), ("2".into(), "3".into())]
+    );
 }
