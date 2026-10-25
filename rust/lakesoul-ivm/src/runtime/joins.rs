@@ -3570,7 +3570,7 @@ impl IvmRuntime {
     /// falls back to the full source scan when a side has no usable keyed
     /// lookup.  Both-sided windows keep the existing full inclusion-exclusion
     /// path because they need the two before/after combinations.
-    async fn keyed_one_sided_join_sides(
+    pub(crate) async fn keyed_one_sided_join_sides(
         &self,
         context: &SessionContext,
         view: &JoinView,
