@@ -2709,6 +2709,11 @@ impl IvmRuntime {
     /// Compact every auxiliary state table registered for a view when it has
     /// accumulated enough files.  This is the single generic compaction entry
     /// point; operators only write state, they do not own compaction policy.
+    ///
+    /// The MV is compacted only when `LAKESOUL_IVM_MV_COMPACT_FILES` is set to
+    /// a non-zero threshold.  It is disabled by default because rewriting a
+    /// large output is much more expensive than compacting its small auxiliary
+    /// state tables.
     pub async fn compact_view_states(&self, view_id: &str) -> Result<()> {
         for state in self.metadata.list_states(view_id).await? {
             if state.role == StateRole::Mv {
@@ -2716,6 +2721,24 @@ impl IvmRuntime {
             }
             let table = self.open_table_by_id(&state.table_id).await?;
             self.maybe_compact_state(&table).await?;
+        }
+        self.maybe_compact_mv(view_id).await
+    }
+
+    async fn maybe_compact_mv(&self, view_id: &str) -> Result<()> {
+        let threshold = std::env::var("LAKESOUL_IVM_MV_COMPACT_FILES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        if threshold == 0 {
+            return Ok(());
+        }
+        let Some(state) = self.metadata.get_state(view_id, StateRole::Mv).await? else {
+            return Ok(());
+        };
+        let table = self.open_table_by_id(&state.table_id).await?;
+        if table.current_file_count(&self.client).await? >= threshold {
+            table.compact(&self.client).await?;
         }
         Ok(())
     }
