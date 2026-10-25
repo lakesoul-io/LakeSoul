@@ -130,6 +130,10 @@ variables (`LAKESOUL_MEMORY_LIMIT`, `LAKESOUL_MEMORY_POOL`,
 `LAKESOUL_VORTEX_DECODE_BUDGET`, `LAKESOUL_CACHE`, `LAKESOUL_CACHE_SIZE`,
 `LAKESOUL_CACHE_PATH`; see `../k8s/README.md`), so `--env` bounds its
 memory and caches warehouse reads on the Pod's `/var/scratch` volume.
+The console runs on jemalloc (see `../k8s/README.md`); with
+`--env RUST_LOG=lakesoul_console=info` it writes a `memory allocator` line
+naming the allocator to its tracing log under `--log-dir` (default
+`/var/scratch` in the Pod).
 
 `console` writes `NAME.jsonl`, `NAME.console.log` (console output without
 result rows), `NAME.console.json` (node, QoS class, resources, allowed

@@ -262,12 +262,22 @@ Downward API),
 `LAKESOUL_DISTRIBUTED_BYTES_PER_PARTITION`.
 Metadata DB variables (`LAKESOUL_PG_URL/USERNAME/PASSWORD`) are unchanged.
 
+Memory allocator: `postgres-lakesoul` (and `lakesoul-console`) run on
+jemalloc 5.3 with its built-in defaults, including for C `malloc` (default
+Cargo feature `jemalloc`, `src/allocator.rs`); heap profiling is not compiled
+in. `lakesoul-worker`, the JNI and Python libraries keep the system (glibc)
+allocator. The coordinator logs its allocator at startup:
+`memory allocator allocator="jemalloc" version=… config_prof=false … dirty_decay_ms=10000 muzzy_decay_ms=0`;
+`allocator="system"` means a `--no-default-features` build. `MALLOC_CONF`
+(jemalloc syntax) is read once at startup; the manifests set none.
+Measurements: `../benchmark/results/20261025-console-sf10-pk-jemalloc-7100c918/`.
+
 | Coordinator execution memory | Default | Meaning |
 |---|---|---|
 | `LAKESOUL_MEMORY_LIMIT` / `--memory-limit` | `0` (unbounded) | Process-wide DataFusion execution budget shared by every connection. Integer bytes or case-insensitive `K/M/G` (decimal), `Ki/Mi/Gi` (binary), e.g. `512Mi`. |
 | `LAKESOUL_MEMORY_POOL` / `--memory-pool` | `fair` | `fair` (FairSpillPool) or `greedy` (GreedyMemoryPool), used only with a nonzero limit. |
 | `LAKESOUL_VORTEX_DECODE_BUDGET` / `--vortex-decode-budget` | ¼ of the memory limit; unbounded when the limit is `0` | Process-wide bytes of decoded Vortex splits in flight, separate from the execution budget. A scan starts decoding a split only once the split's estimated size fits, and a decoded batch counts until it and every slice of it are dropped. Each scan can always have one split in flight, so a full budget slows scans but cannot deadlock them. `0` is unbounded. Same syntax as the memory limit. |
-| `DATAFUSION_EXECUTION_BATCH_SIZE` | `8192` | Rows per execution batch for coordinator and console sessions; `SET datafusion.execution.batch_size` overrides it per session. Batches buffered outside the execution budget (spill merges, IO) scale with it, so a smaller value lowers RSS above `LAKESOUL_MEMORY_LIMIT` (SF10 q09 at a 1Gi budget: 2.2 GiB peak at 8192, 0.76 GiB at 2048), though not for every query. Workers ignore it, see below. |
+| `DATAFUSION_EXECUTION_BATCH_SIZE` | `8192` | Rows per execution batch for coordinator and console sessions; `SET datafusion.execution.batch_size` overrides it per session. Batches buffered outside the execution budget (spill merges, IO) scale with it, so a smaller value lowers RSS above `LAKESOUL_MEMORY_LIMIT` (SF10 q09 at a 1Gi budget, glibc malloc: 2.2 GiB peak at 8192, 0.76 GiB at 2048), though not for every query. Workers ignore it, see below. |
 
 Worker (`/app/lakesoul-worker`): `LAKESOUL_WORKER_BIND` (0.0.0.0),
 `LAKESOUL_WORKER_PORT` (50051), `LAKESOUL_WORKER_METRICS_ADDR`,
