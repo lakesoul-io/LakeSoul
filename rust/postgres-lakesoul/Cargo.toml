@@ -33,6 +33,14 @@ futures.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
+tikv-jemalloc-ctl = { workspace = true, optional = true }
+
+[features]
+default = ["jemalloc"]
+# Process allocator (src/allocator.rs); disable for the system allocator.
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 
 [dev-dependencies]
 metrics-exporter-prometheus = { workspace = true }

@@ -23,6 +23,7 @@ use crate::print::{OutputFormat, Printer};
 
 type Result<T, E = Report> = std::result::Result<T, E>;
 
+mod allocator;
 mod exec;
 mod logo;
 mod print;
@@ -143,6 +144,7 @@ fn print_banner() {
 async fn main_inner(cli: Cli) -> Result<()> {
     print_banner();
     let _log_guard = init_log(&cli.log_dir);
+    allocator::log_active();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
     cli.memory.install_vortex_decode_budget()?;
     let mut session_factory = LakeSoulSessionFactory::new_with_memory_pool(

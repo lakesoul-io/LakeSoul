@@ -170,6 +170,13 @@ rootcause = "0.13"
 reqwest = "0.13"
 # sync
 parking_lot = "0.12"
+# memory allocator: only executables own `#[global_allocator]` (see
+# rust/postgres-lakesoul and rust/lakesoul-console). `unprefixed_malloc` makes
+# jemalloc serve C `malloc` too; `stats` backs the startup identity log.
+tikv-jemallocator = { version = "0.6.1", features = [
+  "unprefixed_malloc_on_supported_platforms",
+] }
+tikv-jemalloc-ctl = { version = "0.6.1", features = ["stats"] }
 
 [workspace.lints.clippy]
 

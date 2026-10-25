@@ -24,6 +24,7 @@ use crate::limits::{Limits, ServerLimits};
 use crate::server::LakeSoulHandlers;
 use crate::session::PgSessionFactory;
 
+mod allocator;
 mod cancel;
 mod catalog;
 mod limits;
@@ -109,6 +110,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
     // Dynamic log level: edit LAKESOUL_LOG_FILTER_FILE (or RUST_LOG) and
     // `kill -HUP <pid>`.
     spawn_reload_on_sighup(tracing.filter_handle());
+    allocator::log_active();
     install_prometheus_metrics(PrometheusMetricsConfig::new(
         "postgres-lakesoul",
         cli.metrics_addr,
