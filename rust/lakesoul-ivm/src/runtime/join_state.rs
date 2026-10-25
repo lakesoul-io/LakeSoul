@@ -289,7 +289,7 @@ pub(crate) fn join_key_array(batch: &RecordBatch) -> DataFusionResult<&BinaryArr
 }
 
 /// Materialize computed join-key expressions under their join-key names.
-fn materialize_join_keys(
+pub(crate) fn materialize_join_keys(
     context: &datafusion::prelude::SessionContext,
     frame: datafusion::prelude::DataFrame,
     exprs: &[String],

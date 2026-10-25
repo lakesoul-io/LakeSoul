@@ -3256,13 +3256,15 @@ fn encode_join_key_frame(
     frame: DataFrame,
     source: &IvmTable,
     join_keys: &[String],
-    encoder: super::join_state::JoinKeyEncoder,
 ) -> Result<DataFrame> {
+    let schema = frame.schema().as_arrow();
     let input_types = join_keys
         .iter()
-        .map(|key| Ok(source.schema.field_with_name(key)?.data_type().clone()))
+        .map(|key| Ok(schema.field_with_name(key)?.data_type().clone()))
         .collect::<Result<Vec<_>>>()?;
-    let encoder = Arc::new(encoder);
+    let encoder = Arc::new(super::join_state::JoinKeyEncoder::new_with_schema(
+        source, schema, join_keys,
+    )?);
     let name = format!("ivm_join_key_probe_{}", uuid::Uuid::new_v4().simple());
     let udf = datafusion::logical_expr::create_udf(
         &name,
@@ -3297,35 +3299,45 @@ impl IvmRuntime {
         left_state: Option<&IvmTable>,
         delta_right: &DataFrame,
     ) -> Result<Option<DataFrame>> {
-        use super::join_state::JoinKeyEncoder;
         use super::keyed_plan::{
             IVM_STATE_COLUMN_PREFIX, IvmLookupTable, groups_by_bucket,
         };
-        if view.key_exprs.left.iter().any(|expr| !expr.is_empty())
-            || view.key_exprs.right.iter().any(|expr| !expr.is_empty())
-        {
-            return Ok(None);
-        }
         let right_keys = if view.right_keys.is_empty() {
             &view.join_keys
         } else {
             &view.right_keys
         };
-        let key_exprs = view
-            .join_keys
-            .iter()
-            .enumerate()
-            .map(|(index, key)| col(right_keys[index].as_str()).alias(key.as_str()))
-            .collect::<Vec<_>>();
-        let contribution = delta_right.clone().select(key_exprs)?.distinct()?;
+        let contribution = if view.key_exprs.right.iter().any(|expr| !expr.is_empty()) {
+            super::join_state::materialize_join_keys(
+                context,
+                delta_right.clone(),
+                &view.key_exprs.right,
+                &view.join_keys,
+            )?
+            .select(
+                view.join_keys
+                    .iter()
+                    .map(|key| col(key.as_str()))
+                    .collect::<Vec<_>>(),
+            )?
+        } else {
+            delta_right.clone().select(
+                view.join_keys
+                    .iter()
+                    .enumerate()
+                    .map(|(index, key)| {
+                        col(right_keys[index].as_str()).alias(key.as_str())
+                    })
+                    .collect::<Vec<_>>(),
+            )?
+        }
+        .distinct()?;
         if let Some(left_state) = left_state {
-            let encoder = JoinKeyEncoder::new(&view.left, &view.join_keys)?;
             let contribution = encode_join_key_frame(
                 context,
                 contribution,
                 &view.left,
                 &view.join_keys,
-                encoder,
             )?;
             let bucket_count = if left_state.bucket_columns.len() == 1
                 && left_state.bucket_columns[0] == super::join_state::IVM_JOIN_KEY_COLUMN
@@ -3433,21 +3445,14 @@ impl IvmRuntime {
         left_state: Option<&IvmTable>,
         contribution: DataFrame,
     ) -> Result<Option<DataFrame>> {
-        use super::join_state::JoinKeyEncoder;
         use super::keyed_plan::{
             IVM_STATE_COLUMN_PREFIX, IvmLookupTable, groups_by_bucket,
         };
         let Some(left_state) = left_state else {
             return Ok(None);
         };
-        let encoder = JoinKeyEncoder::new(&view.left, &view.join_keys)?;
-        let contribution = encode_join_key_frame(
-            context,
-            contribution,
-            &view.left,
-            &view.join_keys,
-            encoder,
-        )?;
+        let contribution =
+            encode_join_key_frame(context, contribution, &view.left, &view.join_keys)?;
         let bucket_count = if left_state.bucket_columns.len() == 1
             && left_state.bucket_columns[0] == super::join_state::IVM_JOIN_KEY_COLUMN
         {
@@ -3580,11 +3585,6 @@ impl IvmRuntime {
         delta_right: Option<&DataFrame>,
         right_window: Option<&SourceWindow>,
     ) -> Result<Option<(DataFrame, DataFrame)>> {
-        if view.key_exprs.left.iter().any(|expr| !expr.is_empty())
-            || view.key_exprs.right.iter().any(|expr| !expr.is_empty())
-        {
-            return Ok(None);
-        }
         let left_changed = delta_left.is_some();
         let right_changed = delta_right.is_some();
         if left_changed == right_changed {
@@ -3594,6 +3594,12 @@ impl IvmRuntime {
             let left = delta_left
                 .cloned()
                 .ok_or_else(|| report!("join refresh without a left delta"))?;
+            let left = super::join_state::materialize_join_keys(
+                context,
+                left,
+                &view.key_exprs.left,
+                &view.join_keys,
+            )?;
             let right = match self
                 .lookup_right_rows_for_left_keys(
                     context,
@@ -3813,29 +3819,37 @@ impl IvmRuntime {
         rendered_exprs: &[String],
         join_keys: &[String],
     ) -> Result<DataFrame> {
-        let current = delta.clone().select(
-            source_keys
-                .iter()
-                .enumerate()
-                .map(|(index, key)| {
-                    match rendered_exprs.get(index).filter(|expr| !expr.is_empty()) {
-                        Some(rendered) => context
-                            .state()
-                            .create_logical_expr(rendered, delta.schema())
-                            .map(|expr| expr.alias(join_keys[index].as_str()))
-                            .map_err(Into::into),
-                        None => Ok(col(key.as_str()).alias(join_keys[index].as_str())),
-                    }
-                })
-                .collect::<Result<Vec<_>>>()?,
-        )?;
-        // Computed keys need the materialized expression on both frames; the
-        // keyed one-sided fast path is disabled for them, so the current
-        // delta alone is enough here.
-        if rendered_exprs.iter().any(|expr| !expr.is_empty()) {
-            return Ok(current.distinct()?);
-        }
-        let current = current.distinct()?;
+        let computed = rendered_exprs.iter().any(|expr| !expr.is_empty());
+        let key_select = |frame: DataFrame| -> Result<DataFrame> {
+            if computed {
+                Ok(super::join_state::materialize_join_keys(
+                    context,
+                    frame,
+                    rendered_exprs,
+                    join_keys,
+                )?
+                .select(
+                    join_keys
+                        .iter()
+                        .map(|key| col(key.as_str()))
+                        .collect::<Vec<_>>(),
+                )?
+                .distinct()?)
+            } else {
+                Ok(frame
+                    .select(
+                        source_keys
+                            .iter()
+                            .enumerate()
+                            .map(|(index, key)| {
+                                col(key.as_str()).alias(join_keys[index].as_str())
+                            })
+                            .collect::<Vec<_>>(),
+                    )?
+                    .distinct()?)
+            }
+        };
+        let current = key_select(delta.clone())?;
         let pk_exprs = source
             .primary_keys
             .iter()
@@ -3845,17 +3859,7 @@ impl IvmRuntime {
         let before = self
             .lookup_source_before_by_pks(context, source, window, contribution)
             .await?;
-        let before = before
-            .select(
-                source_keys
-                    .iter()
-                    .enumerate()
-                    .map(|(index, key)| {
-                        col(key.as_str()).alias(join_keys[index].as_str())
-                    })
-                    .collect::<Vec<_>>(),
-            )?
-            .distinct()?;
+        let before = key_select(before)?;
         Ok(current.union(before)?.distinct()?)
     }
 
@@ -4066,7 +4070,6 @@ impl IvmRuntime {
         right_state: &IvmTable,
         delta_left: &DataFrame,
     ) -> Result<Option<DataFrame>> {
-        use super::join_state::JoinKeyEncoder;
         use super::keyed_plan::{
             IVM_STATE_COLUMN_PREFIX, IvmLookupTable, groups_by_bucket,
         };
@@ -4076,17 +4079,21 @@ impl IvmRuntime {
             &view.right_keys
         };
         // The contribution is encoded under the left names.  This fast path is
-        // valid only when the right state was encoded from the same key names
-        // and neither side uses a computed key expression.
-        if right_join_keys != &view.join_keys
-            || view.key_exprs.left.iter().any(|expr| !expr.is_empty())
-            || view.key_exprs.right.iter().any(|expr| !expr.is_empty())
-        {
+        // valid only when the right state was encoded from the same key names.
+        if right_join_keys != &view.join_keys {
             return Ok(None);
         }
-        let encoder = JoinKeyEncoder::new(&view.left, &view.join_keys)?;
-        let contribution = delta_left
-            .clone()
+        let contribution = if view.key_exprs.left.iter().any(|expr| !expr.is_empty()) {
+            super::join_state::materialize_join_keys(
+                context,
+                delta_left.clone(),
+                &view.key_exprs.left,
+                &view.join_keys,
+            )?
+        } else {
+            delta_left.clone()
+        };
+        let contribution = contribution
             .select(
                 view.join_keys
                     .iter()
@@ -4094,13 +4101,8 @@ impl IvmRuntime {
                     .collect::<Vec<_>>(),
             )?
             .distinct()?;
-        let contribution = encode_join_key_frame(
-            context,
-            contribution,
-            &view.left,
-            &view.join_keys,
-            encoder,
-        )?;
+        let contribution =
+            encode_join_key_frame(context, contribution, &view.left, &view.join_keys)?;
         let bucket_count = if right_state.bucket_columns.len() == 1
             && right_state.bucket_columns[0] == super::join_state::IVM_JOIN_KEY_COLUMN
         {
@@ -6325,15 +6327,17 @@ impl IvmRuntime {
                 &view.right.schema,
                 view.right_filter.as_deref(),
             )?;
-            let contribution = right_rows
-                .clone()
+            let right_for_keys = super::join_state::materialize_join_keys(
+                &context,
+                right_rows.clone(),
+                &view.key_exprs.right,
+                &view.join_keys,
+            )?;
+            let contribution = right_for_keys
                 .select(
-                    right_join_names
+                    view.join_keys
                         .iter()
-                        .enumerate()
-                        .map(|(index, key)| {
-                            col(key.as_str()).alias(view.join_keys[index].as_str())
-                        })
+                        .map(|key| col(key.as_str()))
                         .collect::<Vec<_>>(),
                 )?
                 .distinct()?;
