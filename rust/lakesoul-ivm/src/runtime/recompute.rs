@@ -2430,6 +2430,16 @@ fn lookup_type(
     })
 }
 
+struct StageGuard {
+    dir: std::path::PathBuf,
+}
+
+impl Drop for StageGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 impl IvmRuntime {
     /// Persist a variance view spec (idempotent).
     pub async fn register_variance_view(&self, view: &VarianceView) -> Result<()> {
@@ -3171,6 +3181,52 @@ impl IvmRuntime {
 
     /// Read source before rows for one bounded key chunk and aggregate them
     /// with the window's delta rows into grouped contributions.
+    async fn stage_before_frame(
+        register_context: &SessionContext,
+        name: &str,
+        frame: DataFrame,
+        schema: &SchemaRef,
+        rows: u64,
+    ) -> Result<(Option<StageGuard>, DataFrame)> {
+        if rows == 0 {
+            register_context
+                .register_batch(name, RecordBatch::new_empty(schema.clone()))?;
+            return Ok((None, register_context.table(name).await?));
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "lakesoul-ivm-before-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("data.parquet");
+        let uri = format!("file://{}", path.display());
+        if let Err(error) = frame
+            .write_parquet(
+                &uri,
+                datafusion::dataframe::DataFrameWriteOptions::new(),
+                None,
+            )
+            .await
+        {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(error.into());
+        }
+        register_context
+            .register_parquet(
+                name,
+                &uri,
+                datafusion::prelude::ParquetReadOptions {
+                    schema: Some(schema.as_ref()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        Ok((
+            Some(StageGuard { dir }),
+            register_context.table(name).await?,
+        ))
+    }
+
     async fn source_chunk_contributions(
         &self,
         context: &SessionContext,
@@ -3214,23 +3270,21 @@ impl IvmRuntime {
         for filter in filters {
             before_frame = before_frame.filter(filter)?;
         }
-        let before = before_frame.collect().await?;
         let before_elapsed = before_started.elapsed();
-        let before_rows = before.iter().map(|batch| batch.num_rows()).sum::<usize>();
-        let empty = RecordBatch::new_empty(source.schema.clone());
-        let old_batch = if before.is_empty() {
-            empty
-        } else if before.len() == 1 {
-            before.into_iter().next().expect("one before batch")
-        } else {
-            arrow::compute::concat_batches(&source.schema, &before)?
-        };
+        let before_rows = count_frame_rows(before_frame.clone()).await?;
+        let (before_stage, _old) = Self::stage_before_frame(
+            context,
+            "old",
+            before_frame,
+            &source.schema,
+            before_rows as u64,
+        )
+        .await?;
         let new_frame = context.read_batches(delta_batches.to_vec())?;
         let new_frame = filter_deletes(new_frame, change_column(source))?;
-        let _ = context.deregister_table("old")?;
         let _ = context.deregister_table("new")?;
-        context.register_batch("old", old_batch)?;
         context.register_table("new", new_frame.into_view())?;
+        let _ = before_stage;
         use futures::StreamExt;
         let mut stream = context.sql(contrib_sql).await?.execute_stream().await?;
         let mut output = Vec::new();
