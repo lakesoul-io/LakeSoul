@@ -2173,6 +2173,77 @@ fn validate_left_join_view(view: &LeftJoinView) -> Result<()> {
     Ok(())
 }
 
+/// The probe view used by the shared keyed join helpers for a left join.
+///
+/// Left joins have the same source and key shape as an inner join; only the
+/// output projection differs.  Keeping this conversion local lets the left
+/// join reuse side-state and source-key lookups without duplicating the keyed
+/// key encoding.
+fn left_join_probe(view: &LeftJoinView) -> JoinView {
+    JoinView {
+        view_id: view.view_id.clone(),
+        left: view.left.clone(),
+        right: view.right.clone(),
+        output: view.output.clone(),
+        join_keys: view.join_keys.clone(),
+        right_keys: view.right_keys.clone(),
+        key_exprs: view.key_exprs.clone(),
+        left_value: view.left_value.clone(),
+        right_value: view.right_value.clone(),
+        left_filter: view.left_filter.clone(),
+        right_filter: view.right_filter.clone(),
+        pair_filter: None,
+        null_safe: view.null_safe,
+        output_columns: view.output_columns.clone(),
+        state: None,
+        refresh_interval_ms: view.refresh_interval_ms,
+    }
+}
+
+/// The probe view used by the shared keyed join helpers for a full join.
+fn full_join_probe(view: &FullJoinView) -> JoinView {
+    JoinView {
+        view_id: view.view_id.clone(),
+        left: view.left.clone(),
+        right: view.right.clone(),
+        output: view.output.clone(),
+        join_keys: view.join_keys.clone(),
+        right_keys: view.right_keys.clone(),
+        key_exprs: view.key_exprs.clone(),
+        left_value: view.left_value.clone(),
+        right_value: view.right_value.clone(),
+        left_filter: view.left_filter.clone(),
+        right_filter: view.right_filter.clone(),
+        pair_filter: None,
+        null_safe: view.null_safe,
+        output_columns: view.output_columns.clone(),
+        state: None,
+        refresh_interval_ms: view.refresh_interval_ms,
+    }
+}
+
+/// The probe view used by the shared keyed join helpers for a lookup join.
+fn lookup_join_probe(view: &LookupJoinView) -> JoinView {
+    JoinView {
+        view_id: view.view_id.clone(),
+        left: view.left.clone(),
+        right: view.right.clone(),
+        output: view.output.clone(),
+        join_keys: view.join_keys.clone(),
+        right_keys: view.right_keys.clone(),
+        key_exprs: view.key_exprs.clone(),
+        left_value: view.left_value.clone(),
+        right_value: view.right_value.clone(),
+        left_filter: view.left_filter.clone(),
+        right_filter: view.right_filter.clone(),
+        pair_filter: None,
+        null_safe: false,
+        output_columns: Vec::new(),
+        state: view.state.clone(),
+        refresh_interval_ms: view.refresh_interval_ms,
+    }
+}
+
 /// Validate that a lookup join view can be maintained.
 fn validate_lookup_join_view(view: &LookupJoinView) -> Result<()> {
     if view.join_keys.is_empty() {
@@ -3352,6 +3423,106 @@ impl IvmRuntime {
         Err(report!("right join state lookup is unavailable"))
     }
 
+    /// Read left side-state rows for an already-projected join-key
+    /// contribution.  Returns `None` when no side state exists (the source is
+    /// then the keyed table).
+    async fn lookup_join_left_state_by_keys(
+        &self,
+        context: &SessionContext,
+        view: &JoinView,
+        left_state: Option<&IvmTable>,
+        contribution: DataFrame,
+    ) -> Result<Option<DataFrame>> {
+        use super::join_state::JoinKeyEncoder;
+        use super::keyed_plan::{
+            IVM_STATE_COLUMN_PREFIX, IvmLookupTable, groups_by_bucket,
+        };
+        let Some(left_state) = left_state else {
+            return Ok(None);
+        };
+        let encoder = JoinKeyEncoder::new(&view.left, &view.join_keys)?;
+        let contribution = encode_join_key_frame(
+            context,
+            contribution,
+            &view.left,
+            &view.join_keys,
+            encoder,
+        )?;
+        let bucket_count = if left_state.bucket_columns.len() == 1
+            && left_state.bucket_columns[0] == super::join_state::IVM_JOIN_KEY_COLUMN
+        {
+            left_state
+                .hash_bucket_num
+                .parse::<usize>()
+                .ok()
+                .filter(|count| *count > 1)
+                .unwrap_or(1)
+        } else {
+            1
+        };
+        let groups = groups_by_bucket(
+            left_state.current_groups(&self.client).await?,
+            bucket_count,
+        );
+        let provider = IvmLookupTable::binary(
+            contribution,
+            left_state.clone(),
+            groups,
+            super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
+            bucket_count,
+            true,
+        );
+        let frame = context.read_table(std::sync::Arc::new(provider))?;
+        let projections = view
+            .left
+            .schema
+            .fields()
+            .iter()
+            .map(|field| {
+                column_expr(&format!("{IVM_STATE_COLUMN_PREFIX}{}", field.name()))
+                    .alias(field.name())
+            })
+            .collect::<Vec<_>>();
+        Ok(Some(filter_deletes(
+            frame.select(projections)?,
+            change_column(&view.left),
+        )?))
+    }
+
+    /// Read all current left rows for a join-key contribution, using the side
+    /// state when present and the source as the keyed table otherwise.
+    async fn lookup_left_rows_for_keys(
+        &self,
+        context: &SessionContext,
+        view: &JoinView,
+        left_state: Option<&IvmTable>,
+        contribution: DataFrame,
+    ) -> Result<DataFrame> {
+        if let Some(frame) = self
+            .lookup_join_left_state_by_keys(
+                context,
+                view,
+                left_state,
+                contribution.clone(),
+            )
+            .await?
+        {
+            return Ok(frame);
+        }
+        if view.left.primary_keys.is_empty() {
+            return Err(report!("left join state lookup is unavailable"));
+        }
+        self.lookup_source_by_join_keys(
+            context,
+            &view.left,
+            contribution,
+            &view.join_keys,
+            &view.left.primary_keys,
+            true,
+        )
+        .await
+    }
+
     /// Read all left rows matching the right delta's join keys.
     async fn lookup_left_rows_for_right_keys(
         &self,
@@ -3390,6 +3561,284 @@ impl IvmRuntime {
             true,
         )
         .await
+    }
+
+    /// Read the current rows of both sides for a one-sided join window.
+    ///
+    /// The changed side is the delta; the unchanged side is read by the
+    /// delta's join keys through the source or its side state.  The caller
+    /// falls back to the full source scan when a side has no usable keyed
+    /// lookup.  Both-sided windows keep the existing full inclusion-exclusion
+    /// path because they need the two before/after combinations.
+    async fn keyed_one_sided_join_sides(
+        &self,
+        context: &SessionContext,
+        view: &JoinView,
+        left_state: Option<&IvmTable>,
+        right_state: Option<&IvmTable>,
+        delta_left: Option<&DataFrame>,
+        delta_right: Option<&DataFrame>,
+        right_window: Option<&SourceWindow>,
+    ) -> Result<Option<(DataFrame, DataFrame)>> {
+        if view.null_safe
+            || view.key_exprs.left.iter().any(|expr| !expr.is_empty())
+            || view.key_exprs.right.iter().any(|expr| !expr.is_empty())
+        {
+            return Ok(None);
+        }
+        let left_changed = delta_left.is_some();
+        let right_changed = delta_right.is_some();
+        if left_changed == right_changed {
+            return Ok(None);
+        }
+        let (left, right) = if left_changed {
+            let left = delta_left
+                .cloned()
+                .ok_or_else(|| report!("join refresh without a left delta"))?;
+            let right = match self
+                .lookup_right_rows_for_left_keys(
+                    context,
+                    view,
+                    right_state,
+                    &view.join_keys,
+                    &left,
+                )
+                .await
+            {
+                Ok(frame) => frame,
+                Err(_) => return Ok(None),
+            };
+            (left, right)
+        } else {
+            let right = delta_right
+                .cloned()
+                .ok_or_else(|| report!("join refresh without a right delta"))?;
+            let right_window = right_window
+                .ok_or_else(|| report!("join key change without a right window"))?;
+            let right_keys = if view.right_keys.is_empty() {
+                &view.join_keys
+            } else {
+                &view.right_keys
+            };
+            let contribution = self
+                .join_keys_including_before(
+                    context,
+                    &view.right,
+                    right_window,
+                    &right,
+                    right_keys,
+                    &view.key_exprs.right,
+                    &view.join_keys,
+                )
+                .await?;
+            let left = match self
+                .lookup_left_rows_for_keys(context, view, left_state, contribution)
+                .await
+            {
+                Ok(frame) => frame,
+                Err(_) => return Ok(None),
+            };
+            // Re-read all current right matches for the affected left rows.
+            // A left row can match several right rows, including unchanged
+            // ones; using only the right delta would drop those pairs when the
+            // output pair is rewritten.
+            let right = match self
+                .lookup_right_rows_for_left_keys(
+                    context,
+                    view,
+                    right_state,
+                    if view.right_keys.is_empty() {
+                        &view.join_keys
+                    } else {
+                        &view.right_keys
+                    },
+                    &left,
+                )
+                .await
+            {
+                Ok(frame) => frame,
+                Err(_) => return Ok(None),
+            };
+            (left, right)
+        };
+        let left = apply_side_filter(
+            context,
+            filter_deletes(left, change_column(&view.left))?,
+            &view.left.schema,
+            view.left_filter.as_deref(),
+        )?;
+        let right = apply_side_filter(
+            context,
+            filter_deletes(right, change_column(&view.right))?,
+            &view.right.schema,
+            view.right_filter.as_deref(),
+        )?;
+        Ok(Some((left, right)))
+    }
+
+    /// Ensure and fully re-seed both join side states from the current source
+    /// rows.  Rebuilds use this so later keyed lookups cannot see rows from an
+    /// older generation.
+    async fn sync_full_join_side_states(
+        &self,
+        view_id: &str,
+        left: &IvmTable,
+        right: &IvmTable,
+        join_keys: &[String],
+        right_keys: &[String],
+        left_exprs: &[String],
+        right_exprs: &[String],
+    ) -> Result<Vec<String>> {
+        let mut commit_ids = Vec::new();
+        if let Some(state) = self
+            .ensure_join_side_state(view_id, left, join_keys, StateRole::JoinLeft)
+            .await?
+        {
+            commit_ids.extend(
+                self.sync_join_side_state(left, &state, join_keys, left_exprs)
+                    .await?,
+            );
+        }
+        if let Some(state) = self
+            .ensure_join_side_state(view_id, right, right_keys, StateRole::JoinRight)
+            .await?
+        {
+            commit_ids.extend(
+                self.sync_join_side_state(right, &state, right_keys, right_exprs)
+                    .await?,
+            );
+        }
+        Ok(commit_ids)
+    }
+
+    /// Read a source as of a window's before state by primary key.
+    ///
+    /// This is the same lookup shape used by join side-state maintenance: the
+    /// contribution carries only source identities, and the as-of partition
+    /// groups are addressed through the shared PK lookup plan.
+    async fn lookup_source_before_by_pks(
+        &self,
+        context: &SessionContext,
+        source: &IvmTable,
+        window: &SourceWindow,
+        contribution: DataFrame,
+    ) -> Result<DataFrame> {
+        use super::keyed_plan::{
+            IVM_STATE_COLUMN_PREFIX, IvmLookupTable, groups_by_bucket,
+        };
+        let pk_names = source
+            .primary_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if pk_names.is_empty() {
+            return Err(report!("join key-change detection needs a keyed source"));
+        }
+        let bucket_count = source
+            .hash_bucket_num
+            .parse::<usize>()
+            .ok()
+            .filter(|count| *count > 1)
+            .unwrap_or(1);
+        let route_columns = if bucket_count > 1
+            && !source.bucket_columns.is_empty()
+            && source
+                .bucket_columns
+                .iter()
+                .all(|column| pk_names.contains(&column.as_str()))
+        {
+            Some(source.bucket_columns.clone())
+        } else {
+            None
+        };
+        let bucket_count = route_columns.as_ref().map_or(1, |_| bucket_count);
+        let before_groups = source
+            .before_window_groups(&self.client, &window.before_versions)
+            .await?;
+        let groups = groups_by_bucket(before_groups, bucket_count);
+        let provider = IvmLookupTable::columns(
+            contribution,
+            source.clone(),
+            groups,
+            source.primary_keys.clone(),
+            source.primary_keys.clone(),
+            bucket_count,
+            route_columns,
+            true,
+        );
+        let frame = context.read_table(std::sync::Arc::new(provider))?;
+        let projections = source
+            .schema
+            .fields()
+            .iter()
+            .map(|field| {
+                column_expr(&format!("{IVM_STATE_COLUMN_PREFIX}{}", field.name()))
+                    .alias(field.name())
+            })
+            .collect::<Vec<_>>();
+        Ok(frame.select(projections)?)
+    }
+
+    /// The current and before-image join keys of a source window.
+    ///
+    /// A keyed source update can move a row from one join key to another
+    /// without a delete tombstone for the old key.  The unchanged side must be
+    /// probed with both keys, otherwise the old match's output row is left
+    /// behind.  Keys are returned under the left-side join names.
+    async fn join_keys_including_before(
+        &self,
+        context: &SessionContext,
+        source: &IvmTable,
+        window: &SourceWindow,
+        delta: &DataFrame,
+        source_keys: &[String],
+        rendered_exprs: &[String],
+        join_keys: &[String],
+    ) -> Result<DataFrame> {
+        let current = delta.clone().select(
+            source_keys
+                .iter()
+                .enumerate()
+                .map(|(index, key)| {
+                    match rendered_exprs.get(index).filter(|expr| !expr.is_empty()) {
+                        Some(rendered) => context
+                            .state()
+                            .create_logical_expr(rendered, delta.schema())
+                            .map(|expr| expr.alias(join_keys[index].as_str()))
+                            .map_err(Into::into),
+                        None => Ok(col(key.as_str()).alias(join_keys[index].as_str())),
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?,
+        )?;
+        // Computed keys need the materialized expression on both frames; the
+        // keyed one-sided fast path is disabled for them, so the current
+        // delta alone is enough here.
+        if rendered_exprs.iter().any(|expr| !expr.is_empty()) {
+            return Ok(current.distinct()?);
+        }
+        let current = current.distinct()?;
+        let pk_exprs = source
+            .primary_keys
+            .iter()
+            .map(|key| col(key.as_str()))
+            .collect::<Vec<_>>();
+        let contribution = delta.clone().select(pk_exprs)?.distinct()?;
+        let before = self
+            .lookup_source_before_by_pks(context, source, window, contribution)
+            .await?;
+        let before = before
+            .select(
+                source_keys
+                    .iter()
+                    .enumerate()
+                    .map(|(index, key)| {
+                        col(key.as_str()).alias(join_keys[index].as_str())
+                    })
+                    .collect::<Vec<_>>(),
+            )?
+            .distinct()?;
+        Ok(current.union(before)?.distinct()?)
     }
 
     /// Read a source/MV as the keyed state for a join.  The contribution keys
@@ -4470,6 +4919,36 @@ impl IvmRuntime {
             self.ensure_join_state(&view.output, view.state.as_ref())
                 .await?,
         );
+        let probe = lookup_join_probe(view);
+        let left_state = self
+            .ensure_join_side_state(
+                &view.view_id,
+                &view.left,
+                &view.join_keys,
+                StateRole::JoinLeft,
+            )
+            .await?;
+        if let Some(state) = &left_state {
+            commit_ids.extend(if state.current_files(&self.client).await?.is_empty() {
+                self.sync_join_side_state(
+                    &view.left,
+                    state,
+                    &view.join_keys,
+                    &view.key_exprs.left,
+                )
+                .await?
+            } else {
+                self.apply_join_side_delta(
+                    &view.left,
+                    state,
+                    &left_window,
+                    &view.join_keys,
+                    &view.key_exprs.left,
+                )
+                .await?
+            });
+        }
+        self.checkpoint_epoch_states(&record).await?;
         let context = refresh_session();
         let left_changed = !left_window.added_files.is_empty();
         let right_changed = !right_window.added_files.is_empty();
@@ -4553,6 +5032,25 @@ impl IvmRuntime {
             }
             None => None,
         };
+        let changed_keys = match (changed_keys, &delta_right) {
+            (Some(current), Some(delta_right))
+                if view.key_exprs.right.iter().all(|expr| expr.is_empty()) =>
+            {
+                let before = self
+                    .join_keys_including_before(
+                        &context,
+                        &view.right,
+                        &right_window,
+                        delta_right,
+                        view.right_join_keys(),
+                        &view.key_exprs.right,
+                        &view.join_keys,
+                    )
+                    .await?;
+                Some(current.union(before)?.distinct()?)
+            }
+            (changed, _) => changed,
+        };
 
         // A left-only change is just the delta.  For a right-only change the
         // left source is usually keyed by the lookup keys, so probe it with
@@ -4562,20 +5060,18 @@ impl IvmRuntime {
                 .clone()
                 .ok_or_else(|| report!("lookup refresh without a left change"))?
         } else if !left_changed
-            && view.left.primary_keys == view.join_keys
             && view.key_exprs.left.iter().all(|expr| expr.is_empty())
             && view.key_exprs.right.iter().all(|expr| expr.is_empty())
+            && (left_state.is_some() || view.left.primary_keys == view.join_keys)
         {
             let changed_keys = changed_keys
                 .clone()
                 .ok_or_else(|| report!("lookup refresh without changed keys"))?;
-            self.lookup_source_by_join_keys(
+            self.lookup_left_rows_for_keys(
                 &context,
-                &view.left,
+                &probe,
+                left_state.as_ref(),
                 changed_keys,
-                &view.join_keys,
-                &view.left.primary_keys,
-                true,
             )
             .await?
         } else {
@@ -4779,6 +5275,25 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        if let Some(state) = self
+            .ensure_join_side_state(
+                &view.view_id,
+                &view.left,
+                &view.join_keys,
+                StateRole::JoinLeft,
+            )
+            .await?
+        {
+            commit_ids.extend(
+                self.sync_join_side_state(
+                    &view.left,
+                    &state,
+                    &view.join_keys,
+                    &view.key_exprs.left,
+                )
+                .await?,
+            );
+        }
 
         let context = refresh_session();
         let mut left_now = filter_deletes(
@@ -4884,44 +5399,135 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = refresh_session();
-        let left_now = apply_side_filter(
-            &context,
-            filter_deletes(
-                self.current_table_frame(&context, &view.left)?,
-                change_column(&view.left),
-            )?,
-            &view.left.schema,
-            view.left_filter.as_deref(),
-        )?;
-        let right_now = apply_side_filter(
-            &context,
-            filter_deletes(
-                self.current_table_frame(&context, &view.right)?,
-                change_column(&view.right),
-            )?,
-            &view.right.schema,
-            view.right_filter.as_deref(),
-        )?;
-        let mv_batches = match single_side_join_mv_partitions(
-            &view.output,
-            &view.left,
-            &left_window,
-            &view.right,
-            &right_window,
-        ) {
-            Some(restriction) => {
-                self.current_table_frame_filtered_partitions(
-                    &context,
-                    &view.output,
-                    Vec::new(),
-                    &restriction,
+        let probe = left_join_probe(view);
+        let keyed =
+            !view.left.primary_keys.is_empty() && !view.right.primary_keys.is_empty();
+        let left_state = if keyed {
+            self.ensure_join_side_state(
+                &view.view_id,
+                &view.left,
+                &view.join_keys,
+                StateRole::JoinLeft,
+            )
+            .await?
+        } else {
+            None
+        };
+        let right_keys = if view.right_keys.is_empty() {
+            &view.join_keys
+        } else {
+            &view.right_keys
+        };
+        let right_state = if keyed {
+            self.ensure_join_side_state(
+                &view.view_id,
+                &view.right,
+                right_keys,
+                StateRole::JoinRight,
+            )
+            .await?
+        } else {
+            None
+        };
+        if let Some(state) = &left_state {
+            commit_ids.extend(if state.current_files(&self.client).await?.is_empty() {
+                self.sync_join_side_state(
+                    &view.left,
+                    state,
+                    &view.join_keys,
+                    &view.key_exprs.left,
                 )
                 .await?
-            }
-            None => self.current_table_frame(&context, &view.output)?,
+            } else {
+                self.apply_join_side_delta(
+                    &view.left,
+                    state,
+                    &left_window,
+                    &view.join_keys,
+                    &view.key_exprs.left,
+                )
+                .await?
+            });
+        }
+        if let Some(state) = &right_state {
+            commit_ids.extend(if state.current_files(&self.client).await?.is_empty() {
+                self.sync_join_side_state(
+                    &view.right,
+                    state,
+                    right_keys,
+                    &view.key_exprs.right,
+                )
+                .await?
+            } else {
+                self.apply_join_side_delta(
+                    &view.right,
+                    state,
+                    &right_window,
+                    right_keys,
+                    &view.key_exprs.right,
+                )
+                .await?
+            });
+        }
+        self.checkpoint_epoch_states(&record).await?;
+
+        let context = refresh_session();
+        let delta_left = if !left_window.added_files.is_empty() {
+            Some(self.groups_table_frame(
+                &context,
+                &view.left,
+                left_window.added_files.clone(),
+            )?)
+        } else {
+            None
         };
-        let mv = mv_batches;
+        let delta_right = if !right_window.added_files.is_empty() {
+            Some(self.groups_table_frame(
+                &context,
+                &view.right,
+                right_window.added_files.clone(),
+            )?)
+        } else {
+            None
+        };
+        let one_sided = if keyed {
+            self.keyed_one_sided_join_sides(
+                &context,
+                &probe,
+                left_state.as_ref(),
+                right_state.as_ref(),
+                delta_left.as_ref(),
+                delta_right.as_ref(),
+                Some(&right_window),
+            )
+            .await?
+        } else {
+            None
+        };
+        let one_sided_keyed = one_sided.is_some();
+        let (left_now, right_now) = match one_sided {
+            Some(sides) => sides,
+            None => (
+                apply_side_filter(
+                    &context,
+                    filter_deletes(
+                        self.current_table_frame(&context, &view.left)?,
+                        change_column(&view.left),
+                    )?,
+                    &view.left.schema,
+                    view.left_filter.as_deref(),
+                )?,
+                apply_side_filter(
+                    &context,
+                    filter_deletes(
+                        self.current_table_frame(&context, &view.right)?,
+                        change_column(&view.right),
+                    )?,
+                    &view.right.schema,
+                    view.right_filter.as_deref(),
+                )?,
+            ),
+        };
 
         let key_names = view
             .left
@@ -5024,6 +5630,39 @@ impl IvmRuntime {
             )?;
         }
         let affected = affected.distinct()?;
+
+        // For a one-sided keyed window the affected left identities address
+        // the output pairs directly.  The fallback keeps the partition-scoped
+        // or full MV read for both-sided and non-keyed windows.
+        let mv = if one_sided_keyed && view.identity_column {
+            self.lookup_output_side(
+                &context,
+                &view.output,
+                &affected,
+                &view.left.primary_keys,
+                &left_alias_names,
+            )
+            .await?
+        } else {
+            match single_side_join_mv_partitions(
+                &view.output,
+                &view.left,
+                &left_window,
+                &view.right,
+                &right_window,
+            ) {
+                Some(restriction) => {
+                    self.current_table_frame_filtered_partitions(
+                        &context,
+                        &view.output,
+                        Vec::new(),
+                        &restriction,
+                    )
+                    .await?
+                }
+                None => self.current_table_frame(&context, &view.output)?,
+            }
+        };
 
         // Rewrite all pairs of the affected left rows; a replay deletes and
         // re-inserts the same pairs, so no epoch guard is needed.
@@ -5142,6 +5781,24 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        let right_keys = if view.right_keys.is_empty() {
+            &view.join_keys
+        } else {
+            &view.right_keys
+        };
+        commit_ids.extend(
+            self.sync_full_join_side_states(
+                &view.view_id,
+                &view.left,
+                &view.right,
+                &view.join_keys,
+                right_keys,
+                &view.key_exprs.left,
+                &view.key_exprs.right,
+            )
+            .await?,
+        );
+        self.checkpoint_epoch_states(&record).await?;
 
         let context = refresh_session();
         let left_now = apply_side_filter(
@@ -5250,44 +5907,135 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = refresh_session();
-        let left_now = apply_side_filter(
-            &context,
-            filter_deletes(
-                self.current_table_frame(&context, &view.left)?,
-                change_column(&view.left),
-            )?,
-            &view.left.schema,
-            view.left_filter.as_deref(),
-        )?;
-        let right_now = apply_side_filter(
-            &context,
-            filter_deletes(
-                self.current_table_frame(&context, &view.right)?,
-                change_column(&view.right),
-            )?,
-            &view.right.schema,
-            view.right_filter.as_deref(),
-        )?;
-        let mv_batches = match single_side_join_mv_partitions(
-            &view.output,
-            &view.left,
-            &left_window,
-            &view.right,
-            &right_window,
-        ) {
-            Some(restriction) => {
-                self.current_table_frame_filtered_partitions(
-                    &context,
-                    &view.output,
-                    Vec::new(),
-                    &restriction,
+        let probe = full_join_probe(view);
+        let keyed =
+            !view.left.primary_keys.is_empty() && !view.right.primary_keys.is_empty();
+        let left_state = if keyed {
+            self.ensure_join_side_state(
+                &view.view_id,
+                &view.left,
+                &view.join_keys,
+                StateRole::JoinLeft,
+            )
+            .await?
+        } else {
+            None
+        };
+        let right_keys = if view.right_keys.is_empty() {
+            &view.join_keys
+        } else {
+            &view.right_keys
+        };
+        let right_state = if keyed {
+            self.ensure_join_side_state(
+                &view.view_id,
+                &view.right,
+                right_keys,
+                StateRole::JoinRight,
+            )
+            .await?
+        } else {
+            None
+        };
+        if let Some(state) = &left_state {
+            commit_ids.extend(if state.current_files(&self.client).await?.is_empty() {
+                self.sync_join_side_state(
+                    &view.left,
+                    state,
+                    &view.join_keys,
+                    &view.key_exprs.left,
                 )
                 .await?
-            }
-            None => self.current_table_frame(&context, &view.output)?,
+            } else {
+                self.apply_join_side_delta(
+                    &view.left,
+                    state,
+                    &left_window,
+                    &view.join_keys,
+                    &view.key_exprs.left,
+                )
+                .await?
+            });
+        }
+        if let Some(state) = &right_state {
+            commit_ids.extend(if state.current_files(&self.client).await?.is_empty() {
+                self.sync_join_side_state(
+                    &view.right,
+                    state,
+                    right_keys,
+                    &view.key_exprs.right,
+                )
+                .await?
+            } else {
+                self.apply_join_side_delta(
+                    &view.right,
+                    state,
+                    &right_window,
+                    right_keys,
+                    &view.key_exprs.right,
+                )
+                .await?
+            });
+        }
+        self.checkpoint_epoch_states(&record).await?;
+
+        let context = refresh_session();
+        let delta_left = if !left_window.added_files.is_empty() {
+            Some(self.groups_table_frame(
+                &context,
+                &view.left,
+                left_window.added_files.clone(),
+            )?)
+        } else {
+            None
         };
-        let mv = mv_batches;
+        let delta_right = if !right_window.added_files.is_empty() {
+            Some(self.groups_table_frame(
+                &context,
+                &view.right,
+                right_window.added_files.clone(),
+            )?)
+        } else {
+            None
+        };
+        let one_sided = if keyed {
+            self.keyed_one_sided_join_sides(
+                &context,
+                &probe,
+                left_state.as_ref(),
+                right_state.as_ref(),
+                delta_left.as_ref(),
+                delta_right.as_ref(),
+                Some(&right_window),
+            )
+            .await?
+        } else {
+            None
+        };
+        let one_sided_keyed = one_sided.is_some();
+        let (left_now, right_now) = match one_sided {
+            Some(sides) => sides,
+            None => (
+                apply_side_filter(
+                    &context,
+                    filter_deletes(
+                        self.current_table_frame(&context, &view.left)?,
+                        change_column(&view.left),
+                    )?,
+                    &view.left.schema,
+                    view.left_filter.as_deref(),
+                )?,
+                apply_side_filter(
+                    &context,
+                    filter_deletes(
+                        self.current_table_frame(&context, &view.right)?,
+                        change_column(&view.right),
+                    )?,
+                    &view.right.schema,
+                    view.right_filter.as_deref(),
+                )?,
+            ),
+        };
 
         let left_key_names = view
             .left
@@ -5363,13 +6111,22 @@ impl IvmRuntime {
             right_join_names,
         )?;
 
-        // Same conservative seed as the pair left join: both sides' current
-        // keys, because a key change on one side can drop the other side's
-        // old match (a recorded optimization is to add only the before-match
-        // keys from the materialized pairs).
+        let left_changed = delta_left.is_some();
+        let right_changed = delta_right.is_some();
+        // For a one-sided keyed window the affected identities are already
+        // present in `left_now`/`right_now`; do not conservatively add the
+        // opposite side's full key set.
         let mut affected_left = left_now.clone().select(left_key_exprs.clone())?;
-        let mut affected_right = right_now.clone().select(right_key_exprs.clone())?;
-        if !left_window.added_files.is_empty() {
+        let mut affected_right = if one_sided_keyed && !right_changed {
+            right_now
+                .clone()
+                .select(right_key_exprs.clone())?
+                .limit(0, Some(0))?
+        } else {
+            right_now.clone().select(right_key_exprs.clone())?
+        };
+        let mut right_delta_rows = None;
+        if left_changed {
             let delta_left = apply_side_filter(
                 &context,
                 self.groups_table_frame(
@@ -5386,24 +6143,27 @@ impl IvmRuntime {
                     .select(left_key_exprs.clone())?
                     .distinct()?,
             )?;
-            let changed_keys = delta_left.select(join_key_exprs.clone())?.distinct()?;
-            let probe = with_computed_keys(
-                &context,
-                right_now.clone(),
-                &view.key_exprs.right,
-                right_join_names,
-            )?;
-            affected_right = affected_right.union(
-                keyed_semi_join(
+            if !one_sided_keyed {
+                let changed_keys =
+                    delta_left.select(join_key_exprs.clone())?.distinct()?;
+                let probe = with_computed_keys(
                     &context,
-                    probe,
-                    changed_keys,
-                    &right_join_key_names,
-                    &join_key_names,
-                    view.null_safe,
-                )?
-                .select(right_key_exprs.clone())?,
-            )?;
+                    right_now.clone(),
+                    &view.key_exprs.right,
+                    right_join_names,
+                )?;
+                affected_right = affected_right.union(
+                    keyed_semi_join(
+                        &context,
+                        probe,
+                        changed_keys,
+                        &right_join_key_names,
+                        &join_key_names,
+                        view.null_safe,
+                    )?
+                    .select(right_key_exprs.clone())?,
+                )?;
+            }
         }
         if !right_window.added_files.is_empty() {
             let delta_right = apply_side_filter(
@@ -5422,29 +6182,81 @@ impl IvmRuntime {
                     .select(right_key_exprs.clone())?
                     .distinct()?,
             )?;
-            let changed_keys = delta_right
-                .select(right_join_key_exprs.clone())?
-                .distinct()?;
-            let probe = with_computed_keys(
+            right_delta_rows = Some(apply_side_filter(
                 &context,
-                left_now.clone(),
-                &view.key_exprs.left,
-                &view.join_keys,
-            )?;
-            affected_left = affected_left.union(
-                keyed_semi_join(
+                filter_deletes(delta_right.clone(), change_column(&view.right))?,
+                &view.right.schema,
+                view.right_filter.as_deref(),
+            )?);
+            if !one_sided_keyed {
+                let changed_keys = delta_right
+                    .select(right_join_key_exprs.clone())?
+                    .distinct()?;
+                let probe = with_computed_keys(
                     &context,
-                    probe,
-                    changed_keys,
-                    &join_key_names,
-                    &right_join_key_names,
-                    view.null_safe,
-                )?
-                .select(left_key_exprs.clone())?,
-            )?;
+                    left_now.clone(),
+                    &view.key_exprs.left,
+                    &view.join_keys,
+                )?;
+                affected_left = affected_left.union(
+                    keyed_semi_join(
+                        &context,
+                        probe,
+                        changed_keys,
+                        &join_key_names,
+                        &right_join_key_names,
+                        view.null_safe,
+                    )?
+                    .select(left_key_exprs.clone())?,
+                )?;
+            }
         }
         let affected_left = affected_left.distinct()?;
         let affected_right = affected_right.distinct()?;
+
+        // For a one-sided keyed window the affected identities address the
+        // stored pairs directly.  A right-only window may also create or
+        // retract a NULL-padded right row, so both identity sides are probed.
+        let mv = if one_sided_keyed && view.identity_column {
+            let left = self
+                .lookup_output_side(
+                    &context,
+                    &view.output,
+                    &affected_left,
+                    &view.left.primary_keys,
+                    &left_alias_names,
+                )
+                .await?;
+            let right = self
+                .lookup_output_side(
+                    &context,
+                    &view.output,
+                    &affected_right,
+                    &view.right.primary_keys,
+                    &right_alias_names,
+                )
+                .await?;
+            left.union(right)?.distinct()?
+        } else {
+            match single_side_join_mv_partitions(
+                &view.output,
+                &view.left,
+                &left_window,
+                &view.right,
+                &right_window,
+            ) {
+                Some(restriction) => {
+                    self.current_table_frame_filtered_partitions(
+                        &context,
+                        &view.output,
+                        Vec::new(),
+                        &restriction,
+                    )
+                    .await?
+                }
+                None => self.current_table_frame(&context, &view.output)?,
+            }
+        };
 
         // Rewrite all pairs of the affected rows on either side; identical
         // pairs are deduplicated.
@@ -5455,13 +6267,30 @@ impl IvmRuntime {
             &left_key_names,
             None,
         )?;
-        let right_rows = right_now.clone().join(
+        let matching_right_rows = right_now.clone().join(
             affected_right.clone(),
             JoinType::LeftSemi,
             &right_key_names,
             &right_key_names,
             None,
         )?;
+        let right_rows = if one_sided_keyed && right_changed {
+            matching_right_rows
+                .union(
+                    right_delta_rows
+                        .ok_or_else(|| report!("right delta rows are missing"))?
+                        .join(
+                            affected_right.clone(),
+                            JoinType::LeftSemi,
+                            &right_key_names,
+                            &right_key_names,
+                            None,
+                        )?,
+                )?
+                .distinct()?
+        } else {
+            matching_right_rows
+        };
         let left_pairs = keyed_join_projection(
             &context,
             left_rows,
@@ -5470,19 +6299,28 @@ impl IvmRuntime {
             JoinType::Left,
             false,
         )?;
-        let right_pairs = keyed_join_projection(
-            &context,
-            left_now,
-            right_rows,
-            &view.parts(),
-            JoinType::Right,
-            true,
-        )?;
+        let right_pairs = if one_sided_keyed && !right_changed {
+            None
+        } else {
+            Some(keyed_join_projection(
+                &context,
+                left_now,
+                right_rows,
+                &view.parts(),
+                JoinType::Right,
+                true,
+            )?)
+        };
         // The pair projection carries each side's encoded identity; compose
         // them here and drop the per-side columns on the way out.
-        let inserts = left_pairs.union(right_pairs)?.distinct()?.select(
-            keyed_join_output_columns(&view.parts(), IdentitySource::EncodedSides)?,
-        )?;
+        let composed = match right_pairs {
+            Some(right_pairs) => left_pairs.union(right_pairs)?.distinct()?,
+            None => left_pairs.distinct()?,
+        };
+        let inserts = composed.select(keyed_join_output_columns(
+            &view.parts(),
+            IdentitySource::EncodedSides,
+        )?)?;
         let inserts = inserts
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
@@ -5587,6 +6425,24 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        let right_keys = if view.right_keys.is_empty() {
+            &view.join_keys
+        } else {
+            &view.right_keys
+        };
+        commit_ids.extend(
+            self.sync_full_join_side_states(
+                &view.view_id,
+                &view.left,
+                &view.right,
+                &view.join_keys,
+                right_keys,
+                &view.key_exprs.left,
+                &view.key_exprs.right,
+            )
+            .await?,
+        );
+        self.checkpoint_epoch_states(&record).await?;
 
         let context = refresh_session();
         let left_now = apply_side_filter(
