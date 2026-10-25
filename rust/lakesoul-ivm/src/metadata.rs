@@ -883,6 +883,29 @@ impl IvmMetadata {
             .await
     }
 
+    /// Persist the auxiliary state versions of a pending epoch before the
+    /// epoch is marked committed.  A crash after a state write but before the
+    /// final mark can then be distinguished from a fresh window.
+    pub async fn checkpoint_epoch_state_versions(
+        &self,
+        record: &EpochRecord,
+        state_versions: &[StateVersion],
+    ) -> Result<()> {
+        self.execute_rw(
+            "update ivm.epochs
+                 set state_versions = $4::JSONB
+                 where view_id = $1::TEXT and generation = $2::BIGINT and epoch = $3::BIGINT",
+            &[
+                &record.view_id,
+                &record.generation,
+                &record.epoch,
+                &serde_json::to_value(state_versions)?,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Mark an epoch committed and record both the MV and auxiliary state
     /// partition versions.  Recovery can then distinguish a complete state
     /// write from a partial one.

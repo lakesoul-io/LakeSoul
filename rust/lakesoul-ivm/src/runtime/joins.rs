@@ -3946,6 +3946,7 @@ impl IvmRuntime {
             };
             commit_ids.extend(ids);
         }
+        self.checkpoint_epoch_states(&record).await?;
         let context = refresh_session();
         if keyed {
             let delta_left = self.groups_table_frame(
@@ -4644,6 +4645,7 @@ impl IvmRuntime {
             )
             .await?,
         );
+        self.checkpoint_epoch_states(&record).await?;
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -4736,6 +4738,7 @@ impl IvmRuntime {
         if let Some(state) = &view.state {
             commit_ids.extend(self.sync_join_state(&view.output, state).await?);
         }
+        self.checkpoint_epoch_states(&record).await?;
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -6144,6 +6147,7 @@ impl IvmRuntime {
         if let Some(state) = &view.state {
             commit_ids.extend(self.sync_join_state(&view.output, state).await?);
         }
+        self.checkpoint_epoch_states(&record).await?;
 
         let mv_versions = output_partition_versions(&self.client, &view.output).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)

@@ -2652,6 +2652,20 @@ impl IvmRuntime {
         Ok(versions)
     }
 
+    /// Record the current auxiliary state versions on a pending epoch.
+    ///
+    /// This is called immediately after the state portion of a refresh so a
+    /// crash after that write but before the final commit remains detectable.
+    pub(crate) async fn checkpoint_epoch_states(
+        &self,
+        record: &EpochRecord,
+    ) -> Result<()> {
+        let state_versions = self.state_versions(&record.view_id).await?;
+        self.metadata
+            .checkpoint_epoch_state_versions(record, &state_versions)
+            .await
+    }
+
     /// Mark an epoch committed together with the current auxiliary state
     /// versions.  All refresh paths go through this runtime method so a
     /// pending epoch can later verify that every state write completed.
@@ -4633,21 +4647,16 @@ impl IvmRuntime {
                     // epoch.  Check the auxiliary states as well: marking the
                     // epoch while a window/rank/join index is behind would
                     // make later keyed reads silently stale.
-                    let current_states = if record.state_versions.is_empty()
-                        && record.state_versions_before.is_empty()
-                    {
-                        Vec::new()
-                    } else {
-                        self.state_versions(view_id).await?
-                    };
+                    let current_states = self.state_versions(view_id).await?;
                     let state_incomplete = if !record.state_versions.is_empty() {
                         current_states != record.state_versions
                     } else {
-                        // Older pending rows have no after snapshot.  If the
-                        // pre-window snapshot is known, an unchanged state
-                        // means the auxiliary write never landed.
+                        // A crash before the checkpoint has no trustworthy
+                        // after snapshot.  If this view already has state, do
+                        // not guess: a rebuild is safer than accepting a
+                        // partially written window index/rank/join state.
                         !record.state_versions_before.is_empty()
-                            && current_states == record.state_versions_before
+                            || !current_states.is_empty()
                     };
                     if state_incomplete {
                         return Err(report!(

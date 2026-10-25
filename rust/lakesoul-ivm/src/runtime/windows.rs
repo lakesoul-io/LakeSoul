@@ -2070,13 +2070,44 @@ impl IvmRuntime {
     /// affected partitions instead of scanning the MV.  It is created lazily
     /// and registered as the view's `State` table; the view spec itself stays
     /// unchanged for backward compatibility.
+    /// Whether a mirror index is missing a partition that the MV has.
+    ///
+    /// A seeded mirror can legitimately have a lower absolute partition
+    /// version than a long-lived MV, so comparing version numbers would
+    /// rewrite it on every refresh.  Missing partitions are unambiguous;
+    /// row-level staleness is handled by the epoch checkpoint/recovery path.
+    async fn mirror_state_missing_partitions(
+        &self,
+        state: &IvmTable,
+        mv: &IvmTable,
+    ) -> Result<bool> {
+        if mv.current_files(&self.client).await?.is_empty() {
+            return Ok(false);
+        }
+        if state.current_files(&self.client).await?.is_empty() {
+            return Ok(true);
+        }
+        let state_versions = output_partition_versions(&self.client, state).await?;
+        let mv_versions = output_partition_versions(&self.client, mv).await?;
+        let state_partitions = state_versions
+            .into_iter()
+            .map(|version| version.partition_desc)
+            .collect::<std::collections::HashSet<_>>();
+        Ok(mv_versions
+            .iter()
+            .any(|version| !state_partitions.contains(&version.partition_desc)))
+    }
+
     async fn ensure_window_state(&self, view: &WindowView) -> Result<IvmTable> {
         let states = self.metadata.list_states(&view.view_id).await?;
         if let Some(existing) = states.iter().find(|state| state.role == StateRole::State)
         {
             let state = self.open_table_by_id(&existing.table_id).await?;
-            if state.current_files(&self.client).await?.is_empty() {
-                self.sync_window_state(view, &state).await?;
+            let reset = self
+                .mirror_state_missing_partitions(&state, &view.mv)
+                .await?;
+            if reset {
+                self.sync_window_state(view, &state, true).await?;
             }
             return Ok(state);
         }
@@ -2099,14 +2130,23 @@ impl IvmRuntime {
         let state = self.create_table(options).await?;
         self.register_state_tables(&view.view_id, &[(StateRole::State, &state)])
             .await?;
-        self.sync_window_state(view, &state).await?;
+        self.sync_window_state(view, &state, false).await?;
         Ok(state)
     }
 
-    /// Seed a newly created/empty window partition index from the current MV.
-    async fn sync_window_state(&self, view: &WindowView, state: &IvmTable) -> Result<()> {
+    /// Seed a newly created/empty window partition index from the current MV,
+    /// or replace a mirror that is behind the MV.
+    async fn sync_window_state(
+        &self,
+        view: &WindowView,
+        state: &IvmTable,
+        reset: bool,
+    ) -> Result<()> {
         if view.mv.current_files(&self.client).await?.is_empty() {
             return Ok(());
+        }
+        if reset {
+            state.truncate(&self.client).await?;
         }
         let context = refresh_session();
         context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
@@ -2418,10 +2458,15 @@ impl IvmRuntime {
         };
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&window_refresh_sql(view, epoch)).await?;
+        let state_frame = frame.clone().execute_stream().await?;
         let (mv_ids, state_ids) = futures::future::try_join(
             view.mv
-                .append_stream(&self.client, frame.clone().execute_stream().await?),
-            state.append_stream(&self.client, frame.execute_stream().await?),
+                .append_stream(&self.client, frame.execute_stream().await?),
+            async {
+                let ids = state.append_stream(&self.client, state_frame).await?;
+                self.checkpoint_epoch_states(&record).await?;
+                Ok::<_, rootcause::Report>(ids)
+            },
         )
         .await?;
         commit_ids.extend(mv_ids);
@@ -2619,6 +2664,7 @@ impl IvmRuntime {
         .await?;
         commit_ids.extend(mv_ids);
         commit_ids.extend(state_ids);
+        self.checkpoint_epoch_states(&record).await?;
         if let Some(rank) = &rank_state {
             rank.truncate(&self.client).await?;
             commit_ids.extend(self.sync_rank_state(&view.source, rank).await?);
@@ -2642,8 +2688,11 @@ impl IvmRuntime {
         if let Some(existing) = states.iter().find(|state| state.role == StateRole::State)
         {
             let state = self.open_table_by_id(&existing.table_id).await?;
-            if state.current_files(&self.client).await?.is_empty() {
-                self.sync_top_k_state(view, &state).await?;
+            let reset = self
+                .mirror_state_missing_partitions(&state, &view.mv)
+                .await?;
+            if reset {
+                self.sync_top_k_state(view, &state, true).await?;
             }
             return Ok(state);
         }
@@ -2666,13 +2715,21 @@ impl IvmRuntime {
         let state = self.create_table(options).await?;
         self.register_state_tables(&view.view_id, &[(StateRole::State, &state)])
             .await?;
-        self.sync_top_k_state(view, &state).await?;
+        self.sync_top_k_state(view, &state, false).await?;
         Ok(state)
     }
 
-    async fn sync_top_k_state(&self, view: &TopKView, state: &IvmTable) -> Result<()> {
+    async fn sync_top_k_state(
+        &self,
+        view: &TopKView,
+        state: &IvmTable,
+        reset: bool,
+    ) -> Result<()> {
         if view.mv.current_files(&self.client).await?.is_empty() {
             return Ok(());
+        }
+        if reset {
+            state.truncate(&self.client).await?;
         }
         let context = refresh_session();
         context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
@@ -3137,10 +3194,15 @@ impl IvmRuntime {
         };
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&top_k_refresh_sql(view, epoch)).await?;
+        let state_frame = frame.clone().execute_stream().await?;
         let (mv_ids, state_ids) = futures::future::try_join(
             view.mv
-                .append_stream(&self.client, frame.clone().execute_stream().await?),
-            state.append_stream(&self.client, frame.execute_stream().await?),
+                .append_stream(&self.client, frame.execute_stream().await?),
+            async {
+                let ids = state.append_stream(&self.client, state_frame).await?;
+                self.checkpoint_epoch_states(&record).await?;
+                Ok::<_, rootcause::Report>(ids)
+            },
         )
         .await?;
         commit_ids.extend(mv_ids);
@@ -3218,6 +3280,7 @@ impl IvmRuntime {
         .await?;
         commit_ids.extend(mv_ids);
         commit_ids.extend(state_ids);
+        self.checkpoint_epoch_states(&record).await?;
         if let Some(rank) = &rank_state {
             rank.truncate(&self.client).await?;
             commit_ids.extend(self.sync_rank_state(&view.source, rank).await?);

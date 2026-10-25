@@ -3691,6 +3691,7 @@ impl IvmRuntime {
                 total_elapsed = ?bootstrap_started.elapsed(),
                 "multi-agg bootstrap finished"
             );
+            self.checkpoint_epoch_states(&record).await?;
             let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
             self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                 .await?;
@@ -3826,6 +3827,7 @@ impl IvmRuntime {
             elapsed = ?write_started.elapsed(),
             "multi-agg keyed incremental finished"
         );
+        self.checkpoint_epoch_states(&record).await?;
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;

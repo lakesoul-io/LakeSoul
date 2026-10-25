@@ -3080,6 +3080,7 @@ impl IvmRuntime {
                 .append_stream(&self.client, state_frame.execute_stream().await?)
                 .await?,
         );
+        self.checkpoint_epoch_states(&record).await?;
 
         let affected = context
             .sql(&format!(
@@ -3287,6 +3288,7 @@ impl IvmRuntime {
                 .append_stream(&self.client, state_frame.execute_stream().await?)
                 .await?,
         );
+        self.checkpoint_epoch_states(&record).await?;
 
         context.register_table("state_now", Arc::new(self.table_provider(view.state)))?;
         let rebuild = format!(
