@@ -2659,6 +2659,44 @@ impl IvmRuntime {
         Ok(versions)
     }
 
+    /// Rebuild mirror-style auxiliary state from the current MV.
+    ///
+    /// Window/top-k partition indexes, join pair indexes and the optional
+    /// join output mirror all have the MV schema.  If a pending epoch committed
+    /// the MV but missed one of these writes, they can be repaired in place
+    /// without rebuilding the whole view.  Source-derived state (value-count,
+    /// join side state, rank state) is intentionally left to the rebuild path.
+    pub(crate) async fn repair_mirror_states(
+        &self,
+        view_id: &str,
+        output: &IvmTable,
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        let mut commit_ids = Vec::new();
+        let mut repaired_tables = Vec::new();
+        for state in self.metadata.list_states(view_id).await? {
+            if state.table_id == output.table_id {
+                continue;
+            }
+            let table = self.open_table_by_id(&state.table_id).await?;
+            let mirror = state.role == StateRole::JoinPairIndex
+                || (state.role == StateRole::State
+                    && table.schema.as_ref() == output.schema.as_ref());
+            if !mirror {
+                continue;
+            }
+            let context = refresh_session();
+            let frame = self.current_table_frame(&context, output)?;
+            table.truncate(&self.client).await?;
+            commit_ids.extend(
+                append_dataframe(&table, &self.client, frame)
+                    .await?
+                    .commit_ids,
+            );
+            repaired_tables.push(state.table_id);
+        }
+        Ok((commit_ids, repaired_tables))
+    }
+
     /// Record the current auxiliary state versions on a pending epoch.
     ///
     /// This is called immediately after the state portion of a refresh so a
@@ -4693,14 +4731,31 @@ impl IvmRuntime {
                         !record.state_versions_before.is_empty()
                             || !current_states.is_empty()
                     };
-                    if state_incomplete {
+                    let mut commit_ids = record.commit_ids.clone();
+                    if state_incomplete && !record.state_versions.is_empty() {
+                        let (repair_ids, repaired_tables) =
+                            self.repair_mirror_states(view_id, output).await?;
+                        commit_ids.extend(repair_ids);
+                        let repaired = self.state_versions(view_id).await?;
+                        let repaired_ok = record.state_versions.iter().all(|expected| {
+                            repaired_tables.contains(&expected.table_id)
+                                || repaired.iter().any(|current| current == expected)
+                        });
+                        if !repaired_ok {
+                            return Err(report!(
+                                "view {view_id} window {window_key} has a committed MV \
+                                 but incomplete auxiliary state; a rebuild is required"
+                            )
+                            .attach(RebuildRequired));
+                        }
+                    } else if state_incomplete {
                         return Err(report!(
                             "view {view_id} window {window_key} has a committed MV \
                              but incomplete auxiliary state; a rebuild is required"
                         )
                         .attach(RebuildRequired));
                     }
-                    self.mark_epoch_committed(&record, &current, &record.commit_ids)
+                    self.mark_epoch_committed(&record, &current, &commit_ids)
                         .await?;
                     return Ok(WindowStart::AlreadyApplied(record.epoch));
                 }

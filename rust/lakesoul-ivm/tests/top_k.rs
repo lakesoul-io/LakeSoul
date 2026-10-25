@@ -672,7 +672,7 @@ async fn top_k_with_offset_shifts_the_window() {
 /// A pending epoch whose MV is ahead of the auxiliary index must not be
 /// accepted as committed: keyed reads would otherwise use stale state.
 #[test_log::test(tokio::test)]
-async fn pending_epoch_with_missing_auxiliary_state_requires_rebuild() {
+async fn pending_epoch_with_missing_auxiliary_state_is_repaired() {
     let fixture = fixture(
         vec![
             "k".to_string(),
@@ -697,6 +697,7 @@ async fn pending_epoch_with_missing_auxiliary_state_requires_rebuild() {
         .await
         .unwrap()
         .unwrap();
+    let expected_rows = top_k_rows(&fixture).await;
     let record = fixture
         .runtime
         .latest_epoch(&fixture.view.view_id)
@@ -740,15 +741,33 @@ async fn pending_epoch_with_missing_auxiliary_state_requires_rebuild() {
         .await
         .unwrap();
 
-    let error = fixture
+    let replayed = fixture
         .runtime
         .refresh_top_k(&fixture.view)
         .await
-        .expect_err("a pending epoch with a missing state must not be accepted");
+        .unwrap()
+        .expect("the pending epoch should be completed after repairing the mirror state");
+    assert_eq!(replayed, record.epoch);
+    let state = fixture
+        .runtime
+        .list_states(&fixture.view.view_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|state| state.role == StateRole::State)
+        .unwrap();
     assert!(
-        format!("{error:?}").contains("incomplete auxiliary state"),
-        "unexpected error: {error:?}"
+        !fixture
+            .runtime
+            .open_table_by_id(&state.table_id)
+            .await
+            .unwrap()
+            .current_files(fixture.runtime.client())
+            .await
+            .unwrap()
+            .is_empty()
     );
+    assert_eq!(top_k_rows(&fixture).await, expected_rows);
 }
 
 /// A group key that is also the source primary key exercises the keyed source
