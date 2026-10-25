@@ -611,6 +611,176 @@ impl IvmRuntime {
             .await
     }
 
+    /// Fast path for a single changed source when every join edge is keyed by
+    /// the joined source's primary key.  The changed rows seed a walk over the
+    /// key graph; each reached source is probed by the edge keys instead of
+    /// being read in full.
+    async fn multi_join_single_source_terms(
+        &self,
+        context: &SessionContext,
+        view: &MultiJoinView,
+        changed: usize,
+        window: &super::SourceWindow,
+        schemas: &[SchemaRef],
+        primary_keys: &[Vec<String>],
+    ) -> Result<Option<(DataFrame, Vec<Option<DataFrame>>)>> {
+        if view.null_safe
+            || view
+                .sources
+                .iter()
+                .any(|source| source.primary_keys.is_empty())
+        {
+            return Ok(None);
+        }
+        let mut edges: Vec<(usize, Vec<String>, usize, Vec<String>)> = Vec::new();
+        for key in &view.keys {
+            if key.left_expr.is_some()
+                || key.right_expr.is_some()
+                || key.left_source == key.right_source
+            {
+                return Ok(None);
+            }
+            let position = edges.iter().position(|(left, _, right, _)| {
+                (*left == key.left_source && *right == key.right_source)
+                    || (*left == key.right_source && *right == key.left_source)
+            });
+            if let Some(position) = position {
+                let (left, left_keys, _right, right_keys) = &mut edges[position];
+                if *left == key.left_source {
+                    left_keys.push(key.left_column.clone());
+                    right_keys.push(key.right_column.clone());
+                } else {
+                    left_keys.push(key.right_column.clone());
+                    right_keys.push(key.left_column.clone());
+                }
+            } else {
+                edges.push((
+                    key.left_source,
+                    vec![key.left_column.clone()],
+                    key.right_source,
+                    vec![key.right_column.clone()],
+                ));
+            }
+        }
+        let same_columns = |left: &[String], right: &[String]| {
+            let mut left = left.to_vec();
+            let mut right = right.to_vec();
+            left.sort();
+            right.sort();
+            left == right
+        };
+        if edges.iter().any(|(left, left_keys, right, right_keys)| {
+            !same_columns(left_keys, &primary_keys[*left])
+                || !same_columns(right_keys, &primary_keys[*right])
+        }) {
+            return Ok(None);
+        }
+
+        let source = &view.sources[changed];
+        let delta =
+            self.groups_table_frame(context, source, window.added_files.clone())?;
+        let affected = delta
+            .clone()
+            .select(
+                source
+                    .primary_keys
+                    .iter()
+                    .map(|key| col(key.as_str()))
+                    .collect::<Vec<_>>(),
+            )?
+            .distinct()?;
+        let changed_rows = apply_side_filter(
+            context,
+            filter_deletes(delta, change_column(source))?,
+            &source.schema,
+            view.filters[changed].as_deref(),
+        )?;
+        let mut frames: Vec<Option<DataFrame>> = vec![None; view.sources.len()];
+        frames[changed] = Some(changed_rows);
+        loop {
+            let mut progressed = false;
+            for (left, left_keys, right, right_keys) in &edges {
+                let pair = if frames[*left].is_some() && frames[*right].is_none() {
+                    Some((*left, left_keys, *right, right_keys))
+                } else if frames[*right].is_some() && frames[*left].is_none() {
+                    Some((*right, right_keys, *left, left_keys))
+                } else {
+                    None
+                };
+                let Some((from, from_keys, to, to_keys)) = pair else {
+                    continue;
+                };
+                let contribution = frames[from]
+                    .as_ref()
+                    .ok_or_else(|| report!("multi join source frame is missing"))?
+                    .clone()
+                    .select(
+                        from_keys
+                            .iter()
+                            .zip(to_keys)
+                            .map(|(from, to)| col(from.as_str()).alias(to.as_str()))
+                            .collect::<Vec<_>>(),
+                    )?
+                    .distinct()?;
+                let rows = self
+                    .lookup_source_by_join_keys(
+                        context,
+                        &view.sources[to],
+                        contribution,
+                        to_keys,
+                        to_keys,
+                        true,
+                    )
+                    .await?;
+                let rows = apply_side_filter(
+                    context,
+                    rows,
+                    &view.sources[to].schema,
+                    view.filters[to].as_deref(),
+                )?;
+                frames[to] = Some(rows);
+                progressed = true;
+            }
+            if !progressed {
+                break;
+            }
+        }
+        for (index, frame) in frames.iter_mut().enumerate() {
+            if frame.is_none() {
+                let source = &view.sources[index];
+                *frame = Some(apply_side_filter(
+                    context,
+                    filter_deletes(
+                        self.current_table_frame(context, source)?,
+                        change_column(source),
+                    )?,
+                    &source.schema,
+                    view.filters[index].as_deref(),
+                )?);
+            }
+        }
+        let frames = frames
+            .into_iter()
+            .map(|frame| {
+                frame.ok_or_else(|| report!("multi join source frame is missing"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let current_rows = multi_join_frame(
+            context,
+            frames,
+            schemas,
+            primary_keys,
+            &view.keys,
+            &view.conditions,
+            &view.columns,
+            true,
+            view.null_safe,
+        )?;
+        let mut affected_sources = vec![None; view.sources.len()];
+        affected_sources[changed] = Some(affected);
+        Ok(Some((current_rows, affected_sources)))
+    }
+
     /// Refresh a multi-way inner join view.
     ///
     /// A keyed refresh recomputes the current matches of the rows whose
@@ -669,83 +839,111 @@ impl IvmRuntime {
             .collect::<Vec<_>>();
 
         if keyed {
-            let mut current = Vec::with_capacity(view.sources.len());
-            let mut changed: Vec<Option<DataFrame>> =
-                Vec::with_capacity(view.sources.len());
-            let mut affected: Vec<Option<DataFrame>> =
-                Vec::with_capacity(view.sources.len());
-            for (index, (source, window)) in view.sources.iter().zip(&windows).enumerate()
-            {
-                let now = apply_side_filter(
-                    &context,
-                    filter_deletes(
-                        self.current_table_frame(&context, source)?,
-                        change_column(source),
-                    )?,
-                    &source.schema,
-                    view.filters[index].as_deref(),
-                )?;
-                if window.added_files.is_empty() {
+            let changed_indices = windows
+                .iter()
+                .enumerate()
+                .filter(|(_, window)| !window.added_files.is_empty())
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let legacy = || -> Result<(DataFrame, Vec<Option<DataFrame>>)> {
+                let mut current = Vec::with_capacity(view.sources.len());
+                let mut changed: Vec<Option<DataFrame>> =
+                    Vec::with_capacity(view.sources.len());
+                let mut affected: Vec<Option<DataFrame>> =
+                    Vec::with_capacity(view.sources.len());
+                for (index, (source, window)) in
+                    view.sources.iter().zip(&windows).enumerate()
+                {
+                    let now = apply_side_filter(
+                        &context,
+                        filter_deletes(
+                            self.current_table_frame(&context, source)?,
+                            change_column(source),
+                        )?,
+                        &source.schema,
+                        view.filters[index].as_deref(),
+                    )?;
+                    if window.added_files.is_empty() {
+                        current.push(now);
+                        changed.push(None);
+                        affected.push(None);
+                        continue;
+                    }
+                    let delta = self.groups_table_frame(
+                        &context,
+                        source,
+                        window.added_files.clone(),
+                    )?;
+                    let key_names = source
+                        .primary_keys
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>();
+                    let key_exprs = source
+                        .primary_keys
+                        .iter()
+                        .map(|key| col(key.as_str()))
+                        .collect::<Vec<_>>();
+                    let delta_keys =
+                        delta.clone().select(key_exprs.clone())?.distinct()?;
+                    changed.push(Some(now.clone().join(
+                        delta_keys,
+                        JoinType::LeftSemi,
+                        &key_names,
+                        &key_names,
+                        None,
+                    )?));
+                    affected.push(Some(delta.select(key_exprs)?.distinct()?));
                     current.push(now);
-                    changed.push(None);
-                    affected.push(None);
-                    continue;
                 }
-                let delta = self.groups_table_frame(
-                    &context,
-                    source,
-                    window.added_files.clone(),
-                )?;
-                let key_names = source
-                    .primary_keys
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>();
-                let key_exprs = source
-                    .primary_keys
-                    .iter()
-                    .map(|key| col(key.as_str()))
-                    .collect::<Vec<_>>();
-                let delta_keys = delta.clone().select(key_exprs.clone())?.distinct()?;
-                changed.push(Some(now.clone().join(
-                    delta_keys,
-                    JoinType::LeftSemi,
-                    &key_names,
-                    &key_names,
-                    None,
-                )?));
-                affected.push(Some(delta.select(key_exprs)?.distinct()?));
-                current.push(now);
-            }
 
-            // The current matches of the changed rows, one term per changed
-            // source and deduplicated across them.
-            let mut terms = Vec::new();
-            for index in 0..view.sources.len() {
-                let Some(changed_rows) = changed[index].clone() else {
-                    continue;
-                };
-                let mut frames = current.clone();
-                frames[index] = changed_rows;
-                terms.push(multi_join_frame(
-                    &context,
-                    frames,
-                    &schemas,
-                    &primary_keys,
-                    &view.keys,
-                    &view.conditions,
-                    &view.columns,
-                    true,
-                    view.null_safe,
-                )?);
-            }
-            let mut current_rows = terms
-                .pop()
-                .ok_or_else(|| report!("multi join view has no changed sources"))?;
-            for term in terms {
-                current_rows = current_rows.union(term)?;
-            }
-            let current_rows = current_rows.distinct()?;
+                // The current matches of the changed rows, one term per changed
+                // source and deduplicated across them.
+                let mut terms = Vec::new();
+                for index in 0..view.sources.len() {
+                    let Some(changed_rows) = changed[index].clone() else {
+                        continue;
+                    };
+                    let mut frames = current.clone();
+                    frames[index] = changed_rows;
+                    terms.push(multi_join_frame(
+                        &context,
+                        frames,
+                        &schemas,
+                        &primary_keys,
+                        &view.keys,
+                        &view.conditions,
+                        &view.columns,
+                        true,
+                        view.null_safe,
+                    )?);
+                }
+                let mut current_rows = terms
+                    .pop()
+                    .ok_or_else(|| report!("multi join view has no changed sources"))?;
+                for term in terms {
+                    current_rows = current_rows.union(term)?;
+                }
+                Ok((current_rows.distinct()?, affected))
+            };
+            let (current_rows, affected) = if changed_indices.len() == 1 {
+                match self
+                    .multi_join_single_source_terms(
+                        &context,
+                        view,
+                        changed_indices[0],
+                        &windows[changed_indices[0]],
+                        &schemas,
+                        &primary_keys,
+                    )
+                    .await?
+                {
+                    Some(fast) => fast,
+                    None => legacy()?,
+                }
+            } else {
+                legacy()?
+            };
 
             let identity_names = multi_join_primary_keys(&primary_keys);
             let identity_refs = identity_names
