@@ -3580,8 +3580,7 @@ impl IvmRuntime {
         delta_right: Option<&DataFrame>,
         right_window: Option<&SourceWindow>,
     ) -> Result<Option<(DataFrame, DataFrame)>> {
-        if view.null_safe
-            || view.key_exprs.left.iter().any(|expr| !expr.is_empty())
+        if view.key_exprs.left.iter().any(|expr| !expr.is_empty())
             || view.key_exprs.right.iter().any(|expr| !expr.is_empty())
         {
             return Ok(None);
@@ -3688,21 +3687,40 @@ impl IvmRuntime {
         right_keys: &[String],
         left_exprs: &[String],
         right_exprs: &[String],
+        force: bool,
     ) -> Result<Vec<String>> {
         let mut commit_ids = Vec::new();
-        if let Some(state) = self
-            .ensure_join_side_state(view_id, left, join_keys, StateRole::JoinLeft)
+        let left_state = if force {
+            self.ensure_join_side_state_forced(
+                view_id,
+                left,
+                join_keys,
+                StateRole::JoinLeft,
+            )
             .await?
-        {
+        } else {
+            self.ensure_join_side_state(view_id, left, join_keys, StateRole::JoinLeft)
+                .await?
+        };
+        if let Some(state) = left_state {
             commit_ids.extend(
                 self.sync_join_side_state(left, &state, join_keys, left_exprs)
                     .await?,
             );
         }
-        if let Some(state) = self
-            .ensure_join_side_state(view_id, right, right_keys, StateRole::JoinRight)
+        let right_state = if force {
+            self.ensure_join_side_state_forced(
+                view_id,
+                right,
+                right_keys,
+                StateRole::JoinRight,
+            )
             .await?
-        {
+        } else {
+            self.ensure_join_side_state(view_id, right, right_keys, StateRole::JoinRight)
+                .await?
+        };
+        if let Some(state) = right_state {
             commit_ids.extend(
                 self.sync_join_side_state(right, &state, right_keys, right_exprs)
                     .await?,
@@ -5403,11 +5421,12 @@ impl IvmRuntime {
         let keyed =
             !view.left.primary_keys.is_empty() && !view.right.primary_keys.is_empty();
         let left_state = if keyed {
-            self.ensure_join_side_state(
+            self.ensure_join_side_state_for_view(
                 &view.view_id,
                 &view.left,
                 &view.join_keys,
                 StateRole::JoinLeft,
+                view.null_safe,
             )
             .await?
         } else {
@@ -5419,11 +5438,12 @@ impl IvmRuntime {
             &view.right_keys
         };
         let right_state = if keyed {
-            self.ensure_join_side_state(
+            self.ensure_join_side_state_for_view(
                 &view.view_id,
                 &view.right,
                 right_keys,
                 StateRole::JoinRight,
+                view.null_safe,
             )
             .await?
         } else {
@@ -5795,6 +5815,7 @@ impl IvmRuntime {
                 right_keys,
                 &view.key_exprs.left,
                 &view.key_exprs.right,
+                view.null_safe,
             )
             .await?,
         );
@@ -5927,11 +5948,12 @@ impl IvmRuntime {
             &view.right_keys
         };
         let right_state = if keyed {
-            self.ensure_join_side_state(
+            self.ensure_join_side_state_for_view(
                 &view.view_id,
                 &view.right,
                 right_keys,
                 StateRole::JoinRight,
+                view.null_safe,
             )
             .await?
         } else {
@@ -6526,6 +6548,7 @@ impl IvmRuntime {
                 right_keys,
                 &view.key_exprs.left,
                 &view.key_exprs.right,
+                view.null_safe,
             )
             .await?,
         );
@@ -7027,11 +7050,12 @@ impl IvmRuntime {
         // rebuild would remain visible to later keyed lookups.
         if keyed {
             let left_state = self
-                .ensure_join_side_state(
+                .ensure_join_side_state_for_view(
                     &view.view_id,
                     &view.left,
                     &view.join_keys,
                     StateRole::JoinLeft,
+                    view.null_safe,
                 )
                 .await?;
             if let Some(state) = left_state {
@@ -7051,11 +7075,12 @@ impl IvmRuntime {
                 &view.right_keys
             };
             let right_state = self
-                .ensure_join_side_state(
+                .ensure_join_side_state_for_view(
                     &view.view_id,
                     &view.right,
                     right_keys,
                     StateRole::JoinRight,
+                    view.null_safe,
                 )
                 .await?;
             if let Some(state) = right_state {

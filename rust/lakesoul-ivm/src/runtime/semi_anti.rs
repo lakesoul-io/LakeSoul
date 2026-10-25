@@ -851,22 +851,24 @@ impl IvmRuntime {
             && !view.left.primary_keys.is_empty()
             && !view.right.primary_keys.is_empty();
         let left_state = if side_keyed {
-            self.ensure_join_side_state(
+            self.ensure_join_side_state_for_view(
                 &view.view_id,
                 &view.left,
                 &view.join_keys,
                 StateRole::JoinLeft,
+                view.null_safe,
             )
             .await?
         } else {
             None
         };
         let right_state = if side_keyed {
-            self.ensure_join_side_state(
+            self.ensure_join_side_state_for_view(
                 &view.view_id,
                 &view.right,
                 right_join_keys(view),
                 StateRole::JoinRight,
+                view.null_safe,
             )
             .await?
         } else {
@@ -948,7 +950,6 @@ impl IvmRuntime {
         let left_changed = !left_window.added_files.is_empty();
         let right_changed = !right_window.added_files.is_empty();
         let fast_simple = side_keyed
-            && !view.null_safe
             && !view.count_mode
             && view.right_aggregate.is_none()
             && left_changed != right_changed;
@@ -1422,6 +1423,7 @@ impl IvmRuntime {
                     right_join_keys(view),
                     &[],
                     &[],
+                    view.null_safe,
                 )
                 .await?,
             );
@@ -2053,22 +2055,24 @@ impl IvmRuntime {
             && !view.left.primary_keys.is_empty()
             && !view.right.primary_keys.is_empty();
         let left_state = if side_keyed {
-            self.ensure_join_side_state(
+            self.ensure_join_side_state_for_view(
                 &view.view_id,
                 &view.left,
                 &view.join_keys,
                 StateRole::JoinLeft,
+                false,
             )
             .await?
         } else {
             None
         };
         let right_state = if side_keyed {
-            self.ensure_join_side_state(
+            self.ensure_join_side_state_for_view(
                 &view.view_id,
                 &view.right,
                 left_aggregate_right_keys(view),
                 StateRole::JoinRight,
+                false,
             )
             .await?
         } else {
@@ -2446,6 +2450,7 @@ impl IvmRuntime {
                     left_aggregate_right_keys(view),
                     &[],
                     &[],
+                    false,
                 )
                 .await?,
             );

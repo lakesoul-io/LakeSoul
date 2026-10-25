@@ -316,7 +316,52 @@ impl super::IvmRuntime {
         join_keys: &[String],
         role: crate::metadata::StateRole,
     ) -> crate::error::Result<Option<IvmTable>> {
-        if !join_side_needs_state(source, join_keys) {
+        self.ensure_join_side_state_with_force(view_id, source, join_keys, role, false)
+            .await
+    }
+
+    /// Like [`Self::ensure_join_side_state`], but also creates a side state
+    /// when the source PK already equals the join key.  NULL-safe joins need
+    /// this because the direct source lookup deliberately skips NULL keys,
+    /// while the binary side-state key preserves them.
+    pub(crate) async fn ensure_join_side_state_forced(
+        &self,
+        view_id: &str,
+        source: &IvmTable,
+        join_keys: &[String],
+        role: crate::metadata::StateRole,
+    ) -> crate::error::Result<Option<IvmTable>> {
+        self.ensure_join_side_state_with_force(view_id, source, join_keys, role, true)
+            .await
+    }
+
+    /// Ensure a side state, forcing the auxiliary table for NULL-safe joins.
+    pub(crate) async fn ensure_join_side_state_for_view(
+        &self,
+        view_id: &str,
+        source: &IvmTable,
+        join_keys: &[String],
+        role: crate::metadata::StateRole,
+        null_safe: bool,
+    ) -> crate::error::Result<Option<IvmTable>> {
+        if null_safe {
+            self.ensure_join_side_state_forced(view_id, source, join_keys, role)
+                .await
+        } else {
+            self.ensure_join_side_state(view_id, source, join_keys, role)
+                .await
+        }
+    }
+
+    async fn ensure_join_side_state_with_force(
+        &self,
+        view_id: &str,
+        source: &IvmTable,
+        join_keys: &[String],
+        role: crate::metadata::StateRole,
+        force: bool,
+    ) -> crate::error::Result<Option<IvmTable>> {
+        if !force && !join_side_needs_state(source, join_keys) {
             return Ok(None);
         }
         if let Some(existing) = self.metadata().get_state(view_id, role).await? {
