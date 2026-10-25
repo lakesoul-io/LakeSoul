@@ -1437,6 +1437,7 @@ fn sum_count_refresh_sql(
     keyed: bool,
     epoch: i64,
     changelog: bool,
+    active_keyed: bool,
 ) -> String {
     let keys = quoted_list(&view.group_keys);
     let aggregate_filter = view
@@ -1679,11 +1680,12 @@ fn sum_count_refresh_sql(
     } else {
         String::new()
     };
+    let active_source = if active_keyed { "active_input" } else { "mv" };
     format!(
         "with delta_pks as (select distinct {pks} from delta), \
          {delta_part}, {d2}, \
          already as (select distinct {keys} from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
-         active as (select * from mv where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
+         active as (select * from {active_source} where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
          merged as (select {coalesced_keys}, s.sum_v, s.count_v, s.{nonnull_c} as s_nonnull, \
                            s.\"__ivm_epoch\" as s_epoch, d2.dsum, d2.dcount, d2.dnonnull, \
                            coalesce(s.{nonnull_c} + d2.dnonnull, s.{nonnull_c}, d2.dnonnull) as n_nonnull \
@@ -1705,6 +1707,7 @@ fn sum_count_refresh_sql(
         pks = quoted_list(&view.source.primary_keys),
         nonnull_c = quote_ident(IVM_NONNULL_COUNT_COLUMN),
         order = quoted_list(&refresh_order_columns(&view.mv, &view.group_keys)),
+        active_source = active_source,
     )
 }
 
@@ -1800,7 +1803,12 @@ fn sum_count_rebuild_sql(view: &SumCountView, keyed: bool, epoch: i64) -> String
 /// The CTE chain of one value-count refresh window. It defines `counts`
 /// (`(group, value) -> dcount`), `state_del` / `state_ins` (the state rows to
 /// write) and `merged` (the post-window state with `n_count`).
-fn value_count_refresh_cte(view: &ValueCountView<'_>, keyed: bool, epoch: i64) -> String {
+fn value_count_refresh_cte(
+    view: &ValueCountView<'_>,
+    keyed: bool,
+    epoch: i64,
+    active_keyed: bool,
+) -> String {
     let keys = quoted_list(view.group_keys);
     let source_value = value_count_value_sql(view);
     let state_value = quote_ident(IVM_VALUE_COLUMN);
@@ -1875,12 +1883,17 @@ fn value_count_refresh_cte(view: &ValueCountView<'_>, keyed: bool, epoch: i64) -
         .map(|key| format!("(a.{q} IS NOT DISTINCT FROM {q})", q = quote_ident(key)))
         .collect::<Vec<_>>()
         .join(" and ");
+    let active_source = if active_keyed {
+        "state_active_input"
+    } else {
+        "state"
+    };
     format!(
         "{new_agg}, \
          {counts}, \
          already as (select distinct {state_list} from state \
                      where \"rowKinds\" = 'insert' and \"__ivm_epoch\" = {epoch}), \
-         active as (select * from state \
+         active as (select * from {active_source} \
                     where \"rowKinds\" = 'insert' and \"__ivm_epoch\" <> {epoch}), \
          merged as (select {coalesced}, s.{value_count}, s.\"__ivm_epoch\" as s_epoch, c.dcount, \
                            coalesce(s.{value_count} + c.dcount, s.{value_count}, c.dcount) as n_count \
@@ -1891,6 +1904,7 @@ fn value_count_refresh_cte(view: &ValueCountView<'_>, keyed: bool, epoch: i64) -
                        from merged where dcount is not null and n_count > 0 \
                          and not exists (select 1 from already a where {already_match}))",
         value_count = quote_ident(IVM_VALUE_COUNT_COLUMN),
+        active_source = active_source,
     )
 }
 
@@ -2444,8 +2458,7 @@ impl IvmRuntime {
                     .await?,
             );
             let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-            self.metadata
-                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                 .await?;
             self.advance_cursors(&view.view_id, window.cursors).await?;
             return Ok(Some(epoch));
@@ -2504,6 +2517,46 @@ impl IvmRuntime {
             dataframe(&context, Vec::new(), old_schema)?
         };
 
+        let mut active_keyed =
+            view.having.is_none() && view.mv.primary_keys == view.group_keys;
+        if active_keyed {
+            let key_exprs = view
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let mut affected = delta.clone().select(key_exprs.clone())?.distinct()?;
+            if keyed && !changelog {
+                affected = affected
+                    .union(old_frame.clone().select(key_exprs)?.distinct()?)?
+                    .distinct()?;
+            }
+            // The shared PK lookup treats NULL keys as "no lookup", while a
+            // grouped aggregate here can legitimately have a NULL group key.
+            // Fall back to the full MV scan for those windows.
+            let null_key = view
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()).is_null())
+                .reduce(|left, right| left.or(right))
+                .ok_or_else(|| report!("sum/count view has no group keys"))?;
+            let null_rows = count_frame_rows(affected.clone().filter(null_key)?).await?;
+            if null_rows == 0 {
+                let active = self
+                    .lookup_source_by_join_keys(
+                        &context,
+                        &view.mv,
+                        affected,
+                        &view.group_keys,
+                        &view.mv.primary_keys,
+                        true,
+                    )
+                    .await?;
+                context.register_table("active_input", active.into_view())?;
+            } else {
+                active_keyed = false;
+            }
+        }
         context.register_table("delta", delta.into_view())?;
         if keyed && !changelog {
             context.register_table("old", old_frame.into_view())?;
@@ -2532,7 +2585,7 @@ impl IvmRuntime {
             None => self.current_table_frame(&context, &view.mv)?,
         };
         context.register_table("mv", mv.into_view())?;
-        let sql = sum_count_refresh_sql(view, keyed, epoch, changelog);
+        let sql = sum_count_refresh_sql(view, keyed, epoch, changelog, active_keyed);
         let frame = context.sql(&sql).await?;
         commit_ids.extend(
             view.mv
@@ -2541,8 +2594,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
         Ok(Some(epoch))
@@ -2623,7 +2675,7 @@ impl IvmRuntime {
             &view.group_keys,
             &view.group_exprs,
         )?;
-        context.register_table("delta", delta.into_view())?;
+        context.register_table("delta", delta.clone().into_view())?;
         let old = project_group_keys_frame(
             &context,
             self.before_window_table_frame(
@@ -2636,14 +2688,64 @@ impl IvmRuntime {
             &view.group_keys,
             &view.group_exprs,
         )?;
-        context.register_table("old", old.into_view())?;
-        let src = project_group_keys_frame(
-            &context,
-            self.current_table_frame(&context, &view.source)?,
-            &view.source.schema,
-            &view.group_keys,
-            &view.group_exprs,
-        )?;
+        context.register_table("old", old.clone().into_view())?;
+        let src = if view.group_exprs.is_empty()
+            && !view.group_keys.is_empty()
+            && view.source.primary_keys.starts_with(&view.group_keys)
+        {
+            let key_exprs = view
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let affected_keys = delta
+                .clone()
+                .select(key_exprs.clone())?
+                .distinct()?
+                .union(old.clone().select(key_exprs)?.distinct()?)?
+                .distinct()?;
+            let null_key = view
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()).is_null())
+                .reduce(|left, right| left.or(right))
+                .ok_or_else(|| report!("grouping-sets view has no group keys"))?;
+            if count_frame_rows(affected_keys.clone().filter(null_key)?).await? == 0 {
+                let source_now = self
+                    .lookup_source_by_join_keys(
+                        &context,
+                        &view.source,
+                        affected_keys,
+                        &view.group_keys,
+                        &view.group_keys,
+                        true,
+                    )
+                    .await?;
+                project_group_keys_frame(
+                    &context,
+                    source_now,
+                    &view.source.schema,
+                    &view.group_keys,
+                    &view.group_exprs,
+                )?
+            } else {
+                project_group_keys_frame(
+                    &context,
+                    self.current_table_frame(&context, &view.source)?,
+                    &view.source.schema,
+                    &view.group_keys,
+                    &view.group_exprs,
+                )?
+            }
+        } else {
+            project_group_keys_frame(
+                &context,
+                self.current_table_frame(&context, &view.source)?,
+                &view.source.schema,
+                &view.group_keys,
+                &view.group_exprs,
+            )?
+        };
         context.register_table("src", src.into_view())?;
         context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
         let frame = context.sql(&grouping_sets_refresh_sql(view, epoch)).await?;
@@ -2654,8 +2756,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
         Ok(Some(epoch))
@@ -2718,8 +2819,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, baseline.cursors)
             .await?;
@@ -2789,8 +2889,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, baseline.cursors)
             .await?;
@@ -2869,7 +2968,6 @@ impl IvmRuntime {
         if window.added_files.is_empty() {
             return Ok(None);
         }
-        self.maybe_compact_state(view.state).await?;
         let record = match self
             .begin_window(view.view_id, &window.identity, view.mv)
             .await?
@@ -2899,8 +2997,7 @@ impl IvmRuntime {
                     .await?,
             );
             let mv_versions = output_partition_versions(&self.client, view.mv).await?;
-            self.metadata
-                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                 .await?;
             self.advance_cursors(view.view_id, window.cursors).await?;
             return Ok(Some(epoch));
@@ -2935,25 +3032,55 @@ impl IvmRuntime {
             context.register_table("old", old_frame.into_view())?;
         }
         context.register_table("state", Arc::new(self.table_provider(view.state)))?;
+        let state_value_keys = view
+            .group_keys
+            .iter()
+            .cloned()
+            .chain(std::iter::once(IVM_VALUE_COLUMN.to_string()))
+            .collect::<Vec<_>>();
+        let state_key_list = quoted_list(&state_value_keys);
+        let mut cte = value_count_refresh_cte(view, keyed, epoch, false);
+        let affected_state_keys = context
+            .sql(&format!(
+                "with {cte} select distinct {state_key_list} from counts"
+            ))
+            .await?;
+        let null_state_key = state_value_keys
+            .iter()
+            .map(|key| col(key.as_str()).is_null())
+            .reduce(|left, right| left.or(right))
+            .ok_or_else(|| report!("value-count view has no state keys"))?;
+        let active_keyed = view.state.primary_keys == state_value_keys
+            && count_frame_rows(affected_state_keys.clone().filter(null_state_key)?)
+                .await?
+                == 0;
+        if active_keyed {
+            let active = self
+                .lookup_source_by_join_keys(
+                    &context,
+                    view.state,
+                    affected_state_keys.clone(),
+                    &state_value_keys,
+                    &view.state.primary_keys,
+                    true,
+                )
+                .await?;
+            context.register_table("state_active_input", active.into_view())?;
+            cte = value_count_refresh_cte(view, keyed, epoch, true);
+        }
 
-        let cte = value_count_refresh_cte(view, keyed, epoch);
         let state_frame = context
             .sql(&format!(
                 "with {cte} select * from state_del union all select * from state_ins \
-                 order by {}, \"rowKinds\"",
-                quoted_list(
-                    &view
-                        .group_keys
-                        .iter()
-                        .cloned()
-                        .chain(std::iter::once(IVM_VALUE_COLUMN.to_string()))
-                        .collect::<Vec<_>>(),
-                )
+                 order by {state_key_list}, \"rowKinds\""
             ))
             .await?;
-        view.state
-            .append_stream(&self.client, state_frame.execute_stream().await?)
-            .await?;
+        commit_ids.extend(
+            view.state
+                .append_stream(&self.client, state_frame.execute_stream().await?)
+                .await?,
+        );
+        self.checkpoint_epoch_states(&record).await?;
 
         let affected = context
             .sql(&format!(
@@ -2961,8 +3088,29 @@ impl IvmRuntime {
                 quoted_list(view.group_keys)
             ))
             .await?;
+        let null_group_key = view
+            .group_keys
+            .iter()
+            .map(|key| col(key.as_str()).is_null())
+            .reduce(|left, right| left.or(right))
+            .ok_or_else(|| report!("value-count view has no group keys"))?;
+        if count_frame_rows(affected.clone().filter(null_group_key)?).await? == 0 {
+            let state_now = self
+                .lookup_source_by_join_keys(
+                    &context,
+                    view.state,
+                    affected.clone(),
+                    view.group_keys,
+                    view.group_keys,
+                    true,
+                )
+                .await?;
+            context.register_table("state_now", state_now.into_view())?;
+        } else {
+            context
+                .register_table("state_now", Arc::new(self.table_provider(view.state)))?;
+        }
         context.register_table("affected", affected.into_view())?;
-        context.register_table("state_now", Arc::new(self.table_provider(view.state)))?;
         context.register_table("mv", Arc::new(self.table_provider(view.mv)))?;
         let frame = context.sql(&value_count_mv_sql(view, epoch)).await?;
         commit_ids.extend(
@@ -2972,8 +3120,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(view.view_id, window.cursors).await?;
         Ok(Some(epoch))
@@ -3082,8 +3229,7 @@ impl IvmRuntime {
                     .await?,
             );
             let mv_versions = output_partition_versions(&self.client, view.mv).await?;
-            self.metadata
-                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                 .await?;
             self.advance_cursors(view.view_id, baseline.cursors).await?;
             self.metadata
@@ -3137,9 +3283,12 @@ impl IvmRuntime {
             )
         };
         let state_frame = context.sql(&state_sql).await?;
-        view.state
-            .append_stream(&self.client, state_frame.execute_stream().await?)
-            .await?;
+        commit_ids.extend(
+            view.state
+                .append_stream(&self.client, state_frame.execute_stream().await?)
+                .await?,
+        );
+        self.checkpoint_epoch_states(&record).await?;
 
         context.register_table("state_now", Arc::new(self.table_provider(view.state)))?;
         let rebuild = format!(
@@ -3163,8 +3312,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(view.view_id, baseline.cursors).await?;
         self.metadata

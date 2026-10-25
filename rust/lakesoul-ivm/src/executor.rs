@@ -38,19 +38,19 @@ use crate::error::Result;
 use crate::metadata::StateRole;
 use crate::runtime::{
     ChainPolicy, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_EPOCH_COLUMN,
-    IVM_NONNULL_COUNT_COLUMN, IVM_PAIR_IDENTITY_COLUMN, IVM_ROW_KINDS_COLUMN,
-    IVM_SOURCE_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN, IvmRuntime, JoinOutputColumn,
-    JoinSide, ViewSpec, approx_distinct_groups_mv_schema_for,
-    approx_percentile_groups_mv_schema_for, array_agg_groups_mv_schema_for,
-    bool_agg_groups_mv_schema_for, computed_agg_mv_schema_for,
-    cross_join_view_schema_for, decode_data_type, distinct_agg_groups_mv_schema_for,
-    full_join_view_schema_with_keys, grouping_sets_mv_schema_for,
-    join_view_schema_with_keys, keyed_join_output_primary_keys,
-    keyed_join_view_schema_with_keys, left_aggregate_mv_schema_with_outputs,
-    left_join_view_schema_with_keys, lookup_chain_mv_schema_for,
-    lookup_join_view_schema_for, median_groups_mv_schema_for,
-    min_max_groups_mv_schema_for, multi_agg_mv_schema_for, multi_join_append_schema_for,
-    multi_join_mv_schema_for, multi_join_primary_keys,
+    IVM_GROUP_ROW_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_PAIR_IDENTITY_COLUMN,
+    IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
+    IvmRuntime, JoinOutputColumn, JoinSide, ViewSpec,
+    approx_distinct_groups_mv_schema_for, approx_percentile_groups_mv_schema_for,
+    array_agg_groups_mv_schema_for, bool_agg_groups_mv_schema_for,
+    computed_agg_mv_schema_for, cross_join_view_schema_for, decode_data_type,
+    distinct_agg_groups_mv_schema_for, full_join_view_schema_with_keys,
+    grouping_sets_mv_schema_for, join_view_schema_with_keys,
+    keyed_join_output_primary_keys, keyed_join_view_schema_with_keys,
+    left_aggregate_mv_schema_with_outputs, left_join_view_schema_with_keys,
+    lookup_chain_mv_schema_for, lookup_join_view_schema_for, median_groups_mv_schema_for,
+    min_max_groups_mv_schema_for, multi_agg_mv_schema_for, multi_agg_state_schema_for,
+    multi_join_append_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
     multi_window_mv_schema_for_with_payload, nullable_join_key_schema,
     row_expr_mv_schema_for, semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
     sum_count_groups_mv_schema_for, top_k_expr_mv_schema_for, union_all_mv_schema_for,
@@ -1265,6 +1265,62 @@ impl IvmSqlExecutor {
             let table = create_ivm_table(self.runtime.client(), options).await?;
             return Ok(table.table_id);
         }
+        if let ViewSpec::MultiAgg {
+            source_table_id,
+            group_keys,
+            aggregates,
+            ..
+        } = spec
+        {
+            let source = self.runtime.open_table_by_id(source_table_id).await?;
+            let columns = aggregates
+                .iter()
+                .map(|aggregate| {
+                    Ok((
+                        aggregate.column.clone(),
+                        decode_data_type(&aggregate.result)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let schema =
+                multi_agg_state_schema_for(&source.schema, group_keys, &columns)?;
+            if let Some(existing) = self
+                .runtime
+                .metadata()
+                .get_state(spec.view_id(), StateRole::State)
+                .await?
+            {
+                let table = self.runtime.open_table_by_id(&existing.table_id).await?;
+                if schema_matches(&table.schema, &schema) {
+                    return Ok(table.table_id);
+                }
+                self.runtime
+                    .metadata()
+                    .unregister_state(spec.view_id(), StateRole::State)
+                    .await?;
+                let _ = self
+                    .runtime
+                    .client()
+                    .drop_table(&table.table_name, &table.namespace)
+                    .await;
+            }
+            let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
+            let mut options = IvmTableOptions::new(
+                format!("{}__ivm_state_{suffix}", mv.table_name),
+                format!("{}__ivm_state_{suffix}", mv.table_path),
+                schema,
+            )
+            .with_namespace(mv.namespace.clone())
+            .with_primary_keys(vec![IVM_GROUP_ROW_COLUMN.to_string()])
+            .with_bucket_columns(vec![IVM_GROUP_ROW_COLUMN.to_string()])
+            .with_file_format(mv.file_format);
+            if options.schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_ok() {
+                options = options.with_cdc_column(IVM_ROW_KINDS_COLUMN);
+            }
+            options.hash_bucket_num = mv.hash_bucket_num.clone();
+            let table = create_ivm_table(self.runtime.client(), options).await?;
+            return Ok(table.table_id);
+        }
         let (source_table_id, group_keys, group_exprs, value_column, value_expr) =
             match spec {
                 ViewSpec::MinMax {
@@ -1487,7 +1543,35 @@ impl Visitor for RelationCollector<'_> {
 }
 
 fn needs_state_table(spec: &ViewSpec) -> bool {
-    matches!(spec, ViewSpec::MinMax { .. } | ViewSpec::DistinctAgg { .. })
+    match spec {
+        ViewSpec::MinMax { .. } | ViewSpec::DistinctAgg { .. } => true,
+        ViewSpec::MultiAgg {
+            group_exprs,
+            aggregates,
+            filter,
+            having,
+            having_lookup,
+            ..
+        } => {
+            group_exprs.is_empty()
+                && filter.is_none()
+                && having.is_none()
+                && having_lookup.is_none()
+                && aggregates.iter().all(|aggregate| {
+                    aggregate
+                        .call
+                        .strip_prefix("SUM(")
+                        .and_then(|call| call.strip_suffix(')'))
+                        .is_some_and(|column| {
+                            !column.is_empty()
+                                && !column.contains(',')
+                                && !column.contains('(')
+                                && !column.contains(' ')
+                        })
+                })
+        }
+        _ => false,
+    }
 }
 
 /// Whether a spec is a global aggregate: its single MV row is rewritten

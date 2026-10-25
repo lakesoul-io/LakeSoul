@@ -130,6 +130,16 @@ impl JoinKeyEncoder {
         })
     }
 
+    /// Encode the join key from already-projected key arrays.
+    pub(crate) fn encode_columns(
+        &self,
+        columns: &[ArrayRef],
+    ) -> DataFusionResult<ArrayRef> {
+        Ok(Arc::new(self.encoder.encode_columns(columns).map_err(
+            |error| DataFusionError::Execution(error.to_string()),
+        )?))
+    }
+
     /// Append only the hidden key to a contribution batch.  Unlike the state
     /// payload, a join-key probe does not carry the source columns.
     pub(crate) fn encode_key_only(
@@ -236,17 +246,19 @@ impl JoinKeyEncoder {
 
 /// The CDC column of a side state table, if the source has one.
 pub(crate) fn join_side_state_cdc_column(source: &IvmTable) -> Option<String> {
+    let actual = |name: &str| {
+        source
+            .schema
+            .fields()
+            .iter()
+            .find(|field| field.name().eq_ignore_ascii_case(name))
+            .map(|field| field.name().clone())
+    };
     source
         .cdc_column
-        .clone()
-        .filter(|column| source.schema.field_with_name(column).is_ok())
-        .or_else(|| {
-            source
-                .schema
-                .field_with_name(IVM_ROW_KINDS_COLUMN)
-                .ok()
-                .map(|_| IVM_ROW_KINDS_COLUMN.to_string())
-        })
+        .as_deref()
+        .and_then(actual)
+        .or_else(|| actual(IVM_ROW_KINDS_COLUMN))
         .or_else(|| Some(IVM_ROW_KINDS_COLUMN.to_string()))
 }
 
@@ -340,7 +352,7 @@ impl super::IvmRuntime {
         state: &IvmTable,
         join_keys: &[String],
         key_exprs: &[String],
-    ) -> crate::error::Result<()> {
+    ) -> crate::error::Result<Vec<String>> {
         use futures::StreamExt;
         let context = super::refresh_session();
         let frame = materialize_join_keys(
@@ -349,22 +361,19 @@ impl super::IvmRuntime {
             key_exprs,
             join_keys,
         )?;
-        let encoder = JoinKeyEncoder::new_with_schema(
+        let encoder = std::sync::Arc::new(JoinKeyEncoder::new_with_schema(
             source,
             frame.schema().as_arrow(),
             join_keys,
-        )?;
-        let mut stream = frame.execute_stream().await?;
+        )?);
         state.truncate(&self.client).await?;
-        let mut pending = Vec::new();
-        while let Some(batch) = stream.next().await {
-            let batch = encoder.encode_batch(&batch?)?;
-            pending.push(batch);
-        }
-        if !pending.is_empty() {
-            state.append_batches(&self.client, pending).await?;
-        }
-        Ok(())
+        let stream = frame.execute_stream().await?.map(move |batch| {
+            let batch = batch?;
+            encoder.encode_batch(&batch).map_err(|error| {
+                datafusion::error::DataFusionError::Execution(format!("{error:?}"))
+            })
+        });
+        state.append_stream(&self.client, Box::pin(stream)).await
     }
 }
 
@@ -383,10 +392,10 @@ impl super::IvmRuntime {
         window: &super::SourceWindow,
         join_keys: &[String],
         key_exprs: &[String],
-    ) -> crate::error::Result<()> {
+    ) -> crate::error::Result<Vec<String>> {
         use futures::StreamExt;
         if window.added_files.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let context = super::refresh_session();
         let delta = materialize_join_keys(
@@ -437,77 +446,80 @@ impl super::IvmRuntime {
             None
         };
         let bucket_count = route_columns.as_ref().map_or(1, |_| bucket_count);
-        let plan = contribution.create_physical_plan().await?;
-        let plan = if let Some(columns) = route_columns.as_deref() {
-            super::keyed_plan::bucket_repartition_by_columns(plan, columns, bucket_count)?
-        } else {
-            plan
-        };
         let before_groups = source
             .before_window_groups(&self.client, &window.before_versions)
             .await?;
         let groups = super::keyed_plan::groups_by_bucket(before_groups, bucket_count);
-        let lookup = super::keyed_plan::IvmPkLookupExec::new_with_columns(
-            plan,
+        let provider = super::keyed_plan::IvmLookupTable::columns(
+            contribution,
             source.clone(),
             groups,
             pk_names.iter().map(|key| key.to_string()).collect(),
             pk_names.iter().map(|key| key.to_string()).collect(),
             bucket_count,
-        )?
-        .with_multi_match(true);
-        let streams = datafusion::physical_plan::execute_stream_partitioned(
-            std::sync::Arc::new(lookup),
-            context.task_ctx(),
+            route_columns,
+            true,
+        );
+        let before = context.read_table(std::sync::Arc::new(provider))?;
+        let before_schema = before.schema().clone();
+        let projections = source
+            .schema
+            .fields()
+            .iter()
+            .map(|field| {
+                let prefixed = format!(
+                    "{}{}",
+                    super::keyed_plan::IVM_STATE_COLUMN_PREFIX,
+                    field.name()
+                );
+                let actual = before_schema
+                    .fields()
+                    .iter()
+                    .find(|candidate| {
+                        candidate.name() == &prefixed
+                            || candidate.name().eq_ignore_ascii_case(&prefixed)
+                    })
+                    .map(|candidate| candidate.name().clone())
+                    .unwrap_or(prefixed);
+                super::column_expr(&actual).alias(field.name())
+            })
+            .collect::<Vec<_>>();
+        let old = materialize_join_keys(
+            &context,
+            before.select(projections)?,
+            key_exprs,
+            join_keys,
         )?;
-        let mut before_batches = Vec::new();
-        for mut stream in streams {
-            while let Some(batch) = stream.next().await {
-                before_batches.push(batch?);
-            }
-        }
-        let old = if before_batches.is_empty() {
-            None
-        } else {
-            let frame = context.read_batches(before_batches)?;
-            let projections = source
-                .schema
-                .fields()
-                .iter()
-                .map(|field| {
-                    datafusion::prelude::col(format!(
-                        "{}{}",
-                        super::keyed_plan::IVM_STATE_COLUMN_PREFIX,
-                        field.name()
-                    ))
-                    .alias(field.name())
-                })
-                .collect::<Vec<_>>();
-            Some(materialize_join_keys(
-                &context,
-                frame.select(projections)?,
-                key_exprs,
-                join_keys,
-            )?)
-        };
 
-        let mut pending = Vec::new();
-        if let Some(old) = old {
-            let mut old_stream = old.execute_stream().await?;
-            while let Some(batch) = old_stream.next().await {
-                let batch =
-                    set_change_kind(&encoder.encode_batch(&batch?)?, &kind, "delete")?;
-                pending.push(batch);
-            }
-        }
-        let mut delta_stream = delta.execute_stream().await?;
-        while let Some(batch) = delta_stream.next().await {
-            pending.push(encoder.encode_batch(&batch?)?);
-        }
-        if !pending.is_empty() {
-            state.append_batches(&self.client, pending).await?;
-        }
-        Ok(())
+        let encoder = std::sync::Arc::new(encoder);
+        let mut streams: Vec<
+            std::pin::Pin<
+                Box<
+                    dyn futures::Stream<Item = datafusion::error::Result<RecordBatch>>
+                        + Send,
+                >,
+            >,
+        > = Vec::new();
+        let old_encoder = encoder.clone();
+        let old_stream = old.execute_stream().await?;
+        streams.push(Box::pin(old_stream.map(move |batch| {
+            let batch = batch?;
+            set_change_kind(&old_encoder.encode_batch(&batch)?, &kind, "delete").map_err(
+                |error| {
+                    datafusion::error::DataFusionError::Execution(format!("{error:?}"))
+                },
+            )
+        })));
+        let delta_encoder = encoder;
+        let delta_stream = delta.execute_stream().await?;
+        streams.push(Box::pin(delta_stream.map(move |batch| {
+            let batch = batch?;
+            delta_encoder.encode_batch(&batch).map_err(|error| {
+                datafusion::error::DataFusionError::Execution(format!("{error:?}"))
+            })
+        })));
+        let stream = Box::pin(futures::stream::iter(streams).flatten());
+        state.append_stream(&self.client, stream).await
     }
 }
 

@@ -540,17 +540,29 @@ impl IvmRuntime {
                 // must be retracted even though no new row survives.
                 let affected = delta.clone().select(key_exprs.clone())?.distinct()?;
                 let source_now = filter_deletes(delta, change_column(&view.source))?;
-                let mv = match &partitions {
-                    Some(restriction) => {
-                        self.current_table_frame_filtered_partitions(
-                            &context,
-                            &view.mv,
-                            Vec::new(),
-                            restriction,
-                        )
-                        .await?
+                let mv = if view.mv.primary_keys == view.source.primary_keys {
+                    self.lookup_source_by_join_keys(
+                        &context,
+                        &view.mv,
+                        affected.clone(),
+                        &view.source.primary_keys,
+                        &view.mv.primary_keys,
+                        true,
+                    )
+                    .await?
+                } else {
+                    match &partitions {
+                        Some(restriction) => {
+                            self.current_table_frame_filtered_partitions(
+                                &context,
+                                &view.mv,
+                                Vec::new(),
+                                restriction,
+                            )
+                            .await?
+                        }
+                        None => self.current_table_frame(&context, &view.mv)?,
                     }
-                    None => self.current_table_frame(&context, &view.mv)?,
                 };
                 (source_now, mv, affected)
             };
@@ -629,8 +641,7 @@ impl IvmRuntime {
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         let mut cursors = window.cursors;
         for scalar_window in scalar_windows {
@@ -700,8 +711,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, baseline.cursors)
             .await?;

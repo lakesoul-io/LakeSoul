@@ -27,12 +27,16 @@ use arrow::compute::{SortOptions, cast, take};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
+use async_trait::async_trait;
+use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::{ScalarValue, tree_node::TreeNodeRecursion};
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
+use datafusion::logical_expr::TableType;
 use datafusion::physical_expr::expressions::Column as PhysicalColumn;
 use datafusion::physical_expr::{
     EquivalenceProperties, LexOrdering, PhysicalExpr, PhysicalSortExpr,
 };
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
@@ -42,7 +46,7 @@ use datafusion::physical_plan::{
     PlanProperties, SendableRecordBatchStream,
 };
 use datafusion::physical_plan::{RangePartitioning, SplitPoint};
-use datafusion::prelude::{col, lit};
+use datafusion::prelude::{DataFrame, col, lit};
 use futures::StreamExt;
 use tokio::sync::Semaphore;
 
@@ -367,10 +371,16 @@ pub(crate) const IVM_STATE_COLUMN_PREFIX: &str = "__ivm_state_";
 /// Number of state reads that may execute concurrently in one plan.  The
 /// physical plan is partitioned by hash bucket, which can be more than the
 /// four active reader/state tasks the pilot is allowed to run.
-/// Maximum number of contribution keys in one PK lookup read.  Chunking keeps
-/// the reader filter/index request bounded instead of materializing one huge
-/// IN expression.
+/// Maximum number of contribution keys in one binary side-state lookup read.
+/// Real-column lookups use bounded IN lists or a single bucket scan, while
+/// binary keys keep this bound so the reader request does not grow with the
+/// contribution batch.
 pub(crate) const PK_LOOKUP_CHUNK_ROWS: usize = 4096;
+
+/// Above this many values a pushed-down IN list costs more to evaluate over
+/// the state rows than reading the bucket and matching the exact row key in
+/// memory.  The lookup plan still performs the exact composite-key match.
+const PK_LOOKUP_IN_LIST_LIMIT: usize = 4096;
 
 pub(crate) fn max_active_tasks() -> usize {
     std::env::var("LAKESOUL_IVM_MAX_ACTIVE_TASKS")
@@ -534,12 +544,23 @@ fn state_output_schema(input: &SchemaRef, state: &SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(fields))
 }
 
+enum PkFilters {
+    /// Read each contribution chunk with its own pushed-down filter.
+    Pushdown(Vec<datafusion::prelude::Expr>),
+    /// At least one key column has too many values for a cheap IN list.
+    /// Read the bucket once for the whole contribution batch, then use the
+    /// exact Arrow row keys to match.
+    ScanAll(Vec<datafusion::prelude::Expr>),
+}
+
 fn key_filter_exprs(
     batch: &RecordBatch,
     key: &PkLookupKey,
-) -> DataFusionResult<Vec<datafusion::prelude::Expr>> {
+) -> DataFusionResult<PkFilters> {
     match key {
-        PkLookupKey::BinaryRow { column } => state_key_filter(batch, column),
+        PkLookupKey::BinaryRow { column } => {
+            Ok(PkFilters::Pushdown(state_key_filter(batch, column)?))
+        }
         PkLookupKey::Columns {
             input_columns,
             table_columns,
@@ -564,28 +585,56 @@ fn key_filter_exprs(
                 }
             }
             if rows.is_empty() {
-                return Ok(Vec::new());
+                return Ok(PkFilters::Pushdown(Vec::new()));
             }
             if table_columns.len() == 1 {
                 let list = rows
                     .into_iter()
                     .map(|mut values| lit(values.remove(0)))
-                    .collect();
-                return Ok(vec![col(table_columns[0].as_str()).in_list(list, false)]);
-            }
-            let mut filter: Option<datafusion::prelude::Expr> = None;
-            for values in rows {
-                let mut conjunction =
-                    col(table_columns[0].as_str()).eq(lit(values[0].clone()));
-                for (column, value) in table_columns.iter().zip(values).skip(1) {
-                    conjunction = conjunction.and(col(column.as_str()).eq(lit(value)));
+                    .collect::<Vec<_>>();
+                if list.len() > PK_LOOKUP_IN_LIST_LIMIT {
+                    return Ok(PkFilters::ScanAll(vec![lit(true)]));
                 }
-                filter = Some(match filter {
-                    Some(existing) => existing.or(conjunction),
-                    None => conjunction,
-                });
+                return Ok(PkFilters::Pushdown(vec![
+                    col(table_columns[0].as_str()).in_list(list, false),
+                ]));
             }
-            Ok(filter.into_iter().collect())
+            // A composite key must not become one OR term per contribution
+            // row: the state reader evaluates the filter against every state
+            // row, so 4k OR terms turn a small refresh into a quadratic scan.
+            // Push one selective IN list instead.  It is a superset of the
+            // exact composite key set; the row-key lookup in IvmPkLookupExec
+            // performs the final exact match.  One list also avoids paying
+            // the membership cost once per key column.
+            let mut values_by_column = vec![Vec::new(); table_columns.len()];
+            for values in rows {
+                for (index, value) in values.into_iter().enumerate() {
+                    values_by_column[index].push(value);
+                }
+            }
+            if values_by_column.iter().any(|values| values.is_empty()) {
+                return Ok(PkFilters::Pushdown(vec![lit(false)]));
+            }
+            // If one key column already exceeds the cheap IN-list bound,
+            // filtering on another low-cardinality column is usually not
+            // selective enough to justify re-reading the whole bucket for
+            // every contribution chunk.  Read the bucket once for the batch
+            // and let the exact row-key match below do the work.
+            if values_by_column
+                .iter()
+                .any(|values| values.len() > PK_LOOKUP_IN_LIST_LIMIT)
+            {
+                return Ok(PkFilters::ScanAll(vec![lit(true)]));
+            }
+            let chosen = values_by_column
+                .into_iter()
+                .enumerate()
+                .min_by_key(|(_, values)| values.len())
+                .expect("composite key has at least one column");
+            Ok(PkFilters::Pushdown(vec![
+                col(table_columns[chosen.0].as_str())
+                    .in_list(chosen.1.into_iter().map(lit).collect(), false),
+            ]))
         }
     }
 }
@@ -986,12 +1035,18 @@ impl ExecutionPlan for IvmPkLookupExec {
                         let started = std::time::Instant::now();
                         let mut outputs = Vec::new();
                         let mut state_rows = 0usize;
-                        for offset in (0..batch.num_rows()).step_by(PK_LOOKUP_CHUNK_ROWS)
-                        {
-                            let length =
-                                PK_LOOKUP_CHUNK_ROWS.min(batch.num_rows() - offset);
-                            let chunk = batch.slice(offset, length);
-                            let filters = key_filter_exprs(&chunk, &key)?;
+                        let columns_key = matches!(&key, PkLookupKey::Columns { .. });
+                        // Real-column keys build bounded IN lists (or fall
+                        // back to one bucket scan), so one read for the whole
+                        // contribution batch is enough.  Binary side-state
+                        // keys keep chunking because their IN list is not
+                        // bounded.
+                        let batch_filters = match key_filter_exprs(&batch, &key)? {
+                            PkFilters::ScanAll(filters) => Some(filters),
+                            PkFilters::Pushdown(filters) if columns_key => Some(filters),
+                            PkFilters::Pushdown(_) => None,
+                        };
+                        if let Some(filters) = batch_filters {
                             let state_batches = read_lookup_chunk(
                                 table.clone(),
                                 groups.clone(),
@@ -999,12 +1054,12 @@ impl ExecutionPlan for IvmPkLookupExec {
                                 gate.clone(),
                             )
                             .await?;
-                            state_rows += state_batches
+                            state_rows = state_batches
                                 .iter()
                                 .map(RecordBatch::num_rows)
                                 .sum::<usize>();
                             outputs.push(lookup_batch(
-                                &chunk,
+                                &batch,
                                 &state_batches,
                                 &state_schema,
                                 &out_schema,
@@ -1012,6 +1067,38 @@ impl ExecutionPlan for IvmPkLookupExec {
                                 multi_match,
                                 emit_unmatched,
                             )?);
+                        } else {
+                            for offset in
+                                (0..batch.num_rows()).step_by(PK_LOOKUP_CHUNK_ROWS)
+                            {
+                                let length =
+                                    PK_LOOKUP_CHUNK_ROWS.min(batch.num_rows() - offset);
+                                let chunk = batch.slice(offset, length);
+                                let filters = match key_filter_exprs(&chunk, &key)? {
+                                    PkFilters::Pushdown(filters)
+                                    | PkFilters::ScanAll(filters) => filters,
+                                };
+                                let state_batches = read_lookup_chunk(
+                                    table.clone(),
+                                    groups.clone(),
+                                    filters,
+                                    gate.clone(),
+                                )
+                                .await?;
+                                state_rows += state_batches
+                                    .iter()
+                                    .map(RecordBatch::num_rows)
+                                    .sum::<usize>();
+                                outputs.push(lookup_batch(
+                                    &chunk,
+                                    &state_batches,
+                                    &state_schema,
+                                    &out_schema,
+                                    &key,
+                                    multi_match,
+                                    emit_unmatched,
+                                )?);
+                            }
                         }
                         let output = match outputs.len() {
                             0 => RecordBatch::new_empty(out_schema.clone()),
@@ -1033,6 +1120,244 @@ impl ExecutionPlan for IvmPkLookupExec {
             self.schema.clone(),
             stream,
         )))
+    }
+}
+
+/// A lazy table provider for a keyed lookup.
+///
+/// The contribution plan is rebuilt on every scan.  A refresh query may
+/// reference the same lookup frame more than once (for example a join's
+/// `already` and `deletes` sides); reusing one physical lookup plan would
+/// consume its input partitions on the first execution.
+pub(crate) struct IvmLookupTable {
+    contribution: DataFrame,
+    table: IvmTable,
+    groups_by_bucket: Vec<Vec<PartitionFiles>>,
+    key: PkLookupKey,
+    bucket_count: usize,
+    route_columns: Option<Vec<String>>,
+    bucket_key: Option<String>,
+    multi_match: bool,
+    schema: SchemaRef,
+}
+
+impl IvmLookupTable {
+    pub(crate) fn columns(
+        contribution: DataFrame,
+        table: IvmTable,
+        groups_by_bucket: Vec<Vec<PartitionFiles>>,
+        input_columns: Vec<String>,
+        table_columns: Vec<String>,
+        bucket_count: usize,
+        route_columns: Option<Vec<String>>,
+        multi_match: bool,
+    ) -> Self {
+        let input_schema = Arc::new(contribution.schema().as_arrow().clone());
+        let schema = state_output_schema(&input_schema, &table.schema);
+        Self {
+            contribution,
+            table,
+            groups_by_bucket,
+            key: PkLookupKey::Columns {
+                input_columns,
+                table_columns,
+            },
+            bucket_count,
+            route_columns,
+            bucket_key: None,
+            multi_match,
+            schema,
+        }
+    }
+
+    pub(crate) fn binary(
+        contribution: DataFrame,
+        table: IvmTable,
+        groups_by_bucket: Vec<Vec<PartitionFiles>>,
+        key_column: String,
+        bucket_count: usize,
+        multi_match: bool,
+    ) -> Self {
+        let input_schema = Arc::new(contribution.schema().as_arrow().clone());
+        let schema = state_output_schema(&input_schema, &table.schema);
+        Self {
+            contribution,
+            table,
+            groups_by_bucket,
+            key: PkLookupKey::BinaryRow {
+                column: key_column.clone(),
+            },
+            bucket_count,
+            route_columns: None,
+            bucket_key: (bucket_count > 1).then_some(key_column),
+            multi_match,
+            schema,
+        }
+    }
+
+    async fn build_plan(&self) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let plan = self.contribution.create_physical_plan().await?;
+        let plan = if let Some(columns) = self.route_columns.as_deref() {
+            bucket_repartition_by_columns(plan, columns, self.bucket_count)
+                .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?
+        } else if let Some(key) = self.bucket_key.as_deref() {
+            bucket_repartition(plan, key, self.bucket_count)
+                .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?
+        } else {
+            plan
+        };
+        let lookup = match self.key.clone() {
+            PkLookupKey::BinaryRow { column } => IvmPkLookupExec::new(
+                plan,
+                self.table.clone(),
+                self.groups_by_bucket.clone(),
+                column,
+                self.bucket_count,
+            )?,
+            PkLookupKey::Columns {
+                input_columns,
+                table_columns,
+            } => IvmPkLookupExec::new_with_columns(
+                plan,
+                self.table.clone(),
+                self.groups_by_bucket.clone(),
+                input_columns,
+                table_columns,
+                self.bucket_count,
+            )?,
+        };
+        Ok(Arc::new(lookup.with_multi_match(self.multi_match)))
+    }
+}
+
+impl std::fmt::Debug for IvmLookupTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IvmLookupTable")
+    }
+}
+
+/// A one-partition plan that hides its inner plan from physical optimizers.
+struct IvmHiddenPlanExec {
+    plan: Arc<dyn ExecutionPlan>,
+    properties: Arc<PlanProperties>,
+}
+
+impl IvmHiddenPlanExec {
+    fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
+        let schema = plan.schema();
+        let properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(schema),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        Self { plan, properties }
+    }
+}
+
+impl std::fmt::Debug for IvmHiddenPlanExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IvmHiddenPlanExec")
+    }
+}
+
+impl DisplayAs for IvmHiddenPlanExec {
+    fn fmt_as(
+        &self,
+        _format: DisplayFormatType,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        write!(f, "IvmHiddenPlanExec")
+    }
+}
+
+impl ExecutionPlan for IvmHiddenPlanExec {
+    fn name(&self) -> &str {
+        "IvmHiddenPlanExec"
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.plan.schema()
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        Vec::new()
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if !children.is_empty() {
+            return Err(DataFusionError::Internal(
+                "hidden lookup plan expects no children".to_string(),
+            ));
+        }
+        Ok(self)
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<datafusion::execution::TaskContext>,
+    ) -> DataFusionResult<SendableRecordBatchStream> {
+        if partition != 0 {
+            return Err(DataFusionError::Execution(
+                "hidden lookup plan has one partition".to_string(),
+            ));
+        }
+        self.plan.execute(0, context)
+    }
+}
+
+#[async_trait]
+impl TableProvider for IvmLookupTable {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Temporary
+    }
+
+    async fn scan(
+        &self,
+        _state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        _filters: &[datafusion::prelude::Expr],
+        _limit: Option<usize>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let lookup = self.build_plan().await?;
+        let hidden: Arc<dyn ExecutionPlan> = Arc::new(IvmHiddenPlanExec::new(Arc::new(
+            CoalescePartitionsExec::new(lookup),
+        )));
+        let Some(projection) = projection else {
+            return Ok(hidden);
+        };
+        let schema = hidden.schema();
+        let exprs = projection
+            .iter()
+            .map(|index| {
+                let field = schema.field(*index);
+                (
+                    Arc::new(PhysicalColumn::new(field.name(), *index))
+                        as Arc<dyn PhysicalExpr>,
+                    field.name().clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        Ok(Arc::new(ProjectionExec::try_new(exprs, hidden)?))
     }
 }
 
@@ -1387,6 +1712,56 @@ mod tests {
         let out = out.as_any().downcast_ref::<Decimal128Array>().unwrap();
         assert_eq!(out.value(0), 150);
         assert_eq!(out.value(1), 25);
+    }
+
+    #[test]
+    fn composite_key_filters_use_one_selective_in_list() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("b", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec!["x", "y"])),
+            ],
+        )
+        .unwrap();
+        let key = PkLookupKey::Columns {
+            input_columns: vec!["a".to_string(), "b".to_string()],
+            table_columns: vec!["a".to_string(), "b".to_string()],
+        };
+        let PkFilters::Pushdown(filters) = key_filter_exprs(&batch, &key).unwrap() else {
+            panic!("small composite key should use pushed-down filters");
+        };
+        assert_eq!(filters.len(), 1);
+        assert!(format!("{}", filters[0]).contains("IN"));
+    }
+
+    #[test]
+    fn large_composite_key_sets_scan_the_bucket_once() {
+        let rows = PK_LOOKUP_IN_LIST_LIMIT + 1;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("b", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..rows as i64)),
+                Arc::new(Int64Array::from_iter_values(0..rows as i64)),
+            ],
+        )
+        .unwrap();
+        let key = PkLookupKey::Columns {
+            input_columns: vec!["a".to_string(), "b".to_string()],
+            table_columns: vec!["a".to_string(), "b".to_string()],
+        };
+        assert!(matches!(
+            key_filter_exprs(&batch, &key).unwrap(),
+            PkFilters::ScanAll(_)
+        ));
     }
 
     #[test]

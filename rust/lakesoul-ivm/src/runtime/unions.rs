@@ -370,6 +370,49 @@ fn union_distinct_delta_ctes(
     Ok(ctes.join(", "))
 }
 
+/// The distinct values touched by the changed source rows, including the
+/// before image of a keyed update/delete.  This is the lookup contribution for
+/// the keyed MV read.
+fn union_distinct_affected_sql(
+    view: &UnionDistinctView,
+    keyed: bool,
+    changed: &[bool],
+) -> Result<String> {
+    let columns = union_distinct_columns(view)?;
+    let cols = quoted_list(&columns);
+    let mut parts = Vec::new();
+    for (index, source) in view.sources.iter().enumerate() {
+        if source.table.primary_keys.is_empty() || !changed[index] {
+            continue;
+        }
+        let table = &source.table;
+        let change = change_column(table);
+        let filter = source.filter.as_deref();
+        let projection = union_distinct_projection_sql(&columns, &source.exprs);
+        let new_table = format!("src{index}");
+        parts.push(format!(
+            "select {projection} from {new_table} where {}{}",
+            source_delete_filter(&new_table, change),
+            filter_clause(filter),
+        ));
+        if keyed {
+            let old_table = format!("old{index}");
+            parts.push(format!(
+                "select {projection} from {old_table} where {}{}",
+                source_delete_filter(&old_table, change),
+                filter_clause(filter),
+            ));
+        }
+    }
+    if parts.is_empty() {
+        return Err(report!("union-distinct view has no changed keyed sources"));
+    }
+    Ok(format!(
+        "select distinct {cols} from ({}) affected",
+        parts.join(" union all ")
+    ))
+}
+
 /// The SQL of a union-distinct refresh: the signed occurrence delta is added
 /// to the active counts, the affected keys are rewritten (delete then insert)
 /// and rows whose count drops to zero disappear.
@@ -726,17 +769,6 @@ impl IvmRuntime {
                 windows[index].added_files.clone(),
             )?;
             if keyed {
-                // The delta keys select the affected rows through the
-                // semi-join below; the current source stays streaming.
-                let source_now = filter_deletes(
-                    self.current_table_frame(&context, table)?,
-                    change_column(table),
-                )?;
-                let key_names = table
-                    .primary_keys
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>();
                 let key_exprs = table
                     .primary_keys
                     .iter()
@@ -746,16 +778,20 @@ impl IvmRuntime {
                     .select(key_exprs)?
                     .distinct()?
                     .with_column(IVM_SOURCE_COLUMN, lit(index as i32))?;
-                let rows = source_now.join(
-                    affected.clone(),
-                    JoinType::LeftSemi,
-                    &key_names,
-                    &key_names,
-                    None,
-                )?;
+                // Read only the current rows for this source's changed keys.
+                let source_now = self
+                    .lookup_source_by_join_keys(
+                        &context,
+                        table,
+                        affected.clone(),
+                        &table.primary_keys,
+                        &table.primary_keys,
+                        true,
+                    )
+                    .await?;
                 let rows = match &filter {
-                    Some(filter) => rows.filter(filter.clone())?,
-                    None => rows,
+                    Some(filter) => source_now.filter(filter.clone())?,
+                    None => source_now,
                 };
                 inserts.push(
                     rows.select(union_source_projection(&context, source, None, index)?)?,
@@ -790,18 +826,6 @@ impl IvmRuntime {
             .collect::<Vec<_>>();
 
         if keyed {
-            let mv = match union_mv_partitions(&view.mv, &view.sources, &windows) {
-                Some(restriction) => {
-                    self.current_table_frame_filtered_partitions(
-                        &context,
-                        &view.mv,
-                        Vec::new(),
-                        &restriction,
-                    )
-                    .await?
-                }
-                None => self.current_table_frame(&context, &view.mv)?,
-            };
             let mut pair_names = vec![IVM_SOURCE_COLUMN.to_string()];
             pair_names.extend(view.sources[0].table.primary_keys.iter().cloned());
             let pair_refs = pair_names.iter().map(String::as_str).collect::<Vec<_>>();
@@ -809,6 +833,31 @@ impl IvmRuntime {
                 .iter()
                 .map(|column| col(column.as_str()))
                 .collect::<Vec<_>>();
+            let changed = union_frames(changed)?;
+            let mv = if view.mv.primary_keys == pair_names {
+                self.lookup_source_by_join_keys(
+                    &context,
+                    &view.mv,
+                    changed.clone(),
+                    &pair_names,
+                    &view.mv.primary_keys,
+                    true,
+                )
+                .await?
+            } else {
+                match union_mv_partitions(&view.mv, &view.sources, &windows) {
+                    Some(restriction) => {
+                        self.current_table_frame_filtered_partitions(
+                            &context,
+                            &view.mv,
+                            Vec::new(),
+                            &restriction,
+                        )
+                        .await?
+                    }
+                    None => self.current_table_frame(&context, &view.mv)?,
+                }
+            };
             let already = mv
                 .clone()
                 .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
@@ -819,7 +868,6 @@ impl IvmRuntime {
                 .select(output_exprs.clone())?
                 .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
                 .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-            let changed = union_frames(changed)?;
             let deletes = mv
                 .join(changed, JoinType::LeftSemi, &pair_refs, &pair_refs, None)?
                 .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?
@@ -859,8 +907,7 @@ impl IvmRuntime {
         }
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         for window in &windows {
             self.advance_cursors(&view.view_id, window.cursors.clone())
@@ -957,8 +1004,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         for baseline in &baselines {
             self.advance_cursors(&view.view_id, baseline.cursors.clone())
@@ -1023,30 +1069,63 @@ impl IvmRuntime {
                 windows[index].added_files.clone(),
             )?;
             if keyed {
+                let contribution = delta
+                    .clone()
+                    .select(
+                        table
+                            .primary_keys
+                            .iter()
+                            .map(|key| col(key.as_str()))
+                            .collect::<Vec<_>>(),
+                    )?
+                    .distinct()?;
                 let before = self
-                    .before_window_table_frame(
+                    .lookup_source_before_by_pks(
                         &context,
                         table,
-                        &windows[index].before_versions,
+                        &windows[index],
+                        contribution,
                     )
                     .await?;
                 context.register_table(format!("old{index}"), before.into_view())?;
             }
             context.register_table(format!("src{index}"), delta.into_view())?;
         }
-        let mv = match union_mv_partitions(&view.mv, &view.sources, &windows) {
-            Some(restriction) => {
-                self.current_table_frame_filtered_partitions(
+        let columns = union_distinct_columns(view)?;
+        if keyed && !columns.is_empty() && view.mv.primary_keys == columns {
+            let changed = windows
+                .iter()
+                .map(|window| !window.added_files.is_empty())
+                .collect::<Vec<_>>();
+            let affected = context
+                .sql(&union_distinct_affected_sql(view, keyed, &changed)?)
+                .await?;
+            let mv = self
+                .lookup_source_by_join_keys(
                     &context,
                     &view.mv,
-                    Vec::new(),
-                    &restriction,
+                    affected,
+                    &columns,
+                    &view.mv.primary_keys,
+                    true,
                 )
-                .await?
-            }
-            None => self.current_table_frame(&context, &view.mv)?,
-        };
-        context.register_table("mv", mv.into_view())?;
+                .await?;
+            context.register_table("mv", mv.into_view())?;
+        } else {
+            let mv = match union_mv_partitions(&view.mv, &view.sources, &windows) {
+                Some(restriction) => {
+                    self.current_table_frame_filtered_partitions(
+                        &context,
+                        &view.mv,
+                        Vec::new(),
+                        &restriction,
+                    )
+                    .await?
+                }
+                None => self.current_table_frame(&context, &view.mv)?,
+            };
+            context.register_table("mv", mv.into_view())?;
+        }
         let sql = union_distinct_refresh_sql(view, keyed, epoch)?;
         let frame = context.sql(&sql).await?;
         commit_ids.extend(
@@ -1056,8 +1135,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         for window in &windows {
             self.advance_cursors(&view.view_id, window.cursors.clone())
@@ -1132,8 +1210,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         for baseline in &baselines {
             self.advance_cursors(&view.view_id, baseline.cursors.clone())

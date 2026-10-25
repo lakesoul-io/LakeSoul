@@ -378,6 +378,21 @@ async fn left_join_keeps_all_matches_and_unmatched_rows() {
         full_left_join_rows(runtime, left, right, "l.jk = r.jk").await
     );
 
+    // Moving a right row to another key must retract the old match while
+    // keeping the left row's other matches.
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[(10, Some("c"), 115, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_left_join(view).await.unwrap().unwrap();
+    assert_eq!(
+        left_join_rows(runtime, output).await,
+        full_left_join_rows(runtime, left, right, "l.jk = r.jk").await
+    );
+
     // A new match for the previously unmatched left row.
     right
         .append_batch(

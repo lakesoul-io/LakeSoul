@@ -385,10 +385,15 @@ async fn states_are_registered_for_each_view_kind() {
             ("state", min_state.table_id.clone()),
         ]
     );
+    let window_states = pair_list(&runtime, &window_view.view_id).await;
     assert_eq!(
-        pair_list(&runtime, &window_view.view_id).await,
-        vec![("mv", window_mv.table_id.clone())]
+        window_states
+            .iter()
+            .map(|(role, _)| *role)
+            .collect::<Vec<_>>(),
+        vec!["mv", "rank_state", "state"]
     );
+    assert!(window_states.contains(&("mv", window_mv.table_id.clone())));
     let join_states = pair_list(&runtime, &join_view.view_id).await;
     let mut roles = join_states
         .iter()

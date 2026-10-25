@@ -2803,6 +2803,7 @@ fn analyze_computed_agg(
         filter,
         having,
         having_lookup: None,
+        state_table_id: None,
     })
 }
 
@@ -2999,6 +3000,7 @@ fn analyze_having_aggregate(
             column: IVM_HAVING_LOOKUP_COLUMN.to_string(),
             filter: lookup.filter,
         }),
+        state_table_id: None,
     })
 }
 
@@ -3195,6 +3197,7 @@ fn analyze_multi_agg(
         filter,
         having,
         having_lookup: None,
+        state_table_id: None,
     })
 }
 

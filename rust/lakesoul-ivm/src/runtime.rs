@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 use crate::metadata::{
     BeginEpoch, Consumer, Cursor, EpochRecord, IvmMetadata, PartitionVersion,
-    SourceVersionRange, StateRole, StateTable,
+    SourceVersionRange, StateRole, StateTable, StateVersion,
 };
 use crate::provider::IvmTableProvider;
 pub use crate::table::{IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN};
@@ -428,6 +428,9 @@ pub enum ViewSpec {
         /// one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         having_lookup: Option<HavingLookupSpec>,
+        /// Optional keyed state table for the plain SUM shape.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state_table_id: Option<String>,
     },
     /// `FULL JOIN` over two keyed sources: all matching pairs plus the
     /// unmatched rows of either side (NULL-padded).
@@ -1458,6 +1461,10 @@ impl ViewSpec {
             | ViewSpec::LookupJoin {
                 state_table_id: state,
                 ..
+            }
+            | ViewSpec::MultiAgg {
+                state_table_id: state,
+                ..
             } => {
                 *state = Some(state_table_id.to_string());
                 Ok(())
@@ -2141,7 +2148,7 @@ pub fn window_key(identity: &[(String, String, i64, i64)]) -> String {
 /// Whether the refresh window still has to be applied.
 enum WindowStart {
     /// The caller must apply the window with `EpochRecord::epoch`.
-    Apply(EpochRecord),
+    Apply(Box<EpochRecord>),
     /// The window was already applied; only the cursor has to advance.
     AlreadyApplied(i64),
 }
@@ -2625,6 +2632,105 @@ fn state_compaction_threshold() -> usize {
 }
 
 impl IvmRuntime {
+    /// The partition versions of every auxiliary state table of a view.
+    ///
+    /// The MV is represented separately by `mv_versions`; state roles are
+    /// sorted so the persisted snapshot is deterministic across retries.
+    pub(crate) async fn state_versions(
+        &self,
+        view_id: &str,
+    ) -> Result<Vec<StateVersion>> {
+        let mut versions = Vec::new();
+        for state in self.metadata.list_states(view_id).await? {
+            if state.role == StateRole::Mv {
+                continue;
+            }
+            let table = self.open_table_by_id(&state.table_id).await?;
+            versions.push(StateVersion {
+                role: state.role,
+                table_id: state.table_id,
+                versions: output_partition_versions(&self.client, &table).await?,
+            });
+        }
+        versions.sort_by(|left, right| {
+            (left.role.as_str(), &left.table_id)
+                .cmp(&(right.role.as_str(), &right.table_id))
+        });
+        Ok(versions)
+    }
+
+    /// Rebuild mirror-style auxiliary state from the current MV.
+    ///
+    /// Window/top-k partition indexes, join pair indexes and the optional
+    /// join output mirror all have the MV schema.  If a pending epoch committed
+    /// the MV but missed one of these writes, they can be repaired in place
+    /// without rebuilding the whole view.  Source-derived state (value-count,
+    /// join side state, rank state) is intentionally left to the rebuild path.
+    pub(crate) async fn repair_mirror_states(
+        &self,
+        view_id: &str,
+        output: &IvmTable,
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        let mut commit_ids = Vec::new();
+        let mut repaired_tables = Vec::new();
+        for state in self.metadata.list_states(view_id).await? {
+            if state.table_id == output.table_id {
+                continue;
+            }
+            let table = self.open_table_by_id(&state.table_id).await?;
+            let mirror = state.role == StateRole::JoinPairIndex
+                || (state.role == StateRole::State
+                    && table.schema.as_ref() == output.schema.as_ref());
+            if !mirror {
+                continue;
+            }
+            let context = refresh_session();
+            let frame = self.current_table_frame(&context, output)?;
+            table.truncate(&self.client).await?;
+            commit_ids.extend(
+                append_dataframe(&table, &self.client, frame)
+                    .await?
+                    .commit_ids,
+            );
+            repaired_tables.push(state.table_id);
+        }
+        Ok((commit_ids, repaired_tables))
+    }
+
+    /// Record the current auxiliary state versions on a pending epoch.
+    ///
+    /// This is called immediately after the state portion of a refresh so a
+    /// crash after that write but before the final commit remains detectable.
+    pub(crate) async fn checkpoint_epoch_states(
+        &self,
+        record: &EpochRecord,
+    ) -> Result<()> {
+        let state_versions = self.state_versions(&record.view_id).await?;
+        self.metadata
+            .checkpoint_epoch_state_versions(record, &state_versions)
+            .await
+    }
+
+    /// Mark an epoch committed together with the current auxiliary state
+    /// versions.  All refresh paths go through this runtime method so a
+    /// pending epoch can later verify that every state write completed.
+    pub(crate) async fn mark_epoch_committed(
+        &self,
+        record: &EpochRecord,
+        mv_versions: &[PartitionVersion],
+        commit_ids: &[String],
+    ) -> Result<()> {
+        let state_versions = self.state_versions(&record.view_id).await?;
+        self.metadata
+            .mark_epoch_committed_with_states(
+                record,
+                mv_versions,
+                commit_ids,
+                &state_versions,
+            )
+            .await
+    }
+
     /// Compact an auxiliary state table when it accumulated enough files.
     pub(crate) async fn maybe_compact_state(&self, state: &IvmTable) -> Result<()> {
         let threshold = state_compaction_threshold();
@@ -2635,6 +2741,43 @@ impl IvmRuntime {
             return Ok(());
         }
         state.compact(&self.client).await?;
+        Ok(())
+    }
+
+    /// Compact every auxiliary state table registered for a view when it has
+    /// accumulated enough files.  This is the single generic compaction entry
+    /// point; operators only write state, they do not own compaction policy.
+    ///
+    /// The MV is compacted only when `LAKESOUL_IVM_MV_COMPACT_FILES` is set to
+    /// a non-zero threshold.  It is disabled by default because rewriting a
+    /// large output is much more expensive than compacting its small auxiliary
+    /// state tables.
+    pub async fn compact_view_states(&self, view_id: &str) -> Result<()> {
+        for state in self.metadata.list_states(view_id).await? {
+            if state.role == StateRole::Mv {
+                continue;
+            }
+            let table = self.open_table_by_id(&state.table_id).await?;
+            self.maybe_compact_state(&table).await?;
+        }
+        self.maybe_compact_mv(view_id).await
+    }
+
+    async fn maybe_compact_mv(&self, view_id: &str) -> Result<()> {
+        let threshold = std::env::var("LAKESOUL_IVM_MV_COMPACT_FILES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        if threshold == 0 {
+            return Ok(());
+        }
+        let Some(state) = self.metadata.get_state(view_id, StateRole::Mv).await? else {
+            return Ok(());
+        };
+        let table = self.open_table_by_id(&state.table_id).await?;
+        if table.current_file_count(&self.client).await? >= threshold {
+            table.compact(&self.client).await?;
+        }
         Ok(())
     }
 
@@ -3098,6 +3241,7 @@ impl IvmRuntime {
                 filter,
                 having,
                 having_lookup,
+                state_table_id,
             } => SpecView::MultiAgg(MultiAggView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -3125,6 +3269,10 @@ impl IvmRuntime {
                         column: lookup.column.clone(),
                         filter: lookup.filter.clone(),
                     }),
+                    None => None,
+                },
+                state: match state_table_id {
+                    Some(id) => Some(self.open_table_by_id(id).await?),
                     None => None,
                 },
                 refresh_interval_ms,
@@ -3903,6 +4051,9 @@ impl IvmRuntime {
             matches!(result, Ok(Some(_))),
             started.elapsed(),
         );
+        if result.is_ok() {
+            self.compact_view_states(spec.view_id()).await?;
+        }
         result
     }
 
@@ -3960,7 +4111,7 @@ impl IvmRuntime {
         })
         .await;
         if result.is_ok() {
-            self.sync_join_state_for_spec(spec).await?;
+            self.compact_view_states(spec.view_id()).await?;
             crate::observability::record_rebuild(kind, started.elapsed());
         }
         result
@@ -4368,8 +4519,7 @@ impl IvmRuntime {
             .append_stream(&self.client, frame.execute_stream().await?)
             .await?;
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         // The cursor advances past the deletion: the partition is not reported
         // again, and a partition recreated later starts above it.
@@ -4546,10 +4696,17 @@ impl IvmRuntime {
             )
             .collect::<Vec<_>>();
         let mv_versions_before = output_partition_versions(&self.client, output).await?;
+        let state_versions_before = self.state_versions(view_id).await?;
 
         let record = match self
             .metadata
-            .begin_epoch(view_id, &window_key, &to_versions, &mv_versions_before)
+            .begin_epoch_with_states(
+                view_id,
+                &window_key,
+                &to_versions,
+                &mv_versions_before,
+                &state_versions_before,
+            )
             .await?
         {
             BeginEpoch::Committed(record) => {
@@ -4559,8 +4716,46 @@ impl IvmRuntime {
             BeginEpoch::Pending(record) => {
                 let current = output_partition_versions(&self.client, output).await?;
                 if current != record.mv_versions_before {
-                    self.metadata
-                        .mark_epoch_committed(&record, &current, &record.commit_ids)
+                    // A previous attempt wrote the MV but did not mark the
+                    // epoch.  Check the auxiliary states as well: marking the
+                    // epoch while a window/rank/join index is behind would
+                    // make later keyed reads silently stale.
+                    let current_states = self.state_versions(view_id).await?;
+                    let state_incomplete = if !record.state_versions.is_empty() {
+                        current_states != record.state_versions
+                    } else {
+                        // A crash before the checkpoint has no trustworthy
+                        // after snapshot.  If this view already has state, do
+                        // not guess: a rebuild is safer than accepting a
+                        // partially written window index/rank/join state.
+                        !record.state_versions_before.is_empty()
+                            || !current_states.is_empty()
+                    };
+                    let mut commit_ids = record.commit_ids.clone();
+                    if state_incomplete && !record.state_versions.is_empty() {
+                        let (repair_ids, repaired_tables) =
+                            self.repair_mirror_states(view_id, output).await?;
+                        commit_ids.extend(repair_ids);
+                        let repaired = self.state_versions(view_id).await?;
+                        let repaired_ok = record.state_versions.iter().all(|expected| {
+                            repaired_tables.contains(&expected.table_id)
+                                || repaired.iter().any(|current| current == expected)
+                        });
+                        if !repaired_ok {
+                            return Err(report!(
+                                "view {view_id} window {window_key} has a committed MV \
+                                 but incomplete auxiliary state; a rebuild is required"
+                            )
+                            .attach(RebuildRequired));
+                        }
+                    } else if state_incomplete {
+                        return Err(report!(
+                            "view {view_id} window {window_key} has a committed MV \
+                             but incomplete auxiliary state; a rebuild is required"
+                        )
+                        .attach(RebuildRequired));
+                    }
+                    self.mark_epoch_committed(&record, &current, &commit_ids)
                         .await?;
                     return Ok(WindowStart::AlreadyApplied(record.epoch));
                 }
@@ -4589,7 +4784,7 @@ impl IvmRuntime {
             }
         }
 
-        Ok(WindowStart::Apply(record))
+        Ok(WindowStart::Apply(Box::new(record)))
     }
 
     async fn advance_cursors(&self, view_id: &str, cursors: Vec<Cursor>) -> Result<()> {

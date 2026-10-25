@@ -89,7 +89,7 @@ pub use executor::{IvmExecution, IvmExecutionAction, IvmSqlExecutor};
 pub use lakesoul_io::file_format::PhysicalFormat;
 pub use metadata::{
     BeginEpoch, Consumer, Cursor, EpochRecord, EpochStatus, IvmMetadata,
-    PartitionVersion, SourceVersionRange, StateRole, StateTable, ViewInfo,
+    PartitionVersion, SourceVersionRange, StateRole, StateTable, StateVersion, ViewInfo,
 };
 pub use provider::{IvmReadMode, IvmTableProvider};
 pub use runtime::{

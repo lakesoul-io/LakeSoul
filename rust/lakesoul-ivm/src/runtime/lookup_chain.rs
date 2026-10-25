@@ -900,8 +900,7 @@ impl IvmRuntime {
                 }
             }
             let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-            self.metadata
-                .mark_epoch_committed(&record, &mv_versions, &outcome.commit_ids)
+            self.mark_epoch_committed(&record, &mv_versions, &outcome.commit_ids)
                 .await?;
             for window in windows {
                 self.advance_cursors(&view.view_id, window.cursors).await?;
@@ -1253,8 +1252,7 @@ impl IvmRuntime {
         commit_ids.extend(outcome.commit_ids);
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         for window in windows {
             self.advance_cursors(&view.view_id, window.cursors).await?;
@@ -1586,8 +1584,7 @@ impl IvmRuntime {
                 self.set_view_rows(&view.view_id, rebuilt_rows);
                 let mv_versions =
                     output_partition_versions(&self.client, &view.mv).await?;
-                self.metadata
-                    .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+                self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                     .await?;
                 for baseline in baselines {
                     self.advance_cursors(&view.view_id, baseline.cursors)
@@ -1700,8 +1697,7 @@ impl IvmRuntime {
                 }
                 let mv_versions =
                     output_partition_versions(&self.client, &view.mv).await?;
-                self.metadata
-                    .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+                self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                     .await?;
                 for baseline in baselines {
                     self.advance_cursors(&view.view_id, baseline.cursors)
@@ -1738,8 +1734,7 @@ impl IvmRuntime {
         commit_ids.extend(outcome.commit_ids);
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         for baseline in baselines {
             self.advance_cursors(&view.view_id, baseline.cursors)

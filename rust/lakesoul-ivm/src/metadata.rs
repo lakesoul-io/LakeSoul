@@ -106,7 +106,9 @@ do $$ begin
         status             text   not null,
         to_versions        jsonb  not null,
         mv_versions_before jsonb  not null default '[]'::jsonb,
+        state_versions_before jsonb not null default '[]'::jsonb,
         mv_versions        jsonb  not null default '[]'::jsonb,
+        state_versions     jsonb  not null default '[]'::jsonb,
         commit_ids         jsonb  not null default '[]'::jsonb,
         created_at         bigint not null,
         committed_at       bigint,
@@ -117,6 +119,16 @@ end $$;
 
 do $$ begin
     alter table ivm.epochs add column if not exists commit_ids jsonb not null default '[]'::jsonb;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.epochs add column if not exists state_versions_before jsonb not null default '[]'::jsonb;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.epochs add column if not exists state_versions jsonb not null default '[]'::jsonb;
 exception when duplicate_column or unique_violation then null;
 end $$;
 
@@ -229,6 +241,8 @@ pub enum StateRole {
     JoinRight,
     /// A pair-state index keyed by the right source identity.
     JoinPairIndex,
+    /// The source-row state used to recompute window/top-k ranks.
+    RankState,
 }
 
 impl StateRole {
@@ -240,6 +254,7 @@ impl StateRole {
             StateRole::JoinLeft => "join_left",
             StateRole::JoinRight => "join_right",
             StateRole::JoinPairIndex => "join_pair_index",
+            StateRole::RankState => "rank_state",
         }
     }
 
@@ -250,6 +265,7 @@ impl StateRole {
             "join_left" => Ok(StateRole::JoinLeft),
             "join_right" => Ok(StateRole::JoinRight),
             "join_pair_index" => Ok(StateRole::JoinPairIndex),
+            "rank_state" => Ok(StateRole::RankState),
             other => Err(rootcause::report!("unknown state role {other:?}")),
         }
     }
@@ -307,6 +323,17 @@ pub struct ViewInfo {
     pub fallback_reason: Option<String>,
 }
 
+/// The partition versions of one auxiliary state table at an epoch boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateVersion {
+    /// The state role in `ivm.states`.
+    pub role: StateRole,
+    /// The physical table id.
+    pub table_id: String,
+    /// The partition versions, sorted by partition description.
+    pub versions: Vec<PartitionVersion>,
+}
+
 /// One row of `ivm.epochs`: a refresh window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpochRecord {
@@ -324,9 +351,13 @@ pub struct EpochRecord {
     pub to_versions: Vec<SourceVersionRange>,
     /// The MV partition versions before the window was applied.
     pub mv_versions_before: Vec<PartitionVersion>,
+    /// The auxiliary state partition versions before the window was applied.
+    pub state_versions_before: Vec<StateVersion>,
     /// The MV partition versions after the window was applied.
     pub mv_versions: Vec<PartitionVersion>,
-    /// The LakeSoul commit ids the window wrote to the MV.
+    /// The auxiliary state partition versions after the window was applied.
+    pub state_versions: Vec<StateVersion>,
+    /// The LakeSoul commit ids the window wrote to the MV/state.
     pub commit_ids: Vec<String>,
     /// The allocation time (unix milliseconds).
     pub created_at: i64,
@@ -360,7 +391,8 @@ impl BeginEpoch {
 }
 
 const EPOCH_COLUMNS: &str = "view_id, generation, epoch, window_key, status, \
-     to_versions, mv_versions_before, mv_versions, commit_ids, created_at, committed_at";
+     to_versions, mv_versions_before, state_versions_before, mv_versions, \
+     state_versions, commit_ids, created_at, committed_at";
 
 /// The `ivm` schema access layer.
 pub struct IvmMetadata {
@@ -763,6 +795,27 @@ impl IvmMetadata {
         to_versions: &[SourceVersionRange],
         mv_versions_before: &[PartitionVersion],
     ) -> Result<BeginEpoch> {
+        self.begin_epoch_with_states(
+            view_id,
+            window_key,
+            to_versions,
+            mv_versions_before,
+            &[],
+        )
+        .await
+    }
+
+    /// Begin a refresh window and record the auxiliary state versions before
+    /// the window.  Existing callers without state can keep using
+    /// [`Self::begin_epoch`].
+    pub async fn begin_epoch_with_states(
+        &self,
+        view_id: &str,
+        window_key: &str,
+        to_versions: &[SourceVersionRange],
+        mv_versions_before: &[PartitionVersion],
+        state_versions_before: &[StateVersion],
+    ) -> Result<BeginEpoch> {
         let generation = self.view_generation(view_id).await?;
         if let Some(record) = self.get_epoch(view_id, generation, window_key).await? {
             return Ok(match record.status {
@@ -784,9 +837,11 @@ impl IvmMetadata {
         self.execute_rw(
             "insert into ivm.epochs(
                      view_id, generation, epoch, window_key, status,
-                     to_versions, mv_versions_before, mv_versions, created_at)
+                     to_versions, mv_versions_before, state_versions_before,
+                     mv_versions, state_versions, created_at)
                  values ($1::TEXT, $2::BIGINT, $3::BIGINT, $4::TEXT, 'pending',
-                     $5::JSONB, $6::JSONB, '[]'::jsonb, $7::BIGINT)
+                     $5::JSONB, $6::JSONB, $7::JSONB,
+                     '[]'::jsonb, '[]'::jsonb, $8::BIGINT)
                  on conflict (view_id, generation, window_key) do nothing",
             &[
                 &view_id,
@@ -795,6 +850,7 @@ impl IvmMetadata {
                 &window_key,
                 &serde_json::to_value(to_versions)?,
                 &serde_json::to_value(mv_versions_before)?,
+                &serde_json::to_value(state_versions_before)?,
                 &crate::now_ms(),
             ],
         )
@@ -823,18 +879,57 @@ impl IvmMetadata {
         mv_versions: &[PartitionVersion],
         commit_ids: &[String],
     ) -> Result<()> {
+        self.mark_epoch_committed_with_states(record, mv_versions, commit_ids, &[])
+            .await
+    }
+
+    /// Persist the auxiliary state versions of a pending epoch before the
+    /// epoch is marked committed.  A crash after a state write but before the
+    /// final mark can then be distinguished from a fresh window.
+    pub async fn checkpoint_epoch_state_versions(
+        &self,
+        record: &EpochRecord,
+        state_versions: &[StateVersion],
+    ) -> Result<()> {
+        self.execute_rw(
+            "update ivm.epochs
+                 set state_versions = $4::JSONB
+                 where view_id = $1::TEXT and generation = $2::BIGINT and epoch = $3::BIGINT",
+            &[
+                &record.view_id,
+                &record.generation,
+                &record.epoch,
+                &serde_json::to_value(state_versions)?,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Mark an epoch committed and record both the MV and auxiliary state
+    /// partition versions.  Recovery can then distinguish a complete state
+    /// write from a partial one.
+    pub async fn mark_epoch_committed_with_states(
+        &self,
+        record: &EpochRecord,
+        mv_versions: &[PartitionVersion],
+        commit_ids: &[String],
+        state_versions: &[StateVersion],
+    ) -> Result<()> {
         self.execute_rw(
             "update ivm.epochs
                  set status = 'committed', mv_versions = $4::JSONB,
-                     commit_ids = $6::JSONB, committed_at = $5::BIGINT
+                     state_versions = $5::JSONB,
+                     commit_ids = $6::JSONB, committed_at = $7::BIGINT
                  where view_id = $1::TEXT and generation = $2::BIGINT and epoch = $3::BIGINT",
             &[
                 &record.view_id,
                 &record.generation,
                 &record.epoch,
                 &serde_json::to_value(mv_versions)?,
-                &crate::now_ms(),
+                &serde_json::to_value(state_versions)?,
                 &serde_json::to_value(commit_ids)?,
+                &crate::now_ms(),
             ],
         )
         .await?;
@@ -1121,9 +1216,11 @@ fn epoch_record_from_row(row: &tokio_postgres::Row) -> Result<EpochRecord> {
         status: EpochStatus::parse(row.get::<_, String>(4).as_str())?,
         to_versions: serde_json::from_value(row.get(5))?,
         mv_versions_before: serde_json::from_value(row.get(6))?,
-        mv_versions: serde_json::from_value(row.get(7))?,
-        commit_ids: serde_json::from_value(row.get(8))?,
-        created_at: row.get(9),
-        committed_at: row.get(10),
+        state_versions_before: serde_json::from_value(row.get(7))?,
+        mv_versions: serde_json::from_value(row.get(8))?,
+        state_versions: serde_json::from_value(row.get(9))?,
+        commit_ids: serde_json::from_value(row.get(10))?,
+        created_at: row.get(11),
+        committed_at: row.get(12),
     })
 }

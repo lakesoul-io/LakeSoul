@@ -108,6 +108,8 @@ pub struct MultiAggView {
     /// The extra source a `HAVING` subquery reads, when the statement has
     /// one.
     pub having_lookup: Option<HavingLookup>,
+    /// Optional keyed state for the plain SUM shape.
+    pub state: Option<IvmTable>,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -148,8 +150,15 @@ impl MultiAggView {
             filter: None,
             having: None,
             having_lookup: None,
+            state: None,
             refresh_interval_ms: 0,
         }
+    }
+
+    /// Attach the keyed accumulator state.
+    pub fn with_state(mut self, state: IvmTable) -> Self {
+        self.state = Some(state);
+        self
     }
 
     /// The extra source a `HAVING` subquery reads.
@@ -206,6 +215,7 @@ impl MultiAggView {
                     filter: lookup.filter.clone(),
                 }
             }),
+            state_table_id: self.state.as_ref().map(|state| state.table_id.clone()),
         })
     }
 
@@ -2615,8 +2625,7 @@ impl IvmRuntime {
                     .await?,
             );
             let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
-            self.metadata
-                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                 .await?;
             self.advance_cursors(parts.view_id, window.cursors).await?;
             if let Some(lookup_window) = lookup_window {
@@ -2698,8 +2707,7 @@ impl IvmRuntime {
         commit_ids.extend(parts.mv.append_stream(&self.client, stream).await?);
 
         let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(parts.view_id, window.cursors).await?;
         if let Some(lookup_window) = lookup_window {
@@ -2798,8 +2806,7 @@ impl IvmRuntime {
                     .await?,
             );
             let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
-            self.metadata
-                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                 .await?;
             self.advance_cursors(parts.view_id, baseline.cursors)
                 .await?;
@@ -2830,8 +2837,7 @@ impl IvmRuntime {
         );
 
         let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(parts.view_id, baseline.cursors)
             .await?;
@@ -3010,18 +3016,44 @@ impl IvmRuntime {
 
     /// Persist a multi-aggregate view spec (idempotent).
     pub async fn register_multi_agg_view(&self, view: &MultiAggView) -> Result<()> {
-        self.register_state_tables(&view.view_id, &[(StateRole::Mv, &view.mv)])
-            .await?;
+        let mut tables = vec![(StateRole::Mv, &view.mv)];
+        if let Some(state) = &view.state {
+            tables.push((StateRole::State, state));
+        }
+        self.register_state_tables(&view.view_id, &tables).await?;
         let spec = serde_json::to_value(view.to_spec()?)?;
         self.metadata
             .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
             .await
     }
 
+    /// Whether a multi-aggregate view can use the keyed accumulator state.
+    fn multi_agg_state_eligible(view: &MultiAggView) -> bool {
+        view.state.is_some()
+            && view.group_exprs.is_empty()
+            && view.filter.is_none()
+            && view.having.is_none()
+            && view.having_lookup.is_none()
+            && view.source.primary_keys.len() == 1
+            && view.aggregates.iter().all(|(call, _, _)| {
+                call.strip_prefix("SUM(")
+                    .and_then(|call| call.strip_suffix(')'))
+                    .is_some_and(|column| {
+                        !column.is_empty()
+                            && view.source.schema.field_with_name(column).is_ok()
+                    })
+            })
+    }
+
     /// Refresh a multi-aggregate view from the affected groups.
     pub async fn refresh_multi_agg(&self, view: &MultiAggView) -> Result<Option<i64>> {
         self.register_multi_agg_view(view).await?;
         validate_multi_agg_view(view)?;
+        if Self::multi_agg_state_eligible(view)
+            && let Some(state) = &view.state
+        {
+            return self.refresh_multi_agg_state(view, state).await;
+        }
         let parts = view.parts()?;
         validate_recompute_view(&parts)?;
         self.refresh_recomputed(&parts).await
@@ -3695,9 +3727,9 @@ impl IvmRuntime {
                 total_elapsed = ?bootstrap_started.elapsed(),
                 "multi-agg bootstrap finished"
             );
+            self.checkpoint_epoch_states(&record).await?;
             let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-            self.metadata
-                .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                 .await?;
             self.advance_cursors(&view.view_id, window.cursors).await?;
             return Ok(Some(epoch));
@@ -3831,9 +3863,9 @@ impl IvmRuntime {
             elapsed = ?write_started.elapsed(),
             "multi-agg keyed incremental finished"
         );
+        self.checkpoint_epoch_states(&record).await?;
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
-        self.metadata
-            .mark_epoch_committed(&record, &mv_versions, &commit_ids)
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
         self.advance_cursors(&view.view_id, window.cursors).await?;
         Ok(Some(epoch))
@@ -3843,6 +3875,27 @@ impl IvmRuntime {
     pub async fn rebuild_multi_agg(&self, view: &MultiAggView) -> Result<i64> {
         self.register_multi_agg_view(view).await?;
         validate_multi_agg_view(view)?;
+        if Self::multi_agg_state_eligible(view)
+            && let Some(state) = &view.state
+        {
+            self.metadata
+                .set_view_status(&view.view_id, "rebuilding")
+                .await?;
+            let generation = self.metadata.bump_generation(&view.view_id).await?;
+            self.metadata.delete_cursors(&view.view_id).await?;
+            view.mv.truncate(&self.client).await?;
+            state.truncate(&self.client).await?;
+            let Some(epoch) = self.refresh_multi_agg_state(view, state).await? else {
+                return Err(report!(
+                    "multi-agg rebuild for {} found no source files (generation {generation})",
+                    view.view_id
+                ));
+            };
+            self.metadata
+                .set_view_status(&view.view_id, "active")
+                .await?;
+            return Ok(epoch);
+        }
         let parts = view.parts()?;
         validate_recompute_view(&parts)?;
         self.rebuild_recomputed(&parts).await
