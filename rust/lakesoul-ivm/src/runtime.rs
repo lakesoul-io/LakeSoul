@@ -428,6 +428,9 @@ pub enum ViewSpec {
         /// one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         having_lookup: Option<HavingLookupSpec>,
+        /// Optional keyed state table for the plain SUM shape.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state_table_id: Option<String>,
     },
     /// `FULL JOIN` over two keyed sources: all matching pairs plus the
     /// unmatched rows of either side (NULL-padded).
@@ -1456,6 +1459,10 @@ impl ViewSpec {
                 ..
             }
             | ViewSpec::LookupJoin {
+                state_table_id: state,
+                ..
+            }
+            | ViewSpec::MultiAgg {
                 state_table_id: state,
                 ..
             } => {
@@ -3173,6 +3180,7 @@ impl IvmRuntime {
                 filter,
                 having,
                 having_lookup,
+                state_table_id,
             } => SpecView::MultiAgg(MultiAggView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -3200,6 +3208,10 @@ impl IvmRuntime {
                         column: lookup.column.clone(),
                         filter: lookup.filter.clone(),
                     }),
+                    None => None,
+                },
+                state: match state_table_id {
+                    Some(id) => Some(self.open_table_by_id(id).await?),
                     None => None,
                 },
                 refresh_interval_ms,
