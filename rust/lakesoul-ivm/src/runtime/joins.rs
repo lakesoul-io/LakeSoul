@@ -3968,7 +3968,7 @@ impl IvmRuntime {
         filter_deletes(pairs, change_column(table))
     }
 
-    async fn lookup_output_side(
+    pub(crate) async fn lookup_output_side(
         &self,
         context: &SessionContext,
         table: &IvmTable,

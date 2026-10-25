@@ -756,10 +756,36 @@ impl IvmRuntime {
                 .iter()
                 .map(|name| col(name.as_str()))
                 .collect::<Vec<_>>();
-            // The partition rule needs the changed rows themselves; the
-            // full-state MV read stays correct and streaming.
-            let mv = self.current_table_frame(&context, &view.mv)?;
-            let already = mv
+            // Read the old tuples of the changed source identities through
+            // the MV primary-key lookup.  The same keyed rows written by this
+            // epoch are also the replay guard, so no full MV scan is needed.
+            let mut old_rows: Option<DataFrame> = None;
+            for (index, affected_rows) in affected.iter().enumerate() {
+                let Some(affected_rows) = affected_rows else {
+                    continue;
+                };
+                let alias_names = primary_keys[index]
+                    .iter()
+                    .map(|key| multi_join_pk_alias(index, key))
+                    .collect::<Vec<_>>();
+                let matching = self
+                    .lookup_output_side(
+                        &context,
+                        &view.mv,
+                        affected_rows,
+                        &primary_keys[index],
+                        &alias_names,
+                    )
+                    .await?;
+                old_rows = Some(match old_rows {
+                    Some(existing) => existing.union(matching)?,
+                    None => matching,
+                });
+            }
+            let old_rows = old_rows
+                .ok_or_else(|| report!("multi join view has no changed source"))?
+                .distinct()?;
+            let already = old_rows
                 .clone()
                 .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
                 .select(identity_exprs.clone())?
@@ -777,34 +803,9 @@ impl IvmRuntime {
 
             // Retract the previous tuples of every changed row; this epoch's
             // writes are kept so a replay stays a no-op.
-            let active = mv.filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?;
-            let mut deletes: Option<DataFrame> = None;
-            for (index, affected_rows) in affected.into_iter().enumerate() {
-                let Some(affected_rows) = affected_rows else {
-                    continue;
-                };
-                let alias_names = primary_keys[index]
-                    .iter()
-                    .map(|key| multi_join_pk_alias(index, key))
-                    .collect::<Vec<_>>();
-                let alias_refs =
-                    alias_names.iter().map(String::as_str).collect::<Vec<_>>();
-                let key_refs = primary_keys[index]
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>();
-                let matching = active.clone().join(
-                    affected_rows,
-                    JoinType::LeftSemi,
-                    &alias_refs,
-                    &key_refs,
-                    None,
-                )?;
-                deletes = Some(match deletes {
-                    Some(existing) => existing.union(matching)?,
-                    None => matching,
-                });
-            }
+            let deletes = old_rows
+                .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?
+                .distinct()?;
             let mut mv_columns = view
                 .columns
                 .iter()
@@ -813,18 +814,14 @@ impl IvmRuntime {
             mv_columns.extend(identity_exprs.clone());
             let mut sort_exprs = identity_exprs;
             sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
-            let rows = match deletes {
-                Some(deletes) => inserts
-                    .union(
-                        deletes
-                            .distinct()?
-                            .select(mv_columns)?
-                            .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
-                            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?,
-                    )?
-                    .sort_by(sort_exprs)?,
-                None => inserts,
-            };
+            let rows = inserts
+                .union(
+                    deletes
+                        .select(mv_columns)?
+                        .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
+                        .with_column(IVM_EPOCH_COLUMN, lit(epoch))?,
+                )?
+                .sort_by(sort_exprs)?;
             commit_ids.extend(
                 append_dataframe(&view.mv, &self.client, rows)
                     .await?
