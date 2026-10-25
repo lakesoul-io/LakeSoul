@@ -2488,11 +2488,22 @@ impl IvmRuntime {
         let old_projection = Self::sum_count_source_projection(view)?;
         let old_schema = old_projection.as_ref().unwrap_or(&view.source.schema);
         let old_frame = if keyed && !changelog {
+            let contribution = self
+                .groups_table_frame(&context, &view.source, window.added_files.clone())?
+                .select(
+                    view.source
+                        .primary_keys
+                        .iter()
+                        .map(|key| col(key.as_str()))
+                        .collect::<Vec<_>>(),
+                )?
+                .distinct()?;
             let before = self
-                .before_window_table_frame(
+                .lookup_source_before_by_pks(
                     &context,
                     &view.source,
-                    &window.before_versions,
+                    &window,
+                    contribution,
                 )
                 .await?;
             let before = match old_projection.as_ref() {
@@ -3078,17 +3089,28 @@ impl IvmRuntime {
         }
 
         let context = refresh_session();
+        let raw_delta =
+            self.groups_table_frame(&context, view.source, window.added_files.clone())?;
         let delta = project_group_keys_frame(
             &context,
-            self.groups_table_frame(&context, view.source, window.added_files)?,
+            raw_delta.clone(),
             &view.source.schema,
             view.group_keys,
             view.group_exprs,
         )?;
         let keyed = !view.source.primary_keys.is_empty();
         let old_frame = if keyed {
+            let contribution = raw_delta
+                .select(
+                    view.source
+                        .primary_keys
+                        .iter()
+                        .map(|key| col(key.as_str()))
+                        .collect::<Vec<_>>(),
+                )?
+                .distinct()?;
             let before = self
-                .before_window_table_frame(&context, view.source, &window.before_versions)
+                .lookup_source_before_by_pks(&context, view.source, &window, contribution)
                 .await?;
             project_group_keys_frame(
                 &context,
