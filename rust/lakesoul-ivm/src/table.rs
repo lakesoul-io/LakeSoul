@@ -802,12 +802,54 @@ impl IvmTable {
     /// The keyed-state physical plans use this to resolve one bucket's state
     /// rows for the keys of one contribution batch without materializing the
     /// whole state table.
-    pub(crate) async fn read_partition_files_filtered(
+    /// Stream one bucketed state read through the LakeSoul reader.  The
+    /// receiver yields reader batches; callers can match contribution keys
+    /// incrementally instead of retaining the whole filtered bucket.
+    pub(crate) async fn stream_partition_files_filtered(
         &self,
         groups: Vec<PartitionFiles>,
         filters: Vec<Expr>,
-    ) -> Result<Vec<RecordBatch>> {
-        self.read_groups_with_options(groups, filters, None).await
+        gate: Arc<tokio::sync::Semaphore>,
+    ) -> Result<
+        tokio::sync::mpsc::Receiver<std::result::Result<RecordBatch, DataFusionError>>,
+    > {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let table = self.clone();
+        tokio::task::spawn_blocking(move || {
+            lakesoul_io::session::GLOBAL_RUNTIME.block_on(async move {
+                let _permit = match gate.acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        let _ = tx
+                            .send(Err(DataFusionError::Execution(format!(
+                                "state lookup gate closed: {error}"
+                            ))))
+                            .await;
+                        return;
+                    }
+                };
+                for group in groups {
+                    if let Err(error) = table
+                        .stream_files_with_group(
+                            group,
+                            filters.clone(),
+                            None,
+                            None,
+                            None,
+                            true,
+                            tx.clone(),
+                        )
+                        .await
+                    {
+                        let _ = tx
+                            .send(Err(DataFusionError::Execution(error.to_string())))
+                            .await;
+                        return;
+                    }
+                }
+            })
+        });
+        Ok(rx)
     }
 
     /// Read delta files **without** merge-on-read.
