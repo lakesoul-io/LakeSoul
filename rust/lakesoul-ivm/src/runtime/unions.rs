@@ -370,6 +370,49 @@ fn union_distinct_delta_ctes(
     Ok(ctes.join(", "))
 }
 
+/// The distinct values touched by the changed source rows, including the
+/// before image of a keyed update/delete.  This is the lookup contribution for
+/// the keyed MV read.
+fn union_distinct_affected_sql(
+    view: &UnionDistinctView,
+    keyed: bool,
+    changed: &[bool],
+) -> Result<String> {
+    let columns = union_distinct_columns(view)?;
+    let cols = quoted_list(&columns);
+    let mut parts = Vec::new();
+    for (index, source) in view.sources.iter().enumerate() {
+        if source.table.primary_keys.is_empty() || !changed[index] {
+            continue;
+        }
+        let table = &source.table;
+        let change = change_column(table);
+        let filter = source.filter.as_deref();
+        let projection = union_distinct_projection_sql(&columns, &source.exprs);
+        let new_table = format!("src{index}");
+        parts.push(format!(
+            "select {projection} from {new_table} where {}{}",
+            source_delete_filter(&new_table, change),
+            filter_clause(filter),
+        ));
+        if keyed {
+            let old_table = format!("old{index}");
+            parts.push(format!(
+                "select {projection} from {old_table} where {}{}",
+                source_delete_filter(&old_table, change),
+                filter_clause(filter),
+            ));
+        }
+    }
+    if parts.is_empty() {
+        return Err(report!("union-distinct view has no changed keyed sources"));
+    }
+    Ok(format!(
+        "select distinct {cols} from ({}) affected",
+        parts.join(" union all ")
+    ))
+}
+
 /// The SQL of a union-distinct refresh: the signed occurrence delta is added
 /// to the active counts, the affected keys are rewritten (delete then insert)
 /// and rows whose count drops to zero disappear.
@@ -1037,19 +1080,41 @@ impl IvmRuntime {
             }
             context.register_table(format!("src{index}"), delta.into_view())?;
         }
-        let mv = match union_mv_partitions(&view.mv, &view.sources, &windows) {
-            Some(restriction) => {
-                self.current_table_frame_filtered_partitions(
+        let columns = union_distinct_columns(view)?;
+        if keyed && !columns.is_empty() && view.mv.primary_keys == columns {
+            let changed = windows
+                .iter()
+                .map(|window| !window.added_files.is_empty())
+                .collect::<Vec<_>>();
+            let affected = context
+                .sql(&union_distinct_affected_sql(view, keyed, &changed)?)
+                .await?;
+            let mv = self
+                .lookup_source_by_join_keys(
                     &context,
                     &view.mv,
-                    Vec::new(),
-                    &restriction,
+                    affected,
+                    &columns,
+                    &view.mv.primary_keys,
+                    true,
                 )
-                .await?
-            }
-            None => self.current_table_frame(&context, &view.mv)?,
-        };
-        context.register_table("mv", mv.into_view())?;
+                .await?;
+            context.register_table("mv", mv.into_view())?;
+        } else {
+            let mv = match union_mv_partitions(&view.mv, &view.sources, &windows) {
+                Some(restriction) => {
+                    self.current_table_frame_filtered_partitions(
+                        &context,
+                        &view.mv,
+                        Vec::new(),
+                        &restriction,
+                    )
+                    .await?
+                }
+                None => self.current_table_frame(&context, &view.mv)?,
+            };
+            context.register_table("mv", mv.into_view())?;
+        }
         let sql = union_distinct_refresh_sql(view, keyed, epoch)?;
         let frame = context.sql(&sql).await?;
         commit_ids.extend(
