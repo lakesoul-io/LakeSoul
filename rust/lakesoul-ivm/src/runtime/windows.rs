@@ -883,6 +883,60 @@ fn multi_window_rebuild_sql(view: &MultiWindowView, epoch: i64) -> String {
 const IVM_MW_PARTITION: &str = "__ivm_partition_key";
 const MULTI_WINDOW_KEYED_MAX_ROWS: u64 = 100_000;
 
+/// A temporary on-disk parquet table used to avoid collecting a keyed frame
+/// into the driver.  Registration is per SessionContext; the files are removed
+/// when the guard drops after SQL execution.
+struct StagedFrame {
+    dir: std::path::PathBuf,
+}
+
+impl Drop for StagedFrame {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+async fn stage_frame(
+    context: &SessionContext,
+    name: &str,
+    frame: DataFrame,
+) -> Result<StagedFrame> {
+    let dir = std::env::temp_dir().join(format!(
+        "lakesoul-ivm-stage-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("data.parquet");
+    let uri = format!("file://{}", path.display());
+    let schema = frame.schema().as_arrow().clone();
+    if let Err(error) = frame
+        .write_parquet(
+            &uri,
+            datafusion::dataframe::DataFrameWriteOptions::new(),
+            None,
+        )
+        .await
+    {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(error.into());
+    }
+    if let Err(error) = context
+        .register_parquet(
+            name,
+            &uri,
+            datafusion::prelude::ParquetReadOptions {
+                schema: Some(&schema),
+                ..Default::default()
+            },
+        )
+        .await
+    {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(error.into());
+    }
+    Ok(StagedFrame { dir })
+}
+
 fn multi_window_partition_specs(view: &MultiWindowView) -> Vec<Vec<String>> {
     let mut specs: Vec<Vec<String>> = Vec::new();
     for group in &view.windows {
@@ -2991,6 +3045,7 @@ impl IvmRuntime {
             .await?;
             use_keyed = count <= MULTI_WINDOW_KEYED_MAX_ROWS;
         }
+        let mut staged = Vec::new();
         if use_keyed {
             let affected = affected
                 .ok_or_else(|| report!("multi-window affected keys are missing"))?;
@@ -3014,18 +3069,8 @@ impl IvmRuntime {
                     true,
                 )
                 .await?;
-            let mut src_batches = src.collect().await?;
-            if src_batches.is_empty() {
-                src_batches.push(RecordBatch::new_empty(view.source.schema.clone()));
-            }
-            let mut mv_batches = mv.collect().await?;
-            if mv_batches.is_empty() {
-                mv_batches.push(RecordBatch::new_empty(view.mv.schema.clone()));
-            }
-            let src = context.read_batches(src_batches)?;
-            let mv = context.read_batches(mv_batches)?;
-            context.register_table("mv", mv.into_view())?;
-            context.register_table("src", src.into_view())?;
+            staged.push(stage_frame(&context, "src", src).await?);
+            staged.push(stage_frame(&context, "mv", mv).await?);
         } else {
             context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
             context.register_table("src", Arc::new(self.table_provider(&view.source)))?;
