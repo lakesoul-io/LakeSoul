@@ -719,7 +719,7 @@ async fn row_and_union_validation() {
             .await
             .unwrap_err()
             .to_string()
-            .contains("does not have the same schema")
+            .contains("does not have the same output schema")
     );
 
     // A mismatching append-only schema is rejected too.

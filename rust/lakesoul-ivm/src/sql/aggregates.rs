@@ -920,6 +920,8 @@ fn analyze_grouping_sets(
             &group_keys,
             source,
             &hoisted_expressions(&aggregate.input),
+            projection,
+            request.derived,
         )?;
         if aggregates.is_empty() {
             return Err(unsupported(
@@ -1314,6 +1316,7 @@ pub(super) fn analyze_aggregate(
     if first_value || (needed.len() > 1 && !single_family_shapes(&needed)) {
         return analyze_multi_agg(
             aggregate,
+            projection,
             group_keys,
             group_exprs,
             having_exprs,
@@ -2552,15 +2555,96 @@ fn parse_multi_aggregates(
     group_keys: &[String],
     source: &IvmTable,
     hoisted: &HashMap<String, Expr>,
+    projection: Option<&Projection>,
+    derived: bool,
 ) -> Result<Vec<(String, String, DataType)>> {
-    let mut aggregates: Vec<(String, String, DataType)> = Vec::new();
-    let mut names: Vec<String> = Vec::new();
-    for expr in &aggregate.aggr_expr {
+    let mut parsed: Vec<(String, String, Option<String>, DataType)> = Vec::new();
+    // The projection above the aggregate references each raw aggregate output
+    // by its plan column name (`sum(items.num)`) and may alias it
+    // (`AS net_num`).  Map that output name to the select alias so a computed
+    // aggregate step materializes the name the outer plan uses.
+    let offset = aggregate
+        .schema
+        .fields()
+        .len()
+        .saturating_sub(aggregate.aggr_expr.len());
+    let aggregate_fields = aggregate
+        .schema
+        .fields()
+        .iter()
+        .skip(offset)
+        .map(|field| field.name().clone())
+        .collect::<Vec<_>>();
+    // Raw aggregate outputs are selected as plain columns above the aggregate
+    // (`sum(items.num) AS net_num`); a plain column that is not a group key is
+    // therefore an aggregate output, in aggregate order.  This positional
+    // view is robust when the plan normalizes the aggregate argument.
+    let positional_aliases = projection
+        .map(|projection| {
+            projection
+                .expr
+                .iter()
+                .filter_map(|selected| {
+                    let Expr::Column(column) = strip_alias(selected) else {
+                        return None;
+                    };
+                    if group_keys.contains(&column.name) {
+                        return None;
+                    }
+                    Some(match selected {
+                        Expr::Alias(alias) => Some(alias.name.clone()),
+                        _ => None,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let selected_aliases = projection
+        .map(|projection| {
+            projection
+                .expr
+                .iter()
+                .filter_map(|selected| {
+                    let Expr::Alias(alias) = selected else {
+                        return None;
+                    };
+                    match strip_alias(selected) {
+                        Expr::Column(column) => {
+                            Some((column.name.clone(), alias.name.clone()))
+                        }
+                        _ => None,
+                    }
+                })
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    for (aggregate_index, expr) in aggregate.aggr_expr.iter().enumerate() {
+        let alias = positional_aliases
+            .get(aggregate_index)
+            .cloned()
+            .flatten()
+            .or_else(|| match expr {
+                Expr::Alias(alias) => Some(alias.name.clone()),
+                _ => None,
+            })
+            .or_else(|| {
+                aggregate_fields
+                    .get(aggregate_index)
+                    .and_then(|field| selected_aliases.get(field))
+                    .cloned()
+            });
         let inner = strip_alias(expr);
         let Expr::AggregateFunction(function) = inner else {
             return Err(unsupported("non-aggregate expression in the select list"));
         };
         let name = function.func.name();
+        // The planner gives an unaliased `COUNT(*)` the display name
+        // `count(*)`; keep the canonical `count` column in that case.
+        let alias = alias.filter(|alias| {
+            !(name == "count"
+                && !function.params.distinct
+                && matches!(alias.as_str(), "count(*)" | "count(1)"))
+        });
         if function.params.filter.is_some() {
             return Err(unsupported(format!(
                 "aggregate FILTER over {name} is not maintained"
@@ -2613,7 +2697,7 @@ fn parse_multi_aggregates(
         if name == "count" && function.params.args.len() > 1 {
             return Err(unsupported("COUNT(...) needs a single argument"));
         }
-        let column = if name == "count"
+        let canonical = if name == "count"
             && !function.params.distinct
             && matches!(call.as_str(), "count(1)" | "count(*)")
         {
@@ -2632,12 +2716,6 @@ fn parse_multi_aggregates(
                 format!("{name}_{labels}")
             }
         };
-        if names.contains(&column) {
-            return Err(unsupported(format!(
-                "aggregate column {column} is materialized twice; use distinct arguments"
-            )));
-        }
-        names.push(column.clone());
         // The runtime evaluates the rendered call over the source columns, so
         // the result type is derived from the call and the source schema.  A
         // derived step's plan may type a column differently (for example
@@ -2645,6 +2723,31 @@ fn parse_multi_aggregates(
         // Int64).
         let data_type = expression_type(&source.schema, &call)?.0;
         encode_data_type(&data_type)?;
+        parsed.push((call, canonical, alias, data_type));
+    }
+    // Canonical names are the public layout.  A derived step uses the select
+    // aliases so the outer plan's references resolve after materialization,
+    // and duplicate canonical names always need aliases (two conditional
+    // sums otherwise both become `sum_value`).
+    let mut canonical_counts: HashMap<String, usize> = HashMap::new();
+    for (_, canonical, _, _) in &parsed {
+        *canonical_counts.entry(canonical.clone()).or_default() += 1;
+    }
+    let mut aggregates = Vec::with_capacity(parsed.len());
+    let mut names: Vec<String> = Vec::with_capacity(parsed.len());
+    for (call, canonical, alias, data_type) in parsed {
+        let duplicate = canonical_counts.get(&canonical).copied().unwrap_or(0) > 1;
+        let column = if duplicate || derived {
+            alias.unwrap_or(canonical)
+        } else {
+            canonical
+        };
+        if names.contains(&column) {
+            return Err(unsupported(format!(
+                "aggregate column {column} is materialized twice; use distinct aliases"
+            )));
+        }
+        names.push(column.clone());
         aggregates.push((call, column, data_type));
     }
     Ok(aggregates)
@@ -2685,8 +2788,14 @@ fn analyze_computed_agg(
     filter: Option<String>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    let mut aggregates =
-        parse_multi_aggregates(aggregate, &group_keys, source, hoisted_exprs)?;
+    let mut aggregates = parse_multi_aggregates(
+        aggregate,
+        &group_keys,
+        source,
+        hoisted_exprs,
+        Some(projection),
+        request.derived,
+    )?;
     if aggregates.is_empty() {
         return Err(unsupported(
             "a computed aggregate output needs an aggregate function",
@@ -2933,6 +3042,8 @@ fn analyze_having_aggregate(
         &group_keys,
         source,
         &hoisted_expressions(&aggregate.input),
+        None,
+        request.derived,
     )?;
     if aggregates.is_empty() {
         return Err(unsupported(
@@ -3158,6 +3269,7 @@ pub(super) fn analyze_having_join(
 #[allow(clippy::too_many_arguments)]
 fn analyze_multi_agg(
     aggregate: &Aggregate,
+    projection: Option<&Projection>,
     group_keys: Vec<String>,
     group_exprs: Vec<String>,
     having_exprs: &[Expr],
@@ -3170,6 +3282,8 @@ fn analyze_multi_agg(
         &group_keys,
         source,
         &hoisted_expressions(&aggregate.input),
+        projection,
+        request.derived,
     )?;
     if aggregates.is_empty() {
         return Err(unsupported(

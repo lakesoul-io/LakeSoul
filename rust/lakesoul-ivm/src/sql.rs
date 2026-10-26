@@ -332,6 +332,12 @@ fn collect_filtered_source(
             // __common_expr_1`, `value > 5 AS __common_expr_2`), so scalar
             // projections are allowed next to plain ones.
             if !is_plain_projection(projection) && !is_scalar_projection(projection) {
+                // A computed projection over a compound source is a normal
+                // derived step: materialize it and read the step as the
+                // operator's source.
+                if derived_sourceable(&projection.input) {
+                    return Err(derived_source_error(shape, plan));
+                }
                 return Err(unsupported(format!(
                     "computed columns below {shape} are not supported"
                 )));

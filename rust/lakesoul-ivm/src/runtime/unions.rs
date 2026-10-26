@@ -236,25 +236,37 @@ fn validate_union_all_view(view: &UnionAllView) -> Result<()> {
         ));
     }
     let keyed = !view.sources[0].table.primary_keys.is_empty();
-    let first = &view.sources[0].table.schema;
+    let branch_columns = |source: &UnionSource| {
+        union_branch_columns(source, source.table.cdc_column.as_deref())
+    };
+    let branch_schema = |source: &UnionSource| {
+        let columns = branch_columns(source);
+        let exprs = if source.columns.is_empty() {
+            Vec::new()
+        } else {
+            source.exprs.clone()
+        };
+        union_output_schema_for(&source.table.schema, &columns, &exprs)
+    };
+    let first = branch_schema(&view.sources[0])?;
     for source in &view.sources {
         if let Some(filter) = &source.filter {
             let context = refresh_session();
             parse_filter(&context, &source.table.schema, filter)?;
         }
         let table = &source.table;
-        if table.schema.fields().len() != first.fields().len()
-            || table
-                .schema
+        let schema = branch_schema(source)?;
+        if first.fields().len() != schema.fields().len()
+            || first
                 .fields()
                 .iter()
-                .zip(first.fields())
+                .zip(schema.fields())
                 .any(|(left, right)| {
                     left.name() != right.name() || left.data_type() != right.data_type()
                 })
         {
             return Err(report!(
-                "union all view {}: source {} does not have the same schema",
+                "union all view {}: source {} does not have the same output schema",
                 view.view_id,
                 table.table_name
             ));
@@ -266,7 +278,22 @@ fn validate_union_all_view(view: &UnionAllView) -> Result<()> {
             ));
         }
         if keyed {
+            let columns = branch_columns(source);
             for key in &table.primary_keys {
+                let position = columns.iter().position(|column| column == key);
+                let unchanged = match position {
+                    Some(_) if source.exprs.is_empty() => true,
+                    Some(position) => source.exprs.get(position) == Some(key),
+                    None => false,
+                };
+                if !unchanged {
+                    return Err(report!(
+                        "union all view {}: key column {key} is not projected \
+                         unchanged from source {}",
+                        view.view_id,
+                        table.table_name
+                    ));
+                }
                 let field = table.schema.field_with_name(key).map_err(|_| {
                     report!(
                         "union all view {}: key column {key} is not in source {}",

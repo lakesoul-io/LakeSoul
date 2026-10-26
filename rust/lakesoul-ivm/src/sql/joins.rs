@@ -268,6 +268,16 @@ pub(super) fn analyze_join(
 
     match join.join_type {
         JoinType::Inner => {
+            // A computed select list is materialized as a derived join
+            // first; the outer projection then computes over the derived
+            // table.  The derived step keeps every join column the
+            // projection reads.
+            if projection.is_some_and(|projection| !is_plain_projection(projection)) {
+                return Err(derived_source_error(
+                    "a join with a computed output",
+                    &LogicalPlan::Join(join.clone()),
+                ));
+            }
             // Differently named keys join on both names but output the left
             // ones; the right names are not payloads either.
             let mut key_names = join_keys.clone();
@@ -474,6 +484,12 @@ pub(super) fn analyze_join(
                     projection, &join.left, tables, request,
                 );
             }
+            if projection.is_some_and(|projection| !is_plain_projection(projection)) {
+                return Err(derived_source_error(
+                    "a left join with a computed output",
+                    &LogicalPlan::Join(join.clone()),
+                ));
+            }
             analyze_outer_join(
                 "LEFT",
                 &join.schema,
@@ -513,6 +529,12 @@ pub(super) fn analyze_join(
                     request,
                 );
             }
+            if projection.is_some_and(|projection| !is_plain_projection(projection)) {
+                return Err(derived_source_error(
+                    "a right join with a computed output",
+                    &LogicalPlan::Join(join.clone()),
+                ));
+            }
             // `A RIGHT JOIN B` keeps every row of `B`, i.e. `B LEFT JOIN A`;
             // the swapped sides swap their key names too.
             analyze_outer_join(
@@ -541,6 +563,12 @@ pub(super) fn analyze_join(
             }
             if left.primary_keys.is_empty() || right.primary_keys.is_empty() {
                 return Err(unsupported("FULL JOIN needs a primary key on both sources"));
+            }
+            if projection.is_some_and(|projection| !is_plain_projection(projection)) {
+                return Err(derived_source_error(
+                    "a full join with a computed output",
+                    &LogicalPlan::Join(join.clone()),
+                ));
             }
             let right_keys = if same_names { Vec::new() } else { right_keys };
             // The join keys, under either name, never become payloads.
@@ -1988,6 +2016,13 @@ pub(super) fn join_input<'a>(
                     .iter()
                     .all(|expr| matches!(strip_alias(expr), Expr::Column(_)))
                 {
+                    // A computed projection over a compound source is a
+                    // normal derived step: materialize it, then the join
+                    // side becomes a table.  This covers a business key
+                    // computed over an aggregate and a computed join side.
+                    if derived_sourceable(&projection.input) {
+                        return Err(derived_source_error("a join side", node));
+                    }
                     return Err(unsupported(
                         "join input must be a table or a plain column projection",
                     ));
@@ -2009,11 +2044,11 @@ pub(super) fn join_input<'a>(
                 });
             }
             LogicalPlan::Aggregate(_) => {
-                return Err(unsupported(
-                    "a HAVING subquery over a grouped source needs two views: \
-                     group the source in one view, then filter it against the \
-                     subquery in a second view",
-                ));
+                // A grouped join side is materialized as a derived
+                // aggregate view; a plain column projection above it stays
+                // part of the step so its select aliases keep resolving.
+                let plan = projection_plan.unwrap_or(node);
+                return Err(derived_source_error("a join side", plan));
             }
             _ if derived_sourceable(node) => {
                 let plan = projection_plan.unwrap_or(node);

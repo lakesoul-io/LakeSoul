@@ -28,6 +28,10 @@ pub(super) fn analyze_union(
             .fields()
             .iter()
             .map(|field| field.name().clone())
+            .filter(|name| {
+                name != crate::runtime::IVM_ROW_KINDS_COLUMN
+                    && name != crate::runtime::IVM_EPOCH_COLUMN
+            })
             .collect::<Vec<_>>();
         if columns != union_columns {
             return Err(unsupported(
@@ -185,6 +189,44 @@ struct UnionBranch {
     exprs: Vec<String>,
 }
 
+/// The columns a user sees through a union: the plan's output columns minus
+/// the IVM bookkeeping columns.  Those columns are an implementation detail
+/// and must not leak through `SELECT *` over a derived step.
+fn visible_union_columns(schema: &Schema) -> Vec<String> {
+    schema
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .filter(|name| {
+            name != crate::runtime::IVM_ROW_KINDS_COLUMN
+                && name != crate::runtime::IVM_EPOCH_COLUMN
+        })
+        .collect()
+}
+
+/// Drop the bookkeeping columns from a branch projection, keeping the
+/// expression list aligned with the columns.
+fn strip_bookkeeping_columns(columns: &mut Vec<String>, exprs: &mut Vec<String>) {
+    if columns.is_empty() {
+        return;
+    }
+    let mut kept_columns = Vec::with_capacity(columns.len());
+    let mut kept_exprs = Vec::with_capacity(exprs.len());
+    for (index, column) in columns.iter().enumerate() {
+        if column == crate::runtime::IVM_ROW_KINDS_COLUMN
+            || column == crate::runtime::IVM_EPOCH_COLUMN
+        {
+            continue;
+        }
+        kept_columns.push(column.clone());
+        if let Some(expression) = exprs.get(index) {
+            kept_exprs.push(expression.clone());
+        }
+    }
+    *columns = kept_columns;
+    *exprs = kept_exprs;
+}
+
 /// The source of one `UNION ALL` branch.
 fn union_branch(
     plan: &LogicalPlan,
@@ -196,11 +238,23 @@ fn union_branch(
     if !scalars.is_empty() {
         return Err(unsupported("a scalar subquery inside a UNION branch"));
     }
+    let mut columns = output_columns.unwrap_or_default();
+    let mut exprs = output_exprs;
+    // A `SELECT *` over a derived step has no explicit projection; the scan
+    // may still expose the bookkeeping columns.  Project them away so the
+    // branch has the same shape as a plain source branch.
+    if columns.is_empty() {
+        let visible = visible_union_columns(&source.schema);
+        if visible.len() != source.schema.fields().len() {
+            columns = visible;
+        }
+    }
+    strip_bookkeeping_columns(&mut columns, &mut exprs);
     Ok(UnionBranch {
         source,
         filter,
-        columns: output_columns.unwrap_or_default(),
-        exprs: output_exprs,
+        columns,
+        exprs,
     })
 }
 
@@ -260,7 +314,7 @@ fn union_distinct_branch(
         return Err(unsupported("a scalar subquery inside a UNION branch"));
     }
     let change = source.cdc_column.as_deref();
-    let columns = match output_columns {
+    let mut columns = match output_columns {
         Some(columns) => columns,
         None => source
             .schema
@@ -270,15 +324,17 @@ fn union_distinct_branch(
             .filter(|name| Some(name.as_str()) != change)
             .collect(),
     };
+    let mut exprs = output_exprs;
+    strip_bookkeeping_columns(&mut columns, &mut exprs);
     if let Some(change) = change {
-        if output_exprs.is_empty() {
+        if exprs.is_empty() {
             if columns.iter().any(|column| column == change) {
                 return Err(unsupported(
                     "the CDC change column cannot be part of a UNION output",
                 ));
             }
         } else {
-            for expression in &output_exprs {
+            for expression in &exprs {
                 if projection_uses_column(&source.schema, expression, change)? {
                     return Err(unsupported(
                         "the CDC change column cannot be part of a UNION output",
@@ -291,7 +347,7 @@ fn union_distinct_branch(
         source,
         filter,
         columns,
-        exprs: output_exprs,
+        exprs,
     })
 }
 

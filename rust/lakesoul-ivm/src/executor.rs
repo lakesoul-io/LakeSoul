@@ -66,7 +66,7 @@ use crate::sql::{
     AnalyzeRequest, DerivedSource, UnsupportedShape, analyze_select, definition_hash,
     peel, plan_label,
 };
-use crate::table::{IvmTable, IvmTableOptions, create_ivm_table};
+use crate::table::{IvmTable, IvmTableOptions, create_ivm_table, normalize_schema};
 
 /// Placeholder state table id used to probe the query shape before the real
 /// state table exists.
@@ -78,7 +78,13 @@ const STATE_PLACEHOLDER: &str = "__ivm_state_placeholder__";
 const DERIVED_PLACEHOLDER: &str = "__ivm_derived__";
 
 /// The maximum number of derived views one statement may materialize.
-const MAX_DERIVED_STEPS: usize = 4;
+///
+/// Production CTEs chain several compound sources (a union, joins and
+/// aggregates) before the target shape is reachable.  The limit keeps a
+/// pathological statement bounded without rejecting the common 7-18 CTE
+/// shapes; a statement that really needs more should be split into explicit
+/// views.
+const MAX_DERIVED_STEPS: usize = 16;
 
 /// The table name of a derived step.
 fn derived_step_name(target_name: &str, index: usize) -> String {
@@ -275,7 +281,9 @@ fn derived_step_supported(subplan: &LogicalPlan) -> Result<()> {
         | LogicalPlan::Aggregate(_)
         | LogicalPlan::Distinct(_)
         | LogicalPlan::Sort(_)
-        | LogicalPlan::Limit(_) => Ok(()),
+        | LogicalPlan::Limit(_)
+        | LogicalPlan::Filter(_)
+        | LogicalPlan::TableScan(_) => Ok(()),
         other => Err(rootcause::report!(
             "a derived view over {} is not materialized yet",
             plan_label(other)
@@ -392,20 +400,36 @@ fn derived_output_mapping(
     } = spec
     {
         // A mixed aggregate step keeps the group keys by name and materializes
-        // one column per aggregate, in select order.
+        // one column per aggregate.  A computed select list may drop a group
+        // key or put a computed output before a raw aggregate, so resolve by
+        // name first and use the positional layout only as a fallback.
         let mut mapping = Vec::with_capacity(fields.len());
         for (index, field) in fields.iter().enumerate() {
-            let column = match index.checked_sub(group_keys.len()) {
-                None => group_keys
-                    .get(index)
-                    .cloned()
-                    .unwrap_or_else(|| field.name().clone()),
-                Some(position) => aggregates
-                    .get(position)
-                    .map(|aggregate| aggregate.column.clone())
-                    .unwrap_or_else(|| field.name().clone()),
+            let name = field.name();
+            let column = if group_keys.contains(name) {
+                name.clone()
+            } else if let Some(aggregate) = aggregates
+                .iter()
+                .find(|aggregate| &aggregate.column == name)
+            {
+                aggregate.column.clone()
+            } else if let Some(aggregate) =
+                aggregates.iter().find(|aggregate| &aggregate.call == name)
+            {
+                aggregate.column.clone()
+            } else {
+                match index.checked_sub(group_keys.len()) {
+                    None => group_keys
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_else(|| name.clone()),
+                    Some(position) => aggregates
+                        .get(position)
+                        .map(|aggregate| aggregate.column.clone())
+                        .unwrap_or_else(|| name.clone()),
+                }
             };
-            mapping.push((field.name().clone(), column));
+            mapping.push((name.clone(), column));
         }
         return Ok(mapping);
     }
@@ -1187,6 +1211,17 @@ impl IvmSqlExecutor {
                 .await?
                 .primary_keys
                 .clone(),
+            // A projection step keeps the source row identity.  A keyed
+            // consumer reads the step by it; an append-only source stays
+            // keyless.
+            ViewSpec::Row {
+                source_table_id, ..
+            } => self
+                .runtime
+                .open_table_by_id(source_table_id)
+                .await?
+                .primary_keys
+                .clone(),
             // A top-k row's identity is its source primary key.
             ViewSpec::TopK {
                 source_table_id, ..
@@ -1637,7 +1672,7 @@ fn expected_mv_schema(
     spec: &ViewSpec,
     tables: &HashMap<String, IvmTable>,
 ) -> Result<SchemaRef> {
-    Ok(match spec {
+    let schema = match spec {
         // A Tier-2 fallback is validated against its planned statement, never
         // against the spec.
         ViewSpec::Fallback { .. } => {
@@ -2254,7 +2289,8 @@ fn expected_mv_schema(
                 schema
             }
         }
-    })
+    };
+    Ok(normalize_schema(&schema))
 }
 
 fn schema_matches(actual: &Schema, expected: &Schema) -> bool {
