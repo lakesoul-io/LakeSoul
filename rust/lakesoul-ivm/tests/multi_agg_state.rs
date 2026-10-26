@@ -241,3 +241,136 @@ async fn partitioned_state_and_mv_only_refresh_the_changed_date() {
         .await
         .unwrap();
 }
+
+#[test_log::test(tokio::test)]
+async fn filtered_multi_agg_state_adds_and_removes_groups() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source_name = format!("ivm_multi_state_filter_src_{suffix}");
+    let state_name = format!("ivm_multi_state_filter_state_{suffix}");
+    let mv_name = format!("ivm_multi_state_filter_mv_{suffix}");
+
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                source_name.clone(),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["id".to_string()])
+            .with_bucket_columns(vec!["id".to_string()])
+            .with_range_partition_columns(vec!["stat_date".to_string()])
+            .with_file_format(PhysicalFormat::Vortex),
+        )
+        .await
+        .unwrap();
+    let group_keys = vec!["stat_date".to_string(), "k".to_string()];
+    let aggregates = vec![(
+        "SUM(CASE WHEN k = 1 THEN v ELSE 0 END)".to_string(),
+        "v_sum".to_string(),
+        DataType::Int64,
+    )];
+    let aggregate_columns = vec![("v_sum".to_string(), DataType::Int64)];
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                mv_name.clone(),
+                table_path(&dir, "mv"),
+                multi_agg_mv_schema_for(
+                    &source.schema,
+                    &group_keys,
+                    &[],
+                    &aggregate_columns,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(group_keys.clone())
+            .with_bucket_columns(vec!["stat_date".to_string()])
+            .with_range_partition_columns(vec!["stat_date".to_string()])
+            .with_file_format(PhysicalFormat::Vortex),
+        )
+        .await
+        .unwrap();
+    let mut state_options = IvmTableOptions::new(
+        state_name.clone(),
+        table_path(&dir, "state"),
+        multi_agg_state_schema_for(&source.schema, &group_keys, &aggregate_columns)
+            .unwrap(),
+    )
+    .with_primary_keys(vec![IVM_GROUP_ROW_COLUMN.to_string()])
+    .with_bucket_columns(vec![IVM_GROUP_ROW_COLUMN.to_string()])
+    .with_range_partition_columns(vec!["stat_date".to_string()])
+    .with_file_format(PhysicalFormat::Vortex);
+    state_options.hash_bucket_num = "16".to_string();
+    let state = runtime.create_table(state_options).await.unwrap();
+    let view = MultiAggView::new(
+        format!("ivm_multi_state_filter_view_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        group_keys,
+        aggregates,
+    )
+    .with_filter("v >= 20");
+
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, 0, 1, 10), (2, 0, 2, 20), (3, 1, 1, 30), (4, 1, 2, 40)]),
+        )
+        .await
+        .unwrap();
+    runtime
+        .refresh_multi_agg_state(&view, &state)
+        .await
+        .unwrap();
+    assert_eq!(
+        mv_values(&runtime, &mv).await,
+        vec![(0, 2, 0), (1, 1, 30), (1, 2, 0)]
+    );
+
+    // A filtered-out row becomes visible: its group is inserted.
+    source
+        .append_batch(runtime.client(), source_batch(&[(1, 0, 1, 30)]))
+        .await
+        .unwrap();
+    runtime
+        .refresh_multi_agg_state(&view, &state)
+        .await
+        .unwrap();
+    assert_eq!(
+        mv_values(&runtime, &mv).await,
+        vec![(0, 1, 30), (0, 2, 0), (1, 1, 30), (1, 2, 0)]
+    );
+
+    // A visible row stops matching: its group is removed.
+    source
+        .append_batch(runtime.client(), source_batch(&[(2, 0, 2, 5)]))
+        .await
+        .unwrap();
+    runtime
+        .refresh_multi_agg_state(&view, &state)
+        .await
+        .unwrap();
+    assert_eq!(
+        mv_values(&runtime, &mv).await,
+        vec![(0, 1, 30), (1, 1, 30), (1, 2, 0)]
+    );
+
+    runtime
+        .client()
+        .drop_table(&source_name, "default")
+        .await
+        .unwrap();
+    runtime
+        .client()
+        .drop_table(&state_name, "default")
+        .await
+        .unwrap();
+    runtime
+        .client()
+        .drop_table(&mv_name, "default")
+        .await
+        .unwrap();
+}

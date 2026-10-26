@@ -1548,13 +1548,12 @@ fn needs_state_table(spec: &ViewSpec) -> bool {
         ViewSpec::MultiAgg {
             group_exprs,
             aggregates,
-            filter,
+            filter: _,
             having,
             having_lookup,
             ..
         } => {
             group_exprs.is_empty()
-                && filter.is_none()
                 && having.is_none()
                 && having_lookup.is_none()
                 && aggregates.iter().all(|aggregate| {
@@ -1562,11 +1561,11 @@ fn needs_state_table(spec: &ViewSpec) -> bool {
                         .call
                         .strip_prefix("SUM(")
                         .and_then(|call| call.strip_suffix(')'))
-                        .is_some_and(|column| {
-                            !column.is_empty()
-                                && !column.contains(',')
-                                && !column.contains('(')
-                                && !column.contains(' ')
+                        .is_some_and(|expression| {
+                            let expression = expression.trim();
+                            !expression.is_empty()
+                                && !expression.contains(',')
+                                && !expression.to_ascii_uppercase().contains("DISTINCT")
                         })
                 })
         }

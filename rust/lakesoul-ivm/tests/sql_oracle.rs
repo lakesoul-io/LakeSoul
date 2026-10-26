@@ -3256,6 +3256,32 @@ async fn oracle_plain_sum_multi_agg_uses_keyed_state() {
 }
 
 #[test_log::test(tokio::test)]
+async fn oracle_filtered_conditional_sum_multi_agg_uses_keyed_state() {
+    let schema = source_schema();
+    run_oracle(
+        "filteredconditionalstate",
+        1,
+        multi_agg_mv_schema_for(
+            &schema,
+            &["g".to_string()],
+            &[],
+            &[
+                ("sum_value".to_string(), DataType::Int64),
+                ("sum_v".to_string(), DataType::Int64),
+            ],
+        )
+        .unwrap(),
+        vec!["g".to_string()],
+        "SELECT g, SUM(CASE WHEN k = 1 THEN v ELSE 0 END) AS s1, SUM(v) AS s2 \
+         FROM __SRC__ WHERE v > 10 GROUP BY g",
+        "SELECT g, SUM(CASE WHEN k = 1 THEN v ELSE 0 END) AS s1, SUM(v) AS s2 \
+         FROM __SRC__ WHERE op <> 'delete' AND v > 10 GROUP BY g",
+        "SELECT g, sum_value, sum_v FROM __MV__",
+    )
+    .await;
+}
+
+#[test_log::test(tokio::test)]
 async fn oracle_computed_aggregate_outputs_match_full_recompute() {
     // A computed select expression above an aggregate (`SUM(v) * 2`): the raw
     // aggregate column stays materialized and the expression is recomputed

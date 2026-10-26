@@ -3046,16 +3046,16 @@ impl IvmRuntime {
     fn multi_agg_state_eligible(view: &MultiAggView) -> bool {
         view.state.is_some()
             && view.group_exprs.is_empty()
-            && view.filter.is_none()
             && view.having.is_none()
             && view.having_lookup.is_none()
             && view.source.primary_keys.len() == 1
             && view.aggregates.iter().all(|(call, _, _)| {
                 call.strip_prefix("SUM(")
                     .and_then(|call| call.strip_suffix(')'))
-                    .is_some_and(|column| {
-                        !column.is_empty()
-                            && view.source.schema.field_with_name(column).is_ok()
+                    .is_some_and(|expression| {
+                        let expression = expression.trim();
+                        !expression.is_empty()
+                            && !expression.to_ascii_uppercase().contains("DISTINCT")
                     })
             })
     }
@@ -3400,8 +3400,9 @@ impl IvmRuntime {
         let contrib_sql = format!(
             "select {keys}, ivm_group_row({keys}) as \"{IVM_GROUP_ROW_COLUMN}\", \
                     {contributions}, cast(coalesce(sum(w), 0) as bigint) as d_rows \
-             from (select *, -1 as w from old union all select *, 1 as w from new) t \
-             group by {keys}"
+             from (select *, -1 as w from old union all select *, 1 as w from new) t{filter} \
+             group by {keys}",
+            filter = filter_where(view.filter.as_deref())
         );
         use futures::StreamExt;
         const KEY_CHUNK_ROWS: usize = 131_072;
@@ -3586,10 +3587,9 @@ impl IvmRuntime {
         view: &MultiAggView,
         state: &IvmTable,
     ) -> Result<Option<i64>> {
-        if !view.group_exprs.is_empty() || view.having.is_some() || view.filter.is_some()
-        {
+        if !view.group_exprs.is_empty() || view.having.is_some() {
             return Err(report!(
-                "multi-agg state refresh needs plain group keys without lookup/having/filter"
+                "multi-agg state refresh needs plain group keys without lookup/having"
             ));
         }
         let mut measures = Vec::new();
@@ -3756,8 +3756,9 @@ impl IvmRuntime {
         let contrib_sql = format!(
             "select {keys}, ivm_group_row({keys}) as \"{IVM_GROUP_ROW_COLUMN}\", \
                     {contributions}, cast(coalesce(sum(w), 0) as bigint) as d_rows \
-             from (select *, -1 as w from old union all select *, 1 as w from new) t \
-             group by {keys}"
+             from (select *, -1 as w from old union all select *, 1 as w from new) t{filter} \
+             group by {keys}",
+            filter = filter_where(view.filter.as_deref())
         );
         let encoder = Arc::new(GroupKeyRowEncoder::new(
             &view.source.schema,
