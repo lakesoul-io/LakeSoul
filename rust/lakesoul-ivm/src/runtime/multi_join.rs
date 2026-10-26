@@ -662,19 +662,11 @@ impl IvmRuntime {
                 ));
             }
         }
-        let same_columns = |left: &[String], right: &[String]| {
-            let mut left = left.to_vec();
-            let mut right = right.to_vec();
-            left.sort();
-            right.sort();
-            left == right
-        };
-        if edges.iter().any(|(left, left_keys, right, right_keys)| {
-            !same_columns(left_keys, &primary_keys[*left])
-                || !same_columns(right_keys, &primary_keys[*right])
-        }) {
-            return Ok(None);
-        }
+        // A keyed source is normally also keyed by the join key.  When it is
+        // not, `lookup_source_by_join_keys` still performs the probe through
+        // the generic column lookup plan; the difference is that the source
+        // may need a scan instead of a bucket/PK index.  Keep the functional
+        // path here and let a later join-key index remove that scan.
 
         let source = &view.sources[changed];
         let delta =
