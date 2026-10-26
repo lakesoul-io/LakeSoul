@@ -4,14 +4,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Summaries over raw benchmark results. Standard library only.
 
-  report.py summary RUN_DIR [--name NAME]   # per-query latency + resources
+  report.py summary RUN_DIR [--name NAME]   # per-query latency, memory + resources
   report.py compare BASE_DIR CAND_DIR --name NAME
                                              # per-query median ratio between runs
   report.py memory RUN_DIR... [--names serial,burst]
                                              # memory-matrix table (scripts/memory-matrix.sh)
 
 Inputs are the files `scripts/bench.py drive` and `console` write: NAME.jsonl
-(driver samples), NAME.sampler.<role>.<pod>.jsonl, NAME.pods.json.
+(driver samples; console records carry in-process `memory` peaks),
+NAME.sampler.<role>.<pod>.jsonl, NAME.pods.json, NAME.prom.json.
 """
 
 from __future__ import annotations
@@ -25,9 +26,23 @@ from collections import defaultdict
 from pathlib import Path
 
 from bench import (
+    PROM_JEMALLOC_ACTIVE,
+    PROM_JEMALLOC_ALLOCATED,
+    PROM_JEMALLOC_RESIDENT,
     PROM_MEMORY_POOL_LIMIT,
     PROM_MEMORY_POOL_RESERVED,
     PROM_MEMORY_RESERVATION_FAILURES,
+    PROM_PROCESS_RSS_ANON,
+)
+
+MIB = 1 << 20
+# lsbench console `memory` fields, in display order.
+MEMORY_VIEWS = (
+    "rss_anon_bytes",
+    "jemalloc_resident_bytes",
+    "jemalloc_active_bytes",
+    "jemalloc_allocated_bytes",
+    "pool_reserved_bytes",
 )
 
 
@@ -112,6 +127,31 @@ def latency_table(rows: list[dict]) -> list[dict]:
             }
         )
     return table
+
+
+def memory_table(rows: list[dict]) -> list[dict]:
+    """Per phase and query, over the records with in-process memory samples
+    (lsbench console `memory`): the median of each view's per-iteration peak,
+    and the iteration with the highest RssAnon, at its RssAnon peak instant
+    (the views of one sample are of one instant)."""
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for r in rows:
+        if r.get("memory"):
+            groups[(phase(r), r["query"])].append(r["memory"])
+    table = []
+    for (ph, q), mems in sorted(groups.items()):
+        def p50(key: str) -> float | None:
+            vals = [m["peak"][key] for m in mems if m["peak"].get(key) is not None]
+            return statistics.median(vals) if vals else None
+        worst = max(mems, key=lambda m: m["peak"].get("rss_anon_bytes") or 0)
+        table.append({"phase": ph, "query": q, "n": len(mems),
+                      "peak_p50": {k: p50(k) for k in MEMORY_VIEWS},
+                      "at_max_rss_anon": worst["at_rss_anon_peak"]})
+    return table
+
+
+def mib(x) -> str:
+    return "" if x is None else f"{x / MIB:.0f}"
 
 
 def throughput(rows: list[dict]) -> dict:
@@ -211,6 +251,7 @@ def summarize(run: Path, name: str) -> dict:
             for p in sorted(run.glob(f"{name}.sampler.*.jsonl"))
         },
         "restarts": restarts(run / f"{name}.pods.json"),
+        "memory": memory_table(rows),
     }
     return res
 
@@ -233,6 +274,17 @@ def print_summary(s: dict) -> None:
         print(f"resources {k}: {json.dumps(v)}")
     if s["restarts"]:
         print(f"restarts: {json.dumps(s['restarts'])}")
+    if s["memory"]:
+        views = ["RssAnon", "jemalloc resident", "jemalloc active", "jemalloc allocated", "pool reserved"]
+        print("\nmemory MiB from in-process samples: p50 over iterations of each view's peak; then the "
+              "iteration with the highest RssAnon, all views at its RssAnon peak")
+        print(f"| phase | query | n | {' | '.join(f'p50 peak {v}' for v in views)} | "
+              f"{' | '.join(f'@max {v}' for v in views)} |")
+        print("|---" * (3 + 2 * len(views)) + "|")
+        for r in s["memory"]:
+            peaks = " | ".join(mib(r["peak_p50"][k]) for k in MEMORY_VIEWS)
+            at = " | ".join(mib(r["at_max_rss_anon"].get(k)) for k in MEMORY_VIEWS)
+            print(f"| {r['phase']} | {r['query']} | {r['n']} | {peaks} | {at} |")
     print()
 
 
@@ -285,21 +337,36 @@ def cmd_compare(a) -> None:
         )
 
 
-def prom_max(run: Path, name: str, query: str, pods: set[str]) -> float | None:
-    """Max of a `sum by (pod)` range series over this run's pods only (the
-    query window can include the previous deployment's pods)."""
+def prom_points(run: Path, name: str, query: str, pods: set[str]) -> dict[tuple[str, float], float]:
+    """A `sum by (pod)` range series as {(pod, timestamp): value}, over this
+    run's pods only (the query window can include the previous deployment's
+    pods). Series of one collect share start and step, so timestamps align."""
     path = run / f"{name}.prom.json"
     if not path.exists():
-        return None
+        return {}
     series = json.loads(path.read_text())["series"].get(query) or {}
-    vals = [
-        float(v[1])
+    return {
+        (r["metric"]["pod"], float(v[0])): float(v[1])
         for r in series.get("result", [])
         if r.get("metric", {}).get("pod") in pods
         for v in r.get("values", [])
         if v[1] not in ("NaN", "+Inf", "-Inf")
-    ]
-    return max(vals) if vals else None
+    }
+
+
+def prom_max(run: Path, name: str, query: str, pods: set[str]) -> float | None:
+    return max(prom_points(run, name, query, pods).values(), default=None)
+
+
+def prom_at_peak(
+    run: Path, name: str, peak: str, queries: list[str], pods: set[str]
+) -> list[float | None]:
+    """`peak`'s maximum, then each of `queries` at the same pod and instant."""
+    points = prom_points(run, name, peak, pods)
+    if not points:
+        return [None] * (1 + len(queries))
+    at = max(points, key=points.__getitem__)
+    return [points[at]] + [prom_points(run, name, q, pods).get(at) for q in queries]
 
 
 def coordinator_restarts(pods_path: Path) -> tuple[int, str | None]:
@@ -318,15 +385,16 @@ def cmd_memory(a) -> None:
     mib = 1 << 20
     print(
         "| run | phase | ok/n | errors | coord restarts (reason) | peak cgroup MiB | limit MiB | "
-        "pool limit MiB | pool reserved max MiB | reservation failures (max per 1m) |"
+        "pool limit MiB | pool reserved max MiB | reservation failures (max per 1m) | "
+        "RssAnon max MiB | @ jemalloc resident | @ jemalloc active | @ jemalloc allocated | @ pool reserved |"
     )
-    print("|---|---|---|---|---|---|---|---|---|---|")
+    print("|---" * 15 + "|")
     for run_dir in a.run_dirs:
         run = Path(run_dir)
         prev_restarts = 0
         for name in a.names.split(","):
             if not (run / f"{name}.jsonl").exists():
-                print(f"| {run.name} | {name} | missing | | | | | | | |")
+                print(f"| {run.name} | {name} | missing |" + " |" * 12)
                 continue
             rows = samples(run / f"{name}.jsonl")
             ok = sum(r.get("status") == "ok" for r in rows)
@@ -352,14 +420,21 @@ def cmd_memory(a) -> None:
             pool_limit = prom_max(run, name, PROM_MEMORY_POOL_LIMIT, pods)
             reserved = prom_max(run, name, PROM_MEMORY_POOL_RESERVED, pods)
             failures = prom_max(run, name, PROM_MEMORY_RESERVATION_FAILURES, pods)
+            # Process views at the scrape where the coordinator's RssAnon
+            # peaked. The sampler sets them each interval, but a scrape may
+            # straddle two samples, and the pool gauge is live: aligned to
+            # within one sample interval, not one instant.
+            at_peak = prom_at_peak(run, name, PROM_PROCESS_RSS_ANON, [
+                PROM_JEMALLOC_RESIDENT, PROM_JEMALLOC_ACTIVE, PROM_JEMALLOC_ALLOCATED,
+                PROM_MEMORY_POOL_RESERVED], pods)
             delta = restarts_now - prev_restarts
             prev_restarts = restarts_now
             print(
                 f"| {run.name} | {name} | {ok}/{len(rows)} | {dict(errs) or ''} | "
-                f"{delta}{f' ({reason})' if delta and reason else ''} | {peak / mib:.0f} | {limit / mib:.0f} | "
-                f"{'' if pool_limit is None else f'{pool_limit / mib:.0f}'} | "
-                f"{'' if reserved is None else f'{reserved / mib:.0f}'} | "
-                f"{'' if failures is None else f'{failures:.0f}'} |"
+                f"{delta}{f' ({reason})' if delta and reason else ''} | {mib(peak)} | {mib(limit)} | "
+                f"{mib(pool_limit)} | {mib(reserved)} | "
+                f"{'' if failures is None else f'{failures:.0f}'} | "
+                f"{' | '.join(mib(v) for v in at_peak)} |"
             )
 
 
