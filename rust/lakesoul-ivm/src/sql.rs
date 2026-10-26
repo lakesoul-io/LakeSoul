@@ -722,6 +722,39 @@ pub(crate) fn compare_op_sql(op: CompareOp) -> &'static str {
         CompareOp::Ge => ">=",
     }
 }
+/// Replace a timestamp literal produced by `CURRENT_TIMESTAMP` with a stable
+/// placeholder.  DataFusion folds the function while planning, so without
+/// this normalization the definition hash would change on every execution.
+fn normalize_current_timestamp(expression: &str) -> String {
+    const PREFIX: &str = "CAST('";
+    const SUFFIX: &str = "' AS TIMESTAMP)";
+    let mut out = String::with_capacity(expression.len());
+    let mut rest = expression;
+    while let Some(start) = rest.find(PREFIX) {
+        let after = &rest[start + PREFIX.len()..];
+        let Some(end) = after.find(SUFFIX) else {
+            break;
+        };
+        let literal = &after[..end];
+        // Only normalize date-time literals (CURRENT_TIMESTAMP), not arbitrary
+        // string constants that happen to be cast to a timestamp.
+        let time_like = literal.len() >= 19
+            && literal.as_bytes().get(10) == Some(&b' ')
+            && literal.as_bytes().get(13) == Some(&b':')
+            && literal.as_bytes().get(16) == Some(&b':');
+        out.push_str(&rest[..start + PREFIX.len()]);
+        if time_like {
+            out.push_str("<current_timestamp>");
+        } else {
+            out.push_str(literal);
+        }
+        out.push_str(SUFFIX);
+        rest = &after[end + SUFFIX.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Stable definition identity.  FNV-1a over the canonical spec JSON: a change
 /// in columns, keys or aggregate kind changes the hash and triggers a rebuild.
 ///
@@ -737,6 +770,28 @@ pub fn definition_hash(spec: &ViewSpec) -> Result<String> {
         ViewSpec::Join { state_table_id, .. }
         | ViewSpec::LookupJoin { state_table_id, .. } => {
             *state_table_id = None;
+        }
+        // The maintenance state table id is generated; the source definition
+        // identity already covers its shape.
+        ViewSpec::Sink {
+            source_table_id,
+            source_generation,
+            ..
+        } => {
+            *source_table_id = String::new();
+            *source_generation = 0;
+        }
+        // The planner folds `CURRENT_TIMESTAMP` to a literal at analysis
+        // time.  It is a value, not a shape, so normalize it before hashing.
+        ViewSpec::Row { output_exprs, .. } => {
+            for expression in output_exprs {
+                *expression = normalize_current_timestamp(expression);
+            }
+        }
+        ViewSpec::MultiAgg { aggregates, .. } => {
+            for aggregate in aggregates {
+                aggregate.call = normalize_current_timestamp(&aggregate.call);
+            }
         }
         // The rejection reason depends on the analyzer's message, not on the
         // view's meaning.

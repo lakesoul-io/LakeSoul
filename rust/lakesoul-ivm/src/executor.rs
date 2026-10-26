@@ -40,11 +40,11 @@ use crate::runtime::{
     ChainPolicy, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_EPOCH_COLUMN,
     IVM_GROUP_ROW_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_PAIR_IDENTITY_COLUMN,
     IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
-    IvmRuntime, JoinOutputColumn, JoinSide, ViewSpec,
+    IVM_VALUE_COUNT_COLUMN, IvmRuntime, JoinOutputColumn, JoinSide, SinkColumn, ViewSpec,
     approx_distinct_groups_mv_schema_for, approx_percentile_groups_mv_schema_for,
     array_agg_groups_mv_schema_for, bool_agg_groups_mv_schema_for,
     computed_agg_mv_schema_for, cross_join_view_schema_for, decode_data_type,
-    distinct_agg_groups_mv_schema_for, full_join_view_schema_with_keys,
+    distinct_agg_groups_mv_schema_for, encode_data_type, full_join_view_schema_with_keys,
     grouping_sets_mv_schema_for, join_view_schema_with_keys,
     keyed_join_output_primary_keys, keyed_join_view_schema_with_keys,
     left_aggregate_mv_schema_with_outputs, left_join_view_schema_with_keys,
@@ -708,6 +708,35 @@ impl IvmSqlExecutor {
             }
             Err(error) => return Err(error),
         };
+        // A target whose schema differs from the maintenance state, or whose
+        // range partition columns are not part of its primary key, cannot be
+        // written directly.  Materialize the maintenance state and project it
+        // through a sink instead.
+        if target_needs_sink(&mv, &expected) {
+            if fallback {
+                let reason = match &probe {
+                    ViewSpec::Fallback { reason, .. } => {
+                        format!(" (the shape is not maintained incrementally: {reason})")
+                    }
+                    _ => String::new(),
+                };
+                return Err(rootcause::report!(
+                    "target table `{}` does not match the view schema of this statement{reason}",
+                    mv.table_name
+                ));
+            }
+            return self
+                .execute_split_target(
+                    &mv,
+                    &view_id,
+                    plan,
+                    tables,
+                    sql,
+                    insert.overwrite,
+                    derived,
+                )
+                .await;
+        }
         // The definition hash ignores generated table ids, so the probe is a
         // valid identity even before the state table exists.
         let definition = definition_hash(&probe)?;
@@ -918,6 +947,314 @@ impl IvmSqlExecutor {
             view_id,
             definition_hash: definition,
         })
+    }
+
+    /// Execute a statement through an internal maintenance state and a target
+    /// projection sink.  This path is used when the user target schema (or its
+    /// primary key/partition layout) cannot be the maintenance schema itself.
+    async fn execute_split_target(
+        &self,
+        target: &IvmTable,
+        view_id: &str,
+        plan: LogicalPlan,
+        mut tables: HashMap<String, IvmTable>,
+        sql: &str,
+        overwrite: bool,
+        mut derived: Vec<String>,
+    ) -> Result<IvmExecution> {
+        if self.refresh_upstream {
+            let roots = tables
+                .values()
+                .map(|table| table.table_id.clone())
+                .collect::<Vec<_>>();
+            self.runtime
+                .refresh_view_chains(&roots, &ChainPolicy::default())
+                .await?;
+        }
+        // A maintenance state is an internal state view, so analyze it like a
+        // derived step.  This keeps select aliases and widens the state with
+        // the row identities the sink must not expose.
+        let request = AnalyzeRequest {
+            view_id: target.table_id.clone(),
+            mv_table_id: target.table_id.clone(),
+            state_table_id: Some(STATE_PLACEHOLDER.to_string()),
+            derived: true,
+        };
+        let (state_spec, _) = self
+            .analyze_with_derived(&plan, &mut tables, &request, target, &mut derived)
+            .await?;
+        let expected = expected_mv_schema(&state_spec, &tables)?;
+        for field in target.schema.fields() {
+            expected.field_with_name(field.name()).map_err(|_| {
+                rootcause::report!(
+                    "target column {} is not produced by the view; \
+                     add it to the SELECT list",
+                    field.name()
+                )
+            })?;
+        }
+        if target.schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_err()
+            || target.schema.field_with_name(IVM_EPOCH_COLUMN).is_err()
+        {
+            return Err(rootcause::report!(
+                "target table `{}` needs the internal rowKinds/__ivm_epoch columns",
+                target.table_name
+            ));
+        }
+        if target.primary_keys.is_empty() {
+            return Err(rootcause::report!(
+                "target table `{}` needs a primary key for the projection sink: \
+                 its refresh writes delete markers that the target key merges",
+                target.table_name
+            ));
+        }
+
+        let mut state_spec = state_spec;
+        let state_table = self
+            .ensure_internal_state_table(target, &state_spec, expected.clone())
+            .await?;
+        validate_sink_output(target, &expected, &state_table.primary_keys, &state_spec)?;
+        state_spec.set_derived_identity(&state_table.table_id, &state_table.table_id)?;
+        if needs_state_table(&state_spec) {
+            let state_table_id =
+                self.ensure_state_table(&state_table, &state_spec).await?;
+            state_spec.set_derived_state_table(&state_table_id)?;
+        }
+        let state_definition = definition_hash(&state_spec)?;
+        let stored_state = self
+            .runtime
+            .metadata()
+            .view_definition(&state_table.table_id)
+            .await?;
+        let same_state = stored_state
+            .as_ref()
+            .is_some_and(|(hash, _)| hash == &state_definition);
+        let state_dirty = self
+            .runtime
+            .metadata()
+            .view_status(&state_table.table_id)
+            .await?
+            .as_deref()
+            == Some("dirty");
+
+        let state_generation_before = self
+            .runtime
+            .metadata()
+            .view_generation(&state_table.table_id)
+            .await
+            .unwrap_or(0);
+        let mut state_rebuilt =
+            overwrite || stored_state.is_none() || !same_state || state_dirty;
+        let _state_epoch = if state_rebuilt {
+            let epoch = self.runtime.rebuild_spec(&state_spec).await?;
+            self.runtime
+                .metadata()
+                .set_view_definition(&state_table.table_id, &state_definition, sql)
+                .await?;
+            Some(epoch)
+        } else {
+            match self.runtime.refresh_spec(&state_spec).await {
+                Ok(epoch) => epoch,
+                Err(error) if IvmRuntime::rebuild_required(&error) => {
+                    state_rebuilt = true;
+                    let epoch = self.runtime.rebuild_spec(&state_spec).await?;
+                    self.runtime
+                        .metadata()
+                        .set_view_definition(
+                            &state_table.table_id,
+                            &state_definition,
+                            sql,
+                        )
+                        .await?;
+                    Some(epoch)
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let state_generation = self
+            .runtime
+            .metadata()
+            .view_generation(&state_table.table_id)
+            .await
+            .unwrap_or(0);
+        if state_generation != state_generation_before {
+            // A rebuild of the state (even with the same definition) resets
+            // its changelog; the target must be rebuilt from the snapshot.
+            state_rebuilt = true;
+        }
+        if state_rebuilt || state_dirty {
+            self.runtime
+                .metadata()
+                .set_view_status(&state_table.table_id, "active")
+                .await?;
+            self.runtime
+                .metadata()
+                .set_view_error(&state_table.table_id, None)
+                .await?;
+        }
+
+        let columns = target
+            .schema
+            .fields()
+            .iter()
+            .map(|field| {
+                Ok(SinkColumn {
+                    name: field.name().clone(),
+                    result: encode_data_type(field.data_type())?,
+                    nullable: field.is_nullable(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let source_generation = state_generation;
+        let sink_spec = ViewSpec::Sink {
+            view_id: view_id.to_string(),
+            source_table_id: state_table.table_id.clone(),
+            mv_table_id: target.table_id.clone(),
+            columns,
+            primary_keys: target.primary_keys.clone(),
+            range_partition_columns: target.range_partition_columns.clone(),
+            source_definition: state_definition.clone(),
+            source_generation,
+        };
+        let sink_definition = definition_hash(&sink_spec)?;
+        let stored_sink = self.runtime.metadata().view_definition(view_id).await?;
+        let stored_source_generation =
+            match self.runtime.metadata().get_view_spec(view_id).await? {
+                Some(value) => match serde_json::from_value::<ViewSpec>(value) {
+                    Ok(ViewSpec::Sink {
+                        source_generation, ..
+                    }) => Some(source_generation),
+                    _ => None,
+                },
+                None => None,
+            };
+        let same_sink = stored_sink
+            .as_ref()
+            .is_some_and(|(hash, _)| hash == &sink_definition);
+        let sink_dirty = self
+            .runtime
+            .metadata()
+            .view_status(view_id)
+            .await?
+            .as_deref()
+            == Some("dirty");
+        let mut sink_rebuilt = overwrite
+            || stored_sink.is_none()
+            || !same_sink
+            || stored_source_generation != Some(source_generation)
+            || state_rebuilt
+            || sink_dirty;
+        let sink_epoch = if sink_rebuilt {
+            let epoch = self.runtime.rebuild_spec(&sink_spec).await?;
+            self.runtime
+                .metadata()
+                .set_view_definition(view_id, &sink_definition, sql)
+                .await?;
+            Some(epoch)
+        } else {
+            match self.runtime.refresh_spec(&sink_spec).await {
+                Ok(epoch) => epoch,
+                Err(error) if IvmRuntime::rebuild_required(&error) => {
+                    sink_rebuilt = true;
+                    let epoch = self.runtime.rebuild_spec(&sink_spec).await?;
+                    self.runtime
+                        .metadata()
+                        .set_view_definition(view_id, &sink_definition, sql)
+                        .await?;
+                    Some(epoch)
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        if sink_rebuilt || sink_dirty {
+            self.runtime
+                .metadata()
+                .set_view_status(view_id, "active")
+                .await?;
+            self.runtime
+                .metadata()
+                .set_view_error(view_id, None)
+                .await?;
+        }
+        if stored_sink.is_some() && !same_sink {
+            self.drop_stale_derived(target, derived.len()).await?;
+        }
+
+        let action = if overwrite {
+            IvmExecutionAction::Overwrite
+        } else if stored_sink.is_none() {
+            IvmExecutionAction::Bootstrap
+        } else if sink_rebuilt {
+            IvmExecutionAction::Rebuild
+        } else {
+            IvmExecutionAction::Incremental
+        };
+        Ok(IvmExecution {
+            action,
+            epoch: sink_epoch,
+            view_id: view_id.to_string(),
+            definition_hash: sink_definition,
+        })
+    }
+
+    /// Create or reuse the hidden maintenance state table of a split view.
+    async fn ensure_internal_state_table(
+        &self,
+        target: &IvmTable,
+        spec: &ViewSpec,
+        expected: SchemaRef,
+    ) -> Result<IvmTable> {
+        let primary_keys = self.derived_primary_keys(spec).await?;
+        if primary_keys.is_empty() && !is_global_aggregate(spec) {
+            return Err(rootcause::report!(
+                "the maintenance state of target `{}` needs a primary key",
+                target.table_name
+            ));
+        }
+        let name = format!("{}__ivm_state", target.table_name);
+        let path = format!("{}/__ivm_state", target.table_path.trim_end_matches('/'));
+        if let Ok(existing) = self.runtime.open_table(&name, &target.namespace).await {
+            if schema_matches(&existing.schema, &expected)
+                && existing.primary_keys == primary_keys
+            {
+                return Ok(existing);
+            }
+            for state in self
+                .runtime
+                .metadata()
+                .list_states(&existing.table_id)
+                .await?
+            {
+                if state.role == StateRole::Mv {
+                    continue;
+                }
+                self.runtime
+                    .metadata()
+                    .unregister_state(&existing.table_id, state.role)
+                    .await?;
+                let _ = self
+                    .runtime
+                    .client()
+                    .drop_table(&state.table_name, &state.namespace)
+                    .await;
+            }
+            let _ = self
+                .runtime
+                .metadata()
+                .delete_view(&existing.table_id)
+                .await;
+            let _ = self
+                .runtime
+                .client()
+                .drop_table(&name, &target.namespace)
+                .await;
+        }
+        let mut options = IvmTableOptions::new(name, path, expected)
+            .with_namespace(target.namespace.clone())
+            .with_primary_keys(primary_keys)
+            .with_file_format(target.file_format);
+        options.hash_bucket_num = target.hash_bucket_num.clone();
+        self.runtime.create_table(options).await
     }
 
     /// Analyze `plan`, materializing the derived views its compound sources
@@ -1680,6 +2017,18 @@ fn expected_mv_schema(
                 "a fallback view's schema comes from its statement"
             ));
         }
+        ViewSpec::Sink { columns, .. } => Arc::new(Schema::new(
+            columns
+                .iter()
+                .map(|column| {
+                    Ok(Field::new(
+                        &column.name,
+                        decode_data_type(&column.result)?,
+                        column.nullable,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
+        )),
         ViewSpec::LookupChain {
             sources,
             steps,
@@ -2291,6 +2640,107 @@ fn expected_mv_schema(
         }
     };
     Ok(normalize_schema(&schema))
+}
+
+/// Columns a sink may omit because they are maintenance-only (row identities,
+/// join keys) rather than user output.
+fn sink_omittable_columns(spec: &ViewSpec) -> Vec<String> {
+    let mut columns = Vec::new();
+    match spec {
+        ViewSpec::Join {
+            join_keys,
+            right_keys,
+            ..
+        }
+        | ViewSpec::LookupJoin {
+            join_keys,
+            right_keys,
+            ..
+        }
+        | ViewSpec::LeftJoin {
+            join_keys,
+            right_keys,
+            ..
+        }
+        | ViewSpec::FullJoin {
+            join_keys,
+            right_keys,
+            ..
+        }
+        | ViewSpec::SemiAnti {
+            join_keys,
+            right_keys,
+            ..
+        }
+        | ViewSpec::LeftAggregate {
+            join_keys,
+            right_keys,
+            ..
+        } => {
+            columns.extend(join_keys.iter().cloned());
+            columns.extend(right_keys.iter().cloned());
+        }
+        ViewSpec::MultiJoin { keys, .. } => {
+            for key in keys {
+                columns.push(key.left_column.clone());
+                columns.push(key.right_column.clone());
+            }
+        }
+        ViewSpec::LookupChain { steps, .. } => {
+            for step in steps {
+                columns.extend(step.keys.iter().cloned());
+                columns.extend(step.right_keys.iter().cloned());
+            }
+        }
+        _ => {}
+    }
+    columns
+}
+
+/// Reject a target that silently drops a user-visible output column.  Natural
+/// keys, join keys and bookkeeping columns may be omitted because the target
+/// key represents them; an aggregate or payload column may not.
+fn validate_sink_output(
+    target: &IvmTable,
+    expected: &Schema,
+    primary_keys: &[String],
+    spec: &ViewSpec,
+) -> Result<()> {
+    let omittable = sink_omittable_columns(spec);
+    for field in expected.fields() {
+        if target.schema.field_with_name(field.name()).is_ok() {
+            continue;
+        }
+        let name = field.name();
+        if name == IVM_ROW_KINDS_COLUMN
+            || name == IVM_EPOCH_COLUMN
+            || name == IVM_COUNT_COLUMN
+            || name == IVM_VALUE_COUNT_COLUMN
+            || name.starts_with("__ivm_")
+            || primary_keys.contains(name)
+            || omittable.contains(name)
+        {
+            continue;
+        }
+        return Err(rootcause::report!(
+            "target table `{}` does not include view output column {}; \
+             add it to the target or the SELECT list",
+            target.table_name,
+            name
+        ));
+    }
+    Ok(())
+}
+
+fn target_needs_sink(target: &IvmTable, expected: &Schema) -> bool {
+    if !schema_matches(&target.schema, expected) {
+        return true;
+    }
+    !target.range_partition_columns.is_empty()
+        && !target
+            .range_partition_columns
+            .iter()
+            .all(|column| target.primary_keys.contains(column))
 }
 
 fn schema_matches(actual: &Schema, expected: &Schema) -> bool {

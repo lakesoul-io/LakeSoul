@@ -948,11 +948,11 @@ async fn a_partitioned_mv_refresh_prunes_unchanged_partitions() {
     );
 }
 
-/// A range-partitioned MV must carry its partition columns in the primary
-/// keys: merge-on-read runs within a partition, so a key spanning partitions
-/// would read back as several rows.
+/// A range-partitioned target may move a row to another partition when the
+/// partition column is not in the target primary key: the sink writes the old
+/// partition's delete and the new partition's insert.
 #[test_log::test(tokio::test)]
-async fn a_partitioned_mv_needs_its_partition_columns_in_the_keys() {
+async fn a_partitioned_mv_can_move_rows_through_the_sink() {
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -988,22 +988,37 @@ async fn a_partitioned_mv_needs_its_partition_columns_in_the_keys() {
          SELECT day, g, SUM(v) AS sum_v, COUNT(*) AS count_v \
          FROM ivm_part_src_{suffix} GROUP BY day, g"
     );
-    let error = executor.execute(&statement).await.unwrap_err();
-    let message = error.to_string();
-    assert!(
-        message.contains("primary keys must contain every partition column"),
-        "unexpected error: {message}"
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(
+        read_day_groups(executor.runtime(), &mv).await,
+        vec![("d1".to_string(), "a".to_string(), 10)]
     );
-    // The rejection happens before the target is registered or touched.
-    assert!(
-        executor
-            .runtime()
-            .metadata()
-            .get_view_spec(&mv.table_id)
-            .await
-            .unwrap()
-            .is_none()
+
+    source
+        .append_batch(
+            executor.runtime().client(),
+            source_batch(&[(1, "a", 20, "d2", "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_day_groups(executor.runtime(), &mv).await,
+        vec![("d2".to_string(), "a".to_string(), 20)]
     );
+
+    source
+        .append_batch(
+            executor.runtime().client(),
+            source_batch(&[(1, "a", 20, "d2", "delete")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert!(read_day_groups(executor.runtime(), &mv).await.is_empty());
 }
 
 /// A dropped source partition removes its rows from the view: when the group
