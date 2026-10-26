@@ -5173,6 +5173,7 @@ dependencies = [
  "datafusion",
  "futures",
  "lakesoul-datafusion",
+ "lakesoul-observability",
  "rand 0.9.5",
  "rootcause",
  "rustyline",
@@ -5521,6 +5522,7 @@ dependencies = [
 name = "lakesoul-observability"
 version = "4.1.0-dev.0"
 dependencies = [
+ "clap",
  "lakesoul-build-info",
  "metrics",
  "metrics-exporter-prometheus",

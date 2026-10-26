@@ -11,6 +11,7 @@ edition = { workspace = true }
 [dependencies]
 # lakesoul
 lakesoul-datafusion = { path = "../lakesoul-datafusion" }
+lakesoul-observability = { path = "../lakesoul-observability" }
 # datafusion
 datafusion = { workspace = true }
 # runtime

@@ -636,8 +636,8 @@
     {
       "id": 14,
       "type": "timeseries",
-      "title": "Memory: container RSS vs. execution pool",
-      "description": "Container RSS, working set and limit (kubelet cAdvisor) against the DataFusion pool's reservation and limit (lakesoul_memory_pool_*). The gap between RSS and the reservation is memory the execution budget does not account for (session state, portal buffers, IO pools, allocator overhead); the kernel OOM-kills the container when its usage reaches the limit. Container series exist only on Kubernetes, where lakesoul-prometheus scrapes the kubelets; the docker stack shows the pool series alone. Across a restart the old and new container briefly report together, hence max, not sum.",
+      "title": "Memory: container RSS, process, allocator and execution pool",
+      "description": "Container RSS, working set and limit (kubelet cAdvisor); the process's own RSS and anonymous RSS (/proc/self/status) and jemalloc's resident, active and allocated bytes, set together by the in-process memory sampler (lakesoul_process_*, lakesoul_jemalloc_*; --memory-sample-interval-ms, 1 s by default); and the DataFusion pool's reservation and limit (lakesoul_memory_pool_*). RssAnon minus jemalloc resident is a lower bound on anonymous memory outside jemalloc (jemalloc resident is an upper bound, so the difference can be negative); resident minus active is unpurged dirty pages plus allocator metadata; active minus allocated is fragmentation. Allocated minus pool reserved is not a measurement of untracked memory: reservations are operator estimates. The kernel OOM-kills the container when its usage reaches the limit. Container series exist only on Kubernetes, where lakesoul-prometheus scrapes the kubelets. Across a restart the old and new container briefly report together, hence max, not sum.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -693,6 +693,51 @@
           },
           "expr": "sum by (service, pod, worker) (lakesoul_memory_pool_limit_bytes{service=~\"$service\"} > 0)",
           "legendFormat": "{{service}} {{pod}}{{worker}} \u00b7 pool limit"
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service, pod, worker) (lakesoul_process_resident_anon_memory_bytes{service=~\"$service\"})",
+          "legendFormat": "{{service}} {{pod}}{{worker}} \u00b7 process RssAnon"
+        },
+        {
+          "refId": "G",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service, pod, worker) (lakesoul_process_resident_memory_bytes{service=~\"$service\"})",
+          "legendFormat": "{{service}} {{pod}}{{worker}} \u00b7 process RSS"
+        },
+        {
+          "refId": "H",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service, pod, worker) (lakesoul_jemalloc_resident_bytes{service=~\"$service\"})",
+          "legendFormat": "{{service}} {{pod}}{{worker}} \u00b7 jemalloc resident"
+        },
+        {
+          "refId": "I",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service, pod, worker) (lakesoul_jemalloc_active_bytes{service=~\"$service\"})",
+          "legendFormat": "{{service}} {{pod}}{{worker}} \u00b7 jemalloc active"
+        },
+        {
+          "refId": "J",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service, pod, worker) (lakesoul_jemalloc_allocated_bytes{service=~\"$service\"})",
+          "legendFormat": "{{service}} {{pod}}{{worker}} \u00b7 jemalloc allocated"
         }
       ],
       "fieldConfig": {

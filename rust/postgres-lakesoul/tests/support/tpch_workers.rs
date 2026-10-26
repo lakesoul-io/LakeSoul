@@ -9,6 +9,7 @@ use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use anyhow::{Context as _, Result, bail, ensure};
 use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::distributed::{LakeSoulWorkerOptions, spawn_lakesoul_worker};
+use lakesoul_datafusion::session::ExecutionMemoryArgs;
 use tokio::task::JoinSet;
 use tokio_postgres::SimpleQueryMessage;
 
@@ -47,7 +48,7 @@ impl Workers {
                     worker_threads: 2,
                     ..CoreArgs::default()
                 },
-                memory: Default::default(),
+                memory_pool: ExecutionMemoryArgs::default().create_pool(),
             };
             self.tasks.spawn(async move {
                 spawn_lakesoul_worker(&options, listener)

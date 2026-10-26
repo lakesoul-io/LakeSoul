@@ -735,19 +735,19 @@ fn register_warehouse_object_store(
 }
 
 /// Build a [`RuntimeEnv`] carrying the warehouse object store registered the
-/// same way a coordinator session does it.
+/// same way a coordinator session does it, and executing within `memory_pool`.
 ///
 /// Workers and coordinators must observe identical object-store configuration
 /// for encoded plans to resolve their stores on either side.
 pub fn build_worker_runtime_env(
     args: &CoreArgs,
-    memory: &ExecutionMemoryArgs,
+    memory_pool: Arc<dyn MemoryPool>,
 ) -> Result<Arc<RuntimeEnv>> {
     let warehouse = parse_warehouse(args.warehouse_prefix.as_deref())?;
     let object_store_config =
         LakeSoulIOConfigBuilder::new_with_object_store_options(args.s3_options()).build();
     let runtime = RuntimeEnvBuilder::new()
-        .with_memory_pool(memory.create_pool())
+        .with_memory_pool(memory_pool)
         .build_arc()?;
     register_warehouse_object_store(&warehouse, &object_store_config, &runtime)?;
     Ok(runtime)

@@ -163,7 +163,7 @@ the overlay's Prometheus collects them next to the process metrics:
   `kube_pod_container_status_restarts_total` and
   `kube_pod_container_status_last_terminated_reason`.
 
-The dashboard panels *Memory: container RSS vs. execution pool*, *Container
+The dashboard panels *Memory: container RSS, process, allocator and execution pool*, *Container
 restarts and OOM kills* and *CPU throttling* read these series and line them
 up with the process metrics by `pod`. OOM kills come from
 `last_terminated_reason{reason="OOMKilled"}`, not cAdvisor's
@@ -272,6 +272,33 @@ allocator at startup:
 `allocator="system"` means a `--no-default-features` build. `MALLOC_CONF`
 (jemalloc syntax) is read once at startup; the manifests set none.
 Measurements: `../benchmark/results/20261025-console-sf10-pk-jemalloc-7100c918/`.
+
+Memory monitoring: each binary samples its own memory in one pass on a
+dedicated thread, so the three views are comparable at one instant:
+
+| Metric | Source | Meaning |
+|---|---|---|
+| `lakesoul_process_resident_memory_bytes` | `/proc/self/status` `VmRSS` | Process RSS (anonymous, file-backed and shared pages). |
+| `lakesoul_process_resident_anon_memory_bytes` | `/proc/self/status` `RssAnon` | Anonymous RSS: the heap, stacks, anonymous mmaps. |
+| `lakesoul_jemalloc_resident_bytes` | jemalloc `stats.resident` | Upper bound on resident jemalloc pages: active pages, metadata and dirty pages not yet purged; never-touched pages count too. |
+| `lakesoul_jemalloc_active_bytes` | jemalloc `stats.active` | Pages holding allocations (allocated plus fragmentation). |
+| `lakesoul_jemalloc_allocated_bytes` | jemalloc `stats.allocated` | Bytes handed out through `malloc`/Rust allocations, including freed objects parked in thread caches. |
+| `lakesoul_memory_pool_reserved_bytes` | DataFusion memory pool | Execution budget in use; updated on every reservation change, not by the sampler. |
+
+Reading the gaps at one sample: RssAnon − jemalloc resident is a lower bound
+on anonymous memory outside jemalloc (stacks, direct `mmap`s); it can be
+negative because `resident` is an upper bound. jemalloc resident − active is
+dirty pages (purged after `dirty_decay_ms`) plus metadata; active − allocated
+is fragmentation. allocated − pool reserved is *not* a measurement of
+untracked memory: reservations are operator estimates, not allocations, and
+can exceed or fall short of what the operator holds. A
+`--no-default-features` (system allocator) build exports no `lakesoul_jemalloc_*`
+series, and non-Linux builds no `lakesoul_process_*` series.
+
+| Memory sampling (coordinator, worker, console) | Default | Meaning |
+|---|---|---|
+| `LAKESOUL_MEMORY_SAMPLE_INTERVAL_MS` / `--memory-sample-interval-ms` | `1000` | Sampling interval, at least 1. Prometheus scrapes every 15 s and sees the latest sample, so peaks between scrapes are lost; use the sample file for them. |
+| `LAKESOUL_MEMORY_SAMPLE_FILE` / `--memory-sample-file` | unset | Truncated at startup, then one JSON line per sample: `{"ts":<unix s>,"rss_bytes","rss_anon_bytes","jemalloc_allocated_bytes","jemalloc_active_bytes","jemalloc_resident_bytes","pool_reserved_bytes"}`; unavailable views are `null`. `lakesoul-console` exports no metrics and samples only with this file. |
 
 | Coordinator execution memory | Default | Meaning |
 |---|---|---|

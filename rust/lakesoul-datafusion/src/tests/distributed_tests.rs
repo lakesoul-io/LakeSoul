@@ -137,7 +137,9 @@ use vortex_datafusion::VortexSource;
 use crate::distributed::{
     DistributedOptions, LakeSoulWorkerOptions, StaticWorkerResolver, WorkerDiscovery,
 };
-use crate::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
+use crate::session::{
+    ExecutionMemoryArgs, LakeSoulSessionFactory, LakeSoulSessionOptions,
+};
 use crate::tests::{
     assert_batches_eq, assert_batches_eq_ordered, cdc_batch, create_cdc_table,
     create_cdc_table_with_range_partitions, create_table_with_file_format,
@@ -193,7 +195,7 @@ pub(super) async fn spawn_workers(workers: usize) -> (Vec<String>, JoinSet<()>) 
         urls.push(format!("http://127.0.0.1:{port}"));
         let options = LakeSoulWorkerOptions {
             core_args: CoreArgs::default(),
-            memory: Default::default(),
+            memory_pool: ExecutionMemoryArgs::default().create_pool(),
         };
         join_set.spawn(async move {
             crate::distributed::spawn_lakesoul_worker(&options, listener)
@@ -972,7 +974,7 @@ async fn spawn_workers_with_task_recording(
         .with_runtime_env(
             crate::session::build_worker_runtime_env(
                 &CoreArgs::default(),
-                &Default::default(),
+                ExecutionMemoryArgs::default().create_pool(),
             )
             .unwrap(),
         )
@@ -1122,7 +1124,7 @@ async fn spawn_gated_workers(
         let arrived_at_gate = Arc::new(AtomicUsize::new(0));
         let runtime = crate::session::build_worker_runtime_env(
             &CoreArgs::default(),
-            &Default::default(),
+            ExecutionMemoryArgs::default().create_pool(),
         )
         .unwrap();
         runtime.register_object_store(
@@ -1136,7 +1138,7 @@ async fn spawn_gated_workers(
         );
         let options = LakeSoulWorkerOptions {
             core_args: CoreArgs::default(),
-            memory: Default::default(),
+            memory_pool: ExecutionMemoryArgs::default().create_pool(),
         };
         let worker = crate::distributed::lakesoul_worker(&options)
             .unwrap()
@@ -3162,7 +3164,7 @@ async fn spawn_observable_workers(workers: usize) -> (Vec<String>, JoinSet<()>) 
         urls.push(url.clone());
         let options = LakeSoulWorkerOptions {
             core_args: CoreArgs::default(),
-            memory: Default::default(),
+            memory_pool: ExecutionMemoryArgs::default().create_pool(),
         };
         let worker = crate::distributed::lakesoul_worker(&options).unwrap();
         let observability = worker.with_observability_service(Arc::new(
@@ -3504,7 +3506,7 @@ fn test_a_read_failing_after_progress_fails_distributed_query() {
             urls.push(format!("http://{}", listener.local_addr()?));
             let runtime = crate::session::build_worker_runtime_env(
                 &CoreArgs::default(),
-                &Default::default(),
+                ExecutionMemoryArgs::default().create_pool(),
             )?;
             runtime.register_object_store(
                 &url::Url::parse("file://")?,
@@ -3519,7 +3521,7 @@ fn test_a_read_failing_after_progress_fails_distributed_query() {
             let worker = crate::distributed::lakesoul_worker(
                 &crate::distributed::LakeSoulWorkerOptions {
                     core_args: CoreArgs::default(),
-                    memory: Default::default(),
+                    memory_pool: ExecutionMemoryArgs::default().create_pool(),
                 },
             )?
             .with_runtime_env(runtime);
@@ -3594,7 +3596,7 @@ fn test_two_statements_on_one_session_deliver_distinct_ids_to_workers() {
             urls.push(format!("http://{}", listener.local_addr()?));
             let runtime = crate::session::build_worker_runtime_env(
                 &CoreArgs::default(),
-                &Default::default(),
+                ExecutionMemoryArgs::default().create_pool(),
             )?;
             let worker = datafusion_distributed::Worker::from_session_builder(
                 RecordingQueryIdBuilder {
@@ -3754,7 +3756,7 @@ async fn spawn_workers_with_one_failing() -> (Vec<String>, JoinSet<()>, Arc<Atom
     .with_runtime_env(
         crate::session::build_worker_runtime_env(
             &CoreArgs::default(),
-            &Default::default(),
+            ExecutionMemoryArgs::default().create_pool(),
         )
         .unwrap(),
     )
@@ -4617,7 +4619,7 @@ fn test_a_failing_read_cleans_up_tasks_and_recovers() {
             urls.push(url.clone());
             let runtime = crate::session::build_worker_runtime_env(
                 &CoreArgs::default(),
-                &Default::default(),
+                ExecutionMemoryArgs::default().create_pool(),
             )?;
             runtime.register_object_store(
                 &url::Url::parse("file://")?,
@@ -4632,7 +4634,7 @@ fn test_a_failing_read_cleans_up_tasks_and_recovers() {
             let worker = crate::distributed::lakesoul_worker(
                 &crate::distributed::LakeSoulWorkerOptions {
                     core_args: CoreArgs::default(),
-                    memory: Default::default(),
+                    memory_pool: ExecutionMemoryArgs::default().create_pool(),
                 },
             )?
             .with_runtime_env(runtime);
