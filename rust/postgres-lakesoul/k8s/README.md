@@ -270,7 +270,15 @@ libraries keep the system (glibc) allocator. Both server binaries log their
 allocator at startup:
 `memory allocator allocator="jemalloc" version=… config_prof=false … dirty_decay_ms=10000 muzzy_decay_ms=0`;
 `allocator="system"` means a `--no-default-features` build. `MALLOC_CONF`
-(jemalloc syntax) is read once at startup; the manifests set none.
+(jemalloc syntax) is read once at startup. The ConfigMap sets
+`MALLOC_CONF=background_thread:true`, logged as `background_thread=true`:
+without jemalloc's background threads, an arena purges freed pages only when
+it is used again, so idle workers kept 1.2–1.7 GiB each after a query; with
+them they drop to ~30 MiB within ~6 s, at unchanged latency and throughput
+(`../benchmark/results/20261027-bgthread-ab-feb90f43/`). Coordinator and
+worker peaks during queries were unchanged; in the console, back-to-back
+queries peaked 10–16 % lower because retained pages no longer accumulate.
+Pod memory sizing against the pool limit: see below.
 Measurements: `../benchmark/results/20261025-console-sf10-pk-jemalloc-7100c918/`.
 
 Memory monitoring: each binary samples its own memory in one pass on a
@@ -324,11 +332,18 @@ share the `CoreArgs` CLI (`--warehouse-prefix`, `--endpoint`, …).
 |---|---|---|
 | `LAKESOUL_CACHE` | unset (off) | Any value, even `false`, puts the warehouse S3 store behind a read-through page cache (4 MiB pages) on local disk, shared by every session of the process. Also enables the primary-key index cache. |
 | `LAKESOUL_CACHE_SIZE` | `1GiB` | Cache capacity. Must end in `KiB`, `MiB`, `GiB` or `TiB`, e.g. `5GiB`; any other suffix (`5Gi`, `5G`) silently falls back to 1 GiB. |
-| `LAKESOUL_CACHE_PATH` | `lakesoul_cache_dir` in the working directory | Cache directory, emptied at startup. Use the scratch volume, e.g. `/var/scratch/lakesoul-cache`, with a size below its `sizeLimit`. |
+| `LAKESOUL_CACHE_PATH` | `lakesoul_cache_dir` in the working directory | Cache directory, emptied at startup. Use the scratch volume, e.g. `/var/scratch/lakesoul-cache`, with a size well below the scratch PVC (20Gi coordinator, 40Gi worker), which also holds spill files. |
 
 These budgets govern DataFusion execution reservations, not process RSS,
 LakeSoul IO pools or writer-internal buffers. Spill files use DataFusion's
 default OS temporary directory (`TMPDIR`, `/var/scratch` in these deployments).
+`/var/scratch` is a generic ephemeral volume: each coordinator and worker Pod
+gets its own `ReadWriteOnce` PVC (`<pod>-scratch`) from the cluster's default
+StorageClass, created with the Pod and deleted with it, so spill and cache
+never fill the node's root disk or count against its ephemeral storage. Set
+`storageClassName` in the Deployments' `volumeClaimTemplate` for another
+class; a zonal disk class needs `WaitForFirstConsumer` binding so the disk is
+created in the Pod's zone.
 Builds use a vendored `datafusion-physical-plan` 55.2.0 with the upstream fix
 for apache/datafusion#24883 (`rust/third_party/`, root `Cargo.toml`
 `[patch.crates-io]`): without it, a query whose hash `RepartitionExec` spills
@@ -373,6 +388,38 @@ Measured sizing (Vortex TPC-H on the medium profile, 4 CPU / 4Gi):
   (~5.6 MB RSS, never freed on disconnect), so connection-per-query clients
   exhaust the container. With the fix, 4 × 300 connections settled at
   ~314 MB RSS locally instead of growing by ~1.7 GB per round.
+
+Container limit against the pool, measured with `lakesoul-console` on SF10
+pk tables in Vortex (`vortex-compact`, the default `file_format`) with jemalloc
+background threads, a fair pool, the default Vortex decode budget (¼ of the
+pool) and a 5 GiB disk cache
+(`../benchmark/results/20261027-pool-vs-limit-feb90f43/`):
+
+- Memory outside the pool, decoded Vortex splits included, grows with
+  `target_partitions`, not with the pool. At the RSS peak it was up to
+  0.9 GiB at 2 partitions and 1.51 GiB at 4, and 1.1 GiB at 2 partitions with
+  a 4Gi pool (1Gi decode budget).
+- Provisional limit, fitted to these serial SF10 runs and not validated with
+  a full pool or an explicit decode budget: pool + 0.3 GiB + 0.3 GiB ×
+  `target_partitions` + 0.25 GiB, plus any decode budget above 512 MiB. Set
+  `LAKESOUL_VORTEX_DECODE_BUDGET` explicitly to keep it from growing with the
+  pool. At a 1Gi pool and 2 partitions, 1536Mi was OOMKilled. 1792Mi passed
+  with ~270 MiB to spare, but the worst peak from another run would leave
+  ~40 MiB. 2Gi passed 3/3.
+- A pool of ~512 MiB × `target_partitions` was enough; less failed SF10 sorts
+  with `Not enough memory to continue external sort` (512Mi at 2 partitions,
+  1Gi at 4). Sizes in between were not tested.
+- The pool caps memory only when a query fills it. A pool larger than the
+  container limit passed SF10 one query at a time, but only because SF10 used
+  less than the pool. Concurrent queries or larger data can fill the pool
+  past the limit.
+- The page cache holds the disk cache and spill files. Near the OOM boundary
+  (1792Mi–2560Mi at 2 partitions, 2Gi–3Gi at 4), latency was 1.6–1.8× and
+  2.1–2.5× that at 8Gi, at equal CPU time. Each GiB of limit added back toward
+  ~7 GiB recovers part of it. Either budget the disk cache inside the limit or
+  shrink it.
+- Not measured: coordinator/worker pods in the distributed path, where workers
+  run 4 partitions, and concurrent queries.
 
 ## Verification / acceptance plan (runs against a real cluster; NOT yet
 executed — the manifests and the failure paths are untested beyond `cargo`
