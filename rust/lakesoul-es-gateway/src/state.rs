@@ -10,7 +10,7 @@
 //! and an index whose table already exists is discovered from LakeSoul
 //! metadata after a restart.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use arrow_schema::SchemaRef;
@@ -111,6 +111,10 @@ pub struct GatewayState {
     store_config: Mutex<LakeSoulIOConfig>,
     /// Serializes dynamic provisioning (table creation + cache insert).
     provision_lock: Mutex<()>,
+    /// Tables the deferred index maintenance should build, shared with the
+    /// maintenance thread.  Declared indexes are added at startup, dynamic
+    /// ones when they are provisioned or rediscovered.
+    pub index_tables: Arc<std::sync::RwLock<HashSet<String>>>,
     /// Serializes upserts per index.  Concurrent write commits build the same
     /// index shard's secondary index and collide in the metadata catalog
     /// (duplicate index-commit generation / partition-info rows), so a
@@ -137,11 +141,16 @@ impl GatewayState {
             indexes.insert(index.name.clone(), Arc::new(runtime));
         }
 
+        let index_tables: HashSet<String> = indexes
+            .values()
+            .map(|runtime| runtime.table.clone())
+            .collect();
         let state = Self {
             config,
             client,
             session,
             indexes: RwLock::new(indexes),
+            index_tables: Arc::new(std::sync::RwLock::new(index_tables)),
             store_config: Mutex::new(
                 LakeSoulIOConfigBuilder::new_with_object_store_options(args.s3_options())
                     .build(),
@@ -205,6 +214,10 @@ impl GatewayState {
                 .write()
                 .expect("index map poisoned")
                 .insert(name.to_string(), Arc::new(runtime.clone()));
+            self.index_tables
+                .write()
+                .expect("index table set poisoned")
+                .insert(runtime.table.clone());
             return Ok(runtime);
         }
 
@@ -298,6 +311,10 @@ impl GatewayState {
             .write()
             .expect("index map poisoned")
             .insert(runtime.config.name.clone(), Arc::new(runtime.clone()));
+        self.index_tables
+            .write()
+            .expect("index table set poisoned")
+            .insert(runtime.table.clone());
         tracing::info!(
             index = %runtime.config.name,
             table = %runtime.table,
