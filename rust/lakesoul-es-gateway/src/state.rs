@@ -111,6 +111,12 @@ pub struct GatewayState {
     store_config: Mutex<LakeSoulIOConfig>,
     /// Serializes dynamic provisioning (table creation + cache insert).
     provision_lock: Mutex<()>,
+    /// Serializes upserts per index.  Concurrent write commits build the same
+    /// index shard's secondary index and collide in the metadata catalog
+    /// (duplicate index-commit generation / partition-info rows), so a
+    /// multi-worker client (WeKnora indexes documents in parallel) must be
+    /// let in one commit at a time.
+    write_locks: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl GatewayState {
@@ -141,6 +147,7 @@ impl GatewayState {
                     .build(),
             ),
             provision_lock: Mutex::new(()),
+            write_locks: std::sync::Mutex::new(HashMap::new()),
         };
 
         // Register every known index path's object store on the session
@@ -364,6 +371,15 @@ impl GatewayState {
         runtime: &IndexRuntime,
         batch: arrow_array::RecordBatch,
     ) -> Result<(), EsError> {
+        let lock = {
+            let mut locks = self.write_locks.lock().expect("write locks poisoned");
+            Arc::clone(
+                locks
+                    .entry(runtime.table.clone())
+                    .or_insert_with(|| Arc::new(Mutex::new(()))),
+            )
+        };
+        let _guard = lock.lock().await;
         let table = self
             .lake_soul_table(runtime)
             .await
