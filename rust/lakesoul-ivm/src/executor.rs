@@ -1180,7 +1180,8 @@ impl IvmSqlExecutor {
                 }
                 keys
             }
-            ViewSpec::LookupJoin { left_table_id, .. } => self
+            ViewSpec::LookupJoin { left_table_id, .. }
+            | ViewSpec::SemiAnti { left_table_id, .. } => self
                 .runtime
                 .open_table_by_id(left_table_id)
                 .await?

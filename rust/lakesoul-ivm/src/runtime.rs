@@ -1412,6 +1412,11 @@ impl ViewSpec {
                 mv_table_id: mv,
                 ..
             }
+            | ViewSpec::SemiAnti {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
             | ViewSpec::TopK {
                 view_id: id,
                 mv_table_id: mv,

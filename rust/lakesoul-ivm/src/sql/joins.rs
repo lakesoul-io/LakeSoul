@@ -596,7 +596,7 @@ pub(super) fn analyze_join(
             })
         }
         JoinType::LeftSemi | JoinType::LeftAnti => {
-            let output_columns = semi_anti_output_columns(
+            let mut output_columns = semi_anti_output_columns(
                 join,
                 projection,
                 left_alias,
@@ -604,6 +604,13 @@ pub(super) fn analyze_join(
                 left,
                 right,
             )?;
+            if request.derived {
+                for key in &left.primary_keys {
+                    if !output_columns.contains(key) {
+                        output_columns.push(key.clone());
+                    }
+                }
+            }
             Ok(ViewSpec::SemiAnti {
                 view_id: request.view_id.clone(),
                 left_table_id: left.table_id.clone(),
@@ -618,7 +625,7 @@ pub(super) fn analyze_join(
                 null_safe: false,
                 count_mode: false,
                 right_aggregate: None,
-                right_keys: Vec::new(),
+                right_keys: if same_names { Vec::new() } else { right_keys },
                 match_predicate: None,
             })
         }

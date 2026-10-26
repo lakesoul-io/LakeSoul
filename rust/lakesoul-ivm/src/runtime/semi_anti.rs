@@ -381,7 +381,7 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
             })?;
         }
         None => {
-            if view.match_predicate.is_some() || !view.right_keys.is_empty() {
+            if view.match_predicate.is_some() {
                 return Err(report!(
                     "semi/anti view {}: an aggregate predicate without an \
                      aggregate",
@@ -437,10 +437,8 @@ fn semi_anti_left_columns(view: &SemiAntiView) -> Vec<String> {
 /// condition columns, the right primary keys and the change column.
 fn semi_anti_right_columns(view: &SemiAntiView) -> Vec<String> {
     let mut columns = Vec::new();
-    for column in view
-        .join_keys
+    for column in right_join_keys(view)
         .iter()
-        .chain(view.right_keys.iter())
         .chain(
             view.conditions
                 .iter()
@@ -452,7 +450,11 @@ fn semi_anti_right_columns(view: &SemiAntiView) -> Vec<String> {
             columns.push(column.clone());
         }
     }
-    if let Some(change) = change_column(&view.right)
+    if let Some(change) = view
+        .right
+        .cdc_column
+        .as_deref()
+        .filter(|column| view.right.schema.field_with_name(column).is_ok())
         && !columns.iter().any(|column| column == change)
     {
         columns.push(change.to_string());
@@ -732,7 +734,8 @@ fn semi_anti_join(
     let mut on_pairs: Vec<(String, String)> = view
         .join_keys
         .iter()
-        .map(|key| (key.clone(), semi_anti_right_alias(key)))
+        .zip(right_join_keys(view))
+        .map(|(left, right)| (left.clone(), semi_anti_right_alias(right)))
         .collect();
     let mut filter: Option<Expr> = None;
     for condition in &view.conditions {

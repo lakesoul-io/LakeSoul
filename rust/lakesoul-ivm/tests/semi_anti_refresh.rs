@@ -424,3 +424,30 @@ async fn anti_join_tracks_matches_appearing_and_disappearing() {
 
     fixture.cleanup().await;
 }
+
+#[test_log::test(tokio::test)]
+async fn semi_join_with_differently_named_right_key() {
+    let fixture = setup(false).await;
+    let runtime = &fixture.runtime;
+    let (left, right, mv) = (&fixture.left, &fixture.right, &fixture.mv);
+    let mut view = fixture.view.clone();
+    view.right_keys = vec!["rk".to_string()];
+
+    left.append_batch(runtime.client(), left_batch(&[(1, 10, 5, "insert")]))
+        .await
+        .unwrap();
+    right
+        .append_batch(runtime.client(), right_batch(&[(10, 99, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_semi_anti(&view).await.unwrap().unwrap();
+    assert_eq!(view_state(runtime, mv).await, HashMap::from([(1, (10, 5))]));
+
+    right
+        .append_batch(runtime.client(), right_batch(&[(10, 99, "delete")]))
+        .await
+        .unwrap();
+    runtime.refresh_semi_anti(&view).await.unwrap().unwrap();
+    assert!(view_state(runtime, mv).await.is_empty());
+    fixture.cleanup().await;
+}
