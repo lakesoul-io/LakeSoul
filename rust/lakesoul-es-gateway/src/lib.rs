@@ -9,7 +9,8 @@
 //! query and search.  Tables are pre-declared in a TOML configuration; the
 //! gateway provisions them with a fixed document schema (text index on the
 //! content column, optional vector index on the embedding column, an
-//! internal CDC column for deletes) and rejects undeclared indexes.
+//! internal CDC column for deletes).  Indexes not declared in the file can be
+//! created at runtime when `defaults.dynamic_indexes` is enabled.
 
 pub mod config;
 pub mod delete;
@@ -55,7 +56,9 @@ pub fn build_router(state: Arc<GatewayState>) -> Router {
         .route("/", get(protocol::root))
         .route(
             "/{index}",
-            axum::routing::head(index_api::head_index).put(index_api::put_index),
+            axum::routing::head(index_api::head_index)
+                .put(index_api::put_index)
+                .delete(index_api::delete_index),
         )
         .route("/{index}/_mapping", get(index_api::get_mapping))
         .route("/{index}/_doc", post(document::post_doc))

@@ -29,7 +29,7 @@ use crate::state::{GatewayState, IndexRuntime};
 use crate::timing::timing_enabled;
 
 /// One ES document of the WeKnora index model.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 pub struct EsDocument {
     #[serde(default)]
     pub content: Option<String>,
@@ -99,11 +99,13 @@ async fn write_one(
     index: &str,
     body: &Bytes,
 ) -> Result<Json<Value>, EsError> {
-    let runtime = state.index(index)?;
     let document: EsDocument = serde_json::from_slice(body)
         .map_err(|error| EsError::bad_request(format!("invalid document: {error}")))?;
+    let runtime = state.resolve_index(index).await?;
+    let runtime =
+        ensure_provisioned(state, runtime, std::slice::from_ref(&document)).await?;
     let pk = generate_pk();
-    write_documents(state, runtime, vec![(pk, document)]).await?;
+    write_documents(state, &runtime, vec![(pk, document)]).await?;
     Ok(Json(json!({
         "_index": index,
         "_id": pk.to_string(),
@@ -123,7 +125,6 @@ pub async fn post_bulk(
     body: Bytes,
 ) -> Result<Json<Value>, EsError> {
     let started = Instant::now();
-    let runtime = state.index(&index)?;
     let parse_started = Instant::now();
     let text = std::str::from_utf8(&body).map_err(|error| {
         EsError::bad_request(format!("bulk body is not UTF-8: {error}"))
@@ -178,7 +179,17 @@ pub async fn post_bulk(
     let parse_ms = parse_started.elapsed().as_secs_f64() * 1000.0;
     let write_started = Instant::now();
     if !pending.is_empty() {
-        write_documents(&state, runtime, pending).await?;
+        let runtime = state.resolve_index(&index).await?;
+        let runtime = ensure_provisioned(
+            &state,
+            runtime,
+            &pending
+                .iter()
+                .map(|(_, doc)| doc.clone())
+                .collect::<Vec<_>>(),
+        )
+        .await?;
+        write_documents(&state, &runtime, pending).await?;
     }
     if timing_enabled() {
         tracing::info!(
@@ -195,6 +206,23 @@ pub async fn post_bulk(
         "errors": false,
         "items": items
     })))
+}
+
+/// Provision a pending index from the first document's embedding length, so
+/// the table (and its vector index) is created before the batch is built.
+async fn ensure_provisioned(
+    state: &GatewayState,
+    runtime: IndexRuntime,
+    documents: &[EsDocument],
+) -> Result<IndexRuntime, EsError> {
+    if !runtime.pending {
+        return Ok(runtime);
+    }
+    let dim = documents
+        .iter()
+        .find_map(|document| document.embedding.as_ref().map(Vec::len))
+        .filter(|dim| *dim > 0);
+    state.provision_pending_index(&runtime, dim).await
 }
 
 /// Write `(primary key, document)` rows through the LakeSoul upsert path.

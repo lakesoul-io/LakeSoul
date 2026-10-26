@@ -18,6 +18,8 @@ use serde_json::{Value, json};
 
 use crate::document::mark_deleted;
 use crate::error::EsError;
+use futures::StreamExt;
+
 use crate::query;
 use crate::state::GatewayState;
 
@@ -27,20 +29,27 @@ pub async fn delete_by_query(
     body: Bytes,
 ) -> Result<Json<Value>, EsError> {
     let started = Instant::now();
-    let runtime = state.index(&index)?;
+    let runtime = state.resolve_index(&index).await?;
     let body: Value = serde_json::from_slice(&body)
         .map_err(|error| EsError::bad_request(format!("invalid JSON body: {error}")))?;
     let query_value = body
         .get("query")
         .ok_or_else(|| EsError::bad_request("missing 'query' in delete body"))?;
 
-    let filters = query::extract_filters(query_value, runtime)?;
-    let filter = query::filters_to_expr(&filters, runtime)?;
-    let rows = query::resolve_rows(&state, runtime, filter).await?;
-    let deleted = rows.as_ref().map(|batch| batch.num_rows()).unwrap_or(0);
-    if let Some(batch) = rows {
+    let filters = query::extract_filters(query_value, &runtime)?;
+    let filter = query::filters_to_expr(&filters, &runtime)?;
+    // Stream the matching rows: a delete over a large knowledge base must not
+    // materialize the whole match set before writing the first tombstone.
+    let mut rows = query::stream_matching_rows(&state, &runtime, filter).await?;
+    let mut deleted = 0usize;
+    while let Some(batch) = rows.next().await {
+        let batch = batch?;
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        deleted += batch.num_rows();
         let batch = mark_deleted(&batch)?;
-        state.upsert(runtime, batch).await?;
+        state.upsert(&runtime, batch).await?;
     }
 
     Ok(Json(json!({

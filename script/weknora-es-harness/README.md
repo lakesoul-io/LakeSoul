@@ -17,7 +17,7 @@ needed for this harness.
 | Step | WeKnora driver call |
 |------|---------------------|
 | client info | typed-client version / `X-Elastic-Product` handshake |
-| `indices.exists` + create if missing | `createIndexIfNotExists` (settings: shards/replicas) |
+| `indices.exists` + create if missing | `createIndexIfNotExists` (settings: shards/replicas); works with dynamic gateway indexes (`dynamic_indexes = true`, the default) |
 | `indices.get_mapping` | `detectFieldTypes`: asserts `chunk_id` maps to `keyword`, so the driver uses bare field names instead of `chunk_id.keyword` |
 | index one document | `Save` (chunk edit/re-index path) |
 | bulk create | `BatchSave` |
@@ -26,7 +26,7 @@ needed for this harness.
 | `update_by_query` enable/disable | `UpdateChunkEnabledStatus` |
 | `update_by_query` tag | `BatchUpdateChunkTagID` (`params.tag_id`) |
 | `update_by_query` move | `MoveKnowledgeIndices` (`knowledge_base_id = params.target; tag_id = ''`, `refresh=true`); asserts `total == updated`, no timeouts/conflicts/failures |
-| copy indices paging | `CopyIndices`: filter-only `from`/`size` pages of 5, re-index into another knowledge base |
+| copy indices paging | `CopyIndices`: filter-only `from`/`size` pages of 5 (paged inside the scan), re-index into another knowledge base |
 | `delete_by_query` | `DeleteByChunkIDList` (`terms chunk_id`) |
 
 Keyword hits are also asserted to carry a positive `_score` in descending

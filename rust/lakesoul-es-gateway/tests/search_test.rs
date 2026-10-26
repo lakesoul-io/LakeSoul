@@ -165,7 +165,10 @@ async fn gateway_keyword_search_contract() {
         ),
     )
     .await;
-    assert_eq!(body["hits"]["total"]["value"], 1);
+    // The filter-only path pages inside the scan and reports a lower bound on
+    // the match count instead of scanning the whole match set per page.
+    assert_eq!(body["hits"]["total"]["value"], 2, "{body}");
+    assert_eq!(body["hits"]["total"]["relation"], "gte", "{body}");
 
     // Deleting a document makes its old index candidate unsearchable.
     let (status, _, body) = call(

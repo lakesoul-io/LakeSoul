@@ -1454,11 +1454,11 @@ async fn search_impl(
     body: Vec<u8>,
 ) -> Result<Value, EsError> {
     let started = Instant::now();
-    let runtime = state.index(&index)?;
+    let runtime = state.resolve_index(&index).await?;
     let mut body = SearchBody::parse(&body)?;
-    body.resolve(runtime)?;
+    body.resolve(&runtime)?;
     let parse_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let parsed = ParsedQuery::parse(&body.query, runtime)?;
+    let parsed = ParsedQuery::parse(&body.query, &runtime)?;
     if parsed.vector_query.is_some() && parsed.match_query.is_some() {
         return Err(EsError::bad_request(
             "a query cannot combine match and script_score",
@@ -1467,7 +1467,7 @@ async fn search_impl(
     let knn = body
         .knn
         .as_ref()
-        .map(|value| parse_knn(value, runtime, body.size))
+        .map(|value| parse_knn(value, &runtime, body.size))
         .transpose()?;
     let has_knn = knn.is_some();
     if has_knn && (parsed.vector_query.is_some() || parsed.match_query.is_some()) {
@@ -1490,8 +1490,8 @@ async fn search_impl(
     }
 
     let computed = &body.computed_fields;
-    let (mut hits, shards) = if let Some(clauses) = knn {
-        knn_hits(
+    let (mut hits, shards, paged) = if let Some(clauses) = knn {
+        let (hits, shards) = knn_hits(
             Arc::clone(&state),
             runtime.clone(),
             clauses,
@@ -1500,9 +1500,10 @@ async fn search_impl(
             body.clone(),
             computed,
         )
-        .await?
+        .await?;
+        (hits, shards, false)
     } else if let Some(vector) = &parsed.vector_query {
-        vector_hits(
+        let (hits, shards) = vector_hits(
             Arc::clone(&state),
             runtime.clone(),
             vector.clone(),
@@ -1510,9 +1511,10 @@ async fn search_impl(
             body.clone(),
             computed,
         )
-        .await?
+        .await?;
+        (hits, shards, false)
     } else if let Some(match_query) = &parsed.match_query {
-        keyword_hits(
+        let (hits, shards) = keyword_hits(
             Arc::clone(&state),
             runtime.clone(),
             match_query.clone(),
@@ -1520,7 +1522,8 @@ async fn search_impl(
             body.clone(),
             computed,
         )
-        .await?
+        .await?;
+        (hits, shards, false)
     } else {
         filter_only_hits(
             Arc::clone(&state),
@@ -1554,10 +1557,18 @@ async fn search_impl(
         let docs: Vec<&Hit> = hits.iter().collect();
         Some(eval_aggregations(&body.aggs, &docs))
     };
+    let hits: Vec<Hit> = if paged {
+        hits
+    } else {
+        hits.into_iter().skip(body.from).take(body.size).collect()
+    };
+    let total_value = if paged {
+        body.from + hits.len()
+    } else {
+        hits.len()
+    };
     let page: Vec<Value> = hits
         .into_iter()
-        .skip(body.from)
-        .take(body.size)
         .map(|hit| {
             // Elasticsearch reports the resolved sort values per hit when an
             // explicit sort was requested.
@@ -1612,7 +1623,7 @@ async fn search_impl(
             "failed": 0
         },
         "hits": {
-            "total": {"value": page.len(), "relation": "eq"},
+            "total": {"value": total_value, "relation": "gte"},
             "max_score": max_score,
             "hits": page
         }
@@ -1683,7 +1694,8 @@ async fn vector_hits(
         let candidate_filter = col(PK_COLUMN).in_list(ids, false);
         let filter = and(Some(filter_expr(&parsed, &runtime)?), candidate_filter);
         let fetch_started = Instant::now();
-        let batches = fetch_rows(Arc::clone(&state), runtime.clone(), filter).await?;
+        let batches =
+            fetch_rows(Arc::clone(&state), runtime.clone(), filter, None).await?;
         let fetch_ms = fetch_started.elapsed().as_secs_f64() * 1000.0;
 
         let rerank_started = Instant::now();
@@ -1836,6 +1848,7 @@ async fn knn_hits(
             Arc::clone(&state),
             runtime.clone(),
             and(Some(filter.clone()), candidate_filter),
+            None,
         )
         .await?;
 
@@ -1969,7 +1982,8 @@ async fn keyword_hits(
         let candidate_filter = col(PK_COLUMN).in_list(ids, false);
         let filter = and(Some(filter_expr(&parsed, &runtime)?), candidate_filter);
         let fetch_started = Instant::now();
-        let batches = fetch_rows(Arc::clone(&state), runtime.clone(), filter).await?;
+        let batches =
+            fetch_rows(Arc::clone(&state), runtime.clone(), filter, None).await?;
         let fetch_ms = fetch_started.elapsed().as_secs_f64() * 1000.0;
 
         let verify_started = Instant::now();
@@ -2074,9 +2088,16 @@ async fn filter_only_hits(
     parsed: ParsedQuery,
     body: SearchBody,
     computed_fields: &[String],
-) -> Result<(Vec<Hit>, usize), EsError> {
+) -> Result<(Vec<Hit>, usize, bool), EsError> {
     let filter = filter_expr(&parsed, &runtime)?;
-    let batches = fetch_rows(Arc::clone(&state), runtime.clone(), filter).await?;
+    // Filter-only queries are the pagination path (WeKnora pages the whole
+    // index when it copies a knowledge base): push `from`/`size` into the
+    // scan with a stable primary-key order so one page costs one page of
+    // rows instead of the whole match set.  Aggregations need the complete
+    // set, so they keep the unpaged scan.
+    let page = (body.sort_fields.is_empty() && body.aggs.is_empty())
+        .then_some((body.from, body.size));
+    let batches = fetch_rows(Arc::clone(&state), runtime.clone(), filter, page).await?;
     let mut hits = Vec::new();
     for batch in &batches {
         let ids = batch
@@ -2093,7 +2114,7 @@ async fn filter_only_hits(
             });
         }
     }
-    Ok((hits, batches.len()))
+    Ok((hits, batches.len(), page.is_some()))
 }
 
 /// The object store of a table path.
@@ -2764,6 +2785,7 @@ async fn fetch_rows(
     state: Arc<GatewayState>,
     runtime: IndexRuntime,
     filter: Expr,
+    page: Option<(usize, usize)>,
 ) -> Result<Vec<RecordBatch>, EsError> {
     let dataframe = state
         .session
@@ -2780,6 +2802,15 @@ async fn fetch_rows(
     let dataframe = dataframe
         .select_columns(&columns)
         .map_err(crate::error::internal)?;
+    let dataframe = match page {
+        Some((from, size)) => dataframe
+            .sort_by(vec![col(PK_COLUMN)])
+            .map_err(crate::error::internal)?
+            // `limit(skip, fetch)`.
+            .limit(from, Some(size))
+            .map_err(crate::error::internal)?,
+        None => dataframe,
+    };
     dataframe.collect().await.map_err(crate::error::internal)
 }
 
