@@ -478,6 +478,13 @@ impl LakeSoulIOSession {
             .await
     }
 
+    /// Split the listed files into runs of one object store and physical
+    /// format, in listing order.
+    ///
+    /// Only consecutive files share a group: the merge resolves equal keys
+    /// by input position, so the flattened inputs must keep the commit order
+    /// of `io_config.files`. Joining an earlier group would move a newer file
+    /// ahead of an older one of another format.
     fn format_scan_groups(
         &self,
         listing_metas: &ListingMetas,
@@ -494,7 +501,7 @@ impl LakeSoulIOSession {
             let physical_format =
                 registry.physical_format_for_path(object_meta.location.as_ref())?;
 
-            if let Some(group) = groups.iter_mut().find(|group| {
+            if let Some(group) = groups.last_mut().filter(|group| {
                 group.object_store_url == object_store_url
                     && group.physical_format == physical_format
             }) {
