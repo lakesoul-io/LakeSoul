@@ -262,11 +262,12 @@ Downward API),
 `LAKESOUL_DISTRIBUTED_BYTES_PER_PARTITION`.
 Metadata DB variables (`LAKESOUL_PG_URL/USERNAME/PASSWORD`) are unchanged.
 
-Memory allocator: `postgres-lakesoul` (and `lakesoul-console`) run on
-jemalloc 5.3 with its built-in defaults, including for C `malloc` (default
-Cargo feature `jemalloc`, `src/allocator.rs`); heap profiling is not compiled
-in. `lakesoul-worker`, the JNI and Python libraries keep the system (glibc)
-allocator. The coordinator logs its allocator at startup:
+Memory allocator: `postgres-lakesoul` and `lakesoul-worker` (and
+`lakesoul-console`) run on jemalloc 5.3 with its built-in defaults, including
+for C `malloc` (default Cargo feature `jemalloc`, each crate's
+`src/allocator.rs`); heap profiling is not compiled in. The JNI and Python
+libraries keep the system (glibc) allocator. Both server binaries log their
+allocator at startup:
 `memory allocator allocator="jemalloc" version=… config_prof=false … dirty_decay_ms=10000 muzzy_decay_ms=0`;
 `allocator="system"` means a `--no-default-features` build. `MALLOC_CONF`
 (jemalloc syntax) is read once at startup; the manifests set none.

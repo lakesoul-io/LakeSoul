@@ -32,6 +32,8 @@ use lakesoul_observability::{
 };
 use tracing::info;
 
+mod allocator;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "lakesoul-worker",
@@ -97,6 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // Dynamic log level: edit LAKESOUL_LOG_FILTER_FILE (or RUST_LOG)
             // and `kill -HUP <pid>`.
             spawn_reload_on_sighup(tracing_guard.filter_handle());
+            allocator::log_active();
             install_prometheus_metrics(PrometheusMetricsConfig::new(
                 "lakesoul-worker",
                 metrics_addr,

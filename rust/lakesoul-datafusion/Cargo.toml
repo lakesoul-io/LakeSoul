@@ -11,11 +11,9 @@ edition = { workspace = true }
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
 # lakesoul
-lakesoul-build-info = { path = "../lakesoul-build-info" }
 lakesoul-io = { path = "../lakesoul-io" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 lakesoul-common = { path = "../lakesoul-common" }
-lakesoul-observability = { path = "../lakesoul-observability" }
 lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
 lakesoul-vector = { path = "../lakesoul-vector" }
 lakesoul-text = { path = "../lakesoul-text" }
@@ -79,7 +77,6 @@ tower = "0.5"
 tracing-opentelemetry = "0.33.0"
 # logging
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 log = { workspace = true }
 # error
 rootcause = { workspace = true }
@@ -95,6 +92,7 @@ opentelemetry_sdk = { version = "0.32.1", default-features = false, features = [
   "trace",
 ] }
 test-log = { workspace = true }
+tracing-subscriber = { workspace = true }
 rand = { workspace = true }
 # `Float16` vector storage samples in the vector benchmark.
 half = { workspace = true }

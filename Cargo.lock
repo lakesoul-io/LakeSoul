@@ -5212,12 +5212,10 @@ dependencies = [
  "half",
  "http 1.5.0",
  "json",
- "lakesoul-build-info",
  "lakesoul-common",
  "lakesoul-io",
  "lakesoul-metadata",
  "lakesoul-metadata-proto",
- "lakesoul-observability",
  "lakesoul-text",
  "lakesoul-vector",
  "log",
@@ -5659,6 +5657,22 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "lakesoul-worker"
+version = "4.1.0-dev.0"
+dependencies = [
+ "clap",
+ "lakesoul-build-info",
+ "lakesoul-common",
+ "lakesoul-datafusion",
+ "lakesoul-observability",
+ "tikv-jemalloc-ctl",
+ "tikv-jemallocator",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
