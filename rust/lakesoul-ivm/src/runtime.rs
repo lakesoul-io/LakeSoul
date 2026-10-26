@@ -1083,6 +1083,11 @@ pub enum ViewSpec {
         sources: Vec<UnionSourceSpec>,
         /// The materialized view table id.
         mv_table_id: String,
+        /// The branch-index column name.  A nested union carries its inner
+        /// branch index as a data column, so every union names its own marker
+        /// and the two levels cannot collide.
+        #[serde(default = "default_union_source_column")]
+        source_column: String,
     },
     /// `UNION` (distinct) of several sources with the same schema: every
     /// distinct row with its occurrence count.
@@ -1200,6 +1205,10 @@ pub enum ViewSpec {
         #[serde(default)]
         source_generation: i64,
     },
+}
+
+fn default_union_source_column() -> String {
+    IVM_SOURCE_COLUMN.to_string()
 }
 
 /// One output column of a [`ViewSpec::Sink`].
@@ -2978,6 +2987,10 @@ pub(crate) async fn write_dataframe(
                 }
             }
         }
+        // DataFusion plans string expressions as `Utf8View`; the physical
+        // table stores `Utf8`.  Every write path funnels through here, so cast
+        // once instead of relying on each view kind.
+        let batch = table.cast_batch(batch)?;
         writer.write_record_batch(batch).await?;
     }
     let outputs = writer.flush_and_close().await?;
@@ -3100,7 +3113,7 @@ fn filter_columns(
 }
 
 /// Parse a persisted filter predicate into a logical expression.
-fn parse_filter(
+pub(crate) fn parse_filter(
     context: &SessionContext,
     schema: &SchemaRef,
     filter: &str,
@@ -3991,6 +4004,7 @@ impl IvmRuntime {
                 view_id,
                 sources,
                 mv_table_id,
+                source_column,
             } => {
                 let mut opened = Vec::with_capacity(sources.len());
                 for source in sources {
@@ -4005,6 +4019,7 @@ impl IvmRuntime {
                     view_id: view_id.clone(),
                     sources: opened,
                     mv: self.open_table_by_id(mv_table_id).await?,
+                    source_column: source_column.clone(),
                     refresh_interval_ms,
                 })
             }

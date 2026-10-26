@@ -341,7 +341,9 @@ impl IvmTableOptions {
 /// serializes that as `Utf8`, so a table created from the plan's schema would
 /// advertise `Utf8View` in memory and `Utf8` after reopening.  Normalize when
 /// a table is created so both views agree.
-fn normalize_data_type(data_type: &arrow_schema::DataType) -> arrow_schema::DataType {
+pub(crate) fn normalize_data_type(
+    data_type: &arrow_schema::DataType,
+) -> arrow_schema::DataType {
     match data_type {
         arrow_schema::DataType::Utf8View => arrow_schema::DataType::Utf8,
         arrow_schema::DataType::BinaryView => arrow_schema::DataType::Binary,
@@ -654,7 +656,7 @@ impl IvmTable {
     /// Cast a refresh batch to the table's physical schema.  DataFusion plans
     /// string expressions as `Utf8View`; LakeSoul stores `Utf8`, so the
     /// writer must see the table's canonical types.
-    fn cast_batch(&self, batch: RecordBatch) -> Result<RecordBatch> {
+    pub(crate) fn cast_batch(&self, batch: RecordBatch) -> Result<RecordBatch> {
         if batch.schema().fields().len() != self.schema.fields().len() {
             return Err(rootcause::report!(
                 "refresh batch has {} columns, table {} expects {}",

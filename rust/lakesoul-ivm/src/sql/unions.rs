@@ -46,6 +46,38 @@ pub(super) fn analyze_union(
     if sources.len() < 2 {
         return Err(unsupported("UNION ALL needs at least two branches"));
     }
+    // A `SELECT *` over a derived step also sees the step's internal
+    // bookkeeping columns; they must not become union output columns (the
+    // union adds its own source index and epoch).
+    for branch in &mut sources {
+        let columns = if branch.columns.is_empty() {
+            branch
+                .source
+                .schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect::<Vec<_>>()
+        } else {
+            branch.columns.clone()
+        };
+        if !columns.iter().any(|column| is_internal_column(column)) {
+            continue;
+        }
+        let mut kept = Vec::with_capacity(columns.len());
+        let mut kept_exprs = Vec::with_capacity(branch.exprs.len());
+        for (index, column) in columns.iter().enumerate() {
+            if is_internal_column(column) {
+                continue;
+            }
+            kept.push(column.clone());
+            if !branch.exprs.is_empty() {
+                kept_exprs.push(branch.exprs[index].clone());
+            }
+        }
+        branch.columns = kept;
+        branch.exprs = kept_exprs;
+    }
     // The keyed maintenance matches the MV rows by the source primary keys,
     // so a keyed branch must project them unchanged.  A derived step widens
     // the branch with the keys its consumer does not select; a user statement
@@ -98,6 +130,11 @@ pub(super) fn analyze_union(
             }
         }
     }
+    // Nested unions keep their inner marker as a data column, but branches
+    // may list it in a different position.  Align every branch to the first
+    // branch's output order so the runtime concatenation and schema check
+    // agree.
+    align_union_branches(&mut sources);
     let first = &sources[0];
     let first_schema =
         union_output_schema_for(&first.source.schema, &first.columns, &first.exprs)?;
@@ -113,6 +150,18 @@ pub(super) fn analyze_union(
             ));
         }
     }
+    let source_column = if sources.iter().any(|branch| {
+        branch
+            .source
+            .schema
+            .fields()
+            .iter()
+            .any(|field| field.name().starts_with("__ivm_source"))
+    }) {
+        union_source_column(union)
+    } else {
+        crate::runtime::IVM_SOURCE_COLUMN.to_string()
+    };
     Ok(ViewSpec::UnionAll {
         view_id: request.view_id.clone(),
         sources: sources
@@ -125,6 +174,7 @@ pub(super) fn analyze_union(
             })
             .collect(),
         mv_table_id: request.mv_table_id.clone(),
+        source_column,
     })
 }
 
@@ -289,6 +339,140 @@ fn projection_uses_column(
 
 /// Two union outputs match when their column names and types match; the
 /// nullability may differ between branches.
+/// A stable per-union branch-index column.  Deriving it from the plan keeps
+/// replays on the same spec while a nested union's inner marker cannot collide
+/// with the outer one.
+fn union_source_column(union: &Union) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in format!("{union:?}").bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("__ivm_source_{hash:016x}")
+}
+
+fn align_union_branches(sources: &mut [UnionBranch]) {
+    if sources.len() < 2 {
+        return;
+    }
+    // Two materializations of the same inner union may carry different marker
+    // names; normalize a single inner marker to one canonical output name so
+    // the branches can share a schema.  The value is still the inner branch
+    // index, and the key helper maps the branch key to this output name.
+    for branch in sources.iter_mut() {
+        let mut columns = if branch.columns.is_empty() {
+            branch
+                .source
+                .schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect::<Vec<_>>()
+        } else {
+            branch.columns.clone()
+        };
+        let markers = columns
+            .iter()
+            .enumerate()
+            .filter(|(_, column)| column.starts_with("__ivm_source"))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if markers.len() != 1 {
+            continue;
+        }
+        let marker = markers[0];
+        if columns[marker] == "__ivm_source_inner" {
+            continue;
+        }
+        let original = columns[marker].clone();
+        if branch.exprs.is_empty() {
+            branch.exprs = columns.clone();
+        } else if branch.exprs.len() != columns.len() {
+            continue;
+        }
+        branch.exprs[marker] = original;
+        columns[marker] = "__ivm_source_inner".to_string();
+        branch.columns = columns;
+    }
+    let target = if sources[0].columns.is_empty() {
+        sources[0]
+            .source
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>()
+    } else {
+        sources[0].columns.clone()
+    };
+    for branch in &mut sources[1..] {
+        let columns = if branch.columns.is_empty() {
+            branch
+                .source
+                .schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect::<Vec<_>>()
+        } else {
+            branch.columns.clone()
+        };
+        if columns == target || columns.len() != target.len() {
+            continue;
+        }
+        let mut order = Vec::with_capacity(columns.len());
+        let mut found = true;
+        for wanted in &target {
+            match columns.iter().position(|column| column == wanted) {
+                Some(index) if !order.contains(&index) => order.push(index),
+                _ => {
+                    found = false;
+                    break;
+                }
+            }
+        }
+        if !found {
+            continue;
+        }
+        let has_exprs = !branch.exprs.is_empty();
+        branch.columns = order.iter().map(|&index| columns[index].clone()).collect();
+        if has_exprs {
+            branch.exprs = order
+                .iter()
+                .map(|&index| branch.exprs[index].clone())
+                .collect();
+        }
+    }
+}
+
+/// The output column a union branch key is materialized under after an
+/// expression projection (`raw AS canonical`).
+pub(crate) fn union_key_output_name(
+    source: &UnionSourceSpec,
+    key: &str,
+) -> Option<String> {
+    if source.columns.is_empty() {
+        return Some(key.to_string());
+    }
+    if let Some(position) = source.columns.iter().position(|column| column == key) {
+        let unchanged = source.exprs.is_empty() || source.exprs[position] == key;
+        if unchanged {
+            return Some(key.to_string());
+        }
+    }
+    source
+        .exprs
+        .iter()
+        .position(|expression| expression == key)
+        .map(|position| source.columns[position].clone())
+}
+
+fn is_internal_column(name: &str) -> bool {
+    name == crate::runtime::IVM_ROW_KINDS_COLUMN
+        || name == crate::runtime::IVM_EPOCH_COLUMN
+        || name == crate::runtime::IVM_SOURCE_COLUMN
+}
+
 fn same_union_schema(left: &Schema, right: &Schema) -> bool {
     left.fields().len() == right.fields().len()
         && left
@@ -296,7 +480,9 @@ fn same_union_schema(left: &Schema, right: &Schema) -> bool {
             .iter()
             .zip(right.fields())
             .all(|(left, right)| {
-                left.name() == right.name() && left.data_type() == right.data_type()
+                left.name() == right.name()
+                    && crate::table::normalize_data_type(left.data_type())
+                        == crate::table::normalize_data_type(right.data_type())
             })
 }
 
@@ -496,6 +682,7 @@ mod tests {
         assert_eq!(
             analyzed.spec,
             ViewSpec::UnionAll {
+                source_column: crate::runtime::IVM_SOURCE_COLUMN.to_string(),
                 view_id: "view_1".to_string(),
                 sources: vec![
                     UnionSourceSpec {

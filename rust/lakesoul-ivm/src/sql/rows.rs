@@ -64,6 +64,25 @@ pub(super) fn analyze_row(
     // materializes it too - the top-k layout does the same.
     let mut output_columns = output_columns.unwrap_or_default();
     let mut output_exprs = output_exprs;
+    // A derived `SELECT *` over another derived step also sees its internal
+    // bookkeeping columns; they are never part of the logical output.
+    if !output_columns.is_empty() {
+        let mut kept_columns = Vec::with_capacity(output_columns.len());
+        let mut kept_exprs = Vec::with_capacity(output_exprs.len());
+        for (index, column) in output_columns.iter().enumerate() {
+            if column.eq_ignore_ascii_case(crate::runtime::IVM_ROW_KINDS_COLUMN)
+                || column.eq_ignore_ascii_case(crate::runtime::IVM_EPOCH_COLUMN)
+            {
+                continue;
+            }
+            kept_columns.push(column.clone());
+            if !output_exprs.is_empty() {
+                kept_exprs.push(output_exprs[index].clone());
+            }
+        }
+        output_columns = kept_columns;
+        output_exprs = kept_exprs;
+    }
     if !output_columns.is_empty() {
         for key in &source.primary_keys {
             if !output_columns.contains(key) {
@@ -117,6 +136,15 @@ pub(super) fn collect_row(
                         exprs.push(column.name.clone());
                     }
                     other => {
+                        // A cast to the source column's own physical type is
+                        // the identity; keep it a plain key projection so a
+                        // keyed step does not materialize a duplicate key.
+                        if let Some(column) = identity_cast_column(other, &source) {
+                            let name = alias.unwrap_or_else(|| column.to_string());
+                            names.push(name);
+                            exprs.push(column.to_string());
+                            continue;
+                        }
                         if contains_scalar_subquery(other) {
                             return Err(unsupported(
                                 "a scalar subquery in the select list",
@@ -169,6 +197,20 @@ pub(super) fn collect_row(
         }
         other => Err(unsupported(format!("row shape over {}", plan_label(other)))),
     }
+}
+
+/// The source column under a cast to the column's own physical type.
+fn identity_cast_column<'a>(expr: &'a Expr, source: &IvmTable) -> Option<&'a str> {
+    let Expr::Cast(cast) = expr else {
+        return None;
+    };
+    let Expr::Column(column) = cast.expr.as_ref() else {
+        return None;
+    };
+    let field = source.schema.field_with_name(&column.name).ok()?;
+    (crate::table::normalize_data_type(cast.field.data_type())
+        == crate::table::normalize_data_type(field.data_type()))
+    .then_some(column.name.as_str())
 }
 
 /// Whether an expression contains an uncorrelated scalar subquery.

@@ -47,6 +47,7 @@ use self::joins::*;
 use self::multi_join::*;
 use self::rows::*;
 use self::set_ops::*;
+pub(crate) use self::unions::union_key_output_name;
 use self::unions::*;
 use self::windows::*;
 
@@ -398,16 +399,42 @@ impl std::fmt::Display for UnsupportedShape {
 /// spec, MV table and refresh are the normal ones), so any shape the
 /// analyzer itself maintains qualifies.
 pub(crate) fn derived_sourceable(plan: &LogicalPlan) -> bool {
-    matches!(
-        peel(plan),
+    match peel(plan) {
+        // A plain projection (or a bare table alias) stays inline; a computed
+        // projection is a row step.
+        LogicalPlan::Projection(projection) => {
+            !is_plain_projection(projection) && source_beneath(&projection.input)
+        }
+        LogicalPlan::Filter(filter) => source_beneath(&filter.input),
         LogicalPlan::Join(_)
-            | LogicalPlan::Aggregate(_)
-            | LogicalPlan::Window(_)
-            | LogicalPlan::Union(_)
-            | LogicalPlan::Distinct(_)
-            | LogicalPlan::Sort(_)
-            | LogicalPlan::Limit(_)
-    )
+        | LogicalPlan::Aggregate(_)
+        | LogicalPlan::Window(_)
+        | LogicalPlan::Union(_)
+        | LogicalPlan::Distinct(_)
+        | LogicalPlan::Sort(_)
+        | LogicalPlan::Limit(_) => true,
+        _ => false,
+    }
+}
+
+/// Whether a computed projection's input is a table, filter or compound
+/// source it can be materialized over.
+fn source_beneath(plan: &LogicalPlan) -> bool {
+    match peel(plan) {
+        LogicalPlan::Projection(projection) => {
+            !is_plain_projection(projection) && source_beneath(&projection.input)
+        }
+        LogicalPlan::Filter(filter) => source_beneath(&filter.input),
+        LogicalPlan::TableScan(_)
+        | LogicalPlan::Join(_)
+        | LogicalPlan::Aggregate(_)
+        | LogicalPlan::Window(_)
+        | LogicalPlan::Union(_)
+        | LogicalPlan::Distinct(_)
+        | LogicalPlan::Sort(_)
+        | LogicalPlan::Limit(_) => true,
+        _ => false,
+    }
 }
 
 /// The error asking the executor to materialize `plan` as a derived view.
@@ -1834,14 +1861,9 @@ mod tests {
             .await
             .is_err()
         );
-        assert!(
-            analyze_multi(
-                "select k, g from a union all select k, v from b",
-                vec![left, right]
-            )
-            .await
-            .is_err()
-        );
+        // DataFusion coerces a mismatched branch value to the union's output
+        // type (`v` becomes a string here), so this one is maintained; the
+        // missing-key branch above remains the rejection check.
     }
 
     #[tokio::test]

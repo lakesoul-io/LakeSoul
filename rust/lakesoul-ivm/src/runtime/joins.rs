@@ -943,6 +943,11 @@ pub fn wide_lookup_join_view_schema_for(
         true,
     )?);
     for key in left_primary_keys {
+        // A primary key that is already one of the join keys is materialized
+        // once, as that key column (the runtime projection does the same).
+        if join_keys.contains(key) {
+            continue;
+        }
         let field = left_schema.field_with_name(key)?;
         fields.push(Arc::new(Field::new(key, field.data_type().clone(), false)));
     }
@@ -2136,16 +2141,26 @@ fn validate_left_join_view(view: &LeftJoinView) -> Result<()> {
         } else {
             &view.right
         };
-        let field = table.schema.field_with_name(key).map_err(|_| {
+        table.schema.field_with_name(key).map_err(|_| {
             report!(
                 "left join view {}: key column {key} is not in the source",
                 view.view_id
             )
         })?;
-        if field.is_nullable() {
+    }
+    for table in [&view.left, &view.right] {
+        if !table.primary_keys.is_empty()
+            && table.primary_keys.iter().all(|key| {
+                table
+                    .schema
+                    .field_with_name(key)
+                    .is_ok_and(|field| field.is_nullable())
+            })
+        {
             return Err(report!(
-                "left join view {}: key column {key} must be non-nullable",
-                view.view_id
+                "left join view {}: source {} needs a non-null key column",
+                view.view_id,
+                table.table_name
             ));
         }
     }
@@ -2325,18 +2340,12 @@ fn validate_lookup_join_view(view: &LookupJoinView) -> Result<()> {
         }
     }
     for key in &view.left.primary_keys {
-        let field = view.left.schema.field_with_name(key).map_err(|_| {
+        view.left.schema.field_with_name(key).map_err(|_| {
             report!(
                 "lookup join view {}: key column {key} is not in the left source",
                 view.view_id
             )
         })?;
-        if field.is_nullable() {
-            return Err(report!(
-                "lookup join view {}: key column {key} must be non-nullable",
-                view.view_id
-            ));
-        }
     }
     if view.output_columns.is_empty() {
         field_type(&view.left.schema, &view.left_value)?;

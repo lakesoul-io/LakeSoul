@@ -71,6 +71,50 @@ pub(super) fn analyze_join(
                 request,
             ),
             JoinType::Left => {
+                // A plain left join against a grouped CTE may project several
+                // aggregate columns; only a one-value scalar subquery has the
+                // left-aggregate shape.  Materialize a multi-column aggregate
+                // as a derived step and read it as a normal keyed source.
+                let keys = aggregate
+                    .group_expr
+                    .iter()
+                    .map(column_of)
+                    .collect::<Option<Vec<_>>>();
+                let value_columns = keys.as_ref().map(|keys| {
+                    subquery_projection
+                        .schema
+                        .fields()
+                        .iter()
+                        .filter(|field| {
+                            !field.name().starts_with("__")
+                                && !keys.iter().any(|key| key.name == *field.name())
+                        })
+                        .map(|field| field.name().clone())
+                        .collect::<Vec<_>>()
+                });
+                // Only a one-value scalar subquery has the left-aggregate
+                // shape.  A multi-column aggregate (or a projection that
+                // never reads the value) is a normal left join against a
+                // derived aggregate table.
+                let scalar_value = match (&value_columns, projection) {
+                    (Some(columns), Some(projection)) if columns.len() == 1 => {
+                        let value = &columns[0];
+                        let mut reads = 0;
+                        for expr in &projection.expr {
+                            let _ = strip_alias(expr).apply(|node| {
+                                if matches!(node, Expr::Column(column) if column.name == *value) {
+                                    reads += 1;
+                                }
+                                Ok(TreeNodeRecursion::Continue)
+                            });
+                        }
+                        reads >= 1
+                    }
+                    _ => false,
+                };
+                if !scalar_value && derived_sourceable(&join.right) {
+                    return Err(derived_source_error("a join side", &join.right));
+                }
                 let Some(projection) = projection else {
                     return Err(unsupported(
                         "a select-list scalar subquery needs its projection",
@@ -85,6 +129,13 @@ pub(super) fn analyze_join(
                     request,
                 )
             }
+            // An inner join against a grouped CTE (a scoping `SELECT DISTINCT`
+            // or a per-key aggregate) is a plain join against a derived table,
+            // not a correlated scalar subquery.  Materialize the aggregate as
+            // a step and let the normal join path read it as a source.
+            JoinType::Inner if derived_sourceable(&join.right) => {
+                Err(derived_source_error("a join side", &join.right))
+            }
             _ => Err(unsupported(
                 if subtree_has_distinct_aggregate(&join.right) {
                     "a correlated scalar subquery with a DISTINCT aggregate"
@@ -97,25 +148,16 @@ pub(super) fn analyze_join(
     }
     // Three or more joined tables flatten into one chain: an outer step is a
     // left-deep lookup chain, anything else an inner chain.  A computed
-    // select list over a unique lookup chain is materialized as a derived
-    // join first; the outer projection then computes over the derived table.
-    // A 1:N chain must not take this route: its derived MV carries hidden
-    // `__stepN_id` identity columns that a user target schema does not have.
+    // select list over the chain is materialized as a derived join first; the
+    // outer projection then computes over the derived table.  A 1:N chain
+    // carries hidden identity columns, which are internal to the derived
+    // step and never become user target columns.
     if join_tree_has_multiple_sources(join)
         && projection.is_some_and(|projection| !is_plain_projection(projection))
     {
-        let null_safe = join_tree_null_safe(join)?;
-        if let Ok(ViewSpec::LookupChain { steps, .. }) =
-            analyze_lookup_chain(join, None, tables, request, null_safe)
-            && steps.iter().all(|step| step.unique)
-        {
-            return Err(derived_source_error(
-                "a multi-table join with a computed projection",
-                &LogicalPlan::Join(join.clone()),
-            ));
-        }
-        return Err(unsupported(
-            "computed columns over a multi-table join need a unique lookup chain",
+        return Err(derived_source_error(
+            "a multi-table join with a computed projection",
+            &LogicalPlan::Join(join.clone()),
         ));
     }
     if join_tree_has_multiple_sources(join) {
@@ -633,6 +675,12 @@ pub(super) fn analyze_join(
                 right,
             )?;
             if request.derived {
+                // A `SELECT *` over a derived step also sees the step's
+                // internal bookkeeping columns; they are not user output.
+                output_columns.retain(|column| {
+                    column != crate::runtime::IVM_ROW_KINDS_COLUMN
+                        && column != crate::runtime::IVM_EPOCH_COLUMN
+                });
                 for key in &left.primary_keys {
                     if !output_columns.contains(key) {
                         output_columns.push(key.clone());
@@ -1244,13 +1292,27 @@ fn analyze_left_aggregate(
                 Expr::AggregateFunction(distinct_function),
             ));
         }
-        let Some((plan, expression)) = detected else {
-            return Err(unsupported(
-                "a correlated scalar subquery with a DISTINCT aggregate",
-            ));
-        };
-        right_plan = plan;
-        distinct_expression = Some(expression);
+        // A nested `SELECT DISTINCT` (a scoping CTE below a plain per-key
+        // aggregate) is not the count(DISTINCT) rewrite; only the top-level
+        // aggregate's own DISTINCT makes the shape unsupported here.
+        let top_level_distinct = aggregate.aggr_expr.iter().any(is_distinct_aggregate)
+            || matches!(
+                peel(&aggregate.input),
+                LogicalPlan::Projection(projection)
+                    if matches!(peel(&projection.input), LogicalPlan::Aggregate(inner) if inner.aggr_expr.is_empty())
+            );
+        match detected {
+            Some((plan, expression)) => {
+                right_plan = plan;
+                distinct_expression = Some(expression);
+            }
+            None if top_level_distinct => {
+                return Err(unsupported(
+                    "a correlated scalar subquery with a DISTINCT aggregate",
+                ));
+            }
+            None => {}
+        }
     }
     validate_decimal_accumulators(aggregate)?;
     // The correlated keys are the aggregate's group columns; the DISTINCT
@@ -1503,11 +1565,11 @@ fn analyze_left_aggregate(
                 Ok(TreeNodeRecursion::Continue)
             })
             .map_err(|error| unsupported(format!("a scalar subquery output {error}")))?;
-        if references != 1 {
-            return Err(unsupported(
-                "a computed scalar subquery output must read the subquery \
-                 value once (it may also read the row's own columns)",
-            ));
+        if references == 0 {
+            // The output does not depend on the aggregate value: this is a
+            // plain left join with a computed projection, not a scalar
+            // subquery.  Materialize the aggregate side and join normally.
+            return Err(derived_source_error("a join side", &join.right));
         }
         let rewritten = inner
             .clone()
@@ -1923,6 +1985,47 @@ fn analyze_outer_join(
         // The lookup layout materializes the left primary keys itself, so
         // selecting one does not widen the payloads.
         payloads.drop_carried_left(&left.primary_keys);
+    }
+    // A pruned left join may keep only left columns: with no right payload
+    // and a right side keyed by the join keys, the result is exactly the left
+    // rows (the null extension is not projected).
+    if lookup && payloads.right_count == 0 && projection.is_none() {
+        let mut columns = Vec::new();
+        for (qualifier, field) in join_schema.iter() {
+            let column = datafusion::common::Column::new(
+                qualifier.map(|qualifier| qualifier.table().to_string()),
+                field.name(),
+            );
+            match side_of(&column, left_alias, right_alias, left, right) {
+                Some(Side::Left) => columns.push(field.name().clone()),
+                Some(Side::Right) => {
+                    if !effective_right_keys.contains(field.name()) {
+                        return Err(unsupported(
+                            "a left join without a right payload keeps a right column",
+                        ));
+                    }
+                }
+                None => {
+                    return Err(unsupported("a left join output column is ambiguous"));
+                }
+            }
+        }
+        if !columns.is_empty() {
+            for key in &left.primary_keys {
+                if !columns.contains(key) {
+                    columns.push(key.clone());
+                }
+            }
+            return Ok(ViewSpec::Row {
+                view_id: request.view_id.clone(),
+                source_table_id: left.table_id.clone(),
+                mv_table_id: request.mv_table_id.clone(),
+                output_columns: columns,
+                output_exprs: Vec::new(),
+                filter: left_filter,
+                scalar: None,
+            });
+        }
     }
     let (left_value, right_value, output_columns, payload_names) =
         compact_or_wide(payloads, &key_names, kind)?;
@@ -2382,6 +2485,11 @@ fn join_payloads_from_fields(
             qualifier.map(|qualifier| qualifier.table().to_string()),
             field.name(),
         );
+        // A join key is materialized once under the left name; skip either
+        // side before side attribution (both sides may carry the same name).
+        if left_keys.contains(field.name()) || right_keys.contains(field.name()) {
+            continue;
+        }
         let side =
             side_of(&column, left_alias, right_alias, left, right).ok_or_else(|| {
                 unsupported(format!(
@@ -2389,13 +2497,6 @@ fn join_payloads_from_fields(
                     field.name()
                 ))
             })?;
-        let keys = match side {
-            Side::Left => left_keys,
-            Side::Right => right_keys,
-        };
-        if keys.contains(field.name()) {
-            continue;
-        }
         payloads.push(side, field.name().clone(), field.name().clone());
     }
     Ok(payloads)
