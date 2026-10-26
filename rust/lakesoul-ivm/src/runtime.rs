@@ -1407,6 +1407,11 @@ impl ViewSpec {
                 mv_table_id: mv,
                 ..
             }
+            | ViewSpec::LookupChain {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
             | ViewSpec::TopK {
                 view_id: id,
                 mv_table_id: mv,

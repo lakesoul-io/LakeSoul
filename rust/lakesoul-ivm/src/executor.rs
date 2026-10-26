@@ -48,16 +48,17 @@ use crate::runtime::{
     grouping_sets_mv_schema_for, join_view_schema_with_keys,
     keyed_join_output_primary_keys, keyed_join_view_schema_with_keys,
     left_aggregate_mv_schema_with_outputs, left_join_view_schema_with_keys,
-    lookup_chain_mv_schema_for, lookup_join_view_schema_for, median_groups_mv_schema_for,
-    min_max_groups_mv_schema_for, multi_agg_mv_schema_for, multi_agg_state_schema_for,
-    multi_join_append_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
-    multi_window_mv_schema_for_with_payload, nullable_join_key_schema,
-    row_expr_mv_schema_for, semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
-    sum_count_groups_mv_schema_for, top_k_expr_mv_schema_for, union_all_mv_schema_for,
-    union_distinct_mv_schema_for, union_output_schema_for,
-    value_count_groups_state_schema_for, variance_groups_mv_schema_for,
-    wide_full_join_view_schema_with_identity_and_keys, wide_join_view_schema_with_keys,
-    wide_keyed_join_view_schema_for, wide_keyed_join_view_schema_with_keys,
+    lookup_chain_mv_schema_for, lookup_chain_step_id_column, lookup_join_view_schema_for,
+    median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
+    multi_agg_state_schema_for, multi_join_append_schema_for, multi_join_mv_schema_for,
+    multi_join_primary_keys, multi_window_mv_schema_for_with_payload,
+    nullable_join_key_schema, row_expr_mv_schema_for, semi_anti_mv_schema_for,
+    string_agg_groups_mv_schema_for, sum_count_groups_mv_schema_for,
+    top_k_expr_mv_schema_for, union_all_mv_schema_for, union_distinct_mv_schema_for,
+    union_output_schema_for, value_count_groups_state_schema_for,
+    variance_groups_mv_schema_for, wide_full_join_view_schema_with_identity_and_keys,
+    wide_join_view_schema_with_keys, wide_keyed_join_view_schema_for,
+    wide_keyed_join_view_schema_with_keys,
     wide_left_join_view_schema_with_identity_and_keys, wide_lookup_join_view_schema_for,
     wide_outer_join_view_schema_with_keys, window_columns_mv_schema_for_with_payload,
 };
@@ -1148,6 +1149,33 @@ impl IvmSqlExecutor {
                         if !keys.contains(key) {
                             keys.push(key.clone());
                         }
+                    }
+                }
+                keys
+            }
+            ViewSpec::LookupChain { sources, steps, .. } => {
+                // The chain MV is keyed by the base keys plus the matched-row
+                // identity of every 1:N step.  Computed-output derived steps
+                // only accept unique steps, but the general branch keeps the
+                // key layout valid if this helper is reused later.
+                let mut keys = self
+                    .runtime
+                    .open_table_by_id(
+                        &sources
+                            .first()
+                            .ok_or_else(|| {
+                                rootcause::report!(
+                                    "a derived lookup chain has no base source"
+                                )
+                            })?
+                            .table_id,
+                    )
+                    .await?
+                    .primary_keys
+                    .clone();
+                for step in steps {
+                    if !step.unique {
+                        keys.push(lookup_chain_step_id_column(step.source));
                     }
                 }
                 keys

@@ -653,7 +653,9 @@ fn lookup_chain_source_columns(
         }
         for step in &view.steps {
             for (key_index, key) in step.keys.iter().enumerate() {
-                if computed(&step.key_exprs.left, key_index) {
+                if computed(&step.key_exprs.left, key_index)
+                    || step_key_source(step, key_index) != 0
+                {
                     continue;
                 }
                 if !columns.contains(key) {

@@ -588,12 +588,23 @@ pub(super) fn analyze_lookup_chain(
     request: &AnalyzeRequest,
     null_safe: bool,
 ) -> Result<ViewSpec> {
-    let Some(projection) = projection else {
-        return Err(unsupported("a lookup chain needs a projection"));
+    let output_exprs = match projection {
+        Some(projection) => {
+            if !is_plain_projection(projection) {
+                return Err(unsupported("computed columns in a lookup chain output"));
+            }
+            projection.expr.clone()
+        }
+        // A derived join step has no projection: materialize every output
+        // column so the outer computed projection can resolve its inputs.
+        None => outer
+            .schema
+            .iter()
+            .map(|(qualifier, field)| {
+                Expr::Column(Column::new(qualifier.cloned(), field.name().clone()))
+            })
+            .collect(),
     };
-    if !is_plain_projection(projection) {
-        return Err(unsupported("computed columns in a lookup chain output"));
-    }
     // A chain whose outermost join is a RIGHT or FULL join is not a
     // left-deep lookup chain: materialize its left side as a derived step
     // and let the two-source outer-join paths handle the outer join.
@@ -788,7 +799,7 @@ pub(super) fn analyze_lookup_chain(
         ])
         .collect::<Vec<_>>();
     let mut output_columns = Vec::new();
-    for expr in &projection.expr {
+    for expr in &output_exprs {
         let mut inner = expr;
         let mut alias = None;
         while let Expr::Alias(nested) = inner {

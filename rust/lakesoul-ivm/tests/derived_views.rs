@@ -1359,6 +1359,168 @@ fn triple_rows(batches: &[RecordBatch]) -> Vec<(Option<i64>, Option<i64>, Option
     rows
 }
 
+/// A computed select list over a unique lookup chain is materialized as a
+/// derived join step, then the outer projection computes over that step.
+#[test_log::test(tokio::test)]
+async fn a_computed_unique_chain_output_uses_a_derived_join() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let sources = chain_sources(&runtime, "cu").await;
+    let ChainSources {
+        dir,
+        a,
+        b,
+        c,
+        a_schema,
+        b_schema,
+        c_schema,
+    } = &sources;
+    let target_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("total", DataType::Int64, true),
+        Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]));
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_cu_mv_{}", uuid::Uuid::new_v4().simple()),
+                table_path(dir, "mv"),
+                target_schema,
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT a.k, a.av + b.bv + c.cv AS total \
+         FROM {} a LEFT JOIN {} b ON b.b_k = a.k \
+         LEFT JOIN {} c ON c.c_k = b.b_k",
+        mv.table_name, a.table_name, b.table_name, c.table_name
+    );
+    let reference = "select a.k, a.av + b.bv + c.cv as total \
+         from a left join b on b.b_k = a.k left join c on c.c_k = b.b_k \
+         order by a.k";
+
+    a.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            a_schema.clone(),
+            vec![
+                chain_ints(&[1, 2]),
+                chain_ints(&[100, 200]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    b.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            b_schema.clone(),
+            vec![
+                chain_ints(&[1, 2]),
+                chain_ints(&[1, 2]),
+                chain_ints(&[5, 6]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    c.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            c_schema.clone(),
+            vec![
+                chain_ints(&[1, 2]),
+                chain_ints(&[1, 2]),
+                chain_ints(&[7, 8]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let context = SessionContext::new();
+    for (name, table) in [("a", &a), ("b", &b), ("c", &c)] {
+        context
+            .register_table(name, Arc::new(runtime.table_provider(table)))
+            .unwrap();
+    }
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(&mv)))
+        .unwrap();
+    let expected = context
+        .sql(reference)
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let actual = context
+        .sql(&format!(
+            "select k, total from mv where \"{IVM_ROW_KINDS_COLUMN}\" = 'insert' order by k"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let expected = expected
+        .iter()
+        .flat_map(|batch| {
+            (0..batch.num_rows()).map(|row| {
+                (
+                    batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(row),
+                    batch
+                        .column(1)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(row),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let actual = actual
+        .iter()
+        .flat_map(|batch| {
+            (0..batch.num_rows()).map(|row| {
+                (
+                    batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(row),
+                    batch
+                        .column(1)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(row),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
 /// A chain whose outermost step is a RIGHT JOIN: the left side (the inner
 /// LEFT JOIN) is materialized as a derived step and the outer join reads it
 /// as a keyed source, so the whole chain stays incremental.

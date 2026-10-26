@@ -96,7 +96,28 @@ pub(super) fn analyze_join(
         };
     }
     // Three or more joined tables flatten into one chain: an outer step is a
-    // left-deep lookup chain, anything else an inner chain.
+    // left-deep lookup chain, anything else an inner chain.  A computed
+    // select list over a unique lookup chain is materialized as a derived
+    // join first; the outer projection then computes over the derived table.
+    // A 1:N chain must not take this route: its derived MV carries hidden
+    // `__stepN_id` identity columns that a user target schema does not have.
+    if join_tree_has_multiple_sources(join)
+        && projection.is_some_and(|projection| !is_plain_projection(projection))
+    {
+        let null_safe = join_tree_null_safe(join)?;
+        if let Ok(ViewSpec::LookupChain { steps, .. }) =
+            analyze_lookup_chain(join, None, tables, request, null_safe)
+            && steps.iter().all(|step| step.unique)
+        {
+            return Err(derived_source_error(
+                "a multi-table join with a computed projection",
+                &LogicalPlan::Join(join.clone()),
+            ));
+        }
+        return Err(unsupported(
+            "computed columns over a multi-table join need a unique lookup chain",
+        ));
+    }
     if join_tree_has_multiple_sources(join) {
         let null_safe = join_tree_null_safe(join)?;
         if join.join_type != JoinType::Inner

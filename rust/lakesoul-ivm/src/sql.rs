@@ -1295,6 +1295,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyzes_computed_unique_chain_output_as_a_derived_join() {
+        let tables = vec![source_table("a"), source_table("b"), source_table("c")];
+        let error = analyze_multi(
+            "select a.k, a.v + b.v + c.v as total \
+             from a join b on a.k = b.k join c on b.k = c.k",
+            tables,
+        )
+        .await
+        .unwrap_err();
+        let source = error
+            .attachments()
+            .iter()
+            .find_map(|attachment| attachment.downcast_inner::<DerivedSource>())
+            .expect("a derived join source");
+        assert!(matches!(source.plan, LogicalPlan::Join(_)));
+    }
+
+    #[tokio::test]
     async fn analyzes_single_sided_outer_joins() {
         let tables = vec![source_table("a"), source_table("b")];
         // The right side is keyed by the join keys, so a LEFT join keeps
