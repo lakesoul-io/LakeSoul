@@ -442,18 +442,7 @@ impl LakeSoulIOSession {
                     .map(ListingTableUrl::parse)
                     .collect::<Result<Vec<_>>>()?;
                 let object_metas = get_file_object_meta(self, &table_paths).await?;
-                let (p, o) = zip(table_paths, object_metas)
-                    .filter(|(_, obj_meta)| {
-                        let valid = obj_meta.size >= 8;
-                        if !valid {
-                            error!(
-                                "File {}, size {}, is invalid",
-                                obj_meta.location, obj_meta.size
-                            );
-                        }
-                        valid
-                    })
-                    .unzip();
+                let (p, o) = zip(table_paths, object_metas).unzip();
                 Ok::<ListingMetas, Report>(ListingMetas {
                     object_metas: o,
                     table_paths: p,
