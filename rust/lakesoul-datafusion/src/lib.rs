@@ -46,6 +46,10 @@ pub fn create_lakesoul_session_ctx(
     )
 }
 
+/// Environment variable that sets single-node sessions' `target_partitions`
+/// (DataFusion's own name for the option, read by [`SessionConfig::from_env`]).
+pub const TARGET_PARTITIONS_ENV: &str = "DATAFUSION_EXECUTION_TARGET_PARTITIONS";
+
 /// Build the default [`SessionConfig`] used by LakeSoul sessions.
 pub fn create_lakesoul_session_config() -> Result<SessionConfig> {
     let mut session_config = SessionConfig::from_env()?
@@ -70,7 +74,12 @@ pub fn create_lakesoul_session_config() -> Result<SessionConfig> {
         .execution
         .parquet
         .pushdown_filters = true;
-    session_config.options_mut().execution.target_partitions = 1;
+    // One partition unless `DATAFUSION_EXECUTION_TARGET_PARTITIONS` asks for
+    // more (read by `from_env` above); a session `SET` still overrides both.
+    // Distributed sessions take theirs from `DistributedOptions` instead.
+    if std::env::var_os(TARGET_PARTITIONS_ENV).is_none() {
+        session_config.options_mut().execution.target_partitions = 1;
+    }
     session_config
         .options_mut()
         .execution
