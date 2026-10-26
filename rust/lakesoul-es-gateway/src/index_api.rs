@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Index lifecycle endpoints: `HEAD /{index}`, `PUT /{index}` and
-//! `GET /{index}/_mapping`.
+//! Index lifecycle endpoints: `HEAD /{index}`, `PUT /{index}`,
+//! `DELETE /{index}` and `GET /{index}/_mapping`.
 
 use std::sync::Arc;
 
@@ -17,26 +17,26 @@ use serde_json::{Value, json};
 use crate::error::EsError;
 use crate::state::{GatewayState, IndexRuntime};
 
-/// `HEAD /{index}`: declared indexes exist (they are provisioned at startup).
+/// `HEAD /{index}`: declared indexes exist (they are provisioned at startup);
+/// dynamically created indexes exist once `PUT` accepted them.
 pub async fn head_index(
     State(state): State<Arc<GatewayState>>,
     Path(index): Path<String>,
 ) -> StatusCode {
-    match state.index(&index) {
+    match state.resolve_index(&index).await {
         Ok(_) => StatusCode::OK,
         Err(_) => StatusCode::NOT_FOUND,
     }
 }
 
-/// `PUT /{index}`: validate the declaration.  Settings (`number_of_shards`,
-/// `number_of_replicas`) are ignored; the bucket count is fixed by the
-/// gateway configuration at provisioning time.
+/// `PUT /{index}`: validate a declared index, or create the declaration of a
+/// dynamic one.  Settings (`number_of_shards`, `number_of_replicas`) are
+/// ignored; the bucket count is fixed by the gateway configuration.
 pub async fn put_index(
     State(state): State<Arc<GatewayState>>,
     Path(index): Path<String>,
     body: Bytes,
 ) -> Result<Json<Value>, EsError> {
-    let _runtime = state.index(&index)?;
     if !body.is_empty() {
         let value: Value = serde_json::from_slice(&body).map_err(|error| {
             EsError::bad_request(format!("invalid JSON body: {error}"))
@@ -53,11 +53,31 @@ pub async fn put_index(
             );
         }
     }
-    Ok(Json(json!({
+    // A declared index, a previously created one, or one discovered from
+    // metadata after a restart resolves here.
+    if state.resolve_index(&index).await.is_ok() {
+        return Ok(Json(ack(&index)));
+    }
+    state.create_pending_index(&index).await?;
+    Ok(Json(ack(&index)))
+}
+
+/// `DELETE /{index}`: drop an index created at runtime.  Declared indexes are
+/// owned by the TOML configuration and rejected.
+pub async fn delete_index(
+    State(state): State<Arc<GatewayState>>,
+    Path(index): Path<String>,
+) -> Result<Json<Value>, EsError> {
+    state.delete_index(&index).await?;
+    Ok(Json(json!({"acknowledged": true})))
+}
+
+fn ack(index: &str) -> Value {
+    json!({
         "acknowledged": true,
         "shards_acknowledged": true,
         "index": index
-    })))
+    })
 }
 
 /// `GET /{index}/_mapping`: the fixed document mapping.
@@ -68,10 +88,10 @@ pub async fn get_mapping(
     State(state): State<Arc<GatewayState>>,
     Path(index): Path<String>,
 ) -> Result<Json<Value>, EsError> {
-    let runtime = state.index(&index)?;
+    let runtime = state.resolve_index(&index).await?;
     let mut properties = serde_json::Map::new();
     for field in runtime.schema.fields() {
-        properties.insert(field.name().clone(), field_mapping(runtime, field.name()));
+        properties.insert(field.name().clone(), field_mapping(&runtime, field.name()));
     }
     Ok(Json(json!({
         index: {

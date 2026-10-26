@@ -38,16 +38,14 @@ async fn main() -> anyhow::Result<()> {
     if state.config.defaults.index_build == IndexBuildMode::Deferred {
         tracing::info!("deferred secondary-index maintenance enabled");
         let namespace = state.config.lakesoul.namespace.clone();
-        let tables: Vec<String> = state
-            .config
-            .indexes
-            .iter()
-            .map(|index| index.table_name().to_string())
-            .collect();
         let interval = std::time::Duration::from_secs(
             state.config.defaults.index_build_interval_secs.max(1),
         );
-        lakesoul_es_gateway::maintenance::spawn(namespace, tables, interval);
+        lakesoul_es_gateway::maintenance::spawn(
+            namespace,
+            std::sync::Arc::clone(&state.index_tables),
+            interval,
+        );
     }
     let router = build_router(state);
 

@@ -21,6 +21,8 @@ use serde_json::{Value, json};
 
 use crate::document::replace_column;
 use crate::error::EsError;
+use futures::StreamExt;
+
 use crate::query;
 use crate::state::GatewayState;
 
@@ -51,43 +53,54 @@ pub async fn update_by_query(
     body: Bytes,
 ) -> Result<Json<Value>, EsError> {
     let started = Instant::now();
-    let runtime = state.index(&index)?;
+    let runtime = state.resolve_index(&index).await?;
     let body: UpdateBody = serde_json::from_slice(&body)
         .map_err(|error| EsError::bad_request(format!("invalid update body: {error}")))?;
     let action = parse_script(&body.script)?;
 
-    let filters = query::extract_filters(&body.query, runtime)?;
-    let filter = query::filters_to_expr(&filters, runtime)?;
-    let rows = query::resolve_rows(&state, runtime, filter).await?;
-    let total = rows.as_ref().map(|batch| batch.num_rows()).unwrap_or(0);
-
-    if let Some(batch) = rows {
+    let filters = query::extract_filters(&body.query, &runtime)?;
+    let filter = query::filters_to_expr(&filters, &runtime)?;
+    // Stream the matching rows so a whole knowledge base can be enabled,
+    // disabled, re-tagged or moved without materializing every row first.
+    let mut rows = query::stream_matching_rows(&state, &runtime, filter).await?;
+    let mut total = 0usize;
+    let mut batches = 0usize;
+    while let Some(batch) = rows.next().await {
+        let batch = batch?;
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        let batch_rows = batch.num_rows();
         let batch = match &action {
             ScriptAction::SetEnabled(enabled) => replace_column(
                 &batch,
                 "is_enabled",
-                Arc::new(BooleanArray::from(vec![Some(*enabled); total])) as ArrayRef,
+                Arc::new(BooleanArray::from(vec![Some(*enabled); batch_rows]))
+                    as ArrayRef,
             )?,
             ScriptAction::SetTag(tag) => replace_column(
                 &batch,
                 "tag_id",
-                Arc::new(StringArray::from(vec![Some(tag.as_str()); total])) as ArrayRef,
+                Arc::new(StringArray::from(vec![Some(tag.as_str()); batch_rows]))
+                    as ArrayRef,
             )?,
             ScriptAction::MoveKnowledgeBase(target) => {
                 let batch = replace_column(
                     &batch,
                     "knowledge_base_id",
-                    Arc::new(StringArray::from(vec![Some(target.as_str()); total]))
+                    Arc::new(StringArray::from(vec![Some(target.as_str()); batch_rows]))
                         as ArrayRef,
                 )?;
                 replace_column(
                     &batch,
                     "tag_id",
-                    Arc::new(StringArray::from(vec![Some(""); total])) as ArrayRef,
+                    Arc::new(StringArray::from(vec![Some(""); batch_rows])) as ArrayRef,
                 )?
             }
         };
-        state.upsert(runtime, batch).await?;
+        total += batch_rows;
+        batches += 1;
+        state.upsert(&runtime, batch).await?;
     }
 
     Ok(Json(json!({
@@ -96,7 +109,7 @@ pub async fn update_by_query(
         "total": total,
         "updated": total,
         "deleted": 0,
-        "batches": 1,
+        "batches": batches,
         "version_conflicts": 0,
         "noops": 0,
         "retries": {"bulk": 0, "search": 0},

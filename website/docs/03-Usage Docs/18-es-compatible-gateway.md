@@ -6,7 +6,7 @@ LakeSoul ships `lakesoul-es-gateway`, a small HTTP service that exposes the Elas
 - vector retrieval runs against the vector index with cosine similarity;
 - document writes, delete-by-query and partial updates map onto LakeSoul upserts (merge-on-read plus CDC tombstones), and the indexes are maintained synchronously — a document is searchable when the write request returns.
 
-Indexes are **pre-declared** in a TOML configuration; the gateway provisions the tables at startup and rejects undeclared indexes.
+Indexes are declared in a TOML configuration; the gateway provisions the declared tables at startup. With `defaults.dynamic_indexes` (on by default) an index the client creates through `PUT /{index}` is provisioned on its first write, so a RAG client can manage its own indexes without editing the gateway configuration.
 
 ## Quick start
 
@@ -34,7 +34,9 @@ warehouse_prefix = "s3://bucket/lakesoul"
 hash_bucket_num = 4
 tokenizer = "jieba"
 nprobe = 64
+dynamic_indexes = true     # provision indexes created by PUT /{index}
 
+# Optional: pre-declare indexes (a dynamic index needs no entry).
 [[indexes]]
 name = "my_index"          # Elasticsearch index name
 table = "my_docs"          # LakeSoul table (defaults to the index name)
@@ -54,6 +56,11 @@ export LAKESOUL_PG_PASSWORD=lakesoul_test
 
 ## Document model
 
+The Elasticsearch index name keeps its case; the underlying LakeSoul table
+name is folded to lower case (LakeSoul resolves table names case-insensitively),
+so index `WeKnora` reads and writes table `weknora`. Keep index names unique
+ignoring case when they share a gateway.
+
 Every document is stored with a fixed schema: `content` (the full-text
 column), `source_id`, `source_type`, `chunk_id`, `knowledge_id`,
 `knowledge_base_id`, `tag_id`, `embedding`, `is_enabled`, `is_recommended`,
@@ -69,7 +76,8 @@ document field that carries its column name.
 | Endpoint | Behaviour |
 |----------|-----------|
 | `GET /` | Version and cluster info; the reported `version.number` selects the client dialect (7.x keyword-only, otherwise v8). |
-| `HEAD /{index}`, `PUT /{index}` | Declared indexes exist; `PUT` validates the declaration and ignores `number_of_shards`/`number_of_replicas`. |
+| `HEAD /{index}`, `PUT /{index}` | Declared indexes exist; an undeclared index is created when `dynamic_indexes` is on. `PUT` ignores `number_of_shards`/`number_of_replicas`. |
+| `DELETE /{index}` | Drops an index created at runtime (and its table); declared indexes are rejected. |
 | `GET /{index}/_mapping` | Fixed mapping, with all filter fields as `keyword`. |
 | `POST /{index}/_doc`, `PUT /{index}/_doc/{id}/_create`, `PUT/POST /{index}/_doc/{id}` | Single-document upsert. |
 | `POST /{index}/_bulk` | NDJSON `index`/`create` actions (v7 `_id` and v8 server-generated forms). |
@@ -146,6 +154,16 @@ and `min_score` filters the clamped score. A filter-only query (no scoring
 clause) runs as a plain scan and returns the full `_source`, which is what
 the index-copy path needs.  `script_score` accepts any declared vector
 column, not only `embedding`.
+
+Filter-only queries push `from`/`size` into the scan with a stable
+primary-key order, so one page costs one page of rows instead of the whole
+match set — a knowledge-base copy that pages through a large index stays
+linear.  `hits.total` on that path reports a lower bound
+(`{"value": from + hits, "relation": "gte"}`) rather than scanning the
+complete match set for a count the client usually ignores.  `delete_by_query`
+and `update_by_query` stream their match set in batches, so enabling,
+disabling, re-tagging, moving or deleting a whole knowledge base stays
+memory-bounded (each batch is one LakeSoul commit).
 
 ### Multi-vector `knn`
 
@@ -278,8 +296,12 @@ filter-only path scans every matching row.
 
 ## Limitations
 
-- Delete/update resolve their filters with a table scan; only primary keys
-  have a fast path.
+- Delete/update resolve their filters with a streaming table scan; only
+  primary keys have a fast path.  They apply batch by batch, so a failure
+  mid-way leaves the earlier batches applied (like Elasticsearch's
+  `delete_by_query`).
+- `hits.total` reports a lower bound (`relation: "gte"`), not an exact count,
+  for queries that page inside the scan.
 - `number_of_shards`/`number_of_replicas` are ignored at index creation; the
   bucket count and `nprobe` come from the gateway configuration.
 - Authentication and RBAC are not implemented.
@@ -304,8 +326,10 @@ filter-only path scans every matching row.
 Elasticsearch v7/v8 vector-store drivers, so `RETRIEVE_DRIVER=elasticsearch_v8`
 (or `elasticsearch_v7`) works against LakeSoul without client changes.
 
-1. **Gateway** — declare the index with the embedding dimension of the model
-   WeKnora will use:
+1. **Gateway** — with dynamic indexes (the default) no `[[indexes]]` entry is
+   needed: WeKnora's `PUT /{index}` creates the index and its first document
+   fixes the embedding dimension. To pin the dimension (or use object
+   storage), declare it:
 
    ```toml
    [server]
@@ -319,8 +343,9 @@ Elasticsearch v7/v8 vector-store drivers, so `RETRIEVE_DRIVER=elasticsearch_v8`
    [defaults]
    hash_bucket_num = 4
    tokenizer = "jieba"
+   dynamic_indexes = true
 
-   [[indexes]]
+   [[indexes]]                    # optional
    name = "WeKnora"               # ELASTICSEARCH_INDEX
    table = "weknora_docs"
    path = "file:///data/weknora_docs"
@@ -381,6 +406,14 @@ single/bulk writes, keyword and vector search, the four fixed
 the response fields the driver dereferences (`_score`, `total == updated`, no
 conflicts or failures).
 
+The same flow was replayed through WeKnora's own v8 repository
+(`internal/application/repository/retriever/elasticsearch/v8`) against a
+gateway configured with `dynamic_indexes = true` and no `[[indexes]]`: the
+driver creates the index, indexes documents, retrieves by vector and BM25,
+disables/tags chunks, moves a knowledge item, copies a knowledge base
+(paging) and deletes by chunk id.  That run is what the dynamic-index and
+paging behaviour above is tested against.
+
 ### Known WeKnora v0.8.0 issues
 
 - **Unclamped `script_score`.**  v0.8.0 images send
@@ -390,5 +423,5 @@ conflicts or failures).
 - **`CopyIndices` loses `is_enabled`.**  The v0.8.0 copy path builds its
   documents without `is_enabled`, so `reuse_vectors` knowledge moves and
   knowledge-base clones land **disabled** and are filtered out of search — on
-  real Elasticsearch too.  Use `mode=reparse` for moves, and re-enable chunks
-  of a cloned knowledge base until the client is fixed upstream.
+  real Elasticsearch too.  Current `main` carries `is_enabled` over
+  (`sourceDoc.IsEnabled`, nil ⇒ true), so this only affects v0.8.0 images.

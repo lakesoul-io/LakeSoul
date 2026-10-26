@@ -172,17 +172,19 @@ pub(crate) fn scalar_value(
     }
 }
 
-/// Resolve the current (merge-on-read) rows matching a filter.
+/// Stream the current (merge-on-read) rows matching a filter.
 ///
 /// Updates and deletes rewrite **full rows**: partial-column writes would
 /// leave the text/embedding columns out of the new data files and break the
 /// index auto-build, while a full-row rewrite keeps the unchanged columns
-/// and re-indexes them harmlessly.
-pub async fn resolve_rows(
+/// and re-indexes them harmlessly.  The rows are streamed batch by batch so a
+/// knowledge-base-wide delete/update stays memory-bounded.
+pub async fn stream_matching_rows(
     state: &GatewayState,
     runtime: &IndexRuntime,
     filter: Expr,
-) -> Result<Option<arrow_array::RecordBatch>, EsError> {
+) -> Result<impl futures::Stream<Item = Result<arrow_array::RecordBatch, EsError>>, EsError>
+{
     let dataframe = state
         .session
         .table(runtime.table_ref())
@@ -198,15 +200,11 @@ pub async fn resolve_rows(
     let dataframe = dataframe
         .select_columns(&columns)
         .map_err(crate::error::internal)?;
-    let batches = dataframe.collect().await.map_err(crate::error::internal)?;
-    let batches: Vec<_> = batches
-        .into_iter()
-        .filter(|batch| batch.num_rows() > 0)
-        .collect();
-    if batches.is_empty() {
-        return Ok(None);
-    }
-    let batch = arrow::compute::concat_batches(&runtime.schema, &batches)
+    let stream = dataframe
+        .execute_stream()
+        .await
         .map_err(crate::error::internal)?;
-    Ok(Some(batch))
+    Ok(futures::StreamExt::map(stream, |batch| {
+        batch.map_err(crate::error::internal)
+    }))
 }

@@ -31,7 +31,14 @@ use crate::state::{GatewayState, IndexRuntime};
 
 /// Provision every declared index.
 pub async fn provision_all(state: &GatewayState) -> anyhow::Result<()> {
-    for runtime in state.indexes.values() {
+    let declared: Vec<IndexRuntime> = state
+        .indexes
+        .read()
+        .expect("index map poisoned")
+        .values()
+        .map(|runtime| (**runtime).clone())
+        .collect();
+    for runtime in &declared {
         ensure_table(state, runtime)
             .await
             .with_context(|| format!("index '{}'", runtime.config.name))?;
@@ -44,7 +51,8 @@ pub async fn provision_all(state: &GatewayState) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn ensure_table(
+/// Create the table of one index if it is missing and validate it otherwise.
+pub(crate) async fn ensure_table(
     state: &GatewayState,
     runtime: &IndexRuntime,
 ) -> anyhow::Result<()> {

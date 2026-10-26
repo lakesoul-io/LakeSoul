@@ -21,10 +21,13 @@ use tokio::time::MissedTickBehavior;
 /// The loop owns a fresh metadata client instead of borrowing the gateway
 /// state: the DataFusion write/read futures are not `Send`, and the
 /// maintenance path does not need any per-request state.
-pub fn spawn(namespace: String, tables: Vec<String>, interval: Duration) {
-    if tables.is_empty() {
-        return;
-    }
+pub fn spawn(
+    namespace: String,
+    tables: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
+    interval: Duration,
+) {
+    // The initial set may be empty (all indexes are dynamic) and grows when
+    // an index is provisioned or rediscovered, so always start the loop.
     std::thread::Builder::new()
         .name("lakesoul-index-maintenance".to_string())
         .spawn(move || {
@@ -53,6 +56,12 @@ pub fn spawn(namespace: String, tables: Vec<String>, interval: Duration) {
                     // catch-up run after a restart, when previous writes were
                     // never indexed.
                     ticker.tick().await;
+                    // Pick up indexes created or rediscovered since the last
+                    // tick (dynamic indexes are provisioned at runtime).
+                    let tables: Vec<String> = tables
+                        .read()
+                        .map(|tables| tables.iter().cloned().collect())
+                        .unwrap_or_default();
                     for table in &tables {
                         match lakesoul_datafusion::index_maintenance::build_pending_indices(
                             Arc::clone(&client),

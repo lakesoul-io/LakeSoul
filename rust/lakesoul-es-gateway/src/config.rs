@@ -69,6 +69,8 @@ pub struct GatewayConfig {
     pub lakesoul: LakesoulConfig,
     #[serde(default)]
     pub defaults: IndexDefaults,
+    /// Pre-declared indexes; optional when dynamic indexes are enabled.
+    #[serde(default)]
     pub indexes: Vec<IndexConfig>,
 }
 
@@ -131,6 +133,19 @@ pub struct IndexDefaults {
     /// IVF clusters probed per shard for vector search.
     #[serde(default = "default_nprobe")]
     pub nprobe: usize,
+    /// Provision indexes created by `PUT /{index}` on first write instead of
+    /// rejecting indexes that are not declared in this file.  The first
+    /// written document's embedding length fixes the vector dimension; an
+    /// index whose table already exists is rediscovered from metadata after a
+    /// restart.
+    #[serde(default = "default_true")]
+    pub dynamic_indexes: bool,
+    /// Content column of a dynamically provisioned index.
+    #[serde(default = "default_content_column")]
+    pub content_column: String,
+    /// Embedding column of a dynamically provisioned index.
+    #[serde(default = "default_embedding_column")]
+    pub embedding_column: String,
 }
 
 impl Default for IndexDefaults {
@@ -142,6 +157,9 @@ impl Default for IndexDefaults {
             tokenizer: default_tokenizer(),
             with_positions: default_true(),
             nprobe: default_nprobe(),
+            dynamic_indexes: true,
+            content_column: default_content_column(),
+            embedding_column: default_embedding_column(),
         }
     }
 }
@@ -215,8 +233,17 @@ impl GatewayConfig {
 
     /// Validate index declarations.
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.indexes.is_empty() {
-            anyhow::bail!("at least one [[indexes]] entry is required");
+        if self.indexes.is_empty() && !self.defaults.dynamic_indexes {
+            anyhow::bail!(
+                "at least one [[indexes]] entry is required unless \
+                 defaults.dynamic_indexes is enabled"
+            );
+        }
+        if self.defaults.content_column.trim().is_empty() {
+            anyhow::bail!("defaults.content_column must not be empty");
+        }
+        if self.defaults.embedding_column.trim().is_empty() {
+            anyhow::bail!("defaults.embedding_column must not be empty");
         }
         let mut names = HashSet::new();
         for index in &self.indexes {

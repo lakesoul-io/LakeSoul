@@ -24,7 +24,10 @@ async fn gateway_write_path_contract() {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let table = format!("es_gw_{}", &suffix[..12]);
     let index = format!("esgw{}", &suffix[..12]);
-    let config = test_config(&index, &table, Some(3), 1);
+    let mut config = test_config(&index, &table, Some(3), 1);
+    // This test covers the declared-index contract; dynamic provisioning has
+    // its own test file.
+    config.defaults.dynamic_indexes = false;
     let state = build_state(config).await.unwrap();
     let app = build_router(Arc::clone(&state));
 

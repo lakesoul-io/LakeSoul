@@ -72,13 +72,25 @@ func (h *harnessV7) runAll() {
 		return nil
 	})
 
-	h.step("indices.exists", func() error {
-		if _, err := h.do(ctx, func() (*esapi.Response, error) {
-			return h.client.Indices.Exists([]string{h.cfg.index})
-		}); err != nil {
+	h.step("indices.exists + create if missing", func() error {
+		exists, err := h.client.Indices.Exists([]string{h.cfg.index})
+		if err != nil {
 			return err
 		}
-		fmt.Printf("    exists (the gateway pre-provisions on start)\n")
+		defer exists.Body.Close()
+		if exists.StatusCode == 200 {
+			fmt.Printf("    exists=true\n")
+			return nil
+		}
+		created, err := h.client.Indices.Create(h.cfg.index)
+		if err != nil {
+			return err
+		}
+		defer created.Body.Close()
+		if created.IsError() {
+			return fmt.Errorf("create index: %s", created.String())
+		}
+		fmt.Printf("    created (dynamic provisioning)\n")
 		return nil
 	})
 
