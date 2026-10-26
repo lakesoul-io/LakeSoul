@@ -242,6 +242,10 @@ pub enum StateRole {
     JoinRight,
     /// A pair-state index keyed by the right source identity.
     JoinPairIndex,
+    /// A base join-key index for one lookup-chain step.  The index maps the
+    /// step's left key to the base row identities, so a changed dimension can
+    /// fan out to affected base rows without scanning the base.
+    LookupChainIndex(u32),
     /// The source-row state used to recompute window/top-k ranks.
     RankState,
     /// One partition spec of a multi-window view.  The index is the spec
@@ -259,6 +263,7 @@ impl StateRole {
             StateRole::JoinLeft => "join_left",
             StateRole::JoinRight => "join_right",
             StateRole::JoinPairIndex => "join_pair_index",
+            StateRole::LookupChainIndex(_) => "lookup_chain_index",
             StateRole::RankState => "rank_state",
             StateRole::MultiWindow(_) => "multi_window",
         }
@@ -268,6 +273,9 @@ impl StateRole {
     pub fn role_name(&self) -> Cow<'static, str> {
         match self {
             StateRole::MultiWindow(index) => Cow::Owned(format!("multi_window:{index}")),
+            StateRole::LookupChainIndex(index) => {
+                Cow::Owned(format!("lookup_chain_index:{index}"))
+            }
             role => Cow::Borrowed(role.as_str()),
         }
     }
@@ -289,6 +297,16 @@ impl StateRole {
                             )
                         },
                     );
+                }
+                if let Some(index) = other.strip_prefix("lookup_chain_index:") {
+                    return index
+                        .parse::<u32>()
+                        .map(StateRole::LookupChainIndex)
+                        .map_err(|_| {
+                            rootcause::report!(
+                                "invalid lookup-chain index state role {other:?}"
+                            )
+                        });
                 }
                 Err(rootcause::report!("unknown state role {other:?}"))
             }

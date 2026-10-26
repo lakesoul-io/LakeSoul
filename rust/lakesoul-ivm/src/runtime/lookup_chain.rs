@@ -6,9 +6,11 @@
 
 use std::collections::BTreeMap;
 
+use super::join_state::{IVM_JOIN_KEY_COLUMN, JoinKeyEncoder};
 use super::*;
 use datafusion::common::NullEquality;
 use datafusion::logical_expr::LogicalPlanBuilder;
+use futures::StreamExt;
 use futures::future::join_all;
 
 use datafusion::functions::string::expr_fn::{concat, octet_length};
@@ -782,6 +784,18 @@ fn lookup_chain_dim_frames(
     Ok(frames)
 }
 
+/// Whether every step is a unique lookup whose left keys all come from the
+/// base.  That is the shape where a per-step base join-key index can map a
+/// changed dimension row back to affected base rows without scanning the base.
+fn lookup_chain_indexable(view: &LookupChainView) -> bool {
+    !view.steps.is_empty()
+        && view.steps.iter().all(|step| {
+            step.unique
+                && !step.keys.is_empty()
+                && step.key_sources.iter().all(|source| *source == 0)
+        })
+}
+
 impl IvmRuntime {
     /// Persist a lookup chain view spec (idempotent).
     pub async fn register_lookup_chain_view(&self, view: &LookupChainView) -> Result<()> {
@@ -791,6 +805,168 @@ impl IvmRuntime {
         self.metadata
             .upsert_view(&view.view_id, &spec, view.refresh_interval_ms)
             .await
+    }
+
+    /// Drop the per-step indexes before a full rebuild.  A rebuild reads the
+    /// current source state; a stale index would otherwise fan a later
+    /// dimension change out to the wrong base keys.
+    async fn drop_lookup_chain_indexes(&self, view: &LookupChainView) -> Result<()> {
+        if !lookup_chain_indexable(view) {
+            return Ok(());
+        }
+        for step in &view.steps {
+            let role = StateRole::LookupChainIndex(step.source as u32);
+            let Some(info) = self.metadata().get_state(&view.view_id, role).await? else {
+                continue;
+            };
+            self.metadata()
+                .unregister_state(&view.view_id, role)
+                .await?;
+            let _ = self
+                .client()
+                .drop_table(&info.table_name, &info.namespace)
+                .await;
+        }
+        Ok(())
+    }
+
+    /// Keep the per-step base join-key indexes current.
+    ///
+    /// Only an index that has already been created is maintained on base-only
+    /// windows.  A dimension window creates the index lazily from the current
+    /// base, so the first dimension change pays the one full base index build;
+    /// later changes use the keyed lookup.
+    async fn refresh_lookup_chain_indexes(
+        &self,
+        view: &LookupChainView,
+        windows: &[SourceWindow],
+        changed: &[bool],
+        create: bool,
+    ) -> Result<(Vec<Option<IvmTable>>, Vec<String>)> {
+        let mut indexes = vec![None; view.steps.len()];
+        let mut commit_ids = Vec::new();
+        if !lookup_chain_indexable(view) {
+            return Ok((indexes, commit_ids));
+        }
+        let base = &view.sources[0].0;
+        for (index, step) in view.steps.iter().enumerate() {
+            let role = StateRole::LookupChainIndex(step.source as u32);
+            let existing = self.metadata().get_state(&view.view_id, role).await?;
+            let state = match existing {
+                Some(info) => {
+                    let state = self.open_table_by_id(&info.table_id).await?;
+                    if state.current_files(&self.client).await?.is_empty() {
+                        commit_ids.extend(
+                            self.sync_join_side_state(
+                                base,
+                                &state,
+                                &step.keys,
+                                &step.key_exprs.left,
+                            )
+                            .await?,
+                        );
+                    } else if changed[0] {
+                        commit_ids.extend(
+                            self.apply_join_side_delta(
+                                base,
+                                &state,
+                                &windows[0],
+                                &step.keys,
+                                &step.key_exprs.left,
+                            )
+                            .await?,
+                        );
+                    }
+                    Some(state)
+                }
+                None if create && changed[step.source] => {
+                    let state = self
+                        .ensure_join_side_state_forced(
+                            &view.view_id,
+                            base,
+                            &step.keys,
+                            role,
+                        )
+                        .await?
+                        .ok_or_else(|| {
+                            report!(
+                                "lookup chain index for step {} was not created",
+                                step.source
+                            )
+                        })?;
+                    commit_ids.extend(
+                        self.sync_join_side_state(
+                            base,
+                            &state,
+                            &step.keys,
+                            &step.key_exprs.left,
+                        )
+                        .await?,
+                    );
+                    Some(state)
+                }
+                None => None,
+            };
+            indexes[index] = state;
+        }
+        Ok((indexes, commit_ids))
+    }
+
+    /// Look up the base primary keys whose step key matches the changed
+    /// dimension keys.  The index is the existing join-side state layout,
+    /// keyed by the encoded join key plus the base primary keys.
+    async fn lookup_chain_index_base_keys(
+        &self,
+        context: &SessionContext,
+        index: &IvmTable,
+        base: &IvmTable,
+        changed_keys: DataFrame,
+        step: &LookupChainStep,
+    ) -> Result<DataFrame> {
+        let key_frame = changed_keys.select(
+            step.right_keys
+                .iter()
+                .zip(&step.keys)
+                .map(|(right, left)| col(right.as_str()).alias(left.as_str()))
+                .collect::<Vec<_>>(),
+        )?;
+        let encoder = std::sync::Arc::new(JoinKeyEncoder::new_with_schema(
+            base,
+            key_frame.schema().as_arrow(),
+            &step.keys,
+        )?);
+        let mut stream = key_frame.execute_stream().await?;
+        let mut batches = Vec::new();
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            if batch.num_rows() > 0 {
+                batches.push(encoder.encode_key_only(&batch)?);
+            }
+        }
+        if batches.is_empty() {
+            let schema = project_schema(&base.schema, &base.primary_keys)?;
+            return dataframe(context, Vec::new(), &schema);
+        }
+        let contribution = context.read_batches(batches)?;
+        let rows = self
+            .lookup_source_by_join_keys(
+                context,
+                index,
+                contribution,
+                &[IVM_JOIN_KEY_COLUMN.to_string()],
+                &[IVM_JOIN_KEY_COLUMN.to_string()],
+                true,
+            )
+            .await?;
+        let rows = rows
+            .select(
+                base.primary_keys
+                    .iter()
+                    .map(|key| col(key.as_str()))
+                    .collect::<Vec<_>>(),
+            )?
+            .distinct()?;
+        Ok(rows)
     }
 
     /// Refresh a lookup chain: the affected base rows are replayed through
@@ -815,10 +991,13 @@ impl IvmRuntime {
         }
         // A changed dimension can fan out to an unbounded number of base
         // rows.  A unique chain whose dimension keys are the base keys maps
-        // each changed dimension row to exactly one base row, so keep the
-        // incremental path there.  Other dimension changes rebuild.
+        // each changed dimension row to exactly one base row.  A unique chain
+        // whose left keys all come from the base uses a per-step join-key
+        // index to find the affected base keys.  Other shapes still rebuild.
         let base_keyed_chain = dimension_keys_are_base_keys(view);
-        if changed[1..].iter().any(|changed| *changed) && !base_keyed_chain {
+        let indexable = lookup_chain_indexable(view);
+        if changed[1..].iter().any(|changed| *changed) && !base_keyed_chain && !indexable
+        {
             return self.rebuild_lookup_chain(view).await.map(Some);
         }
         let base_only = changed[0] && !changed[1..].iter().any(|changed| *changed);
@@ -865,6 +1044,9 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        let (indexes, index_commit_ids) = self
+            .refresh_lookup_chain_indexes(view, &windows, &changed, !mv_empty)
+            .await?;
         // Bucket-parallel fast path: with a unique-step chain the MV is keyed
         // by the base key, so a key and all of its rows live in one hash
         // bucket.  Split the fact delta by the file's bucket suffix and
@@ -886,10 +1068,11 @@ impl IvmRuntime {
                 .unwrap_or(1)
                 > 1;
         if bucket_parallel
-            && let Some(outcome) = self
+            && let Some(mut outcome) = self
                 .refresh_lookup_chain_buckets(view, &windows, epoch)
                 .await?
         {
+            outcome.commit_ids.extend(index_commit_ids.clone());
             if unique_steps {
                 if mv_empty {
                     self.set_view_rows(&view.view_id, outcome.inserts);
@@ -991,6 +1174,7 @@ impl IvmRuntime {
             .map(|(_, _, now)| now.clone())
             .collect::<Vec<_>>();
 
+        let mut indexed_fanout = false;
         let affected = if base_only {
             // Every delta row is an affected base key; no base scan needed.
             frames[0]
@@ -1012,8 +1196,12 @@ impl IvmRuntime {
                     continue;
                 }
                 // A change in the base or in an earlier step can move any key, so
-                // every base row is re-evaluated.
-                if !base_keyed_chain && (0..=index).any(|source| changed[source]) {
+                // every base row is re-evaluated.  The indexed star path below
+                // handles base changes without that fallback.
+                if !base_keyed_chain
+                    && !indexable
+                    && (0..=index).any(|source| changed[source])
+                {
                     every_base_row = true;
                     break;
                 }
@@ -1073,6 +1261,25 @@ impl IvmRuntime {
                         .select(right_key_exprs)?
                 }
                 .distinct()?;
+                if let Some(index_table) =
+                    indexes.get(index).and_then(|index| index.as_ref())
+                {
+                    affected = affected
+                        .union(
+                            self.lookup_chain_index_base_keys(
+                                &context,
+                                index_table,
+                                base,
+                                changed_keys.clone(),
+                                step,
+                            )
+                            .await?,
+                        )?
+                        .distinct()?;
+                    indexed_fanout = true;
+                    continue;
+                }
+                indexed_fanout = false;
                 if base_keyed_chain {
                     // The dimension is keyed by the base key.  A changed
                     // dimension row therefore contributes exactly that base
@@ -1139,6 +1346,29 @@ impl IvmRuntime {
             }
             affected
         };
+
+        // The indexed star path only needs the affected base rows.  The
+        // dimension frames stay as current-state frames; a production fact
+        // table is the large side.
+        if indexed_fanout && !base_keyed_chain && !full_snapshot {
+            let base = &view.sources[0].0;
+            let base_columns = lookup_chain_source_columns(view, 0, &context)?;
+            let base_now = self
+                .lookup_source_by_join_keys(
+                    &context,
+                    base,
+                    affected.clone(),
+                    &base.primary_keys,
+                    &base.primary_keys,
+                    true,
+                )
+                .await?;
+            frames[0].2 = project_frame(base_now, &base_columns)?;
+            now_frames = frames
+                .iter()
+                .map(|(_, _, now)| now.clone())
+                .collect::<Vec<_>>();
+        }
 
         // A chain whose step keys are the base primary keys can fetch only
         // the affected base and dimension rows.  This avoids scanning the
@@ -1252,6 +1482,7 @@ impl IvmRuntime {
             }
         }
         commit_ids.extend(outcome.commit_ids);
+        commit_ids.extend(index_commit_ids);
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -1436,6 +1667,7 @@ impl IvmRuntime {
     pub async fn rebuild_lookup_chain(&self, view: &LookupChainView) -> Result<i64> {
         self.register_lookup_chain_view(view).await?;
         validate_lookup_chain_view(view)?;
+        self.drop_lookup_chain_indexes(view).await?;
 
         self.metadata
             .set_view_status(&view.view_id, "rebuilding")
