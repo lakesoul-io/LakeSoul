@@ -1668,8 +1668,8 @@ impl TableProvider for LakeSoulTableProvider {
         }
 
         // Finite primary-key predicates (or a finite prefix of a composite
-        // key) let the scan fetch only the matching rows (vortex only); the
-        // optimizer keeps re-applying the filter above the scan, so a
+        // key) let the scan fetch only the matching rows (vortex and parquet);
+        // the optimizer keeps re-applying the filter above the scan, so a
         // superset candidate set is safe.
         let key_constraint = {
             let fields = self
