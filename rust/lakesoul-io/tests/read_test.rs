@@ -168,6 +168,47 @@ async fn test_read_mixed_parquet_and_vortex_with_primary_key_merge() {
     assert_eq!(int64_values(&batches, "id"), vec![1, 2, 3, 4]);
 }
 
+/// Files are listed oldest first. A Parquet file committed after a Vortex
+/// file must still override it when the formats interleave.
+#[test_log::test(tokio::test)]
+async fn test_read_interleaved_parquet_and_vortex_keeps_version_order() {
+    let dir = tempdir().unwrap();
+    let path = |name: &str| {
+        dir.path()
+            .join(name)
+            .into_os_string()
+            .into_string()
+            .unwrap()
+    };
+    let (v0, v1, v2) = (path("v0.parquet"), path("v1.vortex"), path("v2.parquet"));
+    let primary_keys = vec!["id".to_string()];
+
+    let base = two_int64_batch("id", [1, 2], "v", [0, 0]);
+    write_batch_with_primary_keys(v0.clone(), base.clone(), primary_keys.clone()).await;
+    write_batch_with_primary_keys(
+        v1.clone(),
+        two_int64_batch("id", [1, 2], "v", [1, 1]),
+        primary_keys.clone(),
+    )
+    .await;
+    write_batch_with_primary_keys(
+        v2.clone(),
+        two_int64_batch("id", [1], "v", [2]),
+        primary_keys.clone(),
+    )
+    .await;
+
+    let batches = read_batches_with_primary_keys(
+        vec![v0, v1, v2],
+        base.schema(),
+        vec![],
+        primary_keys,
+    )
+    .await;
+    assert_eq!(int64_values(&batches, "id"), vec![1, 2]);
+    assert_eq!(int64_values(&batches, "v"), vec![2, 1]);
+}
+
 #[test_log::test(tokio::test)]
 async fn test_read_filter_on_non_projected_column_preserves_projection() {
     let dir = tempdir().unwrap();
