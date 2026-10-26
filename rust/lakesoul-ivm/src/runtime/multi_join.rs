@@ -942,7 +942,51 @@ impl IvmRuntime {
                     None => legacy()?,
                 }
             } else {
-                legacy()?
+                // Several sources changed in the same window.  When every
+                // edge is keyed by its source primary key, run one keyed
+                // delta walk per changed source and union the resulting
+                // tuples.  A tuple with any changed row is reachable from at
+                // least one of these starts.
+                let mut terms = Vec::with_capacity(changed_indices.len());
+                let mut affected: Vec<Option<DataFrame>> = vec![None; view.sources.len()];
+                let mut fast_path = true;
+                for &changed in &changed_indices {
+                    match self
+                        .multi_join_single_source_terms(
+                            &context,
+                            view,
+                            changed,
+                            &windows[changed],
+                            &schemas,
+                            &primary_keys,
+                        )
+                        .await?
+                    {
+                        Some((rows, source_affected)) => {
+                            terms.push(rows);
+                            for (index, rows) in source_affected.into_iter().enumerate() {
+                                if rows.is_some() {
+                                    affected[index] = rows;
+                                }
+                            }
+                        }
+                        None => {
+                            fast_path = false;
+                            break;
+                        }
+                    }
+                }
+                if fast_path {
+                    let mut rows = terms.pop().ok_or_else(|| {
+                        report!("multi join window has no changed source")
+                    })?;
+                    for term in terms {
+                        rows = rows.union(term)?;
+                    }
+                    (rows.distinct()?, affected)
+                } else {
+                    legacy()?
+                }
             };
 
             let identity_names = multi_join_primary_keys(&primary_keys);
