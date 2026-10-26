@@ -807,6 +807,51 @@ impl IvmRuntime {
             .await
     }
 
+    /// Project a base source down to the columns the index needs.  The index
+    /// stores the base primary keys, the step's plain keys (or columns used by
+    /// computed keys), and partition/bucket columns needed by the reader.  It
+    /// deliberately does not carry the full fact payload.
+    fn lookup_chain_index_source(
+        &self,
+        base: &IvmTable,
+        step: &LookupChainStep,
+    ) -> Result<IvmTable> {
+        let context = refresh_session();
+        let mut columns = base.primary_keys.clone();
+        let push = |column: String, columns: &mut Vec<String>| {
+            if !columns.contains(&column) {
+                columns.push(column);
+            }
+        };
+        for key in &step.keys {
+            if base.schema.field_with_name(key).is_ok() {
+                push(key.clone(), &mut columns);
+            }
+        }
+        for expression in step
+            .key_exprs
+            .left
+            .iter()
+            .filter(|expression| !expression.is_empty())
+        {
+            for column in filter_columns(&context, &base.schema, expression)? {
+                push(column, &mut columns);
+            }
+        }
+        for column in base
+            .range_partition_columns
+            .iter()
+            .chain(&base.bucket_columns)
+        {
+            if base.schema.field_with_name(column).is_ok() {
+                push(column.clone(), &mut columns);
+            }
+        }
+        let mut source = base.clone();
+        source.schema = project_schema(&base.schema, &columns)?;
+        Ok(source)
+    }
+
     /// Drop the per-step indexes before a full rebuild.  A rebuild reads the
     /// current source state; a stale index would otherwise fan a later
     /// dimension change out to the wrong base keys.
@@ -851,6 +896,7 @@ impl IvmRuntime {
         let base = &view.sources[0].0;
         for (index, step) in view.steps.iter().enumerate() {
             let role = StateRole::LookupChainIndex(step.source as u32);
+            let index_source = self.lookup_chain_index_source(base, step)?;
             let existing = self.metadata().get_state(&view.view_id, role).await?;
             let state = match existing {
                 Some(info) => {
@@ -858,7 +904,7 @@ impl IvmRuntime {
                     if state.current_files(&self.client).await?.is_empty() {
                         commit_ids.extend(
                             self.sync_join_side_state(
-                                base,
+                                &index_source,
                                 &state,
                                 &step.keys,
                                 &step.key_exprs.left,
@@ -868,7 +914,7 @@ impl IvmRuntime {
                     } else if changed[0] {
                         commit_ids.extend(
                             self.apply_join_side_delta(
-                                base,
+                                &index_source,
                                 &state,
                                 &windows[0],
                                 &step.keys,
@@ -883,7 +929,7 @@ impl IvmRuntime {
                     let state = self
                         .ensure_join_side_state_forced(
                             &view.view_id,
-                            base,
+                            &index_source,
                             &step.keys,
                             role,
                         )
@@ -896,7 +942,7 @@ impl IvmRuntime {
                         })?;
                     commit_ids.extend(
                         self.sync_join_side_state(
-                            base,
+                            &index_source,
                             &state,
                             &step.keys,
                             &step.key_exprs.left,

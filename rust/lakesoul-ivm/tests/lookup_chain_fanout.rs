@@ -15,7 +15,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IvmRuntime, IvmTable, IvmTableOptions, JoinKeyExprs, LookupChainColumn,
-    LookupChainStep, LookupChainView, lookup_chain_mv_schema_for,
+    LookupChainStep, LookupChainView, StateRole, lookup_chain_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -264,6 +264,19 @@ async fn dimension_changes_fan_out_through_the_base_join_key_index() {
         rows(&runtime, &mv).await,
         vec![(1, 100, Some(50), Some(7)), (2, 200, Some(6), Some(8)),]
     );
+
+    // The index stores only the base identity and join key, not the wide
+    // fact payload.
+    let states = runtime.metadata().list_states(&view.view_id).await.unwrap();
+    let index = states
+        .iter()
+        .find(|state| state.role == StateRole::LookupChainIndex(1))
+        .expect("the step-1 index state");
+    let index_table = runtime.open_table_by_id(&index.table_id).await.unwrap();
+    assert!(index_table.schema.field_with_name("id").is_ok());
+    assert!(index_table.schema.field_with_name("__ivm_join_key").is_ok());
+    assert!(index_table.schema.field_with_name("v").is_err());
+    assert!(index_table.schema.field_with_name(CHANGE_COLUMN).is_err());
 
     // Base key move: the index must move with the base PK.
     base.append_batch(runtime.client(), base_batch(&[(1, 20, 100, "insert")]))
