@@ -544,7 +544,7 @@ def prepare_dataset(catalog, raw, intervals, args):
         schema=prepared_schema,
         partition_by=("episode_id",),
     )
-    prepared.write_daft(prepared_frame, format="parquet")
+    prepared.write_daft(prepared_frame, format="vortex")
 
     active = set(episodes)
     counts = Counter(row["split"] for row in split_rows if row["episode_id"] in active)
@@ -764,7 +764,7 @@ def generate_training_samples(catalog, args, cameras):
         args.samples_table, path=args.samples_path, schema=schema
     )
     index_table.write_daft(
-        daft.from_arrow(pa.Table.from_pylist(samples, schema=schema)), format="parquet"
+        daft.from_arrow(pa.Table.from_pylist(samples, schema=schema)), format="vortex"
     )
     previews = []
     for index in samples[: args.preview_samples]:

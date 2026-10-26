@@ -166,7 +166,7 @@ def run(args: argparse.Namespace) -> None:
         cameras=args.cameras,
         include_video=True,
         image_format="JPEG",
-        physical_format="parquet",
+        physical_format="vortex",
     )
     manifest.update(status="verifying", import_summary=asdict(summary))
     metadata_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
