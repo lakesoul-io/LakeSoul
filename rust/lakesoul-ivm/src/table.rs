@@ -17,7 +17,9 @@
 
 use std::sync::Arc;
 
+use arrow::compute::concat_batches;
 use arrow::record_batch::RecordBatch;
+use arrow::row::{RowConverter, SortField};
 use arrow_array::Array;
 use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::error::DataFusionError;
@@ -740,6 +742,89 @@ impl IvmTable {
             let batch = self.cast_batch(batch)?;
             rows += batch.num_rows() as u64;
             writer.write_record_batch(batch).await?;
+        }
+        let outputs = writer.flush_and_close().await?;
+        let files = self.output_files(outputs, rows);
+        self.commit_files(client, files).await
+    }
+
+    /// Publish a stream that is sorted by the table's primary keys, keeping
+    /// all rows of one key in the same writer batch.
+    ///
+    /// A target sink writes a delete and an insert for the same update.  If a
+    /// DataFusion batch boundary splits those two rows, a rolling writer can
+    /// put them in different files, and merge-on-read then resolves the same
+    /// key ambiguously.  Buffering only the trailing key group of each batch
+    /// keeps the pair together without collecting the whole delta.
+    pub(crate) async fn append_stream_by_key<S>(
+        &self,
+        client: &MetaDataClient,
+        mut stream: S,
+    ) -> Result<Vec<String>>
+    where
+        S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
+    {
+        use futures::StreamExt;
+        if self.primary_keys.is_empty() {
+            return self.append_stream(client, stream).await;
+        }
+        let key_indices = self
+            .primary_keys
+            .iter()
+            .map(|key| {
+                self.schema.index_of(key).map_err(|error| {
+                    rootcause::report!("primary key {key} is missing: {error}")
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let sort_fields = self
+            .primary_keys
+            .iter()
+            .map(|key| {
+                let field = self.schema.field_with_name(key)?;
+                Ok(SortField::new(field.data_type().clone()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let converter = RowConverter::new(sort_fields)
+            .map_err(|error| rootcause::report!("key row converter: {error}"))?;
+
+        let mut writer = self.writer().await?;
+        let mut rows = 0u64;
+        let mut carry: Option<RecordBatch> = None;
+        while let Some(batch) = stream.next().await {
+            let batch = batch
+                .map_err(|error| rootcause::report!("refresh output batch: {error}"))?;
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            let batch = self.cast_batch(batch)?;
+            rows += batch.num_rows() as u64;
+            let batch = match carry.take() {
+                Some(previous) => {
+                    let previous_key =
+                        boundary_key(&converter, &previous, &key_indices, false)?;
+                    let next_key = boundary_key(&converter, &batch, &key_indices, true)?;
+                    if previous_key == next_key {
+                        concat_batches(&self.schema, &[previous, batch]).map_err(
+                            |error| rootcause::report!("merge key batch: {error}"),
+                        )?
+                    } else {
+                        writer.write_record_batch(previous).await?;
+                        batch
+                    }
+                }
+                None => batch,
+            };
+            let last_start = last_key_group_start(&converter, &batch, &key_indices)?;
+            if last_start > 0 {
+                writer
+                    .write_record_batch(batch.slice(0, last_start))
+                    .await?;
+            }
+            carry = Some(batch.slice(last_start, batch.num_rows() - last_start));
+        }
+        if let Some(carry) = carry {
+            writer.write_record_batch(carry).await?;
         }
         let outputs = writer.flush_and_close().await?;
         let files = self.output_files(outputs, rows);
@@ -1759,4 +1844,44 @@ impl IvmTable {
             .await?;
         Ok(())
     }
+}
+
+/// The first or last key bytes of a batch.
+fn boundary_key(
+    converter: &RowConverter,
+    batch: &RecordBatch,
+    key_indices: &[usize],
+    first: bool,
+) -> Result<Vec<u8>> {
+    let columns = key_indices
+        .iter()
+        .map(|index| batch.column(*index).clone())
+        .collect::<Vec<_>>();
+    let rows = converter
+        .convert_columns(&columns)
+        .map_err(|error| rootcause::report!("key rows: {error}"))?;
+    let index = if first { 0 } else { batch.num_rows() - 1 };
+    Ok(rows.row(index).as_ref().to_vec())
+}
+
+/// The start of the final key group in a key-sorted batch.
+fn last_key_group_start(
+    converter: &RowConverter,
+    batch: &RecordBatch,
+    key_indices: &[usize],
+) -> Result<usize> {
+    let columns = key_indices
+        .iter()
+        .map(|index| batch.column(*index).clone())
+        .collect::<Vec<_>>();
+    let rows = converter
+        .convert_columns(&columns)
+        .map_err(|error| rootcause::report!("key rows: {error}"))?;
+    let mut start = batch.num_rows() - 1;
+    while start > 0
+        && rows.row(start - 1).as_ref() == rows.row(batch.num_rows() - 1).as_ref()
+    {
+        start -= 1;
+    }
+    Ok(start)
 }

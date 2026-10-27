@@ -181,6 +181,63 @@ async fn target_key_and_schema_are_independent_of_the_state() {
     );
 }
 
+#[test_log::test(tokio::test)]
+async fn a_large_upsert_batch_keeps_every_target_row() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = source(&runtime, &dir, &format!("big_src_{suffix}")).await;
+    let target_schema = Arc::new(Schema::new(vec![
+        Field::new("biz_key", DataType::Utf8, false),
+        Field::new("sum_v", DataType::Int64, true),
+        Field::new("count_v", DataType::Int64, false),
+        Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]));
+    let target = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_sink_big_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                target_schema,
+            )
+            .with_primary_keys(vec!["biz_key".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO {} SELECT CAST(k AS VARCHAR) AS biz_key, \
+         SUM(v) AS sum_v, COUNT(*) AS count_v FROM {} GROUP BY k",
+        target.table_name, source.table_name
+    );
+    let runtime = executor.runtime();
+    let rows = (0..9_000)
+        .map(|id| (id, "a", 1, "insert"))
+        .collect::<Vec<_>>();
+    source
+        .append_batch(runtime.client(), source_batch(&rows))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(read_target(runtime, &target).await.len(), 9_000);
+
+    let updates = (0..9_000)
+        .map(|id| (id, "a", 2, "insert"))
+        .collect::<Vec<_>>();
+    source
+        .append_batch(runtime.client(), source_batch(&updates))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    let rows = read_target(runtime, &target).await;
+    assert_eq!(rows.len(), 9_000);
+    assert!(rows.iter().all(|(_, sum, count)| *sum == 2 && *count == 1));
+}
+
 async fn read_target(runtime: &IvmRuntime, target: &IvmTable) -> Vec<(String, i64, i64)> {
     let context = SessionContext::new();
     context
