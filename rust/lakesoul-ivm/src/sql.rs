@@ -2135,6 +2135,14 @@ mod tests {
         let message = format!("{error:?}");
         assert!(message.contains("UNNEST"), "{message}");
         assert!(message.contains("element_index"), "{message}");
+
+        // The executor analyzes the optimized plan; optimization keeps the
+        // lateral subquery's Unnest.
+        let optimized = ctx.state().optimize(cross.logical_plan()).unwrap();
+        let error = analyze_select(&optimized, &tables, &request()).unwrap_err();
+        let message = format!("{error:?}");
+        assert!(message.contains("UNNEST"), "{message}");
+        assert!(message.contains("element_index"), "{message}");
     }
 
     #[tokio::test]
