@@ -331,7 +331,20 @@ impl LakeSoulReader {
         let (filters, text_candidate_scores, key_candidates, vector_distances) = self
             .inject_index_search_filters(filters, &table_schema)
             .await?;
-
+        // An IVM keyed lookup already holds the exact contribution tuples.
+        // Use those encoded keys directly instead of asking the locator to
+        // reconstruct them from per-column IN filters (which is a cross
+        // product for a composite key).
+        let explicit_keys = self
+            .io_session
+            .io_config()
+            .explicit_pk_keys_slice()
+            .to_vec();
+        let key_candidates = if explicit_keys.is_empty() {
+            key_candidates
+        } else {
+            Some(explicit_keys)
+        };
         let io_config = self.io_session.io_config_mut();
 
         // Text search is only exact after a post-merge verification pass:

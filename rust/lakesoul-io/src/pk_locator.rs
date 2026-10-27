@@ -523,16 +523,20 @@ pub fn extract_key_constraints_with_cap(
     let mut values: Vec<Key> = vec![SmallVec::new()];
     for set in &sets[..prefix_len] {
         let set = set.as_ref().expect("prefix sets are finite");
-        let mut next = Vec::new();
+        // Check the cross product *before* materializing it.  Building the
+        // product first made a composite-key IN list with 10k values per
+        // column allocate 10^12 candidates before the cap rejected it.
+        let product = values.len().saturating_mul(set.len());
+        if product > max_candidates {
+            return None;
+        }
+        let mut next = Vec::with_capacity(product);
         for prefix in &values {
             for value in set {
                 let mut candidate = prefix.clone();
                 candidate.push(value.clone());
                 next.push(candidate);
             }
-        }
-        if next.len() > max_candidates {
-            return None;
         }
         values = next;
     }
@@ -1501,7 +1505,8 @@ pub async fn try_build_key_inputs_encoded(
     keys: &[IndexKey],
 ) -> Option<Vec<Arc<dyn ExecutionPlan>>> {
     index_disk_cache()?;
-    if keys.is_empty() || keys.len() > MAX_PK_CANDIDATES || configs.is_empty() {
+    if keys.is_empty() || keys.len() > io_config.max_pk_candidates() || configs.is_empty()
+    {
         return None;
     }
     let primary_keys = io_config.primary_keys_slice();
@@ -1798,7 +1803,8 @@ mod tests {
 
     use super::{
         IndexWriter, Key, KeyConstraint, KeyValue, MmapIndex, extract_key_constraints,
-        extract_pk_candidates, key_values_to_arrays, row_selection,
+        extract_key_constraints_with_cap, extract_pk_candidates, key_values_to_arrays,
+        row_selection,
     };
 
     #[test]
@@ -1923,6 +1929,23 @@ mod tests {
         let mut got = constraint.values;
         got.sort_unstable();
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn composite_cross_product_cap_is_checked_before_allocation() {
+        // Two 2,000-value IN lists have a 4,000,000-row cross product.  The
+        // locator must reject it without materializing the product.
+        let left = (0..2000).map(lit).collect::<Vec<_>>();
+        let right = (0..2000).map(lit).collect::<Vec<_>>();
+        let filters = vec![
+            col("a").in_list(left, false),
+            col("b").in_list(right, false),
+        ];
+        let keys = [
+            ("a".to_string(), DataType::Int64),
+            ("b".to_string(), DataType::Int64),
+        ];
+        assert!(extract_key_constraints_with_cap(&filters, &keys, 1_000_000).is_none());
     }
 
     #[test]
