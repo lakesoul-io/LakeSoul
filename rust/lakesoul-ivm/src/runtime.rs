@@ -2183,14 +2183,15 @@ fn group_key_fields(
         .iter()
         .zip(group_exprs)
         .map(|(key, expression)| {
-            if let Ok(field) = source_schema.field_with_name(key) {
-                // A plain column among computed keys is its own expression.
-                if expression == key {
-                    return Ok(Arc::new(field.clone()) as arrow_schema::FieldRef);
-                }
-                return Err(report!(
-                    "a computed group key must not reuse the source column {key}"
-                ));
+            // A plain column among computed keys is its own expression.  A
+            // computed key may deliberately reuse an input column's name
+            // (`CASE ... spec_name ... END AS spec_name`); the expression is
+            // evaluated against the input and its result type defines the
+            // materialized key.
+            if let Ok(field) = source_schema.field_with_name(key)
+                && expression == key
+            {
+                return Ok(Arc::new(field.clone()) as arrow_schema::FieldRef);
             }
             let (data_type, nullable) = expression_type(source_schema, expression)?;
             Ok(Arc::new(Field::new(key, data_type, nullable)) as arrow_schema::FieldRef)
@@ -5104,5 +5105,21 @@ mod type_encoding_tests {
         assert!(decode_data_type("struct:[{]").is_err());
         assert!(decode_data_type("list:{\"name\":\"i\"}").is_err());
         assert!(decode_data_type("map:1:{}").is_err());
+    }
+
+    #[test]
+    fn a_computed_group_key_may_shadow_a_source_column() {
+        let schema = Schema::new(vec![
+            Field::new("spec_name", DataType::Utf8, false),
+            Field::new("v", DataType::Int64, false),
+        ]);
+        let fields = group_key_fields(
+            &schema,
+            &["spec_name".to_string()],
+            &["CASE WHEN spec_name = 'a' THEN 'b' ELSE spec_name END".to_string()],
+        )
+        .unwrap();
+        assert_eq!(fields[0].name(), "spec_name");
+        assert_eq!(fields[0].data_type(), &DataType::Utf8);
     }
 }

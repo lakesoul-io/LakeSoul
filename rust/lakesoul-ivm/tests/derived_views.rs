@@ -304,6 +304,174 @@ async fn aggregate_over_join_is_materialized_and_maintained() {
     );
 }
 
+/// The sum-count MV schema of a DISTINCT over a derived join whose computed
+/// key has the same name as the join's payload column.
+fn case_over_join_mv_schema() -> SchemaRef {
+    let join = lakesoul_ivm::wide_keyed_join_view_schema_for(
+        &source_schema(),
+        &source_schema(),
+        &["k".to_string()],
+        &["k".to_string()],
+        &["k".to_string()],
+        &[lakesoul_ivm::JoinOutputColumn {
+            side: lakesoul_ivm::JoinSide::Right,
+            column: "v".to_string(),
+            name: "v".to_string(),
+        }],
+    )
+    .unwrap();
+    lakesoul_ivm::sum_count_groups_mv_schema_for(
+        &join,
+        &["k".to_string(), "v".to_string()],
+        &[
+            "k".to_string(),
+            "CASE WHEN v = 7 THEN 70 ELSE v END".to_string(),
+        ],
+        None,
+        None,
+        false,
+    )
+    .unwrap()
+}
+
+const CASE_STATEMENT: &str = "INSERT INTO {mv} SELECT DISTINCT f.k AS k, \
+    CASE WHEN d.v = 7 THEN 70 ELSE d.v END AS v \
+    FROM {f} f JOIN {d} d ON f.k = d.k";
+
+async fn read_kv_rows(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<(i64, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql(&format!(
+            "select k, v from mv where \"{IVM_ROW_KINDS_COLUMN}\" = 'insert' \
+             order by k, v"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((keys.value(row), values.value(row)));
+        }
+    }
+    rows
+}
+
+async fn full_recompute_case(
+    runtime: &IvmRuntime,
+    fact: &IvmTable,
+    dim: &IvmTable,
+) -> Vec<(i64, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("f", Arc::new(runtime.table_provider(fact)))
+        .unwrap();
+    context
+        .register_table("d", Arc::new(runtime.table_provider(dim)))
+        .unwrap();
+    let batches = context
+        .sql(
+            "select distinct f.k as k, case when d.v = 7 then 70 else d.v end as v \
+             from f join d on f.k = d.k \
+             where f.op <> 'delete' and d.op <> 'delete' order by k, v",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((keys.value(row), values.value(row)));
+        }
+    }
+    rows
+}
+
+#[test_log::test(tokio::test)]
+async fn a_distinct_case_over_a_derived_join_keeps_the_computed_key() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let fact = create_source(&runtime, &dir, &format!("ivm_case_f_{suffix}")).await;
+    let dim = create_source(&runtime, &dir, &format!("ivm_case_d_{suffix}")).await;
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_case_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                case_over_join_mv_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string(), "v".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = CASE_STATEMENT
+        .replace("{mv}", &mv.table_name)
+        .replace("{f}", &fact.table_name)
+        .replace("{d}", &dim.table_name);
+
+    fact.append_batch(
+        runtime.client(),
+        source_batch(&[(1, "a", 10, "insert"), (2, "b", 20, "insert")]),
+    )
+    .await
+    .unwrap();
+    dim.append_batch(
+        runtime.client(),
+        source_batch(&[(1, "x", 7, "insert"), (2, "y", 8, "insert")]),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(
+        read_kv_rows(runtime, &mv).await,
+        full_recompute_case(runtime, &fact, &dim).await
+    );
+
+    // The dimension value moves through the derived join and the CASE must
+    // recompute instead of falling back to the join's raw payload column.
+    dim.append_batch(runtime.client(), source_batch(&[(1, "x", 8, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_kv_rows(runtime, &mv).await,
+        full_recompute_case(runtime, &fact, &dim).await
+    );
+}
+
 #[test_log::test(tokio::test)]
 async fn a_shrunken_definition_drops_the_derived_step() {
     let runtime = IvmRuntime::from_env().await.unwrap();

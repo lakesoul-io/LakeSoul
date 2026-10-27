@@ -594,6 +594,13 @@ fn distinct_split(aggregate: &Aggregate) -> Result<Option<(&Aggregate, String, S
 
 /// The aliases the optimizer hoisted above the aggregate input, mapped to
 /// their expressions.
+///
+/// A projection expression is evaluated against the projection's input, so a
+/// column reference with the alias's own name is not a self-reference:
+/// `CAST(order_no AS Utf8View) AS order_no` and
+/// `CASE WHEN spec_name = 'x' THEN 'x2' ELSE spec_name END AS spec_name` both
+/// read the input column.  Recursion is broken while resolving, not by
+/// dropping the alias.
 fn hoisted_expressions(plan: &LogicalPlan) -> HashMap<String, Expr> {
     let mut exprs = HashMap::new();
     if let LogicalPlan::Projection(projection) = peel(plan) {
@@ -603,54 +610,22 @@ fn hoisted_expressions(plan: &LogicalPlan) -> HashMap<String, Expr> {
             }
         }
     }
-    // Drop self-referential (or mutually recursive) aliases: the optimizer
-    // keeps `CAST(order_no AS Utf8View) AS order_no`, and substituting that
-    // alias inside itself would never terminate.  Such an alias does not need
-    // resolving -- the raw source column already has the same name.
-    let cyclic = exprs
-        .iter()
-        .filter(|(name, expr)| {
-            hoisted_reaches(expr, name, &exprs, &mut std::collections::HashSet::new())
-        })
-        .map(|(name, _)| name.clone())
-        .collect::<std::collections::HashSet<_>>();
-    exprs.retain(|name, _| !cyclic.contains(name));
     exprs
-}
-
-/// Whether `expr` reaches the hoisted alias `target` through column
-/// references, following hoisted aliases.  Used to break recursive aliases.
-fn hoisted_reaches(
-    expr: &Expr,
-    target: &str,
-    exprs: &HashMap<String, Expr>,
-    seen: &mut std::collections::HashSet<String>,
-) -> bool {
-    let mut found = false;
-    let _ = expr.apply(|node| {
-        if found {
-            return Ok(TreeNodeRecursion::Stop);
-        }
-        if let Expr::Column(column) = node {
-            if column.name == target {
-                found = true;
-                return Ok(TreeNodeRecursion::Stop);
-            }
-            if seen.insert(column.name.clone())
-                && let Some(next) = exprs.get(&column.name)
-                && hoisted_reaches(next, target, exprs, seen)
-            {
-                found = true;
-                return Ok(TreeNodeRecursion::Stop);
-            }
-        }
-        Ok(TreeNodeRecursion::Continue)
-    });
-    found
 }
 
 /// Replace the hoisted aliases a predicate refers to by their expressions.
 fn resolve_hoisted(expr: &Expr, hoisted: &HashMap<String, Expr>) -> Expr {
+    resolve_hoisted_with(expr, hoisted, &mut std::collections::HashSet::new())
+}
+
+/// Resolve one expression, keeping a stack of aliases currently being
+/// expanded.  A reference to an alias already on the stack is a reference to
+/// the projection's input column of that name, so it stays a column.
+fn resolve_hoisted_with(
+    expr: &Expr,
+    hoisted: &HashMap<String, Expr>,
+    active: &mut std::collections::HashSet<String>,
+) -> Expr {
     expr.clone()
         .transform_down(|node| {
             // The optimizer wraps the hoisted column in a display alias.
@@ -660,8 +635,13 @@ fn resolve_hoisted(expr: &Expr, hoisted: &HashMap<String, Expr>) -> Expr {
             }
             if let Expr::Column(column) = inner
                 && let Some(hoisted_expr) = hoisted.get(&column.name)
+                && active.insert(column.name.clone())
             {
-                return Ok(Transformed::yes(hoisted_expr.clone()));
+                let resolved = resolve_hoisted_with(hoisted_expr, hoisted, active);
+                active.remove(&column.name);
+                // The replacement is already fully resolved; do not expand
+                // its input-column references again.
+                return Ok(Transformed::new(resolved, true, TreeNodeRecursion::Jump));
             }
             Ok(Transformed::no(node))
         })
@@ -5528,5 +5508,46 @@ mod tests {
         map.insert("src".to_string(), src);
         map.insert("dim".to_string(), dim);
         assert!(analyze_select(&optimized, &map, &request()).is_err());
+    }
+
+    #[tokio::test]
+    async fn keeps_a_case_alias_that_shadows_its_input_column() {
+        // The optimizer hoists the DISTINCT projection above its source and
+        // names the CASE output after the input column it reads.  That is not
+        // a self-reference: the aggregate must group by the CASE expression,
+        // not by the raw column.
+        let analyzed = analyze_optimized(
+            "select distinct k, \
+             case when v = 1 then 2 else v end as v \
+             from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SumCount {
+            group_keys,
+            group_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(group_keys, vec!["k".to_string(), "v".to_string()]);
+        assert_eq!(group_exprs.len(), 2, "{group_exprs:?}");
+        assert_eq!(group_exprs[0], "k");
+        assert!(
+            group_exprs[1].to_ascii_uppercase().contains("CASE"),
+            "{group_exprs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolves_a_self_named_cast_without_recursing() {
+        // The projection input may already provide the alias's name; expanding
+        // the alias once must stop at the input column instead of looping.
+        let plan = plan("select cast(v as varchar) as v from src").await;
+        let hoisted = hoisted_expressions(&plan);
+        let resolved = resolve_hoisted(&Expr::Column(Column::from_name("v")), &hoisted);
+        let rendered = format!("{resolved}").to_ascii_uppercase();
+        assert!(rendered.contains("CAST"), "{rendered}");
     }
 }
