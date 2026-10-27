@@ -809,7 +809,15 @@ impl IvmRuntime {
                 windows[index].added_files.clone(),
             )?;
             if keyed {
+                // Probe the branch table with its own key names, then rename
+                // the changed keys to the union's output names (a nested
+                // branch may carry `__ivm_source` under `..._inner`).
                 let key_exprs = table
+                    .primary_keys
+                    .iter()
+                    .map(|column| col(column.as_str()))
+                    .collect::<Vec<_>>();
+                let output_key_exprs = table
                     .primary_keys
                     .iter()
                     .map(|column| {
@@ -819,10 +827,7 @@ impl IvmRuntime {
                         col(column.as_str()).alias(output)
                     })
                     .collect::<Vec<_>>();
-                let affected = delta
-                    .select(key_exprs)?
-                    .distinct()?
-                    .with_column(view.source_column.as_str(), lit(index as i32))?;
+                let affected = delta.select(key_exprs)?.distinct()?;
                 // Read only the current rows for this source's changed keys.
                 let source_now = self
                     .lookup_source_by_join_keys(
@@ -845,7 +850,12 @@ impl IvmRuntime {
                     index,
                     &view.source_column,
                 )?)?);
-                changed.push(affected);
+                changed.push(
+                    affected
+                        .select(output_key_exprs)?
+                        .distinct()?
+                        .with_column(view.source_column.as_str(), lit(index as i32))?,
+                );
             } else {
                 let rows = match &filter {
                     Some(filter) => delta.filter(filter.clone())?,

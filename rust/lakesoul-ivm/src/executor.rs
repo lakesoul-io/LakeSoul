@@ -644,6 +644,10 @@ impl IvmSqlExecutor {
     }
 
     async fn execute_inner(&self, sql: &str) -> Result<IvmExecution> {
+        // Flink task SQL may carry temporal-join syntax; these tasks use a
+        // primary-key dimension lookup, so it is planned as a normal join.
+        let normalized = crate::sql::normalize_flink_sql(sql);
+        let sql = normalized.as_str();
         let insert = parse_insert(sql)?;
         let (namespace, table_name) = split_object_name(insert_target(&insert)?)?;
         let mv = self.runtime.open_table(&table_name, &namespace).await?;

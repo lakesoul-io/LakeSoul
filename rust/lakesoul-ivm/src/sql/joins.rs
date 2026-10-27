@@ -133,7 +133,9 @@ pub(super) fn analyze_join(
             // or a per-key aggregate) is a plain join against a derived table,
             // not a correlated scalar subquery.  Materialize the aggregate as
             // a step and let the normal join path read it as a source.
-            JoinType::Inner if derived_sourceable(&join.right) => {
+            JoinType::Inner
+                if join.filter.is_none() && derived_sourceable(&join.right) =>
+            {
                 Err(derived_source_error("a join side", &join.right))
             }
             _ => Err(unsupported(

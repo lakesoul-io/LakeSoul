@@ -402,9 +402,16 @@ pub(crate) fn derived_sourceable(plan: &LogicalPlan) -> bool {
     match peel(plan) {
         // A plain projection (or a bare table alias) stays inline; a computed
         // projection is a row step.
-        LogicalPlan::Projection(projection) => {
-            !is_plain_projection(projection) && source_beneath(&projection.input)
-        }
+        LogicalPlan::Projection(projection) => match peel(&projection.input) {
+            // A plain projection over a table scan/filter stays inline; a
+            // computed one is a row step.
+            LogicalPlan::TableScan(_) | LogicalPlan::Filter(_) => {
+                !is_plain_projection(projection) && source_beneath(&projection.input)
+            }
+            // A plain projection over an aggregate/join/window is the
+            // materializable output of that compound source.
+            _ => derived_sourceable(&projection.input),
+        },
         LogicalPlan::Filter(filter) => source_beneath(&filter.input),
         LogicalPlan::Join(_)
         | LogicalPlan::Aggregate(_)
@@ -421,9 +428,12 @@ pub(crate) fn derived_sourceable(plan: &LogicalPlan) -> bool {
 /// source it can be materialized over.
 fn source_beneath(plan: &LogicalPlan) -> bool {
     match peel(plan) {
-        LogicalPlan::Projection(projection) => {
-            !is_plain_projection(projection) && source_beneath(&projection.input)
-        }
+        LogicalPlan::Projection(projection) => match peel(&projection.input) {
+            LogicalPlan::TableScan(_) | LogicalPlan::Filter(_) => {
+                !is_plain_projection(projection) && source_beneath(&projection.input)
+            }
+            _ => source_beneath(&projection.input),
+        },
         LogicalPlan::Filter(filter) => source_beneath(&filter.input),
         LogicalPlan::TableScan(_)
         | LogicalPlan::Join(_)
@@ -779,6 +789,150 @@ fn normalize_current_timestamp(expression: &str) -> String {
         rest = &after[end + SUFFIX.len()..];
     }
     out.push_str(rest);
+    out
+}
+
+/// Flink-specific syntax these tasks use, normalized before planning.
+///
+/// * `FOR SYSTEM_TIME AS OF <expr>` on a dimension table is a keyed lookup
+///   (the task uses a primary-key dimension), so the temporal clause is
+///   removed and the join is planned as a normal lookup.
+/// * `PROCTIME()` is the statement's processing time; a temporal lookup no
+///   longer reads it, and the planner prunes the column.
+/// * `SPLIT(s, d)` is Flink's split; DataFusion's nested function is
+///   `string_to_array`.
+pub(crate) fn normalize_flink_sql(sql: &str) -> String {
+    fn skip_ws(bytes: &[u8], mut index: usize) -> usize {
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        index
+    }
+    fn read_word(sql: &str, index: usize) -> (&str, usize) {
+        let bytes = sql.as_bytes();
+        if index >= bytes.len()
+            || (!bytes[index].is_ascii_alphabetic() && bytes[index] != b'_')
+        {
+            return ("", index);
+        }
+        let mut end = index + 1;
+        while end < bytes.len()
+            && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+        {
+            end += 1;
+        }
+        (&sql[index..end], end)
+    }
+
+    let bytes = sql.as_bytes();
+    let mut out = String::with_capacity(sql.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let rest = &sql[index..];
+        if rest.starts_with("--") {
+            let end = rest
+                .find('\n')
+                .map_or(bytes.len(), |offset| index + offset + 1);
+            out.push_str(&sql[index..end]);
+            index = end;
+            continue;
+        }
+        if rest.starts_with("/*") {
+            let end = rest
+                .find("*/")
+                .map_or(bytes.len(), |offset| index + offset + 2);
+            out.push_str(&sql[index..end]);
+            index = end;
+            continue;
+        }
+        let byte = bytes[index];
+        if byte == b'\'' || byte == b'"' || byte == b'`' {
+            let start = index;
+            index += 1;
+            while index < bytes.len() {
+                if bytes[index] == byte {
+                    if index + 1 < bytes.len() && bytes[index + 1] == byte {
+                        index += 2;
+                        continue;
+                    }
+                    index += 1;
+                    break;
+                }
+                index += 1;
+            }
+            out.push_str(&sql[start..index]);
+            continue;
+        }
+        if byte.is_ascii_alphabetic() || byte == b'_' {
+            let (word, end) = read_word(sql, index);
+            index = end;
+            if word.eq_ignore_ascii_case("FOR") {
+                let mut cursor = skip_ws(bytes, index);
+                let (system, end) = read_word(sql, cursor);
+                if system.eq_ignore_ascii_case("SYSTEM_TIME") {
+                    cursor = skip_ws(bytes, end);
+                    let (as_word, end) = read_word(sql, cursor);
+                    if as_word.eq_ignore_ascii_case("AS") {
+                        cursor = skip_ws(bytes, end);
+                        let (of_word, end) = read_word(sql, cursor);
+                        if of_word.eq_ignore_ascii_case("OF") {
+                            cursor = skip_ws(bytes, end);
+                            let mut depth = 0i32;
+                            while cursor < bytes.len() {
+                                match bytes[cursor] {
+                                    b'(' => depth += 1,
+                                    b')' => {
+                                        if depth == 0 {
+                                            break;
+                                        }
+                                        depth -= 1;
+                                    }
+                                    b',' if depth == 0 => break,
+                                    value
+                                        if value.is_ascii_whitespace() && depth == 0 =>
+                                    {
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                                cursor += 1;
+                            }
+                            if out.chars().last().is_some_and(|c| !c.is_whitespace())
+                                && cursor < bytes.len()
+                                && !bytes[cursor].is_ascii_whitespace()
+                            {
+                                out.push(' ');
+                            }
+                            index = cursor;
+                            continue;
+                        }
+                    }
+                }
+            } else if word.eq_ignore_ascii_case("PROCTIME") {
+                let mut cursor = skip_ws(bytes, index);
+                if cursor < bytes.len() && bytes[cursor] == b'(' {
+                    cursor = skip_ws(bytes, cursor + 1);
+                    if cursor < bytes.len() && bytes[cursor] == b')' {
+                        out.push_str("CURRENT_TIMESTAMP");
+                        index = cursor + 1;
+                        continue;
+                    }
+                }
+            } else if word.eq_ignore_ascii_case("SPLIT") {
+                let cursor = skip_ws(bytes, index);
+                if cursor < bytes.len() && bytes[cursor] == b'(' {
+                    out.push_str("string_to_array");
+                    index = cursor;
+                    continue;
+                }
+            }
+            out.push_str(word);
+            continue;
+        }
+        let ch = sql[index..].chars().next().unwrap();
+        out.push(ch);
+        index += ch.len_utf8();
+    }
     out
 }
 
@@ -1864,6 +2018,31 @@ mod tests {
         // DataFusion coerces a mismatched branch value to the union's output
         // type (`v` becomes a string here), so this one is maintained; the
         // missing-key branch above remains the rejection check.
+    }
+
+    #[test]
+    fn normalizes_flink_temporal_and_function_syntax() {
+        let sql = "select b.*, proctime() as p from t b \n\
+             left join dim FOR SYSTEM_TIME AS OF b.p d on b.k = d.k \n\
+             cross join unnest(split(b.items, ',')) as u(item)";
+        let normalized = normalize_flink_sql(sql);
+        assert!(
+            normalized.contains("CURRENT_TIMESTAMP as p"),
+            "{normalized}"
+        );
+        assert!(normalized.contains("left join dim"), "{normalized}");
+        assert!(normalized.contains("d on b.k = d.k"), "{normalized}");
+        assert!(
+            normalized.contains("string_to_array(b.items, ',')"),
+            "{normalized}"
+        );
+        assert!(!normalized.to_ascii_uppercase().contains("FOR SYSTEM_TIME"));
+        assert!(!normalized.to_ascii_uppercase().contains("PROCTIME"));
+        assert!(!normalized.to_ascii_uppercase().contains("SPLIT("));
+
+        // String literals and comments are untouched.
+        let literal = "select 'FOR SYSTEM_TIME AS OF x', split -- proctime()\n";
+        assert_eq!(normalize_flink_sql(literal), literal);
     }
 
     #[tokio::test]
