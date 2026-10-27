@@ -1216,10 +1216,26 @@ fn default_union_source_column() -> String {
 pub struct SinkColumn {
     /// The target column name.
     pub name: String,
+    /// The maintenance-state output column carrying the value; empty when it
+    /// has the target name.  A Flink `INSERT INTO` maps the select list by
+    /// position, so the names may differ.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
     /// The encoded arrow data type.
     pub result: String,
     /// Whether the target column is nullable.
     pub nullable: bool,
+}
+
+impl SinkColumn {
+    /// The maintenance-state column this target column reads.
+    pub fn source(&self) -> &str {
+        if self.source.is_empty() {
+            &self.name
+        } else {
+            &self.source
+        }
+    }
 }
 
 impl ViewSpec {

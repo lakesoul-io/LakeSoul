@@ -2029,6 +2029,35 @@ fn analyze_outer_join(
             });
         }
     }
+    // An outer join may not select a key of the padded side: the join output
+    // materializes the preserved side's key, which is non-NULL on an
+    // unmatched row.
+    if let Some(projection) = projection {
+        for expr in &projection.expr {
+            let Some(column) = column_of(expr) else {
+                continue;
+            };
+            let side = side_of(column, left_alias, right_alias, left, right);
+            let padded = payloads.left_count == 0
+                && matches!(kind, "LEFT" | "RIGHT")
+                && side == Some(Side::Right)
+                && effective_right_keys.contains(&column.name);
+            if padded {
+                return Err(unsupported(format!(
+                    "a {kind} join may not select the padded side's key {}",
+                    column.name
+                )));
+            }
+        }
+    }
+    // A single-sided payload is only safe when the other side matches at
+    // most once (a lookup keyed by the join keys); otherwise the outer join
+    // would duplicate or drop rows.
+    if !lookup && (payloads.left_count == 0 || payloads.right_count == 0) {
+        return Err(unsupported(format!(
+            "a {kind} needs at least one column from each side"
+        )));
+    }
     let (left_value, right_value, output_columns, payload_names) =
         compact_or_wide(payloads, &key_names, kind)?;
     if lookup {
@@ -2526,9 +2555,21 @@ fn compact_or_wide(
         return Ok((left_value, right_value, Vec::new(), names));
     }
     if payloads.left_count == 0 || payloads.right_count == 0 {
-        return Err(unsupported(format!(
-            "a {shape} needs at least one column from each side"
-        )));
+        // An outer join may select only one side's payload; the join keys and
+        // the other side's row identity still distinguish the rows.  A wide
+        // output materializes those payloads directly.
+        if payloads.output_columns.is_empty() {
+            return Err(unsupported(format!(
+                "a {shape} needs at least one payload column"
+            )));
+        }
+        check_wide_output_names(&payloads.output_columns, key_names)?;
+        return Ok((
+            payloads.left_value.clone().unwrap_or_default(),
+            payloads.right_value.clone().unwrap_or_default(),
+            payloads.output_columns,
+            Vec::new(),
+        ));
     }
     check_wide_output_names(&payloads.output_columns, key_names)?;
     Ok((

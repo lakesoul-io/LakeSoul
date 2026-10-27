@@ -40,7 +40,7 @@ use crate::runtime::{
     ChainPolicy, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_EPOCH_COLUMN,
     IVM_GROUP_ROW_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_PAIR_IDENTITY_COLUMN,
     IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
-    IVM_VALUE_COUNT_COLUMN, IvmRuntime, JoinOutputColumn, JoinSide, SinkColumn, ViewSpec,
+    IvmRuntime, JoinOutputColumn, JoinSide, SinkColumn, ViewSpec,
     approx_distinct_groups_mv_schema_for, approx_percentile_groups_mv_schema_for,
     array_agg_groups_mv_schema_for, bool_agg_groups_mv_schema_for,
     computed_agg_mv_schema_for, cross_join_view_schema_for, decode_data_type,
@@ -356,20 +356,64 @@ fn derived_output_mapping(
 ) -> Result<Vec<(String, String)>> {
     let fields = subplan.schema().fields();
     if matches!(spec, ViewSpec::SumCount { .. }) {
-        let LogicalPlan::Aggregate(aggregate) = peel(subplan) else {
+        // The optimizer may prune a group key above the aggregate while the
+        // MV still materializes it; peel plain projections and map fields by
+        // their aggregate output name.
+        let mut node = peel(subplan);
+        let mut projection: Option<&datafusion::logical_expr::Projection> = None;
+        while let LogicalPlan::Projection(inner) = node {
+            if !inner.expr.iter().all(|expr| {
+                let mut value = expr;
+                while let Expr::Alias(alias) = value {
+                    value = &alias.expr;
+                }
+                matches!(value, Expr::Column(_))
+            }) {
+                break;
+            }
+            projection = Some(inner);
+            node = peel(&inner.input);
+        }
+        let LogicalPlan::Aggregate(aggregate) = node else {
             return Err(rootcause::report!(
                 "a derived sum-count view needs an aggregate input"
             )
             .attach(UnsupportedShape));
         };
         let groups = aggregate.group_expr.len();
+        let mut targets = HashMap::new();
+        for field in aggregate.schema.fields().iter().take(groups) {
+            targets.insert(field.name().clone(), field.name().clone());
+        }
+        for (index, expr) in aggregate.aggr_expr.iter().enumerate() {
+            targets.insert(
+                expr.schema_name().to_string(),
+                sum_count_column(expr)?.to_string(),
+            );
+            if index + groups >= aggregate.schema.fields().len() {
+                break;
+            }
+        }
         let mut mapping = Vec::with_capacity(fields.len());
         for (index, field) in fields.iter().enumerate() {
-            let column = if index < groups {
-                field.name().clone()
-            } else {
-                sum_count_column(&aggregate.aggr_expr[index - groups])?.to_string()
-            };
+            let source =
+                match projection.and_then(|projection| projection.expr.get(index)) {
+                    Some(expr) => {
+                        let mut value = expr;
+                        while let Expr::Alias(alias) = value {
+                            value = &alias.expr;
+                        }
+                        match value {
+                            Expr::Column(column) => column.name.clone(),
+                            _ => field.name().clone(),
+                        }
+                    }
+                    None => field.name().clone(),
+                };
+            let column = targets
+                .get(&source)
+                .cloned()
+                .unwrap_or_else(|| source.clone());
             mapping.push((field.name().clone(), column));
         }
         return Ok(mapping);
@@ -1040,14 +1084,62 @@ impl IvmSqlExecutor {
             )
             .await?;
         let expected = expected_mv_schema(&state_spec, &tables)?;
-        for field in target.schema.fields() {
-            expected.field_with_name(field.name()).map_err(|_| {
-                rootcause::report!(
-                    "target column {} is not produced by the view; \
-                     add it to the SELECT list",
-                    field.name()
-                )
-            })?;
+        // Flink `INSERT INTO` maps the select list to the target by position;
+        // the names may differ (`spec_model` -> `spec_model_no`).
+        let internal =
+            |name: &str| name == IVM_ROW_KINDS_COLUMN || name.starts_with("__ivm_");
+        let target_fields = target
+            .schema
+            .fields()
+            .iter()
+            .filter(|field| !internal(field.name()))
+            .collect::<Vec<_>>();
+        let select_fields = plan.schema().fields();
+        if target_fields.len() != select_fields.len() {
+            return Err(rootcause::report!(
+                "target table `{}` has {} user columns {:?} but the select list has {} {:?}; \
+                 an INSERT INTO maps them by position",
+                target.table_name,
+                target_fields.len(),
+                target_fields
+                    .iter()
+                    .map(|f| f.name().clone())
+                    .collect::<Vec<_>>(),
+                select_fields.len(),
+                select_fields
+                    .iter()
+                    .map(|f| f.name().clone())
+                    .collect::<Vec<_>>()
+            ));
+        }
+        let state_map = derived_output_mapping(&state_spec, &plan)?
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        let mut positional = HashMap::new();
+        for (target, select) in target_fields.iter().zip(select_fields) {
+            if crate::table::normalize_data_type(target.data_type())
+                != crate::table::normalize_data_type(select.data_type())
+            {
+                return Err(rootcause::report!(
+                    "target column {} ({}) does not match select column {} ({}); \
+                     an INSERT INTO maps by position and the types must match",
+                    target.name(),
+                    target.data_type(),
+                    select.name(),
+                    select.data_type()
+                ));
+            }
+            let source = state_map
+                .get(select.name())
+                .cloned()
+                .unwrap_or_else(|| select.name().clone());
+            if expected.field_with_name(&source).is_err() {
+                return Err(rootcause::report!(
+                    "the maintenance state does not materialize select column {}",
+                    select.name()
+                ));
+            }
+            positional.insert(target.name().clone(), source);
         }
         if target.schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_err()
             || target.schema.field_with_name(IVM_EPOCH_COLUMN).is_err()
@@ -1069,7 +1161,6 @@ impl IvmSqlExecutor {
         let state_table = self
             .ensure_internal_state_table(target, &state_spec, expected.clone())
             .await?;
-        validate_sink_output(target, &expected, &state_table.primary_keys, &state_spec)?;
         state_spec.set_derived_identity(&state_table.table_id, &state_table.table_id)?;
         if needs_state_table(&state_spec) {
             let state_table_id =
@@ -1154,8 +1245,17 @@ impl IvmSqlExecutor {
             .fields()
             .iter()
             .map(|field| {
+                let source = positional
+                    .get(field.name())
+                    .cloned()
+                    .unwrap_or_else(|| field.name().clone());
                 Ok(SinkColumn {
                     name: field.name().clone(),
+                    source: if source == *field.name() {
+                        String::new()
+                    } else {
+                        source
+                    },
                     result: encode_data_type(field.data_type())?,
                     nullable: field.is_nullable(),
                 })
@@ -2860,96 +2960,6 @@ fn expected_mv_schema(
         }
     };
     Ok(normalize_schema(&schema))
-}
-
-/// Columns a sink may omit because they are maintenance-only (row identities,
-/// join keys) rather than user output.
-fn sink_omittable_columns(spec: &ViewSpec) -> Vec<String> {
-    let mut columns = Vec::new();
-    match spec {
-        ViewSpec::Join {
-            join_keys,
-            right_keys,
-            ..
-        }
-        | ViewSpec::LookupJoin {
-            join_keys,
-            right_keys,
-            ..
-        }
-        | ViewSpec::LeftJoin {
-            join_keys,
-            right_keys,
-            ..
-        }
-        | ViewSpec::FullJoin {
-            join_keys,
-            right_keys,
-            ..
-        }
-        | ViewSpec::SemiAnti {
-            join_keys,
-            right_keys,
-            ..
-        }
-        | ViewSpec::LeftAggregate {
-            join_keys,
-            right_keys,
-            ..
-        } => {
-            columns.extend(join_keys.iter().cloned());
-            columns.extend(right_keys.iter().cloned());
-        }
-        ViewSpec::MultiJoin { keys, .. } => {
-            for key in keys {
-                columns.push(key.left_column.clone());
-                columns.push(key.right_column.clone());
-            }
-        }
-        ViewSpec::LookupChain { steps, .. } => {
-            for step in steps {
-                columns.extend(step.keys.iter().cloned());
-                columns.extend(step.right_keys.iter().cloned());
-            }
-        }
-        _ => {}
-    }
-    columns
-}
-
-/// Reject a target that silently drops a user-visible output column.  Natural
-/// keys, join keys and bookkeeping columns may be omitted because the target
-/// key represents them; an aggregate or payload column may not.
-fn validate_sink_output(
-    target: &IvmTable,
-    expected: &Schema,
-    primary_keys: &[String],
-    spec: &ViewSpec,
-) -> Result<()> {
-    let omittable = sink_omittable_columns(spec);
-    for field in expected.fields() {
-        if target.schema.field_with_name(field.name()).is_ok() {
-            continue;
-        }
-        let name = field.name();
-        if name == IVM_ROW_KINDS_COLUMN
-            || name == IVM_EPOCH_COLUMN
-            || name == IVM_COUNT_COLUMN
-            || name == IVM_VALUE_COUNT_COLUMN
-            || name.starts_with("__ivm_")
-            || primary_keys.contains(name)
-            || omittable.contains(name)
-        {
-            continue;
-        }
-        return Err(rootcause::report!(
-            "target table `{}` does not include view output column {}; \
-             add it to the target or the SELECT list",
-            target.table_name,
-            name
-        ));
-    }
-    Ok(())
 }
 
 /// The filter a normalized view applies to its contributing rows, when the

@@ -58,6 +58,7 @@ impl SinkView {
                 .schema
                 .field_with_name(&column.name)
                 .map_err(|_| report!("sink target is missing column {}", column.name))?;
+            let source_name = column.source();
             let expr = if column.name == IVM_EPOCH_COLUMN {
                 lit(epoch)
             } else if rebuild && column.name == IVM_ROW_KINDS_COLUMN {
@@ -66,14 +67,14 @@ impl SinkView {
                 let source =
                     self.source
                         .schema
-                        .field_with_name(&column.name)
+                        .field_with_name(source_name)
                         .map_err(|_| {
                             report!(
-                                "maintenance state is missing target column {}",
+                                "maintenance state is missing column {source_name} for target column {}",
                                 column.name
                             )
                         })?;
-                let column_expr = Expr::Column(Column::from_name(column.name.as_str()));
+                let column_expr = Expr::Column(Column::from_name(source_name));
                 if source.data_type() == target.data_type() {
                     column_expr
                 } else {
@@ -162,7 +163,7 @@ pub fn validate_sink_view(view: &SinkView) -> Result<()> {
         }
         view.source
             .schema
-            .field_with_name(&column.name)
+            .field_with_name(column.source())
             .map_err(|_| {
                 report!(
                     "maintenance state {} does not produce target column {}",
@@ -190,13 +191,6 @@ pub fn validate_sink_view(view: &SinkView) -> Result<()> {
                 view.target.table_name
             ));
         }
-        view.source.schema.field_with_name(key).map_err(|_| {
-            report!(
-                "maintenance state {} does not produce target key {}",
-                view.source.table_name,
-                key
-            )
-        })?;
     }
     Ok(())
 }
@@ -384,16 +378,19 @@ mod tests {
             columns: vec![
                 SinkColumn {
                     name: "k".to_string(),
+                    source: String::new(),
                     result: "int64".to_string(),
                     nullable: false,
                 },
                 SinkColumn {
                     name: IVM_ROW_KINDS_COLUMN.to_string(),
+                    source: String::new(),
                     result: "utf8".to_string(),
                     nullable: false,
                 },
                 SinkColumn {
                     name: IVM_EPOCH_COLUMN.to_string(),
+                    source: String::new(),
                     result: "int64".to_string(),
                     nullable: false,
                 },
