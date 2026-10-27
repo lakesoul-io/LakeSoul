@@ -2351,6 +2351,17 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        let mut phase = std::time::Instant::now();
+        macro_rules! phase_done {
+            ($name:literal) => {
+                tracing::debug!(
+                    phase = $name,
+                    elapsed_ms = phase.elapsed().as_millis() as u64,
+                    "view phase"
+                );
+                phase = std::time::Instant::now();
+            };
+        }
 
         // A range-partitioned MV only holds affected rows in the partitions
         // the delta touched (the MV keys carry the partition columns and a
@@ -2371,6 +2382,7 @@ impl IvmRuntime {
             .lookup_source_before_by_pks(&context, &view.source, &window, contribution)
             .await?;
         let before = filter_deletes(before, change_column(&view.source))?;
+        phase_done!("before");
         if let Some(rank) = &rank_state {
             let change = change_column(&view.source).unwrap_or(IVM_ROW_KINDS_COLUMN);
             commit_ids.extend(
@@ -2473,6 +2485,7 @@ impl IvmRuntime {
                 }
             }
         };
+        phase_done!("mv_lookup");
         context.register_table("delta", delta.clone().into_view())?;
         context.register_table("mv", mv.clone().into_view())?;
         let src = if let Some(rank) = &rank_state {
@@ -2611,6 +2624,8 @@ impl IvmRuntime {
         .await?;
         commit_ids.extend(mv_ids);
         commit_ids.extend(state_ids);
+        phase_done!("sql_execute_and_append");
+        let _ = phase.elapsed();
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -3547,12 +3562,24 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        let mut phase = std::time::Instant::now();
+        macro_rules! phase_done {
+            ($name:literal) => {
+                tracing::debug!(
+                    phase = $name,
+                    elapsed_ms = phase.elapsed().as_millis() as u64,
+                    "top_k phase"
+                );
+                phase = std::time::Instant::now();
+            };
+        }
 
         let context = refresh_session();
         let mv_partitions =
             super::mv_partitions_for_source(&view.mv, &view.source, &window);
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
+        phase_done!("delta");
         let pk_exprs = view
             .source
             .primary_keys
@@ -3578,6 +3605,7 @@ impl IvmRuntime {
                 .await?,
             );
         }
+        phase_done!("rank_update");
         let mv = if view.group_keys.is_empty() {
             match mv_partitions {
                 Some(restriction) => {
@@ -3785,8 +3813,10 @@ impl IvmRuntime {
                 self.current_table_frame(&context, &view.source)?
             }
         };
+        phase_done!("src_lookup");
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&top_k_refresh_sql(view, epoch)).await?;
+        phase_done!("sql_plan");
         let state_frame = frame.clone().execute_stream().await?;
         let (mv_ids, state_ids) = futures::future::try_join(
             view.mv
@@ -3800,6 +3830,8 @@ impl IvmRuntime {
         .await?;
         commit_ids.extend(mv_ids);
         commit_ids.extend(state_ids);
+        phase_done!("sql_execute_and_append");
+        let _ = phase.elapsed();
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
