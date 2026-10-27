@@ -193,17 +193,14 @@ async fn aggregate_over_join_is_materialized_and_maintained() {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let fact = create_source(&runtime, &dir, &format!("ivm_der_f_{suffix}")).await;
     let dim = create_source(&runtime, &dir, &format!("ivm_der_d_{suffix}")).await;
-    let mv = runtime
-        .create_table(
-            IvmTableOptions::new(
-                format!("ivm_der_mv_{suffix}"),
-                table_path(&dir, "mv"),
-                aggregate_over_join_mv_schema(),
-            )
-            .with_primary_keys(vec!["g".to_string()]),
-        )
-        .await
-        .unwrap();
+    let mut mv_options = IvmTableOptions::new(
+        format!("ivm_der_mv_{suffix}"),
+        table_path(&dir, "mv"),
+        aggregate_over_join_mv_schema(),
+    )
+    .with_primary_keys(vec!["g".to_string()]);
+    mv_options.hash_bucket_num = "8".to_string();
+    let mv = runtime.create_table(mv_options).await.unwrap();
     let executor = IvmSqlExecutor::new(runtime);
     let runtime = executor.runtime();
     let statement = STATEMENT
@@ -249,6 +246,7 @@ async fn aggregate_over_join_is_materialized_and_maintained() {
         derived_table.table_name,
         format!("{}__ivm_step0", mv.table_name)
     );
+    assert_eq!(derived_table.hash_bucket_num, "8");
     let info = runtime
         .metadata()
         .list_views()

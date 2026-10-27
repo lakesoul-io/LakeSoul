@@ -1607,8 +1607,12 @@ impl IvmSqlExecutor {
         }
         let primary_keys = self.derived_primary_keys(spec).await?;
         if let Ok(existing) = self.runtime.open_table(&name, &target.namespace).await {
+            // A derived step inherits the target's bucket layout: keeping the
+            // default bucket count would serialize a 1M-row window/join step
+            // into one oversized hash partition.
             if schema_matches(&existing.schema, &schema)
                 && existing.primary_keys == primary_keys
+                && existing.hash_bucket_num == target.hash_bucket_num
             {
                 return Ok(existing);
             }
@@ -1621,13 +1625,11 @@ impl IvmSqlExecutor {
                 .drop_table(&name, &target.namespace)
                 .await?;
         }
-        self.runtime
-            .create_table(
-                IvmTableOptions::new(name, path, schema)
-                    .with_namespace(target.namespace.clone())
-                    .with_primary_keys(primary_keys),
-            )
-            .await
+        let mut options = IvmTableOptions::new(name, path, schema)
+            .with_namespace(target.namespace.clone())
+            .with_primary_keys(primary_keys);
+        options.hash_bucket_num = target.hash_bucket_num.clone();
+        self.runtime.create_table(options).await
     }
 
     /// The columns a derived step's own filter, or every keyed UNION branch's
