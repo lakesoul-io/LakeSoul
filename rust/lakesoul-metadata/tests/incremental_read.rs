@@ -7,6 +7,8 @@
 //! They require a running PostgreSQL configured through `LAKESOUL_PG_*`
 //! (the same service `rust-ci` provides) and use unique table names.
 
+use std::collections::HashMap;
+
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_metadata::error::Result;
 use lakesoul_metadata::transfusion::DataFileInfo;
@@ -322,6 +324,33 @@ async fn compaction_output_is_not_changelog() -> Result<()> {
         .await?;
     assert_eq!(added_paths(&whole), vec!["/tmp/p1/f1.parquet"]);
     assert_eq!(whole.to_version, 1);
+
+    // A later append snapshot is cumulative and repeats the compaction output.
+    // It must not turn the whole table into changelog rows: only f2 is new.
+    client
+        .commit_data_files(&name, NAMESPACE, vec![file("p1", "f2")])
+        .await?;
+    let after_compaction = client
+        .get_partition_changelog(&table_id, "p1", 0, 2)
+        .await?;
+    assert_eq!(added_paths(&after_compaction), vec!["/tmp/p1/f2.parquet"]);
+    let whole = client
+        .get_partition_changelog(&table_id, "p1", -1, 2)
+        .await?;
+    assert_eq!(
+        added_paths(&whole),
+        vec!["/tmp/p1/f1.parquet", "/tmp/p1/f2.parquet"]
+    );
+
+    // The table-level scan used by the IVM reader has the same semantics.
+    let from = HashMap::from([("p1".to_string(), 0i64)]);
+    let window = client.get_table_changelog(&table_id, &from).await?;
+    let p1 = window
+        .partitions
+        .iter()
+        .find(|partition| partition.partition_desc == "p1")
+        .expect("p1 changed");
+    assert_eq!(added_paths(p1), vec!["/tmp/p1/f2.parquet"]);
 
     client.drop_table(&name, NAMESPACE).await?;
     Ok(())
