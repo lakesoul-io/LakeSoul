@@ -59,6 +59,7 @@ mod multi_join;
 mod recompute;
 mod rows;
 mod semi_anti;
+mod sink;
 mod unions;
 mod windows;
 
@@ -71,6 +72,7 @@ pub use self::multi_join::*;
 pub use self::recompute::*;
 pub use self::rows::*;
 pub use self::semi_anti::*;
+pub use self::sink::*;
 pub use self::unions::*;
 pub use self::windows::*;
 
@@ -1081,6 +1083,11 @@ pub enum ViewSpec {
         sources: Vec<UnionSourceSpec>,
         /// The materialized view table id.
         mv_table_id: String,
+        /// The branch-index column name.  A nested union carries its inner
+        /// branch index as a data column, so every union names its own marker
+        /// and the two levels cannot collide.
+        #[serde(default = "default_union_source_column")]
+        source_column: String,
     },
     /// `UNION` (distinct) of several sources with the same schema: every
     /// distinct row with its occurrence count.
@@ -1169,6 +1176,66 @@ pub enum ViewSpec {
         /// The materialized view table id.
         mv_table_id: String,
     },
+    /// A projection sink from an internal maintenance state to a user target
+    /// table.  The source is the keyed maintenance MV; the sink writes the
+    /// user target by the target primary key.
+    Sink {
+        /// The user view id (the target table id).
+        view_id: String,
+        /// The maintenance state MV.
+        source_table_id: String,
+        /// The user target table id.
+        mv_table_id: String,
+        /// The target output columns, in target schema order.
+        #[serde(default)]
+        columns: Vec<SinkColumn>,
+        /// The target primary keys, so a key change rebuilds the target.
+        #[serde(default)]
+        primary_keys: Vec<String>,
+        /// The target range partition columns, so a partition-layout change
+        /// rebuilds the target.
+        #[serde(default)]
+        range_partition_columns: Vec<String>,
+        /// The definition identity of the source maintenance view, so a
+        /// changed source shape rebuilds the target.
+        #[serde(default)]
+        source_definition: String,
+        /// The source view generation the sink last consumed.  A rebuild of
+        /// the maintenance state increments it and forces a target rebuild.
+        #[serde(default)]
+        source_generation: i64,
+    },
+}
+
+fn default_union_source_column() -> String {
+    IVM_SOURCE_COLUMN.to_string()
+}
+
+/// One output column of a [`ViewSpec::Sink`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SinkColumn {
+    /// The target column name.
+    pub name: String,
+    /// The maintenance-state output column carrying the value; empty when it
+    /// has the target name.  A Flink `INSERT INTO` maps the select list by
+    /// position, so the names may differ.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    /// The encoded arrow data type.
+    pub result: String,
+    /// Whether the target column is nullable.
+    pub nullable: bool,
+}
+
+impl SinkColumn {
+    /// The maintenance-state column this target column reads.
+    pub fn source(&self) -> &str {
+        if self.source.is_empty() {
+            &self.name
+        } else {
+            &self.source
+        }
+    }
 }
 
 impl ViewSpec {
@@ -1203,7 +1270,8 @@ impl ViewSpec {
             | ViewSpec::UnionDistinct { view_id, .. }
             | ViewSpec::MultiWindow { view_id, .. }
             | ViewSpec::TopK { view_id, .. }
-            | ViewSpec::Fallback { view_id, .. } => view_id,
+            | ViewSpec::Fallback { view_id, .. }
+            | ViewSpec::Sink { view_id, .. } => view_id,
         }
     }
 
@@ -1258,6 +1326,9 @@ impl ViewSpec {
                 source_table_id, ..
             }
             | ViewSpec::Row {
+                source_table_id, ..
+            }
+            | ViewSpec::Sink {
                 source_table_id, ..
             } => {
                 ids.push(source_table_id.as_str());
@@ -1407,7 +1478,82 @@ impl ViewSpec {
                 mv_table_id: mv,
                 ..
             }
+            | ViewSpec::LookupChain {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::SemiAnti {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
             | ViewSpec::TopK {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::Row {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::Variance {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::Median {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::BoolAgg {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::ApproxDistinct {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::ApproxPercentile {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::ComputedAgg {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::StringAgg {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::ArrayAgg {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::LeftAggregate {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::GroupingSets {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::Fallback {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::Sink {
                 view_id: id,
                 mv_table_id: mv,
                 ..
@@ -1416,10 +1562,6 @@ impl ViewSpec {
                 *mv = mv_table_id.to_string();
                 Ok(())
             }
-            other => Err(report!(
-                "a derived view over {} is not materialized yet",
-                other.kind()
-            )),
         }
     }
 
@@ -1508,6 +1650,7 @@ impl ViewSpec {
             ViewSpec::TopK { .. } => "top_k",
             ViewSpec::MultiWindow { .. } => "multi_window",
             ViewSpec::Fallback { .. } => "fallback",
+            ViewSpec::Sink { .. } => "sink",
         }
     }
 }
@@ -1596,6 +1739,7 @@ enum SpecView {
     TopK(TopKView),
     MultiWindow(MultiWindowView),
     Fallback(FallbackView),
+    Sink(SinkView),
 }
 
 /// The extra source a `HAVING` subquery reads: its rows are aggregated and
@@ -2039,14 +2183,15 @@ fn group_key_fields(
         .iter()
         .zip(group_exprs)
         .map(|(key, expression)| {
-            if let Ok(field) = source_schema.field_with_name(key) {
-                // A plain column among computed keys is its own expression.
-                if expression == key {
-                    return Ok(Arc::new(field.clone()) as arrow_schema::FieldRef);
-                }
-                return Err(report!(
-                    "a computed group key must not reuse the source column {key}"
-                ));
+            // A plain column among computed keys is its own expression.  A
+            // computed key may deliberately reuse an input column's name
+            // (`CASE ... spec_name ... END AS spec_name`); the expression is
+            // evaluated against the input and its result type defines the
+            // materialized key.
+            if let Ok(field) = source_schema.field_with_name(key)
+                && expression == key
+            {
+                return Ok(Arc::new(field.clone()) as arrow_schema::FieldRef);
             }
             let (data_type, nullable) = expression_type(source_schema, expression)?;
             Ok(Arc::new(Field::new(key, data_type, nullable)) as arrow_schema::FieldRef)
@@ -2219,6 +2364,12 @@ fn change_column(source: &IvmTable) -> Option<&str> {
 /// has a change column.
 fn filter_deletes(frame: DataFrame, change_column: Option<&str>) -> Result<DataFrame> {
     match change_column {
+        // A projected frame may not carry the change column; its source was
+        // already read in current/before form, so there is no tombstone to
+        // filter.
+        Some(column) if frame.schema().field_with_name(None, column).is_err() => {
+            Ok(frame)
+        }
         Some(column) => Ok(frame.filter(column_expr(column).not_eq(lit("delete")))?),
         None => Ok(frame),
     }
@@ -2653,8 +2804,8 @@ impl IvmRuntime {
             });
         }
         versions.sort_by(|left, right| {
-            (left.role.as_str(), &left.table_id)
-                .cmp(&(right.role.as_str(), &right.table_id))
+            (left.role.role_name(), &left.table_id)
+                .cmp(&(right.role.role_name(), &right.table_id))
         });
         Ok(versions)
     }
@@ -2853,6 +3004,10 @@ pub(crate) async fn write_dataframe(
                 }
             }
         }
+        // DataFusion plans string expressions as `Utf8View`; the physical
+        // table stores `Utf8`.  Every write path funnels through here, so cast
+        // once instead of relying on each view kind.
+        let batch = table.cast_batch(batch)?;
         writer.write_record_batch(batch).await?;
     }
     let outputs = writer.flush_and_close().await?;
@@ -2975,7 +3130,7 @@ fn filter_columns(
 }
 
 /// Parse a persisted filter predicate into a logical expression.
-fn parse_filter(
+pub(crate) fn parse_filter(
     context: &SessionContext,
     schema: &SchemaRef,
     filter: &str,
@@ -3866,6 +4021,7 @@ impl IvmRuntime {
                 view_id,
                 sources,
                 mv_table_id,
+                source_column,
             } => {
                 let mut opened = Vec::with_capacity(sources.len());
                 for source in sources {
@@ -3880,6 +4036,7 @@ impl IvmRuntime {
                     view_id: view_id.clone(),
                     sources: opened,
                     mv: self.open_table_by_id(mv_table_id).await?,
+                    source_column: source_column.clone(),
                     refresh_interval_ms,
                 })
             }
@@ -3968,6 +4125,26 @@ impl IvmRuntime {
                     refresh_interval_ms,
                 })
             }
+            ViewSpec::Sink {
+                view_id,
+                source_table_id,
+                mv_table_id,
+                columns,
+                primary_keys,
+                range_partition_columns,
+                source_definition,
+                source_generation,
+            } => SpecView::Sink(SinkView {
+                view_id: view_id.clone(),
+                source: self.open_table_by_id(source_table_id).await?,
+                target: self.open_table_by_id(mv_table_id).await?,
+                columns: columns.clone(),
+                primary_keys: primary_keys.clone(),
+                range_partition_columns: range_partition_columns.clone(),
+                source_definition: source_definition.clone(),
+                source_generation: *source_generation,
+                refresh_interval_ms,
+            }),
         })
     }
 
@@ -4042,6 +4219,7 @@ impl IvmRuntime {
                 Ok(SpecView::TopK(view)) => self.refresh_top_k(&view).await,
                 Ok(SpecView::MultiWindow(view)) => self.refresh_multi_window(&view).await,
                 Ok(SpecView::Fallback(view)) => self.refresh_fallback(&view).await,
+                Ok(SpecView::Sink(view)) => self.refresh_sink(&view).await,
                 Err(error) => Err(error),
             }
         })
@@ -4106,6 +4284,7 @@ impl IvmRuntime {
                 Ok(SpecView::TopK(view)) => self.rebuild_top_k(&view).await,
                 Ok(SpecView::MultiWindow(view)) => self.rebuild_multi_window(&view).await,
                 Ok(SpecView::Fallback(view)) => self.rebuild_fallback(&view).await,
+                Ok(SpecView::Sink(view)) => self.rebuild_sink(&view).await,
                 Err(error) => Err(error),
             }
         })
@@ -4926,5 +5105,21 @@ mod type_encoding_tests {
         assert!(decode_data_type("struct:[{]").is_err());
         assert!(decode_data_type("list:{\"name\":\"i\"}").is_err());
         assert!(decode_data_type("map:1:{}").is_err());
+    }
+
+    #[test]
+    fn a_computed_group_key_may_shadow_a_source_column() {
+        let schema = Schema::new(vec![
+            Field::new("spec_name", DataType::Utf8, false),
+            Field::new("v", DataType::Int64, false),
+        ]);
+        let fields = group_key_fields(
+            &schema,
+            &["spec_name".to_string()],
+            &["CASE WHEN spec_name = 'a' THEN 'b' ELSE spec_name END".to_string()],
+        )
+        .unwrap();
+        assert_eq!(fields[0].name(), "spec_name");
+        assert_eq!(fields[0].data_type(), &DataType::Utf8);
     }
 }

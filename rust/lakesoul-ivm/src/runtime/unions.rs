@@ -37,6 +37,8 @@ pub struct UnionAllView {
     pub sources: Vec<UnionSource>,
     /// The materialized view table.
     pub mv: IvmTable,
+    /// The branch-index column name.
+    pub source_column: String,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -101,6 +103,7 @@ impl UnionAllView {
             view_id: view_id.into(),
             sources,
             mv,
+            source_column: IVM_SOURCE_COLUMN.to_string(),
             refresh_interval_ms: 0,
         }
     }
@@ -110,6 +113,7 @@ impl UnionAllView {
             view_id: self.view_id.clone(),
             sources: self.sources.iter().map(UnionSource::to_spec).collect(),
             mv_table_id: self.mv.table_id.clone(),
+            source_column: self.source_column.clone(),
         }
     }
 }
@@ -158,12 +162,17 @@ impl UnionDistinctView {
 /// plus the source index, the row kind and the epoch. Keyed sources are keyed
 /// by `(__ivm_source, primary keys)`.
 pub fn union_all_mv_schema_for(source_schema: &Schema) -> Result<SchemaRef> {
+    union_all_mv_schema_with_source(source_schema, IVM_SOURCE_COLUMN)
+}
+
+/// The union-all MV schema with an explicit branch-index column name (a
+/// nested union uses a per-view name).
+pub fn union_all_mv_schema_with_source(
+    source_schema: &Schema,
+    source_column: &str,
+) -> Result<SchemaRef> {
     let mut fields = source_schema.fields().iter().cloned().collect::<Vec<_>>();
-    fields.push(Arc::new(Field::new(
-        IVM_SOURCE_COLUMN,
-        DataType::Int32,
-        false,
-    )));
+    fields.push(Arc::new(Field::new(source_column, DataType::Int32, false)));
     fields.push(Arc::new(Field::new(
         IVM_ROW_KINDS_COLUMN,
         DataType::Utf8,
@@ -236,25 +245,39 @@ fn validate_union_all_view(view: &UnionAllView) -> Result<()> {
         ));
     }
     let keyed = !view.sources[0].table.primary_keys.is_empty();
-    let first = &view.sources[0].table.schema;
+    let branch_columns = |source: &UnionSource| {
+        union_branch_columns(source, source.table.cdc_column.as_deref())
+    };
+    let branch_schema = |source: &UnionSource| {
+        let columns = branch_columns(source);
+        let exprs = if source.columns.is_empty() {
+            Vec::new()
+        } else {
+            source.exprs.clone()
+        };
+        union_output_schema_for(&source.table.schema, &columns, &exprs)
+    };
+    let first = branch_schema(&view.sources[0])?;
     for source in &view.sources {
         if let Some(filter) = &source.filter {
             let context = refresh_session();
             parse_filter(&context, &source.table.schema, filter)?;
         }
         let table = &source.table;
-        if table.schema.fields().len() != first.fields().len()
-            || table
-                .schema
+        let schema = branch_schema(source)?;
+        if first.fields().len() != schema.fields().len()
+            || first
                 .fields()
                 .iter()
-                .zip(first.fields())
+                .zip(schema.fields())
                 .any(|(left, right)| {
-                    left.name() != right.name() || left.data_type() != right.data_type()
+                    left.name() != right.name()
+                        || crate::table::normalize_data_type(left.data_type())
+                            != crate::table::normalize_data_type(right.data_type())
                 })
         {
             return Err(report!(
-                "union all view {}: source {} does not have the same schema",
+                "union all view {}: source {} does not have the same output schema",
                 view.view_id,
                 table.table_name
             ));
@@ -267,6 +290,18 @@ fn validate_union_all_view(view: &UnionAllView) -> Result<()> {
         }
         if keyed {
             for key in &table.primary_keys {
+                // A key may be materialized under a canonical output name
+                // (`raw AS __ivm_source_inner`); the projection helper maps it.
+                let unchanged =
+                    crate::sql::union_key_output_name(&source.to_spec(), key).is_some();
+                if !unchanged {
+                    return Err(report!(
+                        "union all view {}: key column {key} is not projected \
+                         unchanged from source {}",
+                        view.view_id,
+                        table.table_name
+                    ));
+                }
                 let field = table.schema.field_with_name(key).map_err(|_| {
                     report!(
                         "union all view {}: key column {key} is not in source {}",
@@ -644,7 +679,11 @@ fn union_branch_columns(
         .fields()
         .iter()
         .map(|field| field.name().clone())
-        .filter(|name| Some(name.as_str()) != change_column)
+        .filter(|name| {
+            Some(name.as_str()) != change_column
+                && name != IVM_ROW_KINDS_COLUMN
+                && name != IVM_EPOCH_COLUMN
+        })
         .collect()
 }
 
@@ -655,6 +694,7 @@ fn union_source_projection(
     source: &UnionSource,
     change_column: Option<&str>,
     index: usize,
+    source_column: &str,
 ) -> Result<Vec<Expr>> {
     let columns = union_branch_columns(source, change_column);
     let mut exprs = if source.exprs.is_empty() {
@@ -679,7 +719,7 @@ fn union_source_projection(
             })
             .collect::<Result<Vec<_>>>()?
     };
-    exprs.push(lit(index as i32).alias(IVM_SOURCE_COLUMN));
+    exprs.push(lit(index as i32).alias(source_column));
     Ok(exprs)
 }
 
@@ -769,15 +809,25 @@ impl IvmRuntime {
                 windows[index].added_files.clone(),
             )?;
             if keyed {
+                // Probe the branch table with its own key names, then rename
+                // the changed keys to the union's output names (a nested
+                // branch may carry `__ivm_source` under `..._inner`).
                 let key_exprs = table
                     .primary_keys
                     .iter()
                     .map(|column| col(column.as_str()))
                     .collect::<Vec<_>>();
-                let affected = delta
-                    .select(key_exprs)?
-                    .distinct()?
-                    .with_column(IVM_SOURCE_COLUMN, lit(index as i32))?;
+                let output_key_exprs = table
+                    .primary_keys
+                    .iter()
+                    .map(|column| {
+                        let output =
+                            crate::sql::union_key_output_name(&source.to_spec(), column)
+                                .unwrap_or_else(|| column.clone());
+                        col(column.as_str()).alias(output)
+                    })
+                    .collect::<Vec<_>>();
+                let affected = delta.select(key_exprs)?.distinct()?;
                 // Read only the current rows for this source's changed keys.
                 let source_now = self
                     .lookup_source_by_join_keys(
@@ -793,10 +843,19 @@ impl IvmRuntime {
                     Some(filter) => source_now.filter(filter.clone())?,
                     None => source_now,
                 };
-                inserts.push(
-                    rows.select(union_source_projection(&context, source, None, index)?)?,
+                inserts.push(rows.select(union_source_projection(
+                    &context,
+                    source,
+                    None,
+                    index,
+                    &view.source_column,
+                )?)?);
+                changed.push(
+                    affected
+                        .select(output_key_exprs)?
+                        .distinct()?
+                        .with_column(view.source_column.as_str(), lit(index as i32))?,
                 );
-                changed.push(affected);
             } else {
                 let rows = match &filter {
                     Some(filter) => delta.filter(filter.clone())?,
@@ -812,8 +871,13 @@ impl IvmRuntime {
                     }
                     None => lit("insert"),
                 };
-                let mut projection =
-                    union_source_projection(&context, source, None, index)?;
+                let mut projection = union_source_projection(
+                    &context,
+                    source,
+                    None,
+                    index,
+                    &view.source_column,
+                )?;
                 projection.push(kinds.alias(IVM_ROW_KINDS_COLUMN));
                 inserts.push(rows.select(projection)?);
             }
@@ -822,12 +886,19 @@ impl IvmRuntime {
         let output_exprs = union_branch_columns(&view.sources[0], None)
             .iter()
             .map(|column| col(column.as_str()))
-            .chain(std::iter::once(col(IVM_SOURCE_COLUMN)))
+            .chain(std::iter::once(col(view.source_column.as_str())))
             .collect::<Vec<_>>();
 
         if keyed {
-            let mut pair_names = vec![IVM_SOURCE_COLUMN.to_string()];
-            pair_names.extend(view.sources[0].table.primary_keys.iter().cloned());
+            let mut pair_names = vec![view.source_column.clone()];
+            for key in &view.sources[0].table.primary_keys {
+                let output =
+                    crate::sql::union_key_output_name(&view.sources[0].to_spec(), key)
+                        .unwrap_or_else(|| key.clone());
+                if !pair_names.contains(&output) {
+                    pair_names.push(output);
+                }
+            }
             let pair_refs = pair_names.iter().map(String::as_str).collect::<Vec<_>>();
             let pair_exprs = pair_names
                 .iter()
@@ -863,8 +934,18 @@ impl IvmRuntime {
                 .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
                 .select(pair_exprs.clone())?
                 .distinct()?;
+            let inserts_schema = inserts.first().map(|frame| frame.schema().clone());
+            let already_schema = already.schema().clone();
             let inserts = union_frames(inserts)?
-                .join(already, JoinType::LeftAnti, &pair_refs, &pair_refs, None)?
+                .join(already, JoinType::LeftAnti, &pair_refs, &pair_refs, None)
+                .map_err(|error| {
+                    report!(
+                        "union {}: inserts {:?} already {:?} pair {pair_refs:?}: {error}",
+                        view.view_id,
+                        inserts_schema,
+                        already_schema,
+                    )
+                })?
                 .select(output_exprs.clone())?
                 .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
                 .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
@@ -874,14 +955,8 @@ impl IvmRuntime {
                 .select(output_exprs)?
                 .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
                 .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-            let mut sort_exprs = vec![column_expr(IVM_SOURCE_COLUMN)];
-            sort_exprs.extend(
-                view.sources[0]
-                    .table
-                    .primary_keys
-                    .iter()
-                    .map(|key| column_expr(key)),
-            );
+            let mut sort_exprs = vec![column_expr(&view.source_column)];
+            sort_exprs.extend(pair_names.iter().skip(1).map(|key| column_expr(key)));
             sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
             commit_ids.extend(
                 append_dataframe(
@@ -981,14 +1056,18 @@ impl IvmRuntime {
                 }
                 None => rows,
             };
-            frames.push(
-                rows.select(union_source_projection(&context, source, None, index)?)?,
-            );
+            frames.push(rows.select(union_source_projection(
+                &context,
+                source,
+                None,
+                index,
+                &view.source_column,
+            )?)?);
         }
         let output_exprs = union_branch_columns(&view.sources[0], None)
             .iter()
             .map(|column| col(column.as_str()))
-            .chain(std::iter::once(col(IVM_SOURCE_COLUMN)))
+            .chain(std::iter::once(col(view.source_column.as_str())))
             .collect::<Vec<_>>();
         commit_ids.extend(
             append_dataframe(

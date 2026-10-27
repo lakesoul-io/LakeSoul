@@ -25,6 +25,7 @@
 //!   epoch rows below `min(last_epoch) - grace` can be garbage collected
 //!   without stranding a consumer.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -241,12 +242,20 @@ pub enum StateRole {
     JoinRight,
     /// A pair-state index keyed by the right source identity.
     JoinPairIndex,
+    /// A base join-key index for one lookup-chain step.  The index maps the
+    /// step's left key to the base row identities, so a changed dimension can
+    /// fan out to affected base rows without scanning the base.
+    LookupChainIndex(u32),
     /// The source-row state used to recompute window/top-k ranks.
     RankState,
+    /// One partition spec of a multi-window view.  The index is the spec
+    /// position in the view definition.
+    MultiWindow(u32),
 }
 
 impl StateRole {
-    /// The persisted role name.
+    /// The persisted role name for the fixed roles.  Multi-window roles use
+    /// [`Self::role_name`] for their unique indexed name.
     pub fn as_str(self) -> &'static str {
         match self {
             StateRole::Mv => "mv",
@@ -254,7 +263,20 @@ impl StateRole {
             StateRole::JoinLeft => "join_left",
             StateRole::JoinRight => "join_right",
             StateRole::JoinPairIndex => "join_pair_index",
+            StateRole::LookupChainIndex(_) => "lookup_chain_index",
             StateRole::RankState => "rank_state",
+            StateRole::MultiWindow(_) => "multi_window",
+        }
+    }
+
+    /// The unique persisted role name.
+    pub fn role_name(&self) -> Cow<'static, str> {
+        match self {
+            StateRole::MultiWindow(index) => Cow::Owned(format!("multi_window:{index}")),
+            StateRole::LookupChainIndex(index) => {
+                Cow::Owned(format!("lookup_chain_index:{index}"))
+            }
+            role => Cow::Borrowed(role.as_str()),
         }
     }
 
@@ -266,7 +288,28 @@ impl StateRole {
             "join_right" => Ok(StateRole::JoinRight),
             "join_pair_index" => Ok(StateRole::JoinPairIndex),
             "rank_state" => Ok(StateRole::RankState),
-            other => Err(rootcause::report!("unknown state role {other:?}")),
+            other => {
+                if let Some(index) = other.strip_prefix("multi_window:") {
+                    return index.parse::<u32>().map(StateRole::MultiWindow).map_err(
+                        |_| {
+                            rootcause::report!(
+                                "invalid multi-window state role {other:?}"
+                            )
+                        },
+                    );
+                }
+                if let Some(index) = other.strip_prefix("lookup_chain_index:") {
+                    return index
+                        .parse::<u32>()
+                        .map(StateRole::LookupChainIndex)
+                        .map_err(|_| {
+                            rootcause::report!(
+                                "invalid lookup-chain index state role {other:?}"
+                            )
+                        });
+                }
+                Err(rootcause::report!("unknown state role {other:?}"))
+            }
         }
     }
 }
@@ -1012,7 +1055,7 @@ impl IvmMetadata {
                  on conflict (view_id, role) do nothing",
             &[
                 &view_id,
-                &role.as_str(),
+                &role.role_name().as_ref(),
                 &table.table_id,
                 &table.table_name,
                 &table.namespace,
@@ -1028,7 +1071,7 @@ impl IvmMetadata {
             return Err(rootcause::report!(
                 "view {view_id} already uses table {} as its {} state",
                 existing.table_name,
-                role.as_str()
+                role.role_name()
             ));
         }
         Ok(())
@@ -1040,7 +1083,7 @@ impl IvmMetadata {
     pub async fn unregister_state(&self, view_id: &str, role: StateRole) -> Result<()> {
         self.execute_rw(
             "delete from ivm.states where view_id = $1::TEXT and role = $2::TEXT",
-            &[&view_id, &role.as_str()],
+            &[&view_id, &role.role_name().as_ref()],
         )
         .await?;
         Ok(())
@@ -1057,7 +1100,7 @@ impl IvmMetadata {
                 "select view_id, role, table_id, table_name, namespace, table_path, created_at
                  from ivm.states where view_id = $1::TEXT and role = $2::TEXT",
                 QueryType::RO,
-                &[&view_id, &role.as_str()],
+                &[&view_id, &role.role_name().as_ref()],
             )
             .await?;
         row.map(|row| state_table_from_row(&row)).transpose()

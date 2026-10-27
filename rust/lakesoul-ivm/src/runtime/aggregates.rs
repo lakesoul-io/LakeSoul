@@ -2488,11 +2488,22 @@ impl IvmRuntime {
         let old_projection = Self::sum_count_source_projection(view)?;
         let old_schema = old_projection.as_ref().unwrap_or(&view.source.schema);
         let old_frame = if keyed && !changelog {
+            let contribution = self
+                .groups_table_frame(&context, &view.source, window.added_files.clone())?
+                .select(
+                    view.source
+                        .primary_keys
+                        .iter()
+                        .map(|key| col(key.as_str()))
+                        .collect::<Vec<_>>(),
+                )?
+                .distinct()?;
             let before = self
-                .before_window_table_frame(
+                .lookup_source_before_by_pks(
                     &context,
                     &view.source,
-                    &window.before_versions,
+                    &window,
+                    contribution,
                 )
                 .await?;
             let before = match old_projection.as_ref() {
@@ -2517,6 +2528,7 @@ impl IvmRuntime {
             dataframe(&context, Vec::new(), old_schema)?
         };
 
+        let mut keyed_mv: Option<DataFrame> = None;
         let mut active_keyed =
             view.having.is_none() && view.mv.primary_keys == view.group_keys;
         if active_keyed {
@@ -2542,6 +2554,7 @@ impl IvmRuntime {
                 .ok_or_else(|| report!("sum/count view has no group keys"))?;
             let null_rows = count_frame_rows(affected.clone().filter(null_key)?).await?;
             if null_rows == 0 {
+                keyed_mv = Some(affected.clone());
                 let active = self
                     .lookup_source_by_join_keys(
                         &context,
@@ -2572,17 +2585,29 @@ impl IvmRuntime {
             )?;
             context.register_table("src", src.into_view())?;
         }
-        let mv = match &mv_partitions {
-            Some(partitions) => {
-                self.current_table_frame_filtered_partitions(
-                    &context,
-                    &view.mv,
-                    Vec::new(),
-                    partitions,
-                )
-                .await?
+        let mv = if let Some(affected) = keyed_mv {
+            self.lookup_source_by_join_keys(
+                &context,
+                &view.mv,
+                affected,
+                &view.group_keys,
+                &view.mv.primary_keys,
+                true,
+            )
+            .await?
+        } else {
+            match &mv_partitions {
+                Some(partitions) => {
+                    self.current_table_frame_filtered_partitions(
+                        &context,
+                        &view.mv,
+                        Vec::new(),
+                        partitions,
+                    )
+                    .await?
+                }
+                None => self.current_table_frame(&context, &view.mv)?,
             }
-            None => self.current_table_frame(&context, &view.mv)?,
         };
         context.register_table("mv", mv.into_view())?;
         let sql = sum_count_refresh_sql(view, keyed, epoch, changelog, active_keyed);
@@ -2747,7 +2772,67 @@ impl IvmRuntime {
             )?
         };
         context.register_table("src", src.into_view())?;
-        context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
+        let mv = if view.group_keys.is_empty() {
+            self.current_table_frame(&context, &view.mv)?
+        } else {
+            let key_exprs = view
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let affected_keys = delta
+                .select(key_exprs.clone())?
+                .distinct()?
+                .union(old.select(key_exprs)?.distinct()?)?
+                .distinct()?;
+            let null_key = view
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()).is_null())
+                .reduce(|left, right| left.or(right))
+                .ok_or_else(|| report!("grouping-sets view has no group keys"))?;
+            if count_frame_rows(affected_keys.clone().filter(null_key)?).await? > 0 {
+                self.current_table_frame(&context, &view.mv)?
+            } else {
+                let mut keyed: Option<DataFrame> = None;
+                for (index, set) in view.groupings.iter().enumerate() {
+                    let columns = set
+                        .iter()
+                        .map(|position| view.group_keys[*position].clone())
+                        .collect::<Vec<_>>();
+                    let mut contribution = affected_keys
+                        .clone()
+                        .select(
+                            columns
+                                .iter()
+                                .map(|key| col(key.as_str()))
+                                .collect::<Vec<_>>(),
+                        )?
+                        .distinct()?;
+                    contribution = contribution
+                        .with_column(IVM_GROUPING_COLUMN, lit(index as i64))?;
+                    let mut input_columns = vec![IVM_GROUPING_COLUMN.to_string()];
+                    input_columns.extend(columns.clone());
+                    let table_columns = input_columns.clone();
+                    let frame = self
+                        .lookup_source_by_join_keys(
+                            &context,
+                            &view.mv,
+                            contribution,
+                            &input_columns,
+                            &table_columns,
+                            true,
+                        )
+                        .await?;
+                    keyed = Some(match keyed {
+                        Some(existing) => existing.union(frame)?,
+                        None => frame,
+                    });
+                }
+                keyed.ok_or_else(|| report!("grouping-sets view has no groupings"))?
+            }
+        };
+        context.register_table("mv", mv.into_view())?;
         let frame = context.sql(&grouping_sets_refresh_sql(view, epoch)).await?;
         commit_ids.extend(
             view.mv
@@ -3004,17 +3089,28 @@ impl IvmRuntime {
         }
 
         let context = refresh_session();
+        let raw_delta =
+            self.groups_table_frame(&context, view.source, window.added_files.clone())?;
         let delta = project_group_keys_frame(
             &context,
-            self.groups_table_frame(&context, view.source, window.added_files)?,
+            raw_delta.clone(),
             &view.source.schema,
             view.group_keys,
             view.group_exprs,
         )?;
         let keyed = !view.source.primary_keys.is_empty();
         let old_frame = if keyed {
+            let contribution = raw_delta
+                .select(
+                    view.source
+                        .primary_keys
+                        .iter()
+                        .map(|key| col(key.as_str()))
+                        .collect::<Vec<_>>(),
+                )?
+                .distinct()?;
             let before = self
-                .before_window_table_frame(&context, view.source, &window.before_versions)
+                .lookup_source_before_by_pks(&context, view.source, &window, contribution)
                 .await?;
             project_group_keys_frame(
                 &context,
@@ -3110,8 +3206,21 @@ impl IvmRuntime {
             context
                 .register_table("state_now", Arc::new(self.table_provider(view.state)))?;
         }
-        context.register_table("affected", affected.into_view())?;
-        context.register_table("mv", Arc::new(self.table_provider(view.mv)))?;
+        context.register_table("affected", affected.clone().into_view())?;
+        let mv = if view.mv.primary_keys == view.group_keys {
+            self.lookup_source_by_join_keys(
+                &context,
+                view.mv,
+                affected,
+                view.group_keys,
+                &view.mv.primary_keys,
+                true,
+            )
+            .await?
+        } else {
+            self.current_table_frame(&context, view.mv)?
+        };
+        context.register_table("mv", mv.into_view())?;
         let frame = context.sql(&value_count_mv_sql(view, epoch)).await?;
         commit_ids.extend(
             view.mv

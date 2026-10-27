@@ -47,6 +47,7 @@ use self::joins::*;
 use self::multi_join::*;
 use self::rows::*;
 use self::set_ops::*;
+pub(crate) use self::unions::union_key_output_name;
 use self::unions::*;
 use self::windows::*;
 
@@ -101,6 +102,9 @@ pub fn analyze_select(
     // SQL standard; normalizing them before planning makes DataFusion plan the
     // semi/anti joins the analyzer models instead of mark joins.
     let plan = normalize_quantified_comparisons(plan)?;
+    if plan_contains_unnest(&plan) {
+        return Err(unnest_unsupported());
+    }
     // The optimizer keeps a projection over a projection around a pruned
     // subquery select list (a filtered window subquery, say); every shape
     // below reads one projection.
@@ -218,6 +222,7 @@ pub fn analyze_select(
                 }
             }
             LogicalPlan::TableScan(_) => analyze_row(plan, tables, request)?,
+            LogicalPlan::Unnest(_) => return Err(unnest_unsupported()),
             other => {
                 return Err(unsupported(format!(
                     "projection over {}",
@@ -275,6 +280,7 @@ pub fn analyze_select(
         LogicalPlan::Distinct(distinct) => {
             analyze_distinct_rows(distinct, tables, request)?
         }
+        LogicalPlan::Unnest(_) => return Err(unnest_unsupported()),
         other => {
             return Err(unsupported(plan_label(other)));
         }
@@ -332,6 +338,12 @@ fn collect_filtered_source(
             // __common_expr_1`, `value > 5 AS __common_expr_2`), so scalar
             // projections are allowed next to plain ones.
             if !is_plain_projection(projection) && !is_scalar_projection(projection) {
+                // A computed projection over a compound source is a normal
+                // derived step: materialize it and read the step as the
+                // operator's source.
+                if derived_sourceable(&projection.input) {
+                    return Err(derived_source_error(shape, plan));
+                }
                 return Err(unsupported(format!(
                     "computed columns below {shape} are not supported"
                 )));
@@ -354,6 +366,7 @@ fn collect_filtered_source(
         LogicalPlan::Sort(sort) if sort.fetch.is_none() => {
             collect_filtered_source(&sort.input, tables, shape)
         }
+        LogicalPlan::Unnest(_) => Err(unnest_unsupported()),
         other if derived_sourceable(other) => Err(derived_source_error(shape, other)),
         other => Err(unsupported(format!("{shape} over {}", plan_label(other)))),
     }
@@ -392,16 +405,52 @@ impl std::fmt::Display for UnsupportedShape {
 /// spec, MV table and refresh are the normal ones), so any shape the
 /// analyzer itself maintains qualifies.
 pub(crate) fn derived_sourceable(plan: &LogicalPlan) -> bool {
-    matches!(
-        peel(plan),
+    match peel(plan) {
+        // A plain projection (or a bare table alias) stays inline; a computed
+        // projection is a row step.
+        LogicalPlan::Projection(projection) => match peel(&projection.input) {
+            // A plain projection over a table scan/filter stays inline; a
+            // computed one is a row step.
+            LogicalPlan::TableScan(_) | LogicalPlan::Filter(_) => {
+                !is_plain_projection(projection) && source_beneath(&projection.input)
+            }
+            // A plain projection over an aggregate/join/window is the
+            // materializable output of that compound source.
+            _ => derived_sourceable(&projection.input),
+        },
+        LogicalPlan::Filter(filter) => source_beneath(&filter.input),
         LogicalPlan::Join(_)
-            | LogicalPlan::Aggregate(_)
-            | LogicalPlan::Window(_)
-            | LogicalPlan::Union(_)
-            | LogicalPlan::Distinct(_)
-            | LogicalPlan::Sort(_)
-            | LogicalPlan::Limit(_)
-    )
+        | LogicalPlan::Aggregate(_)
+        | LogicalPlan::Window(_)
+        | LogicalPlan::Union(_)
+        | LogicalPlan::Distinct(_)
+        | LogicalPlan::Sort(_)
+        | LogicalPlan::Limit(_) => true,
+        _ => false,
+    }
+}
+
+/// Whether a computed projection's input is a table, filter or compound
+/// source it can be materialized over.
+fn source_beneath(plan: &LogicalPlan) -> bool {
+    match peel(plan) {
+        LogicalPlan::Projection(projection) => match peel(&projection.input) {
+            LogicalPlan::TableScan(_) | LogicalPlan::Filter(_) => {
+                !is_plain_projection(projection) && source_beneath(&projection.input)
+            }
+            _ => source_beneath(&projection.input),
+        },
+        LogicalPlan::Filter(filter) => source_beneath(&filter.input),
+        LogicalPlan::TableScan(_)
+        | LogicalPlan::Join(_)
+        | LogicalPlan::Aggregate(_)
+        | LogicalPlan::Window(_)
+        | LogicalPlan::Union(_)
+        | LogicalPlan::Distinct(_)
+        | LogicalPlan::Sort(_)
+        | LogicalPlan::Limit(_) => true,
+        _ => false,
+    }
 }
 
 /// The error asking the executor to materialize `plan` as a derived view.
@@ -716,6 +765,183 @@ pub(crate) fn compare_op_sql(op: CompareOp) -> &'static str {
         CompareOp::Ge => ">=",
     }
 }
+/// Replace a timestamp literal produced by `CURRENT_TIMESTAMP` with a stable
+/// placeholder.  DataFusion folds the function while planning, so without
+/// this normalization the definition hash would change on every execution.
+fn normalize_current_timestamp(expression: &str) -> String {
+    const PREFIX: &str = "CAST('";
+    const SUFFIX: &str = "' AS TIMESTAMP)";
+    let mut out = String::with_capacity(expression.len());
+    let mut rest = expression;
+    while let Some(start) = rest.find(PREFIX) {
+        let after = &rest[start + PREFIX.len()..];
+        let Some(end) = after.find(SUFFIX) else {
+            break;
+        };
+        let literal = &after[..end];
+        // Only normalize date-time literals (CURRENT_TIMESTAMP), not arbitrary
+        // string constants that happen to be cast to a timestamp.
+        let time_like = literal.len() >= 19
+            && literal.as_bytes().get(10) == Some(&b' ')
+            && literal.as_bytes().get(13) == Some(&b':')
+            && literal.as_bytes().get(16) == Some(&b':');
+        out.push_str(&rest[..start + PREFIX.len()]);
+        if time_like {
+            out.push_str("<current_timestamp>");
+        } else {
+            out.push_str(literal);
+        }
+        out.push_str(SUFFIX);
+        rest = &after[end + SUFFIX.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Flink-specific syntax these tasks use, normalized before planning.
+///
+/// * `FOR SYSTEM_TIME AS OF <expr>` on a dimension table is a keyed lookup
+///   (the task uses a primary-key dimension), so the temporal clause is
+///   removed and the join is planned as a normal lookup.
+/// * `PROCTIME()` is the statement's processing time; a temporal lookup no
+///   longer reads it, and the planner prunes the column.
+/// * `SPLIT(s, d)` is Flink's split; DataFusion's nested function is
+///   `string_to_array`.
+pub(crate) fn normalize_flink_sql(sql: &str) -> String {
+    fn skip_ws(bytes: &[u8], mut index: usize) -> usize {
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        index
+    }
+    fn read_word(sql: &str, index: usize) -> (&str, usize) {
+        let bytes = sql.as_bytes();
+        if index >= bytes.len()
+            || (!bytes[index].is_ascii_alphabetic() && bytes[index] != b'_')
+        {
+            return ("", index);
+        }
+        let mut end = index + 1;
+        while end < bytes.len()
+            && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+        {
+            end += 1;
+        }
+        (&sql[index..end], end)
+    }
+
+    let bytes = sql.as_bytes();
+    let mut out = String::with_capacity(sql.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let rest = &sql[index..];
+        if rest.starts_with("--") {
+            let end = rest
+                .find('\n')
+                .map_or(bytes.len(), |offset| index + offset + 1);
+            out.push_str(&sql[index..end]);
+            index = end;
+            continue;
+        }
+        if rest.starts_with("/*") {
+            let end = rest
+                .find("*/")
+                .map_or(bytes.len(), |offset| index + offset + 2);
+            out.push_str(&sql[index..end]);
+            index = end;
+            continue;
+        }
+        let byte = bytes[index];
+        if byte == b'\'' || byte == b'"' || byte == b'`' {
+            let start = index;
+            index += 1;
+            while index < bytes.len() {
+                if bytes[index] == byte {
+                    if index + 1 < bytes.len() && bytes[index + 1] == byte {
+                        index += 2;
+                        continue;
+                    }
+                    index += 1;
+                    break;
+                }
+                index += 1;
+            }
+            out.push_str(&sql[start..index]);
+            continue;
+        }
+        if byte.is_ascii_alphabetic() || byte == b'_' {
+            let (word, end) = read_word(sql, index);
+            index = end;
+            if word.eq_ignore_ascii_case("FOR") {
+                let mut cursor = skip_ws(bytes, index);
+                let (system, end) = read_word(sql, cursor);
+                if system.eq_ignore_ascii_case("SYSTEM_TIME") {
+                    cursor = skip_ws(bytes, end);
+                    let (as_word, end) = read_word(sql, cursor);
+                    if as_word.eq_ignore_ascii_case("AS") {
+                        cursor = skip_ws(bytes, end);
+                        let (of_word, end) = read_word(sql, cursor);
+                        if of_word.eq_ignore_ascii_case("OF") {
+                            cursor = skip_ws(bytes, end);
+                            let mut depth = 0i32;
+                            while cursor < bytes.len() {
+                                match bytes[cursor] {
+                                    b'(' => depth += 1,
+                                    b')' => {
+                                        if depth == 0 {
+                                            break;
+                                        }
+                                        depth -= 1;
+                                    }
+                                    b',' if depth == 0 => break,
+                                    value
+                                        if value.is_ascii_whitespace() && depth == 0 =>
+                                    {
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                                cursor += 1;
+                            }
+                            if out.chars().last().is_some_and(|c| !c.is_whitespace())
+                                && cursor < bytes.len()
+                                && !bytes[cursor].is_ascii_whitespace()
+                            {
+                                out.push(' ');
+                            }
+                            index = cursor;
+                            continue;
+                        }
+                    }
+                }
+            } else if word.eq_ignore_ascii_case("PROCTIME") {
+                let mut cursor = skip_ws(bytes, index);
+                if cursor < bytes.len() && bytes[cursor] == b'(' {
+                    cursor = skip_ws(bytes, cursor + 1);
+                    if cursor < bytes.len() && bytes[cursor] == b')' {
+                        out.push_str("CURRENT_TIMESTAMP");
+                        index = cursor + 1;
+                        continue;
+                    }
+                }
+            } else if word.eq_ignore_ascii_case("SPLIT") {
+                let cursor = skip_ws(bytes, index);
+                if cursor < bytes.len() && bytes[cursor] == b'(' {
+                    out.push_str("string_to_array");
+                    index = cursor;
+                    continue;
+                }
+            }
+            out.push_str(word);
+            continue;
+        }
+        let ch = sql[index..].chars().next().unwrap();
+        out.push(ch);
+        index += ch.len_utf8();
+    }
+    out
+}
+
 /// Stable definition identity.  FNV-1a over the canonical spec JSON: a change
 /// in columns, keys or aggregate kind changes the hash and triggers a rebuild.
 ///
@@ -731,6 +957,28 @@ pub fn definition_hash(spec: &ViewSpec) -> Result<String> {
         ViewSpec::Join { state_table_id, .. }
         | ViewSpec::LookupJoin { state_table_id, .. } => {
             *state_table_id = None;
+        }
+        // The maintenance state table id is generated; the source definition
+        // identity already covers its shape.
+        ViewSpec::Sink {
+            source_table_id,
+            source_generation,
+            ..
+        } => {
+            *source_table_id = String::new();
+            *source_generation = 0;
+        }
+        // The planner folds `CURRENT_TIMESTAMP` to a literal at analysis
+        // time.  It is a value, not a shape, so normalize it before hashing.
+        ViewSpec::Row { output_exprs, .. } => {
+            for expression in output_exprs {
+                *expression = normalize_current_timestamp(expression);
+            }
+        }
+        ViewSpec::MultiAgg { aggregates, .. } => {
+            for aggregate in aggregates {
+                aggregate.call = normalize_current_timestamp(&aggregate.call);
+            }
         }
         // The rejection reason depends on the analyzer's message, not on the
         // view's meaning.
@@ -942,12 +1190,42 @@ pub(crate) fn plan_label(plan: &LogicalPlan) -> &'static str {
         LogicalPlan::TableScan(_) => "a table scan",
         LogicalPlan::SubqueryAlias(_) => "a subquery alias",
         LogicalPlan::Subquery(_) => "a subquery",
+        LogicalPlan::Unnest(_) => "UNNEST",
         LogicalPlan::Values(_) => "VALUES",
         LogicalPlan::Repartition(_) => "a repartition",
         LogicalPlan::EmptyRelation(_) => "an empty relation",
         _ => "an unsupported plan node",
     }
 }
+
+/// Whether the plan contains an `Unnest` node, including inside an embedded
+/// lateral/correlated subquery.
+fn plan_contains_unnest(plan: &LogicalPlan) -> bool {
+    let mut found = false;
+    let _ = plan.apply_with_subqueries(|node| {
+        if matches!(node, LogicalPlan::Unnest(_)) {
+            found = true;
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    found
+}
+
+/// UNNEST is not an incremental shape: the expanded rows need a stable
+/// element position, which neither DataFusion's `Unnest` nor its SQL
+/// `WITH ORDINALITY` form provides.  The supported migration expands the
+/// array upstream into a keyed table.
+///
+/// This is a hard error (no [`UnsupportedShape`] attachment): silently
+/// falling back to a full recompute is not acceptable for a fanout operator.
+pub(crate) fn unnest_unsupported() -> rootcause::Report {
+    rootcause::report!(
+        "UNNEST is not maintained incrementally: expand the array upstream \
+         into a keyed table with (parent_key..., element_index, element_value)"
+    )
+}
+
 pub(crate) fn unsupported(what: impl std::fmt::Display) -> rootcause::Report {
     rootcause::report!("unsupported incremental view shape: {what}")
         .attach(UnsupportedShape)
@@ -1292,6 +1570,24 @@ mod tests {
             normalized(Some(output_exprs[1].as_str())).as_deref(),
             Some("v + 1 * 2")
         );
+    }
+
+    #[tokio::test]
+    async fn analyzes_computed_unique_chain_output_as_a_derived_join() {
+        let tables = vec![source_table("a"), source_table("b"), source_table("c")];
+        let error = analyze_multi(
+            "select a.k, a.v + b.v + c.v as total \
+             from a join b on a.k = b.k join c on b.k = c.k",
+            tables,
+        )
+        .await
+        .unwrap_err();
+        let source = error
+            .attachments()
+            .iter()
+            .find_map(|attachment| attachment.downcast_inner::<DerivedSource>())
+            .expect("a derived join source");
+        assert!(matches!(source.plan, LogicalPlan::Join(_)));
     }
 
     #[tokio::test]
@@ -1755,14 +2051,98 @@ mod tests {
             .await
             .is_err()
         );
+        // DataFusion coerces a mismatched branch value to the union's output
+        // type (`v` becomes a string here), so this one is maintained; the
+        // missing-key branch above remains the rejection check.
+    }
+
+    #[test]
+    fn normalizes_flink_temporal_and_function_syntax() {
+        let sql = "select b.*, proctime() as p from t b \n\
+             left join dim FOR SYSTEM_TIME AS OF b.p d on b.k = d.k \n\
+             cross join unnest(split(b.items, ',')) as u(item)";
+        let normalized = normalize_flink_sql(sql);
         assert!(
-            analyze_multi(
-                "select k, g from a union all select k, v from b",
-                vec![left, right]
+            normalized.contains("CURRENT_TIMESTAMP as p"),
+            "{normalized}"
+        );
+        assert!(normalized.contains("left join dim"), "{normalized}");
+        assert!(normalized.contains("d on b.k = d.k"), "{normalized}");
+        assert!(
+            normalized.contains("string_to_array(b.items, ',')"),
+            "{normalized}"
+        );
+        assert!(!normalized.to_ascii_uppercase().contains("FOR SYSTEM_TIME"));
+        assert!(!normalized.to_ascii_uppercase().contains("PROCTIME"));
+        assert!(!normalized.to_ascii_uppercase().contains("SPLIT("));
+
+        // String literals and comments are untouched.
+        let literal = "select 'FOR SYSTEM_TIME AS OF x', split -- proctime()\n";
+        assert_eq!(normalize_flink_sql(literal), literal);
+    }
+
+    #[tokio::test]
+    async fn rejects_unnest_with_upstream_expansion_guidance() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new(
+                "items",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                true,
+            ),
+        ]));
+        let table = IvmTable {
+            table_id: "table_src".to_string(),
+            table_name: "src".to_string(),
+            namespace: "default".to_string(),
+            table_path: "file:///tmp/src".to_string(),
+            schema: schema.clone(),
+            range_partition_columns: Vec::new(),
+            primary_keys: vec!["k".to_string()],
+            bucket_columns: Vec::new(),
+            hash_bucket_num: "1".to_string(),
+            cdc_column: None,
+            file_format: PhysicalFormat::Parquet,
+            allow_fallback: true,
+        };
+        let ctx = SessionContext::new();
+        let mem = MemTable::try_new(schema, vec![vec![]]).unwrap();
+        ctx.register_table("src", Arc::new(mem)).unwrap();
+        let frame = ctx
+            .table("src")
+            .await
+            .unwrap()
+            .unnest_columns(&["items"])
+            .unwrap();
+        let tables = HashMap::from([("src".to_string(), table)]);
+        let error = analyze_select(&frame.logical_plan().clone(), &tables, &request())
+            .unwrap_err();
+        let message = format!("{error:?}");
+        assert!(message.contains("UNNEST"), "{message}");
+        assert!(message.contains("element_index"), "{message}");
+
+        // The Flink-shaped cross join is planned as a lateral subquery; the
+        // analyzer still recognizes the Unnest inside it.
+        let cross = ctx
+            .sql(
+                "select s.k, item from src s \
+                 cross join unnest(s.items) as u(item)",
             )
             .await
-            .is_err()
-        );
+            .unwrap();
+        let error =
+            analyze_select(cross.logical_plan(), &tables, &request()).unwrap_err();
+        let message = format!("{error:?}");
+        assert!(message.contains("UNNEST"), "{message}");
+        assert!(message.contains("element_index"), "{message}");
+
+        // The executor analyzes the optimized plan; optimization keeps the
+        // lateral subquery's Unnest.
+        let optimized = ctx.state().optimize(cross.logical_plan()).unwrap();
+        let error = analyze_select(&optimized, &tables, &request()).unwrap_err();
+        let message = format!("{error:?}");
+        assert!(message.contains("UNNEST"), "{message}");
+        assert!(message.contains("element_index"), "{message}");
     }
 
     #[tokio::test]

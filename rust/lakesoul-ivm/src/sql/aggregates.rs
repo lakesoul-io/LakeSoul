@@ -594,6 +594,13 @@ fn distinct_split(aggregate: &Aggregate) -> Result<Option<(&Aggregate, String, S
 
 /// The aliases the optimizer hoisted above the aggregate input, mapped to
 /// their expressions.
+///
+/// A projection expression is evaluated against the projection's input, so a
+/// column reference with the alias's own name is not a self-reference:
+/// `CAST(order_no AS Utf8View) AS order_no` and
+/// `CASE WHEN spec_name = 'x' THEN 'x2' ELSE spec_name END AS spec_name` both
+/// read the input column.  Recursion is broken while resolving, not by
+/// dropping the alias.
 fn hoisted_expressions(plan: &LogicalPlan) -> HashMap<String, Expr> {
     let mut exprs = HashMap::new();
     if let LogicalPlan::Projection(projection) = peel(plan) {
@@ -608,6 +615,17 @@ fn hoisted_expressions(plan: &LogicalPlan) -> HashMap<String, Expr> {
 
 /// Replace the hoisted aliases a predicate refers to by their expressions.
 fn resolve_hoisted(expr: &Expr, hoisted: &HashMap<String, Expr>) -> Expr {
+    resolve_hoisted_with(expr, hoisted, &mut std::collections::HashSet::new())
+}
+
+/// Resolve one expression, keeping a stack of aliases currently being
+/// expanded.  A reference to an alias already on the stack is a reference to
+/// the projection's input column of that name, so it stays a column.
+fn resolve_hoisted_with(
+    expr: &Expr,
+    hoisted: &HashMap<String, Expr>,
+    active: &mut std::collections::HashSet<String>,
+) -> Expr {
     expr.clone()
         .transform_down(|node| {
             // The optimizer wraps the hoisted column in a display alias.
@@ -617,8 +635,13 @@ fn resolve_hoisted(expr: &Expr, hoisted: &HashMap<String, Expr>) -> Expr {
             }
             if let Expr::Column(column) = inner
                 && let Some(hoisted_expr) = hoisted.get(&column.name)
+                && active.insert(column.name.clone())
             {
-                return Ok(Transformed::yes(hoisted_expr.clone()));
+                let resolved = resolve_hoisted_with(hoisted_expr, hoisted, active);
+                active.remove(&column.name);
+                // The replacement is already fully resolved; do not expand
+                // its input-column references again.
+                return Ok(Transformed::new(resolved, true, TreeNodeRecursion::Jump));
             }
             Ok(Transformed::no(node))
         })
@@ -920,6 +943,8 @@ fn analyze_grouping_sets(
             &group_keys,
             source,
             &hoisted_expressions(&aggregate.input),
+            projection,
+            request.derived,
         )?;
         if aggregates.is_empty() {
             return Err(unsupported(
@@ -1195,8 +1220,10 @@ pub(super) fn analyze_aggregate(
         }
         match inner {
             Expr::Column(column) if hoisted_exprs.contains_key(&column.name) => {
-                let name = alias
-                    .ok_or_else(|| unsupported("GROUP BY expressions need an alias"))?;
+                // A bare DISTINCT aggregate has no projection above it; its
+                // output field keeps the input column name, so that name is
+                // the group key.
+                let name = alias.unwrap_or_else(|| column.name.clone());
                 let resolved = resolve_hoisted(inner, &hoisted_exprs);
                 group_keys.push(name);
                 group_exprs.push(render_filter(&resolved)?);
@@ -1314,6 +1341,7 @@ pub(super) fn analyze_aggregate(
     if first_value || (needed.len() > 1 && !single_family_shapes(&needed)) {
         return analyze_multi_agg(
             aggregate,
+            projection,
             group_keys,
             group_exprs,
             having_exprs,
@@ -2552,15 +2580,118 @@ fn parse_multi_aggregates(
     group_keys: &[String],
     source: &IvmTable,
     hoisted: &HashMap<String, Expr>,
+    projection: Option<&Projection>,
+    derived: bool,
 ) -> Result<Vec<(String, String, DataType)>> {
-    let mut aggregates: Vec<(String, String, DataType)> = Vec::new();
-    let mut names: Vec<String> = Vec::new();
-    for expr in &aggregate.aggr_expr {
+    let mut parsed: Vec<(String, String, Option<String>, DataType)> = Vec::new();
+    // The projection above the aggregate references each raw aggregate output
+    // by its plan column name (`sum(items.num)`) and may alias it
+    // (`AS net_num`).  Map that output name to the select alias so a computed
+    // aggregate step materializes the name the outer plan uses.
+    let offset = aggregate
+        .schema
+        .fields()
+        .len()
+        .saturating_sub(aggregate.aggr_expr.len());
+    let aggregate_fields = aggregate
+        .schema
+        .fields()
+        .iter()
+        .skip(offset)
+        .map(|field| field.name().clone())
+        .collect::<Vec<_>>();
+    // Raw aggregate outputs are selected as plain columns above the aggregate
+    // (`sum(items.num) AS net_num`); a plain column that is not a group key is
+    // therefore an aggregate output, in aggregate order.  This positional
+    // view is robust when the plan normalizes the aggregate argument.
+    let positional_aliases = projection
+        .map(|projection| {
+            projection
+                .expr
+                .iter()
+                .filter_map(|selected| {
+                    let Expr::Column(column) = strip_alias(selected) else {
+                        return None;
+                    };
+                    if group_keys.contains(&column.name) {
+                        return None;
+                    }
+                    Some(match selected {
+                        Expr::Alias(alias) => Some(alias.name.clone()),
+                        _ => None,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    // A plain aggregate output may be wrapped in a cast above the aggregate
+    // (`CAST(sum(v) AS DECIMAL(18,6)) AS total`), so unwrap both aliases and
+    // casts before matching the plan column name.
+    fn output_alias(selected: &Expr) -> Option<(&str, String)> {
+        let Expr::Alias(alias) = selected else {
+            return None;
+        };
+        let mut inner = alias.expr.as_ref();
+        while let Expr::Alias(nested) = inner {
+            inner = &nested.expr;
+        }
+        while let Expr::Cast(cast) = inner {
+            inner = cast.expr.as_ref();
+        }
+        let Expr::Column(column) = inner else {
+            return None;
+        };
+        Some((column.name.as_str(), alias.name.clone()))
+    }
+    let selected_aliases = projection
+        .map(|projection| {
+            projection
+                .expr
+                .iter()
+                .filter_map(output_alias)
+                .map(|(column, alias)| (column.to_string(), alias))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    // A projection that wraps some aggregate outputs in a cast has fewer
+    // plain-column entries than aggregates; the positional mapping would then
+    // shift every later alias.  Only trust it when it covers exactly the
+    // aggregate list.
+    let positional_aliases = if positional_aliases.len() == aggregate.aggr_expr.len() {
+        positional_aliases
+    } else {
+        Vec::new()
+    };
+    for (aggregate_index, expr) in aggregate.aggr_expr.iter().enumerate() {
+        let alias = positional_aliases
+            .get(aggregate_index)
+            .cloned()
+            .flatten()
+            // The projection alias is the user's select alias; DataFusion also
+            // wraps a non-trivial aggregate in a generated expression-text
+            // alias, which must not win over the select alias.
+            .or_else(|| {
+                aggregate_fields
+                    .get(aggregate_index)
+                    .and_then(|field| selected_aliases.get(field))
+                    .cloned()
+            })
+            .or_else(|| match expr {
+                Expr::Alias(alias) => Some(alias.name.clone()),
+                _ => None,
+            });
         let inner = strip_alias(expr);
         let Expr::AggregateFunction(function) = inner else {
             return Err(unsupported("non-aggregate expression in the select list"));
         };
         let name = function.func.name();
+        // The planner gives an unaliased `COUNT(*)` the display name
+        // `count(*)`; keep the canonical `count` column in that case.
+        let alias = alias.filter(|alias| {
+            !(name == "count"
+                && !function.params.distinct
+                && matches!(alias.as_str(), "count(*)" | "count(1)"))
+        });
         if function.params.filter.is_some() {
             return Err(unsupported(format!(
                 "aggregate FILTER over {name} is not maintained"
@@ -2613,7 +2744,7 @@ fn parse_multi_aggregates(
         if name == "count" && function.params.args.len() > 1 {
             return Err(unsupported("COUNT(...) needs a single argument"));
         }
-        let column = if name == "count"
+        let canonical = if name == "count"
             && !function.params.distinct
             && matches!(call.as_str(), "count(1)" | "count(*)")
         {
@@ -2632,12 +2763,6 @@ fn parse_multi_aggregates(
                 format!("{name}_{labels}")
             }
         };
-        if names.contains(&column) {
-            return Err(unsupported(format!(
-                "aggregate column {column} is materialized twice; use distinct arguments"
-            )));
-        }
-        names.push(column.clone());
         // The runtime evaluates the rendered call over the source columns, so
         // the result type is derived from the call and the source schema.  A
         // derived step's plan may type a column differently (for example
@@ -2645,6 +2770,31 @@ fn parse_multi_aggregates(
         // Int64).
         let data_type = expression_type(&source.schema, &call)?.0;
         encode_data_type(&data_type)?;
+        parsed.push((call, canonical, alias, data_type));
+    }
+    // Canonical names are the public layout.  A derived step uses the select
+    // aliases so the outer plan's references resolve after materialization,
+    // and duplicate canonical names always need aliases (two conditional
+    // sums otherwise both become `sum_value`).
+    let mut canonical_counts: HashMap<String, usize> = HashMap::new();
+    for (_, canonical, _, _) in &parsed {
+        *canonical_counts.entry(canonical.clone()).or_default() += 1;
+    }
+    let mut aggregates = Vec::with_capacity(parsed.len());
+    let mut names: Vec<String> = Vec::with_capacity(parsed.len());
+    for (call, canonical, alias, data_type) in parsed {
+        let duplicate = canonical_counts.get(&canonical).copied().unwrap_or(0) > 1;
+        let column = if duplicate || derived {
+            alias.unwrap_or(canonical)
+        } else {
+            canonical
+        };
+        if names.contains(&column) {
+            return Err(unsupported(format!(
+                "aggregate column {column} is materialized twice; use distinct aliases"
+            )));
+        }
+        names.push(column.clone());
         aggregates.push((call, column, data_type));
     }
     Ok(aggregates)
@@ -2670,6 +2820,23 @@ fn unsupported_computed_output(expr: &Expr) -> Option<&'static str> {
     kind
 }
 
+/// The column name under one or more casts (`CAST(CAST(col AS t1) AS t2)`).
+fn cast_wrapped_column(expr: &Expr) -> Option<&str> {
+    let mut inner = expr;
+    let mut casted = false;
+    while let Expr::Cast(cast) = inner {
+        inner = cast.expr.as_ref();
+        casted = true;
+    }
+    if !casted {
+        return None;
+    }
+    match inner {
+        Expr::Column(column) => Some(column.name.as_str()),
+        _ => None,
+    }
+}
+
 /// A computed output above an aggregate: the general multi-aggregate view
 /// keeps every raw aggregate column and appends one column per computed select
 /// expression, so the projection is recomputed with the groups.
@@ -2685,8 +2852,14 @@ fn analyze_computed_agg(
     filter: Option<String>,
     request: &AnalyzeRequest,
 ) -> Result<ViewSpec> {
-    let mut aggregates =
-        parse_multi_aggregates(aggregate, &group_keys, source, hoisted_exprs)?;
+    let mut aggregates = parse_multi_aggregates(
+        aggregate,
+        &group_keys,
+        source,
+        hoisted_exprs,
+        Some(projection),
+        request.derived,
+    )?;
     if aggregates.is_empty() {
         return Err(unsupported(
             "a computed aggregate output needs an aggregate function",
@@ -2718,6 +2891,20 @@ fn analyze_computed_agg(
             );
         }
     }
+    // The plan field name of each raw aggregate output and the column the
+    // view materializes it under.
+    let materialized_by_raw = aggregate
+        .aggr_expr
+        .iter()
+        .enumerate()
+        .filter_map(|(index, _)| {
+            aggregate
+                .schema
+                .fields()
+                .get(offset + index)
+                .map(|field| (field.name().clone(), names[index].clone()))
+        })
+        .collect::<HashMap<_, _>>();
     for (index, expr) in projection.expr.iter().enumerate() {
         let inner = strip_alias(expr);
         // A group key or a selected aggregate is already materialized.
@@ -2737,6 +2924,19 @@ fn analyze_computed_agg(
             return Err(unsupported("a computed aggregate output needs an alias"));
         };
         let column = alias.name.clone();
+        // `CAST(sum(v) AS DECIMAL(18,6)) AS total` only re-types an output
+        // the view already materializes under the same name.
+        if let Some(raw) = cast_wrapped_column(inner) {
+            let group_column = aggregate.group_expr.iter().any(|group| {
+                matches!(strip_alias(group), Expr::Column(inner) if inner.name == raw)
+            });
+            if names.contains(&raw.to_string())
+                || group_column
+                || materialized_by_raw.get(raw) == Some(&column)
+            {
+                continue;
+            }
+        }
         if names.contains(&column) {
             return Err(unsupported(format!(
                 "computed aggregate output {column} is materialized twice"
@@ -2933,6 +3133,8 @@ fn analyze_having_aggregate(
         &group_keys,
         source,
         &hoisted_expressions(&aggregate.input),
+        None,
+        request.derived,
     )?;
     if aggregates.is_empty() {
         return Err(unsupported(
@@ -3158,6 +3360,7 @@ pub(super) fn analyze_having_join(
 #[allow(clippy::too_many_arguments)]
 fn analyze_multi_agg(
     aggregate: &Aggregate,
+    projection: Option<&Projection>,
     group_keys: Vec<String>,
     group_exprs: Vec<String>,
     having_exprs: &[Expr],
@@ -3170,6 +3373,8 @@ fn analyze_multi_agg(
         &group_keys,
         source,
         &hoisted_expressions(&aggregate.input),
+        projection,
+        request.derived,
     )?;
     if aggregates.is_empty() {
         return Err(unsupported(
@@ -5303,5 +5508,46 @@ mod tests {
         map.insert("src".to_string(), src);
         map.insert("dim".to_string(), dim);
         assert!(analyze_select(&optimized, &map, &request()).is_err());
+    }
+
+    #[tokio::test]
+    async fn keeps_a_case_alias_that_shadows_its_input_column() {
+        // The optimizer hoists the DISTINCT projection above its source and
+        // names the CASE output after the input column it reads.  That is not
+        // a self-reference: the aggregate must group by the CASE expression,
+        // not by the raw column.
+        let analyzed = analyze_optimized(
+            "select distinct k, \
+             case when v = 1 then 2 else v end as v \
+             from src",
+        )
+        .await
+        .unwrap();
+        let ViewSpec::SumCount {
+            group_keys,
+            group_exprs,
+            ..
+        } = analyzed.spec
+        else {
+            panic!("expected a sum/count spec");
+        };
+        assert_eq!(group_keys, vec!["k".to_string(), "v".to_string()]);
+        assert_eq!(group_exprs.len(), 2, "{group_exprs:?}");
+        assert_eq!(group_exprs[0], "k");
+        assert!(
+            group_exprs[1].to_ascii_uppercase().contains("CASE"),
+            "{group_exprs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolves_a_self_named_cast_without_recursing() {
+        // The projection input may already provide the alias's name; expanding
+        // the alias once must stop at the input column instead of looping.
+        let plan = plan("select cast(v as varchar) as v from src").await;
+        let hoisted = hoisted_expressions(&plan);
+        let resolved = resolve_hoisted(&Expr::Column(Column::from_name("v")), &hoisted);
+        let rendered = format!("{resolved}").to_ascii_uppercase();
+        assert!(rendered.contains("CAST"), "{rendered}");
     }
 }

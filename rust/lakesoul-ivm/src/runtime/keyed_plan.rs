@@ -15,7 +15,7 @@
 //! resolves each bucket's state rows by primary key, and the merge plan
 //! computes the next state rows without a driver-side collect or SQL merge.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
 use std::sync::Arc;
 
@@ -391,28 +391,77 @@ pub(crate) fn max_active_tasks() -> usize {
         .max(1)
 }
 
-async fn read_lookup_chunk(
-    table: IvmTable,
-    groups: Vec<PartitionFiles>,
+async fn lookup_streaming_chunk(
+    table: &IvmTable,
+    groups: &[PartitionFiles],
+    chunk: &RecordBatch,
+    state_schema: &SchemaRef,
+    out_schema: &SchemaRef,
+    key: &PkLookupKey,
     filters: Vec<datafusion::prelude::Expr>,
+    multi_match: bool,
+    emit_unmatched: bool,
     gate: Arc<Semaphore>,
-) -> DataFusionResult<Vec<RecordBatch>> {
-    if groups.is_empty() || filters.is_empty() {
-        return Ok(Vec::new());
+) -> DataFusionResult<(Vec<RecordBatch>, usize)> {
+    let contribution_keys = key_rows(chunk, key, state_schema)?;
+    let mut matched: HashSet<Vec<u8>> = HashSet::new();
+    let mut outputs = Vec::new();
+    let mut state_rows = 0usize;
+    let mut state_batches = table
+        .stream_partition_files_filtered(groups.to_vec(), filters, gate.clone())
+        .await
+        .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+    while let Some(batch) = state_batches.recv().await {
+        let batch = batch?;
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        state_rows += batch.num_rows();
+        if !multi_match {
+            for key in key_rows(&batch, &key.for_table(), state_schema)?
+                .into_iter()
+                .flatten()
+            {
+                matched.insert(key);
+            }
+        }
+        let output = lookup_batch(
+            chunk,
+            &[batch],
+            state_schema,
+            out_schema,
+            key,
+            multi_match,
+            false,
+        )?;
+        if output.num_rows() > 0 {
+            outputs.push(output);
+        }
     }
-    let permit = gate.acquire_owned().await.map_err(|error| {
-        DataFusionError::Execution(format!("state lookup gate closed: {error}"))
-    })?;
-    let joined = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        lakesoul_io::session::GLOBAL_RUNTIME
-            .block_on(table.read_partition_files_filtered(groups, filters))
-    })
-    .await
-    .map_err(|error| {
-        DataFusionError::Execution(format!("state lookup task failed: {error}"))
-    })?;
-    joined.map_err(|error| DataFusionError::Execution(error.to_string()))
+    if emit_unmatched && !multi_match {
+        let mask = arrow::array::BooleanArray::from(
+            contribution_keys
+                .iter()
+                .map(|key| key.as_ref().is_none_or(|key| !matched.contains(key)))
+                .collect::<Vec<_>>(),
+        );
+        let unmatched = arrow::compute::filter_record_batch(chunk, &mask)?;
+        if unmatched.num_rows() > 0 {
+            let output = lookup_batch(
+                &unmatched,
+                &[],
+                state_schema,
+                out_schema,
+                key,
+                false,
+                true,
+            )?;
+            if output.num_rows() > 0 {
+                outputs.push(output);
+            }
+        }
+    }
+    Ok((outputs, state_rows))
 }
 
 /// Split state file groups into the hash buckets the writer used.
@@ -626,15 +675,21 @@ fn key_filter_exprs(
             {
                 return Ok(PkFilters::ScanAll(vec![lit(true)]));
             }
-            let chosen = values_by_column
-                .into_iter()
-                .enumerate()
-                .min_by_key(|(_, values)| values.len())
-                .expect("composite key has at least one column");
-            Ok(PkFilters::Pushdown(vec![
-                col(table_columns[chosen.0].as_str())
-                    .in_list(chosen.1.into_iter().map(lit).collect(), false),
-            ]))
+            // Apply all key columns, not only the shortest IN list.  The
+            // reader still performs the exact Arrow-row match, but the
+            // conjunctive filters keep the state rows read for a composite
+            // chunk close to the contribution cardinality.
+            Ok(PkFilters::Pushdown(
+                values_by_column
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(_, values)| !values.is_empty())
+                    .map(|(index, values)| {
+                        col(table_columns[index].as_str())
+                            .in_list(values.into_iter().map(lit).collect(), false)
+                    })
+                    .collect(),
+            ))
         }
     }
 }
@@ -1019,12 +1074,13 @@ impl ExecutionPlan for IvmPkLookupExec {
         let emit_unmatched = self.emit_unmatched;
         let stream =
             futures::stream::try_unfold((input, groups), move |(mut input, groups)| {
+                let gate = gate.clone();
                 let table = table.clone();
                 let key = key.clone();
                 let state_schema = state_schema.clone();
                 let out_schema = out_schema.clone();
-                let gate = gate.clone();
                 async move {
+                    let gate = gate.clone();
                     loop {
                         let batch = match input.next().await {
                             None => return Ok::<_, DataFusionError>(None),
@@ -1035,70 +1091,32 @@ impl ExecutionPlan for IvmPkLookupExec {
                         let started = std::time::Instant::now();
                         let mut outputs = Vec::new();
                         let mut state_rows = 0usize;
-                        let columns_key = matches!(&key, PkLookupKey::Columns { .. });
-                        // Real-column keys build bounded IN lists (or fall
-                        // back to one bucket scan), so one read for the whole
-                        // contribution batch is enough.  Binary side-state
-                        // keys keep chunking because their IN list is not
-                        // bounded.
-                        let batch_filters = match key_filter_exprs(&batch, &key)? {
-                            PkFilters::ScanAll(filters) => Some(filters),
-                            PkFilters::Pushdown(filters) if columns_key => Some(filters),
-                            PkFilters::Pushdown(_) => None,
-                        };
-                        if let Some(filters) = batch_filters {
-                            let state_batches = read_lookup_chunk(
-                                table.clone(),
-                                groups.clone(),
-                                filters,
-                                gate.clone(),
-                            )
-                            .await?;
-                            state_rows = state_batches
-                                .iter()
-                                .map(RecordBatch::num_rows)
-                                .sum::<usize>();
-                            outputs.push(lookup_batch(
-                                &batch,
-                                &state_batches,
+                        let mut chunks = 0usize;
+                        for offset in (0..batch.num_rows()).step_by(PK_LOOKUP_CHUNK_ROWS)
+                        {
+                            let length =
+                                PK_LOOKUP_CHUNK_ROWS.min(batch.num_rows() - offset);
+                            let chunk = batch.slice(offset, length);
+                            let filters = match key_filter_exprs(&chunk, &key)? {
+                                PkFilters::Pushdown(filters)
+                                | PkFilters::ScanAll(filters) => filters,
+                            };
+                            let (mut found, rows) = lookup_streaming_chunk(
+                                &table,
+                                &groups,
+                                &chunk,
                                 &state_schema,
                                 &out_schema,
                                 &key,
+                                filters,
                                 multi_match,
                                 emit_unmatched,
-                            )?);
-                        } else {
-                            for offset in
-                                (0..batch.num_rows()).step_by(PK_LOOKUP_CHUNK_ROWS)
-                            {
-                                let length =
-                                    PK_LOOKUP_CHUNK_ROWS.min(batch.num_rows() - offset);
-                                let chunk = batch.slice(offset, length);
-                                let filters = match key_filter_exprs(&chunk, &key)? {
-                                    PkFilters::Pushdown(filters)
-                                    | PkFilters::ScanAll(filters) => filters,
-                                };
-                                let state_batches = read_lookup_chunk(
-                                    table.clone(),
-                                    groups.clone(),
-                                    filters,
-                                    gate.clone(),
-                                )
-                                .await?;
-                                state_rows += state_batches
-                                    .iter()
-                                    .map(RecordBatch::num_rows)
-                                    .sum::<usize>();
-                                outputs.push(lookup_batch(
-                                    &chunk,
-                                    &state_batches,
-                                    &state_schema,
-                                    &out_schema,
-                                    &key,
-                                    multi_match,
-                                    emit_unmatched,
-                                )?);
-                            }
+                                gate.clone(),
+                            )
+                            .await?;
+                            state_rows += rows;
+                            outputs.append(&mut found);
+                            chunks += 1;
                         }
                         let output = match outputs.len() {
                             0 => RecordBatch::new_empty(out_schema.clone()),
@@ -1108,6 +1126,7 @@ impl ExecutionPlan for IvmPkLookupExec {
                         tracing::debug!(
                             partition,
                             contribution_rows = batch.num_rows(),
+                            chunks,
                             state_rows,
                             elapsed = ?started.elapsed(),
                             "keyed state lookup batch finished"
@@ -1715,7 +1734,7 @@ mod tests {
     }
 
     #[test]
-    fn composite_key_filters_use_one_selective_in_list() {
+    fn composite_key_filters_use_all_key_columns() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int64, false),
             Field::new("b", DataType::Utf8, false),
@@ -1735,8 +1754,12 @@ mod tests {
         let PkFilters::Pushdown(filters) = key_filter_exprs(&batch, &key).unwrap() else {
             panic!("small composite key should use pushed-down filters");
         };
-        assert_eq!(filters.len(), 1);
-        assert!(format!("{}", filters[0]).contains("IN"));
+        assert_eq!(filters.len(), 2);
+        assert!(
+            filters
+                .iter()
+                .all(|filter| format!("{filter}").contains("IN"))
+        );
     }
 
     #[test]

@@ -880,6 +880,153 @@ fn multi_window_rebuild_sql(view: &MultiWindowView, epoch: i64) -> String {
     )
 }
 
+const IVM_MW_PARTITION: &str = "__ivm_partition_key";
+const MULTI_WINDOW_KEYED_MAX_ROWS: u64 = 100_000;
+
+/// A temporary on-disk parquet table used to avoid collecting a keyed frame
+/// into the driver.  Registration is per SessionContext; the files are removed
+/// when the guard drops after SQL execution.
+struct StagedFrame {
+    dir: std::path::PathBuf,
+}
+
+impl Drop for StagedFrame {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+async fn stage_frame(
+    context: &SessionContext,
+    name: &str,
+    frame: DataFrame,
+) -> Result<StagedFrame> {
+    let dir = std::env::temp_dir().join(format!(
+        "lakesoul-ivm-stage-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("data.parquet");
+    let uri = format!("file://{}", path.display());
+    let schema = frame.schema().as_arrow().clone();
+    if let Err(error) = frame
+        .write_parquet(
+            &uri,
+            datafusion::dataframe::DataFrameWriteOptions::new(),
+            None,
+        )
+        .await
+    {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(error.into());
+    }
+    if let Err(error) = context
+        .register_parquet(
+            name,
+            &uri,
+            datafusion::prelude::ParquetReadOptions {
+                schema: Some(&schema),
+                ..Default::default()
+            },
+        )
+        .await
+    {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(error.into());
+    }
+    Ok(StagedFrame { dir })
+}
+
+fn multi_window_partition_specs(view: &MultiWindowView) -> Vec<Vec<String>> {
+    let mut specs: Vec<Vec<String>> = Vec::new();
+    for group in &view.windows {
+        if !specs.iter().any(|spec| spec == &group.partition_keys) {
+            specs.push(group.partition_keys.clone());
+        }
+    }
+    specs
+}
+
+fn multi_window_index_schema(source: &IvmTable) -> Result<SchemaRef> {
+    let mut fields = vec![Arc::new(Field::new(
+        IVM_MW_PARTITION,
+        DataType::Binary,
+        false,
+    ))];
+    for key in &source.primary_keys {
+        let field = source.schema.field_with_name(key)?;
+        fields.push(Arc::new(Field::new(key, field.data_type().clone(), false)));
+    }
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+fn multi_window_index_primary_keys(source: &IvmTable) -> Vec<String> {
+    let mut keys = vec![IVM_MW_PARTITION.to_string()];
+    keys.extend(source.primary_keys.iter().cloned());
+    keys
+}
+
+fn add_multi_window_partition_key(
+    context: &SessionContext,
+    frame: DataFrame,
+    source: &IvmTable,
+    partition_keys: &[String],
+) -> Result<DataFrame> {
+    let encoder = Arc::new(GroupKeyRowEncoder::new(
+        source.schema.as_ref(),
+        partition_keys,
+    )?);
+    let input_types = partition_keys
+        .iter()
+        .map(|key| Ok(source.schema.field_with_name(key)?.data_type().clone()))
+        .collect::<Result<Vec<_>>>()?;
+    let name = format!("ivm_mw_partition_{}", uuid::Uuid::new_v4().simple());
+    let udf_encoder = encoder.clone();
+    let udf = datafusion::logical_expr::create_udf(
+        &name,
+        input_types,
+        DataType::Binary,
+        datafusion::logical_expr::Volatility::Immutable,
+        Arc::new(move |args: &[datafusion::logical_expr::ColumnarValue]| {
+            let arrays = datafusion::logical_expr::ColumnarValue::values_to_arrays(args)?;
+            let rows = udf_encoder.encode_columns(&arrays).map_err(|error| {
+                datafusion::error::DataFusionError::Execution(error.to_string())
+            })?;
+            Ok(datafusion::logical_expr::ColumnarValue::Array(Arc::new(
+                rows,
+            )))
+        }),
+    );
+    let key = udf.call(
+        partition_keys
+            .iter()
+            .map(|key| col(key.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    context.register_udf(udf);
+    Ok(frame.with_column(IVM_MW_PARTITION, key)?)
+}
+
+fn multi_window_state_rows(
+    context: &SessionContext,
+    frame: DataFrame,
+    source: &IvmTable,
+    partition_keys: &[String],
+    kind: &str,
+) -> Result<DataFrame> {
+    let frame = add_multi_window_partition_key(context, frame, source, partition_keys)?;
+    let mut projection = vec![col(IVM_MW_PARTITION)];
+    projection.extend(source.primary_keys.iter().map(|key| col(key.as_str())));
+    Ok(frame
+        .select(projection)?
+        .with_column(IVM_ROW_KINDS_COLUMN, lit(kind))?)
+}
+
 /// Validate that a multi-window view can be maintained.
 fn validate_multi_window_view(view: &MultiWindowView) -> Result<()> {
     if let Some(filter) = &view.filter {
@@ -2489,6 +2636,336 @@ impl IvmRuntime {
             .await
     }
 
+    fn multi_window_index_role(index: usize) -> StateRole {
+        StateRole::MultiWindow(index as u32)
+    }
+
+    async fn ensure_multi_window_index(
+        &self,
+        view: &MultiWindowView,
+        index: usize,
+        spec: &[String],
+    ) -> Result<(IvmTable, Vec<String>, bool)> {
+        let role = Self::multi_window_index_role(index);
+        let schema = multi_window_index_schema(&view.source)?;
+        let keys = multi_window_index_primary_keys(&view.source);
+        if let Some(existing) = self.metadata().get_state(&view.view_id, role).await? {
+            let state = self.open_table_by_id(&existing.table_id).await?;
+            if state.schema == schema && state.primary_keys == keys {
+                let empty = state.current_files(&self.client).await?.is_empty();
+                if empty && !view.source.current_files(&self.client).await?.is_empty() {
+                    let ids = self.sync_multi_window_index(view, &state, spec).await?;
+                    return Ok((state, ids, true));
+                }
+                return Ok((state, Vec::new(), false));
+            }
+            self.metadata()
+                .unregister_state(&view.view_id, role)
+                .await?;
+            let _ = self
+                .client()
+                .drop_table(&state.table_name, &state.namespace)
+                .await;
+        }
+        let mut options = IvmTableOptions::new(
+            format!("{}__ivm_mw_index_{index}", view.mv.table_name),
+            format!("{}__ivm_mw_index_{index}", view.mv.table_path),
+            schema,
+        )
+        .with_namespace(view.mv.namespace.clone())
+        .with_primary_keys(keys)
+        .with_bucket_columns(vec![IVM_MW_PARTITION.to_string()])
+        .with_file_format(view.mv.file_format)
+        .with_cdc_column(IVM_ROW_KINDS_COLUMN);
+        options.hash_bucket_num = view.source.hash_bucket_num.clone();
+        let state = self.create_table(options).await?;
+        self.metadata()
+            .register_state(&view.view_id, role, &state)
+            .await?;
+        let ids = if view.source.current_files(&self.client).await?.is_empty() {
+            Vec::new()
+        } else {
+            self.sync_multi_window_index(view, &state, spec).await?
+        };
+        Ok((state, ids, true))
+    }
+
+    async fn sync_multi_window_index(
+        &self,
+        view: &MultiWindowView,
+        state: &IvmTable,
+        spec: &[String],
+    ) -> Result<Vec<String>> {
+        state.truncate(&self.client).await?;
+        if view.source.current_files(&self.client).await?.is_empty() {
+            return Ok(Vec::new());
+        }
+        let context = refresh_session();
+        let source = apply_side_filter(
+            &context,
+            self.current_table_frame(&context, &view.source)?,
+            &view.source.schema,
+            view.filter.as_deref(),
+        )?;
+        let rows =
+            multi_window_state_rows(&context, source, &view.source, spec, "insert")?;
+        state
+            .append_stream(&self.client, rows.execute_stream().await?)
+            .await
+    }
+
+    async fn apply_multi_window_index_delta(
+        &self,
+        view: &MultiWindowView,
+        state: &IvmTable,
+        spec: &[String],
+        window: &SourceWindow,
+    ) -> Result<Vec<String>> {
+        if window.added_files.is_empty() {
+            return Ok(Vec::new());
+        }
+        let context = refresh_session();
+        let delta =
+            self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
+        let contribution = delta
+            .clone()
+            .select(
+                view.source
+                    .primary_keys
+                    .iter()
+                    .map(|key| col(key.as_str()))
+                    .collect::<Vec<_>>(),
+            )?
+            .distinct()?;
+        let before = self
+            .lookup_source_before_by_pks(&context, &view.source, window, contribution)
+            .await?;
+        let change = change_column(&view.source);
+        let delta = apply_side_filter(
+            &context,
+            filter_deletes(delta, change)?,
+            &view.source.schema,
+            view.filter.as_deref(),
+        )?;
+        let before = apply_side_filter(
+            &context,
+            filter_deletes(before, change)?,
+            &view.source.schema,
+            view.filter.as_deref(),
+        )?;
+        let old =
+            multi_window_state_rows(&context, before, &view.source, spec, "delete")?;
+        let new = multi_window_state_rows(&context, delta, &view.source, spec, "insert")?;
+        use futures::StreamExt;
+        let streams: Vec<
+            std::pin::Pin<
+                Box<
+                    dyn futures::Stream<Item = datafusion::error::Result<RecordBatch>>
+                        + Send,
+                >,
+            >,
+        > = vec![
+            Box::pin(old.execute_stream().await?),
+            Box::pin(new.execute_stream().await?),
+        ];
+        state
+            .append_stream(
+                &self.client,
+                Box::pin(futures::stream::iter(streams).flatten()),
+            )
+            .await
+    }
+
+    async fn multi_window_index_pks(
+        &self,
+        view: &MultiWindowView,
+        state: &IvmTable,
+        keyed: DataFrame,
+        context: &SessionContext,
+        bucket_count: usize,
+        groups: &[Vec<crate::table::PartitionFiles>],
+    ) -> Result<DataFrame> {
+        let provider = super::keyed_plan::IvmLookupTable::columns(
+            keyed,
+            state.clone(),
+            groups.to_vec(),
+            vec![IVM_MW_PARTITION.to_string()],
+            vec![IVM_MW_PARTITION.to_string()],
+            bucket_count,
+            Some(vec![IVM_MW_PARTITION.to_string()]),
+            true,
+        );
+        let frame = context.read_table(Arc::new(provider))?;
+        let projections = view
+            .source
+            .primary_keys
+            .iter()
+            .map(|key| {
+                column_expr(&format!(
+                    "{}{}",
+                    super::keyed_plan::IVM_STATE_COLUMN_PREFIX,
+                    key
+                ))
+                .alias(key.as_str())
+            })
+            .collect::<Vec<_>>();
+        Ok(frame.select(projections)?)
+    }
+
+    async fn multi_window_affected_pks(
+        &self,
+        view: &MultiWindowView,
+        states: &[(IvmTable, Vec<String>)],
+        windows: &[SourceWindow],
+        context: &SessionContext,
+    ) -> Result<Option<DataFrame>> {
+        if states.iter().any(|(_, spec)| spec.is_empty()) {
+            return Ok(None);
+        }
+        let mut affected: Option<DataFrame> = None;
+        for window in windows {
+            if window.added_files.is_empty() {
+                continue;
+            }
+            let delta = self.groups_table_frame(
+                context,
+                &view.source,
+                window.added_files.clone(),
+            )?;
+            let contribution = delta
+                .clone()
+                .select(
+                    view.source
+                        .primary_keys
+                        .iter()
+                        .map(|key| col(key.as_str()))
+                        .collect::<Vec<_>>(),
+                )?
+                .distinct()?;
+            let before = self
+                .lookup_source_before_by_pks(context, &view.source, window, contribution)
+                .await?;
+            let change = change_column(&view.source);
+            let delta = apply_side_filter(
+                context,
+                filter_deletes(delta, change)?,
+                &view.source.schema,
+                view.filter.as_deref(),
+            )?;
+            let before = apply_side_filter(
+                context,
+                filter_deletes(before, change)?,
+                &view.source.schema,
+                view.filter.as_deref(),
+            )?;
+            let delta_pks = delta
+                .clone()
+                .select(
+                    view.source
+                        .primary_keys
+                        .iter()
+                        .map(|key| col(key.as_str()))
+                        .collect::<Vec<_>>(),
+                )?
+                .distinct()?;
+            affected = Some(match affected {
+                Some(existing) => existing.union(delta_pks)?,
+                None => delta_pks,
+            });
+            for (state, spec) in states {
+                let bucket_count = state
+                    .hash_bucket_num
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|count| *count > 1)
+                    .unwrap_or(1);
+                let groups = super::keyed_plan::groups_by_bucket(
+                    state.current_groups(&self.client).await?,
+                    bucket_count,
+                );
+                let keys = delta
+                    .clone()
+                    .select(spec.iter().map(|key| col(key.as_str())).collect::<Vec<_>>())?
+                    .distinct()?
+                    .union(before.clone().select(
+                        spec.iter().map(|key| col(key.as_str())).collect::<Vec<_>>(),
+                    )?)?
+                    .distinct()?;
+                let keyed =
+                    add_multi_window_partition_key(context, keys, &view.source, spec)?
+                        .select(vec![col(IVM_MW_PARTITION)])?;
+                let rows = self
+                    .multi_window_index_pks(
+                        view,
+                        state,
+                        keyed,
+                        context,
+                        bucket_count,
+                        &groups,
+                    )
+                    .await?;
+                affected = Some(match affected {
+                    Some(existing) => existing.union(rows)?,
+                    None => rows,
+                });
+            }
+        }
+        let Some(mut current) = affected else {
+            return Ok(None);
+        };
+        let initial = count_frame_rows(current.clone()).await?;
+        if initial > MULTI_WINDOW_KEYED_MAX_ROWS {
+            return Ok(Some(current.distinct()?));
+        }
+        for _ in 0..states.len() {
+            let before_count = count_frame_rows(current.clone()).await?;
+            for (state, spec) in states {
+                let bucket_count = state
+                    .hash_bucket_num
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|count| *count > 1)
+                    .unwrap_or(1);
+                let groups = super::keyed_plan::groups_by_bucket(
+                    state.current_groups(&self.client).await?,
+                    bucket_count,
+                );
+                let source_rows = self
+                    .lookup_source_by_join_keys(
+                        context,
+                        &view.source,
+                        current.clone(),
+                        &view.source.primary_keys,
+                        &view.source.primary_keys,
+                        true,
+                    )
+                    .await?;
+                let keys = source_rows
+                    .select(spec.iter().map(|key| col(key.as_str())).collect::<Vec<_>>())?
+                    .distinct()?;
+                let keyed =
+                    add_multi_window_partition_key(context, keys, &view.source, spec)?
+                        .select(vec![col(IVM_MW_PARTITION)])?;
+                let rows = self
+                    .multi_window_index_pks(
+                        view,
+                        state,
+                        keyed,
+                        context,
+                        bucket_count,
+                        &groups,
+                    )
+                    .await?;
+                current = current.union(rows)?.distinct()?;
+            }
+            let after_count = count_frame_rows(current.clone()).await?;
+            if after_count == before_count || after_count > MULTI_WINDOW_KEYED_MAX_ROWS {
+                break;
+            }
+        }
+        Ok(Some(current.distinct()?))
+    }
+
     /// Refresh a multi-window view: every clause is recomputed over the current
     /// source state for the rows whose identities changed, and the affected MV
     /// rows are rewritten.
@@ -2517,13 +2994,87 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        let specs = multi_window_partition_specs(view);
+        let bootstrap = window
+            .before_versions
+            .values()
+            .all(|version| version.is_none());
+        let mut states = Vec::new();
+        if specs.iter().all(|spec| !spec.is_empty()) {
+            for (index, spec) in specs.iter().enumerate() {
+                let (state, mut ids, synced) =
+                    self.ensure_multi_window_index(view, index, spec).await?;
+                let mut synced = synced;
+                if bootstrap && !synced {
+                    ids.extend(self.sync_multi_window_index(view, &state, spec).await?);
+                    synced = true;
+                }
+                if !synced {
+                    ids.extend(
+                        self.apply_multi_window_index_delta(view, &state, spec, &window)
+                            .await?,
+                    );
+                }
+                commit_ids.extend(ids);
+                states.push((state, spec.clone()));
+            }
+            self.checkpoint_epoch_states(&record).await?;
+        }
 
         let context = refresh_session();
         let delta =
-            self.groups_table_frame(&context, &view.source, window.added_files)?;
+            self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
         context.register_table("delta", delta.into_view())?;
-        context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
-        context.register_table("src", Arc::new(self.table_provider(&view.source)))?;
+        let affected = self
+            .multi_window_affected_pks(
+                view,
+                &states,
+                std::slice::from_ref(&window),
+                &context,
+            )
+            .await?;
+        let mut use_keyed = !bootstrap
+            && view.mv.primary_keys == view.source.primary_keys
+            && affected.is_some();
+        if use_keyed {
+            let count = count_frame_rows(
+                affected
+                    .clone()
+                    .ok_or_else(|| report!("multi-window affected keys are missing"))?,
+            )
+            .await?;
+            use_keyed = count <= MULTI_WINDOW_KEYED_MAX_ROWS;
+        }
+        let mut staged = Vec::new();
+        if use_keyed {
+            let affected = affected
+                .ok_or_else(|| report!("multi-window affected keys are missing"))?;
+            let src = self
+                .lookup_source_by_join_keys(
+                    &context,
+                    &view.source,
+                    affected.clone(),
+                    &view.source.primary_keys,
+                    &view.source.primary_keys,
+                    true,
+                )
+                .await?;
+            let mv = self
+                .lookup_source_by_join_keys(
+                    &context,
+                    &view.mv,
+                    affected,
+                    &view.source.primary_keys,
+                    &view.mv.primary_keys,
+                    true,
+                )
+                .await?;
+            staged.push(stage_frame(&context, "src", src).await?);
+            staged.push(stage_frame(&context, "mv", mv).await?);
+        } else {
+            context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
+            context.register_table("src", Arc::new(self.table_provider(&view.source)))?;
+        }
         let frame = context.sql(&multi_window_refresh_sql(view, epoch)).await?;
         commit_ids.extend(
             view.mv
@@ -2575,6 +3126,18 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        let specs = multi_window_partition_specs(view);
+        if specs.iter().all(|spec| !spec.is_empty()) {
+            for (index, spec) in specs.iter().enumerate() {
+                let (state, mut ids, synced) =
+                    self.ensure_multi_window_index(view, index, spec).await?;
+                if !synced {
+                    ids.extend(self.sync_multi_window_index(view, &state, spec).await?);
+                }
+                commit_ids.extend(ids);
+            }
+            self.checkpoint_epoch_states(&record).await?;
+        }
 
         let context = refresh_session();
         context.register_table(

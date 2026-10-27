@@ -360,9 +360,19 @@ pub(super) fn try_analyze_top_k(
             {
                 int_literal(right)
             }
+            // `ROW_NUMBER() = 1` is the same top-1 predicate as `<= 1`; the
+            // optimizer emits either form.
+            (Expr::Column(column), Operator::Eq, right)
+                if &column.name == rank_column =>
+            {
+                int_literal(right)
+            }
             (left, Operator::GtEq, Expr::Column(column))
                 if &column.name == rank_column =>
             {
+                int_literal(left)
+            }
+            (left, Operator::Eq, Expr::Column(column)) if &column.name == rank_column => {
                 int_literal(left)
             }
             _ => None,
@@ -432,7 +442,9 @@ fn window_function_spec(
     let mut order_by: Option<Vec<String>> = None;
     let mut columns = Vec::with_capacity(window.window_expr.len());
     for expr in &window.window_expr {
-        let Expr::WindowFunction(function) = expr else {
+        // The optimizer keeps a generated display alias on a window function
+        // the projection references by name.
+        let Expr::WindowFunction(function) = strip_alias(expr) else {
             return Err(unsupported("non-window expression in a window node"));
         };
         let params = &function.params;

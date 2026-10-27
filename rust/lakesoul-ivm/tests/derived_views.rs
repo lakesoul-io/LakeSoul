@@ -14,8 +14,9 @@ use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTable,
-    IvmTableOptions, WindowColumn, WindowFunction, WindowGroupSpec,
+    IVM_COUNT_COLUMN, IVM_EPOCH_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_ROW_KINDS_COLUMN,
+    IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions,
+    WindowColumn, WindowFunction, WindowGroupSpec,
     multi_window_mv_schema_for_with_payload, row_expr_mv_schema_for,
     sum_count_mv_schema_for, top_k_mv_schema_for, window_columns_mv_schema_for,
     window_columns_mv_schema_for_with_payload,
@@ -300,6 +301,174 @@ async fn aggregate_over_join_is_materialized_and_maintained() {
     assert_eq!(
         read_sum_mv(runtime, &mv).await,
         full_recompute(runtime, &fact, &dim).await
+    );
+}
+
+/// The sum-count MV schema of a DISTINCT over a derived join whose computed
+/// key has the same name as the join's payload column.
+fn case_over_join_mv_schema() -> SchemaRef {
+    let join = lakesoul_ivm::wide_keyed_join_view_schema_for(
+        &source_schema(),
+        &source_schema(),
+        &["k".to_string()],
+        &["k".to_string()],
+        &["k".to_string()],
+        &[lakesoul_ivm::JoinOutputColumn {
+            side: lakesoul_ivm::JoinSide::Right,
+            column: "v".to_string(),
+            name: "v".to_string(),
+        }],
+    )
+    .unwrap();
+    lakesoul_ivm::sum_count_groups_mv_schema_for(
+        &join,
+        &["k".to_string(), "v".to_string()],
+        &[
+            "k".to_string(),
+            "CASE WHEN v = 7 THEN 70 ELSE v END".to_string(),
+        ],
+        None,
+        None,
+        false,
+    )
+    .unwrap()
+}
+
+const CASE_STATEMENT: &str = "INSERT INTO {mv} SELECT DISTINCT f.k AS k, \
+    CASE WHEN d.v = 7 THEN 70 ELSE d.v END AS v \
+    FROM {f} f JOIN {d} d ON f.k = d.k";
+
+async fn read_kv_rows(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<(i64, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql(&format!(
+            "select k, v from mv where \"{IVM_ROW_KINDS_COLUMN}\" = 'insert' \
+             order by k, v"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((keys.value(row), values.value(row)));
+        }
+    }
+    rows
+}
+
+async fn full_recompute_case(
+    runtime: &IvmRuntime,
+    fact: &IvmTable,
+    dim: &IvmTable,
+) -> Vec<(i64, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("f", Arc::new(runtime.table_provider(fact)))
+        .unwrap();
+    context
+        .register_table("d", Arc::new(runtime.table_provider(dim)))
+        .unwrap();
+    let batches = context
+        .sql(
+            "select distinct f.k as k, case when d.v = 7 then 70 else d.v end as v \
+             from f join d on f.k = d.k \
+             where f.op <> 'delete' and d.op <> 'delete' order by k, v",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((keys.value(row), values.value(row)));
+        }
+    }
+    rows
+}
+
+#[test_log::test(tokio::test)]
+async fn a_distinct_case_over_a_derived_join_keeps_the_computed_key() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let fact = create_source(&runtime, &dir, &format!("ivm_case_f_{suffix}")).await;
+    let dim = create_source(&runtime, &dir, &format!("ivm_case_d_{suffix}")).await;
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_case_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                case_over_join_mv_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string(), "v".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = CASE_STATEMENT
+        .replace("{mv}", &mv.table_name)
+        .replace("{f}", &fact.table_name)
+        .replace("{d}", &dim.table_name);
+
+    fact.append_batch(
+        runtime.client(),
+        source_batch(&[(1, "a", 10, "insert"), (2, "b", 20, "insert")]),
+    )
+    .await
+    .unwrap();
+    dim.append_batch(
+        runtime.client(),
+        source_batch(&[(1, "x", 7, "insert"), (2, "y", 8, "insert")]),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(
+        read_kv_rows(runtime, &mv).await,
+        full_recompute_case(runtime, &fact, &dim).await
+    );
+
+    // The dimension value moves through the derived join and the CASE must
+    // recompute instead of falling back to the join's raw payload column.
+    dim.append_batch(runtime.client(), source_batch(&[(1, "x", 8, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_kv_rows(runtime, &mv).await,
+        full_recompute_case(runtime, &fact, &dim).await
     );
 }
 
@@ -1198,9 +1367,10 @@ async fn full_full_side_pairs(
     pair_rows(&batches)
 }
 
-/// A computed side projection has no column layout to materialize yet.
+/// A computed projection over a join is materialized as a derived join
+/// step; an operator above it can read the step as a normal keyed source.
 #[test_log::test(tokio::test)]
-async fn a_computed_join_side_is_not_materialized_yet() {
+async fn a_computed_join_side_is_materialized() {
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -1208,20 +1378,333 @@ async fn a_computed_join_side_is_not_materialized_yet() {
     let a = create_source(&runtime, &dir, &format!("ivm_der13_a_{suffix}")).await;
     let b = create_source(&runtime, &dir, &format!("ivm_der13_b_{suffix}")).await;
     let c = create_source(&runtime, &dir, &format!("ivm_der13_c_{suffix}")).await;
-    let mv = create_source(&runtime, &dir, &format!("ivm_der13_mv_{suffix}")).await;
+    let mv_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("sum_v", DataType::Int64, true),
+        Field::new(IVM_COUNT_COLUMN, DataType::Int64, false),
+        Field::new(IVM_NONNULL_COUNT_COLUMN, DataType::Int64, false),
+        Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]));
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_der13_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                mv_schema,
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
     let executor = IvmSqlExecutor::new(runtime);
     let statement = format!(
-        "INSERT INTO {} SELECT a.k, x.w \
-         FROM {} a LEFT JOIN (SELECT b.v * 2 AS w, c.k AS k \
-                              FROM {} b JOIN {} c ON c.g = b.g) x \
-         ON x.k = a.k",
+        "INSERT INTO {} SELECT y.k AS k, SUM(y.w) AS sum_v FROM (\
+           SELECT a.k AS k, x.w AS w FROM {} a JOIN (\
+             SELECT b.v * 2 AS w, c.k AS k FROM {} b JOIN {} c ON c.g = b.g\
+           ) x ON x.k = a.k\
+         ) y GROUP BY y.k",
         mv.table_name, a.table_name, b.table_name, c.table_name
     );
-    let error = executor.execute(&statement).await.unwrap_err().to_string();
-    assert!(
-        error.contains("a table or a plain column projection"),
-        "{error}"
+    let runtime = executor.runtime();
+    a.append_batch(
+        runtime.client(),
+        source_batch(&[(200, "ax", 10, "insert"), (201, "ay", 20, "insert")]),
+    )
+    .await
+    .unwrap();
+    b.append_batch(
+        runtime.client(),
+        source_batch(&[(100, "x", 3, "insert"), (101, "y", 4, "insert")]),
+    )
+    .await
+    .unwrap();
+    c.append_batch(
+        runtime.client(),
+        source_batch(&[(200, "x", 0, "insert"), (201, "y", 0, "insert")]),
+    )
+    .await
+    .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(
+        read_k_sum(executor.runtime(), &mv).await,
+        vec![(200, 6), (201, 8)]
     );
+
+    // The computed join side changes with its source.
+    b.append_batch(runtime.client(), source_batch(&[(100, "x", 5, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_k_sum(executor.runtime(), &mv).await,
+        vec![(200, 10), (201, 8)]
+    );
+
+    // A deleted outer row retracts its aggregate group.
+    a.append_batch(runtime.client(), source_batch(&[(200, "ax", 10, "delete")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(read_k_sum(executor.runtime(), &mv).await, vec![(201, 8)]);
+}
+
+/// A computed aggregate projection is a normal join side: the aggregate
+/// step materializes the computed business key and the join reads it.
+#[test_log::test(tokio::test)]
+async fn a_computed_aggregate_join_side_is_materialized() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = create_source(&runtime, &dir, &format!("ivm_der14_src_{suffix}")).await;
+    let dim_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("biz_key", DataType::Utf8, false),
+        Field::new("w", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let dim = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_der14_dim_{suffix}"),
+                table_path(&dir, "dim"),
+                dim_schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("sum_v", DataType::Int64, true),
+        Field::new(IVM_COUNT_COLUMN, DataType::Int64, false),
+        Field::new(IVM_NONNULL_COUNT_COLUMN, DataType::Int64, false),
+        Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]));
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_der14_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                mv_schema,
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO {} SELECT j.k AS k, SUM(j.amount) AS sum_v FROM (\
+           SELECT a.k AS k, a.sum_v * d.w AS amount \
+           FROM (SELECT k, g || '!' AS biz_key, SUM(v) AS sum_v \
+                 FROM {} GROUP BY k, g) a \
+           JOIN {} d ON d.k = a.k AND d.biz_key = a.biz_key\
+         ) j GROUP BY j.k",
+        mv.table_name, source.table_name, dim.table_name
+    );
+    let runtime = executor.runtime();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 10, "insert"), (2, "b", 20, "insert")]),
+        )
+        .await
+        .unwrap();
+    dim.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            dim_schema,
+            vec![
+                Arc::new(Int64Array::from_iter_values([1_i64, 2])),
+                Arc::new(StringArray::from_iter_values(["a!", "b!"])),
+                Arc::new(Int64Array::from_iter_values([100_i64, 200])),
+                Arc::new(StringArray::from_iter_values(["insert", "insert"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(
+        read_k_sum(executor.runtime(), &mv).await,
+        vec![(1, 1000), (2, 4000)]
+    );
+
+    source
+        .append_batch(runtime.client(), source_batch(&[(1, "a", 12, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_k_sum(executor.runtime(), &mv).await,
+        vec![(1, 1200), (2, 4000)]
+    );
+
+    dim.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("k", DataType::Int64, false),
+                Field::new("biz_key", DataType::Utf8, false),
+                Field::new("w", DataType::Int64, false),
+                Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(Int64Array::from_iter_values([2_i64])),
+                Arc::new(StringArray::from_iter_values(["b!"])),
+                Arc::new(Int64Array::from_iter_values([200_i64])),
+                Arc::new(StringArray::from_iter_values(["delete"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(read_k_sum(executor.runtime(), &mv).await, vec![(1, 1200)]);
+}
+
+/// A `UNION ALL` branch that selects `*` from a derived step hides the
+/// bookkeeping columns and joins the other branch through the visible schema.
+#[test_log::test(tokio::test)]
+async fn a_union_branch_over_a_derived_step_hides_bookkeeping_columns() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = create_source(&runtime, &dir, &format!("ivm_der15_src_{suffix}")).await;
+    let mv_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("g", DataType::Utf8, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new(IVM_SOURCE_COLUMN, DataType::Int32, false),
+        Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]));
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_der15_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                mv_schema,
+            )
+            .with_primary_keys(vec![IVM_SOURCE_COLUMN.to_string(), "k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO {} SELECT u.k, u.g, u.v FROM (\
+           SELECT k, g, v FROM {} \
+           UNION ALL \
+           SELECT * FROM (SELECT k, g, v * 2 AS v FROM {}) d\
+         ) u",
+        mv.table_name, source.table_name, source.table_name
+    );
+    let runtime = executor.runtime();
+    source
+        .append_batch(runtime.client(), source_batch(&[(1, "a", 10, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(
+        read_union_rows(executor.runtime(), &mv).await,
+        vec![(0, 1, 10), (1, 1, 20)]
+    );
+
+    source
+        .append_batch(runtime.client(), source_batch(&[(1, "a", 12, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_union_rows(executor.runtime(), &mv).await,
+        vec![(0, 1, 12), (1, 1, 24)]
+    );
+}
+
+async fn read_union_rows(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<(i32, i64, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql(&format!(
+            "select {source}, k, v from mv order by {source}, k",
+            source = IVM_SOURCE_COLUMN
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let sources = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow_array::Int32Array>()
+            .unwrap();
+        let keys = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let values = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((sources.value(row), keys.value(row), values.value(row)));
+        }
+    }
+    rows
+}
+
+async fn read_k_sum(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<(i64, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql("select k, sum_v from mv order by k")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let sums = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((keys.value(row), sums.value(row)));
+        }
+    }
+    rows
 }
 
 /// The three chain sources: `a LEFT JOIN b LEFT JOIN c`-style fixtures with
@@ -1357,6 +1840,168 @@ fn triple_rows(batches: &[RecordBatch]) -> Vec<(Option<i64>, Option<i64>, Option
         }
     }
     rows
+}
+
+/// A computed select list over a unique lookup chain is materialized as a
+/// derived join step, then the outer projection computes over that step.
+#[test_log::test(tokio::test)]
+async fn a_computed_unique_chain_output_uses_a_derived_join() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let sources = chain_sources(&runtime, "cu").await;
+    let ChainSources {
+        dir,
+        a,
+        b,
+        c,
+        a_schema,
+        b_schema,
+        c_schema,
+    } = &sources;
+    let target_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("total", DataType::Int64, true),
+        Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]));
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_cu_mv_{}", uuid::Uuid::new_v4().simple()),
+                table_path(dir, "mv"),
+                target_schema,
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT a.k, a.av + b.bv + c.cv AS total \
+         FROM {} a LEFT JOIN {} b ON b.b_k = a.k \
+         LEFT JOIN {} c ON c.c_k = b.b_k",
+        mv.table_name, a.table_name, b.table_name, c.table_name
+    );
+    let reference = "select a.k, a.av + b.bv + c.cv as total \
+         from a left join b on b.b_k = a.k left join c on c.c_k = b.b_k \
+         order by a.k";
+
+    a.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            a_schema.clone(),
+            vec![
+                chain_ints(&[1, 2]),
+                chain_ints(&[100, 200]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    b.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            b_schema.clone(),
+            vec![
+                chain_ints(&[1, 2]),
+                chain_ints(&[1, 2]),
+                chain_ints(&[5, 6]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    c.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            c_schema.clone(),
+            vec![
+                chain_ints(&[1, 2]),
+                chain_ints(&[1, 2]),
+                chain_ints(&[7, 8]),
+                chain_ops(&["insert", "insert"]),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let context = SessionContext::new();
+    for (name, table) in [("a", &a), ("b", &b), ("c", &c)] {
+        context
+            .register_table(name, Arc::new(runtime.table_provider(table)))
+            .unwrap();
+    }
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(&mv)))
+        .unwrap();
+    let expected = context
+        .sql(reference)
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let actual = context
+        .sql(&format!(
+            "select k, total from mv where \"{IVM_ROW_KINDS_COLUMN}\" = 'insert' order by k"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let expected = expected
+        .iter()
+        .flat_map(|batch| {
+            (0..batch.num_rows()).map(|row| {
+                (
+                    batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(row),
+                    batch
+                        .column(1)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(row),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let actual = actual
+        .iter()
+        .flat_map(|batch| {
+            (0..batch.num_rows()).map(|row| {
+                (
+                    batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(row),
+                    batch
+                        .column(1)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(row),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
 }
 
 /// A chain whose outermost step is a RIGHT JOIN: the left side (the inner

@@ -381,7 +381,7 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
             })?;
         }
         None => {
-            if view.match_predicate.is_some() || !view.right_keys.is_empty() {
+            if view.match_predicate.is_some() {
                 return Err(report!(
                     "semi/anti view {}: an aggregate predicate without an \
                      aggregate",
@@ -437,10 +437,8 @@ fn semi_anti_left_columns(view: &SemiAntiView) -> Vec<String> {
 /// condition columns, the right primary keys and the change column.
 fn semi_anti_right_columns(view: &SemiAntiView) -> Vec<String> {
     let mut columns = Vec::new();
-    for column in view
-        .join_keys
+    for column in right_join_keys(view)
         .iter()
-        .chain(view.right_keys.iter())
         .chain(
             view.conditions
                 .iter()
@@ -452,7 +450,11 @@ fn semi_anti_right_columns(view: &SemiAntiView) -> Vec<String> {
             columns.push(column.clone());
         }
     }
-    if let Some(change) = change_column(&view.right)
+    if let Some(change) = view
+        .right
+        .cdc_column
+        .as_deref()
+        .filter(|column| view.right.schema.field_with_name(column).is_ok())
         && !columns.iter().any(|column| column == change)
     {
         columns.push(change.to_string());
@@ -732,7 +734,8 @@ fn semi_anti_join(
     let mut on_pairs: Vec<(String, String)> = view
         .join_keys
         .iter()
-        .map(|key| (key.clone(), semi_anti_right_alias(key)))
+        .zip(right_join_keys(view))
+        .map(|(left, right)| (left.clone(), semi_anti_right_alias(right)))
         .collect();
     let mut filter: Option<Expr> = None;
     for condition in &view.conditions {
@@ -851,22 +854,24 @@ impl IvmRuntime {
             && !view.left.primary_keys.is_empty()
             && !view.right.primary_keys.is_empty();
         let left_state = if side_keyed {
-            self.ensure_join_side_state(
+            self.ensure_join_side_state_for_view(
                 &view.view_id,
                 &view.left,
                 &view.join_keys,
                 StateRole::JoinLeft,
+                view.null_safe,
             )
             .await?
         } else {
             None
         };
         let right_state = if side_keyed {
-            self.ensure_join_side_state(
+            self.ensure_join_side_state_for_view(
                 &view.view_id,
                 &view.right,
                 right_join_keys(view),
                 StateRole::JoinRight,
+                view.null_safe,
             )
             .await?
         } else {
@@ -948,7 +953,6 @@ impl IvmRuntime {
         let left_changed = !left_window.added_files.is_empty();
         let right_changed = !right_window.added_files.is_empty();
         let fast_simple = side_keyed
-            && !view.null_safe
             && !view.count_mode
             && view.right_aggregate.is_none()
             && left_changed != right_changed;
@@ -1422,6 +1426,7 @@ impl IvmRuntime {
                     right_join_keys(view),
                     &[],
                     &[],
+                    view.null_safe,
                 )
                 .await?,
             );
@@ -1621,6 +1626,28 @@ impl LeftAggregateView {
                 })
                 .collect::<Result<Vec<_>>>()?,
         })
+    }
+}
+
+/// The probe view used by the shared keyed join helpers for a left aggregate.
+fn left_aggregate_probe(view: &LeftAggregateView) -> JoinView {
+    JoinView {
+        view_id: view.view_id.clone(),
+        left: view.left.clone(),
+        right: view.right.clone(),
+        output: view.mv.clone(),
+        join_keys: view.join_keys.clone(),
+        right_keys: view.right_keys.clone(),
+        key_exprs: JoinKeyExprs::default(),
+        left_value: String::new(),
+        right_value: String::new(),
+        left_filter: view.left_filter.clone(),
+        right_filter: view.right_filter.clone(),
+        pair_filter: None,
+        null_safe: false,
+        output_columns: Vec::new(),
+        state: None,
+        refresh_interval_ms: view.refresh_interval_ms,
     }
 }
 
@@ -2027,69 +2054,173 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        let side_keyed = !view.join_keys.is_empty()
+            && !view.left.primary_keys.is_empty()
+            && !view.right.primary_keys.is_empty();
+        let left_state = if side_keyed {
+            self.ensure_join_side_state_for_view(
+                &view.view_id,
+                &view.left,
+                &view.join_keys,
+                StateRole::JoinLeft,
+                false,
+            )
+            .await?
+        } else {
+            None
+        };
+        let right_state = if side_keyed {
+            self.ensure_join_side_state_for_view(
+                &view.view_id,
+                &view.right,
+                left_aggregate_right_keys(view),
+                StateRole::JoinRight,
+                false,
+            )
+            .await?
+        } else {
+            None
+        };
+        if let Some(state) = &left_state {
+            commit_ids.extend(if state.current_files(&self.client).await?.is_empty() {
+                self.sync_join_side_state(&view.left, state, &view.join_keys, &[])
+                    .await?
+            } else {
+                self.apply_join_side_delta(
+                    &view.left,
+                    state,
+                    &left_window,
+                    &view.join_keys,
+                    &[],
+                )
+                .await?
+            });
+        }
+        if let Some(state) = &right_state {
+            commit_ids.extend(if state.current_files(&self.client).await?.is_empty() {
+                self.sync_join_side_state(
+                    &view.right,
+                    state,
+                    left_aggregate_right_keys(view),
+                    &[],
+                )
+                .await?
+            } else {
+                self.apply_join_side_delta(
+                    &view.right,
+                    state,
+                    &right_window,
+                    left_aggregate_right_keys(view),
+                    &[],
+                )
+                .await?
+            });
+        }
+        self.checkpoint_epoch_states(&record).await?;
 
         let context = refresh_session();
         let left_columns = left_aggregate_left_columns(view)?;
         let right_columns = left_aggregate_right_columns(view, &context)?;
         let left_projection = project_schema(&view.left.schema, &left_columns)?;
         let right_projection = project_schema(&view.right.schema, &right_columns)?;
-        let delta_left = project_frame(
-            self.groups_table_frame(&context, &view.left, left_window.added_files)?,
-            &left_columns,
-        )?;
-        let delta_right = project_frame(
-            self.groups_table_frame(&context, &view.right, right_window.added_files)?,
-            &right_columns,
-        )?;
-        let left_before = filter_deletes(
-            project_frame(
-                self.before_window_table_frame(
-                    &context,
-                    &view.left,
-                    &left_window.before_versions,
-                )
-                .await?,
-                &left_columns,
-            )?,
-            change_column(&view.left),
-        )?;
-        let right_before = filter_deletes(
-            project_frame(
-                self.before_window_table_frame(
-                    &context,
-                    &view.right,
-                    &right_window.before_versions,
-                )
-                .await?,
-                &right_columns,
-            )?,
-            change_column(&view.right),
-        )?;
-        let left_now = apply_side_filter(
+        let left_changed = !left_window.added_files.is_empty();
+        let fast_simple = side_keyed && left_changed != right_changed;
+        let raw_delta_left = self.groups_table_frame(
             &context,
+            &view.left,
+            left_window.added_files.clone(),
+        )?;
+        let raw_delta_right = self.groups_table_frame(
+            &context,
+            &view.right,
+            right_window.added_files.clone(),
+        )?;
+        let delta_left = project_frame(raw_delta_left.clone(), &left_columns)?;
+        let delta_right = project_frame(raw_delta_right.clone(), &right_columns)?;
+        let probe = left_aggregate_probe(view);
+        let fast_sides = if fast_simple {
+            self.keyed_one_sided_join_sides(
+                &context,
+                &probe,
+                left_state.as_ref(),
+                right_state.as_ref(),
+                if left_changed {
+                    Some(&raw_delta_left)
+                } else {
+                    None
+                },
+                if right_changed {
+                    Some(&raw_delta_right)
+                } else {
+                    None
+                },
+                Some(&right_window),
+            )
+            .await?
+        } else {
+            None
+        };
+        let left_before = if fast_sides.is_some() {
+            dataframe(&context, Vec::new(), &left_projection)?
+        } else {
             filter_deletes(
+                project_frame(
+                    self.before_window_table_frame(
+                        &context,
+                        &view.left,
+                        &left_window.before_versions,
+                    )
+                    .await?,
+                    &left_columns,
+                )?,
+                change_column(&view.left),
+            )?
+        };
+        let right_before = if fast_sides.is_some() {
+            dataframe(&context, Vec::new(), &right_projection)?
+        } else {
+            filter_deletes(
+                project_frame(
+                    self.before_window_table_frame(
+                        &context,
+                        &view.right,
+                        &right_window.before_versions,
+                    )
+                    .await?,
+                    &right_columns,
+                )?,
+                change_column(&view.right),
+            )?
+        };
+        let fast_keyed = fast_sides.is_some();
+        let (left_now, right_now) = match fast_sides {
+            Some((left, right)) => (
+                project_frame(left, &left_columns)?,
+                project_frame(right, &right_columns)?,
+            ),
+            None => (
                 project_frame(
                     self.current_table_frame(&context, &view.left)?,
                     &left_columns,
                 )?,
-                change_column(&view.left),
-            )?,
+                project_frame(
+                    self.current_table_frame(&context, &view.right)?,
+                    &right_columns,
+                )?,
+            ),
+        };
+        let left_now = apply_side_filter(
+            &context,
+            filter_deletes(left_now, change_column(&view.left))?,
             &left_projection,
             view.left_filter.as_deref(),
         )?;
         let right_now = apply_side_filter(
             &context,
-            filter_deletes(
-                project_frame(
-                    self.current_table_frame(&context, &view.right)?,
-                    &right_columns,
-                )?,
-                change_column(&view.right),
-            )?,
+            filter_deletes(right_now, change_column(&view.right))?,
             &right_projection,
             view.right_filter.as_deref(),
         )?;
-        let mv = self.current_table_frame(&context, &view.mv)?;
 
         let left_key_names = view
             .left
@@ -2110,7 +2241,16 @@ impl IvmRuntime {
             .map(String::as_str)
             .collect::<Vec<_>>();
         let affected_from_left = delta_left.select(left_key_exprs.clone())?.distinct()?;
-        let affected = if !right_changed {
+        let affected = if fast_keyed {
+            if left_changed {
+                affected_from_left
+            } else {
+                left_now
+                    .clone()
+                    .select(left_key_exprs.clone())?
+                    .distinct()?
+            }
+        } else if !right_changed {
             affected_from_left
         } else {
             let right_key_exprs = left_aggregate_right_keys(view)
@@ -2163,6 +2303,19 @@ impl IvmRuntime {
                 .select(left_key_exprs.clone())?
                 .distinct()?;
             affected_from_left.union(affected_from_right)?.distinct()?
+        };
+        let mv = if view.mv.primary_keys == view.left.primary_keys {
+            self.lookup_source_by_join_keys(
+                &context,
+                &view.mv,
+                affected.clone(),
+                &view.left.primary_keys,
+                &view.mv.primary_keys,
+                true,
+            )
+            .await?
+        } else {
+            self.current_table_frame(&context, &view.mv)?
         };
 
         let joined = left_now
@@ -2287,6 +2440,25 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        if !view.join_keys.is_empty()
+            && !view.left.primary_keys.is_empty()
+            && !view.right.primary_keys.is_empty()
+        {
+            commit_ids.extend(
+                self.sync_full_join_side_states(
+                    &view.view_id,
+                    &view.left,
+                    &view.right,
+                    &view.join_keys,
+                    left_aggregate_right_keys(view),
+                    &[],
+                    &[],
+                    false,
+                )
+                .await?,
+            );
+            self.checkpoint_epoch_states(&record).await?;
+        }
 
         let context = refresh_session();
         let left = apply_side_filter(

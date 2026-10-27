@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
 use arrow_array::Array;
-use arrow_schema::SchemaRef;
+use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::error::DataFusionError;
 use datafusion::prelude::{Expr, SessionContext};
 use lakesoul_common::ser::arrow_java::{
@@ -335,11 +335,77 @@ impl IvmTableOptions {
     }
 }
 
+/// Normalize Arrow view types to the physical column types LakeSoul stores.
+///
+/// DataFusion plans string functions as `Utf8View`; LakeSoul metadata
+/// serializes that as `Utf8`, so a table created from the plan's schema would
+/// advertise `Utf8View` in memory and `Utf8` after reopening.  Normalize when
+/// a table is created so both views agree.
+pub(crate) fn normalize_data_type(
+    data_type: &arrow_schema::DataType,
+) -> arrow_schema::DataType {
+    match data_type {
+        arrow_schema::DataType::Utf8View => arrow_schema::DataType::Utf8,
+        arrow_schema::DataType::BinaryView => arrow_schema::DataType::Binary,
+        arrow_schema::DataType::List(field) => arrow_schema::DataType::List(Arc::new(
+            field
+                .as_ref()
+                .clone()
+                .with_data_type(normalize_data_type(field.data_type())),
+        )),
+        arrow_schema::DataType::LargeList(field) => {
+            arrow_schema::DataType::LargeList(Arc::new(
+                field
+                    .as_ref()
+                    .clone()
+                    .with_data_type(normalize_data_type(field.data_type())),
+            ))
+        }
+        arrow_schema::DataType::Struct(fields) => arrow_schema::DataType::Struct(
+            fields
+                .iter()
+                .map(|field| {
+                    Arc::new(
+                        field
+                            .as_ref()
+                            .clone()
+                            .with_data_type(normalize_data_type(field.data_type())),
+                    )
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// The physical schema LakeSoul stores for an IVM table.
+pub(crate) fn normalize_schema(schema: &Schema) -> SchemaRef {
+    let fields = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            Arc::new(
+                Field::new(
+                    field.name(),
+                    normalize_data_type(field.data_type()),
+                    field.is_nullable(),
+                )
+                .with_metadata(field.metadata().clone()),
+            ) as arrow_schema::FieldRef
+        })
+        .collect::<Vec<_>>();
+    Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
+}
+
 /// Create an internal LakeSoul table.
 pub async fn create_ivm_table(
     client: &MetaDataClient,
     options: IvmTableOptions,
 ) -> Result<IvmTable> {
+    let options = IvmTableOptions {
+        schema: normalize_schema(&options.schema),
+        ..options
+    };
     let mut properties = serde_json::json!({
         "hashBucketNum": options.hash_bucket_num,
         "file_format": options.file_format.name(),
@@ -579,11 +645,44 @@ impl IvmTable {
         if batch.num_rows() == 0 {
             return Ok(Vec::new());
         }
+        let batch = self.cast_batch(batch)?;
         let rows = batch.num_rows() as u64;
         let mut writer = self.writer().await?;
         writer.write_record_batch(batch).await?;
         let outputs = writer.flush_and_close().await?;
         Ok(self.output_files(outputs, rows))
+    }
+
+    /// Cast a refresh batch to the table's physical schema.  DataFusion plans
+    /// string expressions as `Utf8View`; LakeSoul stores `Utf8`, so the
+    /// writer must see the table's canonical types.
+    pub(crate) fn cast_batch(&self, batch: RecordBatch) -> Result<RecordBatch> {
+        if batch.schema().fields().len() != self.schema.fields().len() {
+            return Err(rootcause::report!(
+                "refresh batch has {} columns, table {} expects {}",
+                batch.schema().fields().len(),
+                self.table_name,
+                self.schema.fields().len()
+            ));
+        }
+        let mut columns = Vec::with_capacity(batch.num_columns());
+        for (array, field) in batch.columns().iter().zip(self.schema.fields()) {
+            if array.data_type() == field.data_type() {
+                columns.push(array.clone());
+            } else {
+                columns.push(arrow::compute::cast(array, field.data_type()).map_err(
+                    |error| {
+                        rootcause::report!(
+                            "cast refresh column {} to {}: {error}",
+                            field.name(),
+                            field.data_type()
+                        )
+                    },
+                )?);
+            }
+        }
+        RecordBatch::try_new(self.schema.clone(), columns)
+            .map_err(|error| rootcause::report!("refresh batch schema: {error}"))
     }
 
     /// Publish already written files in one metadata commit.
@@ -638,6 +737,7 @@ impl IvmTable {
             if batch.num_rows() == 0 {
                 continue;
             }
+            let batch = self.cast_batch(batch)?;
             rows += batch.num_rows() as u64;
             writer.write_record_batch(batch).await?;
         }
@@ -657,6 +757,7 @@ impl IvmTable {
             if batch.num_rows() == 0 {
                 continue;
             }
+            let batch = self.cast_batch(batch)?;
             rows += batch.num_rows() as u64;
             writer.write_record_batch(batch).await?;
         }
@@ -802,12 +903,57 @@ impl IvmTable {
     /// The keyed-state physical plans use this to resolve one bucket's state
     /// rows for the keys of one contribution batch without materializing the
     /// whole state table.
-    pub(crate) async fn read_partition_files_filtered(
+    /// Stream one bucketed state read through the LakeSoul reader.  The
+    /// receiver yields reader batches; callers can match contribution keys
+    /// incrementally instead of retaining the whole filtered bucket.
+    pub(crate) async fn stream_partition_files_filtered(
         &self,
         groups: Vec<PartitionFiles>,
         filters: Vec<Expr>,
-    ) -> Result<Vec<RecordBatch>> {
-        self.read_groups_with_options(groups, filters, None).await
+        gate: Arc<tokio::sync::Semaphore>,
+    ) -> Result<
+        tokio::sync::mpsc::Receiver<std::result::Result<RecordBatch, DataFusionError>>,
+    > {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let table = self.clone();
+        tokio::task::spawn_blocking(move || {
+            lakesoul_io::session::GLOBAL_RUNTIME.block_on(async move {
+                let _permit = match gate.acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        let _ = tx
+                            .send(Err(DataFusionError::Execution(format!(
+                                "state lookup gate closed: {error}"
+                            ))))
+                            .await;
+                        return;
+                    }
+                };
+                for group in groups {
+                    if group.files.is_empty() {
+                        continue;
+                    }
+                    if let Err(error) = table
+                        .stream_files_with_group(
+                            group,
+                            filters.clone(),
+                            None,
+                            None,
+                            None,
+                            true,
+                            tx.clone(),
+                        )
+                        .await
+                    {
+                        let _ = tx
+                            .send(Err(DataFusionError::Execution(error.to_string())))
+                            .await;
+                        return;
+                    }
+                }
+            })
+        });
+        Ok(rx)
     }
 
     /// Read delta files **without** merge-on-read.

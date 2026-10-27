@@ -139,7 +139,7 @@ pub fn row_expr_mv_schema_for(
     output_columns: &[String],
     output_exprs: &[String],
 ) -> Result<SchemaRef> {
-    let columns = if output_columns.is_empty() {
+    let mut columns = if output_columns.is_empty() {
         source_schema
             .fields()
             .iter()
@@ -148,20 +148,43 @@ pub fn row_expr_mv_schema_for(
     } else {
         output_columns.to_vec()
     };
-    let mut fields = if output_exprs.is_empty() {
+    let mut exprs = output_exprs.to_vec();
+    // The MV schema appends the bookkeeping columns itself; a projection that
+    // saw them through `SELECT *` must not materialize them twice.
+    if columns.iter().any(|column| {
+        column.eq_ignore_ascii_case(IVM_ROW_KINDS_COLUMN)
+            || column.eq_ignore_ascii_case(IVM_EPOCH_COLUMN)
+    }) {
+        let mut kept_columns = Vec::with_capacity(columns.len());
+        let mut kept_exprs = Vec::with_capacity(exprs.len());
+        for (index, column) in columns.iter().enumerate() {
+            if column.eq_ignore_ascii_case(IVM_ROW_KINDS_COLUMN)
+                || column.eq_ignore_ascii_case(IVM_EPOCH_COLUMN)
+            {
+                continue;
+            }
+            kept_columns.push(column.clone());
+            if !exprs.is_empty() {
+                kept_exprs.push(exprs[index].clone());
+            }
+        }
+        columns = kept_columns;
+        exprs = kept_exprs;
+    }
+    let mut fields = if exprs.is_empty() {
         project_schema(source_schema, &columns)?
             .fields()
             .iter()
             .cloned()
             .collect::<Vec<_>>()
     } else {
-        if output_exprs.len() != columns.len() {
+        if exprs.len() != columns.len() {
             return Err(report!(
                 "the projection needs one expression per output column"
             ));
         }
         let mut fields = Vec::with_capacity(columns.len());
-        for (column, expression) in columns.iter().zip(output_exprs) {
+        for (column, expression) in columns.iter().zip(&exprs) {
             let (data_type, nullable) = expression_type(source_schema, expression)?;
             fields.push(Arc::new(Field::new(column, data_type, nullable)));
         }
@@ -249,40 +272,128 @@ fn row_mv_partitions(
 
 fn row_projection(view: &RowView, context: &SessionContext) -> Result<Vec<Expr>> {
     let columns = row_output_columns(view);
+    let mut seen = std::collections::HashSet::new();
+    for column in &columns {
+        if !seen.insert(column.clone()) {
+            return Err(report!(
+                "row view {}: duplicate output column {column} over source {}; columns={:?} exprs={:?}",
+                view.view_id,
+                view.source.table_name,
+                columns,
+                view.output_exprs
+            ));
+        }
+    }
     if view.output_exprs.is_empty() {
         return Ok(columns.iter().map(|column| col(column.as_str())).collect());
     }
-    let df_schema = DFSchema::try_from(view.source.schema.as_ref().clone())
-        .map_err(|error| report!("invalid source schema: {error}"))?;
     columns
         .iter()
         .zip(&view.output_exprs)
         .map(|(column, expression)| {
-            let expression = context
-                .state()
-                .create_logical_expr(expression, &df_schema)
-                .map_err(|error| {
-                    report!(
-                        "row view {}: invalid projection expression {expression:?}: {error}",
-                        view.view_id
-                    )
-                })?;
+            let expression = parse_row_expression(
+                context,
+                &view.source.schema,
+                expression,
+            )
+            .map_err(|error| {
+                report!(
+                    "row view {}: invalid projection expression {expression:?}: {error}",
+                    view.view_id
+                )
+            })?;
             Ok(expression.alias(column))
         })
         .collect()
 }
 
+/// Parse a rendered projection expression.  A plan may keep an internal
+/// column in lower case (`rowkinds`), while the table schema preserves its
+/// spelling (`rowKinds`); retry against a lower-cased schema and restore the
+/// real field names.
+fn parse_row_expression(
+    context: &SessionContext,
+    schema: &Schema,
+    expression: &str,
+) -> Result<Expr> {
+    let df_schema = DFSchema::try_from(schema.clone())
+        .map_err(|error| report!("invalid source schema: {error}"))?;
+    if let Ok(expr) = context.state().create_logical_expr(expression, &df_schema) {
+        return Ok(expr);
+    }
+    let lowered = Schema::new(
+        schema
+            .fields()
+            .iter()
+            .map(|field| {
+                Field::new(
+                    field.name().to_lowercase(),
+                    field.data_type().clone(),
+                    field.is_nullable(),
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    let lowered_schema = DFSchema::try_from(lowered)
+        .map_err(|error| report!("invalid source schema: {error}"))?;
+    let expr = context
+        .state()
+        .create_logical_expr(expression, &lowered_schema)
+        .map_err(|error| report!("{error}"))?;
+    expr.transform_down(|node| {
+        if let Expr::Column(column) = &node
+            && schema.field_with_name(&column.name).is_err()
+            && let Some(field) = schema
+                .fields()
+                .iter()
+                .find(|field| field.name().eq_ignore_ascii_case(&column.name))
+        {
+            return Ok(Transformed::yes(Expr::Column(Column::new(
+                column.relation.clone(),
+                field.name().clone(),
+            ))));
+        }
+        Ok(Transformed::no(node))
+    })
+    .map(|transformed| transformed.data)
+    .map_err(|error| report!("{error}"))
+}
+
 fn row_output_columns(view: &RowView) -> Vec<String> {
-    if view.output_columns.is_empty() {
+    let resolve = |name: &str| {
+        view.source
+            .schema
+            .field_with_name(name)
+            .map(|field| field.name().clone())
+            .or_else(|_| {
+                view.source
+                    .schema
+                    .fields()
+                    .iter()
+                    .find(|field| field.name().eq_ignore_ascii_case(name))
+                    .map(|field| field.name().clone())
+                    .ok_or(())
+            })
+            .unwrap_or_else(|_| name.to_string())
+    };
+    let columns = if view.output_columns.is_empty() {
         view.source
             .schema
             .fields()
             .iter()
             .map(|field| field.name().clone())
-            .collect()
+            .collect::<Vec<_>>()
     } else {
         view.output_columns.clone()
-    }
+    };
+    columns
+        .into_iter()
+        .filter(|column| {
+            !column.eq_ignore_ascii_case(IVM_ROW_KINDS_COLUMN)
+                && !column.eq_ignore_ascii_case(IVM_EPOCH_COLUMN)
+        })
+        .map(|column| resolve(&column))
+        .collect()
 }
 
 /// Validate that a projection/filter view can be maintained.
@@ -320,12 +431,6 @@ async fn validate_row_view(view: &RowView) -> Result<()> {
                     view.view_id
                 )
             })?;
-            if field.is_nullable() {
-                return Err(report!(
-                    "row view {}: key column {key} must be non-nullable",
-                    view.view_id
-                ));
-            }
             if !columns.contains(key) {
                 return Err(report!(
                     "row view {}: output columns must contain the source key {key}",
@@ -350,13 +455,41 @@ async fn validate_row_view(view: &RowView) -> Result<()> {
                             view.view_id
                         )
                     })?;
-                if !matches!(&parsed, Expr::Column(column) if column.name == *key) {
+                // A cast to the key's own type is an identity the optimizer
+                // introduces around a plain column; the value is unchanged.
+                let unchanged = match &parsed {
+                    Expr::Column(column) => column.name == *key,
+                    Expr::Cast(cast) => {
+                        cast.field.data_type() == field.data_type()
+                            && matches!(
+                                cast.expr.as_ref(),
+                                Expr::Column(column) if column.name == *key
+                            )
+                    }
+                    _ => false,
+                };
+                if !unchanged {
                     return Err(report!(
                         "row view {}: the key column {key} must be projected unchanged",
                         view.view_id
                     ));
                 }
             }
+        }
+        // A composite key may have a nullable component (a window partition
+        // column, say) as long as at least one component is non-null; the
+        // source primary key in the same key list keeps rows distinct.
+        if view.source.primary_keys.iter().all(|key| {
+            view.source
+                .schema
+                .field_with_name(key)
+                .is_ok_and(|field| field.is_nullable())
+        }) {
+            return Err(report!(
+                "row view {}: source {} needs a non-null key column",
+                view.view_id,
+                view.source.table_name
+            ));
         }
     }
     if view.filter.is_some() {
@@ -702,7 +835,13 @@ impl IvmRuntime {
             append_dataframe(
                 &view.mv,
                 &self.client,
-                rows.select(output_exprs)?
+                rows.select(output_exprs.clone())
+                    .map_err(|error| {
+                        report!(
+                            "row view {}: projection {output_exprs:?}: {error}",
+                            view.view_id
+                        )
+                    })?
                     .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
                     .with_column(IVM_EPOCH_COLUMN, lit(epoch))?,
             )

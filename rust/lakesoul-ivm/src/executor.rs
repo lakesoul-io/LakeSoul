@@ -40,24 +40,26 @@ use crate::runtime::{
     ChainPolicy, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_EPOCH_COLUMN,
     IVM_GROUP_ROW_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_PAIR_IDENTITY_COLUMN,
     IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
-    IvmRuntime, JoinOutputColumn, JoinSide, ViewSpec,
+    IvmRuntime, JoinOutputColumn, JoinSide, SinkColumn, ViewSpec,
     approx_distinct_groups_mv_schema_for, approx_percentile_groups_mv_schema_for,
     array_agg_groups_mv_schema_for, bool_agg_groups_mv_schema_for,
     computed_agg_mv_schema_for, cross_join_view_schema_for, decode_data_type,
-    distinct_agg_groups_mv_schema_for, full_join_view_schema_with_keys,
+    distinct_agg_groups_mv_schema_for, encode_data_type, full_join_view_schema_with_keys,
     grouping_sets_mv_schema_for, join_view_schema_with_keys,
     keyed_join_output_primary_keys, keyed_join_view_schema_with_keys,
     left_aggregate_mv_schema_with_outputs, left_join_view_schema_with_keys,
-    lookup_chain_mv_schema_for, lookup_join_view_schema_for, median_groups_mv_schema_for,
-    min_max_groups_mv_schema_for, multi_agg_mv_schema_for, multi_agg_state_schema_for,
-    multi_join_append_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
-    multi_window_mv_schema_for_with_payload, nullable_join_key_schema,
-    row_expr_mv_schema_for, semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
-    sum_count_groups_mv_schema_for, top_k_expr_mv_schema_for, union_all_mv_schema_for,
-    union_distinct_mv_schema_for, union_output_schema_for,
-    value_count_groups_state_schema_for, variance_groups_mv_schema_for,
-    wide_full_join_view_schema_with_identity_and_keys, wide_join_view_schema_with_keys,
-    wide_keyed_join_view_schema_for, wide_keyed_join_view_schema_with_keys,
+    lookup_chain_mv_schema_for, lookup_chain_step_id_column, lookup_join_view_schema_for,
+    median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
+    multi_agg_state_schema_for, multi_join_append_schema_for, multi_join_mv_schema_for,
+    multi_join_primary_keys, multi_window_mv_schema_for_with_payload,
+    nullable_join_key_schema, parse_filter, refresh_session, row_expr_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
+    sum_count_groups_mv_schema_for, top_k_expr_mv_schema_for,
+    union_all_mv_schema_with_source, union_distinct_mv_schema_for,
+    union_output_schema_for, value_count_groups_state_schema_for,
+    variance_groups_mv_schema_for, wide_full_join_view_schema_with_identity_and_keys,
+    wide_join_view_schema_with_keys, wide_keyed_join_view_schema_for,
+    wide_keyed_join_view_schema_with_keys,
     wide_left_join_view_schema_with_identity_and_keys, wide_lookup_join_view_schema_for,
     wide_outer_join_view_schema_with_keys, window_columns_mv_schema_for_with_payload,
 };
@@ -65,7 +67,7 @@ use crate::sql::{
     AnalyzeRequest, DerivedSource, UnsupportedShape, analyze_select, definition_hash,
     peel, plan_label,
 };
-use crate::table::{IvmTable, IvmTableOptions, create_ivm_table};
+use crate::table::{IvmTable, IvmTableOptions, create_ivm_table, normalize_schema};
 
 /// Placeholder state table id used to probe the query shape before the real
 /// state table exists.
@@ -77,7 +79,23 @@ const STATE_PLACEHOLDER: &str = "__ivm_state_placeholder__";
 const DERIVED_PLACEHOLDER: &str = "__ivm_derived__";
 
 /// The maximum number of derived views one statement may materialize.
-const MAX_DERIVED_STEPS: usize = 4;
+///
+/// Production CTEs chain several compound sources (a union, joins and
+/// aggregates) before the target shape is reachable.  The limit keeps a
+/// pathological statement bounded without rejecting the common 7-18 CTE
+/// shapes; a statement that really needs more should be split into explicit
+/// views.
+const DEFAULT_MAX_DERIVED_STEPS: usize = 32;
+
+/// The derived-step budget.  A production statement with many CTEs may need
+/// more than the default; the environment override keeps the limit explicit.
+fn max_derived_steps() -> usize {
+    std::env::var("LAKESOUL_IVM_MAX_DERIVED_STEPS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_DERIVED_STEPS)
+}
 
 /// The table name of a derived step.
 fn derived_step_name(target_name: &str, index: usize) -> String {
@@ -87,6 +105,24 @@ fn derived_step_name(target_name: &str, index: usize) -> String {
 /// The table path of a derived step (a sibling directory of the target MV).
 fn derived_step_path(target_path: &str, index: usize) -> String {
     format!("{}/__ivm_step{index}", target_path.trim_end_matches('/'))
+}
+
+/// A derived step materialized during one analysis, reusable when the same
+/// subplan appears again (a CTE referenced several times).
+#[derive(Clone)]
+struct CachedDerived {
+    table: IvmTable,
+    view_id: String,
+    mapping: Vec<(String, String)>,
+}
+
+fn plan_key(plan: &LogicalPlan) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in format!("{plan:?}").bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 /// The compact join shapes name their payload columns `left_value` /
@@ -274,7 +310,10 @@ fn derived_step_supported(subplan: &LogicalPlan) -> Result<()> {
         | LogicalPlan::Aggregate(_)
         | LogicalPlan::Distinct(_)
         | LogicalPlan::Sort(_)
-        | LogicalPlan::Limit(_) => Ok(()),
+        | LogicalPlan::Limit(_)
+        | LogicalPlan::Filter(_)
+        | LogicalPlan::TableScan(_) => Ok(()),
+        LogicalPlan::Unnest(_) => Err(crate::sql::unnest_unsupported()),
         other => Err(rootcause::report!(
             "a derived view over {} is not materialized yet",
             plan_label(other)
@@ -318,20 +357,64 @@ fn derived_output_mapping(
 ) -> Result<Vec<(String, String)>> {
     let fields = subplan.schema().fields();
     if matches!(spec, ViewSpec::SumCount { .. }) {
-        let LogicalPlan::Aggregate(aggregate) = peel(subplan) else {
+        // The optimizer may prune a group key above the aggregate while the
+        // MV still materializes it; peel plain projections and map fields by
+        // their aggregate output name.
+        let mut node = peel(subplan);
+        let mut projection: Option<&datafusion::logical_expr::Projection> = None;
+        while let LogicalPlan::Projection(inner) = node {
+            if !inner.expr.iter().all(|expr| {
+                let mut value = expr;
+                while let Expr::Alias(alias) = value {
+                    value = &alias.expr;
+                }
+                matches!(value, Expr::Column(_))
+            }) {
+                break;
+            }
+            projection = Some(inner);
+            node = peel(&inner.input);
+        }
+        let LogicalPlan::Aggregate(aggregate) = node else {
             return Err(rootcause::report!(
                 "a derived sum-count view needs an aggregate input"
             )
             .attach(UnsupportedShape));
         };
         let groups = aggregate.group_expr.len();
+        let mut targets = HashMap::new();
+        for field in aggregate.schema.fields().iter().take(groups) {
+            targets.insert(field.name().clone(), field.name().clone());
+        }
+        for (index, expr) in aggregate.aggr_expr.iter().enumerate() {
+            targets.insert(
+                expr.schema_name().to_string(),
+                sum_count_column(expr)?.to_string(),
+            );
+            if index + groups >= aggregate.schema.fields().len() {
+                break;
+            }
+        }
         let mut mapping = Vec::with_capacity(fields.len());
         for (index, field) in fields.iter().enumerate() {
-            let column = if index < groups {
-                field.name().clone()
-            } else {
-                sum_count_column(&aggregate.aggr_expr[index - groups])?.to_string()
-            };
+            let source =
+                match projection.and_then(|projection| projection.expr.get(index)) {
+                    Some(expr) => {
+                        let mut value = expr;
+                        while let Expr::Alias(alias) = value {
+                            value = &alias.expr;
+                        }
+                        match value {
+                            Expr::Column(column) => column.name.clone(),
+                            _ => field.name().clone(),
+                        }
+                    }
+                    None => field.name().clone(),
+                };
+            let column = targets
+                .get(&source)
+                .cloned()
+                .unwrap_or_else(|| source.clone());
             mapping.push((field.name().clone(), column));
         }
         return Ok(mapping);
@@ -391,20 +474,36 @@ fn derived_output_mapping(
     } = spec
     {
         // A mixed aggregate step keeps the group keys by name and materializes
-        // one column per aggregate, in select order.
+        // one column per aggregate.  A computed select list may drop a group
+        // key or put a computed output before a raw aggregate, so resolve by
+        // name first and use the positional layout only as a fallback.
         let mut mapping = Vec::with_capacity(fields.len());
         for (index, field) in fields.iter().enumerate() {
-            let column = match index.checked_sub(group_keys.len()) {
-                None => group_keys
-                    .get(index)
-                    .cloned()
-                    .unwrap_or_else(|| field.name().clone()),
-                Some(position) => aggregates
-                    .get(position)
-                    .map(|aggregate| aggregate.column.clone())
-                    .unwrap_or_else(|| field.name().clone()),
+            let name = field.name();
+            let column = if group_keys.contains(name) {
+                name.clone()
+            } else if let Some(aggregate) = aggregates
+                .iter()
+                .find(|aggregate| &aggregate.column == name)
+            {
+                aggregate.column.clone()
+            } else if let Some(aggregate) =
+                aggregates.iter().find(|aggregate| &aggregate.call == name)
+            {
+                aggregate.column.clone()
+            } else {
+                match index.checked_sub(group_keys.len()) {
+                    None => group_keys
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_else(|| name.clone()),
+                    Some(position) => aggregates
+                        .get(position)
+                        .map(|aggregate| aggregate.column.clone())
+                        .unwrap_or_else(|| name.clone()),
+                }
             };
-            mapping.push((field.name().clone(), column));
+            mapping.push((name.clone(), column));
         }
         return Ok(mapping);
     }
@@ -590,6 +689,10 @@ impl IvmSqlExecutor {
     }
 
     async fn execute_inner(&self, sql: &str) -> Result<IvmExecution> {
+        // Flink task SQL may carry temporal-join syntax; these tasks use a
+        // primary-key dimension lookup, so it is planned as a normal join.
+        let normalized = crate::sql::normalize_flink_sql(sql);
+        let sql = normalized.as_str();
         let insert = parse_insert(sql)?;
         let (namespace, table_name) = split_object_name(insert_target(&insert)?)?;
         let mv = self.runtime.open_table(&table_name, &namespace).await?;
@@ -642,8 +745,16 @@ impl IvmSqlExecutor {
         // derived steps are idempotent by name, while the target checks below
         // still run before the target itself is touched.
         let mut derived = Vec::new();
+        let mut derived_cache = HashMap::new();
         let analyzed = self
-            .analyze_with_derived(&plan, &mut tables, &request, &mv, &mut derived)
+            .analyze_with_derived(
+                &plan,
+                &mut tables,
+                &request,
+                &mv,
+                &mut derived,
+                &mut derived_cache,
+            )
             .await;
         let (probe, fallback, expected, plan) = match analyzed {
             Ok((probe, rewritten)) => {
@@ -683,6 +794,35 @@ impl IvmSqlExecutor {
             }
             Err(error) => return Err(error),
         };
+        // A target whose schema differs from the maintenance state, or whose
+        // range partition columns are not part of its primary key, cannot be
+        // written directly.  Materialize the maintenance state and project it
+        // through a sink instead.
+        if target_needs_sink(&mv, &expected) {
+            if fallback {
+                let reason = match &probe {
+                    ViewSpec::Fallback { reason, .. } => {
+                        format!(" (the shape is not maintained incrementally: {reason})")
+                    }
+                    _ => String::new(),
+                };
+                return Err(rootcause::report!(
+                    "target table `{}` does not match the view schema of this statement{reason}",
+                    mv.table_name
+                ));
+            }
+            return self
+                .execute_split_target(
+                    &mv,
+                    &view_id,
+                    plan,
+                    tables,
+                    sql,
+                    insert.overwrite,
+                    derived,
+                )
+                .await;
+        }
         // The definition hash ignores generated table ids, so the probe is a
         // valid identity even before the state table exists.
         let definition = definition_hash(&probe)?;
@@ -749,9 +889,16 @@ impl IvmSqlExecutor {
                 state_table_id: Some(state_table_id),
                 ..request
             };
-            self.analyze_with_derived(&plan, &mut tables, &request, &mv, &mut derived)
-                .await?
-                .0
+            self.analyze_with_derived(
+                &plan,
+                &mut tables,
+                &request,
+                &mv,
+                &mut derived,
+                &mut derived_cache,
+            )
+            .await?
+            .0
         } else {
             probe
         };
@@ -895,6 +1042,378 @@ impl IvmSqlExecutor {
         })
     }
 
+    /// Execute a statement through an internal maintenance state and a target
+    /// projection sink.  This path is used when the user target schema (or its
+    /// primary key/partition layout) cannot be the maintenance schema itself.
+    async fn execute_split_target(
+        &self,
+        target: &IvmTable,
+        view_id: &str,
+        plan: LogicalPlan,
+        mut tables: HashMap<String, IvmTable>,
+        sql: &str,
+        overwrite: bool,
+        mut derived: Vec<String>,
+    ) -> Result<IvmExecution> {
+        if self.refresh_upstream {
+            let roots = tables
+                .values()
+                .map(|table| table.table_id.clone())
+                .collect::<Vec<_>>();
+            self.runtime
+                .refresh_view_chains(&roots, &ChainPolicy::default())
+                .await?;
+        }
+        // A maintenance state is an internal state view, so analyze it like a
+        // derived step.  This keeps select aliases and widens the state with
+        // the row identities the sink must not expose.
+        let request = AnalyzeRequest {
+            view_id: target.table_id.clone(),
+            mv_table_id: target.table_id.clone(),
+            state_table_id: Some(STATE_PLACEHOLDER.to_string()),
+            derived: true,
+        };
+        let mut derived_cache = HashMap::new();
+        let (state_spec, _) = self
+            .analyze_with_derived(
+                &plan,
+                &mut tables,
+                &request,
+                target,
+                &mut derived,
+                &mut derived_cache,
+            )
+            .await?;
+        let expected = expected_mv_schema(&state_spec, &tables)?;
+        // Flink `INSERT INTO` maps the select list to the target by position;
+        // the names may differ (`spec_model` -> `spec_model_no`).
+        let internal =
+            |name: &str| name == IVM_ROW_KINDS_COLUMN || name.starts_with("__ivm_");
+        let target_fields = target
+            .schema
+            .fields()
+            .iter()
+            .filter(|field| !internal(field.name()))
+            .collect::<Vec<_>>();
+        let select_fields = plan.schema().fields();
+        if target_fields.len() != select_fields.len() {
+            return Err(rootcause::report!(
+                "target table `{}` has {} user columns {:?} but the select list has {} {:?}; \
+                 an INSERT INTO maps them by position",
+                target.table_name,
+                target_fields.len(),
+                target_fields
+                    .iter()
+                    .map(|f| f.name().clone())
+                    .collect::<Vec<_>>(),
+                select_fields.len(),
+                select_fields
+                    .iter()
+                    .map(|f| f.name().clone())
+                    .collect::<Vec<_>>()
+            ));
+        }
+        let state_map = derived_output_mapping(&state_spec, &plan)?
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        let mut positional = HashMap::new();
+        for (target, select) in target_fields.iter().zip(select_fields) {
+            if crate::table::normalize_data_type(target.data_type())
+                != crate::table::normalize_data_type(select.data_type())
+            {
+                return Err(rootcause::report!(
+                    "target column {} ({}) does not match select column {} ({}); \
+                     an INSERT INTO maps by position and the types must match",
+                    target.name(),
+                    target.data_type(),
+                    select.name(),
+                    select.data_type()
+                ));
+            }
+            let source = state_map
+                .get(select.name())
+                .cloned()
+                .unwrap_or_else(|| select.name().clone());
+            if expected.field_with_name(&source).is_err() {
+                return Err(rootcause::report!(
+                    "the maintenance state does not materialize select column {}",
+                    select.name()
+                ));
+            }
+            positional.insert(target.name().clone(), source);
+        }
+        if target.schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_err()
+            || target.schema.field_with_name(IVM_EPOCH_COLUMN).is_err()
+        {
+            return Err(rootcause::report!(
+                "target table `{}` needs the internal rowKinds/__ivm_epoch columns",
+                target.table_name
+            ));
+        }
+        if target.primary_keys.is_empty() {
+            return Err(rootcause::report!(
+                "target table `{}` needs a primary key for the projection sink: \
+                 its refresh writes delete markers that the target key merges",
+                target.table_name
+            ));
+        }
+
+        let mut state_spec = state_spec;
+        let state_table = self
+            .ensure_internal_state_table(target, &state_spec, expected.clone())
+            .await?;
+        state_spec.set_derived_identity(&state_table.table_id, &state_table.table_id)?;
+        if needs_state_table(&state_spec) {
+            let state_table_id =
+                self.ensure_state_table(&state_table, &state_spec).await?;
+            state_spec.set_derived_state_table(&state_table_id)?;
+        }
+        let state_definition = definition_hash(&state_spec)?;
+        let stored_state = self
+            .runtime
+            .metadata()
+            .view_definition(&state_table.table_id)
+            .await?;
+        let same_state = stored_state
+            .as_ref()
+            .is_some_and(|(hash, _)| hash == &state_definition);
+        let state_dirty = self
+            .runtime
+            .metadata()
+            .view_status(&state_table.table_id)
+            .await?
+            .as_deref()
+            == Some("dirty");
+
+        let state_generation_before = self
+            .runtime
+            .metadata()
+            .view_generation(&state_table.table_id)
+            .await
+            .unwrap_or(0);
+        let mut state_rebuilt =
+            overwrite || stored_state.is_none() || !same_state || state_dirty;
+        let _state_epoch = if state_rebuilt {
+            let epoch = self.runtime.rebuild_spec(&state_spec).await?;
+            self.runtime
+                .metadata()
+                .set_view_definition(&state_table.table_id, &state_definition, sql)
+                .await?;
+            Some(epoch)
+        } else {
+            match self.runtime.refresh_spec(&state_spec).await {
+                Ok(epoch) => epoch,
+                Err(error) if IvmRuntime::rebuild_required(&error) => {
+                    state_rebuilt = true;
+                    let epoch = self.runtime.rebuild_spec(&state_spec).await?;
+                    self.runtime
+                        .metadata()
+                        .set_view_definition(
+                            &state_table.table_id,
+                            &state_definition,
+                            sql,
+                        )
+                        .await?;
+                    Some(epoch)
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let state_generation = self
+            .runtime
+            .metadata()
+            .view_generation(&state_table.table_id)
+            .await
+            .unwrap_or(0);
+        if state_generation != state_generation_before {
+            // A rebuild of the state (even with the same definition) resets
+            // its changelog; the target must be rebuilt from the snapshot.
+            state_rebuilt = true;
+        }
+        if state_rebuilt || state_dirty {
+            self.runtime
+                .metadata()
+                .set_view_status(&state_table.table_id, "active")
+                .await?;
+            self.runtime
+                .metadata()
+                .set_view_error(&state_table.table_id, None)
+                .await?;
+        }
+
+        let columns = target
+            .schema
+            .fields()
+            .iter()
+            .map(|field| {
+                let source = positional
+                    .get(field.name())
+                    .cloned()
+                    .unwrap_or_else(|| field.name().clone());
+                Ok(SinkColumn {
+                    name: field.name().clone(),
+                    source: if source == *field.name() {
+                        String::new()
+                    } else {
+                        source
+                    },
+                    result: encode_data_type(field.data_type())?,
+                    nullable: field.is_nullable(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let source_generation = state_generation;
+        let sink_spec = ViewSpec::Sink {
+            view_id: view_id.to_string(),
+            source_table_id: state_table.table_id.clone(),
+            mv_table_id: target.table_id.clone(),
+            columns,
+            primary_keys: target.primary_keys.clone(),
+            range_partition_columns: target.range_partition_columns.clone(),
+            source_definition: state_definition.clone(),
+            source_generation,
+        };
+        let sink_definition = definition_hash(&sink_spec)?;
+        let stored_sink = self.runtime.metadata().view_definition(view_id).await?;
+        let stored_source_generation =
+            match self.runtime.metadata().get_view_spec(view_id).await? {
+                Some(value) => match serde_json::from_value::<ViewSpec>(value) {
+                    Ok(ViewSpec::Sink {
+                        source_generation, ..
+                    }) => Some(source_generation),
+                    _ => None,
+                },
+                None => None,
+            };
+        let same_sink = stored_sink
+            .as_ref()
+            .is_some_and(|(hash, _)| hash == &sink_definition);
+        let sink_dirty = self
+            .runtime
+            .metadata()
+            .view_status(view_id)
+            .await?
+            .as_deref()
+            == Some("dirty");
+        let mut sink_rebuilt = overwrite
+            || stored_sink.is_none()
+            || !same_sink
+            || stored_source_generation != Some(source_generation)
+            || state_rebuilt
+            || sink_dirty;
+        let sink_epoch = if sink_rebuilt {
+            let epoch = self.runtime.rebuild_spec(&sink_spec).await?;
+            self.runtime
+                .metadata()
+                .set_view_definition(view_id, &sink_definition, sql)
+                .await?;
+            Some(epoch)
+        } else {
+            match self.runtime.refresh_spec(&sink_spec).await {
+                Ok(epoch) => epoch,
+                Err(error) if IvmRuntime::rebuild_required(&error) => {
+                    sink_rebuilt = true;
+                    let epoch = self.runtime.rebuild_spec(&sink_spec).await?;
+                    self.runtime
+                        .metadata()
+                        .set_view_definition(view_id, &sink_definition, sql)
+                        .await?;
+                    Some(epoch)
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        if sink_rebuilt || sink_dirty {
+            self.runtime
+                .metadata()
+                .set_view_status(view_id, "active")
+                .await?;
+            self.runtime
+                .metadata()
+                .set_view_error(view_id, None)
+                .await?;
+        }
+        if stored_sink.is_some() && !same_sink {
+            self.drop_stale_derived(target, derived.len()).await?;
+        }
+
+        let action = if overwrite {
+            IvmExecutionAction::Overwrite
+        } else if stored_sink.is_none() {
+            IvmExecutionAction::Bootstrap
+        } else if sink_rebuilt {
+            IvmExecutionAction::Rebuild
+        } else {
+            IvmExecutionAction::Incremental
+        };
+        Ok(IvmExecution {
+            action,
+            epoch: sink_epoch,
+            view_id: view_id.to_string(),
+            definition_hash: sink_definition,
+        })
+    }
+
+    /// Create or reuse the hidden maintenance state table of a split view.
+    async fn ensure_internal_state_table(
+        &self,
+        target: &IvmTable,
+        spec: &ViewSpec,
+        expected: SchemaRef,
+    ) -> Result<IvmTable> {
+        let primary_keys = self.derived_primary_keys(spec).await?;
+        if primary_keys.is_empty() && !is_global_aggregate(spec) {
+            return Err(rootcause::report!(
+                "the maintenance state of target `{}` needs a primary key",
+                target.table_name
+            ));
+        }
+        let name = format!("{}__ivm_state", target.table_name);
+        let path = format!("{}/__ivm_state", target.table_path.trim_end_matches('/'));
+        if let Ok(existing) = self.runtime.open_table(&name, &target.namespace).await {
+            if schema_matches(&existing.schema, &expected)
+                && existing.primary_keys == primary_keys
+            {
+                return Ok(existing);
+            }
+            for state in self
+                .runtime
+                .metadata()
+                .list_states(&existing.table_id)
+                .await?
+            {
+                if state.role == StateRole::Mv {
+                    continue;
+                }
+                self.runtime
+                    .metadata()
+                    .unregister_state(&existing.table_id, state.role)
+                    .await?;
+                let _ = self
+                    .runtime
+                    .client()
+                    .drop_table(&state.table_name, &state.namespace)
+                    .await;
+            }
+            let _ = self
+                .runtime
+                .metadata()
+                .delete_view(&existing.table_id)
+                .await;
+            let _ = self
+                .runtime
+                .client()
+                .drop_table(&name, &target.namespace)
+                .await;
+        }
+        let mut options = IvmTableOptions::new(name, path, expected)
+            .with_namespace(target.namespace.clone())
+            .with_primary_keys(primary_keys)
+            .with_file_format(target.file_format);
+        options.hash_bucket_num = target.hash_bucket_num.clone();
+        self.runtime.create_table(options).await
+    }
+
     /// Analyze `plan`, materializing the derived views its compound sources
     /// need (bottom-up), and return the outer spec with the rewritten plan.
     async fn analyze_with_derived(
@@ -904,6 +1423,7 @@ impl IvmSqlExecutor {
         request: &AnalyzeRequest,
         target: &IvmTable,
         steps: &mut Vec<String>,
+        cache: &mut HashMap<String, CachedDerived>,
     ) -> Result<(ViewSpec, LogicalPlan)> {
         let mut plan = plan.clone();
         loop {
@@ -913,16 +1433,36 @@ impl IvmSqlExecutor {
                     let Some(source) = derived_source(&error) else {
                         return Err(error);
                     };
-                    if steps.len() >= MAX_DERIVED_STEPS {
+                    if steps.len() >= max_derived_steps() {
                         return Err(rootcause::report!(
-                            "the statement needs more than {MAX_DERIVED_STEPS} \
-                             derived views; split it into explicit views"
+                            "the statement needs more than {} derived views; \
+                             split it into explicit views (raise \
+                             LAKESOUL_IVM_MAX_DERIVED_STEPS to allow more)",
+                            max_derived_steps()
                         )
                         .attach(UnsupportedShape));
                     }
-                    let (table, view_id, mapping) = self
-                        .materialize_derived(&source, target, tables, steps)
-                        .await?;
+                    let key = plan_key(&source);
+                    let reused = cache.get(&key).cloned();
+                    let (table, view_id, mapping, fresh) = match reused {
+                        Some(step) => (step.table, step.view_id, step.mapping, false),
+                        None => {
+                            let (table, view_id, mapping) = self
+                                .materialize_derived(
+                                    &source, target, tables, steps, cache,
+                                )
+                                .await?;
+                            cache.insert(
+                                key,
+                                CachedDerived {
+                                    table: table.clone(),
+                                    view_id: view_id.clone(),
+                                    mapping: mapping.clone(),
+                                },
+                            );
+                            (table, view_id, mapping, true)
+                        }
+                    };
                     let scan = derived_scan(&table, &self.runtime)?;
                     plan = replace_plan(&plan, &source, &scan)?;
                     let renames = mapping
@@ -933,7 +1473,9 @@ impl IvmSqlExecutor {
                         plan = rename_derived_columns(plan, &renames)?;
                     }
                     tables.insert(table.table_name.clone(), table);
-                    steps.push(view_id);
+                    if fresh {
+                        steps.push(view_id);
+                    }
                 }
             }
         }
@@ -947,6 +1489,7 @@ impl IvmSqlExecutor {
         target: &IvmTable,
         tables: &mut HashMap<String, IvmTable>,
         steps: &mut Vec<String>,
+        cache: &mut HashMap<String, CachedDerived>,
     ) -> Result<(IvmTable, String, Vec<(String, String)>)> {
         derived_step_supported(subplan)?;
         let request = AnalyzeRequest {
@@ -957,9 +1500,10 @@ impl IvmSqlExecutor {
         };
         // The subplan may itself need derived views; they are materialized
         // first and take the lower step indices.
-        let (mut spec, _) =
-            Box::pin(self.analyze_with_derived(subplan, tables, &request, target, steps))
-                .await?;
+        let (mut spec, _) = Box::pin(
+            self.analyze_with_derived(subplan, tables, &request, target, steps, cache),
+        )
+        .await?;
         // A derived outer-join step gets a non-null row identity, so a
         // consumer can read its MV as a keyed source; the keys must be
         // encodable into that identity.
@@ -969,6 +1513,14 @@ impl IvmSqlExecutor {
         // derived view widens them to the subplan's column names so the
         // rewritten plan resolves its columns.
         widen_derived_join(&mut spec);
+        // Two occurrences of the same CTE may differ only in relation aliases;
+        // their normalized specs are identical, so reuse the step table (and
+        // skip creating a new one).
+        let spec_key = format!("spec:{}", definition_hash(&spec)?);
+        if let Some(step) = cache.get(&spec_key).cloned() {
+            let mapping = derived_output_mapping(&spec, subplan)?;
+            return Ok((step.table, step.view_id, mapping));
+        }
         // The materialized columns must cover every subplan output field
         // (the replacement projection renames them back).
         let mapping = derived_output_mapping(&spec, subplan)?;
@@ -1010,6 +1562,14 @@ impl IvmSqlExecutor {
                 .set_view_definition(&view_id, &definition, "")
                 .await?;
         }
+        cache.insert(
+            spec_key,
+            CachedDerived {
+                table: table.clone(),
+                view_id: view_id.clone(),
+                mapping: mapping.clone(),
+            },
+        );
         Ok((table, view_id, mapping))
     }
 
@@ -1025,7 +1585,26 @@ impl IvmSqlExecutor {
     ) -> Result<IvmTable> {
         let name = derived_step_name(&target.table_name, index);
         let path = derived_step_path(&target.table_path, index);
-        let schema = expected_mv_schema(spec, tables)?;
+        let mut schema = expected_mv_schema(spec, tables)?;
+        // A filter `key IS NOT NULL` guarantees a derived key is non-null even
+        // when the source column is declared nullable.  Carry that into the
+        // step schema so a consumer can read the step as a keyed source.
+        let non_null = self.spec_non_null_columns(spec, &schema).await?;
+        if !non_null.is_empty() {
+            let fields = schema
+                .fields()
+                .iter()
+                .map(|field| {
+                    if non_null.contains(field.name()) {
+                        Arc::new(field.as_ref().clone().with_nullable(false))
+                    } else {
+                        field.clone()
+                    }
+                })
+                .collect::<Vec<_>>();
+            schema =
+                Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
+        }
         let primary_keys = self.derived_primary_keys(spec).await?;
         if let Ok(existing) = self.runtime.open_table(&name, &target.namespace).await {
             if schema_matches(&existing.schema, &schema)
@@ -1049,6 +1628,74 @@ impl IvmSqlExecutor {
                     .with_primary_keys(primary_keys),
             )
             .await
+    }
+
+    /// The columns a derived step's own filter, or every keyed UNION branch's
+    /// filter, guarantees non-null.
+    async fn spec_non_null_columns(
+        &self,
+        spec: &ViewSpec,
+        schema: &Schema,
+    ) -> Result<Vec<String>> {
+        // A step filter runs against the source table, not against the
+        // step's (possibly pruned) output schema.
+        let filter_schema = match spec {
+            ViewSpec::Row {
+                source_table_id, ..
+            }
+            | ViewSpec::MultiAgg {
+                source_table_id, ..
+            } => self.runtime.open_table_by_id(source_table_id).await?.schema,
+            _ => Arc::new(schema.clone()),
+        };
+        let mut columns = spec_filter(spec)
+            .map(|filter| filter_non_null_columns(filter, &filter_schema))
+            .unwrap_or_default();
+        if let ViewSpec::UnionAll { sources, .. } = spec {
+            let mut guaranteed: Option<Vec<String>> = None;
+            for source in sources {
+                let table = self.runtime.open_table_by_id(&source.table_id).await?;
+                let mut branch = source
+                    .filter
+                    .as_deref()
+                    .map(|filter| filter_non_null_columns(filter, &table.schema))
+                    .unwrap_or_default();
+                // A branch table that already carries a non-null column and
+                // projects it unchanged guarantees it as well.
+                if source.columns.is_empty() {
+                    for field in table.schema.fields() {
+                        if !field.is_nullable() {
+                            branch.push(field.name().clone());
+                        }
+                    }
+                } else {
+                    for (index, column) in source.columns.iter().enumerate() {
+                        let expression = source
+                            .exprs
+                            .get(index)
+                            .cloned()
+                            .unwrap_or_else(|| column.clone());
+                        if expression == *column
+                            && table
+                                .schema
+                                .field_with_name(column)
+                                .is_ok_and(|field| !field.is_nullable())
+                        {
+                            branch.push(column.clone());
+                        }
+                    }
+                }
+                guaranteed = Some(match guaranteed {
+                    None => branch,
+                    Some(previous) => previous
+                        .into_iter()
+                        .filter(|column| branch.contains(column))
+                        .collect(),
+                });
+            }
+            columns.extend(guaranteed.unwrap_or_default());
+        }
+        Ok(columns)
     }
 
     /// The primary keys a derived MV is created with.  The join shapes, the
@@ -1130,11 +1777,35 @@ impl IvmSqlExecutor {
                 let source = self.runtime.open_table_by_id(source_table_id).await?;
                 source.primary_keys.clone()
             }
-            ViewSpec::UnionAll { sources, .. }
-            | ViewSpec::UnionDistinct { sources, .. } => {
-                // A keyed union is keyed by `(__ivm_source, primary keys)`;
+            ViewSpec::UnionAll {
+                sources,
+                source_column,
+                ..
+            } => {
+                // A keyed union is keyed by `(source column, branch keys)`;
                 // every keyed branch keeps its primary keys in the output.
-                // An append-only union stays keyless.
+                // An append-only union stays keyless.  A nested union's inner
+                // marker is a branch primary key and stays in `keys` too.
+                let mut keys = Vec::new();
+                for source in sources {
+                    let table = self.runtime.open_table_by_id(&source.table_id).await?;
+                    if table.primary_keys.is_empty() {
+                        continue;
+                    }
+                    if keys.is_empty() {
+                        keys.push(source_column.clone());
+                    }
+                    for key in &table.primary_keys {
+                        let output = crate::sql::union_key_output_name(source, key)
+                            .unwrap_or_else(|| key.clone());
+                        if !keys.contains(&output) {
+                            keys.push(output);
+                        }
+                    }
+                }
+                keys
+            }
+            ViewSpec::UnionDistinct { sources, .. } => {
                 let mut keys = Vec::new();
                 for source in sources {
                     let table = self.runtime.open_table_by_id(&source.table_id).await?;
@@ -1152,13 +1823,60 @@ impl IvmSqlExecutor {
                 }
                 keys
             }
-            ViewSpec::LookupJoin { left_table_id, .. } => self
+            ViewSpec::LookupChain { sources, steps, .. } => {
+                // The chain MV is keyed by the base keys plus the matched-row
+                // identity of every 1:N step.  Computed-output derived steps
+                // only accept unique steps, but the general branch keeps the
+                // key layout valid if this helper is reused later.
+                let mut keys = self
+                    .runtime
+                    .open_table_by_id(
+                        &sources
+                            .first()
+                            .ok_or_else(|| {
+                                rootcause::report!(
+                                    "a derived lookup chain has no base source"
+                                )
+                            })?
+                            .table_id,
+                    )
+                    .await?
+                    .primary_keys
+                    .clone();
+                for step in steps {
+                    if !step.unique {
+                        keys.push(lookup_chain_step_id_column(step.source));
+                    }
+                }
+                keys
+            }
+            ViewSpec::LookupJoin { left_table_id, .. }
+            | ViewSpec::SemiAnti { left_table_id, .. } => self
                 .runtime
                 .open_table_by_id(left_table_id)
                 .await?
                 .primary_keys
                 .clone(),
+            // A projection step keeps the source row identity.  A keyed
+            // consumer reads the step by it; an append-only source stays
+            // keyless.
+            ViewSpec::Row {
+                source_table_id, ..
+            } => self
+                .runtime
+                .open_table_by_id(source_table_id)
+                .await?
+                .primary_keys
+                .clone(),
             // A top-k row's identity is its source primary key.
+            // A top-1 view has exactly one row per group, so the partition
+            // keys are its identity; a larger limit keeps the source keys.
+            ViewSpec::TopK {
+                group_keys,
+                limit,
+                offset,
+                ..
+            } if *limit == 1 && *offset == 0 => group_keys.clone(),
             ViewSpec::TopK {
                 source_table_id, ..
             } => self
@@ -1193,7 +1911,7 @@ impl IvmSqlExecutor {
     /// step tables are addressed by name, and their views are registered
     /// under the table id.
     async fn drop_stale_derived(&self, target: &IvmTable, needed: usize) -> Result<()> {
-        for index in needed..=MAX_DERIVED_STEPS {
+        for index in needed..=max_derived_steps() {
             let name = derived_step_name(&target.table_name, index);
             let Ok(table) = self.runtime.open_table(&name, &target.namespace).await
             else {
@@ -1548,13 +2266,12 @@ fn needs_state_table(spec: &ViewSpec) -> bool {
         ViewSpec::MultiAgg {
             group_exprs,
             aggregates,
-            filter,
+            filter: _,
             having,
             having_lookup,
             ..
         } => {
             group_exprs.is_empty()
-                && filter.is_none()
                 && having.is_none()
                 && having_lookup.is_none()
                 && aggregates.iter().all(|aggregate| {
@@ -1562,11 +2279,11 @@ fn needs_state_table(spec: &ViewSpec) -> bool {
                         .call
                         .strip_prefix("SUM(")
                         .and_then(|call| call.strip_suffix(')'))
-                        .is_some_and(|column| {
-                            !column.is_empty()
-                                && !column.contains(',')
-                                && !column.contains('(')
-                                && !column.contains(' ')
+                        .is_some_and(|expression| {
+                            let expression = expression.trim();
+                            !expression.is_empty()
+                                && !expression.contains(',')
+                                && !expression.to_ascii_uppercase().contains("DISTINCT")
                         })
                 })
         }
@@ -1609,7 +2326,7 @@ fn expected_mv_schema(
     spec: &ViewSpec,
     tables: &HashMap<String, IvmTable>,
 ) -> Result<SchemaRef> {
-    Ok(match spec {
+    let schema = match spec {
         // A Tier-2 fallback is validated against its planned statement, never
         // against the spec.
         ViewSpec::Fallback { .. } => {
@@ -1617,6 +2334,18 @@ fn expected_mv_schema(
                 "a fallback view's schema comes from its statement"
             ));
         }
+        ViewSpec::Sink { columns, .. } => Arc::new(Schema::new(
+            columns
+                .iter()
+                .map(|column| {
+                    Ok(Field::new(
+                        &column.name,
+                        decode_data_type(&column.result)?,
+                        column.nullable,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
+        )),
         ViewSpec::LookupChain {
             sources,
             steps,
@@ -2053,14 +2782,18 @@ fn expected_mv_schema(
             output_columns,
             output_exprs,
         )?,
-        ViewSpec::UnionAll { sources, .. } => {
+        ViewSpec::UnionAll {
+            sources,
+            source_column,
+            ..
+        } => {
             let spec = sources
                 .first()
                 .ok_or_else(|| rootcause::report!("UNION ALL view without sources"))?;
             let source = find_table(tables, &spec.table_id)?;
             let output =
                 union_output_schema_for(&source.schema, &spec.columns, &spec.exprs)?;
-            union_all_mv_schema_for(&output)?
+            union_all_mv_schema_with_source(&output, source_column)?
         }
         ViewSpec::UnionDistinct { sources, .. } => {
             let spec = sources
@@ -2226,7 +2959,57 @@ fn expected_mv_schema(
                 schema
             }
         }
-    })
+    };
+    Ok(normalize_schema(&schema))
+}
+
+/// The filter a normalized view applies to its contributing rows, when the
+/// spec keeps one.
+fn spec_filter(spec: &ViewSpec) -> Option<&str> {
+    match spec {
+        ViewSpec::Row { filter, .. } => filter.as_deref(),
+        ViewSpec::MultiAgg { filter, .. } => filter.as_deref(),
+        _ => None,
+    }
+}
+
+/// The columns a filter guarantees non-null (`col IS NOT NULL` conjuncts).
+fn filter_non_null_columns(filter: &str, schema: &Schema) -> Vec<String> {
+    let context = refresh_session();
+    let schema: SchemaRef = Arc::new(schema.clone());
+    let Ok(predicate) = parse_filter(&context, &schema, filter) else {
+        return Vec::new();
+    };
+    datafusion::logical_expr::utils::split_conjunction(&predicate)
+        .into_iter()
+        .filter_map(|conjunct| match conjunct {
+            Expr::IsNotNull(inner) => non_null_column(inner),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The column under a cast chain, for `CAST(col AS t) IS NOT NULL`.
+fn non_null_column(expr: &Expr) -> Option<String> {
+    let mut inner = expr;
+    while let Expr::Cast(cast) = inner {
+        inner = cast.expr.as_ref();
+    }
+    match inner {
+        Expr::Column(column) => Some(column.name.clone()),
+        _ => None,
+    }
+}
+
+fn target_needs_sink(target: &IvmTable, expected: &Schema) -> bool {
+    if !schema_matches(&target.schema, expected) {
+        return true;
+    }
+    !target.range_partition_columns.is_empty()
+        && !target
+            .range_partition_columns
+            .iter()
+            .all(|column| target.primary_keys.contains(column))
 }
 
 fn schema_matches(actual: &Schema, expected: &Schema) -> bool {
