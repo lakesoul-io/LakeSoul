@@ -2484,6 +2484,7 @@ impl IvmRuntime {
             &view.group_keys,
             &view.group_exprs,
         )?;
+        let delta = cast_frame_columns(delta, &view.mv.schema, &view.group_keys)?;
         let keyed = !view.source.primary_keys.is_empty();
         let old_projection = Self::sum_count_source_projection(view)?;
         let old_schema = old_projection.as_ref().unwrap_or(&view.source.schema);
@@ -2527,6 +2528,7 @@ impl IvmRuntime {
         } else {
             dataframe(&context, Vec::new(), old_schema)?
         };
+        let old_frame = cast_frame_columns(old_frame, &view.mv.schema, &view.group_keys)?;
 
         let mut keyed_mv: Option<DataFrame> = None;
         let mut active_keyed =
@@ -2565,6 +2567,8 @@ impl IvmRuntime {
                         true,
                     )
                     .await?;
+                let active =
+                    cast_frame_columns(active, &view.mv.schema, &view.group_keys)?;
                 context.register_table("active_input", active.into_view())?;
             } else {
                 active_keyed = false;

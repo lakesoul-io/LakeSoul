@@ -2571,6 +2571,38 @@ fn project_group_keys_frame(
     Ok(frame)
 }
 
+/// Cast the given columns of a frame to the types the materialized view
+/// stores.  A source read may expose an optimized string view type
+/// (`Utf8View`) while the state/MV schema stores `Utf8`; hash joins on the
+/// group keys require both sides to use the same physical type.
+pub(crate) fn cast_frame_columns(
+    frame: DataFrame,
+    target_schema: &arrow_schema::Schema,
+    columns: &[String],
+) -> Result<DataFrame> {
+    let exprs = frame
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| {
+            let expr = Expr::Column(Column::from_name(field.name()));
+            if columns.iter().any(|column| column == field.name())
+                && let Ok(target) = target_schema.field_with_name(field.name())
+                && target.data_type() != field.data_type()
+            {
+                return datafusion::logical_expr::Expr::Cast(
+                    datafusion::logical_expr::expr::Cast::new(
+                        Box::new(expr),
+                        target.data_type().clone(),
+                    ),
+                );
+            }
+            expr
+        })
+        .collect::<Vec<_>>();
+    frame.select(exprs).map_err(Into::into)
+}
+
 /// The session used by full and incremental refreshes.  Keep the partition
 /// count identical on both paths so a bootstrap and its first incremental
 /// windows run with the same parallelism.
