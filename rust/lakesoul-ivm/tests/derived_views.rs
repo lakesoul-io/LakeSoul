@@ -247,6 +247,9 @@ async fn aggregate_over_join_is_materialized_and_maintained() {
         format!("{}__ivm_step0", mv.table_name)
     );
     assert_eq!(derived_table.hash_bucket_num, "8");
+    // A keyed lookup routes by the recorded bucket columns.  Leaving them
+    // empty makes every before-image lookup scan the whole step table.
+    assert_eq!(derived_table.bucket_columns, derived_table.primary_keys);
     let info = runtime
         .metadata()
         .list_views()

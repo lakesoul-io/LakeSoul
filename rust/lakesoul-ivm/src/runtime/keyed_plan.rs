@@ -1149,6 +1149,7 @@ impl ExecutionPlan for IvmPkLookupExec {
                             contribution_rows = batch.num_rows(),
                             chunks,
                             state_rows,
+                            output_rows = output.num_rows(),
                             elapsed = ?started.elapsed(),
                             "keyed state lookup batch finished"
                         );

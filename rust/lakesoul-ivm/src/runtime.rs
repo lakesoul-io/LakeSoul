@@ -2619,28 +2619,50 @@ pub(crate) fn refresh_session() -> SessionContext {
     let config = SessionConfig::new()
         .with_target_partitions(target_partitions)
         .with_batch_size(batch_size);
-    let limit_mb = std::env::var("LAKESOUL_IVM_MEMORY_LIMIT_MB")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(4096);
-    let spill_dir = std::env::var("LAKESOUL_IVM_SPILL_DIR")
-        .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
-    let _ = std::fs::create_dir_all(&spill_dir);
-    let runtime = datafusion::execution::runtime_env::RuntimeEnvBuilder::new()
-        .with_memory_limit(limit_mb * 1024 * 1024, 0.8)
-        .with_temp_file_path(&spill_dir)
-        .with_max_temp_directory_size(100 * 1024 * 1024 * 1024)
-        .build()
-        .expect("ivm refresh runtime env");
-    let context = SessionContext::new_with_config_rt(config, Arc::new(runtime));
+    let context = SessionContext::new_with_config_rt(config, refresh_runtime());
     tracing::debug!(
         target_partitions,
         batch_size,
-        limit_mb,
-        %spill_dir,
         "IVM refresh session configured"
     );
     context
+}
+
+/// The single SQL execution pool shared by every refresh session.
+///
+/// A refresh creates a session per view and a few more for helper plans.  A
+/// pool per session made memory scale with the number of live plans; sharing
+/// one pool keeps the configured budget process-wide and lets DataFusion spill
+/// instead of multiplying it.  This pool is intentionally the largest one:
+/// joins, windows and sorts benefit from memory much more than streaming IO
+/// readers do.
+fn refresh_runtime() -> Arc<datafusion::execution::runtime_env::RuntimeEnv> {
+    static RUNTIME: std::sync::OnceLock<
+        Arc<datafusion::execution::runtime_env::RuntimeEnv>,
+    > = std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            let limit_mb = std::env::var("LAKESOUL_IVM_MEMORY_LIMIT_MB")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(8192);
+            let spill_dir = std::env::var("LAKESOUL_IVM_SPILL_DIR")
+                .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
+            let _ = std::fs::create_dir_all(&spill_dir);
+            let runtime = datafusion::execution::runtime_env::RuntimeEnvBuilder::new()
+                .with_memory_limit(limit_mb * 1024 * 1024, 0.8)
+                .with_temp_file_path(&spill_dir)
+                .with_max_temp_directory_size(100 * 1024 * 1024 * 1024)
+                .build()
+                .expect("ivm refresh runtime env");
+            tracing::debug!(
+                limit_mb,
+                %spill_dir,
+                "IVM refresh runtime configured"
+            );
+            Arc::new(runtime)
+        })
+        .clone()
 }
 
 /// Encodes the group-key columns of a batch into Arrow's canonical row
