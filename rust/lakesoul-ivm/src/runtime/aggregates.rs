@@ -2410,6 +2410,7 @@ impl IvmRuntime {
         } else {
             None
         };
+        crate::runtime::trace_rss("sum_count raw_delta");
         let raw_deletes = if let Some(raw) = &raw_delta {
             let rows = count_frame_rows(raw.clone()).await?;
             let deletes = count_frame_rows(
@@ -2425,6 +2426,7 @@ impl IvmRuntime {
             0
         };
         drop(check_context);
+        crate::runtime::trace_rss("sum_count delta_counted");
         let record = match self
             .begin_window(&view.view_id, &window.identity, &view.mv)
             .await?
@@ -2529,6 +2531,7 @@ impl IvmRuntime {
             dataframe(&context, Vec::new(), old_schema)?
         };
         let old_frame = cast_frame_columns(old_frame, &view.mv.schema, &view.group_keys)?;
+        crate::runtime::trace_rss("sum_count old_frame");
 
         let mut keyed_mv: Option<DataFrame> = None;
         let mut active_keyed =
@@ -2614,14 +2617,17 @@ impl IvmRuntime {
             }
         };
         context.register_table("mv", mv.into_view())?;
+        crate::runtime::trace_rss("sum_count mv_frame");
         let sql = sum_count_refresh_sql(view, keyed, epoch, changelog, active_keyed);
         let frame = context.sql(&sql).await?;
+        crate::runtime::trace_rss("sum_count planned");
         commit_ids.extend(
             view.mv
                 .append_stream(&self.client, frame.execute_stream().await?)
                 .await?,
         );
 
+        crate::runtime::trace_rss("sum_count appended");
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;

@@ -2272,7 +2272,7 @@ impl IvmRuntime {
         .with_primary_keys(keys)
         .with_bucket_columns(view.partition_keys.clone())
         .with_range_partition_columns(view.mv.range_partition_columns.clone())
-        .with_file_format(view.mv.file_format);
+        .with_file_format(crate::table::internal_file_format());
         options.hash_bucket_num = view.mv.hash_bucket_num.clone();
         let state = self.create_table(options).await?;
         self.register_state_tables(&view.view_id, &[(StateRole::State, &state)])
@@ -2668,7 +2668,7 @@ impl IvmRuntime {
         .with_namespace(view.mv.namespace.clone())
         .with_primary_keys(keys)
         .with_bucket_columns(vec![IVM_MW_PARTITION.to_string()])
-        .with_file_format(view.mv.file_format)
+        .with_file_format(crate::table::internal_file_format())
         .with_cdc_column(IVM_ROW_KINDS_COLUMN);
         options.hash_bucket_num = view.source.hash_bucket_num.clone();
         let state = self.create_table(options).await?;
@@ -3266,7 +3266,7 @@ impl IvmRuntime {
         .with_primary_keys(keys)
         .with_bucket_columns(view.group_keys.clone())
         .with_range_partition_columns(view.mv.range_partition_columns.clone())
-        .with_file_format(view.mv.file_format);
+        .with_file_format(crate::table::keyed_state_file_format());
         options.hash_bucket_num = view.mv.hash_bucket_num.clone();
         let state = self.create_table(options).await?;
         self.register_state_tables(&view.view_id, &[(StateRole::State, &state)])
@@ -3327,7 +3327,19 @@ impl IvmRuntime {
             let state = self.open_table_by_id(&existing.table_id).await?;
             if state.schema.as_ref() == expected_schema.as_ref() {
                 if state.current_files(&self.client).await?.is_empty() {
+                    tracing::debug!(
+                        table = %state.table_name,
+                        source = %source.table_name,
+                        reason = "empty",
+                        "sync rank state"
+                    );
+                    let started = std::time::Instant::now();
                     self.sync_rank_state(source, &state).await?;
+                    tracing::debug!(
+                        table = %state.table_name,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "rank state synced"
+                    );
                 } else if let Some(epoch) = self.latest_epoch(view_id).await? {
                     let expected = epoch
                         .state_versions
@@ -3343,8 +3355,22 @@ impl IvmRuntime {
                         // committed epoch (for example after a crash or a
                         // compaction).  Re-seed it from the source so the next
                         // window starts from a known current row set.
+                        tracing::debug!(
+                            table = %state.table_name,
+                            source = %source.table_name,
+                            reason = "version_mismatch",
+                            ?expected,
+                            ?current,
+                            "sync rank state"
+                        );
+                        let started = std::time::Instant::now();
                         state.truncate(&self.client).await?;
                         self.sync_rank_state(source, &state).await?;
+                        tracing::debug!(
+                            table = %state.table_name,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "rank state synced"
+                        );
                     }
                 }
                 return Ok(Some(state));
@@ -3379,7 +3405,7 @@ impl IvmRuntime {
         .with_primary_keys(keys)
         .with_bucket_columns(bucket_columns.to_vec())
         .with_cdc_column(change)
-        .with_file_format(source.file_format);
+        .with_file_format(crate::table::internal_file_format());
         options.hash_bucket_num = source.hash_bucket_num.clone();
         let state = self.create_table(options).await?;
         self.register_state_tables(view_id, &[(StateRole::RankState, &state)])

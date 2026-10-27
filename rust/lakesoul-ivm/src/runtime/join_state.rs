@@ -377,7 +377,7 @@ impl super::IvmRuntime {
         .with_namespace(source.namespace.clone())
         .with_primary_keys(join_side_state_primary_keys(source))
         .with_bucket_columns(vec![IVM_JOIN_KEY_COLUMN.to_string()])
-        .with_file_format(source.file_format);
+        .with_file_format(crate::table::keyed_state_file_format());
         options.hash_bucket_num = source.hash_bucket_num.clone();
         if let Some(cdc) = join_side_state_cdc_column(source) {
             options = options.with_cdc_column(cdc);

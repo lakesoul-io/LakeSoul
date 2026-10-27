@@ -48,6 +48,7 @@ use datafusion::physical_plan::{
 use datafusion::physical_plan::{RangePartitioning, SplitPoint};
 use datafusion::prelude::{DataFrame, col, lit};
 use futures::StreamExt;
+use lakesoul_vector::IndexKey;
 use tokio::sync::Semaphore;
 
 use super::{
@@ -404,11 +405,27 @@ async fn lookup_streaming_chunk(
     gate: Arc<Semaphore>,
 ) -> DataFusionResult<(Vec<RecordBatch>, usize)> {
     let contribution_keys = key_rows(chunk, key, state_schema)?;
+    let explicit_pk = match key {
+        PkLookupKey::Columns { table_columns, .. } => {
+            let encoded: Vec<IndexKey> = contribution_keys
+                .iter()
+                .flatten()
+                .map(IndexKey::new)
+                .collect();
+            (!encoded.is_empty()).then(|| (table_columns.clone(), encoded))
+        }
+        PkLookupKey::BinaryRow { .. } => None,
+    };
     let mut matched: HashSet<Vec<u8>> = HashSet::new();
     let mut outputs = Vec::new();
     let mut state_rows = 0usize;
     let mut state_batches = table
-        .stream_partition_files_filtered(groups.to_vec(), filters, gate.clone())
+        .stream_partition_files_filtered(
+            groups.to_vec(),
+            filters,
+            explicit_pk,
+            gate.clone(),
+        )
         .await
         .map_err(|error| DataFusionError::Execution(error.to_string()))?;
     while let Some(batch) = state_batches.recv().await {
@@ -1145,6 +1162,7 @@ impl ExecutionPlan for IvmPkLookupExec {
                             _ => arrow::compute::concat_batches(&out_schema, &outputs)?,
                         };
                         tracing::debug!(
+                            table = %table.table_name,
                             partition,
                             contribution_rows = batch.num_rows(),
                             chunks,

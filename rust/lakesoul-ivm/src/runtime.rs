@@ -2942,10 +2942,18 @@ impl IvmRuntime {
         if threshold == 0 {
             return Ok(());
         }
-        if state.current_file_count(&self.client).await? < threshold {
+        let files = state.current_file_count(&self.client).await?;
+        if files < threshold {
             return Ok(());
         }
+        let started = std::time::Instant::now();
         state.compact(&self.client).await?;
+        tracing::debug!(
+            table = %state.table_name,
+            files,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "state compaction finished"
+        );
         Ok(())
     }
 
@@ -2980,8 +2988,16 @@ impl IvmRuntime {
             return Ok(());
         };
         let table = self.open_table_by_id(&state.table_id).await?;
-        if table.current_file_count(&self.client).await? >= threshold {
+        let files = table.current_file_count(&self.client).await?;
+        if files >= threshold {
+            let started = std::time::Instant::now();
             table.compact(&self.client).await?;
+            tracing::debug!(
+                table = %table.table_name,
+                files,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "mv compaction finished"
+            );
         }
         Ok(())
     }
@@ -3114,6 +3130,28 @@ fn project_frame(frame: DataFrame, columns: &[String]) -> Result<DataFrame> {
 }
 
 /// Count a lazy frame's rows by draining its stream; nothing is collected.
+/// Log the process RSS at a debug checkpoint when `IVM_DEBUG_RSS` is set.
+pub(crate) fn trace_rss(label: &str) {
+    if std::env::var("IVM_DEBUG_RSS").is_err() {
+        return;
+    }
+    let rss_mb = std::fs::read_to_string("/proc/self/status")
+        .unwrap_or_default()
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|value| {
+            value
+                .trim()
+                .trim_end_matches(" kB")
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })
+        .unwrap_or(0)
+        / 1024;
+    tracing::debug!(rss_mb, label, "rss checkpoint");
+}
+
 pub(crate) async fn count_frame_rows(frame: DataFrame) -> Result<u64> {
     use futures::StreamExt;
     let mut stream = frame.execute_stream().await?;
@@ -4231,6 +4269,11 @@ impl IvmRuntime {
         self.ensure_incremental_upstreams(spec).await?;
         let kind = spec.kind();
         let started = std::time::Instant::now();
+        tracing::debug!(
+            kind,
+            view_id = %spec.view_id(),
+            "view refresh started"
+        );
         let view = self.spec_view(spec).await;
         let result = crate::observability::scope_refresh_io(kind, async {
             match view {
@@ -4282,6 +4325,13 @@ impl IvmRuntime {
             kind,
             matches!(result, Ok(Some(_))),
             started.elapsed(),
+        );
+        tracing::debug!(
+            kind,
+            view_id = %spec.view_id(),
+            applied = matches!(result, Ok(Some(_))),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "view refresh finished"
         );
         if result.is_ok() {
             self.compact_view_states(spec.view_id()).await?;
