@@ -414,6 +414,15 @@ needs none).  A typical trap: the two branches of a
   value; NULL never matches).  `array_agg` over a struct column materializes
   a list of structs.  A nested **join key** and an outer join or chain step
   whose key cannot be cast to a string stay rejected.
+* An **array column is not expanded by the engine**.  `CROSS JOIN
+  UNNEST(column)` and select-list `UNNEST` are rejected with a hard error (no
+  Tier-2 fallback): DataFusion 55.2 cannot execute a correlated
+  `CROSS JOIN UNNEST` and has no `WITH ORDINALITY`, so the expanded rows have
+  no stable element key.  Expand the array upstream into a keyed table whose
+  primary key contains the parent key and `element_index`
+  (`(parent_key..., element_index)`), then maintain the view from that table.
+  `SPLIT(x, ',')` may still be used in the upstream projection (the SQL
+  normalizer maps it to `string_to_array`).
 * A source may declare a CDC change column (`lakesoul_cdc_change_column`,
   [`IvmTableOptions::with_cdc_column`](src/table.rs)): `delete` retracts and
   `update` asserts the new version of the key. Without one the internal
@@ -617,6 +626,10 @@ decision too).  Create the target with `with_allow_fallback(false)`
 (the `lakesoul.ivm.allow_fallback = false` table property) to have the shapes
 rejected outright; the notes below describe the incremental analyzer's
 boundary (see [PLAN.md](PLAN.md) §10.5 for the backlog):
+
+* `UNNEST` is the exception: it is rejected outright even when the target
+  allows fallback, because the expanded rows have no stable element key
+  (see [Sources](#sources)); expand the array upstream instead.
 
 * a non-equality join condition is maintained for the two-source inner and
   cross joins (a compared column the select list does not carry becomes a

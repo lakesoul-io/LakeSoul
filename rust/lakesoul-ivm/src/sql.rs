@@ -102,6 +102,9 @@ pub fn analyze_select(
     // SQL standard; normalizing them before planning makes DataFusion plan the
     // semi/anti joins the analyzer models instead of mark joins.
     let plan = normalize_quantified_comparisons(plan)?;
+    if plan_contains_unnest(&plan) {
+        return Err(unnest_unsupported());
+    }
     // The optimizer keeps a projection over a projection around a pruned
     // subquery select list (a filtered window subquery, say); every shape
     // below reads one projection.
@@ -219,6 +222,7 @@ pub fn analyze_select(
                 }
             }
             LogicalPlan::TableScan(_) => analyze_row(plan, tables, request)?,
+            LogicalPlan::Unnest(_) => return Err(unnest_unsupported()),
             other => {
                 return Err(unsupported(format!(
                     "projection over {}",
@@ -276,6 +280,7 @@ pub fn analyze_select(
         LogicalPlan::Distinct(distinct) => {
             analyze_distinct_rows(distinct, tables, request)?
         }
+        LogicalPlan::Unnest(_) => return Err(unnest_unsupported()),
         other => {
             return Err(unsupported(plan_label(other)));
         }
@@ -361,6 +366,7 @@ fn collect_filtered_source(
         LogicalPlan::Sort(sort) if sort.fetch.is_none() => {
             collect_filtered_source(&sort.input, tables, shape)
         }
+        LogicalPlan::Unnest(_) => Err(unnest_unsupported()),
         other if derived_sourceable(other) => Err(derived_source_error(shape, other)),
         other => Err(unsupported(format!("{shape} over {}", plan_label(other)))),
     }
@@ -1184,12 +1190,42 @@ pub(crate) fn plan_label(plan: &LogicalPlan) -> &'static str {
         LogicalPlan::TableScan(_) => "a table scan",
         LogicalPlan::SubqueryAlias(_) => "a subquery alias",
         LogicalPlan::Subquery(_) => "a subquery",
+        LogicalPlan::Unnest(_) => "UNNEST",
         LogicalPlan::Values(_) => "VALUES",
         LogicalPlan::Repartition(_) => "a repartition",
         LogicalPlan::EmptyRelation(_) => "an empty relation",
         _ => "an unsupported plan node",
     }
 }
+
+/// Whether the plan contains an `Unnest` node, including inside an embedded
+/// lateral/correlated subquery.
+fn plan_contains_unnest(plan: &LogicalPlan) -> bool {
+    let mut found = false;
+    let _ = plan.apply_with_subqueries(|node| {
+        if matches!(node, LogicalPlan::Unnest(_)) {
+            found = true;
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    found
+}
+
+/// UNNEST is not an incremental shape: the expanded rows need a stable
+/// element position, which neither DataFusion's `Unnest` nor its SQL
+/// `WITH ORDINALITY` form provides.  The supported migration expands the
+/// array upstream into a keyed table.
+///
+/// This is a hard error (no [`UnsupportedShape`] attachment): silently
+/// falling back to a full recompute is not acceptable for a fanout operator.
+pub(crate) fn unnest_unsupported() -> rootcause::Report {
+    rootcause::report!(
+        "UNNEST is not maintained incrementally: expand the array upstream \
+         into a keyed table with (parent_key..., element_index, element_value)"
+    )
+}
+
 pub(crate) fn unsupported(what: impl std::fmt::Display) -> rootcause::Report {
     rootcause::report!("unsupported incremental view shape: {what}")
         .attach(UnsupportedShape)
@@ -2043,6 +2079,62 @@ mod tests {
         // String literals and comments are untouched.
         let literal = "select 'FOR SYSTEM_TIME AS OF x', split -- proctime()\n";
         assert_eq!(normalize_flink_sql(literal), literal);
+    }
+
+    #[tokio::test]
+    async fn rejects_unnest_with_upstream_expansion_guidance() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new(
+                "items",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                true,
+            ),
+        ]));
+        let table = IvmTable {
+            table_id: "table_src".to_string(),
+            table_name: "src".to_string(),
+            namespace: "default".to_string(),
+            table_path: "file:///tmp/src".to_string(),
+            schema: schema.clone(),
+            range_partition_columns: Vec::new(),
+            primary_keys: vec!["k".to_string()],
+            bucket_columns: Vec::new(),
+            hash_bucket_num: "1".to_string(),
+            cdc_column: None,
+            file_format: PhysicalFormat::Parquet,
+            allow_fallback: true,
+        };
+        let ctx = SessionContext::new();
+        let mem = MemTable::try_new(schema, vec![vec![]]).unwrap();
+        ctx.register_table("src", Arc::new(mem)).unwrap();
+        let frame = ctx
+            .table("src")
+            .await
+            .unwrap()
+            .unnest_columns(&["items"])
+            .unwrap();
+        let tables = HashMap::from([("src".to_string(), table)]);
+        let error = analyze_select(&frame.logical_plan().clone(), &tables, &request())
+            .unwrap_err();
+        let message = format!("{error:?}");
+        assert!(message.contains("UNNEST"), "{message}");
+        assert!(message.contains("element_index"), "{message}");
+
+        // The Flink-shaped cross join is planned as a lateral subquery; the
+        // analyzer still recognizes the Unnest inside it.
+        let cross = ctx
+            .sql(
+                "select s.k, item from src s \
+                 cross join unnest(s.items) as u(item)",
+            )
+            .await
+            .unwrap();
+        let error =
+            analyze_select(cross.logical_plan(), &tables, &request()).unwrap_err();
+        let message = format!("{error:?}");
+        assert!(message.contains("UNNEST"), "{message}");
+        assert!(message.contains("element_index"), "{message}");
     }
 
     #[tokio::test]

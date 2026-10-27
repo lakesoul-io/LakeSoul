@@ -313,6 +313,7 @@ fn derived_step_supported(subplan: &LogicalPlan) -> Result<()> {
         | LogicalPlan::Limit(_)
         | LogicalPlan::Filter(_)
         | LogicalPlan::TableScan(_) => Ok(()),
+        LogicalPlan::Unnest(_) => Err(crate::sql::unnest_unsupported()),
         other => Err(rootcause::report!(
             "a derived view over {} is not materialized yet",
             plan_label(other)
