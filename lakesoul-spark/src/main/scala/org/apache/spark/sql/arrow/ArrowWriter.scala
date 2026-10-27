@@ -47,7 +47,7 @@ object ArrowWriter {
       case (TimestampType, vector: TimeStampVector) =>
         new TimestampWriter(vector)
       case (_, vector: TimeSecVector) => new TimeSecWriter(vector)
-      case (TimestampNTZType, vector: TimeStampMicroVector) =>
+      case (TimestampNTZType, vector: TimeStampVector) =>
         new TimestampNTZWriter(vector)
       case (ArrayType(_, _), vector: ListVector) =>
         val elementVector = createFieldWriter(vector.getDataVector())
@@ -301,7 +301,7 @@ private[arrow] class TimestampWriter(val valueVector: TimeStampVector)
   }
 }
 
-private[arrow] class TimestampNTZWriter(val valueVector: TimeStampMicroVector)
+private[arrow] class TimestampNTZWriter(val valueVector: TimeStampVector)
     extends ArrowFieldWriter {
 
   override def setNull(): Unit = {
