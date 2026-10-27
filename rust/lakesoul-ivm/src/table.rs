@@ -17,11 +17,13 @@
 
 use std::sync::Arc;
 
+use arrow::compute::concat_batches;
 use arrow::record_batch::RecordBatch;
+use arrow::row::{RowConverter, SortField};
 use arrow_array::Array;
 use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::error::DataFusionError;
-use datafusion::prelude::{Expr, SessionContext};
+use datafusion::prelude::Expr;
 use lakesoul_common::ser::arrow_java::{
     schema_from_table_info_metadata, schema_to_metadata_str,
 };
@@ -57,9 +59,32 @@ pub(crate) const MAX_WRITE_FILE_SIZE: u64 = 64 * 1024 * 1024;
 /// The in-memory multipart buffer used by the LakeSoul writer.
 pub(crate) const WRITE_MEMORY_BUFFER: usize = 8 * 1024 * 1024;
 
-/// Give a LakeSoul reader/writer its own bounded memory pool and spill
-/// directory.  DataFusion's session limit does not automatically apply to the
-/// IO layer: its sort and merge operators create a separate runtime.
+/// Apply IO threads to a reader.  Readers stream batches and never spill, so
+/// they do not get a private memory pool: a pool per reader multiplied the
+/// refresh's memory by the number of open buckets.  An explicit
+/// `LAKESOUL_IVM_READ_POOL_SIZE` still opts into the old bounded-reader
+/// behavior for deployments that rely on it.
+fn with_reader_io(builder: LakeSoulIOConfigBuilder) -> LakeSoulIOConfigBuilder {
+    let threads = std::env::var("LAKESOUL_IVM_IO_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(4);
+    let builder = builder.with_thread_num(threads);
+    let Ok(size) = std::env::var("LAKESOUL_IVM_READ_POOL_SIZE") else {
+        return builder;
+    };
+    let directory = std::env::var("LAKESOUL_IVM_SPILL_DIR")
+        .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
+    let _ = std::fs::create_dir_all(&directory);
+    tracing::debug!(size, threads, %directory, "IVM reader spill pool configured");
+    builder
+        .with_option(OPTION_KEY_POOL_SIZE, size)
+        .with_option(OPTION_KEY_POOL_DIR, directory)
+}
+
+/// Give a LakeSoul writer its own bounded memory pool and spill directory.
+/// DataFusion's session limit does not automatically apply to the IO layer:
+/// its sort and merge operators create a separate runtime.
 fn with_spill_pool(
     builder: LakeSoulIOConfigBuilder,
     size_env: &str,
@@ -588,7 +613,7 @@ impl IvmTable {
                 .with_max_file_size(MAX_WRITE_FILE_SIZE)
                 .with_memory_buffer_capacity(WRITE_MEMORY_BUFFER),
             "LAKESOUL_IVM_WRITE_POOL_SIZE",
-            "1024mb",
+            "500mb",
         );
         if !self.range_partition_columns.is_empty() {
             builder = builder.with_range_partitions(self.range_partition_columns.clone());
@@ -746,6 +771,89 @@ impl IvmTable {
         self.commit_files(client, files).await
     }
 
+    /// Publish a stream that is sorted by the table's primary keys, keeping
+    /// all rows of one key in the same writer batch.
+    ///
+    /// A target sink writes a delete and an insert for the same update.  If a
+    /// DataFusion batch boundary splits those two rows, a rolling writer can
+    /// put them in different files, and merge-on-read then resolves the same
+    /// key ambiguously.  Buffering only the trailing key group of each batch
+    /// keeps the pair together without collecting the whole delta.
+    pub(crate) async fn append_stream_by_key<S>(
+        &self,
+        client: &MetaDataClient,
+        mut stream: S,
+    ) -> Result<Vec<String>>
+    where
+        S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
+    {
+        use futures::StreamExt;
+        if self.primary_keys.is_empty() {
+            return self.append_stream(client, stream).await;
+        }
+        let key_indices = self
+            .primary_keys
+            .iter()
+            .map(|key| {
+                self.schema.index_of(key).map_err(|error| {
+                    rootcause::report!("primary key {key} is missing: {error}")
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let sort_fields = self
+            .primary_keys
+            .iter()
+            .map(|key| {
+                let field = self.schema.field_with_name(key)?;
+                Ok(SortField::new(field.data_type().clone()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let converter = RowConverter::new(sort_fields)
+            .map_err(|error| rootcause::report!("key row converter: {error}"))?;
+
+        let mut writer = self.writer().await?;
+        let mut rows = 0u64;
+        let mut carry: Option<RecordBatch> = None;
+        while let Some(batch) = stream.next().await {
+            let batch = batch
+                .map_err(|error| rootcause::report!("refresh output batch: {error}"))?;
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            let batch = self.cast_batch(batch)?;
+            rows += batch.num_rows() as u64;
+            let batch = match carry.take() {
+                Some(previous) => {
+                    let previous_key =
+                        boundary_key(&converter, &previous, &key_indices, false)?;
+                    let next_key = boundary_key(&converter, &batch, &key_indices, true)?;
+                    if previous_key == next_key {
+                        concat_batches(&self.schema, &[previous, batch]).map_err(
+                            |error| rootcause::report!("merge key batch: {error}"),
+                        )?
+                    } else {
+                        writer.write_record_batch(previous).await?;
+                        batch
+                    }
+                }
+                None => batch,
+            };
+            let last_start = last_key_group_start(&converter, &batch, &key_indices)?;
+            if last_start > 0 {
+                writer
+                    .write_record_batch(batch.slice(0, last_start))
+                    .await?;
+            }
+            carry = Some(batch.slice(last_start, batch.num_rows() - last_start));
+        }
+        if let Some(carry) = carry {
+            writer.write_record_batch(carry).await?;
+        }
+        let outputs = writer.flush_and_close().await?;
+        let files = self.output_files(outputs, rows);
+        self.commit_files(client, files).await
+    }
+
     /// Write refresh output through one rolling writer, without publishing.
     pub async fn write_batches(
         &self,
@@ -785,7 +893,7 @@ impl IvmTable {
         // `read_current()` would materialize the entire table before the
         // writer even starts.  Execute all hash/range partitions so this is
         // not accidentally limited to the first bucket.
-        let context = SessionContext::new();
+        let context = crate::runtime::refresh_session();
         let provider = IvmTableProvider::current(self.clone(), client.clone());
         let frame = context.read_table(Arc::new(provider))?;
         let streams = frame.execute_stream_partitioned().await?;
@@ -985,13 +1093,11 @@ impl IvmTable {
                 .cloned()
                 .collect::<Vec<_>>();
             let file_count = group.files.len() as u64;
-            let mut builder = with_spill_pool(
+            let mut builder = with_reader_io(
                 LakeSoulIOConfig::builder()
                     .with_files(group.files)
                     .with_schema(schema)
                     .with_physical_format(self.file_format),
-                "LAKESOUL_IVM_READ_POOL_SIZE",
-                "2048mb",
             );
             if !range_columns.is_empty() {
                 builder = builder.with_range_partitions(range_columns.clone());
@@ -1146,14 +1252,12 @@ impl IvmTable {
                 .cloned()
                 .collect::<Vec<_>>();
             let group_files = group.files.len() as u64;
-            let mut builder = with_spill_pool(
+            let mut builder = with_reader_io(
                 LakeSoulIOConfig::builder()
                     .with_files(group.files)
                     .with_schema(schema)
                     .with_primary_keys(self.primary_keys.clone())
                     .with_physical_format(self.file_format),
-                "LAKESOUL_IVM_READ_POOL_SIZE",
-                "2048mb",
             );
             if !range_columns.is_empty() {
                 builder = builder.with_range_partitions(range_columns.clone());
@@ -1374,7 +1478,7 @@ impl IvmTable {
             .cloned()
             .collect::<Vec<_>>();
         let file_count = group.files.len() as u64;
-        let mut builder = with_spill_pool(
+        let mut builder = with_reader_io(
             LakeSoulIOConfig::builder()
                 .with_files(group.files)
                 .with_schema(schema)
@@ -1384,8 +1488,6 @@ impl IvmTable {
                     Vec::new()
                 })
                 .with_physical_format(self.file_format),
-            "LAKESOUL_IVM_READ_POOL_SIZE",
-            "2048mb",
         );
         if !range_columns.is_empty() {
             builder = builder.with_range_partitions(range_columns.clone());
@@ -1455,14 +1557,12 @@ impl IvmTable {
             return Ok(Vec::new());
         }
         let file_count = files.len() as u64;
-        let mut builder = with_spill_pool(
+        let mut builder = with_reader_io(
             LakeSoulIOConfig::builder()
                 .with_files(files)
                 .with_schema(projection.cloned().unwrap_or_else(|| self.schema.clone()))
                 .with_primary_keys(self.primary_keys.clone())
                 .with_physical_format(self.file_format),
-            "LAKESOUL_IVM_READ_POOL_SIZE",
-            "2048mb",
         );
         if !filters.is_empty() {
             builder = with_state_key_lookup(builder, self.file_format);
@@ -1759,4 +1859,44 @@ impl IvmTable {
             .await?;
         Ok(())
     }
+}
+
+/// The first or last key bytes of a batch.
+fn boundary_key(
+    converter: &RowConverter,
+    batch: &RecordBatch,
+    key_indices: &[usize],
+    first: bool,
+) -> Result<Vec<u8>> {
+    let columns = key_indices
+        .iter()
+        .map(|index| batch.column(*index).clone())
+        .collect::<Vec<_>>();
+    let rows = converter
+        .convert_columns(&columns)
+        .map_err(|error| rootcause::report!("key rows: {error}"))?;
+    let index = if first { 0 } else { batch.num_rows() - 1 };
+    Ok(rows.row(index).as_ref().to_vec())
+}
+
+/// The start of the final key group in a key-sorted batch.
+fn last_key_group_start(
+    converter: &RowConverter,
+    batch: &RecordBatch,
+    key_indices: &[usize],
+) -> Result<usize> {
+    let columns = key_indices
+        .iter()
+        .map(|index| batch.column(*index).clone())
+        .collect::<Vec<_>>();
+    let rows = converter
+        .convert_columns(&columns)
+        .map_err(|error| rootcause::report!("key rows: {error}"))?;
+    let mut start = batch.num_rows() - 1;
+    while start > 0
+        && rows.row(start - 1).as_ref() == rows.row(batch.num_rows() - 1).as_ref()
+    {
+        start -= 1;
+    }
+    Ok(start)
 }

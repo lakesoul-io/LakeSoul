@@ -232,20 +232,72 @@ impl IvmRuntime {
         let context = refresh_session();
         let delta =
             self.unmerged_groups_table_frame(&context, &view.source, window.added_files)?;
+        // Collapse an update's delete/insert pair when both target the same
+        // partition: the insert alone is an upsert and cannot be ordered
+        // incorrectly by a writer that folds one key inside a file.  A
+        // partition move keeps the old partition's delete and the new
+        // partition's insert.
+        let source_name = |name: &str| {
+            view.columns
+                .iter()
+                .find(|column| column.name == name)
+                .map(|column| column.source().to_string())
+                .unwrap_or_else(|| name.to_string())
+        };
+        let mut key_columns = view
+            .target
+            .primary_keys
+            .iter()
+            .map(|key| source_name(key))
+            .collect::<Vec<_>>();
+        for column in &view.target.range_partition_columns {
+            let column = source_name(column);
+            if !key_columns.contains(&column) {
+                key_columns.push(column);
+            }
+        }
+        let key_exprs = key_columns
+            .iter()
+            .map(|key| Expr::Column(Column::from_name(key.as_str())))
+            .collect::<Vec<_>>();
+        let key_names = key_columns.iter().map(String::as_str).collect::<Vec<_>>();
+        let kinds = Expr::Column(Column::from_name(IVM_ROW_KINDS_COLUMN));
+        let inserts = delta.clone().filter(kinds.clone().eq(lit("insert")))?;
+        let insert_keys = inserts.clone().select(key_exprs)?.distinct()?;
+        let deletes = delta.filter(kinds.eq(lit("delete")))?;
+        let kept_deletes = deletes.join(
+            insert_keys,
+            JoinType::LeftAnti,
+            &key_names,
+            &key_names,
+            None,
+        )?;
+        let delta = inserts.union(kept_deletes)?;
+
         let mut sort_exprs = view
             .target
             .primary_keys
             .iter()
-            .map(|key| Expr::Column(Column::from_name(key.as_str())))
+            .map(|key| {
+                Expr::Column(Column::from_name(source_name(key).as_str()))
+                    .sort(true, false)
+            })
             .collect::<Vec<_>>();
-        sort_exprs.push(Expr::Column(Column::from_name(IVM_EPOCH_COLUMN)));
-        sort_exprs.push(Expr::Column(Column::from_name(IVM_ROW_KINDS_COLUMN)));
+        sort_exprs
+            .push(Expr::Column(Column::from_name(IVM_EPOCH_COLUMN)).sort(true, false));
+        sort_exprs.push(
+            Expr::Column(Column::from_name(IVM_ROW_KINDS_COLUMN)).sort(true, false),
+        );
         let frame = delta
-            .sort_by(sort_exprs)?
+            .sort(sort_exprs)?
             .select(view.projection(epoch, false)?)?;
         let stream = frame.execute_stream().await?;
         drop(context);
-        commit_ids.extend(view.target.append_stream(&self.client, stream).await?);
+        commit_ids.extend(
+            view.target
+                .append_stream_by_key(&self.client, stream)
+                .await?,
+        );
 
         let target_versions =
             output_partition_versions(&self.client, &view.target).await?;

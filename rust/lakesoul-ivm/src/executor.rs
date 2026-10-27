@@ -97,6 +97,18 @@ fn max_derived_steps() -> usize {
         .unwrap_or(DEFAULT_MAX_DERIVED_STEPS)
 }
 
+/// The hash bucket columns of an internal copy of a view.
+///
+/// The writer falls back to hashing the primary keys when no bucket columns
+/// are set, so leaving the list empty produces bucket files that a keyed
+/// lookup cannot address.  Record the same keys explicitly: the lookup then
+/// routes a contribution to the bucket files that can contain it instead of
+/// scanning the whole table.  Hashing the full key also keeps the physical
+/// layout of tables written before this metadata was recorded.
+fn bucket_columns_for(primary_keys: &[String]) -> Vec<String> {
+    primary_keys.to_vec()
+}
+
 /// The table name of a derived step.
 fn derived_step_name(target_name: &str, index: usize) -> String {
     format!("{target_name}__ivm_step{index}")
@@ -1370,9 +1382,12 @@ impl IvmSqlExecutor {
         }
         let name = format!("{}__ivm_state", target.table_name);
         let path = format!("{}/__ivm_state", target.table_path.trim_end_matches('/'));
+        let bucket_columns = bucket_columns_for(&primary_keys);
         if let Ok(existing) = self.runtime.open_table(&name, &target.namespace).await {
             if schema_matches(&existing.schema, &expected)
                 && existing.primary_keys == primary_keys
+                && (existing.bucket_columns.is_empty()
+                    || existing.bucket_columns == bucket_columns)
             {
                 return Ok(existing);
             }
@@ -1409,6 +1424,7 @@ impl IvmSqlExecutor {
         let mut options = IvmTableOptions::new(name, path, expected)
             .with_namespace(target.namespace.clone())
             .with_primary_keys(primary_keys)
+            .with_bucket_columns(bucket_columns)
             .with_file_format(target.file_format);
         options.hash_bucket_num = target.hash_bucket_num.clone();
         self.runtime.create_table(options).await
@@ -1606,9 +1622,18 @@ impl IvmSqlExecutor {
                 Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
         }
         let primary_keys = self.derived_primary_keys(spec).await?;
+        let bucket_columns = bucket_columns_for(&primary_keys);
         if let Ok(existing) = self.runtime.open_table(&name, &target.namespace).await {
+            // A derived step inherits the target's bucket layout: keeping the
+            // default bucket count would serialize a 1M-row window/join step
+            // into one oversized hash partition.  It must record the bucket
+            // columns as well: a keyed lookup routes by them, and an empty
+            // list silently turns every before-image lookup into a full scan.
             if schema_matches(&existing.schema, &schema)
                 && existing.primary_keys == primary_keys
+                && (existing.bucket_columns.is_empty()
+                    || existing.bucket_columns == bucket_columns)
+                && existing.hash_bucket_num == target.hash_bucket_num
             {
                 return Ok(existing);
             }
@@ -1621,13 +1646,12 @@ impl IvmSqlExecutor {
                 .drop_table(&name, &target.namespace)
                 .await?;
         }
-        self.runtime
-            .create_table(
-                IvmTableOptions::new(name, path, schema)
-                    .with_namespace(target.namespace.clone())
-                    .with_primary_keys(primary_keys),
-            )
-            .await
+        let mut options = IvmTableOptions::new(name, path, schema)
+            .with_namespace(target.namespace.clone())
+            .with_primary_keys(primary_keys)
+            .with_bucket_columns(bucket_columns);
+        options.hash_bucket_num = target.hash_bucket_num.clone();
+        self.runtime.create_table(options).await
     }
 
     /// The columns a derived step's own filter, or every keyed UNION branch's

@@ -2360,15 +2360,17 @@ impl IvmRuntime {
         let context = refresh_session();
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
-        let before = filter_deletes(
-            self.before_window_table_frame(
-                &context,
-                &view.source,
-                &window.before_versions,
-            )
-            .await?,
-            change_column(&view.source),
-        )?;
+        let pk_exprs = view
+            .source
+            .primary_keys
+            .iter()
+            .map(|key| col(key.as_str()))
+            .collect::<Vec<_>>();
+        let contribution = delta.clone().select(pk_exprs)?.distinct()?;
+        let before = self
+            .lookup_source_before_by_pks(&context, &view.source, &window, contribution)
+            .await?;
+        let before = filter_deletes(before, change_column(&view.source))?;
         if let Some(rank) = &rank_state {
             let change = change_column(&view.source).unwrap_or(IVM_ROW_KINDS_COLUMN);
             commit_ids.extend(
@@ -2421,16 +2423,7 @@ impl IvmRuntime {
                         before_columns.push(key.clone());
                     }
                 }
-                let before = filter_deletes(
-                    self.before_window_table_frame(
-                        &context,
-                        &view.source,
-                        &window.before_versions,
-                    )
-                    .await?,
-                    change_column(&view.source),
-                )?;
-                let before = project_frame(before, &before_columns)?;
+                let before = project_frame(before.clone(), &before_columns)?;
                 let delta_keys = delta.clone().select(pk_exprs)?.distinct()?;
                 let pk_refs = view
                     .source
@@ -3534,15 +3527,17 @@ impl IvmRuntime {
             super::mv_partitions_for_source(&view.mv, &view.source, &window);
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
-        let before = filter_deletes(
-            self.before_window_table_frame(
-                &context,
-                &view.source,
-                &window.before_versions,
-            )
-            .await?,
-            change_column(&view.source),
-        )?;
+        let pk_exprs = view
+            .source
+            .primary_keys
+            .iter()
+            .map(|key| col(key.as_str()))
+            .collect::<Vec<_>>();
+        let contribution = delta.clone().select(pk_exprs)?.distinct()?;
+        let before = self
+            .lookup_source_before_by_pks(&context, &view.source, &window, contribution)
+            .await?;
+        let before = filter_deletes(before, change_column(&view.source))?;
         if let Some(rank) = &rank_state {
             let change = change_column(&view.source).unwrap_or(IVM_ROW_KINDS_COLUMN);
             commit_ids.extend(
@@ -3591,16 +3586,7 @@ impl IvmRuntime {
                         before_columns.push(key.clone());
                     }
                 }
-                let before = filter_deletes(
-                    self.before_window_table_frame(
-                        &context,
-                        &view.source,
-                        &window.before_versions,
-                    )
-                    .await?,
-                    change_column(&view.source),
-                )?;
-                let before = project_frame(before, &before_columns)?;
+                let before = project_frame(before.clone(), &before_columns)?;
                 let delta_keys = delta.clone().select(pk_exprs)?.distinct()?;
                 let pk_refs = view
                     .source

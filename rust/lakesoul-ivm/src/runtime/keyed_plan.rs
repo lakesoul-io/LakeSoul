@@ -742,12 +742,33 @@ fn key_rows(
                 .map_err(|error| DataFusionError::Execution(error.to_string()))?;
             let arrays = input_columns
                 .iter()
-                .map(|column| {
-                    batch.column_by_name(column).cloned().ok_or_else(|| {
+                .zip(table_columns)
+                .map(|(column, table_column)| {
+                    let array = batch.column_by_name(column).cloned().ok_or_else(|| {
                         DataFusionError::Execution(format!(
                             "lookup key {column} is missing from the contribution"
                         ))
-                    })
+                    })?;
+                    // A projection may hand the lookup an optimized view type
+                    // (`Utf8View`) while the state table key stores `Utf8`.
+                    // Encode against the state key's physical type.
+                    let data_type = table_schema
+                        .field_with_name(table_column)
+                        .map_err(|error| {
+                            DataFusionError::Execution(format!(
+                                "lookup key {table_column} is missing from the table: {error}"
+                            ))
+                        })?
+                        .data_type();
+                    if array.data_type() == data_type {
+                        Ok(array)
+                    } else {
+                        cast(&array, data_type).map_err(|error| {
+                            DataFusionError::Execution(format!(
+                                "cast lookup key {column} to {data_type}: {error}"
+                            ))
+                        })
+                    }
                 })
                 .collect::<DataFusionResult<Vec<ArrayRef>>>()?;
             let nulls = (0..batch.num_rows())
@@ -1128,6 +1149,7 @@ impl ExecutionPlan for IvmPkLookupExec {
                             contribution_rows = batch.num_rows(),
                             chunks,
                             state_rows,
+                            output_rows = output.num_rows(),
                             elapsed = ?started.elapsed(),
                             "keyed state lookup batch finished"
                         );
@@ -1684,7 +1706,7 @@ fn merge_state_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int32Array, StringArray};
+    use arrow::array::{Int32Array, StringArray, StringViewArray};
     use arrow::datatypes::{Field, Schema};
     use arrow::record_batch::RecordBatch;
     use datafusion::physical_plan::ExecutionPlanProperties;
@@ -1705,6 +1727,29 @@ mod tests {
         assert_eq!(split[3][0].files.len(), 1);
         assert!(split[1].is_empty());
         assert!(split[2].is_empty());
+    }
+
+    #[test]
+    fn lookup_key_casts_an_optimized_string_view() {
+        let table_schema =
+            Arc::new(Schema::new(vec![Field::new("k", DataType::Utf8, false)]));
+        let contribution_schema = Arc::new(Schema::new(vec![Field::new(
+            "k",
+            DataType::Utf8View,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            contribution_schema,
+            vec![Arc::new(StringViewArray::from(vec!["a"]))],
+        )
+        .unwrap();
+        let key = PkLookupKey::Columns {
+            input_columns: vec!["k".to_string()],
+            table_columns: vec!["k".to_string()],
+        };
+        let rows = key_rows(&batch, &key, &table_schema).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].is_some());
     }
 
     #[test]
