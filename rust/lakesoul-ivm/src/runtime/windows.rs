@@ -2611,17 +2611,35 @@ impl IvmRuntime {
         };
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&window_refresh_sql(view, epoch)).await?;
-        let state_frame = frame.clone().execute_stream().await?;
-        let (mv_ids, state_ids) = futures::future::try_join(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?),
-            async {
-                let ids = state.append_stream(&self.client, state_frame).await?;
-                self.checkpoint_epoch_states(&record).await?;
-                Ok::<_, rootcause::Report>(ids)
-            },
-        )
-        .await?;
+        // Execute the top-k SQL once and tee each batch into the MV and the
+        // top-k state writer.  Two independent append_stream calls executed
+        // the whole lookup/window plan twice, which dominated a 1M window.
+        use futures::StreamExt;
+        let mut output = frame.execute_stream().await?;
+        let mut mv_writer = view.mv.writer().await?;
+        let mut state_writer = state.writer().await?;
+        let mut written_rows = 0u64;
+        while let Some(batch) = output.next().await {
+            let batch = batch?;
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            written_rows += batch.num_rows() as u64;
+            mv_writer
+                .write_record_batch(view.mv.cast_batch(batch.clone())?)
+                .await?;
+            state_writer
+                .write_record_batch(state.cast_batch(batch)?)
+                .await?;
+        }
+        let mv_files = view
+            .mv
+            .output_files(mv_writer.flush_and_close().await?, written_rows);
+        let state_files =
+            state.output_files(state_writer.flush_and_close().await?, written_rows);
+        let mv_ids = view.mv.commit_files(&self.client, mv_files).await?;
+        let state_ids = state.commit_files(&self.client, state_files).await?;
+        self.checkpoint_epoch_states(&record).await?;
         commit_ids.extend(mv_ids);
         commit_ids.extend(state_ids);
         phase_done!("sql_execute_and_append");

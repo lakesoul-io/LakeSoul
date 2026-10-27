@@ -414,7 +414,28 @@ async fn lookup_streaming_chunk(
                 .collect();
             (!encoded.is_empty()).then(|| (table_columns.clone(), encoded))
         }
-        PkLookupKey::BinaryRow { .. } => None,
+        PkLookupKey::BinaryRow { column } => {
+            // The join state stores an `arrow::Row` in a Binary column.  The
+            // index encodes that Binary column again, so wrap each value in
+            // the same one-field Row layout before probing it.
+            let values = contribution_keys
+                .iter()
+                .map(|key| key.as_deref())
+                .collect::<Vec<_>>();
+            let array = arrow::array::BinaryArray::from_iter(values);
+            let converter =
+                arrow::row::RowConverter::new(vec![arrow::row::SortField::new(
+                    DataType::Binary,
+                )])
+                .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+            let encoded = converter
+                .convert_columns(&[Arc::new(array)])
+                .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+            let keys = (0..encoded.num_rows())
+                .map(|row| IndexKey::new(encoded.row(row).as_ref()))
+                .collect::<Vec<_>>();
+            (!keys.is_empty()).then(|| (vec![column.clone()], keys))
+        }
     };
     let mut matched: HashSet<Vec<u8>> = HashSet::new();
     let mut outputs = Vec::new();
