@@ -1045,12 +1045,29 @@ impl IvmRuntime {
             } else {
                 None
             };
-            let affected_from_left = match &left_rows_by_key {
-                Some(rows) => rows.clone().select(left_key_exprs.clone())?.distinct()?,
-                None => raw_delta_left
+            let affected_from_left = if view.count_mode {
+                // The deleted keys are absent from the current state, so the
+                // delta keys are always part of the affected set.
+                let changed = raw_delta_left
                     .clone()
                     .select(left_key_exprs.clone())?
-                    .distinct()?,
+                    .distinct()?;
+                match &left_rows_by_key {
+                    Some(rows) => changed
+                        .union(rows.clone().select(left_key_exprs.clone())?.distinct()?)?
+                        .distinct()?,
+                    None => changed,
+                }
+            } else {
+                match &left_rows_by_key {
+                    Some(rows) => {
+                        rows.clone().select(left_key_exprs.clone())?.distinct()?
+                    }
+                    None => raw_delta_left
+                        .clone()
+                        .select(left_key_exprs.clone())?
+                        .distinct()?,
+                }
             };
             let affected_from_right = match &right_rows {
                 Some(rows) => rows.clone().select(left_key_exprs.clone())?.distinct()?,
