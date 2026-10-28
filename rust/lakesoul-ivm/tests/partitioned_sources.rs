@@ -770,18 +770,35 @@ async fn multi_agg_row_state_mirrors_source_partitions() {
     // statement creates a derived aggregate view behind a sink, so the state
     // belongs to the derived view rather than to the sink view id.
     let mut row_state = None;
+    let mut row_view = None;
     for view in runtime.metadata().list_views().await.unwrap() {
         for state in runtime.metadata().list_states(&view.view_id).await.unwrap() {
             if state.role == StateRole::MultiAggRows
                 && state.table_name.starts_with(&mv.table_name)
             {
                 row_state = Some(state);
+                row_view = Some(view.view_id.clone());
             }
         }
     }
     let state = row_state.expect("the multi-agg row state exists");
     let state = runtime.open_table_by_id(&state.table_id).await.unwrap();
     assert_eq!(state.range_partition_columns, vec!["day".to_string()]);
+    // The derived aggregate step feeding the user MV is partitioned too, so
+    // the next step of a chain can prune as well.
+    let derived_mv = runtime
+        .metadata()
+        .list_states(&row_view.expect("the multi-agg view exists"))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|state| state.role == StateRole::Mv)
+        .expect("the derived multi-agg MV exists");
+    let derived_mv = runtime
+        .open_table_by_id(&derived_mv.table_id)
+        .await
+        .unwrap();
+    assert_eq!(derived_mv.range_partition_columns, vec!["day".to_string()]);
     let mut descs = runtime
         .client()
         .get_all_partition_info(&state.table_id)
