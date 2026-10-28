@@ -55,7 +55,7 @@ use super::{
     IVM_EPOCH_COLUMN, IVM_GROUP_ROW_COLUMN, IVM_ROW_COUNT_COLUMN, IVM_ROW_KINDS_COLUMN,
 };
 use crate::error::Result;
-use crate::table::{IvmTable, PartitionFiles, file_bucket};
+use crate::table::{IvmTable, PartitionFiles, file_bucket, partition_matches};
 
 /// Hidden column carrying the LakeSoul bucket id during a shuffle.
 pub(crate) const IVM_BUCKET_COLUMN: &str = "__ivm_bucket";
@@ -1275,7 +1275,103 @@ impl IvmLookupTable {
         }
     }
 
+    /// The range-partition values carried by the contribution, when the
+    /// lookup key contains every partition column.
+    ///
+    /// Only the distinct partition values of the affected keys are collected
+    /// (a handful of dates in practice), never the key frame itself.  A
+    /// missing or unparsable key returns `None`, which keeps every partition:
+    /// pruning is an optimization and must never drop a needed one.
+    async fn partition_restriction(&self) -> Option<Vec<(String, Vec<String>)>> {
+        let partitions = &self.table.range_partition_columns;
+        if partitions.is_empty() {
+            return None;
+        }
+        let PkLookupKey::Columns {
+            input_columns,
+            table_columns,
+        } = &self.key
+        else {
+            return None;
+        };
+        let mut pairs = Vec::with_capacity(partitions.len());
+        for partition in partitions {
+            let index = table_columns
+                .iter()
+                .position(|column| column == partition)?;
+            pairs.push((partition.clone(), input_columns.get(index)?.clone()));
+        }
+        let frame = self
+            .contribution
+            .clone()
+            .select(
+                pairs
+                    .iter()
+                    .map(|(_, input)| col(input.as_str()))
+                    .collect::<Vec<_>>(),
+            )
+            .ok()?
+            .distinct()
+            .ok()?;
+        let batches = frame.collect().await.ok()?;
+        let mut values: Vec<(String, std::collections::BTreeSet<String>)> = pairs
+            .iter()
+            .map(|(column, _)| (column.clone(), std::collections::BTreeSet::new()))
+            .collect();
+        let mut rows = 0usize;
+        for batch in &batches {
+            for row in 0..batch.num_rows() {
+                for (index, (_, input)) in pairs.iter().enumerate() {
+                    let array = batch.column_by_name(input)?;
+                    let scalar = ScalarValue::try_from_array(array, row).ok()?;
+                    values[index]
+                        .1
+                        .insert(lakesoul_io::helpers::format_scalar_value(&scalar));
+                }
+                rows += 1;
+            }
+        }
+        if rows == 0 {
+            return None;
+        }
+        Some(
+            values
+                .into_iter()
+                .map(|(column, values)| (column, values.into_iter().collect()))
+                .collect(),
+        )
+    }
+
     async fn build_plan(&self) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let groups_by_bucket = match self.partition_restriction().await {
+            Some(restriction) => {
+                let kept = self
+                    .groups_by_bucket
+                    .iter()
+                    .map(|groups| {
+                        groups
+                            .iter()
+                            .filter(|group| {
+                                partition_matches(
+                                    &group.partition_desc,
+                                    &self.table.range_partition_columns,
+                                    &restriction,
+                                )
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                tracing::debug!(
+                    table = %self.table.table_name,
+                    partitions = self.groups_by_bucket.iter().flatten().count(),
+                    kept = kept.iter().flatten().count(),
+                    "keyed lookup pruned partitions"
+                );
+                kept
+            }
+            None => self.groups_by_bucket.clone(),
+        };
         let plan = self.contribution.create_physical_plan().await?;
         let plan = if let Some(columns) = self.route_columns.as_deref() {
             bucket_repartition_by_columns(plan, columns, self.bucket_count)
@@ -1290,7 +1386,7 @@ impl IvmLookupTable {
             PkLookupKey::BinaryRow { column } => IvmPkLookupExec::new(
                 plan,
                 self.table.clone(),
-                self.groups_by_bucket.clone(),
+                groups_by_bucket.clone(),
                 column,
                 self.bucket_count,
             )?,
@@ -1300,7 +1396,7 @@ impl IvmLookupTable {
             } => IvmPkLookupExec::new_with_columns(
                 plan,
                 self.table.clone(),
-                self.groups_by_bucket.clone(),
+                groups_by_bucket,
                 input_columns,
                 table_columns,
                 self.bucket_count,

@@ -267,7 +267,7 @@ pub(crate) fn parse_partition_values(
 /// `(column, allowed values)`.  A column outside the table's range columns and
 /// a descriptor that cannot be parsed both match: the read keeps such
 /// partitions rather than dropping rows.
-fn partition_matches(
+pub(crate) fn partition_matches(
     partition_desc: &str,
     range_columns: &[String],
     restriction: &[(String, Vec<String>)],
@@ -285,6 +285,28 @@ fn partition_matches(
             None => true,
         }
     })
+}
+
+/// The source range partitions a state table may mirror.
+///
+/// A state key must carry the partition columns, otherwise a source row that
+/// moves between partitions would leave its old state behind under the same
+/// key.  Returning an empty list keeps the state unpartitioned (the safe
+/// fallback).
+pub(crate) fn state_range_partition_columns(
+    source: &IvmTable,
+    keys: &[String],
+) -> Vec<String> {
+    if !source.range_partition_columns.is_empty()
+        && source
+            .range_partition_columns
+            .iter()
+            .all(|column| keys.contains(column))
+    {
+        source.range_partition_columns.clone()
+    } else {
+        Vec::new()
+    }
 }
 
 /// Options for [`create_ivm_table`].

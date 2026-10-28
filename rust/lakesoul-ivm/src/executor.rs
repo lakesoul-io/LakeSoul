@@ -69,7 +69,7 @@ use crate::sql::{
 };
 use crate::table::{
     IvmTable, IvmTableOptions, create_ivm_table, internal_file_format,
-    keyed_state_file_format, normalize_schema,
+    keyed_state_file_format, normalize_schema, state_range_partition_columns,
 };
 
 /// Placeholder state table id used to probe the query shape before the real
@@ -2034,6 +2034,7 @@ impl IvmSqlExecutor {
                 }
             }
             let bucket_columns = group_keys.clone();
+            let range_partitions = state_range_partition_columns(&source, &primary_keys);
             if let Some(existing) = self
                 .runtime
                 .metadata()
@@ -2087,6 +2088,9 @@ impl IvmSqlExecutor {
             .with_bucket_columns(bucket_columns)
             .with_cdc_column(IVM_ROW_KINDS_COLUMN)
             .with_file_format(keyed_state_file_format());
+            if !range_partitions.is_empty() {
+                options = options.with_range_partition_columns(range_partitions);
+            }
             options.hash_bucket_num = mv.hash_bucket_num.clone();
             let table = create_ivm_table(self.runtime.client(), options).await?;
             self.runtime
@@ -2220,18 +2224,19 @@ impl IvmSqlExecutor {
         let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
         let mut primary_keys = group_keys.to_vec();
         primary_keys.push(IVM_VALUE_COLUMN.to_string());
-        let table = create_ivm_table(
-            self.runtime.client(),
-            IvmTableOptions::new(
-                format!("{}__ivm_state_{suffix}", mv.table_name),
-                format!("{}__ivm_state_{suffix}", mv.table_path),
-                schema,
-            )
-            .with_primary_keys(primary_keys)
-            .with_bucket_columns(group_keys.to_vec())
-            .with_file_format(keyed_state_file_format()),
+        let mut options = IvmTableOptions::new(
+            format!("{}__ivm_state_{suffix}", mv.table_name),
+            format!("{}__ivm_state_{suffix}", mv.table_path),
+            schema,
         )
-        .await?;
+        .with_primary_keys(primary_keys.clone())
+        .with_bucket_columns(group_keys.to_vec())
+        .with_file_format(keyed_state_file_format());
+        let range_partitions = state_range_partition_columns(&source, &primary_keys);
+        if !range_partitions.is_empty() {
+            options = options.with_range_partition_columns(range_partitions);
+        }
+        let table = create_ivm_table(self.runtime.client(), options).await?;
         Ok(table.table_id)
     }
 

@@ -368,6 +368,7 @@ impl super::IvmRuntime {
             return Ok(Some(self.open_table_by_id(&existing.table_id).await?));
         }
         let schema = join_side_state_schema_for(source, join_keys)?;
+        let primary_keys = join_side_state_primary_keys(source);
         let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
         let mut options = crate::table::IvmTableOptions::new(
             format!("{}__ivm_join_state_{suffix}", source.table_name),
@@ -375,9 +376,14 @@ impl super::IvmRuntime {
             schema,
         )
         .with_namespace(source.namespace.clone())
-        .with_primary_keys(join_side_state_primary_keys(source))
+        .with_primary_keys(primary_keys.clone())
         .with_bucket_columns(vec![IVM_JOIN_KEY_COLUMN.to_string()])
         .with_file_format(crate::table::keyed_state_file_format());
+        let range_partitions =
+            crate::table::state_range_partition_columns(source, &primary_keys);
+        if !range_partitions.is_empty() {
+            options = options.with_range_partition_columns(range_partitions);
+        }
         options.hash_bucket_num = source.hash_bucket_num.clone();
         if let Some(cdc) = join_side_state_cdc_column(source) {
             options = options.with_cdc_column(cdc);
