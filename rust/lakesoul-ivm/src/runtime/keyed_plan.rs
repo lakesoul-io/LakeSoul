@@ -1221,6 +1221,8 @@ pub(crate) struct IvmLookupTable {
     /// The range partition columns a binary key can prune by: the plain join
     /// keys that are also partition columns of the state.
     partition_columns: Vec<String>,
+    /// The caller already fetched only the matching partition groups.
+    prepruned: bool,
     schema: SchemaRef,
 }
 
@@ -1251,6 +1253,7 @@ impl IvmLookupTable {
             bucket_key: None,
             multi_match,
             partition_columns,
+            prepruned: false,
             schema,
         }
     }
@@ -1278,8 +1281,16 @@ impl IvmLookupTable {
             bucket_key: (bucket_count > 1).then_some(key_column),
             multi_match,
             partition_columns,
+            prepruned: false,
             schema,
         }
+    }
+
+    /// Mark the supplied groups as already restricted to the lookup's
+    /// partitions.  The plan then skips the contribution collect and filter.
+    pub(crate) fn with_prepruned_groups(mut self) -> Self {
+        self.prepruned = true;
+        self
     }
 
     /// The range-partition values carried by the contribution, when the
@@ -1367,34 +1378,38 @@ impl IvmLookupTable {
     }
 
     async fn build_plan(&self) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let groups_by_bucket = match self.partition_restriction().await {
-            Some(restriction) => {
-                let kept = self
-                    .groups_by_bucket
-                    .iter()
-                    .map(|groups| {
-                        groups
-                            .iter()
-                            .filter(|group| {
-                                partition_matches(
-                                    &group.partition_desc,
-                                    &self.table.range_partition_columns,
-                                    &restriction,
-                                )
-                            })
-                            .cloned()
-                            .collect::<Vec<_>>()
-                    })
-                    .collect::<Vec<_>>();
-                tracing::debug!(
-                    table = %self.table.table_name,
-                    partitions = self.groups_by_bucket.iter().flatten().count(),
-                    kept = kept.iter().flatten().count(),
-                    "keyed lookup pruned partitions"
-                );
-                kept
+        let groups_by_bucket = if self.prepruned {
+            self.groups_by_bucket.clone()
+        } else {
+            match self.partition_restriction().await {
+                Some(restriction) => {
+                    let kept = self
+                        .groups_by_bucket
+                        .iter()
+                        .map(|groups| {
+                            groups
+                                .iter()
+                                .filter(|group| {
+                                    partition_matches(
+                                        &group.partition_desc,
+                                        &self.table.range_partition_columns,
+                                        &restriction,
+                                    )
+                                })
+                                .cloned()
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>();
+                    tracing::debug!(
+                        table = %self.table.table_name,
+                        partitions = self.groups_by_bucket.iter().flatten().count(),
+                        kept = kept.iter().flatten().count(),
+                        "keyed lookup pruned partitions"
+                    );
+                    kept
+                }
+                None => self.groups_by_bucket.clone(),
             }
-            None => self.groups_by_bucket.clone(),
         };
         let plan = self.contribution.create_physical_plan().await?;
         let plan = if let Some(columns) = self.route_columns.as_deref() {

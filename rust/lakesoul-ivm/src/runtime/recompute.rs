@@ -4188,18 +4188,45 @@ impl IvmRuntime {
         let before_groups = project_frame(before, &view.group_keys)?.distinct()?;
         let delta_groups = project_frame(delta, &view.group_keys)?.distinct()?;
         let affected = before_groups.union(delta_groups)?.distinct()?;
-        let state_rows = self
-            .lookup_source_by_join_keys(
-                &context,
-                state,
-                affected.clone(),
-                &view.group_keys,
-                &view.group_keys,
-                true,
-            )
-            .await?;
+        // A state/MV keyed by the group keys can only hold rows of the
+        // partitions the affected groups belong to.  The window's changed
+        // partitions are exactly those when the range columns are grouped by.
+        let state_partitions = if !state.range_partition_columns.is_empty()
+            && state
+                .range_partition_columns
+                .iter()
+                .all(|column| view.group_keys.contains(column))
+        {
+            self.changed_partition_restriction(&window, &state.range_partition_columns)
+        } else {
+            None
+        };
+        let state_rows = match &state_partitions {
+            Some(restriction) => {
+                self.lookup_source_by_join_keys_in_partitions(
+                    &context,
+                    state,
+                    affected.clone(),
+                    &view.group_keys,
+                    &view.group_keys,
+                    true,
+                    restriction,
+                )
+                .await?
+            }
+            None => {
+                self.lookup_source_by_join_keys(
+                    &context,
+                    state,
+                    affected.clone(),
+                    &view.group_keys,
+                    &view.group_keys,
+                    true,
+                )
+                .await?
+            }
+        };
         let src = project_frame(state_rows, &source_fields)?;
-
         context.register_table("src", src.into_view())?;
         context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
         let parts = view.parts()?;

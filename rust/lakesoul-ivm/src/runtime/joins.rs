@@ -3926,6 +3926,78 @@ impl IvmRuntime {
         table_columns: &[String],
         multi_match: bool,
     ) -> Result<DataFrame> {
+        self.lookup_source_by_join_keys_impl(
+            context,
+            table,
+            contribution,
+            input_columns,
+            table_columns,
+            multi_match,
+            None,
+        )
+        .await
+    }
+
+    /// Like [`Self::lookup_source_by_join_keys`], but only the given range
+    /// partitions are listed and read.  The caller must have derived the
+    /// restriction from the window (or another complete set of affected
+    /// partitions); the lookup keys must carry every partition column.
+    pub(crate) async fn lookup_source_by_join_keys_in_partitions(
+        &self,
+        context: &SessionContext,
+        table: &IvmTable,
+        contribution: DataFrame,
+        input_columns: &[String],
+        table_columns: &[String],
+        multi_match: bool,
+        partitions: &[(String, Vec<String>)],
+    ) -> Result<DataFrame> {
+        // The restriction is only sound when the lookup key determines the
+        // partition.  A caller that cannot guarantee it gets the full read.
+        if !table
+            .range_partition_columns
+            .iter()
+            .all(|column| table_columns.contains(column))
+        {
+            return self
+                .lookup_source_by_join_keys(
+                    context,
+                    table,
+                    contribution,
+                    input_columns,
+                    table_columns,
+                    multi_match,
+                )
+                .await;
+        }
+        tracing::debug!(
+            table = %table.table_name,
+            ?partitions,
+            "keyed lookup restricted to window partitions"
+        );
+        self.lookup_source_by_join_keys_impl(
+            context,
+            table,
+            contribution,
+            input_columns,
+            table_columns,
+            multi_match,
+            Some(partitions),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn lookup_source_by_join_keys_impl(
+        &self,
+        context: &SessionContext,
+        table: &IvmTable,
+        contribution: DataFrame,
+        input_columns: &[String],
+        table_columns: &[String],
+        multi_match: bool,
+        partitions: Option<&[(String, Vec<String>)]>,
+    ) -> Result<DataFrame> {
         use super::keyed_plan::{
             IVM_STATE_COLUMN_PREFIX, IvmLookupTable, groups_by_bucket,
         };
@@ -3966,8 +4038,15 @@ impl IvmRuntime {
             ?table_columns,
             "keyed source lookup routing"
         );
-        let groups =
-            groups_by_bucket(table.current_groups(&self.client).await?, bucket_count);
+        let groups = match partitions {
+            Some(restriction) => {
+                table
+                    .current_groups_for_partitions(&self.client, restriction)
+                    .await?
+            }
+            None => table.current_groups(&self.client).await?,
+        };
+        let groups = groups_by_bucket(groups, bucket_count);
         let provider = IvmLookupTable::columns(
             routed,
             table.clone(),
@@ -3978,6 +4057,11 @@ impl IvmRuntime {
             route_columns,
             multi_match,
         );
+        let provider = if partitions.is_some() {
+            provider.with_prepruned_groups()
+        } else {
+            provider
+        };
         let frame = context.read_table(Arc::new(provider))?;
         let projections = table
             .schema
