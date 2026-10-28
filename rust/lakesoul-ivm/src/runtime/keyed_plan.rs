@@ -1218,6 +1218,9 @@ pub(crate) struct IvmLookupTable {
     route_columns: Option<Vec<String>>,
     bucket_key: Option<String>,
     multi_match: bool,
+    /// The range partition columns a binary key can prune by: the plain join
+    /// keys that are also partition columns of the state.
+    partition_columns: Vec<String>,
     schema: SchemaRef,
 }
 
@@ -1234,6 +1237,7 @@ impl IvmLookupTable {
     ) -> Self {
         let input_schema = Arc::new(contribution.schema().as_arrow().clone());
         let schema = state_output_schema(&input_schema, &table.schema);
+        let partition_columns = table.range_partition_columns.clone();
         Self {
             contribution,
             table,
@@ -1246,6 +1250,7 @@ impl IvmLookupTable {
             route_columns,
             bucket_key: None,
             multi_match,
+            partition_columns,
             schema,
         }
     }
@@ -1257,6 +1262,7 @@ impl IvmLookupTable {
         key_column: String,
         bucket_count: usize,
         multi_match: bool,
+        partition_columns: Vec<String>,
     ) -> Self {
         let input_schema = Arc::new(contribution.schema().as_arrow().clone());
         let schema = state_output_schema(&input_schema, &table.schema);
@@ -1271,6 +1277,7 @@ impl IvmLookupTable {
             route_columns: None,
             bucket_key: (bucket_count > 1).then_some(key_column),
             multi_match,
+            partition_columns,
             schema,
         }
     }
@@ -1283,23 +1290,40 @@ impl IvmLookupTable {
     /// missing or unparsable key returns `None`, which keeps every partition:
     /// pruning is an optimization and must never drop a needed one.
     async fn partition_restriction(&self) -> Option<Vec<(String, Vec<String>)>> {
-        let partitions = &self.table.range_partition_columns;
+        let partitions = match &self.key {
+            PkLookupKey::Columns { .. } => &self.table.range_partition_columns,
+            PkLookupKey::BinaryRow { .. } => &self.partition_columns,
+        };
         if partitions.is_empty() {
             return None;
         }
-        let PkLookupKey::Columns {
-            input_columns,
-            table_columns,
-        } = &self.key
-        else {
-            return None;
-        };
         let mut pairs = Vec::with_capacity(partitions.len());
-        for partition in partitions {
-            let index = table_columns
-                .iter()
-                .position(|column| column == partition)?;
-            pairs.push((partition.clone(), input_columns.get(index)?.clone()));
+        match &self.key {
+            PkLookupKey::Columns {
+                input_columns,
+                table_columns,
+            } => {
+                for partition in partitions {
+                    let index = table_columns
+                        .iter()
+                        .position(|column| column == partition)?;
+                    pairs.push((partition.clone(), input_columns.get(index)?.clone()));
+                }
+            }
+            PkLookupKey::BinaryRow { .. } => {
+                // A binary state key hides its join-key columns.  The
+                // contribution still carries them under their join names; the
+                // caller only passes plain join keys that are also state
+                // partition columns, so every such column is safe to use.
+                for partition in partitions {
+                    self.contribution
+                        .schema()
+                        .as_arrow()
+                        .field_with_name(partition)
+                        .ok()?;
+                    pairs.push((partition.clone(), partition.clone()));
+                }
+            }
         }
         let frame = self
             .contribution

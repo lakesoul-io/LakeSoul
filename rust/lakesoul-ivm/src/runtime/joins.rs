@@ -2647,6 +2647,35 @@ fn join_side_key_columns(
 /// (a plain key is already a column of the frame).  The affected detection of
 /// the outer joins probes by key name, so a computed key has to exist as a
 /// column first.
+/// The plain join keys that are also range partition columns of a side state.
+///
+/// A computed key may render to a value unrelated to the source partition
+/// column it is named after, so only plain keys are safe for pruning.
+fn plain_join_partition_columns(
+    view: &JoinView,
+    side: JoinSide,
+    state: &IvmTable,
+) -> Vec<String> {
+    if state.range_partition_columns.is_empty() {
+        return Vec::new();
+    }
+    let right_keys: &[String] = if view.right_keys.is_empty() {
+        &view.join_keys
+    } else {
+        &view.right_keys
+    };
+    let (keys, exprs): (&[String], &[String]) = match side {
+        JoinSide::Left => (&view.join_keys, &view.key_exprs.left),
+        JoinSide::Right => (right_keys, &view.key_exprs.right),
+    };
+    keys.iter()
+        .enumerate()
+        .filter(|(index, _)| exprs.get(*index).is_none_or(|expr| expr.is_empty()))
+        .map(|(_, key)| key.clone())
+        .filter(|key| state.range_partition_columns.contains(key))
+        .collect()
+}
+
 fn with_computed_keys(
     context: &SessionContext,
     frame: DataFrame,
@@ -3364,6 +3393,8 @@ impl IvmRuntime {
                 left_state.current_groups(&self.client).await?,
                 bucket_count,
             );
+            let partition_columns =
+                plain_join_partition_columns(view, JoinSide::Left, left_state);
             let provider = IvmLookupTable::binary(
                 contribution,
                 left_state.clone(),
@@ -3371,6 +3402,7 @@ impl IvmRuntime {
                 super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
                 bucket_count,
                 true,
+                partition_columns,
             );
             let frame = context.read_table(Arc::new(provider))?;
             let projections = view
@@ -3478,6 +3510,8 @@ impl IvmRuntime {
             left_state.current_groups(&self.client).await?,
             bucket_count,
         );
+        let partition_columns =
+            plain_join_partition_columns(view, JoinSide::Left, left_state);
         let provider = IvmLookupTable::binary(
             contribution,
             left_state.clone(),
@@ -3485,6 +3519,7 @@ impl IvmRuntime {
             super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
             bucket_count,
             true,
+            partition_columns,
         );
         let frame = context.read_table(std::sync::Arc::new(provider))?;
         let projections = view
@@ -4151,6 +4186,8 @@ impl IvmRuntime {
         };
         let groups = right_state.current_groups(&self.client).await?;
         let groups = groups_by_bucket(groups, bucket_count);
+        let partition_columns =
+            plain_join_partition_columns(view, JoinSide::Right, right_state);
         let provider = IvmLookupTable::binary(
             contribution,
             right_state.clone(),
@@ -4158,6 +4195,7 @@ impl IvmRuntime {
             super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
             bucket_count,
             true,
+            partition_columns,
         );
         let frame = context.read_table(Arc::new(provider))?;
         let right_columns = view
