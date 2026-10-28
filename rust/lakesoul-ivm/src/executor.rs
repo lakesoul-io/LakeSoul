@@ -2305,16 +2305,17 @@ fn needs_state_table(spec: &ViewSpec) -> bool {
                 && having.is_none()
                 && having_lookup.is_none()
                 && aggregates.iter().all(|aggregate| {
-                    aggregate
-                        .call
-                        .strip_prefix("SUM(")
-                        .and_then(|call| call.strip_suffix(')'))
-                        .is_some_and(|expression| {
+                    let call = aggregate.call.trim();
+                    call.get(..4)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("SUM("))
+                        && call.ends_with(')')
+                        && {
+                            let expression = &call[4..call.len() - 1];
                             let expression = expression.trim();
                             !expression.is_empty()
                                 && !expression.contains(',')
                                 && !expression.to_ascii_uppercase().contains("DISTINCT")
-                        })
+                        }
                 })
         }
         _ => false,

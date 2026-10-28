@@ -3048,15 +3048,18 @@ impl IvmRuntime {
             && view.group_exprs.is_empty()
             && view.having.is_none()
             && view.having_lookup.is_none()
-            && view.source.primary_keys.len() == 1
+            && !view.source.primary_keys.is_empty()
             && view.aggregates.iter().all(|(call, _, _)| {
-                call.strip_prefix("SUM(")
-                    .and_then(|call| call.strip_suffix(')'))
-                    .is_some_and(|expression| {
+                let call = call.trim();
+                call.get(..4)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("SUM("))
+                    && call.ends_with(')')
+                    && {
+                        let expression = &call[4..call.len() - 1];
                         let expression = expression.trim();
                         !expression.is_empty()
                             && !expression.to_ascii_uppercase().contains("DISTINCT")
-                    })
+                    }
             })
     }
 
@@ -3594,12 +3597,18 @@ impl IvmRuntime {
         }
         let mut measures = Vec::new();
         for (call, column, _) in &view.aggregates {
-            let inner = call
-                .strip_prefix("SUM(")
-                .and_then(|call| call.strip_suffix(')'))
-                .ok_or_else(|| {
-                    report!("multi-agg state refresh only supports SUM aggregates")
-                })?;
+            let call = call.trim();
+            let inner = if call
+                .get(..4)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("SUM("))
+                && call.ends_with(')')
+            {
+                call[4..call.len() - 1].trim()
+            } else {
+                return Err(report!(
+                    "multi-agg state refresh only supports SUM aggregates"
+                ));
+            };
             let data_type = view.mv.schema.field_with_name(column)?.data_type().clone();
             measures.push((inner.to_string(), column.clone(), data_type));
         }
@@ -3678,6 +3687,40 @@ impl IvmRuntime {
             };
         let (old, new, bootstrap_new) = if keyed_contributions.is_some() {
             (empty_old.clone(), empty_old, None)
+        } else if keyed && !versions.is_empty() && view.source.primary_keys.len() > 1 {
+            // A composite primary key cannot use the single-column chunked
+            // contribution path.  Read the before/current rows for exactly
+            // the changed tuples through the arrow-Row key lookup instead of
+            // scanning the full source.
+            let delta = delta
+                .as_ref()
+                .ok_or_else(|| report!("multi-agg refresh without a delta"))?;
+            let key_exprs = view
+                .source
+                .primary_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let delta_keys = delta.clone().select(key_exprs)?.distinct()?;
+            let old = self
+                .lookup_source_before_by_pks(
+                    &context,
+                    &view.source,
+                    &window,
+                    delta_keys.clone(),
+                )
+                .await?;
+            let new = self
+                .lookup_source_by_join_keys(
+                    &context,
+                    &view.source,
+                    delta_keys,
+                    &view.source.primary_keys,
+                    &view.source.primary_keys,
+                    true,
+                )
+                .await?;
+            (old, new, None)
         } else if keyed && !versions.is_empty() {
             let delta = delta
                 .as_ref()
