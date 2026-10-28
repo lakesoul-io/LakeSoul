@@ -1386,23 +1386,12 @@ impl IvmSqlExecutor {
         let name = format!("{}__ivm_state", target.table_name);
         let path = format!("{}/__ivm_state", target.table_path.trim_end_matches('/'));
         let bucket_columns = bucket_columns_for(&primary_keys);
-        let range_partitions = if !target.range_partition_columns.is_empty()
-            && target
-                .range_partition_columns
-                .iter()
-                .all(|column| primary_keys.contains(column))
-        {
-            target.range_partition_columns.clone()
-        } else {
-            Vec::new()
-        };
         if let Ok(existing) = self.runtime.open_table(&name, &target.namespace).await {
             if schema_matches(&existing.schema, &expected)
                 && existing.primary_keys == primary_keys
                 && (existing.bucket_columns.is_empty()
                     || existing.bucket_columns == bucket_columns)
                 && existing.file_format == internal_file_format()
-                && existing.range_partition_columns == range_partitions
             {
                 return Ok(existing);
             }
@@ -1441,9 +1430,6 @@ impl IvmSqlExecutor {
             .with_primary_keys(primary_keys)
             .with_bucket_columns(bucket_columns)
             .with_file_format(internal_file_format());
-        if !range_partitions.is_empty() {
-            options = options.with_range_partition_columns(range_partitions);
-        }
         options.hash_bucket_num = target.hash_bucket_num.clone();
         self.runtime.create_table(options).await
     }
@@ -1641,19 +1627,6 @@ impl IvmSqlExecutor {
         }
         let primary_keys = self.derived_primary_keys(spec).await?;
         let bucket_columns = bucket_columns_for(&primary_keys);
-        // A derived step that carries the target's range partition columns in
-        // its key is partitioned the same way, so the next step can prune to
-        // the touched days instead of reading one monolithic state.
-        let range_partitions = if !target.range_partition_columns.is_empty()
-            && target
-                .range_partition_columns
-                .iter()
-                .all(|column| primary_keys.contains(column))
-        {
-            target.range_partition_columns.clone()
-        } else {
-            Vec::new()
-        };
         if let Ok(existing) = self.runtime.open_table(&name, &target.namespace).await {
             // A derived step inherits the target's bucket layout: keeping the
             // default bucket count would serialize a 1M-row window/join step
@@ -1666,7 +1639,6 @@ impl IvmSqlExecutor {
                     || existing.bucket_columns == bucket_columns)
                 && existing.file_format == internal_file_format()
                 && existing.hash_bucket_num == target.hash_bucket_num
-                && existing.range_partition_columns == range_partitions
             {
                 return Ok(existing);
             }
@@ -1684,9 +1656,6 @@ impl IvmSqlExecutor {
             .with_primary_keys(primary_keys)
             .with_bucket_columns(bucket_columns)
             .with_file_format(internal_file_format());
-        if !range_partitions.is_empty() {
-            options = options.with_range_partition_columns(range_partitions);
-        }
         options.hash_bucket_num = target.hash_bucket_num.clone();
         self.runtime.create_table(options).await
     }
