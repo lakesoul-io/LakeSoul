@@ -12,7 +12,7 @@ use arrow::array::{ArrayRef, Int64Array, StringArray};
 use datafusion::common::ScalarValue;
 use datafusion::prelude::{col, lit};
 
-use crate::metadata::PartitionVersion;
+use crate::metadata::{PartitionVersion, StateRole};
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 
 /// The internal state schema for a multi-aggregate view: the Arrow row
@@ -48,6 +48,47 @@ pub fn multi_agg_state_schema_for(
         DataType::Int64,
         false,
     )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The schema of the row-level state of a multi-aggregate view.
+///
+/// It carries every source column (apart from the internal change columns)
+/// plus its own row kind and epoch.  The state primary key is the group keys
+/// followed by the source primary keys, so a group lookup is a PK prefix
+/// lookup and a source-key update is an exact PK upsert.
+pub fn multi_agg_rows_state_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+) -> Result<SchemaRef> {
+    for key in group_keys {
+        source_schema.field_with_name(key)?;
+    }
+    let mut fields = source_schema
+        .fields()
+        .iter()
+        .map(|field| {
+            Arc::new(Field::new(
+                field.name(),
+                field.data_type().clone(),
+                field.is_nullable(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    if source_schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_err() {
+        fields.push(Arc::new(Field::new(
+            IVM_ROW_KINDS_COLUMN,
+            DataType::Utf8,
+            false,
+        )));
+    }
+    if source_schema.field_with_name(IVM_EPOCH_COLUMN).is_err() {
+        fields.push(Arc::new(Field::new(
+            IVM_EPOCH_COLUMN,
+            DataType::Int64,
+            false,
+        )));
+    }
     Ok(Arc::new(Schema::new(fields)))
 }
 
@@ -3067,6 +3108,14 @@ impl IvmRuntime {
     pub async fn refresh_multi_agg(&self, view: &MultiAggView) -> Result<Option<i64>> {
         self.register_multi_agg_view(view).await?;
         validate_multi_agg_view(view)?;
+        if let Some(existing) = self
+            .metadata
+            .get_state(&view.view_id, StateRole::MultiAggRows)
+            .await?
+        {
+            let state = self.open_table_by_id(&existing.table_id).await?;
+            return self.refresh_multi_agg_rows(view, &state).await;
+        }
         if Self::multi_agg_state_eligible(view)
             && let Some(state) = &view.state
         {
@@ -4046,10 +4095,158 @@ impl IvmRuntime {
         Ok(Some(epoch))
     }
 
+    /// Refresh a multi-aggregate view from its row-level source state.
+    ///
+    /// The state stores every current source row keyed by the group keys and
+    /// the source primary key.  A window updates only the changed rows, then
+    /// reads the state rows of the affected groups by a group-key prefix and
+    /// recomputes those groups.  Arbitrary aggregates (COUNT, MAX, scalar
+    /// group expressions) therefore never scan the full source.
+    async fn refresh_multi_agg_rows(
+        &self,
+        view: &MultiAggView,
+        state: &IvmTable,
+    ) -> Result<Option<i64>> {
+        self.register_multi_agg_view(view).await?;
+        self.register_state_tables(&view.view_id, &[(StateRole::MultiAggRows, state)])
+            .await?;
+        let window = self
+            .collect_source_window(&view.view_id, &view.source)
+            .await?;
+        if window.added_files.is_empty() {
+            return Ok(None);
+        }
+        let identity = window.identity.clone();
+        let record = match self
+            .begin_window(&view.view_id, &identity, &view.mv)
+            .await?
+        {
+            WindowStart::AlreadyApplied(epoch) => {
+                self.advance_cursors(&view.view_id, window.cursors).await?;
+                return Ok(Some(epoch));
+            }
+            WindowStart::Apply(record) => record,
+        };
+        let epoch = record.epoch;
+        let context = refresh_session();
+        let delta =
+            self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
+        let source_fields = view
+            .source
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>();
+        let pk_exprs = view
+            .source
+            .primary_keys
+            .iter()
+            .map(|key| col(key.as_str()))
+            .collect::<Vec<_>>();
+        let bootstrap = window
+            .before_versions
+            .values()
+            .all(|version| version.is_none());
+        let before = if bootstrap {
+            dataframe(&context, Vec::new(), &view.source.schema)?
+        } else {
+            let contribution = delta.clone().select(pk_exprs)?.distinct()?;
+            let before = self
+                .lookup_source_before_by_pks(
+                    &context,
+                    &view.source,
+                    &window,
+                    contribution,
+                )
+                .await?;
+            filter_deletes(before, change_column(&view.source))?
+        };
+        let delta_clean = filter_deletes(delta.clone(), change_column(&view.source))?;
+        let before_data = project_frame(before.clone(), &source_fields)?;
+        let delta_data = project_frame(delta_clean, &source_fields)?;
+        let before_ops = before_data
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let new_ops = delta_data
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let mut state_ops = before_ops.union(new_ops)?;
+        let mut sort_exprs = state
+            .primary_keys
+            .iter()
+            .map(|key| column_expr(key))
+            .collect::<Vec<_>>();
+        sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
+        state_ops = state_ops.sort_by(sort_exprs)?;
+        let mut commit_ids = state
+            .append_stream(&self.client, state_ops.execute_stream().await?)
+            .await?;
+
+        context.register_table("old", before.clone().into_view())?;
+        context.register_table("delta", delta.clone().into_view())?;
+        let before_groups = project_frame(before, &view.group_keys)?.distinct()?;
+        let delta_groups = project_frame(delta, &view.group_keys)?.distinct()?;
+        let affected = before_groups.union(delta_groups)?.distinct()?;
+        let state_rows = self
+            .lookup_source_by_join_keys(
+                &context,
+                state,
+                affected.clone(),
+                &view.group_keys,
+                &view.group_keys,
+                true,
+            )
+            .await?;
+        let src = project_frame(state_rows, &source_fields)?;
+
+        context.register_table("src", src.into_view())?;
+        context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
+        let parts = view.parts()?;
+        let frame = context
+            .sql(&recompute_refresh_sql(&parts, epoch, false))
+            .await?;
+        commit_ids.extend(
+            view.mv
+                .append_stream(&self.client, frame.execute_stream().await?)
+                .await?,
+        );
+        self.checkpoint_epoch_states(&record).await?;
+        let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
+        self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
+            .await?;
+        self.advance_cursors(&view.view_id, window.cursors).await?;
+        Ok(Some(epoch))
+    }
+
     /// Rebuild a multi-aggregate view from the full source state.
     pub async fn rebuild_multi_agg(&self, view: &MultiAggView) -> Result<i64> {
         self.register_multi_agg_view(view).await?;
         validate_multi_agg_view(view)?;
+        if let Some(existing) = self
+            .metadata
+            .get_state(&view.view_id, StateRole::MultiAggRows)
+            .await?
+        {
+            let state = self.open_table_by_id(&existing.table_id).await?;
+            self.metadata
+                .set_view_status(&view.view_id, "rebuilding")
+                .await?;
+            let generation = self.metadata.bump_generation(&view.view_id).await?;
+            self.metadata.delete_cursors(&view.view_id).await?;
+            view.mv.truncate(&self.client).await?;
+            state.truncate(&self.client).await?;
+            let Some(epoch) = self.refresh_multi_agg_rows(view, &state).await? else {
+                return Err(report!(
+                    "multi-agg rebuild for {} found no source files (generation {generation})",
+                    view.view_id
+                ));
+            };
+            self.metadata
+                .set_view_status(&view.view_id, "active")
+                .await?;
+            return Ok(epoch);
+        }
         if Self::multi_agg_state_eligible(view)
             && let Some(state) = &view.state
         {

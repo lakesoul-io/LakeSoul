@@ -50,16 +50,16 @@ use crate::runtime::{
     left_aggregate_mv_schema_with_outputs, left_join_view_schema_with_keys,
     lookup_chain_mv_schema_for, lookup_chain_step_id_column, lookup_join_view_schema_for,
     median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
-    multi_agg_state_schema_for, multi_join_append_schema_for, multi_join_mv_schema_for,
-    multi_join_primary_keys, multi_window_mv_schema_for_with_payload,
-    nullable_join_key_schema, parse_filter, refresh_session, row_expr_mv_schema_for,
-    semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
-    sum_count_groups_mv_schema_for, top_k_expr_mv_schema_for,
-    union_all_mv_schema_with_source, union_distinct_mv_schema_for,
-    union_output_schema_for, value_count_groups_state_schema_for,
-    variance_groups_mv_schema_for, wide_full_join_view_schema_with_identity_and_keys,
-    wide_join_view_schema_with_keys, wide_keyed_join_view_schema_for,
-    wide_keyed_join_view_schema_with_keys,
+    multi_agg_rows_state_schema_for, multi_agg_state_schema_for,
+    multi_join_append_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
+    multi_window_mv_schema_for_with_payload, nullable_join_key_schema, parse_filter,
+    refresh_session, row_expr_mv_schema_for, semi_anti_mv_schema_for,
+    string_agg_groups_mv_schema_for, sum_count_groups_mv_schema_for,
+    top_k_expr_mv_schema_for, union_all_mv_schema_with_source,
+    union_distinct_mv_schema_for, union_output_schema_for,
+    value_count_groups_state_schema_for, variance_groups_mv_schema_for,
+    wide_full_join_view_schema_with_identity_and_keys, wide_join_view_schema_with_keys,
+    wide_keyed_join_view_schema_for, wide_keyed_join_view_schema_with_keys,
     wide_left_join_view_schema_with_identity_and_keys, wide_lookup_join_view_schema_for,
     wide_outer_join_view_schema_with_keys, window_columns_mv_schema_for_with_payload,
 };
@@ -2013,6 +2013,88 @@ impl IvmSqlExecutor {
             let table = create_ivm_table(self.runtime.client(), options).await?;
             return Ok(table.table_id);
         }
+        if !multi_agg_value_state_eligible(spec)
+            && let ViewSpec::MultiAgg {
+                source_table_id,
+                group_keys,
+                ..
+            } = spec
+        {
+            let source = self.runtime.open_table_by_id(source_table_id).await?;
+            if source.primary_keys.is_empty() {
+                return Err(rootcause::report!(
+                    "multi-agg row state needs a keyed source"
+                ));
+            }
+            let schema = multi_agg_rows_state_schema_for(&source.schema, group_keys)?;
+            let mut primary_keys = group_keys.clone();
+            for key in &source.primary_keys {
+                if !primary_keys.contains(key) {
+                    primary_keys.push(key.clone());
+                }
+            }
+            let bucket_columns = group_keys.clone();
+            if let Some(existing) = self
+                .runtime
+                .metadata()
+                .get_state(spec.view_id(), StateRole::MultiAggRows)
+                .await?
+            {
+                let table = self.runtime.open_table_by_id(&existing.table_id).await?;
+                if schema_matches(&table.schema, &schema)
+                    && table.primary_keys == primary_keys
+                {
+                    return Ok(table.table_id);
+                }
+                self.runtime
+                    .metadata()
+                    .unregister_state(spec.view_id(), StateRole::MultiAggRows)
+                    .await?;
+                let _ = self
+                    .runtime
+                    .client()
+                    .drop_table(&table.table_name, &table.namespace)
+                    .await;
+            }
+            // A compact aggregate state from an older definition would make
+            // the refresh pick the wrong path; remove it when switching to
+            // row-level state.
+            if let Some(existing) = self
+                .runtime
+                .metadata()
+                .get_state(spec.view_id(), StateRole::State)
+                .await?
+            {
+                self.runtime
+                    .metadata()
+                    .unregister_state(spec.view_id(), StateRole::State)
+                    .await?;
+                let table = self.runtime.open_table_by_id(&existing.table_id).await?;
+                let _ = self
+                    .runtime
+                    .client()
+                    .drop_table(&table.table_name, &table.namespace)
+                    .await;
+            }
+            let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
+            let mut options = IvmTableOptions::new(
+                format!("{}__ivm_multi_agg_rows_{suffix}", mv.table_name),
+                format!("{}__ivm_multi_agg_rows_{suffix}", mv.table_path),
+                schema,
+            )
+            .with_namespace(mv.namespace.clone())
+            .with_primary_keys(primary_keys)
+            .with_bucket_columns(bucket_columns)
+            .with_cdc_column(IVM_ROW_KINDS_COLUMN)
+            .with_file_format(keyed_state_file_format());
+            options.hash_bucket_num = mv.hash_bucket_num.clone();
+            let table = create_ivm_table(self.runtime.client(), options).await?;
+            self.runtime
+                .metadata()
+                .register_state(spec.view_id(), StateRole::MultiAggRows, &table)
+                .await?;
+            return Ok(table.table_id);
+        }
         if let ViewSpec::MultiAgg {
             source_table_id,
             group_keys,
@@ -2290,34 +2372,46 @@ impl Visitor for RelationCollector<'_> {
     }
 }
 
+/// Whether a multi-aggregate view can use the compact aggregate-value state
+/// (one row per group) instead of the row-level source state.
+fn multi_agg_value_state_eligible(spec: &ViewSpec) -> bool {
+    let ViewSpec::MultiAgg {
+        group_exprs,
+        aggregates,
+        having,
+        having_lookup,
+        ..
+    } = spec
+    else {
+        return false;
+    };
+    group_exprs.is_empty()
+        && having.is_none()
+        && having_lookup.is_none()
+        && aggregates.iter().all(|aggregate| {
+            let call = aggregate.call.trim();
+            call.get(..4)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("SUM("))
+                && call.ends_with(')')
+                && {
+                    let expression = &call[4..call.len() - 1];
+                    let expression = expression.trim();
+                    !expression.is_empty()
+                        && !expression.contains(',')
+                        && !expression.to_ascii_uppercase().contains("DISTINCT")
+                }
+        })
+}
+
 fn needs_state_table(spec: &ViewSpec) -> bool {
     match spec {
         ViewSpec::MinMax { .. } | ViewSpec::DistinctAgg { .. } => true,
         ViewSpec::MultiAgg {
+            group_keys,
             group_exprs,
-            aggregates,
-            filter: _,
-            having,
             having_lookup,
             ..
-        } => {
-            group_exprs.is_empty()
-                && having.is_none()
-                && having_lookup.is_none()
-                && aggregates.iter().all(|aggregate| {
-                    let call = aggregate.call.trim();
-                    call.get(..4)
-                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("SUM("))
-                        && call.ends_with(')')
-                        && {
-                            let expression = &call[4..call.len() - 1];
-                            let expression = expression.trim();
-                            !expression.is_empty()
-                                && !expression.contains(',')
-                                && !expression.to_ascii_uppercase().contains("DISTINCT")
-                        }
-                })
-        }
+        } => group_exprs.is_empty() && !group_keys.is_empty() && having_lookup.is_none(),
         _ => false,
     }
 }
