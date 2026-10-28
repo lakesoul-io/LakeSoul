@@ -975,7 +975,12 @@ pub fn definition_hash(spec: &ViewSpec) -> Result<String> {
                 *expression = normalize_current_timestamp(expression);
             }
         }
-        ViewSpec::MultiAgg { aggregates, .. } => {
+        ViewSpec::MultiAgg {
+            state_table_id,
+            aggregates,
+            ..
+        } => {
+            *state_table_id = None;
             for aggregate in aggregates {
                 aggregate.call = normalize_current_timestamp(&aggregate.call);
             }

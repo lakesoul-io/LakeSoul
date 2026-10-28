@@ -952,10 +952,6 @@ impl IvmRuntime {
         let context = refresh_session();
         let left_changed = !left_window.added_files.is_empty();
         let right_changed = !right_window.added_files.is_empty();
-        let fast_simple = side_keyed
-            && !view.count_mode
-            && view.right_aggregate.is_none()
-            && left_changed != right_changed;
         let raw_delta_left = self.groups_table_frame(
             &context,
             &view.left,
@@ -970,109 +966,6 @@ impl IvmRuntime {
         let delta_right = project_frame(raw_delta_right.clone(), &right_columns)?;
         let mv_partitions = if right_changed { None } else { mv_partitions };
         let probe = semi_anti_probe(view);
-        let fast_sides = if fast_simple {
-            if left_changed {
-                let left = raw_delta_left.clone();
-                let right = self
-                    .lookup_right_rows_for_left_keys(
-                        &context,
-                        &probe,
-                        right_state.as_ref(),
-                        right_join_keys(view),
-                        &left,
-                    )
-                    .await?;
-                Some((left, right))
-            } else {
-                let contribution = self
-                    .join_keys_including_before(
-                        &context,
-                        &view.right,
-                        &right_window,
-                        &raw_delta_right,
-                        right_join_keys(view),
-                        &[],
-                        &view.join_keys,
-                    )
-                    .await?;
-                let left = self
-                    .lookup_left_rows_for_keys(
-                        &context,
-                        &probe,
-                        left_state.as_ref(),
-                        contribution,
-                    )
-                    .await?;
-                let right = self
-                    .lookup_right_rows_for_left_keys(
-                        &context,
-                        &probe,
-                        right_state.as_ref(),
-                        right_join_keys(view),
-                        &left,
-                    )
-                    .await?;
-                Some((left, right))
-            }
-        } else {
-            None
-        };
-        let left_before = if fast_simple {
-            dataframe(&context, Vec::new(), &left_projection)?
-        } else {
-            project_frame(
-                self.before_window_table_frame(
-                    &context,
-                    &view.left,
-                    &left_window.before_versions,
-                )
-                .await?,
-                &left_columns,
-            )?
-        };
-        let right_before = if fast_simple || !right_changed {
-            dataframe(&context, Vec::new(), &right_projection)?
-        } else {
-            project_frame(
-                self.before_window_table_frame(
-                    &context,
-                    &view.right,
-                    &right_window.before_versions,
-                )
-                .await?,
-                &right_columns,
-            )?
-        };
-        let (left_now, right_now) = match fast_sides {
-            Some((left, right)) => (
-                project_frame(left, &left_columns)?,
-                project_frame(right, &right_columns)?,
-            ),
-            None => (
-                project_frame(
-                    self.current_table_frame(&context, &view.left)?,
-                    &left_columns,
-                )?,
-                project_frame(
-                    self.current_table_frame(&context, &view.right)?,
-                    &right_columns,
-                )?,
-            ),
-        };
-        let left_before = filter_deletes(left_before, change_column(&view.left))?;
-        let right_before = filter_deletes(right_before, change_column(&view.right))?;
-        let left_now = apply_side_filter(
-            &context,
-            filter_deletes(left_now, change_column(&view.left))?,
-            &left_projection,
-            view.left_filter.as_deref(),
-        )?;
-        let right_now = apply_side_filter(
-            &context,
-            filter_deletes(right_now, change_column(&view.right))?,
-            &right_projection,
-            view.right_filter.as_deref(),
-        )?;
 
         let left_key_names = view
             .left
@@ -1092,75 +985,270 @@ impl IvmRuntime {
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
+        let left_key_schema = project_schema(&view.left.schema, &view.left.primary_keys)?;
 
-        // Left rows in the delta are always affected.  In count mode a left
-        // insertion or deletion also shifts the ranks of the remaining rows of
-        // its tuple, so the whole tuple follows.
-        let affected_from_left = if view.count_mode {
-            let join_key_exprs = view
-                .join_keys
-                .iter()
-                .map(|key| col(key.as_str()))
-                .collect::<Vec<_>>();
-            let changed_tuples = delta_left
-                .clone()
-                .select(join_key_exprs.clone())?
-                .union(
-                    left_before
-                        .clone()
-                        .join(
-                            delta_left.clone().select(left_key_exprs.clone())?,
-                            JoinType::LeftSemi,
-                            &left_key_names,
-                            &left_key_names,
-                            None,
-                        )?
-                        .select(join_key_exprs)?,
-                )?
-                .distinct()?;
-            let shifted =
-                null_safe_semi_join(left_now.clone(), changed_tuples, &view.join_keys)?
+        // With keyed sources on both sides, every row the window needs is read
+        // through a keyed lookup: the left rows of the delta and of the changed
+        // right join keys, then the right rows matching those left rows.  No
+        // side is read in full.
+        let (left_now, right_now, affected) = if side_keyed {
+            // The current left rows behind each changed join key.  In count
+            // mode a left change also shifts the ranks of the whole tuple, so
+            // the lookup covers the tuple instead of just the changed row.
+            let left_rows_by_key = if left_changed && view.count_mode {
+                let changed_tuples = self
+                    .join_keys_including_before(
+                        &context,
+                        &view.left,
+                        &left_window,
+                        &raw_delta_left,
+                        &view.join_keys,
+                        &[],
+                        &view.join_keys,
+                    )
+                    .await?;
+                Some(
+                    self.lookup_left_rows_for_keys(
+                        &context,
+                        &probe,
+                        left_state.as_ref(),
+                        changed_tuples,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            // The current left rows matching the previous and the current
+            // join keys of the changed right rows.
+            let right_rows = if right_changed {
+                let changed_keys = self
+                    .join_keys_including_before(
+                        &context,
+                        &view.right,
+                        &right_window,
+                        &raw_delta_right,
+                        right_join_keys(view),
+                        &[],
+                        &view.join_keys,
+                    )
+                    .await?;
+                Some(
+                    self.lookup_left_rows_for_keys(
+                        &context,
+                        &probe,
+                        left_state.as_ref(),
+                        changed_keys,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            let affected_from_left = if view.count_mode {
+                // The deleted keys are absent from the current state, so the
+                // delta keys are always part of the affected set.
+                let changed = raw_delta_left
+                    .clone()
                     .select(left_key_exprs.clone())?
                     .distinct()?;
-            delta_left
-                .clone()
-                .select(left_key_exprs.clone())?
-                .distinct()?
-                .union(shifted)?
-                .distinct()?
+                match &left_rows_by_key {
+                    Some(rows) => changed
+                        .union(rows.clone().select(left_key_exprs.clone())?.distinct()?)?
+                        .distinct()?,
+                    None => changed,
+                }
+            } else {
+                match &left_rows_by_key {
+                    Some(rows) => {
+                        rows.clone().select(left_key_exprs.clone())?.distinct()?
+                    }
+                    None => raw_delta_left
+                        .clone()
+                        .select(left_key_exprs.clone())?
+                        .distinct()?,
+                }
+            };
+            let affected_from_right = match &right_rows {
+                Some(rows) => rows.clone().select(left_key_exprs.clone())?.distinct()?,
+                None => dataframe(&context, Vec::new(), &left_key_schema)?,
+            };
+            let affected = match (left_changed, right_changed) {
+                (true, true) => {
+                    affected_from_left.union(affected_from_right)?.distinct()?
+                }
+                (true, false) => affected_from_left,
+                (false, true) => affected_from_right,
+                (false, false) => unreachable!("an empty window returns above"),
+            };
+            // Reuse the rows already read: the left delta carries the current
+            // row of every changed left key, and the right lookups carry the
+            // current left rows of the changed right keys, so no extra PK
+            // lookup over the left source is needed.
+            let left_now = if view.count_mode {
+                let rows = match (left_rows_by_key, right_rows) {
+                    (Some(left), Some(right)) => left.union(right)?,
+                    (Some(rows), None) | (None, Some(rows)) => rows,
+                    (None, None) => dataframe(&context, Vec::new(), &left_key_schema)?,
+                };
+                rows.distinct()?
+            } else {
+                let rows = match right_rows {
+                    Some(right) => raw_delta_left.clone().union(right)?,
+                    None => raw_delta_left.clone(),
+                };
+                rows.distinct()?
+            };
+            let right_now = self
+                .lookup_right_rows_for_left_keys(
+                    &context,
+                    &probe,
+                    right_state.as_ref(),
+                    right_join_keys(view),
+                    &left_now,
+                )
+                .await?;
+            (
+                project_frame(left_now, &left_columns)?,
+                project_frame(right_now, &right_columns)?,
+                affected,
+            )
         } else {
-            delta_left
-                .clone()
+            let left_before = project_frame(
+                self.before_window_table_frame(
+                    &context,
+                    &view.left,
+                    &left_window.before_versions,
+                )
+                .await?,
+                &left_columns,
+            )?;
+            let right_before = if right_changed {
+                project_frame(
+                    self.before_window_table_frame(
+                        &context,
+                        &view.right,
+                        &right_window.before_versions,
+                    )
+                    .await?,
+                    &right_columns,
+                )?
+            } else {
+                dataframe(&context, Vec::new(), &right_projection)?
+            };
+            let left_now = project_frame(
+                self.current_table_frame(&context, &view.left)?,
+                &left_columns,
+            )?;
+            let right_now = project_frame(
+                self.current_table_frame(&context, &view.right)?,
+                &right_columns,
+            )?;
+
+            // Left rows in the delta are always affected.  In count mode a
+            // left insertion or deletion also shifts the ranks of the remaining
+            // rows of its tuple, so the whole tuple follows.
+            let affected_from_left = if view.count_mode {
+                let join_key_exprs = view
+                    .join_keys
+                    .iter()
+                    .map(|key| col(key.as_str()))
+                    .collect::<Vec<_>>();
+                let changed_tuples = delta_left
+                    .clone()
+                    .select(join_key_exprs.clone())?
+                    .union(
+                        left_before
+                            .clone()
+                            .join(
+                                delta_left.clone().select(left_key_exprs.clone())?,
+                                JoinType::LeftSemi,
+                                &left_key_names,
+                                &left_key_names,
+                                None,
+                            )?
+                            .select(join_key_exprs)?,
+                    )?
+                    .distinct()?;
+                let shifted = null_safe_semi_join(
+                    left_now.clone(),
+                    changed_tuples,
+                    &view.join_keys,
+                )?
                 .select(left_key_exprs.clone())?
-                .distinct()?
-        };
-        // A right change affects the left rows matching the previous or the
-        // current version of the changed right rows: the predicate can flip on
-        // an update and a changed equality key can drop an old match.
-        let affected = if fast_simple {
-            if left_changed {
+                .distinct()?;
                 delta_left
                     .clone()
                     .select(left_key_exprs.clone())?
                     .distinct()?
+                    .union(shifted)?
+                    .distinct()?
             } else {
-                left_now
+                delta_left
                     .clone()
                     .select(left_key_exprs.clone())?
                     .distinct()?
-            }
-        } else if !right_changed {
-            affected_from_left
-        } else if view.right_aggregate.is_some() {
-            // An aggregate input change re-evaluates the left rows of the
-            // changed join keys (their old keys included for a keyed right
-            // source).
-            let right_key_exprs = right_join_keys(view)
-                .iter()
-                .map(|key| col(key.as_str()))
-                .collect::<Vec<_>>();
-            let changed_keys = if view.right.primary_keys.is_empty() {
-                delta_right.clone().select(right_key_exprs.clone())?
+            };
+            // A right change affects the left rows matching the previous or
+            // the current version of the changed right rows: the predicate can
+            // flip on an update and a changed equality key can drop an old
+            // match.
+            let affected = if !right_changed {
+                affected_from_left
+            } else if view.right_aggregate.is_some() {
+                // An aggregate input change re-evaluates the left rows of the
+                // changed join keys (their old keys included for a keyed right
+                // source).
+                let right_key_exprs = right_join_keys(view)
+                    .iter()
+                    .map(|key| col(key.as_str()))
+                    .collect::<Vec<_>>();
+                let changed_keys = if view.right.primary_keys.is_empty() {
+                    delta_right.clone().select(right_key_exprs.clone())?
+                } else {
+                    let changed_pks = delta_right
+                        .clone()
+                        .select(
+                            view.right
+                                .primary_keys
+                                .iter()
+                                .map(|column| col(column.as_str()))
+                                .collect::<Vec<_>>(),
+                        )?
+                        .distinct()?;
+                    let changed_before = right_before.join(
+                        changed_pks,
+                        JoinType::LeftSemi,
+                        &right_key_names,
+                        &right_key_names,
+                        None,
+                    )?;
+                    changed_before
+                        .union(delta_right)?
+                        .distinct()?
+                        .select(right_key_exprs)?
+                }
+                .distinct()?;
+                let left_join_keys = view
+                    .join_keys
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                let right_join_key_names = right_join_keys(view)
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                let affected_from_right = left_before
+                    .join(
+                        changed_keys,
+                        JoinType::LeftSemi,
+                        &left_join_keys,
+                        &right_join_key_names,
+                        None,
+                    )?
+                    .select(left_key_exprs.clone())?
+                    .distinct()?;
+                affected_from_left.union(affected_from_right)?.distinct()?
             } else {
                 let changed_pks = delta_right
                     .clone()
@@ -1179,57 +1267,27 @@ impl IvmRuntime {
                     &right_key_names,
                     None,
                 )?;
-                changed_before
-                    .union(delta_right)?
-                    .distinct()?
-                    .select(right_key_exprs)?
-            }
-            .distinct()?;
-            let left_join_keys = view
-                .join_keys
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            let right_join_key_names = right_join_keys(view)
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            let affected_from_right = left_before
-                .join(
-                    changed_keys,
-                    JoinType::LeftSemi,
-                    &left_join_keys,
-                    &right_join_key_names,
-                    None,
-                )?
-                .select(left_key_exprs.clone())?
-                .distinct()?;
-            affected_from_left.union(affected_from_right)?.distinct()?
-        } else {
-            let changed_pks = delta_right
-                .clone()
-                .select(
-                    view.right
-                        .primary_keys
-                        .iter()
-                        .map(|column| col(column.as_str()))
-                        .collect::<Vec<_>>(),
-                )?
-                .distinct()?;
-            let changed_before = right_before.join(
-                changed_pks,
-                JoinType::LeftSemi,
-                &right_key_names,
-                &right_key_names,
-                None,
-            )?;
-            let changed = changed_before.union(delta_right)?.distinct()?;
-            let affected_from_right =
-                semi_anti_join(left_before, changed, view, JoinType::LeftSemi)?
-                    .select(left_key_exprs.clone())?
-                    .distinct()?;
-            affected_from_left.union(affected_from_right)?.distinct()?
+                let changed = changed_before.union(delta_right)?.distinct()?;
+                let affected_from_right =
+                    semi_anti_join(left_before, changed, view, JoinType::LeftSemi)?
+                        .select(left_key_exprs.clone())?
+                        .distinct()?;
+                affected_from_left.union(affected_from_right)?.distinct()?
+            };
+            (left_now, right_now, affected)
         };
+        let left_now = apply_side_filter(
+            &context,
+            filter_deletes(left_now, change_column(&view.left))?,
+            &left_projection,
+            view.left_filter.as_deref(),
+        )?;
+        let right_now = apply_side_filter(
+            &context,
+            filter_deletes(right_now, change_column(&view.right))?,
+            &right_projection,
+            view.right_filter.as_deref(),
+        )?;
 
         // The MV only supplies the old rows for the affected left keys.
         // Read those keys through the shared PK lookup instead of scanning

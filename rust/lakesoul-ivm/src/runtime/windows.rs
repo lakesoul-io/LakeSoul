@@ -3435,10 +3435,14 @@ impl IvmRuntime {
             expected_schema,
         )
         .with_namespace(source.namespace.clone())
-        .with_primary_keys(keys)
+        .with_primary_keys(keys.clone())
         .with_bucket_columns(bucket_columns.to_vec())
         .with_cdc_column(change)
         .with_file_format(crate::table::internal_file_format());
+        let range_partitions = crate::table::state_range_partition_columns(source, &keys);
+        if !range_partitions.is_empty() {
+            options = options.with_range_partition_columns(range_partitions);
+        }
         options.hash_bucket_num = source.hash_bucket_num.clone();
         let state = self.create_table(options).await?;
         self.register_state_tables(view_id, &[(StateRole::RankState, &state)])

@@ -251,6 +251,46 @@ impl Fixture {
 }
 
 #[test_log::test(tokio::test)]
+async fn semi_join_same_window_versions_use_the_last() {
+    // Two versions of one key in a single window: the second is the current
+    // row, so the left filter (`x > 10`) excludes it.
+    let mut fixture = setup(false).await;
+    fixture.view.left_filter = Some("x > 10".to_string());
+    let runtime = &fixture.runtime;
+    let (left, right, mv, view) =
+        (&fixture.left, &fixture.right, &fixture.mv, &fixture.view);
+
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[
+            (5, 2, 48, "insert"),
+            (5, 2, 3, "insert"),
+            (6, 2, 7, "insert"),
+            (6, 2, 50, "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(runtime.client(), right_batch(&[(100, 2, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_semi_anti(view).await.unwrap().unwrap();
+    assert_eq!(view_state(runtime, mv).await, HashMap::from([(6, (2, 50))]));
+
+    // A later right-only window reads the left rows from their side state,
+    // which must hold the same last version of each key.
+    right
+        .append_batch(runtime.client(), right_batch(&[(101, 2, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_semi_anti(view).await.unwrap().unwrap();
+    assert_eq!(view_state(runtime, mv).await, HashMap::from([(6, (2, 50))]));
+
+    fixture.cleanup().await;
+}
+
+#[test_log::test(tokio::test)]
 async fn semi_join_recomputes_affected_rows() {
     let fixture = setup(false).await;
     let runtime = &fixture.runtime;
@@ -421,6 +461,52 @@ async fn anti_join_tracks_matches_appearing_and_disappearing() {
         view_state(runtime, mv).await,
         full_result(runtime, left, right, true).await
     );
+
+    fixture.cleanup().await;
+}
+
+#[test_log::test(tokio::test)]
+async fn semi_join_with_differently_named_state_key() {
+    // The left join key (`x`) and the right join key (`g`) have different
+    // names while the right source is keyed by `rk`, so both side states exist.
+    let fixture = setup(false).await;
+    let runtime = &fixture.runtime;
+    let (left, right, mv) = (&fixture.left, &fixture.right, &fixture.mv);
+    let mut view = fixture.view.clone();
+    view.join_keys = vec!["x".to_string()];
+    view.right_keys = vec!["g".to_string()];
+
+    // Both sides change in the first window.
+    left.append_batch(runtime.client(), left_batch(&[(1, 10, 5, "insert")]))
+        .await
+        .unwrap();
+    right
+        .append_batch(runtime.client(), right_batch(&[(100, 5, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_semi_anti(&view).await.unwrap().unwrap();
+    assert_eq!(view_state(runtime, mv).await, HashMap::from([(1, (10, 5))]));
+
+    // The right key moves, and the left row moves with it in the same window.
+    left.append_batch(runtime.client(), left_batch(&[(1, 10, 6, "insert")]))
+        .await
+        .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[(100, 5, "delete"), (100, 6, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_semi_anti(&view).await.unwrap().unwrap();
+    assert_eq!(view_state(runtime, mv).await, HashMap::from([(1, (10, 6))]));
+
+    // The left key moves away with the right side unchanged.
+    left.append_batch(runtime.client(), left_batch(&[(1, 10, 7, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_semi_anti(&view).await.unwrap().unwrap();
+    assert!(view_state(runtime, mv).await.is_empty());
 
     fixture.cleanup().await;
 }

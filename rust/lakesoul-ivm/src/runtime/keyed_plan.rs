@@ -55,7 +55,7 @@ use super::{
     IVM_EPOCH_COLUMN, IVM_GROUP_ROW_COLUMN, IVM_ROW_COUNT_COLUMN, IVM_ROW_KINDS_COLUMN,
 };
 use crate::error::Result;
-use crate::table::{IvmTable, PartitionFiles, file_bucket};
+use crate::table::{IvmTable, PartitionFiles, file_bucket, partition_matches};
 
 /// Hidden column carrying the LakeSoul bucket id during a shuffle.
 pub(crate) const IVM_BUCKET_COLUMN: &str = "__ivm_bucket";
@@ -1218,6 +1218,11 @@ pub(crate) struct IvmLookupTable {
     route_columns: Option<Vec<String>>,
     bucket_key: Option<String>,
     multi_match: bool,
+    /// The range partition columns a binary key can prune by: the plain join
+    /// keys that are also partition columns of the state.
+    partition_columns: Vec<String>,
+    /// The caller already fetched only the matching partition groups.
+    prepruned: bool,
     schema: SchemaRef,
 }
 
@@ -1234,6 +1239,7 @@ impl IvmLookupTable {
     ) -> Self {
         let input_schema = Arc::new(contribution.schema().as_arrow().clone());
         let schema = state_output_schema(&input_schema, &table.schema);
+        let partition_columns = table.range_partition_columns.clone();
         Self {
             contribution,
             table,
@@ -1246,6 +1252,8 @@ impl IvmLookupTable {
             route_columns,
             bucket_key: None,
             multi_match,
+            partition_columns,
+            prepruned: false,
             schema,
         }
     }
@@ -1257,6 +1265,7 @@ impl IvmLookupTable {
         key_column: String,
         bucket_count: usize,
         multi_match: bool,
+        partition_columns: Vec<String>,
     ) -> Self {
         let input_schema = Arc::new(contribution.schema().as_arrow().clone());
         let schema = state_output_schema(&input_schema, &table.schema);
@@ -1271,11 +1280,137 @@ impl IvmLookupTable {
             route_columns: None,
             bucket_key: (bucket_count > 1).then_some(key_column),
             multi_match,
+            partition_columns,
+            prepruned: false,
             schema,
         }
     }
 
+    /// Mark the supplied groups as already restricted to the lookup's
+    /// partitions.  The plan then skips the contribution collect and filter.
+    pub(crate) fn with_prepruned_groups(mut self) -> Self {
+        self.prepruned = true;
+        self
+    }
+
+    /// The range-partition values carried by the contribution, when the
+    /// lookup key contains every partition column.
+    ///
+    /// Only the distinct partition values of the affected keys are collected
+    /// (a handful of dates in practice), never the key frame itself.  A
+    /// missing or unparsable key returns `None`, which keeps every partition:
+    /// pruning is an optimization and must never drop a needed one.
+    async fn partition_restriction(&self) -> Option<Vec<(String, Vec<String>)>> {
+        let partitions = match &self.key {
+            PkLookupKey::Columns { .. } => &self.table.range_partition_columns,
+            PkLookupKey::BinaryRow { .. } => &self.partition_columns,
+        };
+        if partitions.is_empty() {
+            return None;
+        }
+        let mut pairs = Vec::with_capacity(partitions.len());
+        match &self.key {
+            PkLookupKey::Columns {
+                input_columns,
+                table_columns,
+            } => {
+                for partition in partitions {
+                    let index = table_columns
+                        .iter()
+                        .position(|column| column == partition)?;
+                    pairs.push((partition.clone(), input_columns.get(index)?.clone()));
+                }
+            }
+            PkLookupKey::BinaryRow { .. } => {
+                // A binary state key hides its join-key columns.  The
+                // contribution still carries them under their join names; the
+                // caller only passes plain join keys that are also state
+                // partition columns, so every such column is safe to use.
+                for partition in partitions {
+                    self.contribution
+                        .schema()
+                        .as_arrow()
+                        .field_with_name(partition)
+                        .ok()?;
+                    pairs.push((partition.clone(), partition.clone()));
+                }
+            }
+        }
+        let frame = self
+            .contribution
+            .clone()
+            .select(
+                pairs
+                    .iter()
+                    .map(|(_, input)| col(input.as_str()))
+                    .collect::<Vec<_>>(),
+            )
+            .ok()?
+            .distinct()
+            .ok()?;
+        let batches = frame.collect().await.ok()?;
+        let mut values: Vec<(String, std::collections::BTreeSet<String>)> = pairs
+            .iter()
+            .map(|(column, _)| (column.clone(), std::collections::BTreeSet::new()))
+            .collect();
+        let mut rows = 0usize;
+        for batch in &batches {
+            for row in 0..batch.num_rows() {
+                for (index, (_, input)) in pairs.iter().enumerate() {
+                    let array = batch.column_by_name(input)?;
+                    let scalar = ScalarValue::try_from_array(array, row).ok()?;
+                    values[index]
+                        .1
+                        .insert(lakesoul_io::helpers::format_scalar_value(&scalar));
+                }
+                rows += 1;
+            }
+        }
+        if rows == 0 {
+            return None;
+        }
+        Some(
+            values
+                .into_iter()
+                .map(|(column, values)| (column, values.into_iter().collect()))
+                .collect(),
+        )
+    }
+
     async fn build_plan(&self) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let groups_by_bucket = if self.prepruned {
+            self.groups_by_bucket.clone()
+        } else {
+            match self.partition_restriction().await {
+                Some(restriction) => {
+                    let kept = self
+                        .groups_by_bucket
+                        .iter()
+                        .map(|groups| {
+                            groups
+                                .iter()
+                                .filter(|group| {
+                                    partition_matches(
+                                        &group.partition_desc,
+                                        &self.table.range_partition_columns,
+                                        &restriction,
+                                    )
+                                })
+                                .cloned()
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>();
+                    tracing::debug!(
+                        table = %self.table.table_name,
+                        partitions = self.groups_by_bucket.iter().flatten().count(),
+                        kept = kept.iter().flatten().count(),
+                        "keyed lookup pruned partitions"
+                    );
+                    kept
+                }
+                None => self.groups_by_bucket.clone(),
+            }
+        };
         let plan = self.contribution.create_physical_plan().await?;
         let plan = if let Some(columns) = self.route_columns.as_deref() {
             bucket_repartition_by_columns(plan, columns, self.bucket_count)
@@ -1290,7 +1425,7 @@ impl IvmLookupTable {
             PkLookupKey::BinaryRow { column } => IvmPkLookupExec::new(
                 plan,
                 self.table.clone(),
-                self.groups_by_bucket.clone(),
+                groups_by_bucket.clone(),
                 column,
                 self.bucket_count,
             )?,
@@ -1300,7 +1435,7 @@ impl IvmLookupTable {
             } => IvmPkLookupExec::new_with_columns(
                 plan,
                 self.table.clone(),
-                self.groups_by_bucket.clone(),
+                groups_by_bucket,
                 input_columns,
                 table_columns,
                 self.bucket_count,
