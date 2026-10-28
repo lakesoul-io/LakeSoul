@@ -1918,7 +1918,9 @@ impl MetaDataClient {
     ///   baseline snapshot at `from_version_exclusive`;
     /// * a compaction output (`snapshot[0]` of a compaction version) is excluded
     ///   because compaction is not changelog, while `snapshot[1..]` (concurrent
-    ///   appends) is kept;
+    ///   appends) is kept.  A later append snapshot contains the cumulative
+    ///   commit set, so the compaction output is removed from the final id set
+    ///   instead of only from the compaction version itself;
     /// * `del` file operations only suppress an earlier `add` of the same path.
     ///
     /// Two behaviours deliberately differ from the JVM implementation: an update
@@ -1996,6 +1998,7 @@ impl MetaDataClient {
 
         let mut added_ids: Vec<entity::Uuid> = Vec::new();
         let mut seen_ids: HashSet<(u64, u64)> = HashSet::new();
+        let mut compaction_ids: HashSet<(u64, u64)> = HashSet::new();
         for row in &window {
             let commit_op = row.commit_op();
             if commit_op == CommitOp::UpdateCommit {
@@ -2007,6 +2010,11 @@ impl MetaDataClient {
             let snapshot_ids = if commit_op == CommitOp::CompactionCommit {
                 // snapshot[0] is the compaction output, everything after it is a
                 // concurrently appended commit that must stay in the changelog.
+                // Later append snapshots are cumulative and repeat the output,
+                // so remember it and drop it from the final id set.
+                if let Some(output) = row.snapshot.first() {
+                    compaction_ids.insert((output.high, output.low));
+                }
                 row.snapshot.get(1..).unwrap_or_default()
             } else {
                 row.snapshot.as_slice()
@@ -2031,6 +2039,7 @@ impl MetaDataClient {
                 .collect::<HashSet<_>>();
             added_ids.retain(|id| !baseline_ids.contains(&(id.high, id.low)));
         }
+        exclude_compaction_outputs(&mut added_ids, &compaction_ids);
 
         if !added_ids.is_empty() {
             let snapshot = PartitionInfo {
@@ -2206,6 +2215,7 @@ impl MetaDataClient {
 
             let mut added_ids: Vec<entity::Uuid> = Vec::new();
             let mut seen_ids: HashSet<(u64, u64)> = HashSet::new();
+            let mut compaction_ids: HashSet<(u64, u64)> = HashSet::new();
             for row in &window {
                 let commit_op = row.commit_op();
                 if commit_op == CommitOp::UpdateCommit {
@@ -2216,7 +2226,11 @@ impl MetaDataClient {
                 }
                 let snapshot_ids = if commit_op == CommitOp::CompactionCommit {
                     // snapshot[0] is the compaction output, everything after it
-                    // is a concurrently appended commit that must stay.
+                    // is a concurrently appended commit that must stay.  A
+                    // later append snapshot is cumulative and repeats it.
+                    if let Some(output) = row.snapshot.first() {
+                        compaction_ids.insert((output.high, output.low));
+                    }
                     row.snapshot.get(1..).unwrap_or_default()
                 } else {
                     row.snapshot.as_slice()
@@ -2241,6 +2255,7 @@ impl MetaDataClient {
                     .collect::<HashSet<_>>();
                 added_ids.retain(|id| !baseline_ids.contains(&(id.high, id.low)));
             }
+            exclude_compaction_outputs(&mut added_ids, &compaction_ids);
             if !added_ids.is_empty() {
                 pending.push((changelogs.len(), added_ids));
             }
@@ -2500,6 +2515,23 @@ fn push_unique_uuid(
     }
 }
 
+/// Drop compaction outputs from a changelog id set.
+///
+/// `partition_info.snapshot` is the cumulative commit set at a version: an
+/// append after a compaction lists the compaction output again, even though
+/// that output only rewrites rows the cursor already consumed.  Filtering only
+/// the compaction row itself is not enough, because the next append's snapshot
+/// re-adds the output and the caller would read the whole table as new rows.
+fn exclude_compaction_outputs(
+    added_ids: &mut Vec<entity::Uuid>,
+    compaction_ids: &HashSet<(u64, u64)>,
+) {
+    if compaction_ids.is_empty() {
+        return;
+    }
+    added_ids.retain(|id| !compaction_ids.contains(&(id.high, id.low)));
+}
+
 /// Merge the snapshot submitted by a stale commit with the commits that landed
 /// concurrently: `submitted ++ (current − read)`, mirroring the JVM
 /// `updateSubmitPartitionSnapshot`.
@@ -2568,6 +2600,21 @@ fn data_commit_info_list_from_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn later_append_snapshot_does_not_readd_compaction_output() {
+        let compaction_output = entity::Uuid { high: 2, low: 2 };
+        let appended = entity::Uuid { high: 3, low: 3 };
+        // The changelog accumulates the cumulative append snapshot after the
+        // baseline subtraction: [compaction output, appended commit].
+        let mut added_ids = vec![compaction_output, appended];
+        let compaction_ids =
+            HashSet::from([(compaction_output.high, compaction_output.low)]);
+
+        exclude_compaction_outputs(&mut added_ids, &compaction_ids);
+
+        assert_eq!(added_ids, vec![appended]);
+    }
 
     #[test]
     fn table_log_summary_omits_credentials_in_properties() {

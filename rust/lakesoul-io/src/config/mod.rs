@@ -168,6 +168,11 @@ pub struct LakeSoulIOConfig {
     /// keys) per file, so it stays cheap when the candidate set is large.
     #[educe(Default = false)]
     pub(crate) bulk_pk_lookup: bool,
+    /// Explicit, already `arrow::Row`-encoded primary-key prefixes for a
+    /// point lookup.  IVM passes the contribution tuples directly so a
+    /// composite key never becomes a per-column IN-list cross product.
+    pub(crate) explicit_pk_columns: Vec<String>,
+    pub(crate) explicit_pk_keys: Vec<lakesoul_vector::IndexKey>,
 }
 
 impl LakeSoulIOConfig {
@@ -199,6 +204,16 @@ impl LakeSoulIOConfig {
     /// Whether large candidate sets use the sorted index merge.
     pub fn bulk_pk_lookup(&self) -> bool {
         self.bulk_pk_lookup
+    }
+
+    /// The primary-key prefix columns the explicit keys encode.
+    pub fn explicit_pk_columns_slice(&self) -> &[String] {
+        &self.explicit_pk_columns
+    }
+
+    /// Already encoded primary-key prefixes for this read.
+    pub fn explicit_pk_keys_slice(&self) -> &[lakesoul_vector::IndexKey] {
+        &self.explicit_pk_keys
     }
 
     /// Returns the columns used for hash partitioning.
@@ -737,6 +752,17 @@ impl LakeSoulIOConfigBuilder {
     /// Above this many candidates the scan falls back to the regular path.
     /// The default ([`crate::pk_locator::MAX_PK_CANDIDATES`]) suits point
     /// lookups; IVM refreshes raise it for their key-filtered state reads.
+    /// Pass exact key tuples instead of deriving them from SQL filters.
+    pub fn with_explicit_pk_keys(
+        mut self,
+        columns: Vec<String>,
+        keys: Vec<lakesoul_vector::IndexKey>,
+    ) -> Self {
+        self.config.explicit_pk_columns = columns;
+        self.config.explicit_pk_keys = keys;
+        self
+    }
+
     pub fn with_max_pk_candidates(mut self, max_pk_candidates: usize) -> Self {
         self.config.max_pk_candidates = max_pk_candidates;
         self

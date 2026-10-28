@@ -67,7 +67,10 @@ use crate::sql::{
     AnalyzeRequest, DerivedSource, UnsupportedShape, analyze_select, definition_hash,
     peel, plan_label,
 };
-use crate::table::{IvmTable, IvmTableOptions, create_ivm_table, normalize_schema};
+use crate::table::{
+    IvmTable, IvmTableOptions, create_ivm_table, internal_file_format,
+    keyed_state_file_format, normalize_schema,
+};
 
 /// Placeholder state table id used to probe the query shape before the real
 /// state table exists.
@@ -1388,6 +1391,7 @@ impl IvmSqlExecutor {
                 && existing.primary_keys == primary_keys
                 && (existing.bucket_columns.is_empty()
                     || existing.bucket_columns == bucket_columns)
+                && existing.file_format == internal_file_format()
             {
                 return Ok(existing);
             }
@@ -1425,7 +1429,7 @@ impl IvmSqlExecutor {
             .with_namespace(target.namespace.clone())
             .with_primary_keys(primary_keys)
             .with_bucket_columns(bucket_columns)
-            .with_file_format(target.file_format);
+            .with_file_format(internal_file_format());
         options.hash_bucket_num = target.hash_bucket_num.clone();
         self.runtime.create_table(options).await
     }
@@ -1633,6 +1637,7 @@ impl IvmSqlExecutor {
                 && existing.primary_keys == primary_keys
                 && (existing.bucket_columns.is_empty()
                     || existing.bucket_columns == bucket_columns)
+                && existing.file_format == internal_file_format()
                 && existing.hash_bucket_num == target.hash_bucket_num
             {
                 return Ok(existing);
@@ -1649,7 +1654,8 @@ impl IvmSqlExecutor {
         let mut options = IvmTableOptions::new(name, path, schema)
             .with_namespace(target.namespace.clone())
             .with_primary_keys(primary_keys)
-            .with_bucket_columns(bucket_columns);
+            .with_bucket_columns(bucket_columns)
+            .with_file_format(internal_file_format());
         options.hash_bucket_num = target.hash_bucket_num.clone();
         self.runtime.create_table(options).await
     }
@@ -1999,7 +2005,7 @@ impl IvmSqlExecutor {
             .with_namespace(mv.namespace.clone())
             .with_primary_keys(primary_keys)
             .with_bucket_columns(bucket_columns)
-            .with_file_format(mv.file_format);
+            .with_file_format(keyed_state_file_format());
             if options.schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_ok() {
                 options = options.with_cdc_column(IVM_ROW_KINDS_COLUMN);
             }
@@ -2055,7 +2061,7 @@ impl IvmSqlExecutor {
             .with_namespace(mv.namespace.clone())
             .with_primary_keys(vec![IVM_GROUP_ROW_COLUMN.to_string()])
             .with_bucket_columns(vec![IVM_GROUP_ROW_COLUMN.to_string()])
-            .with_file_format(mv.file_format);
+            .with_file_format(keyed_state_file_format());
             if options.schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_ok() {
                 options = options.with_cdc_column(IVM_ROW_KINDS_COLUMN);
             }
@@ -2141,7 +2147,7 @@ impl IvmSqlExecutor {
             )
             .with_primary_keys(primary_keys)
             .with_bucket_columns(group_keys.to_vec())
-            .with_file_format(mv.file_format),
+            .with_file_format(keyed_state_file_format()),
         )
         .await?;
         Ok(table.table_id)

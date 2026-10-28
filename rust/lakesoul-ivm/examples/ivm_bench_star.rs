@@ -783,6 +783,9 @@ async fn main() {
     }
 
     if args.keep {
+        if let Some(dir) = _dir.take() {
+            let _ = dir.keep();
+        }
         println!("kept the tables under {base}");
     } else {
         for table in std::iter::once(&fact)

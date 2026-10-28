@@ -3773,18 +3773,25 @@ impl IvmRuntime {
             .ok()
             .filter(|count| *count > 1)
             .unwrap_or(1);
+        let bucket_columns = source.effective_bucket_columns();
         let route_columns = if bucket_count > 1
-            && !source.bucket_columns.is_empty()
-            && source
-                .bucket_columns
+            && !bucket_columns.is_empty()
+            && bucket_columns
                 .iter()
                 .all(|column| pk_names.contains(&column.as_str()))
         {
-            Some(source.bucket_columns.clone())
+            Some(bucket_columns.to_vec())
         } else {
             None
         };
         let bucket_count = route_columns.as_ref().map_or(1, |_| bucket_count);
+        tracing::debug!(
+            table = %source.table_name,
+            bucket_count,
+            routed = route_columns.is_some(),
+            ?route_columns,
+            "keyed before lookup routing"
+        );
         let before_groups = source
             .before_window_groups(&self.client, &window.before_versions)
             .await?;
@@ -3894,15 +3901,15 @@ impl IvmRuntime {
             .filter(|count| *count > 1)
             .unwrap_or(1);
         let routed = contribution;
+        let bucket_columns = table.effective_bucket_columns();
         let route_columns = if bucket_count > 1
-            && !table.bucket_columns.is_empty()
-            && table
-                .bucket_columns
+            && !bucket_columns.is_empty()
+            && bucket_columns
                 .iter()
                 .all(|column| table_columns.iter().any(|key| key == column))
         {
-            let mut columns = Vec::with_capacity(table.bucket_columns.len());
-            for bucket_column in &table.bucket_columns {
+            let mut columns = Vec::with_capacity(bucket_columns.len());
+            for bucket_column in bucket_columns {
                 let position = table_columns
                     .iter()
                     .position(|key| key == bucket_column)
@@ -3916,6 +3923,14 @@ impl IvmRuntime {
             None
         };
         let bucket_count = route_columns.as_ref().map_or(1, |_| bucket_count);
+        tracing::debug!(
+            table = %table.table_name,
+            bucket_count,
+            routed = route_columns.is_some(),
+            ?route_columns,
+            ?table_columns,
+            "keyed source lookup routing"
+        );
         let groups =
             groups_by_bucket(table.current_groups(&self.client).await?, bucket_count);
         let provider = IvmLookupTable::columns(
@@ -4021,15 +4036,15 @@ impl IvmRuntime {
             .ok()
             .filter(|count| *count > 1)
             .unwrap_or(1);
+        let bucket_columns = table.effective_bucket_columns();
         let route_columns = if bucket_count > 1
-            && !table.bucket_columns.is_empty()
-            && table
-                .bucket_columns
+            && !bucket_columns.is_empty()
+            && bucket_columns
                 .iter()
                 .all(|column| table_columns.iter().any(|key| key == column))
         {
-            let mut columns = Vec::with_capacity(table.bucket_columns.len());
-            for bucket_column in &table.bucket_columns {
+            let mut columns = Vec::with_capacity(bucket_columns.len());
+            for bucket_column in bucket_columns {
                 let position = table_columns
                     .iter()
                     .position(|key| key == bucket_column)

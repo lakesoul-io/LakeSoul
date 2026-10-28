@@ -13,6 +13,7 @@ lakesoul-common = { path = "../lakesoul-common" }
 lakesoul-io = { path = "../lakesoul-io" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
+lakesoul-vector = { path = "../lakesoul-vector" }
 datafusion = { workspace = true }
 arrow = { workspace = true }
 futures.workspace = true

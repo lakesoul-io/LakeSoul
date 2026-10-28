@@ -252,7 +252,7 @@ impl IvmTableProvider {
     /// Bucket files contain disjoint merge keys, so splitting them preserves
     /// merge-on-read semantics while exposing one stream per bucket.
     fn split_bucket_groups(&self, groups: Vec<PartitionFiles>) -> Vec<PartitionFiles> {
-        if self.table.bucket_columns.is_empty() {
+        if self.table.effective_bucket_columns().is_empty() {
             return groups;
         }
         let bucket_count = self
@@ -639,6 +639,7 @@ impl ExecutionPlan for IvmStreamExec {
                         Some(&out_schema),
                         change_filter.as_deref(),
                         merge,
+                        None,
                         tx,
                     )
                     .await

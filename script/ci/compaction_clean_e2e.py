@@ -282,6 +282,10 @@ def scenario_update_commit() -> None:
     compaction_commit = str(uuid4())
     update_commit = str(uuid4())
     now_ms = int(time.time() * 1000)
+    # Keep the superseded commit well past the clean job's default retention.
+    # The test passes dataExpiredTime=0, but the extra margin keeps the fixture
+    # deterministic if the launch parameter is not propagated.
+    old_commit_ms = now_ms - 600_000
 
     def file_ops(ops: list[tuple[str, str]]) -> str:
         values = ", ".join(
@@ -314,7 +318,7 @@ def scenario_update_commit() -> None:
                 compaction_commit,
                 "CompactionCommit",
                 [(shared_uri, "add"), (expired_uri, "add")],
-                now_ms - 60_000,
+                old_commit_ms,
             )
             + "; "
             + insert_commit(
@@ -345,7 +349,7 @@ def scenario_update_commit() -> None:
         )
 
         _psql(
-            insert_partition(-1, "CompactionCommit", compaction_commit, now_ms - 60_000)
+            insert_partition(-1, "CompactionCommit", compaction_commit, old_commit_ms)
             + ";"
         )
 

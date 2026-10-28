@@ -833,12 +833,18 @@ impl LakeSoulIOSession {
         let table_schema = self.io_table_schema().await?;
         let statistics = Statistics::new_unknown(table_schema.table_schema());
 
-        // Fingerprint of the key layout the table's data files use; index
-        // search candidates are only usable when their stored `key_kind`
-        // matches it.
+        // Explicit IVM contribution keys encode a prefix of the primary key;
+        // vector-index candidates encode the full key.  The fingerprint must
+        // describe the columns actually carried by the candidates.
+        let explicit_columns = self.io_config.explicit_pk_columns_slice();
+        let key_columns: Vec<String> = if explicit_columns.is_empty() {
+            self.io_config.primary_keys_slice().to_vec()
+        } else {
+            explicit_columns.to_vec()
+        };
         let expected_key_kind = crate::index::key::KeyLayout::from_schema(
             table_schema.table_schema().as_ref(),
-            self.io_config.primary_keys_slice(),
+            &key_columns,
         )?
         .kind_hash();
 
@@ -848,7 +854,10 @@ impl LakeSoulIOSession {
         // superset of the matching rows; the filters above the scan still run
         // for correctness.  Only key prefixes are used: payload predicates
         // cannot be pushed into a merge-on-read scan.
-        let key_constraint = {
+        let key_constraint = if !self.io_config.explicit_pk_keys_slice().is_empty() {
+            // Exact tuples were supplied: do not rebuild them from IN lists.
+            None
+        } else {
             let primary_keys = self.io_config.primary_keys_slice();
             let fields = primary_keys
                 .iter()
@@ -1015,12 +1024,11 @@ impl LakeSoulIOSession {
         // scan path is kept).
         let encoded_inputs = match key_candidates {
             Some(keys) if !keys.is_empty() => {
-                let primary_keys = self.io_config.primary_keys_slice().to_vec();
                 pk_locator::try_build_key_inputs_encoded(
                     self,
                     &self.io_config,
                     &flatten_configs,
-                    &primary_keys,
+                    &key_columns,
                     expected_key_kind,
                     keys,
                 )

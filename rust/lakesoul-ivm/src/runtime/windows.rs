@@ -2272,7 +2272,7 @@ impl IvmRuntime {
         .with_primary_keys(keys)
         .with_bucket_columns(view.partition_keys.clone())
         .with_range_partition_columns(view.mv.range_partition_columns.clone())
-        .with_file_format(view.mv.file_format);
+        .with_file_format(crate::table::internal_file_format());
         options.hash_bucket_num = view.mv.hash_bucket_num.clone();
         let state = self.create_table(options).await?;
         self.register_state_tables(&view.view_id, &[(StateRole::State, &state)])
@@ -2351,6 +2351,17 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        let mut phase = std::time::Instant::now();
+        macro_rules! phase_done {
+            ($name:literal) => {
+                tracing::debug!(
+                    phase = $name,
+                    elapsed_ms = phase.elapsed().as_millis() as u64,
+                    "view phase"
+                );
+                phase = std::time::Instant::now();
+            };
+        }
 
         // A range-partitioned MV only holds affected rows in the partitions
         // the delta touched (the MV keys carry the partition columns and a
@@ -2371,6 +2382,7 @@ impl IvmRuntime {
             .lookup_source_before_by_pks(&context, &view.source, &window, contribution)
             .await?;
         let before = filter_deletes(before, change_column(&view.source))?;
+        phase_done!("before");
         if let Some(rank) = &rank_state {
             let change = change_column(&view.source).unwrap_or(IVM_ROW_KINDS_COLUMN);
             commit_ids.extend(
@@ -2473,6 +2485,7 @@ impl IvmRuntime {
                 }
             }
         };
+        phase_done!("mv_lookup");
         context.register_table("delta", delta.clone().into_view())?;
         context.register_table("mv", mv.clone().into_view())?;
         let src = if let Some(rank) = &rank_state {
@@ -2598,19 +2611,39 @@ impl IvmRuntime {
         };
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&window_refresh_sql(view, epoch)).await?;
-        let state_frame = frame.clone().execute_stream().await?;
-        let (mv_ids, state_ids) = futures::future::try_join(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?),
-            async {
-                let ids = state.append_stream(&self.client, state_frame).await?;
-                self.checkpoint_epoch_states(&record).await?;
-                Ok::<_, rootcause::Report>(ids)
-            },
-        )
-        .await?;
+        // Execute the top-k SQL once and tee each batch into the MV and the
+        // top-k state writer.  Two independent append_stream calls executed
+        // the whole lookup/window plan twice, which dominated a 1M window.
+        use futures::StreamExt;
+        let mut output = frame.execute_stream().await?;
+        let mut mv_writer = view.mv.writer().await?;
+        let mut state_writer = state.writer().await?;
+        let mut written_rows = 0u64;
+        while let Some(batch) = output.next().await {
+            let batch = batch?;
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            written_rows += batch.num_rows() as u64;
+            mv_writer
+                .write_record_batch(view.mv.cast_batch(batch.clone())?)
+                .await?;
+            state_writer
+                .write_record_batch(state.cast_batch(batch)?)
+                .await?;
+        }
+        let mv_files = view
+            .mv
+            .output_files(mv_writer.flush_and_close().await?, written_rows);
+        let state_files =
+            state.output_files(state_writer.flush_and_close().await?, written_rows);
+        let mv_ids = view.mv.commit_files(&self.client, mv_files).await?;
+        let state_ids = state.commit_files(&self.client, state_files).await?;
+        self.checkpoint_epoch_states(&record).await?;
         commit_ids.extend(mv_ids);
         commit_ids.extend(state_ids);
+        phase_done!("sql_execute_and_append");
+        let _ = phase.elapsed();
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -2668,7 +2701,7 @@ impl IvmRuntime {
         .with_namespace(view.mv.namespace.clone())
         .with_primary_keys(keys)
         .with_bucket_columns(vec![IVM_MW_PARTITION.to_string()])
-        .with_file_format(view.mv.file_format)
+        .with_file_format(crate::table::internal_file_format())
         .with_cdc_column(IVM_ROW_KINDS_COLUMN);
         options.hash_bucket_num = view.source.hash_bucket_num.clone();
         let state = self.create_table(options).await?;
@@ -3266,7 +3299,7 @@ impl IvmRuntime {
         .with_primary_keys(keys)
         .with_bucket_columns(view.group_keys.clone())
         .with_range_partition_columns(view.mv.range_partition_columns.clone())
-        .with_file_format(view.mv.file_format);
+        .with_file_format(crate::table::keyed_state_file_format());
         options.hash_bucket_num = view.mv.hash_bucket_num.clone();
         let state = self.create_table(options).await?;
         self.register_state_tables(&view.view_id, &[(StateRole::State, &state)])
@@ -3327,7 +3360,19 @@ impl IvmRuntime {
             let state = self.open_table_by_id(&existing.table_id).await?;
             if state.schema.as_ref() == expected_schema.as_ref() {
                 if state.current_files(&self.client).await?.is_empty() {
+                    tracing::debug!(
+                        table = %state.table_name,
+                        source = %source.table_name,
+                        reason = "empty",
+                        "sync rank state"
+                    );
+                    let started = std::time::Instant::now();
                     self.sync_rank_state(source, &state).await?;
+                    tracing::debug!(
+                        table = %state.table_name,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "rank state synced"
+                    );
                 } else if let Some(epoch) = self.latest_epoch(view_id).await? {
                     let expected = epoch
                         .state_versions
@@ -3343,8 +3388,22 @@ impl IvmRuntime {
                         // committed epoch (for example after a crash or a
                         // compaction).  Re-seed it from the source so the next
                         // window starts from a known current row set.
+                        tracing::debug!(
+                            table = %state.table_name,
+                            source = %source.table_name,
+                            reason = "version_mismatch",
+                            ?expected,
+                            ?current,
+                            "sync rank state"
+                        );
+                        let started = std::time::Instant::now();
                         state.truncate(&self.client).await?;
                         self.sync_rank_state(source, &state).await?;
+                        tracing::debug!(
+                            table = %state.table_name,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "rank state synced"
+                        );
                     }
                 }
                 return Ok(Some(state));
@@ -3379,7 +3438,7 @@ impl IvmRuntime {
         .with_primary_keys(keys)
         .with_bucket_columns(bucket_columns.to_vec())
         .with_cdc_column(change)
-        .with_file_format(source.file_format);
+        .with_file_format(crate::table::internal_file_format());
         options.hash_bucket_num = source.hash_bucket_num.clone();
         let state = self.create_table(options).await?;
         self.register_state_tables(view_id, &[(StateRole::RankState, &state)])
@@ -3521,12 +3580,24 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        let mut phase = std::time::Instant::now();
+        macro_rules! phase_done {
+            ($name:literal) => {
+                tracing::debug!(
+                    phase = $name,
+                    elapsed_ms = phase.elapsed().as_millis() as u64,
+                    "top_k phase"
+                );
+                phase = std::time::Instant::now();
+            };
+        }
 
         let context = refresh_session();
         let mv_partitions =
             super::mv_partitions_for_source(&view.mv, &view.source, &window);
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
+        phase_done!("delta");
         let pk_exprs = view
             .source
             .primary_keys
@@ -3552,6 +3623,7 @@ impl IvmRuntime {
                 .await?,
             );
         }
+        phase_done!("rank_update");
         let mv = if view.group_keys.is_empty() {
             match mv_partitions {
                 Some(restriction) => {
@@ -3759,8 +3831,10 @@ impl IvmRuntime {
                 self.current_table_frame(&context, &view.source)?
             }
         };
+        phase_done!("src_lookup");
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&top_k_refresh_sql(view, epoch)).await?;
+        phase_done!("sql_plan");
         let state_frame = frame.clone().execute_stream().await?;
         let (mv_ids, state_ids) = futures::future::try_join(
             view.mv
@@ -3774,6 +3848,8 @@ impl IvmRuntime {
         .await?;
         commit_ids.extend(mv_ids);
         commit_ids.extend(state_ids);
+        phase_done!("sql_execute_and_append");
+        let _ = phase.elapsed();
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)

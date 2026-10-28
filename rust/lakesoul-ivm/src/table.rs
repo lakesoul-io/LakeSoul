@@ -31,6 +31,7 @@ use lakesoul_io::{
     config::{
         LakeSoulIOConfig, LakeSoulIOConfigBuilder, OPTION_KEY_POOL_DIR,
         OPTION_KEY_POOL_SIZE, OPTION_KEY_STABLE_SORT,
+        OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES, OPTION_KEY_VORTEX_ROW_BLOCK_SIZE,
     },
     file_format::PhysicalFormat,
     reader::LakeSoulReader,
@@ -151,6 +152,32 @@ fn with_state_key_lookup(
     builder
         .with_max_pk_candidates(MAX_STATE_KEY_CANDIDATES)
         .with_bulk_pk_lookup(true)
+}
+
+/// The physical format of every IVM-internal table.
+///
+/// Internal state and derived steps are read by point lookups far more often
+/// than by full scans, so they use Vortex even when the user target/source
+/// tables are Parquet.  Vortex's small row blocks let the row-level primary
+/// key locator skip most of a file; `LAKESOUL_IVM_INTERNAL_FILE_FORMAT` can
+/// still select parquet or vortex-compact for experiments.
+pub fn internal_file_format() -> PhysicalFormat {
+    match std::env::var("LAKESOUL_IVM_INTERNAL_FILE_FORMAT")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "parquet" => PhysicalFormat::Parquet,
+        "vortex-compact" | "vortex_compact" => PhysicalFormat::VortexCompact,
+        _ => PhysicalFormat::Vortex,
+    }
+}
+
+/// The format of keyed auxiliary state tables.  IVM keeps these on Vortex as
+/// well: the row-level key index is the point-lookup path for join, aggregate
+/// and top-k state.
+pub fn keyed_state_file_format() -> PhysicalFormat {
+    internal_file_format()
 }
 
 /// The row kind column of materialized view outputs (`insert` / `delete`).
@@ -502,6 +529,20 @@ pub async fn create_ivm_table(
 }
 
 impl IvmTable {
+    /// The columns whose hash determines the file bucket.
+    ///
+    /// The writer falls back to the primary keys when no dedicated bucket
+    /// columns are set.  Tables created before the bucket columns were
+    /// persisted therefore still have their files laid out by primary key;
+    /// routing must use the same fallback or every lookup scans every bucket.
+    pub fn effective_bucket_columns(&self) -> &[String] {
+        if self.bucket_columns.is_empty() {
+            &self.primary_keys
+        } else {
+            &self.bucket_columns
+        }
+    }
+
     /// Open an existing LakeSoul table (internal or user-created) from its
     /// metadata.  Missing IVM properties fall back to their defaults, so a
     /// table created by plain DDL can be opened as well.
@@ -622,6 +663,18 @@ impl IvmTable {
             builder = builder
                 .set_dynamic_partition(true)
                 .with_option(OPTION_KEY_STABLE_SORT, "true");
+        }
+        if matches!(
+            self.file_format,
+            PhysicalFormat::Vortex | PhysicalFormat::VortexCompact
+        ) {
+            if let Ok(value) = std::env::var("LAKESOUL_IVM_VORTEX_ROW_BLOCK_SIZE") {
+                builder = builder.with_option(OPTION_KEY_VORTEX_ROW_BLOCK_SIZE, value);
+            }
+            if let Ok(value) = std::env::var("LAKESOUL_IVM_VORTEX_DATA_BLOCK_BYTES") {
+                builder =
+                    builder.with_option(OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES, value);
+            }
         }
         builder
     }
@@ -1018,6 +1071,7 @@ impl IvmTable {
         &self,
         groups: Vec<PartitionFiles>,
         filters: Vec<Expr>,
+        explicit_pk: Option<(Vec<String>, Vec<lakesoul_vector::IndexKey>)>,
         gate: Arc<tokio::sync::Semaphore>,
     ) -> Result<
         tokio::sync::mpsc::Receiver<std::result::Result<RecordBatch, DataFusionError>>,
@@ -1049,6 +1103,7 @@ impl IvmTable {
                             None,
                             None,
                             true,
+                            explicit_pk.clone(),
                             tx.clone(),
                         )
                         .await
@@ -1468,6 +1523,7 @@ impl IvmTable {
         output: Option<&SchemaRef>,
         change_filter: Option<&str>,
         merge: bool,
+        explicit_pk: Option<(Vec<String>, Vec<lakesoul_vector::IndexKey>)>,
         tx: BatchSender,
     ) -> Result<()> {
         let schema = projection.cloned().unwrap_or_else(|| self.schema.clone());
@@ -1504,6 +1560,19 @@ impl IvmTable {
             #[allow(deprecated)]
             {
                 builder = builder.with_filters(filters);
+            }
+        }
+        if let Some((columns, keys)) = explicit_pk {
+            // The row-level index is only a win on Vortex's small blocks; a
+            // Parquet page holds too many rows, and building the index on the
+            // fly is much slower than the regular scan.
+            let vortex = !matches!(self.file_format, PhysicalFormat::Parquet);
+            let forced = std::env::var("LAKESOUL_IVM_STATE_INDEX")
+                .ok()
+                .is_some_and(|value| !matches!(value.as_str(), "0" | "false" | "off"));
+            if vortex || forced {
+                builder = with_state_key_lookup(builder, self.file_format);
+                builder = builder.with_explicit_pk_keys(columns, keys);
             }
         }
         let mut reader = LakeSoulReader::new(builder.build())?;
