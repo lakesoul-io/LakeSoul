@@ -4102,10 +4102,20 @@ impl IvmRuntime {
         } else {
             &view.right_keys
         };
-        // The contribution is encoded under the left names.  This fast path is
-        // valid only when the right state was encoded from the same key names.
-        if right_join_keys != &view.join_keys {
-            return Ok(None);
+        // The encoded key is positional; only the key types have to agree
+        // with the right source the state was encoded from.  A join with
+        // differently named keys on the two sides still shares the encoding.
+        for (left, right) in view.join_keys.iter().zip(right_join_keys) {
+            let (Ok(left_field), Ok(right_field)) = (
+                view.left.schema.field_with_name(left),
+                view.right.schema.field_with_name(right),
+            ) else {
+                // A computed key has a synthetic name and no source column.
+                return Ok(None);
+            };
+            if left_field.data_type() != right_field.data_type() {
+                return Ok(None);
+            }
         }
         let contribution = if view.key_exprs.left.iter().any(|expr| !expr.is_empty()) {
             super::join_state::materialize_join_keys(
