@@ -404,6 +404,64 @@ async fn lookup_join_refreshes_both_sides() {
     fixture.cleanup().await;
 }
 
+/// Several versions of one right key in a single window: the lookup must see
+/// the last one, not an earlier version still present in the source files.
+#[test_log::test(tokio::test)]
+async fn lookup_join_same_window_right_versions_use_the_last() {
+    let fixture = setup().await;
+    let runtime = &fixture.runtime;
+    let (left, right, output, view) = (
+        &fixture.left,
+        &fixture.right,
+        &fixture.output,
+        &fixture.view,
+    );
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[
+            (1, Some("a"), "L1", "insert"),
+            (2, Some("b"), "L2", "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[("a", 10, "insert"), ("b", 20, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_lookup_join(view).await.unwrap().unwrap();
+
+    // The left row changes and the right row is rewritten twice in the same
+    // window; the final right value is 12.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[(1, Some("a"), "L1b", "insert")]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[
+                ("a", 10, "delete"),
+                ("a", 11, "insert"),
+                ("a", 12, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_lookup_join(view).await.unwrap().unwrap();
+    assert_eq!(
+        lookup_rows(runtime, output).await,
+        full_lookup_rows(runtime, left, right).await
+    );
+
+    fixture.cleanup().await;
+}
+
 /// A window that changes both sides, including a left and a right delete,
 /// retracts every affected row.
 #[test_log::test(tokio::test)]
