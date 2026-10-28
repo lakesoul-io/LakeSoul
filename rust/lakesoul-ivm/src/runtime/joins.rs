@@ -5106,28 +5106,35 @@ impl IvmRuntime {
             (changed, _) => changed,
         };
 
-        // A left-only change is just the delta.  For a right-only change the
-        // left source is usually keyed by the lookup keys, so probe it with
-        // the changed right keys instead of scanning the full left state.
+        let keyed_sides = view.key_exprs.left.iter().all(|expr| expr.is_empty())
+            && view.key_exprs.right.iter().all(|expr| expr.is_empty());
+        // The source itself is the keyed state when its primary keys are the
+        // join keys, in any column order.
+        let left_is_source_state =
+            !super::join_state::join_side_needs_state(&view.left, &view.join_keys);
+        // A left-only change is just the delta.  Otherwise the affected left
+        // rows are the delta rows plus the current left rows carrying a
+        // changed right join key, read through the left side state.
         let left_now = if !right_changed {
             delta_left
                 .clone()
                 .ok_or_else(|| report!("lookup refresh without a left change"))?
-        } else if !left_changed
-            && view.key_exprs.left.iter().all(|expr| expr.is_empty())
-            && view.key_exprs.right.iter().all(|expr| expr.is_empty())
-            && (left_state.is_some() || view.left.primary_keys == view.join_keys)
-        {
+        } else if keyed_sides && (left_state.is_some() || left_is_source_state) {
             let changed_keys = changed_keys
                 .clone()
                 .ok_or_else(|| report!("lookup refresh without changed keys"))?;
-            self.lookup_left_rows_for_keys(
-                &context,
-                &probe,
-                left_state.as_ref(),
-                changed_keys,
-            )
-            .await?
+            let from_right = self
+                .lookup_left_rows_for_keys(
+                    &context,
+                    &probe,
+                    left_state.as_ref(),
+                    changed_keys,
+                )
+                .await?;
+            match &delta_left {
+                Some(delta_left) => delta_left.clone().union(from_right)?.distinct()?,
+                None => from_right,
+            }
         } else {
             self.current_table_frame(&context, &view.left)?
         };
@@ -5143,36 +5150,27 @@ impl IvmRuntime {
             delta_right
                 .clone()
                 .ok_or_else(|| report!("lookup refresh without a right change"))?
-        } else if !right_changed {
-            // The right source is keyed by the lookup keys, so a left-only
-            // window can read exactly the referenced right rows instead of the
-            // full right state.  Unmatched left keys still produce a null right
-            // side for the LEFT JOIN.
-            if view.key_exprs.left.iter().any(|expr| !expr.is_empty())
-                || view.key_exprs.right.iter().any(|expr| !expr.is_empty())
-            {
-                self.current_table_frame(&context, &view.right)?
-            } else {
-                let delta_left = delta_left
-                    .clone()
-                    .ok_or_else(|| report!("lookup refresh without a left change"))?;
-                let keys = view
-                    .join_keys
-                    .iter()
-                    .map(|key| col(key.as_str()))
-                    .collect::<Vec<_>>();
-                let contribution = delta_left.select(keys)?.distinct()?;
-                let right_keys = view.right_join_keys();
-                self.lookup_source_by_join_keys(
-                    &context,
-                    &view.right,
-                    contribution,
-                    &view.join_keys,
-                    right_keys,
-                    false,
-                )
-                .await?
-            }
+        } else if keyed_sides {
+            // The right source is keyed by the lookup keys, so read exactly
+            // the rows the affected left rows reference instead of scanning
+            // the full right state.  Unmatched left keys still produce a null
+            // right side for the LEFT JOIN.
+            let keys = view
+                .join_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let contribution = left_now.clone().select(keys)?.distinct()?;
+            let right_keys = view.right_join_keys();
+            self.lookup_source_by_join_keys(
+                &context,
+                &view.right,
+                contribution,
+                &view.join_keys,
+                right_keys,
+                false,
+            )
+            .await?
         } else {
             self.current_table_frame(&context, &view.right)?
         };
@@ -5222,8 +5220,7 @@ impl IvmRuntime {
         // its left primary key when that is the output identity; otherwise the
         // semi-joins below select the affected rows from the streaming state.
         let state_table = view.state.as_ref().unwrap_or(&view.output);
-        let mv = if !left_changed
-            && state_table.primary_keys == view.left.primary_keys
+        let mv = if state_table.primary_keys == view.left.primary_keys
             && view.key_exprs.left.iter().all(|expr| expr.is_empty())
         {
             self.lookup_source_by_join_keys(
