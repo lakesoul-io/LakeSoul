@@ -61,6 +61,23 @@ impl HTTPHandler for AWSHandler {
         let mut signing_settings = SigningSettings::default();
         signing_settings.percent_encoding_mode = PercentEncodingMode::Single;
         signing_settings.payload_checksum_kind = PayloadChecksumKind::XAmzSha256;
+        // Hop-by-hop headers may be removed by the upstream connection or an
+        // intermediate proxy. Signing them makes the signature include a
+        // header that OBS never sees, e.g. `connection` appears in
+        // SignedHeaders but not in the canonical request headers.
+        let mut excluded_headers =
+            signing_settings.excluded_headers.take().unwrap_or_default();
+        for header in [
+            "connection",
+            "keep-alive",
+            "proxy-connection",
+            "te",
+            "trailer",
+            "upgrade",
+        ] {
+            excluded_headers.push(header.into());
+        }
+        signing_settings.excluded_headers = Some(excluded_headers);
         let binding = self.identity.load();
         let identity = binding.as_ref();
         let signing_params = v4::SigningParams::builder()
