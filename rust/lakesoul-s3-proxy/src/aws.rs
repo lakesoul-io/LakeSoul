@@ -16,8 +16,8 @@ use aws_sigv4::http_request::{
 use aws_sigv4::sign::v4;
 use aws_smithy_runtime_api::client::identity::Identity;
 use bytes::Bytes;
-use http::HeaderValue;
 use http::header::{CONTENT_LENGTH, HOST};
+use http::{HeaderValue, Uri};
 use pingora::http::{RequestHeader, ResponseHeader};
 use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,90 @@ pub struct AWSHandler {
     region: String,
     virtual_host: bool,
     identity: ArcSwap<Identity>,
+}
+
+/// Characters that may appear literally in a URI path.
+///
+/// This is RFC 3986 `pchar` plus the `/` separator. Everything else is
+/// percent-encoded.
+fn is_uri_path_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'-' | b'.'
+                | b'_'
+                | b'~'
+                | b'!'
+                | b'$'
+                | b'&'
+                | b'\''
+                | b'('
+                | b')'
+                | b'*'
+                | b'+'
+                | b','
+                | b';'
+                | b'='
+                | b':'
+                | b'@'
+                | b'/'
+        )
+}
+
+/// Percent-encode a URI path exactly once.
+///
+/// Some S3 clients put raw UTF-8 bytes in the request target instead of
+/// percent-encoding them. SigV4 canonicalizes those bytes before verifying
+/// the signature, so signing the raw path does not match. Existing `%XX`
+/// escapes are preserved to avoid double encoding.
+fn encode_uri_path(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let mut encoded = String::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            encoded.push('%');
+            encoded.push(bytes[i + 1] as char);
+            encoded.push(bytes[i + 2] as char);
+            i += 3;
+        } else if is_uri_path_char(byte) {
+            encoded.push(byte as char);
+            i += 1;
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+            i += 1;
+        }
+    }
+    encoded
+}
+
+/// Return the URI with its path percent-encoded exactly once.
+fn normalize_uri_path(uri: &str) -> Result<String, Error> {
+    let parsed: Uri = uri.parse()?;
+    let encoded_path = encode_uri_path(parsed.path());
+    if encoded_path == parsed.path() {
+        return Ok(uri.to_string());
+    }
+
+    let mut normalized = String::with_capacity(uri.len() + encoded_path.len());
+    if let Some(scheme) = parsed.scheme_str() {
+        normalized.push_str(scheme);
+        normalized.push_str("://");
+    }
+    if let Some(authority) = parsed.authority() {
+        normalized.push_str(authority.as_str());
+    }
+    normalized.push_str(&encoded_path);
+    if let Some(query) = parsed.query() {
+        normalized.push('?');
+        normalized.push_str(query);
+    }
+    Ok(normalized)
 }
 
 impl AWSHandler {
@@ -94,6 +178,11 @@ impl HTTPHandler for AWSHandler {
                 .req_header_mut()
                 .insert_header(HOST, HeaderValue::try_from(self.host.clone())?)?;
         }
+
+        // SigV4 canonicalizes raw UTF-8 bytes in the path, so sign and forward
+        // the path in its percent-encoded form.
+        uri = normalize_uri_path(&uri)?;
+        debug!("normalized uri {}", uri);
 
         if let Some(value) = session
             .req_header()
@@ -396,5 +485,53 @@ mod test {
         };
         let s = quick_xml::se::to_string(&a).unwrap();
         println!("{}", s);
+    }
+
+    #[test]
+    fn test_encode_uri_path() {
+        // Raw UTF-8 bytes are encoded exactly once.
+        assert_eq!(
+            encode_uri_path("/bucket/category%3D家用电器/file.vortex"),
+            "/bucket/category%3D%E5%AE%B6%E7%94%A8%E7%94%B5%E5%99%A8/file.vortex"
+        );
+        // Already encoded paths are left as-is.
+        assert_eq!(
+            encode_uri_path(
+                "/bucket/category%3D%E5%AE%B6%E7%94%A8%E7%94%B5%E5%99%A8/file.vortex"
+            ),
+            "/bucket/category%3D%E5%AE%B6%E7%94%A8%E7%94%B5%E5%99%A8/file.vortex"
+        );
+        // Lowercase escapes are preserved.
+        assert_eq!(
+            encode_uri_path("/bucket/category%3d%e5%ae%b6/file"),
+            "/bucket/category%3d%e5%ae%b6/file"
+        );
+        // Literal path characters are preserved; unsafe bytes are encoded.
+        assert_eq!(
+            encode_uri_path("/bucket/category=家用 电器/file"),
+            "/bucket/category=%E5%AE%B6%E7%94%A8%20%E7%94%B5%E5%99%A8/file"
+        );
+        // A stray percent sign is not treated as an escape.
+        assert_eq!(encode_uri_path("/bucket/100%/file"), "/bucket/100%25/file");
+    }
+
+    #[test]
+    fn test_normalize_uri_path() {
+        assert_eq!(
+            normalize_uri_path(
+                "/bucket/category%3D家用电器/file.vortex?versionId=abc%3D1"
+            )
+            .unwrap(),
+            "/bucket/category%3D%E5%AE%B6%E7%94%A8%E7%94%B5%E5%99%A8/file.vortex?versionId=abc%3D1"
+        );
+        assert_eq!(
+            normalize_uri_path("/bucket/already%3Dencoded/file").unwrap(),
+            "/bucket/already%3Dencoded/file"
+        );
+        assert_eq!(
+            normalize_uri_path("http://obs.example.com/bucket/家用电器/file?x=1")
+                .unwrap(),
+            "http://obs.example.com/bucket/%E5%AE%B6%E7%94%A8%E7%94%B5%E5%99%A8/file?x=1"
+        );
     }
 }
