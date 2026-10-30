@@ -1,0 +1,41 @@
+[package]
+name = "datafusion-pg-catalog"
+description = "pg_catalog compatibility for datafusion"
+version = "0.18.3"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Ning Sun <n@sunng.info>"]
+keywords = ["datafusion", "postgresql", "pg_catalog"]
+repository = "https://github.com/datafusion-contrib/datafusion-postgres/"
+documentation = "https://docs.rs/crate/datafusion-pg-catalog/"
+readme = "README.md"
+rust-version = "1.89"
+include = [
+  "src/**/*",
+  "pg_catalog_arrow_exports/**/*",
+  "Cargo.toml"
+]
+
+[dependencies]
+async-trait = "0.1"
+datafusion = { version = "55", features = ["sql"] }
+arrow-pg = { git = "https://github.com/mag1c1an1/datafusion-postgres.git", rev = "39b2657cc9143bd019dacbedb6b40dbd66379fa0", version = "0.15.0", default-features = false, features = ["datafusion"] }
+futures = "0.3"
+log = "0.4"
+postgres-types = "0.2"
+tokio = { version = "1.52", features = ["sync"] }
+
+[features]
+# pgvector compatibility: plan the pgvector `vector(n)` SQL type (as a
+# FixedSizeList/List of Float32) and expose the `vector` row in `pg_catalog`.
+# The distance operators (`<->` / `<#>` / `<=>`) and INSERT literal rewriting
+# are implemented in datafusion-postgres, not here.
+pgvector = ["arrow-pg/pgvector"]
+
+[dev-dependencies]
+env_logger = "0.11"
+criterion = { version = "0.8", features = ["html_reports"] }
+
+[[bench]]
+name = "parser_benchmark"
+harness = false

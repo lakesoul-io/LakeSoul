@@ -21,8 +21,14 @@
 //! unavailable: setup errors fail the test, and cleanup always runs, including
 //! after suite panics.
 
+mod catalog;
 pub mod compare;
 mod state;
+mod storage;
+pub mod tpch;
+mod tpch_driver;
+mod tpch_workers;
+pub mod vector;
 
 use std::any::Any;
 use std::future::Future;
@@ -109,12 +115,64 @@ pub async fn run_suite<F>(suite: F) -> Result<()>
 where
     F: for<'a> FnOnce(&'a Harness) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
 {
+    run_fixture_suite(Fixtures::Base, suite).await
+}
+
+/// Prepare physical storage fixtures before the server's catalog is loaded.
+pub async fn run_storage_suite<F>(suite: F) -> Result<()>
+where
+    F: for<'a> FnOnce(&'a Harness) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+{
+    run_fixture_suite(Fixtures::Storage, suite).await
+}
+
+/// Prepare both namespace/database fixtures before starting the real server.
+pub async fn run_catalog_suite<F>(suite: F) -> Result<()>
+where
+    F: for<'a> FnOnce(&'a Harness) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+{
+    run_fixture_suite(Fixtures::Catalog, suite).await
+}
+
+/// Build committed vector indexes before the server discovers the catalog.
+pub async fn run_vector_suite<F>(suite: F) -> Result<()>
+where
+    F: for<'a> FnOnce(&'a Harness) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+{
+    run_fixture_suite(Fixtures::Vector, suite).await
+}
+
+/// Prepare the pinned TPC-H dataset before the real PG server loads its catalog.
+pub async fn run_tpch_suite<F>(config: tpch::TpchConfig, suite: F) -> Result<()>
+where
+    F: for<'a> FnOnce(&'a Harness) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+{
+    run_fixture_suite(Fixtures::Tpch(config), suite).await
+}
+
+enum Fixtures {
+    Base,
+    Storage,
+    Catalog,
+    Vector,
+    Tpch(tpch::TpchConfig),
+}
+
+async fn run_fixture_suite<F>(fixtures: Fixtures, suite: F) -> Result<()>
+where
+    F: for<'a> FnOnce(&'a Harness) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+{
     let fault = std::env::var(FAULT_ENV).ok();
+    let suite_timeout = if matches!(&fixtures, Fixtures::Tpch(_)) {
+        Duration::from_secs(3600)
+    } else {
+        SUITE_TIMEOUT
+    };
     let mut state = StartupState::new()
         .await
         .context("create SQL compatibility harness")?;
 
-    let prepared = AssertUnwindSafe(state.prepare(fault.as_deref()))
+    let prepared = AssertUnwindSafe(state.prepare(fault.as_deref(), fixtures))
         .catch_unwind()
         .await;
     let startup_error = match prepared {
@@ -138,13 +196,13 @@ where
         harness.warehouse_dir.display()
     );
     let suite_result = tokio::time::timeout(
-        SUITE_TIMEOUT,
+        suite_timeout,
         AssertUnwindSafe(suite(&harness)).catch_unwind(),
     )
     .await;
 
     let primary = match suite_result {
-        Err(_) => Some(format!("suite timed out after {SUITE_TIMEOUT:?}")),
+        Err(_) => Some(format!("suite timed out after {suite_timeout:?}")),
         Ok(Ok(Ok(()))) => None,
         Ok(Ok(Err(error))) => Some(format!("suite failed: {error:#}")),
         Ok(Err(payload)) => Some(format!("suite panicked: {}", panic_message(payload))),
@@ -197,10 +255,12 @@ struct StartupState {
     lake_client: Option<Client>,
     lake_task: Option<JoinHandle<()>>,
     child: Option<ChildGuard>,
+    workers: Option<tpch_workers::Workers>,
     lake_addr: Option<SocketAddr>,
     metrics_addr: Option<SocketAddr>,
     namespace_created: bool,
     created_tables: Vec<String>,
+    extra_namespaces: Vec<(String, Vec<String>)>,
     connections: parking_lot::Mutex<Vec<JoinHandle<()>>>,
 }
 
@@ -266,17 +326,36 @@ impl StartupState {
             lake_client: None,
             lake_task: None,
             child: None,
+            workers: None,
             lake_addr: None,
             metrics_addr: None,
             namespace_created: false,
             created_tables: Vec::new(),
+            extra_namespaces: Vec::new(),
             connections: parking_lot::Mutex::new(Vec::new()),
         })
     }
 
-    async fn prepare(&mut self, fault: Option<&str>) -> Result<()> {
+    async fn prepare(&mut self, fault: Option<&str>, fixtures: Fixtures) -> Result<()> {
         self.create_reference_fixtures().await?;
         self.create_lake_fixtures().await?;
+        match fixtures {
+            Fixtures::Base => {}
+            Fixtures::Storage => self.create_storage_fixtures().await?,
+            Fixtures::Catalog => self.create_catalog_fixtures().await?,
+            Fixtures::Vector => self.create_vector_fixtures().await?,
+            Fixtures::Tpch(config) => {
+                self.workers = tpch_workers::Workers::configured()?;
+                if let Some(workers) = &mut self.workers {
+                    ensure!(
+                        config.layout != "pk",
+                        "distributed TPC-H requires nopk or pkmonth; unpartitioned PK scans stay local"
+                    );
+                    workers.start(&self.warehouse_url).await?;
+                }
+                self.create_tpch_fixtures(&config).await?;
+            }
+        }
         let _startup = STARTUP_GATE.lock().await;
         self.launch_server(fault).await?;
         tokio::time::timeout(STARTUP_TIMEOUT, self.wait_until_ready())
@@ -503,14 +582,27 @@ impl StartupState {
             .arg("16")
             .args(["--max-result-rows", "0", "--max-result-bytes", "0"])
             .args(["--memory-limit", "0", "--vortex-decode-budget", "0"])
-            .arg("--discovery")
-            .arg("none")
             .arg("--warehouse-prefix")
             .arg(&self.warehouse_url)
             .env("TZ", "UTC")
+            .env_remove("LAKESOUL_DISTRIBUTED_WORKERS")
+            .env_remove("LAKESOUL_K8S_WORKER_SERVICE")
+            .env_remove("LAKESOUL_K8S_NAMESPACE")
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err));
+        if let Some(workers) = &self.workers {
+            command
+                .args(["--discovery", "static", "--distributed-workers"])
+                .arg(workers.urls())
+                .args([
+                    "--distributed-fallback-local=false",
+                    "--distributed-bytes-per-partition",
+                    "1",
+                ]);
+        } else {
+            command.args(["--discovery", "none"]);
+        }
         if fault == Some("startup") {
             // Controlled startup failure: clap rejects the unknown option and
             // the child exits non-zero before readiness.
@@ -662,6 +754,10 @@ impl StartupState {
                 .push("no child process was spawned".to_string());
         }
 
+        if let Some(workers) = &mut self.workers {
+            workers.stop(&mut outcome).await;
+        }
+
         for (label, address) in [
             ("PostgreSQL", self.lake_addr),
             ("metrics", self.metrics_addr),
@@ -684,10 +780,20 @@ impl StartupState {
             }
         }
 
+        let mut namespaces = std::mem::take(&mut self.extra_namespaces);
         if self.namespace_created {
+            namespaces.push((
+                self.namespace.clone(),
+                std::mem::take(&mut self.created_tables),
+            ));
+        }
+        if namespaces.is_empty() {
+            outcome
+                .resources
+                .push("metadata namespaces were not created".to_string());
+        }
+        for (namespace, tables) in namespaces {
             let meta = Arc::clone(&self.meta);
-            let namespace = self.namespace.clone();
-            let tables = std::mem::take(&mut self.created_tables);
             for table in tables {
                 let meta = Arc::clone(&meta);
                 let namespace = namespace.clone();
@@ -708,7 +814,7 @@ impl StartupState {
                 }
             }
             let meta = Arc::clone(&self.meta);
-            let namespace_for_delete = self.namespace.clone();
+            let namespace_for_delete = namespace;
             let namespace_for_log = namespace_for_delete.clone();
             match bounded(CLEANUP_TIMEOUT, "delete metadata namespace", async move {
                 meta.delete_namespace_by_namespace(&namespace_for_delete)
@@ -724,10 +830,28 @@ impl StartupState {
                     "delete metadata namespace {namespace_for_log}: {error:#}"
                 )),
             }
-        } else {
-            outcome
+        }
+
+        // Index deletion is best-effort inside drop_table. A leftover shard
+        // must still fail this harness; commits/leases reference it by FK.
+        let catalog = self.meta.vector_index_catalog();
+        match bounded(CLEANUP_TIMEOUT, "verify vector index cleanup", async {
+            catalog
+                .list_shards_under(&self.warehouse_url)
+                .await
+                .map_err(|error| format!("{error:?}"))
+        })
+        .await
+        {
+            Ok(shards) if shards.is_empty() => outcome
                 .resources
-                .push("metadata namespace was not created".to_string());
+                .push("owned vector index shards=0 (commit/lease FK cascade)".to_owned()),
+            Ok(shards) => outcome
+                .errors
+                .push(format!("owned vector index shards remain: {shards:?}")),
+            Err(error) => outcome
+                .errors
+                .push(format!("verify vector index cleanup: {error:#}")),
         }
 
         let reference_config = self.reference_config.clone();
@@ -1015,13 +1139,13 @@ async fn connect_pg(config: &Config, label: &str) -> Result<(Client, JoinHandle<
     config
         .application_name(label)
         .connect_timeout(OPERATION_TIMEOUT);
-    let (client, connection) = bounded(
-        OPERATION_TIMEOUT,
-        &format!("connect to {label}"),
-        config.connect(NoTls),
-    )
-    .await
-    .with_context(|| format!("connect to {label}"))?;
+    // Keep the driver's typed ErrorResponse (not merely its Display text),
+    // so startup rejection cases can distinguish SQLSTATE from transport errors.
+    let (client, connection) =
+        tokio::time::timeout(OPERATION_TIMEOUT, config.connect(NoTls))
+            .await
+            .with_context(|| format!("connect to {label} timed out"))?
+            .with_context(|| format!("connect to {label}"))?;
     let label = label.to_string();
     let task = tokio::spawn(async move {
         if let Err(error) = connection.await {

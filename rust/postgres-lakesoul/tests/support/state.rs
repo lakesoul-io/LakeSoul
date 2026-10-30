@@ -17,12 +17,31 @@ use super::{
 impl Harness {
     /// Driver tasks remain owned by teardown, including on a suite error or panic.
     pub async fn connect_lake(&self) -> Result<Client> {
-        self.connect_extra(&lake_config(self.lake_addr, &self.lake_namespace), false)
+        self.connect_database(&self.lake_namespace).await
+    }
+
+    /// Select a database at connection startup; never mutate a shared session.
+    pub async fn connect_database(&self, database: &str) -> Result<Client> {
+        self.connect_extra(&lake_config(self.lake_addr, database), false)
             .await
     }
 
     pub async fn connect_reference(&self) -> Result<Client> {
         self.connect_extra(&self.state.reference_config, true).await
+    }
+
+    /// Connect through the real server without applying [`SESSION_SETTINGS`],
+    /// so the connection's process-startup defaults stay observable.
+    ///
+    /// The label matches the harness's primary LakeSoul client, so
+    /// `application_name` and every other startup-seeded value are directly
+    /// comparable. Used by the time-zone/reset contract to derive the expected
+    /// post-`RESET`/`DISCARD` state instead of re-pinning current output.
+    pub async fn connect_lake_startup_defaults(&self) -> Result<Client> {
+        let config = lake_config(self.lake_addr, &self.lake_namespace);
+        let (client, task) = connect_pg(&config, "sql_compat_lake").await?;
+        self.state.connections.lock().push(task);
+        Ok(client)
     }
 
     async fn connect_extra(&self, config: &Config, reference: bool) -> Result<Client> {

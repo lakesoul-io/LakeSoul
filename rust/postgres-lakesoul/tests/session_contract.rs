@@ -7,10 +7,14 @@
 //! The shared harness starts a fresh `postgres-lakesoul` child and a matching
 //! PostgreSQL reference schema. Cases are ordered deliberately:
 //!
-//! 1. session state (time zone, failed transactions, isolation),
+//! 1. session state (failed transactions, isolation),
 //! 2. read-only refusals and parameter-error boundaries,
 //! 3. `visibility::run` last, because it mutates the `pk_items` fixture
 //!    through the management session to measure commit publication.
+//!
+//! `time_zone_changes_query_and_is_connection_local` is a separate normal gate:
+//! it exercises `SET TIME ZONE`, its spellings, `ParameterStatus`, explicit
+//! `LOCAL`/`GLOBAL` refusals and `RESET`/`DISCARD ALL` on its own harness.
 //!
 //! Every case leaves both clients idle, out of any transaction, and restored to
 //! the harness's UTC session settings.
@@ -41,8 +45,10 @@ async fn session_contract_phase_two() -> Result<()> {
     .await
 }
 
+/// Normal gate: `SET TIME ZONE`, its spellings, explicit `LOCAL`/`GLOBAL`
+/// refusals, `ParameterStatus`, and `RESET`/`DISCARD ALL` restoring this
+/// connection's startup defaults without leaking to peers or new connections.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Known SET TIME ZONE does not apply execution settings; strict PG reproduction (see README)"]
 async fn time_zone_changes_query_and_is_connection_local() -> Result<()> {
     support::run_suite(|h| Box::pin(state::time_zone_is_connection_local(h))).await
 }

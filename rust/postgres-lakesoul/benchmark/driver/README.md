@@ -62,6 +62,53 @@ process exit code.
 still drains all rows, so server execution and backpressure are not bypassed.
 Result values are not copied into JSONL.
 
+## Strict TPC-H regression gate
+
+The sampling command above deliberately keeps its exit-code behavior. Use the
+separate one-pass gate when correctness must determine process success:
+
+```sh
+python3 -m lsbench.strict_tpch --host coordinator --port 5432 \
+  --database tpch_sf1 --scale 1 --layout pk --protocol simple
+python3 -m lsbench.strict_tpch --host coordinator --port 5432 \
+  --database tpch_sf1 --scale 1 --layout pk --protocol extended --json
+```
+
+This command requires Python 3.11+ and only the standard library. It uses the
+same PG-wire client and workload CSV comparator, not a console or MockClient.
+Both protocols request **text** results; this workload gate does not replace
+the separate binary-codec SQL compatibility tests.
+
+- The default selection is exactly q01–q22. An explicit subset uses
+  `--queries q06 q11`, not the sampling command's comma-separated syntax.
+  Duplicate/unknown selections, missing SQL/answers and malformed CSV fail
+  before connection. `--queries-dir` and `--answers-dir` override the checked-in
+  asset paths; default answers are selected by `--scale 0.1|1|10`.
+- Data must already exist in the named LakeSoul namespace/PG database, with
+  user tables in `public`. Use the pinned tpchgen-rs dataset, **not** DuckDB's
+  `CALL dbgen`. `--layout pk|nopk|pkmonth` labels the supplied fixture; the CLI
+  does not load data or discover its storage layout.
+- Q11 renders `{{SF}}` as `0.1`, `1.0` or `10.0`. The session fixes UTC,
+  ISO/YMD, UTF8 and `datafusion.execution.target_partitions = 4`.
+- Every selected query executes once with all rows collected. No warmup,
+  iterations, retry or reconnect. Server errors remain failures after later
+  successful queries; timeout/transport failure leaves later queries explicitly
+  unattempted. The default per-query deadline is 60 seconds (`--query-timeout`).
+- Exit 0 requires every selected query identity exactly once and all
+  expected/attempted/completed/matched counts equal. Exit 2 means preflight or
+  configuration failure; exit 1 means execution, comparison or completion
+  failure. `--json` emits one final JSON object with per-query results, SQLSTATE,
+  typed failure causes and the completion ledger.
+
+The numeric tolerance, trailing-space/empty-field normalization and ORDER BY
+tie rules above remain **TPC-H-derived workload rules only**. They do not prove
+general PostgreSQL equality or change the core SQL comparator.
+
+For an automatically generated, isolated dataset and real service lifecycle,
+run `cargo -q test -p postgres-lakesoul --test tpch_contract -- --nocapture`
+from the repository root after initializing metadata PostgreSQL. See
+`../../README.md` for the daily and scheduled/manual layout matrix.
+
 ## TPC-H through lakesoul-console
 
 ```sh

@@ -14,6 +14,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use datafusion::error::DataFusionError;
+use datafusion::physical_plan::scalar_subquery::ScalarSubqueryCardinalityError;
 use datafusion::prelude::SessionContext;
 use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
 use datafusion_postgres::pgwire;
@@ -23,7 +25,7 @@ use pgwire::api::auth::StartupHandler;
 use pgwire::api::auth::noop::NoopStartupHandler;
 use pgwire::api::cancel::CancelHandler;
 use pgwire::api::copy;
-use pgwire::api::portal::{Format, Portal};
+use pgwire::api::portal::{Format, Portal, PortalExecutionState};
 use pgwire::api::query::{
     ExtendedQueryHandler, SimpleQueryHandler, send_execution_response,
     send_query_response, send_ready_for_query,
@@ -43,6 +45,7 @@ use pgwire::messages::extendedquery::{
 };
 use pgwire::messages::response::{EmptyQueryResponse, TransactionStatus};
 use pgwire::messages::simplequery::Query;
+use pgwire::messages::startup::ParameterStatus;
 use pgwire::messages::{PgWireBackendMessage, PgWireFrontendMessage};
 use rootcause::Report;
 use tracing::{debug, info, warn};
@@ -52,8 +55,11 @@ use crate::cancel::{
     QueryCancellation, guard_response, statement_timeout, with_cancellation,
 };
 use crate::limits::{ConnectionPermit, ServerLimits, StatementOutcome};
-use crate::read_only::{rejected_startup_isolation, statement_hooks};
+use crate::read_only::{rejected_startup_isolation, statement_hooks_with};
 use crate::session::{PgSession, PgSessionFactory, SessionIdentity, SessionSettings};
+use crate::session_settings::{
+    SessionDefaults, SettingsGeneration, initialize_client_metadata,
+};
 
 /// Drops the response a failed `Execute` would otherwise leave in its portal,
 /// and the statement registered for that portal.
@@ -90,6 +96,12 @@ pub struct ConnectionSession {
     /// The connection's slot: released when this state is dropped.
     #[allow(dead_code)]
     pub permit: ConnectionPermit,
+    /// Startup settings `RESET`/`DISCARD ALL` restore.
+    pub defaults: SessionDefaults,
+    /// Session-setting changes, and the generation each prepared statement
+    /// was planned under: `Execute` replans a statement whose plan predates a
+    /// change.
+    pub settings: Arc<SettingsGeneration>,
 }
 
 /// Resolve the connection-local session state from pgwire's
@@ -104,7 +116,7 @@ where
         .ok_or_else(session_not_initialized)
 }
 
-fn session_not_initialized() -> PgWireError {
+pub(crate) fn session_not_initialized() -> PgWireError {
     PgWireError::UserError(Box::new(ErrorInfo::new(
         "FATAL".to_string(),
         "XX000".to_string(),
@@ -118,6 +130,37 @@ fn fatal_startup_error(error: Report) -> PgWireError {
         "XX000".to_string(),
         error.format_current_context_unhooked().to_string(),
     )))
+}
+
+/// PostgreSQL `cardinality_violation`.
+fn cardinality_violation_error() -> PgWireError {
+    PgWireError::UserError(Box::new(ErrorInfo::new(
+        "ERROR".to_string(),
+        "21000".to_string(),
+        "more than one row returned by a subquery used as an expression".to_string(),
+    )))
+}
+
+/// Maps execution errors that have a PostgreSQL SQLSTATE equivalent.
+///
+/// The match is on the typed error emitted by `ScalarSubqueryExec`, not on
+/// error text, so unrelated execution failures keep the generic `XX000`
+/// mapping.
+fn map_statement_error(error: PgWireError) -> PgWireError {
+    let PgWireError::ApiError(source) = &error else {
+        return error;
+    };
+    let Some(datafusion_error) = source.downcast_ref::<DataFusionError>() else {
+        return error;
+    };
+    if matches!(
+        datafusion_error.find_root(),
+        DataFusionError::External(inner)
+            if inner.is::<ScalarSubqueryCardinalityError>()
+    ) {
+        return cardinality_violation_error();
+    }
+    error
 }
 
 impl LakeSoulQueryRouter {
@@ -188,6 +231,15 @@ impl LakeSoulQueryRouter {
         // failed.
         let mut failed = false;
         let outcome: PgWireResult<()> = async {
+            // `RESET TIME ZONE` is a multi-word PostgreSQL parameter name that
+            // sqlparser cannot parse; a single-statement form is rewritten
+            // before the batch is split (batches containing it stay a syntax
+            // error). The rewrite runs after the first statement is registered,
+            // so a cancel that arrives while the text is still being inspected
+            // finds a statement in flight.
+            let query_text =
+                crate::session_settings::rewrite_reset_time_zone(&query_text)
+                    .unwrap_or(query_text);
             let statements =
                 split_statements(&query_text).unwrap_or_else(|| vec![query_text.clone()]);
             if statements.is_empty() {
@@ -321,7 +373,7 @@ where
 {
     let future = tracing::Instrument::instrument(future, execution.span());
     match with_cancellation(execution, future).await {
-        Ok(result) => result,
+        Ok(result) => result.map_err(map_statement_error),
         Err(interruption) => {
             execution.finish(interruption.outcome());
             Err(interruption.error())
@@ -487,6 +539,17 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
             "created connection-local session"
         );
 
+        // Seed the metadata the `SHOW`/`SET` paths read from the settings the
+        // session was actually created with, and report the real time zone:
+        // pgwire's own startup `ParameterStatus` is a fixed `Etc/UTC`.
+        let time_zone = initialize_client_metadata(&session, client.metadata_mut());
+        client
+            .feed(PgWireBackendMessage::ParameterStatus(ParameterStatus::new(
+                "TimeZone".to_string(),
+                time_zone,
+            )))
+            .await?;
+        let defaults = SessionDefaults::capture(&session.context, client.metadata());
         let service = Arc::new(DfSessionService::new_with_hooks(
             Arc::clone(&session.context),
             connection_statement_hooks(),
@@ -511,6 +574,8 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
             service,
             cancellation,
             permit,
+            defaults,
+            settings: Arc::new(SettingsGeneration::default()),
         });
         Ok(())
     }
@@ -518,13 +583,12 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
 
 /// Statement hooks for one connection.
 ///
-/// The pgvector GUC hook goes first: it claims `ivfflat.probes` before the
-/// upstream `SetShowHook` offers the generic DataFusion config path.
+/// The pgvector GUC hook claims `ivfflat.probes` before the upstream
+/// `SetShowHook` offers the generic DataFusion config path, behind the
+/// transaction hook like every other `SET` hook.
 pub(crate) fn connection_statement_hooks() -> Vec<Arc<dyn datafusion_postgres::QueryHook>>
 {
-    let mut hooks = crate::pg_vector::statement_hooks();
-    hooks.extend(statement_hooks());
-    hooks
+    statement_hooks_with(crate::pg_vector::statement_hooks())
 }
 
 /// Connection-aware parser facade.
@@ -554,6 +618,8 @@ impl QueryParser for __ConnectionParser {
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
+        let rewritten = crate::session_settings::rewrite_reset_time_zone(sql);
+        let sql = rewritten.as_deref().unwrap_or(sql);
         let state = connection_session(client)?;
         let parser = state.service.query_parser();
         parser.parse_sql(client, sql, types).await
@@ -589,6 +655,60 @@ impl LakeSoulQueryRouter {
         Self {
             parser: Arc::new(__ConnectionParser { fallback }),
         }
+    }
+
+    /// Plan the portal's statement again when the session settings changed
+    /// since it was planned.
+    ///
+    /// A logical plan embeds session settings - `CAST(x AS TIMESTAMPTZ)`
+    /// resolves its target type with the time zone current at plan time - so a
+    /// statement parsed before a `SET` would otherwise execute with the old
+    /// value. PostgreSQL runs a prepared statement with the settings current
+    /// at execution.
+    async fn replan_if_stale<C>(
+        &self,
+        client: &C,
+        state: &ConnectionSession,
+        portal: &Portal<<DfSessionService as ExtendedQueryHandler>::Statement>,
+    ) -> PgWireResult<()>
+    where
+        C: ClientInfo + ClientPortalStore + Unpin + Send + Sync,
+        C::PortalStore: PortalStore<
+            Statement = <DfSessionService as ExtendedQueryHandler>::Statement,
+        >,
+    {
+        let statement = &portal.statement;
+        if !state.settings.needs_replan(&statement.id) {
+            return Ok(());
+        }
+        // A portal that already started keeps the plan its result came from:
+        // replacing it would restart the rows the client is fetching.
+        if !matches!(*portal.state.lock().await, PortalExecutionState::Initial) {
+            return Ok(());
+        }
+        let (sql, _) = &statement.statement;
+        let Some(planned) = self
+            .parser
+            .parse_sql(client, sql, &statement.parameter_types)
+            .await?
+        else {
+            return Ok(());
+        };
+        let mut replacement = Portal::default();
+        replacement.name = portal.name.clone();
+        replacement.statement = Arc::new(StoredStatement::new(
+            statement.id.clone(),
+            planned,
+            statement.parameter_types.clone(),
+        ));
+        replacement.parameter_format = portal.parameter_format.clone();
+        replacement.parameters = portal.parameters.clone();
+        replacement.result_column_format = portal.result_column_format.clone();
+        replacement.state =
+            Arc::new(tokio::sync::Mutex::new(PortalExecutionState::Initial));
+        client.portal_store().put_portal(Arc::new(replacement));
+        state.settings.record(&statement.id);
+        Ok(())
     }
 }
 
@@ -723,6 +843,16 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
             sql = %message.query,
             "planning SQL (extended query)"
         );
+        // `RESET TIME ZONE` is a multi-word PostgreSQL parameter name the
+        // upstream parser cannot read; the statement stored here is the one
+        // `Execute` plans from, so the rewrite must happen before it is parsed
+        // (the log line above kept the text the client sent).
+        let mut message = message;
+        if let Some(rewritten) =
+            crate::session_settings::rewrite_reset_time_zone(&message.query)
+        {
+            message.query = rewritten;
+        }
         let result = run_under_limit(
             &execution,
             <DfSessionService as ExtendedQueryHandler>::on_parse(
@@ -742,6 +872,9 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
             // report the replaced statement's query id and parse time.
             Ok(()) => {
                 state.cancellation.commit_parse(&name, &execution);
+                // The plan just made belongs to the current settings; a later
+                // `SET` bumps past it and makes the next `Execute` replan.
+                state.settings.record(&name);
                 // Planning is over: its slot returns, and a statement that is
                 // never executed leaves no report behind. The identity stays,
                 // so the `Execute` that follows reports under it.
@@ -821,13 +954,16 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
         // Only an existing portal gets a statement: registering one for a name
         // that does not exist would leave an entry nothing ever cleans up,
         // because pgwire never had that portal to drop.
-        let execution = client
-            .portal_store()
-            .get_portal(&portal)
-            .and_then(|entry| match entry {
-                pgwire::api::store::Entry::Value(portal) => Some(portal),
-                pgwire::api::store::Entry::Empty => None,
-            })
+        let stored =
+            client
+                .portal_store()
+                .get_portal(&portal)
+                .and_then(|entry| match entry {
+                    pgwire::api::store::Entry::Value(portal) => Some(portal),
+                    pgwire::api::store::Entry::Empty => None,
+                });
+        let execution = stored
+            .as_ref()
             .map(|portal| {
                 state.cancellation.begin_execution(
                     &portal.name,
@@ -839,6 +975,16 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
         let Some(execution) = execution else {
             return self._on_execute(client, message).await;
         };
+        // The stored plan was made at `Parse`; a `SET` since then leaves it
+        // stale, and PostgreSQL runs a prepared statement with the settings
+        // current at execution. Bounded like the parse it repeats.
+        if let Some(portal) = stored.as_ref() {
+            run_under_limit(
+                &execution,
+                self.replan_if_stale(client, state.as_ref(), portal),
+            )
+            .await?;
+        }
         // Fetching the portal and sending its rows happen inside this future:
         // bounding it is what stops a statement whose client has stopped
         // reading, instead of leaving the execution alive behind a blocked
@@ -850,7 +996,7 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
             execution.span(),
         );
         let result = match with_cancellation(&execution, execute).await {
-            Ok(result) => result,
+            Ok(result) => result.map_err(map_statement_error),
             Err(interruption) => {
                 execution.end(interruption.outcome());
                 release_portal(client, &state.cancellation, &portal, &execution);
@@ -907,7 +1053,10 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
             TARGET_TYPE_BYTE_PORTAL => state.cancellation.forget_portal(name),
             // A closed prepared statement: pgwire drops it, so the statement it
             // was charged for goes with it.
-            _ => state.cancellation.forget_statement(name),
+            _ => {
+                state.settings.forget(name);
+                state.cancellation.forget_statement(name)
+            }
         }
         <DfSessionService as ExtendedQueryHandler>::on_close(
             state.service.as_ref(),

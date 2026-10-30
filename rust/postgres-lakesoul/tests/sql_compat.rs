@@ -46,15 +46,14 @@ async fn decimal_zero_binary_scale_matches_postgres() -> Result<()> {
     support::run_suite(|h| Box::pin(codecs::zero_binary_scale(h))).await
 }
 
+/// Projection scalar subqueries count rows: zero -> typed NULL, one -> the
+/// value, more than one -> execution-time SQLSTATE 21000. Explicit user
+/// LIMIT 1 remains legal; prepared binds, cross-batch execution and explicit
+/// transactions are covered in `semantics::projection_scalar_subquery_cardinality`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Known projection scalar-subquery LIMIT 1 defect; strict PG cardinality reproduction (see README)"]
-async fn projection_scalar_subquery_rejects_multiple_rows() -> Result<()> {
-    support::run_suite(|h| {
-        Box::pin(semantics::projection_scalar_subquery_rejects_multiple_rows(
-            h,
-        ))
-    })
-    .await
+async fn projection_scalar_subquery_cardinality() -> Result<()> {
+    support::run_suite(|h| Box::pin(semantics::projection_scalar_subquery_cardinality(h)))
+        .await
 }
 
 // Explicitly a support boundary, not PG type equivalence: DataFusion's bare

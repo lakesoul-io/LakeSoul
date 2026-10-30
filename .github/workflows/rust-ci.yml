@@ -104,6 +104,11 @@ jobs:
               echo "RustFS Configuration Complete!"
             '
       - uses: actions/checkout@v4
+      - name: Strict TPC-H driver boundary regressions
+        env:
+          PYTHONPATH: rust/postgres-lakesoul/benchmark/driver
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -m unittest discover -s rust/postgres-lakesoul/benchmark/driver/tests -v
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -148,7 +153,7 @@ jobs:
           LAKESOUL_PG_PASSWORD: lakesoul_test
           TZ: UTC
           RUST_BACKTRACE: full
-        run: cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test session_contract --jobs 4 -- --nocapture
+        run: cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --jobs 4 -- --nocapture
       - name: Test v2 merge
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
@@ -164,7 +169,7 @@ jobs:
           LAKESOUL_PG_PASSWORD: lakesoul_test
           TZ: UTC
           RUST_BACKTRACE: full
-        run: cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test session_contract --jobs 4 -- --nocapture
+        run: cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --jobs 4 -- --nocapture
 
   clippy_check:
     runs-on: ubuntu-24.04

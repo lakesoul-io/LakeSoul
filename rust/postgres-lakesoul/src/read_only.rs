@@ -26,6 +26,16 @@
 //! one; those can only be reads or session-local control statements, so no
 //! persistent state changes before the error.
 //!
+//! One hook runs between the transaction hook and the upstream `SET` hook:
+//! `SessionSettingsHook` claims `SET TIME ZONE` (whose upstream branch writes
+//! through a discarded `SessionContext::state()` clone), `RESET` and `DISCARD
+//! ALL`, i.e. the connection-local settings and their restoration. It is
+//! installed after `TransactionStatementHook`, so an aborted transaction
+//! rejects these statements with `25P01` before any setting is changed, and
+//! after [`ReadCommittedOnlyGuard`], so isolation assignments keep their own
+//! validation. It still precedes `SetShowHook` so the broken upstream branch
+//! never sees a time-zone assignment.
+//!
 //! Transaction *isolation* is checked by [`ReadCommittedOnlyGuard`], which
 //! runs before the upstream transaction hook: the session has no
 //! multi-statement snapshot, so only `READ COMMITTED` (or no explicit level)
@@ -44,8 +54,8 @@ use datafusion::common::ParamValues;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::{
-    CloseCursor, Expr, ObjectName, Set, Statement, TransactionIsolationLevel,
-    TransactionMode,
+    CloseCursor, DiscardObject, Expr, ObjectName, Set, Statement,
+    TransactionIsolationLevel, TransactionMode,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::hooks::HookClient;
@@ -58,26 +68,50 @@ use pgwire::api::results::Response;
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 
 use crate::server::ConnectionSession;
+use crate::session_settings::SessionSettingsHook;
 
 /// SQLSTATE for rejected statements (read-only error mapping).
 const FEATURE_NOT_SUPPORTED: &str = "0A000";
 
 /// Statement hooks executed by every connection-local service.
 ///
+/// The hooks of one connection, with `connection_hooks` spliced in after the
+/// transaction hook.
+///
 /// The read-only guard runs last so the upstream hooks keep first claim on
 /// cursor, `SET`/`SHOW` and transaction statements; the isolation guard runs
 /// first because it must see `BEGIN`/`SET TRANSACTION` before the transaction
-/// hook answers them.
-pub(crate) fn statement_hooks() -> Vec<Arc<dyn QueryHook>> {
-    vec![
+/// hook answers them. [`SessionSettingsHook`] runs after the transaction hook
+/// so an aborted transaction (`25P01`) is reported before any `SET TIME
+/// ZONE`/`RESET`/`DISCARD ALL` could mutate session state, and before
+/// `SetShowHook` so the broken upstream `SET TIME ZONE` branch never runs.
+///
+/// A hook that answers `SET`/`SHOW` itself must sit behind
+/// [`TransactionStatementHook`]: an aborted transaction has to reject the
+/// statement with `25P01` before the hook could mutate session state, and in
+/// front of [`SetShowHook`] so it keeps first claim on its own variables.
+pub(crate) fn statement_hooks_with(
+    connection_hooks: Vec<Arc<dyn QueryHook>>,
+) -> Vec<Arc<dyn QueryHook>> {
+    let mut hooks: Vec<Arc<dyn QueryHook>> = vec![
         Arc::new(ReadCommittedOnlyGuard),   // new
         Arc::new(UncancellableCursorGuard), // new
         Arc::new(PortalCloseCleanup),       // new
         Arc::new(CursorStatementHook),
-        Arc::new(SetShowHook),
         Arc::new(TransactionStatementHook),
+    ];
+    hooks.extend(connection_hooks);
+    hooks.extend([
+        // After the transaction hook (aborted transactions must reject these
+        // statements with `25P01` rather than apply them) and before the
+        // upstream `SetShowHook`: that hook's `SET TIME ZONE` branch writes
+        // through an owned `SessionContext::state()` clone and discards the
+        // write, and its generic `SET` fallback ignores errors.
+        Arc::new(SessionSettingsHook) as Arc<dyn QueryHook>, // new
+        Arc::new(SetShowHook),
         Arc::new(ReadOnlyStatementGuard), // new
-    ]
+    ]);
+    hooks
 }
 
 /// Removes the cancellation state of portals closed through SQL.
@@ -394,9 +428,9 @@ struct ReadOnlyStatementGuard;
 
 impl ReadOnlyStatementGuard {
     /// Statements the server accepts: queries, `DESCRIBE <table>`,
-    /// session-local `SET`/`SHOW` and transaction control. Cursors are refused
-    /// by [`UncancellableCursorGuard`]; `EXPLAIN` is allowed only for a query,
-    /// so `EXPLAIN INSERT` is rejected like the
+    /// session-local `SET`/`SHOW`, `RESET`/`DISCARD ALL` and transaction
+    /// control. Cursors are refused by [`UncancellableCursorGuard`]; `EXPLAIN`
+    /// is allowed only for a query, so `EXPLAIN INSERT` is rejected like the
     /// statement it wraps.
     fn allow(statement: &Statement) -> bool {
         match statement {
@@ -421,7 +455,14 @@ impl ReadOnlyStatementGuard {
             | Statement::StartTransaction { .. }
             | Statement::Commit { .. }
             | Statement::Rollback { .. }
-            | Statement::Close { .. } => true,
+            | Statement::Close { .. }
+            // Session settings can be restored; `SessionSettingsHook` applies
+            // them (and refuses the untracked parameter / `DISCARD` variants
+            // with their own SQLSTATE).
+            | Statement::Reset(_) => true,
+            Statement::Discard { object_type } => {
+                matches!(object_type, DiscardObject::ALL)
+            }
             Statement::Explain {
                 statement: inner, ..
             } => {
@@ -458,6 +499,12 @@ fn verb(statement: &Statement) -> &'static str {
         Statement::CreateDatabase { .. } => "CREATE DATABASE",
         Statement::CreateIndex { .. } => "CREATE INDEX",
         Statement::AlterTable { .. } => "ALTER TABLE",
+        Statement::Discard { object_type } => match object_type {
+            DiscardObject::ALL => "DISCARD ALL",
+            DiscardObject::PLANS => "DISCARD PLANS",
+            DiscardObject::SEQUENCES => "DISCARD SEQUENCES",
+            DiscardObject::TEMP => "DISCARD TEMP",
+        },
         _ => "this statement",
     }
 }
@@ -553,7 +600,7 @@ mod tests {
     fn service() -> DfSessionService {
         DfSessionService::new_with_hooks(
             Arc::new(SessionContext::new()),
-            statement_hooks(),
+            statement_hooks_with(Vec::new()),
         )
     }
 
@@ -600,6 +647,11 @@ mod tests {
         "START TRANSACTION ISOLATION LEVEL SERIALIZABLE",
         "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
         "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+        // Accepted by the read-only guard but refused by the session-settings
+        // hook: these PostgreSQL behaviours are not implemented.
+        "DISCARD PLANS",
+        "DISCARD SEQUENCES",
+        "DISCARD TEMP",
     ];
 
     const ALLOWED: &[&str] = &[
@@ -611,6 +663,10 @@ mod tests {
         "EXPLAIN ANALYZE SELECT 1",
         "SET a = 1",
         "SET TIME ZONE 'UTC'",
+        "RESET ALL",
+        "RESET timezone",
+        "RESET statement_timeout",
+        "DISCARD ALL",
         "SHOW server_version",
         "BEGIN",
         "BEGIN TRANSACTION READ ONLY",

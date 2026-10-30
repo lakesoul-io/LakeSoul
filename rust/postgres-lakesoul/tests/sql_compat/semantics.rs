@@ -14,11 +14,15 @@
 //! Contract classes used below:
 //!
 //! * `PG-equivalent`: identical rows, column names and OIDs on both servers.
+//! * `PG-equivalent` scalar cardinality: zero subquery rows produce a typed
+//!   NULL, one row produces its value, and more than one row (including NULL
+//!   or equal extra rows) is an execution-time `21000`.
 //! * `support-boundary`: type/error mappings asserted separately from PG
 //!   equivalence. Phase two adds the window `UInt64 -> numeric` mapping
 //!   and DataFusion's generic `XX000` error mapping.
-//! * Known semantic defects retain strict PG expectations in separately named,
-//!   explicitly ignored reproductions, never assertions blessing bad values.
+//! * Other suites' known semantic defects retain strict PG expectations in
+//!   separately named, explicitly ignored reproductions; they are never
+//!   assertions blessing bad values.
 //!
 //! No case mutates fixtures, skips a protocol, or accepts actual output as the
 //! expected one.
@@ -27,8 +31,8 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result, ensure};
 use rust_decimal::Decimal;
-use tokio_postgres::types::Type;
-use tokio_postgres::{Client, Error};
+use tokio_postgres::types::{ToSql, Type};
+use tokio_postgres::{Client, Error, Statement};
 
 use crate::support::{Harness, compare};
 
@@ -822,14 +826,14 @@ async fn invalid_conversion(h: &Harness) -> Result<()> {
     Ok(())
 }
 
-/// A scalar subquery in `WHERE` returning three rows: both servers reject;
-/// LakeSoul reports `XX000`, PostgreSQL `21000` (cardinality_violation).
+/// A scalar subquery in `WHERE` returning three rows: both servers reject at
+/// execution with `21000` (cardinality_violation).
 async fn scalar_subquery_multirow(h: &Harness) -> Result<()> {
     let sql = "SELECT id FROM items \
                WHERE id = (SELECT id FROM items WHERE id IS NOT NULL) ORDER BY id";
     for mode in Mode::BOTH {
         let lake = format!(
-            "case=scalar-subquery-multirow SQL={sql} params=[] protocol={} expected LakeSoul rejection SQLSTATE=XX000 reference=21000",
+            "case=scalar-subquery-multirow SQL={sql} params=[] protocol={} expected LakeSoul rejection SQLSTATE=21000",
             mode.label()
         );
         let reference = format!(
@@ -838,11 +842,11 @@ async fn scalar_subquery_multirow(h: &Harness) -> Result<()> {
         );
         match mode {
             Mode::Simple => {
-                assert_simple_error(&h.lake, sql, "XX000", &lake).await?;
+                assert_simple_error(&h.lake, sql, "21000", &lake).await?;
                 assert_simple_error(&h.reference, sql, "21000", &reference).await?;
             }
             Mode::Extended => {
-                assert_extended_error(&h.lake, sql, "XX000", &lake).await?;
+                assert_extended_error(&h.lake, sql, "21000", &lake).await?;
                 assert_extended_error(&h.reference, sql, "21000", &reference).await?;
             }
         }
@@ -851,35 +855,416 @@ async fn scalar_subquery_multirow(h: &Harness) -> Result<()> {
         .await
         .context("case=scalar-subquery-multirow first query after error")?;
     compare::compare_rows(&recovery.rows, &rows(&[&[Some("4")]]), true)?;
-    eprintln!("PASS case=scalar-subquery-multirow lake=XX000 postgres=21000 recovery=4");
+    eprintln!("PASS case=scalar-subquery-multirow lake=21000 postgres=21000 recovery=4");
     Ok(())
 }
 
-/// Strict PG contract: a projection scalar subquery must not silently truncate
-/// multiple rows. The upstream LIMIT 1 rewrite currently violates this.
-pub async fn projection_scalar_subquery_rejects_multiple_rows(h: &Harness) -> Result<()> {
-    let sql =
-        "SELECT (SELECT val FROM items WHERE val IS NOT NULL ORDER BY val) AS first_val";
-    let mut failures = Vec::new();
+/// Projection scalar-subquery cardinality contract.
+///
+/// SQL cardinality counts rows, not non-NULL or distinct values: zero rows
+/// produce a typed NULL, exactly one row produces its value, and more than one
+/// row is `21000` (`cardinality_violation`) even when the extra rows are NULL
+/// or equal to the first. PostgreSQL and LakeSoul run the same SQL through
+/// simple text and extended binary; an explicit user `LIMIT 1` inside the
+/// subquery remains a legal one-row query. Error cases outside an explicit
+/// transaction run on both servers and both protocols, and the first query
+/// after each rejection reads the fixture on the same connection without
+/// reconnecting. The explicit-transaction case additionally checks that the
+/// failed transaction rejects reads until ROLLBACK.
+pub async fn projection_scalar_subquery_cardinality(h: &Harness) -> Result<()> {
+    // The existing `scalar-subquery-zero-rows` case covers a zero-row scalar
+    // with an outer relation; this bare projection repeats the typed-NULL
+    // contract in the exact shape affected by the projection rewrite.
+    let zero = rows(&[&[None]]);
+    assert_sql(
+        h,
+        "projection-scalar-zero-rows",
+        "SELECT (SELECT val FROM items WHERE val > 1000) AS missing",
+        &[("missing", Type::INT4)],
+        true,
+        Some(&zero),
+    )
+    .await?;
+
+    let one = rows(&[&[Some("20")]]);
+    assert_sql(
+        h,
+        "projection-scalar-one-row",
+        "SELECT (SELECT val FROM items WHERE id = 2) AS only_val",
+        &[("only_val", Type::INT4)],
+        true,
+        Some(&one),
+    )
+    .await?;
+
+    let limited = rows(&[&[Some("10")]]);
+    assert_sql(
+        h,
+        "projection-scalar-explicit-limit-one",
+        "SELECT (SELECT val FROM items WHERE val IS NOT NULL ORDER BY val LIMIT 1) AS first_val",
+        &[("first_val", Type::INT4)],
+        true,
+        Some(&limited),
+    )
+    .await?;
+
+    // Two non-NULL values (10, 20).
+    assert_cardinality_error(
+        h,
+        "projection-scalar-multirow",
+        "SELECT (SELECT val FROM items WHERE val IS NOT NULL ORDER BY val) AS first_val",
+    )
+    .await?;
+
+    // Two rows for id = 1: 10 and NULL. A COUNT(val) or non-NULL-only check
+    // would incorrectly accept this as one row.
+    assert_cardinality_error(
+        h,
+        "projection-scalar-multirow-null",
+        "SELECT (SELECT val FROM items WHERE id = 1) AS maybe_val",
+    )
+    .await?;
+
+    // Two rows for id = 1 with the same value 1; equality must not collapse
+    // them into a single scalar.
+    assert_cardinality_error(
+        h,
+        "projection-scalar-multirow-equal",
+        "SELECT (SELECT id FROM items WHERE id = 1) AS same_id",
+    )
+    .await?;
+
+    prepared_scalar_cardinality(h).await?;
+    correlated_scalar_per_outer_row(h).await?;
+    cross_batch_scalar_cardinality(h).await?;
+    explicit_transaction_scalar_error(h).await?;
+
+    eprintln!(
+        "PASS case=projection-scalar-cardinality zero=null one=value multi=21000 equal=21000 explicit_limit=legal"
+    );
+    Ok(())
+}
+
+/// Both servers reject `sql` with `21000` in both protocols at execution
+/// time, then the first query on the same LakeSoul connection reads the
+/// four-row fixture.
+async fn assert_cardinality_error(h: &Harness, id: &str, sql: &str) -> Result<()> {
     for mode in Mode::BOTH {
-        let context = format!(
-            "case=projection-scalar-subquery contract=PG-equivalent SQL={sql} params=[] protocol={} expected rejection SQLSTATE=21000",
+        let lake = format!(
+            "case={id} SQL={sql} params=[] protocol={} expected LakeSoul rejection SQLSTATE=21000",
             mode.label()
         );
-        let result = match mode {
+        let reference = format!(
+            "case={id} SQL={sql} params=[] protocol={} expected PostgreSQL rejection SQLSTATE=21000",
+            mode.label()
+        );
+        match mode {
             Mode::Simple => {
-                assert_simple_error(&h.reference, sql, "21000", &context).await?;
-                assert_simple_error(&h.lake, sql, "21000", &context).await
+                assert_simple_error(&h.reference, sql, "21000", &reference).await?;
+                assert_simple_error(&h.lake, sql, "21000", &lake).await?;
             }
             Mode::Extended => {
-                assert_extended_error(&h.reference, sql, "21000", &context).await?;
-                assert_extended_error(&h.lake, sql, "21000", &context).await
+                assert_extended_error(&h.reference, sql, "21000", &reference).await?;
+                assert_extended_error(&h.lake, sql, "21000", &lake).await?;
             }
-        };
-        if let Err(error) = result {
-            failures.push(format!("{error:#}"));
+        }
+        let recovery_sql = "SELECT COUNT(*) AS n FROM items";
+        let context = format!(
+            "case={id} protocol={} first query after error SQL={recovery_sql}",
+            mode.label()
+        );
+        let recovery = compare::query_binary(&h.lake, recovery_sql)
+            .await
+            .with_context(|| context.clone())?;
+        compare::check_columns(&recovery, &[("n", Type::INT8)])
+            .with_context(|| context.clone())?;
+        compare::compare_rows(&recovery.rows, &rows(&[&[Some("4")]]), true)
+            .with_context(|| context)?;
+    }
+    Ok(())
+}
+
+/// One prepared Statement is re-bound to parameters producing zero, one and
+/// many subquery rows, including the error, then reused after the error.
+async fn prepared_scalar_cardinality(h: &Harness) -> Result<()> {
+    let sql = "SELECT (SELECT val FROM items WHERE id = $1) AS picked";
+    let context = format!(
+        "case=projection-scalar-prepared SQL={sql} protocol=extended-binary expected params=[INT4]"
+    );
+    let lake = h
+        .lake
+        .prepare_typed(sql, &[Type::INT4])
+        .await
+        .with_context(|| context.clone())?;
+    let reference = h
+        .reference
+        .prepare_typed(sql, &[Type::INT4])
+        .await
+        .with_context(|| context.clone())?;
+    ensure!(
+        lake.params() == [Type::INT4],
+        "{} actual params={:?}",
+        context,
+        lake.params()
+    );
+    ensure!(
+        reference.params() == [Type::INT4],
+        "{} actual params={:?}",
+        context,
+        reference.params()
+    );
+
+    // No row matches: scalar subquery is NULL.
+    assert_prepared_scalar(
+        h,
+        &lake,
+        &reference,
+        Some(999),
+        None,
+        "projection-scalar-prepared-zero",
+    )
+    .await?;
+    // One row matches (id = 2): value 20.
+    assert_prepared_scalar(
+        h,
+        &lake,
+        &reference,
+        Some(2),
+        Some("20"),
+        "projection-scalar-prepared-one",
+    )
+    .await?;
+
+    // Two rows match (id = 1: 10 and NULL): both servers reject 21000 on the
+    // same Statement.
+    let many = Some(1_i32);
+    let params: &[&(dyn ToSql + Sync)] = &[&many];
+    let reference_context = format!(
+        "case=projection-scalar-prepared-many SQL={sql} params=[{many:?}] protocol=extended-binary expected PostgreSQL rejection SQLSTATE=21000"
+    );
+    let reference_error = h
+        .reference
+        .query(&reference, params)
+        .await
+        .err()
+        .with_context(|| {
+            format!("{reference_context}: expected server rejection, actual success")
+        })?;
+    let code = server_sqlstate(&reference_error, &reference_context)?;
+    ensure!(
+        code == "21000",
+        "{reference_context}: expected SQLSTATE=21000, actual={code}"
+    );
+    let lake_context = format!(
+        "case=projection-scalar-prepared-many SQL={sql} params=[{many:?}] protocol=extended-binary expected LakeSoul rejection SQLSTATE=21000"
+    );
+    let lake_error = h.lake.query(&lake, params).await.err().with_context(|| {
+        format!("{lake_context}: expected server rejection, actual success")
+    })?;
+    let code = server_sqlstate(&lake_error, &lake_context)?;
+    ensure!(
+        code == "21000",
+        "{lake_context}: expected SQLSTATE=21000, actual={code}"
+    );
+
+    // The same Statement still honors a later one-row bind; the error does not
+    // leak a stale result or a stale cardinality state.
+    assert_prepared_scalar(
+        h,
+        &lake,
+        &reference,
+        Some(2),
+        Some("20"),
+        "projection-scalar-prepared-reuse",
+    )
+    .await?;
+    Ok(())
+}
+
+async fn assert_prepared_scalar(
+    h: &Harness,
+    lake: &Statement,
+    reference: &Statement,
+    value: Option<i32>,
+    expected: Option<&str>,
+    id: &str,
+) -> Result<()> {
+    let params: &[&(dyn ToSql + Sync)] = &[&value];
+    let context = format!(
+        "case={id} SQL=prepared-scalar-subquery params=[{value:?}] protocol=extended-binary expected columns=[picked INT4]"
+    );
+    let lake_rows = h
+        .lake
+        .query(lake, params)
+        .await
+        .with_context(|| context.clone())?;
+    let reference_rows = h
+        .reference
+        .query(reference, params)
+        .await
+        .with_context(|| context.clone())?;
+    let actual = compare::binary(lake, &lake_rows).with_context(|| context.clone())?;
+    let reference =
+        compare::binary(reference, &reference_rows).with_context(|| context.clone())?;
+    compare::check_columns(&actual, &[("picked", Type::INT4)])
+        .with_context(|| context.clone())?;
+    compare::check_columns(&reference, &[("picked", Type::INT4)])
+        .with_context(|| context.clone())?;
+    compare::compare(&actual, &reference, true).with_context(|| context.clone())?;
+    let expected_rows: compare::Rows = vec![vec![expected.map(|value| value.to_owned())]];
+    compare::compare_rows(&actual.rows, &expected_rows, true)
+        .with_context(|| context.clone())?;
+    Ok(())
+}
+
+/// A correlated scalar subquery is evaluated for every outer row, not once
+/// globally: `MAX(j.val)` differs by `i.id`, and the NULL outer key yields
+/// NULL because no inner row matches.
+async fn correlated_scalar_per_outer_row(h: &Harness) -> Result<()> {
+    let expected = rows(&[
+        &[None, None, None],
+        &[Some("1"), None, Some("10")],
+        &[Some("1"), Some("10"), Some("10")],
+        &[Some("2"), Some("20"), Some("20")],
+    ]);
+    assert_sql(
+        h,
+        "correlated-scalar-per-outer-row",
+        "SELECT i.id, i.val, (SELECT MAX(j.val) FROM items j WHERE j.id = i.id) AS picked \
+         FROM items i ORDER BY i.id NULLS FIRST, i.val NULLS FIRST",
+        &[
+            ("id", Type::INT4),
+            ("val", Type::INT4),
+            ("picked", Type::INT4),
+        ],
+        true,
+        Some(&expected),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Force DataFusion's execution batch size to one row on a dedicated
+/// connection so the two matching rows arrive in separate batches. Row count
+/// must still be enforced across batches; the reference PostgreSQL rejects
+/// the same SQL independently.
+async fn cross_batch_scalar_cardinality(h: &Harness) -> Result<()> {
+    let lake = h
+        .connect_lake()
+        .await
+        .context("case=projection-scalar-cross-batch connect LakeSoul")?;
+    let set_sql = "SET datafusion.execution.batch_size = 1";
+    lake.batch_execute(set_sql)
+        .await
+        .with_context(|| format!("case=projection-scalar-cross-batch SQL={set_sql}"))?;
+
+    let sql =
+        "SELECT (SELECT val FROM items WHERE val IS NOT NULL ORDER BY val) AS first_val";
+    for mode in Mode::BOTH {
+        let reference = format!(
+            "case=projection-scalar-cross-batch SQL={sql} params=[] protocol={} expected PostgreSQL rejection SQLSTATE=21000",
+            mode.label()
+        );
+        let lake_context = format!(
+            "case=projection-scalar-cross-batch SQL={sql} params=[] protocol={} batch_size=1 expected LakeSoul rejection SQLSTATE=21000",
+            mode.label()
+        );
+        match mode {
+            Mode::Simple => {
+                assert_simple_error(&h.reference, sql, "21000", &reference).await?;
+                assert_simple_error(&lake, sql, "21000", &lake_context).await?;
+            }
+            Mode::Extended => {
+                assert_extended_error(&h.reference, sql, "21000", &reference).await?;
+                assert_extended_error(&lake, sql, "21000", &lake_context).await?;
+            }
+        }
+        let recovery_sql = "SELECT COUNT(*) AS n FROM items";
+        let recovery_context = format!(
+            "case=projection-scalar-cross-batch protocol={} first query after error SQL={recovery_sql}",
+            mode.label()
+        );
+        let recovery = compare::query_binary(&lake, recovery_sql)
+            .await
+            .with_context(|| recovery_context.clone())?;
+        compare::check_columns(&recovery, &[("n", Type::INT8)])
+            .with_context(|| recovery_context.clone())?;
+        compare::compare_rows(&recovery.rows, &rows(&[&[Some("4")]]), true)
+            .with_context(|| recovery_context)?;
+    }
+    Ok(())
+}
+
+/// The cardinality error is a real execution error inside an explicit
+/// transaction, not a silently truncated row. ROLLBACK then permits the first
+/// read; the transaction abort-state SQLSTATE boundary itself is covered by
+/// `session_contract`, not redefined here.
+async fn explicit_transaction_scalar_error(h: &Harness) -> Result<()> {
+    let sql =
+        "SELECT (SELECT val FROM items WHERE val IS NOT NULL ORDER BY val) AS first_val";
+    let lake = h
+        .connect_lake()
+        .await
+        .context("case=projection-scalar-explicit-transaction connect LakeSoul")?;
+    let reference = h
+        .connect_reference()
+        .await
+        .context("case=projection-scalar-explicit-transaction connect PostgreSQL")?;
+    for mode in Mode::BOTH {
+        for (client, side, aborted_state) in [
+            (&lake, "lakesoul", "25P01"),
+            (&reference, "postgres", "25P02"),
+        ] {
+            client.batch_execute("BEGIN").await.with_context(|| {
+                format!(
+                    "case=projection-scalar-explicit-transaction side={side} SQL=BEGIN"
+                )
+            })?;
+            let context = format!(
+                "case=projection-scalar-explicit-transaction side={side} SQL={sql} protocol={} expected rejection SQLSTATE=21000",
+                mode.label()
+            );
+            match mode {
+                Mode::Simple => {
+                    assert_simple_error(client, sql, "21000", &context).await?
+                }
+                Mode::Extended => {
+                    assert_extended_error(client, sql, "21000", &context).await?
+                }
+            }
+            let premature_sql = "SELECT COUNT(*) AS n FROM items";
+            let error = match mode {
+                Mode::Simple => client.simple_query(premature_sql).await.err(),
+                Mode::Extended => client.query(premature_sql, &[]).await.err(),
+            }
+            .with_context(|| {
+                format!("{context}: failed transaction returned rows before ROLLBACK")
+            })?;
+            // Preserve the existing abort-state SQLSTATE boundary: this fix
+            // must not turn a transport or unrelated SQL error into proof.
+            let actual_state = server_sqlstate(&error, &context)?;
+            ensure!(
+                actual_state == aborted_state,
+                "{context}: expected aborted transaction SQLSTATE={aborted_state}, actual={actual_state}"
+            );
+            client.batch_execute("ROLLBACK").await.with_context(|| {
+                format!(
+                    "case=projection-scalar-explicit-transaction side={side} SQL=ROLLBACK"
+                )
+            })?;
+            let read_sql = "SELECT COUNT(*) AS n FROM items";
+            let read_context = format!(
+                "case=projection-scalar-explicit-transaction side={side} protocol={} first read after rollback SQL={read_sql}",
+                mode.label()
+            );
+            let recovered = compare::query_binary(client, read_sql)
+                .await
+                .with_context(|| read_context.clone())?;
+            compare::check_columns(&recovered, &[("n", Type::INT8)])
+                .with_context(|| read_context.clone())?;
+            compare::compare_rows(&recovered.rows, &rows(&[&[Some("4")]]), true)
+                .with_context(|| read_context)?;
         }
     }
-    ensure!(failures.is_empty(), "{}", failures.join("\n"));
     Ok(())
 }

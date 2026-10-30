@@ -33,6 +33,7 @@ mod pg_vector;
 mod read_only;
 mod server;
 mod session;
+mod session_settings;
 use rootcause::Report;
 
 pub(crate) type Result<T, E = Report> = std::result::Result<T, E>;

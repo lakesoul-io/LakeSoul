@@ -54,6 +54,9 @@ metrics-exporter-prometheus = { workspace = true }
 rustls-pki-types = "1"
 bytes.workspace = true
 serde_json.workspace = true
+lakesoul-io = { path = "../lakesoul-io" }
+lakesoul-vector = { path = "../lakesoul-vector" }
+parquet.workspace = true
 
 [lints]
 workspace = true

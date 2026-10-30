@@ -2978,7 +2978,6 @@ dependencies = [
 [[package]]
 name = "datafusion-pg-catalog"
 version = "0.18.3"
-source = "git+https://github.com/mag1c1an1/datafusion-postgres.git?rev=39b2657cc9143bd019dacbedb6b40dbd66379fa0#39b2657cc9143bd019dacbedb6b40dbd66379fa0"
 dependencies = [
  "arrow-pg",
  "async-trait",
@@ -7777,11 +7776,14 @@ dependencies = [
  "lakesoul-build-info",
  "lakesoul-common",
  "lakesoul-datafusion",
+ "lakesoul-io",
  "lakesoul-metadata",
  "lakesoul-observability",
+ "lakesoul-vector",
  "metrics",
  "metrics-exporter-prometheus",
  "parking_lot 0.12.5",
+ "parquet",
  "pgvector",
  "rootcause",
  "rust_decimal",

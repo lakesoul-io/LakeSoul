@@ -103,6 +103,16 @@ async fn attach_session_with_limits(
         crate::server::connection_statement_hooks(),
     ));
     let server = crate::limits::ServerLimits::new(limits);
+    // Mirror production setup: the metadata `SHOW`/`RESET` read starts from
+    // the settings the session was created with.
+    let _ = crate::session_settings::initialize_client_metadata(
+        &session,
+        client.metadata_mut(),
+    );
+    let defaults = crate::session_settings::SessionDefaults::capture(
+        &session.context,
+        client.metadata(),
+    );
     let state = Arc::new(ConnectionSession {
         session,
         service,
@@ -113,6 +123,8 @@ async fn attach_session_with_limits(
         permit: server
             .admit_connection()
             .expect("the test server admits a connection"),
+        defaults: defaults.clone(),
+        settings: Arc::new(crate::session_settings::SettingsGeneration::default()),
     });
     client.session_extensions().insert(ConnectionSession {
         session: Arc::clone(&state.session),
@@ -124,6 +136,8 @@ async fn attach_session_with_limits(
         permit: server
             .admit_connection()
             .expect("the test server admits the inserted connection"),
+        defaults,
+        settings: Arc::new(crate::session_settings::SettingsGeneration::default()),
     });
     state
 }
@@ -409,6 +423,10 @@ async fn connection_close_releases_session() {
     let client = MockClient::new();
     let service = Arc::new(DfSessionService::new(Arc::clone(&session.context)));
     let server = crate::limits::ServerLimits::new(crate::limits::Limits::default());
+    let defaults = crate::session_settings::SessionDefaults::capture(
+        &session.context,
+        client.metadata(),
+    );
     client.session_extensions().insert(ConnectionSession {
         session,
         service,
@@ -419,6 +437,8 @@ async fn connection_close_releases_session() {
         permit: server
             .admit_connection()
             .expect("the test server admits a connection"),
+        defaults,
+        settings: Arc::new(crate::session_settings::SettingsGeneration::default()),
     });
     assert!(Arc::strong_count(&context) > baseline);
 
