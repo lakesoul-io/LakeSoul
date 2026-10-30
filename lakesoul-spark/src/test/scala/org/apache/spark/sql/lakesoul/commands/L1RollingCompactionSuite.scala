@@ -73,7 +73,10 @@ class L1RollingCompactionSuite
       val spark = SparkSession.active
 
       def batch(start: Int, end: Int, value: String): DataFrame =
-        spark.range(start, end).select(col("id"), lit(value).as("value")).coalesce(1)
+        spark
+          .range(start, end)
+          .select(col("id"), lit(value).as("value"))
+          .coalesce(1)
 
       // Batch 1: id 1..10000 -> v1.
       batch(1, 10001, "v1").write
@@ -93,14 +96,16 @@ class L1RollingCompactionSuite
       // Batch 3: update id 1001..3000 -> v3.
       table.upsert(batch(1001, 3001, "v3"))
 
-      val expected = spark.range(1, 12001).select(
-        col("id"),
-        when(col("id") <= 1000, lit("v2"))
-          .when(col("id") <= 3000, lit("v3"))
-          .when(col("id") <= 10000, lit("v1"))
-          .otherwise(lit("v2"))
-          .as("value")
-      )
+      val expected = spark
+        .range(1, 12001)
+        .select(
+          col("id"),
+          when(col("id") <= 1000, lit("v2"))
+            .when(col("id") <= 3000, lit("v3"))
+            .when(col("id") <= 10000, lit("v1"))
+            .otherwise(lit("v2"))
+            .as("value")
+        )
 
       // Program expectation vs. pre-compaction read, all fields.
       val before = LakeSoulTable.forPath(tablePath).toDF.select("id", "value")
@@ -119,8 +124,11 @@ class L1RollingCompactionSuite
         LakeSoulSQLConf.COMPACTION_MAX_LEVEL_FILE_NUM_LIMIT.key -> "1000",
         LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_BASE.key -> "1GB"
       )
-      val hadoopConfs = l1Confs.map { case (k, v) => ("spark.hadoop." + k) -> v }
-      val previousHadoopConfs = hadoopConfs.keys.map(k => k -> spark.conf.getOption(k)).toMap
+      val hadoopConfs = l1Confs.map { case (k, v) =>
+        ("spark.hadoop." + k) -> v
+      }
+      val previousHadoopConfs =
+        hadoopConfs.keys.map(k => k -> spark.conf.getOption(k)).toMap
       withSQLConf(l1Confs.toSeq: _*) {
         // The executor reads Hadoop Configuration, not just the session SQLConf.
         try {
@@ -133,7 +141,12 @@ class L1RollingCompactionSuite
           val oldL1Paths = firstCompacted.map(_.path).toSet
           assert(firstCompacted.forall(_.path.contains("/compactdir1/")))
           assert(firstCompacted.groupBy(_.file_bucket_id).size == 4)
-          assert(firstCompacted.groupBy(_.file_bucket_id).values.forall(_.length == 1))
+          assert(
+            firstCompacted
+              .groupBy(_.file_bucket_id)
+              .values
+              .forall(_.length == 1)
+          )
           checkAnswer(
             LakeSoulTable.forPath(tablePath).toDF.select("id", "value"),
             expected
@@ -142,11 +155,14 @@ class L1RollingCompactionSuite
           // Establish newer values overlapping every bucket and the OLD L1 contents.
           LakeSoulTable.forPath(tablePath).upsert(batch(1, 12001, "v4"))
           LakeSoulTable.forPath(tablePath).upsert(batch(1001, 3001, "v5"))
-          val expectedSecond = spark.range(1, 12001).select(
-            col("id"),
-            when(col("id").between(1001, 3000), lit("v5"))
-              .otherwise(lit("v4")).as("value")
-          )
+          val expectedSecond = spark
+            .range(1, 12001)
+            .select(
+              col("id"),
+              when(col("id").between(1001, 3000), lit("v5"))
+                .otherwise(lit("v4"))
+                .as("value")
+            )
           LakeSoulTable.uncached(tablePath)
           checkAnswer(
             LakeSoulTable.forPath(tablePath).toDF.select("id", "value"),
@@ -156,7 +172,9 @@ class L1RollingCompactionSuite
           val l0Inputs = secondInputs.filterNot(_.path.contains("/compactdir"))
           assert(oldL1Paths.subsetOf(secondInputs.map(_.path).toSet))
           assert(l0Inputs.groupBy(_.file_bucket_id).size == 4)
-          assert(l0Inputs.groupBy(_.file_bucket_id).values.forall(_.length >= 2))
+          assert(
+            l0Inputs.groupBy(_.file_bucket_id).values.forall(_.length >= 2)
+          )
 
           // One L0 input per batch forces multiple new L1 outputs next to each old L1.
           // A single final L1 per bucket therefore cannot be explained by L0 merging alone.
@@ -166,18 +184,32 @@ class L1RollingCompactionSuite
           assert(secondCompacted.length < secondInputs.length)
           assert(secondCompacted.forall(_.path.contains("/compactdir1/")))
           assert(secondCompacted.groupBy(_.file_bucket_id).size == 4)
-          assert(secondCompacted.groupBy(_.file_bucket_id).values.forall(_.length == 1))
-          assert(oldL1Paths.intersect(secondCompacted.map(_.path).toSet).isEmpty,
-            "Old L1 files must participate in rolling compaction, not remain untouched")
-          assert(l0Inputs.map(_.path).toSet.intersect(secondCompacted.map(_.path).toSet).isEmpty)
-          val after = LakeSoulTable.forPath(tablePath).toDF.select("id", "value")
+          assert(
+            secondCompacted
+              .groupBy(_.file_bucket_id)
+              .values
+              .forall(_.length == 1)
+          )
+          assert(
+            oldL1Paths.intersect(secondCompacted.map(_.path).toSet).isEmpty,
+            "Old L1 files must participate in rolling compaction, not remain untouched"
+          )
+          assert(
+            l0Inputs
+              .map(_.path)
+              .toSet
+              .intersect(secondCompacted.map(_.path).toSet)
+              .isEmpty
+          )
+          val after =
+            LakeSoulTable.forPath(tablePath).toDF.select("id", "value")
           assert(after.count() == 12000)
           checkAnswer(after, expectedSecond)
 
         } finally {
           previousHadoopConfs.foreach {
             case (k, Some(v)) => spark.conf.set(k, v)
-            case (k, None) => spark.conf.unset(k)
+            case (k, None)    => spark.conf.unset(k)
           }
         }
       }
@@ -185,23 +217,35 @@ class L1RollingCompactionSuite
   }
 
   // Real files + native IO, not a simulation of the planner's output.
-  test("rolling preserves values across retained files and multiple merge groups") {
+  test(
+    "rolling preserves values across retained files and multiple merge groups"
+  ) {
     checkGroupedUpserts("interleaved", Seq(512, 8, 8, 512, 8, 8), Set(0, 3), 4)
   }
 
-  test("absorbing adjacent large files preserves values and untouched intervals") {
-    checkGroupedUpserts("absorption", Seq(512, 8, 8192, 8, 8192, 8, 512),
-      Set(2, 3, 4), 5)
+  test(
+    "absorbing adjacent large files preserves values and untouched intervals"
+  ) {
+    checkGroupedUpserts(
+      "absorption",
+      Seq(512, 8, 8192, 8, 8192, 8, 512),
+      Set(2, 3, 4),
+      5
+    )
   }
 
-  test("connecting small groups includes middle large file and preserves boundary updates") {
+  test(
+    "connecting small groups includes middle large file and preserves boundary updates"
+  ) {
     // Base groups: [huge][small][large][small][huge]. Only connectSmallGroups
     // can turn the three middle groups into one; single-pass adjacent absorption
     // cannot consume the same large neighbor twice.
     checkGroupedUpserts("connection", Seq(8192, 8, 512, 8, 8192), Set(0, 4), 3)
   }
 
-  test("pressure compaction preserves values across multiple budget limited groups") {
+  test(
+    "pressure compaction preserves values across multiple budget limited groups"
+  ) {
     checkGroupedUpserts("pressure", Seq.fill(7)(8), Set(6), 4)
   }
 
@@ -218,14 +262,21 @@ class L1RollingCompactionSuite
         }
         val frame = rows.toDF("id", "batch", "payload").coalesce(1)
         if (batch == 0) {
-          frame.write.format("lakesoul").option("hashPartitions", "id")
-            .option("hashBucketNum", "1").save(path)
+          frame.write
+            .format("lakesoul")
+            .option("hashPartitions", "id")
+            .option("hashBucketNum", "1")
+            .save(path)
         } else LakeSoulTable.forPath(path).upsert(frame)
       }
       def verify(): Unit = {
         LakeSoulTable.uncached(path)
-        checkAnswer(LakeSoulTable.forPath(path).toDF.select("id", "batch", "payload"),
-          expected.toSeq.map { case (id, (batch, payload)) => Row(id, batch, payload) })
+        checkAnswer(
+          LakeSoulTable.forPath(path).toDF.select("id", "batch", "payload"),
+          expected.toSeq.map { case (id, (batch, payload)) =>
+            Row(id, batch, payload)
+          }
+        )
       }
       // Seed one large and two small L1 files; no promotion in this L1-only test.
       writeBatch(0, 512)
@@ -243,9 +294,13 @@ class L1RollingCompactionSuite
       }
       verify()
       val inputs = getFileList(path)
-      assert(inputs.length == 3 && inputs.forall(_.path.contains("/compactdir1/")))
+      assert(
+        inputs.length == 3 && inputs.forall(_.path.contains("/compactdir1/"))
+      )
       val target = inputs.drop(1).map(_.size).max * 4
-      assert(inputs.head.size >= target && inputs.drop(1).map(_.size).sum < target)
+      assert(
+        inputs.head.size >= target && inputs.drop(1).map(_.size).sum < target
+      )
       // Keep these options unchanged across both calls. Three inputs are below
       // pressure=4; after rolling leaves two, two new L1 files reach pressure=4.
       val options = seed ++ Map(
@@ -263,8 +318,11 @@ class L1RollingCompactionSuite
         verify()
         val first = getFileList(path)
         assert(first.length == 2)
-        assert(first.map(_.path).toSet.intersect(inputs.map(_.path).toSet) ==
-          Set(inputs.head.path), "Regular rolling must retain the large L1 and merge the small pair")
+        assert(
+          first.map(_.path).toSet.intersect(inputs.map(_.path).toSet) ==
+            Set(inputs.head.path),
+          "Regular rolling must retain the large L1 and merge the small pair"
+        )
         assert(first.map(_.size).sum < 1024L * 1024 * 1024)
 
         writeBatch(3, 8)
@@ -272,15 +330,21 @@ class L1RollingCompactionSuite
         verify()
         val beforePressure = getFileList(path)
         assert(beforePressure.count(f => !f.path.contains("/compactdir")) == 2)
-        assert(first.map(_.path).toSet.subsetOf(beforePressure.map(_.path).toSet))
+        assert(
+          first.map(_.path).toSet.subsetOf(beforePressure.map(_.path).toSet)
+        )
         // Keep each L0 separate so the L1 planner receives exactly four files.
         LakeSoulTable.forPath(path).newCompaction(fileNumLimit = Some(1))
         verify()
         val second = getFileList(path)
-        assert(second.length == 2 && second.forall(_.path.contains("/compactdir1/")))
-        assert(first.map(_.path).toSet.intersect(second.map(_.path).toSet).isEmpty,
+        assert(
+          second.length == 2 && second.forall(_.path.contains("/compactdir1/"))
+        )
+        assert(
+          first.map(_.path).toSet.intersect(second.map(_.path).toSet).isEmpty,
           "Pressure must rewrite the previously retained large L1 and rolling output; " +
-            "regular rolling would keep that large file")
+            "regular rolling would keep that large file"
+        )
       }
     }
   }
@@ -290,15 +354,24 @@ class L1RollingCompactionSuite
   }
 
   test("same table supports legacy to rolling and rollback to legacy") {
-    checkLayerLifecycle("switch", Seq.fill(3)(false) ++ Seq.fill(5)(true) ++ Seq.fill(4)(false), cdc = false)
+    checkLayerLifecycle(
+      "switch",
+      Seq.fill(3)(false) ++ Seq.fill(5)(true) ++ Seq.fill(4)(false),
+      cdc = false
+    )
   }
 
-  test("CDC deletions survive rolling promotion and L2 merging without resurrection") {
+  test(
+    "CDC deletions survive rolling promotion and L2 merging without resurrection"
+  ) {
     checkLayerLifecycle("cdc", Seq.fill(12)(true), cdc = true)
   }
 
   private def checkLayerLifecycle(
-      scenario: String, rollingModes: Seq[Boolean], cdc: Boolean): Unit = {
+      scenario: String,
+      rollingModes: Seq[Boolean],
+      cdc: Boolean
+  ): Unit = {
     withTempDir { dir =>
       val path = dir.getCanonicalPath
       val expected = scala.collection.mutable.Map.empty[Int, (String, String)]
@@ -306,21 +379,31 @@ class L1RollingCompactionSuite
       def payload(): String = random.alphanumeric.take(200).mkString
       val initial = (1 to 32).map(id => (id, payload(), "insert"))
       initial.foreach { case (id, value, op) => expected(id) = (value, op) }
-      val writer = initial.toDF("id", "value", "op").coalesce(1).write
-        .format("lakesoul").option("hashPartitions", "id").option("hashBucketNum", "1")
+      val writer = initial
+        .toDF("id", "value", "op")
+        .coalesce(1)
+        .write
+        .format("lakesoul")
+        .option("hashPartitions", "id")
+        .option("hashBucketNum", "1")
       if (cdc) writer.option("lakesoul_cdc_change_column", "op")
       writer.save(path)
 
       def verify(): Unit = {
         LakeSoulTable.uncached(path)
         // Full multiset equality catches missing rows AND duplicate primary keys.
-        checkAnswer(LakeSoulTable.forPath(path).toDF.select("id", "value", "op"),
-          expected.toSeq.map { case (id, (value, op)) => Row(id, value, op) })
+        checkAnswer(
+          LakeSoulTable.forPath(path).toDF.select("id", "value", "op"),
+          expected.toSeq.map { case (id, (value, op)) => Row(id, value, op) }
+        )
       }
       def write(rows: Seq[(Int, String, String)]): Unit = {
-        LakeSoulTable.forPath(path).upsert(rows.toDF("id", "value", "op").coalesce(1))
+        LakeSoulTable
+          .forPath(path)
+          .upsert(rows.toDF("id", "value", "op").coalesce(1))
         rows.foreach { case (id, value, op) =>
-          if (op == "delete") expected.remove(id) else expected(id) = (value, op)
+          if (op == "delete") expected.remove(id)
+          else expected(id) = (value, op)
         }
         verify()
       }
@@ -357,21 +440,29 @@ class L1RollingCompactionSuite
         val before = getFileList(path)
         if (round > 0 && rolling != rollingModes(round - 1)) {
           if (checkedTransitions > 0) {
-            assert(transitionRewritten,
-              s"$scenario: previous strategy transition never rewrote its inherited files")
+            assert(
+              transitionRewritten,
+              s"$scenario: previous strategy transition never rewrote its inherited files"
+            )
           }
           transitionInputs = fileNames(before)
-          assert(transitionInputs.nonEmpty, "Strategy switch must inherit existing files")
+          assert(
+            transitionInputs.nonEmpty,
+            "Strategy switch must inherit existing files"
+          )
           transitionRewritten = false
           checkedTransitions += 1
         }
         val oldL1 = before.filter(_.path.contains("/compactdir1/"))
-        val oldL2Paths = before.filter(_.path.contains("/compactdir2/")).map(_.path).toSet
+        val oldL2Paths =
+          before.filter(_.path.contains("/compactdir2/")).map(_.path).toSet
         val events = if (cdc && deletionRound < 0 && oldL2Paths.nonEmpty) {
           // The old values of keys 1 and 2 have naturally reached L2.
           deletionRound = round
           Seq((1, "deleted-one", "delete"), (2, "deleted-two", "delete"))
-        } else if (cdc && deletionRound >= 0 && !reinserted && round >= deletionRound + 3) {
+        } else if (
+          cdc && deletionRound >= 0 && !reinserted && round >= deletionRound + 3
+        ) {
           reinserted = true
           Seq((1, "reinserted-one", "insert"))
         } else Seq.empty[(Int, String, String)]
@@ -379,12 +470,22 @@ class L1RollingCompactionSuite
         // Two committed batches naturally satisfy the L0 trigger; no empty task
         // or artificial threshold change is used for promotion.
         val firstId = 1000 + round * 64
-        write((3 to 16).map(id => (id, payload(), "insert")) ++
-          (firstId until firstId + 32).map(id => (id, payload(), "insert")) ++ events)
-        write((10 to 24).map(id => (id, payload(), "insert")) ++
-          (firstId + 32 until firstId + 64).map(id => (id, payload(), "insert")))
-        withCompactionOptions(base +
-          (LakeSoulSQLConf.COMPACTION_L1_ROLLING_ENABLED.key -> rolling.toString)) {
+        write(
+          (3 to 16).map(id => (id, payload(), "insert")) ++
+            (firstId until firstId + 32).map(id =>
+              (id, payload(), "insert")
+            ) ++ events
+        )
+        write(
+          (10 to 24).map(id => (id, payload(), "insert")) ++
+            (firstId + 32 until firstId + 64).map(id =>
+              (id, payload(), "insert")
+            )
+        )
+        withCompactionOptions(
+          base +
+            (LakeSoulSQLConf.COMPACTION_L1_ROLLING_ENABLED.key -> rolling.toString)
+        ) {
           LakeSoulTable.forPath(path).newCompaction()
         }
         verify()
@@ -392,12 +493,22 @@ class L1RollingCompactionSuite
         val paths = after.map(_.path).toSet
         val l1 = after.filter(_.path.contains("/compactdir1/"))
         val l2 = after.filter(_.path.contains("/compactdir2/"))
-        assert(after.forall(f => f.path.contains("/compactdir1/") ||
-          f.path.contains("/compactdir2/")), "Expected completed L0 compaction and only L1/L2")
-        assert(l2.forall(_.size >= target), "L2 must arise from natural size-based promotion")
+        assert(
+          after.forall(f =>
+            f.path.contains("/compactdir1/") ||
+              f.path.contains("/compactdir2/")
+          ),
+          "Expected completed L0 compaction and only L1/L2"
+        )
+        assert(
+          l2.forall(_.size >= target),
+          "L2 must arise from natural size-based promotion"
+        )
         sawL1BelowTarget ||= l1.exists(_.size < target)
         val afterNames = fileNames(after)
-        if (checkedTransitions > 0 && transitionInputs.diff(afterNames).nonEmpty) {
+        if (
+          checkedTransitions > 0 && transitionInputs.diff(afterNames).nonEmpty
+        ) {
           transitionRewritten = true
         }
         val rewrittenL1 = fileNames(oldL1).diff(afterNames)
@@ -411,21 +522,37 @@ class L1RollingCompactionSuite
           sawL2Merge = true
           if (deletionRound >= 0) sawL2MergeAfterDelete = true
         }
-        println(s"[L1-correctness] PASS $scenario round=$round rolling=$rolling " +
-          s"rows=${expected.size} L1=${l1.length} L2=${l2.length}: complete data equality")
+        println(
+          s"[L1-correctness] PASS $scenario round=$round rolling=$rolling " +
+            s"rows=${expected.size} L1=${l1.length} L2=${l2.length}: complete data equality"
+        )
       }
       if (checkedTransitions > 0) {
-        assert(checkedTransitions == 2 && transitionRewritten,
-          "Both legacy-to-rolling and rolling-to-legacy phases must rewrite inherited files")
+        assert(
+          checkedTransitions == 2 && transitionRewritten,
+          "Both legacy-to-rolling and rolling-to-legacy phases must rewrite inherited files"
+        )
       }
       assert(sawL1BelowTarget, "Workload must retain a small L1 before growth")
-      assert(sawRollingRewrite, "Workload must actually rewrite an old L1 with rolling enabled")
-      assert(sawL2Merge, "Workload must grow enough to exercise the legacy L2 merge")
+      assert(
+        sawRollingRewrite,
+        "Workload must actually rewrite an old L1 with rolling enabled"
+      )
+      assert(
+        sawL2Merge,
+        "Workload must grow enough to exercise the legacy L2 merge"
+      )
       write(Seq((3, "after-all-compactions", "insert")))
       if (cdc) {
-        assert(deletionRound >= 0 && sawRollingRewriteAfterDelete && sawL2MergeAfterDelete,
-          "Deletion must be checked across both a real rolling L1 rewrite and an L2 merge")
-        assert(!expected.contains(2) && reinserted && expected(1)._1 == "reinserted-one")
+        assert(
+          deletionRound >= 0 && sawRollingRewriteAfterDelete && sawL2MergeAfterDelete,
+          "Deletion must be checked across both a real rolling L1 rewrite and an L2 merge"
+        )
+        assert(
+          !expected.contains(2) && reinserted && expected(
+            1
+          )._1 == "reinserted-one"
+        )
       }
     }
   }
@@ -434,7 +561,9 @@ class L1RollingCompactionSuite
     withTempDir { dir =>
       val suffix = java.util.UUID.randomUUID().toString.replace("-", "")
       val names = Seq(s"l1_selected_$suffix", s"l1_unselected_$suffix")
-      val paths = Seq("directory_a", "directory_b").map(n => new java.io.File(dir, n).getPath)
+      val paths = Seq("directory_a", "directory_b").map(n =>
+        new java.io.File(dir, n).getPath
+      )
       val base = Map(
         LakeSoulSQLConf.COMPACTION_L1_ROLLING_ENABLED.key -> "false",
         LakeSoulSQLConf.COMPACTION_L1_ROLLING_TABLES.key -> "",
@@ -448,10 +577,15 @@ class L1RollingCompactionSuite
         paths.zip(names).foreach { case (path, name) =>
           (0 until 3).foreach { batch =>
             val frame = Seq((1, s"v$batch"), (100 + batch, s"unique$batch"))
-              .toDF("id", "value").coalesce(1)
+              .toDF("id", "value")
+              .coalesce(1)
             if (batch == 0) {
-              frame.write.format("lakesoul").option("hashPartitions", "id")
-                .option("hashBucketNum", "1").option("shortTableName", name).save(path)
+              frame.write
+                .format("lakesoul")
+                .option("hashPartitions", "id")
+                .option("hashBucketNum", "1")
+                .option("shortTableName", name)
+                .save(path)
             } else LakeSoulTable.forPath(path).upsert(frame)
           }
           withCompactionOptions(base) {
@@ -473,11 +607,20 @@ class L1RollingCompactionSuite
             val path = paths(index)
             LakeSoulTable.forPath(path).newCompaction()
             LakeSoulTable.uncached(path)
-            checkAnswer(LakeSoulTable.forPath(path).toDF.select("id", "value"),
-              Seq(Row(1, "v2"), Row(100, "unique0"), Row(101, "unique1"), Row(102, "unique2")))
+            checkAnswer(
+              LakeSoulTable.forPath(path).toDF.select("id", "value"),
+              Seq(
+                Row(1, "v2"),
+                Row(100, "unique0"),
+                Row(101, "unique1"),
+                Row(102, "unique2")
+              )
+            )
             val files = getFileList(path).map(_.path).toSet
             if (index == 0) {
-              assert(files.size == 1 && files.intersect(originalPaths(index)).isEmpty)
+              assert(
+                files.size == 1 && files.intersect(originalPaths(index)).isEmpty
+              )
             } else assert(files == originalPaths(index))
           }
         }
@@ -485,10 +628,15 @@ class L1RollingCompactionSuite
     }
   }
 
-  private def withCompactionOptions(options: Map[String, String])(body: => Unit): Unit = {
+  private def withCompactionOptions(
+      options: Map[String, String]
+  )(body: => Unit): Unit = {
     val session = SparkSession.active
-    val hadoop = options.map { case (key, value) => ("spark.hadoop." + key) -> value }
-    val previous = hadoop.keys.map(key => key -> session.conf.getOption(key)).toMap
+    val hadoop = options.map { case (key, value) =>
+      ("spark.hadoop." + key) -> value
+    }
+    val previous =
+      hadoop.keys.map(key => key -> session.conf.getOption(key)).toMap
     withSQLConf(options.toSeq: _*) {
       try {
         hadoop.foreach { case (key, value) => session.conf.set(key, value) }
@@ -496,7 +644,7 @@ class L1RollingCompactionSuite
       } finally {
         previous.foreach {
           case (key, Some(value)) => session.conf.set(key, value)
-          case (key, None) => session.conf.unset(key)
+          case (key, None)        => session.conf.unset(key)
         }
       }
     }
@@ -506,7 +654,8 @@ class L1RollingCompactionSuite
       scenario: String,
       payloadLengths: Seq[Int],
       retainedIndices: Set[Int],
-      expectedFileCount: Int): Unit = {
+      expectedFileCount: Int
+  ): Unit = {
     withTempDir { dir =>
       val path = dir.getCanonicalPath
       val expected = scala.collection.mutable.Map.empty[Long, (Int, String)]
@@ -532,8 +681,11 @@ class L1RollingCompactionSuite
         }
         val frame = rows.toDF("id", "batch", "payload").coalesce(1)
         if (batch == 0) {
-          frame.write.format("lakesoul").option("hashPartitions", "id")
-            .option("hashBucketNum", "1").save(path)
+          frame.write
+            .format("lakesoul")
+            .option("hashPartitions", "id")
+            .option("hashBucketNum", "1")
+            .save(path)
         } else {
           LakeSoulTable.forPath(path).upsert(frame)
         }
@@ -543,8 +695,10 @@ class L1RollingCompactionSuite
       }
       def verifyData(): Unit = {
         LakeSoulTable.uncached(path)
-        checkAnswer(LakeSoulTable.forPath(path).toDF.select("id", "batch", "payload"),
-          expectedRows)
+        checkAnswer(
+          LakeSoulTable.forPath(path).toDF.select("id", "batch", "payload"),
+          expectedRows
+        )
       }
       verifyData()
       val seedOptions = Map(
@@ -560,20 +714,29 @@ class L1RollingCompactionSuite
       }
       verifyData()
       val inputs = getFileList(path)
-      assert(inputs.length == payloadLengths.length,
-        s"$scenario fixture must produce one L1 per write, got ${inputs.length}")
+      assert(
+        inputs.length == payloadLengths.length,
+        s"$scenario fixture must produce one L1 per write, got ${inputs.length}"
+      )
       assert(inputs.forall(_.path.contains("/compactdir1/")))
       val smallIndices = payloadLengths.indices.filter(payloadLengths(_) == 8)
       val largestSmall = smallIndices.map(inputs(_).size).max
       val target = largestSmall * 4
-      val ordinaryLarge = payloadLengths.indices.filter(payloadLengths(_) == 512)
-      assert(ordinaryLarge.forall(i => inputs(i).size >= target),
-        s"$scenario fixture did not produce the required large/small boundaries")
+      val ordinaryLarge =
+        payloadLengths.indices.filter(payloadLengths(_) == 512)
+      assert(
+        ordinaryLarge.forall(i => inputs(i).size >= target),
+        s"$scenario fixture did not produce the required large/small boundaries"
+      )
       val maxBytes = if (ordinaryLarge.nonEmpty) {
         ordinaryLarge.map(inputs(_).size).max + largestSmall * 4
       } else target * 8
-      assert(payloadLengths.indices.filter(payloadLengths(_) == 8192)
-        .forall(i => inputs(i).size > maxBytes), "Barrier files must exceed the input budget")
+      assert(
+        payloadLengths.indices
+          .filter(payloadLengths(_) == 8192)
+          .forall(i => inputs(i).size > maxBytes),
+        "Barrier files must exceed the input budget"
+      )
       val pressure = scenario == "pressure"
       val options = seedOptions ++ Map(
         LakeSoulSQLConf.COMPACTION_L1_ROLLING_ENABLED.key -> "true",
@@ -582,12 +745,15 @@ class L1RollingCompactionSuite
         LakeSoulSQLConf.COMPACTION_L1_ROLLING_MAX_INPUT_FILES.key ->
           (if (pressure) "2" else "20"),
         LakeSoulSQLConf.COMPACTION_L1_ROLLING_SMALL_FILE_LIMIT.key ->
-          (if (Set("absorption", "connection").contains(scenario)) "2" else "1000"),
+          (if (Set("absorption", "connection").contains(scenario)) "2"
+           else "1000"),
         LakeSoulSQLConf.COMPACTION_MAX_LEVEL_FILE_NUM_LIMIT.key ->
           (if (pressure) "2" else "1000"),
         LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT.key -> "2"
       )
-      println(s"[L1-correctness] scenario=$scenario, inputBytes=${inputs.map(_.size).mkString(",")}")
+      println(
+        s"[L1-correctness] scenario=$scenario, inputBytes=${inputs.map(_.size).mkString(",")}"
+      )
       withCompactionOptions(options) {
         LakeSoulTable.forPath(path).newCompaction()
       }
@@ -595,18 +761,29 @@ class L1RollingCompactionSuite
       val outputs = getFileList(path)
       val inputPaths = inputs.map(_.path).toSet
       val retainedPaths = retainedIndices.map(i => inputs(i).path)
-      assert(outputs.length == expectedFileCount,
-        s"$scenario: expected $expectedFileCount files, got ${outputs.length}")
-      assert(outputs.map(_.path).toSet.intersect(inputPaths) == retainedPaths,
-        s"$scenario: wrong files retained/replaced; intended merge branch was not exercised")
+      assert(
+        outputs.length == expectedFileCount,
+        s"$scenario: expected $expectedFileCount files, got ${outputs.length}"
+      )
+      assert(
+        outputs.map(_.path).toSet.intersect(inputPaths) == retainedPaths,
+        s"$scenario: wrong files retained/replaced; intended merge branch was not exercised"
+      )
       // Writes after compaction also need to override values from every output interval.
       val later = (0L until 64L).map(id => (id, 99, s"latest-$id"))
-      LakeSoulTable.forPath(path).upsert(later.toDF("id", "batch", "payload").coalesce(1))
+      LakeSoulTable
+        .forPath(path)
+        .upsert(later.toDF("id", "batch", "payload").coalesce(1))
       LakeSoulTable.uncached(path)
       val finalExpected = expectedRows.filter(_.getLong(0) >= 1000L) ++
         later.map { case (id, batch, payload) => Row(id, batch, payload) }
-      checkAnswer(LakeSoulTable.forPath(path).toDF.select("id", "batch", "payload"), finalExpected)
-      println(s"[L1-correctness] PASS $scenario: retained paths, full rows, and later upserts")
+      checkAnswer(
+        LakeSoulTable.forPath(path).toDF.select("id", "batch", "payload"),
+        finalExpected
+      )
+      println(
+        s"[L1-correctness] PASS $scenario: retained paths, full rows, and later upserts"
+      )
     }
   }
 

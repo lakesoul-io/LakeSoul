@@ -13,10 +13,11 @@ public class L1CompactionPlannerTest {
     public void planningPreservesOrderAndBudgets() {
         main(new String[0]);
     }
+
     private static List<L1CompactionPlanner.Group> plan(boolean pressure, int k, Long... sizes) {
-        return L1CompactionPlanner.plan(
-                Arrays.asList(sizes), 100, 256, 20, k, pressure, 5, 600);
+        return L1CompactionPlanner.plan(Arrays.asList(sizes), 100, 256, 20, k, pressure, 5, 600);
     }
+
     private static void expect(List<L1CompactionPlanner.Group> groups, int... ends) {
         if (groups.size() != ends.length) throw new AssertionError("Unexpected group count");
         int start = 0;
@@ -27,6 +28,7 @@ public class L1CompactionPlannerTest {
             start = ends[i];
         }
     }
+
     public static void main(String[] args) {
         expect(plan(false, 99, 120L, 1L, 2L, 3L, 150L, 2L, 3L), 1, 4, 5, 7);
         expect(plan(false, 2, 120L, 1L, 2L, 3L, 150L, 2L, 3L), 1, 7);
@@ -48,11 +50,12 @@ public class L1CompactionPlannerTest {
             int fileCount = random.nextInt(60);
             for (int i = 0; i < fileCount; i++) sizes.add((long) random.nextInt(400));
             int cap = 2 + random.nextInt(19);
-            List<L1CompactionPlanner.Group> groups = L1CompactionPlanner.plan(
-                    sizes, 100, 256, cap, 2, random.nextBoolean(), 5, 600);
+            List<L1CompactionPlanner.Group> groups =
+                    L1CompactionPlanner.plan(sizes, 100, 256, cap, 2, random.nextBoolean(), 5, 600);
             int cursor = 0;
             for (L1CompactionPlanner.Group g : groups) {
-                if (g.start != cursor || g.end <= g.start) throw new AssertionError("Order/coverage");
+                if (g.start != cursor || g.end <= g.start)
+                    throw new AssertionError("Order/coverage");
                 long bytes = 0;
                 for (int i = g.start; i < g.end; i++) bytes += sizes.get(i);
                 if (bytes != g.bytes || (g.count() > 1 && (bytes > 256 || g.count() > cap))) {

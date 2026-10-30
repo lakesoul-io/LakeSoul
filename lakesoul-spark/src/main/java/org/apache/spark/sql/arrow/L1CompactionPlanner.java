@@ -18,13 +18,26 @@ final class L1CompactionPlanner {
             this.bytes = bytes;
         }
 
-        int count() { return end - start; }
+        int count() {
+            return end - start;
+        }
     }
 
-    static List<Group> plan(List<Long> sizes, long target, long maxBytes, int maxFiles,
-            int smallFileLimit, boolean pressure, int pressureFiles, long pressureBytes) {
-        if (target <= 0 || maxBytes < target || maxFiles < 2 || smallFileLimit < 2
-                || pressureFiles < 2 || pressureBytes <= 0) {
+    static List<Group> plan(
+            List<Long> sizes,
+            long target,
+            long maxBytes,
+            int maxFiles,
+            int smallFileLimit,
+            boolean pressure,
+            int pressureFiles,
+            long pressureBytes) {
+        if (target <= 0
+                || maxBytes < target
+                || maxFiles < 2
+                || smallFileLimit < 2
+                || pressureFiles < 2
+                || pressureBytes <= 0) {
             throw new IllegalArgumentException("Invalid L1 compaction planning limits");
         }
         int smallCount = 0;
@@ -40,10 +53,12 @@ final class L1CompactionPlanner {
             // Oversized singletons are retained, never submitted to a reader.
             if (bytes <= maxBytes && (pressure || bytes < target)) {
                 while (i < sizes.size()) {
-                    if (pressure ? (i - start >= pressureFiles || bytes >= pressureBytes)
+                    if (pressure
+                            ? (i - start >= pressureFiles || bytes >= pressureBytes)
                             : bytes >= target) break;
                     long next = sizes.get(i);
-                    if ((!pressure && next >= target) || i - start >= maxFiles
+                    if ((!pressure && next >= target)
+                            || i - start >= maxFiles
                             || next > maxBytes - bytes) break;
                     bytes += next;
                     i++;
@@ -52,10 +67,12 @@ final class L1CompactionPlanner {
             groups.add(new Group(start, i, bytes));
         }
         // Absorb a small tail before IO. In regular mode, do not cross a large file boundary.
-        for (int g = 1; g < groups.size();) {
+        for (int g = 1; g < groups.size(); ) {
             Group left = groups.get(g - 1), right = groups.get(g);
-            boolean boundary = !pressure && ((left.count() == 1 && left.bytes >= target)
-                    || (right.count() == 1 && right.bytes >= target));
+            boolean boundary =
+                    !pressure
+                            && ((left.count() == 1 && left.bytes >= target)
+                                    || (right.count() == 1 && right.bytes >= target));
             if (!boundary && right.bytes < target && fits(left, right, maxBytes, maxFiles)) {
                 join(groups, g - 1, g);
             } else g++;
@@ -120,7 +137,7 @@ final class L1CompactionPlanner {
             }
         }
         List<Group> result = new ArrayList<>();
-        for (int g = 0; g < groups.size();) {
+        for (int g = 0; g < groups.size(); ) {
             Group left = groups.get(g);
             if (pairStart[g]) {
                 Group right = groups.get(g + 1);
@@ -143,7 +160,8 @@ final class L1CompactionPlanner {
     }
 
     private static boolean fits(Group left, Group right, long maxBytes, int maxFiles) {
-        return left.bytes <= maxBytes && right.bytes <= maxBytes - left.bytes
+        return left.bytes <= maxBytes
+                && right.bytes <= maxBytes - left.bytes
                 && right.end - left.start <= maxFiles;
     }
 
@@ -157,8 +175,11 @@ final class L1CompactionPlanner {
     }
 
     private static void join(List<Group> groups, int from, int to) {
-        Group combined = new Group(groups.get(from).start, groups.get(to).end,
-                rangeBytes(groups, from, to, Long.MAX_VALUE));
+        Group combined =
+                new Group(
+                        groups.get(from).start,
+                        groups.get(to).end,
+                        rangeBytes(groups, from, to, Long.MAX_VALUE));
         groups.subList(from, to + 1).clear();
         groups.add(from, combined);
     }
