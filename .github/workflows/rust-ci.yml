@@ -148,7 +148,7 @@ jobs:
           LAKESOUL_PG_PASSWORD: lakesoul_test
           TZ: UTC
           RUST_BACKTRACE: full
-        run: cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --jobs 4 -- --nocapture
+        run: cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test session_contract --jobs 4 -- --nocapture
       - name: Test v2 merge
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
@@ -164,7 +164,7 @@ jobs:
           LAKESOUL_PG_PASSWORD: lakesoul_test
           TZ: UTC
           RUST_BACKTRACE: full
-        run: cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --jobs 4 -- --nocapture
+        run: cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test session_contract --jobs 4 -- --nocapture
 
   clippy_check:
     runs-on: ubuntu-24.04

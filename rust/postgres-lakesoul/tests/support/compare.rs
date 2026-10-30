@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::{Context, Result, bail, ensure};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use rust_decimal::Decimal;
 use tokio_postgres::{Client, Row, SimpleQueryMessage, Statement, types::Type};
 
 pub type Rows = Vec<Vec<Option<String>>>;
@@ -59,8 +61,28 @@ pub fn binary(statement: &Statement, rows: &[Row]) -> Result<ResultSet> {
                 Type::INT4 => row.try_get::<_, Option<i32>>(i)?.map(|v| v.to_string()),
                 Type::INT8 => row.try_get::<_, Option<i64>>(i)?.map(|v| v.to_string()),
                 Type::TEXT => row.try_get::<_, Option<String>>(i)?,
+                // Exact PostgreSQL `numeric`: rust_decimal preserves the
+                // value's scale, so the rendered text keeps significant
+                // trailing zeros like the reference server's text output.
+                Type::NUMERIC => {
+                    row.try_get::<_, Option<Decimal>>(i)?.map(|v| v.to_string())
+                }
+                Type::DATE => row
+                    .try_get::<_, Option<NaiveDate>>(i)?
+                    .map(|v| v.to_string()),
+                Type::TIMESTAMP => row
+                    .try_get::<_, Option<NaiveDateTime>>(i)?
+                    .map(|v| v.to_string()),
+                // timestamptz is an instant: decode to UTC and render one
+                // canonical RFC 3339 string instead of a session-local form.
+                Type::TIMESTAMPTZ => row
+                    .try_get::<_, Option<DateTime<Utc>>>(i)?
+                    .map(|v| v.to_rfc3339()),
+                Type::INT4_ARRAY => row
+                    .try_get::<_, Option<Vec<Option<i32>>>>(i)?
+                    .map(|values| render_int4_array(&values)),
                 ref other => bail!(
-                    "no phase-one result decoder for column {}: {other:?}",
+                    "no binary result decoder for column {}: {other:?}",
                     column.name()
                 ),
             };
@@ -83,6 +105,28 @@ pub fn binary(statement: &Statement, rows: &[Row]) -> Result<ResultSet> {
         ),
         rows: decoded,
     })
+}
+
+/// Canonical text form of a decoded `int4[]` value: `{1,NULL,3}` or `{}`.
+///
+/// Both sides of a differential check go through this renderer, so an array
+/// comparison never depends on driver- or server-specific text formatting.
+fn render_int4_array(values: &[Option<i32>]) -> String {
+    let mut rendered = String::from("{");
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            rendered.push(',');
+        }
+        match value {
+            Some(value) => {
+                std::fmt::Write::write_fmt(&mut rendered, format_args!("{value}"))
+                    .expect("writing to a String cannot fail")
+            }
+            None => rendered.push_str("NULL"),
+        }
+    }
+    rendered.push('}');
+    rendered
 }
 
 pub fn check_columns(result: &ResultSet, expected: &[(&str, Type)]) -> Result<()> {

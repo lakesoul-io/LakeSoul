@@ -4,7 +4,9 @@
 
 #[path = "sql_compat/codecs.rs"]
 mod codecs;
-mod support;
+#[path = "sql_compat/semantics.rs"]
+mod semantics;
+pub mod support;
 
 use anyhow::{Context, Result, ensure};
 use support::{Harness, compare};
@@ -34,9 +36,25 @@ async fn sql_compat_phase_one() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_compat_phase_two() -> Result<()> {
+    support::run_suite(|h| Box::pin(semantics::run(h))).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Known upstream rust_decimal NUMERIC-zero binary scale defect; explicit strict reproduction (see README)"]
 async fn decimal_zero_binary_scale_matches_postgres() -> Result<()> {
     support::run_suite(|h| Box::pin(codecs::zero_binary_scale(h))).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Known projection scalar-subquery LIMIT 1 defect; strict PG cardinality reproduction (see README)"]
+async fn projection_scalar_subquery_rejects_multiple_rows() -> Result<()> {
+    support::run_suite(|h| {
+        Box::pin(semantics::projection_scalar_subquery_rejects_multiple_rows(
+            h,
+        ))
+    })
+    .await
 }
 
 // Explicitly a support boundary, not PG type equivalence: DataFusion's bare

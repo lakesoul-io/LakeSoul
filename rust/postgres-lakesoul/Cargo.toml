@@ -46,7 +46,8 @@ jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 anyhow.workspace = true
 tempfile.workspace = true
 uuid.workspace = true
-tokio-postgres = "0.7"
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
+chrono.workspace = true
 rust_decimal = { version = "1", features = ["db-tokio-postgres"] }
 pgvector = { version = "0.4", features = ["postgres"] }
 metrics-exporter-prometheus = { workspace = true }

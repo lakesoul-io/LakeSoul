@@ -22,6 +22,7 @@
 //! after suite panics.
 
 pub mod compare;
+mod state;
 
 use std::any::Any;
 use std::future::Future;
@@ -46,6 +47,11 @@ use tempfile::TempDir;
 use tokio::task::JoinHandle;
 use tokio_postgres::{Client, Config, NoTls};
 use uuid::Uuid;
+
+// Port-zero reservations must be released before exec. Serialize only this
+// handoff through readiness, so another suite cannot reserve a released port
+// while the first child has not bound it yet. Suite queries still run in parallel.
+static STARTUP_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Upper bound for one connect or fixture-management operation.
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -195,6 +201,7 @@ struct StartupState {
     metrics_addr: Option<SocketAddr>,
     namespace_created: bool,
     created_tables: Vec<String>,
+    connections: parking_lot::Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl StartupState {
@@ -263,12 +270,14 @@ impl StartupState {
             metrics_addr: None,
             namespace_created: false,
             created_tables: Vec::new(),
+            connections: parking_lot::Mutex::new(Vec::new()),
         })
     }
 
     async fn prepare(&mut self, fault: Option<&str>) -> Result<()> {
         self.create_reference_fixtures().await?;
         self.create_lake_fixtures().await?;
+        let _startup = STARTUP_GATE.lock().await;
         self.launch_server(fault).await?;
         tokio::time::timeout(STARTUP_TIMEOUT, self.wait_until_ready())
             .await
@@ -624,6 +633,10 @@ impl StartupState {
             &mut outcome,
         )
         .await;
+        for task in self.connections.get_mut().drain(..) {
+            stop_connection_recorded(None, Some(task), "additional client", &mut outcome)
+                .await;
+        }
 
         if let Some(mut child) = self.child.take() {
             outcome.pid = Some(child.pid);
