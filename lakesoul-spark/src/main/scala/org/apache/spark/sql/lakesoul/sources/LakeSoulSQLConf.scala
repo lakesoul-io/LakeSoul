@@ -178,6 +178,45 @@ object LakeSoulSQLConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMPACTION_L1_ROLLING_ENABLED =
+    buildConf("compaction.l1.rolling.enabled")
+      .doc(
+        "Enable one-pass ordered L1 rolling compaction; disabled preserves legacy behavior."
+      )
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMPACTION_L1_ROLLING_TABLES =
+    buildConf("compaction.l1.rolling.tables")
+      .doc(
+        "Comma-separated exact namespace.table names eligible for L1 rolling compaction. " +
+          "Empty allows all tables; rolling.enabled must also be true."
+      )
+      .stringConf
+      .createWithDefault("")
+
+  val COMPACTION_L1_ROLLING_MAX_INPUT_BYTES =
+    buildConf("compaction.l1.rolling.max.input.bytes")
+      .doc(
+        "Hard input-byte budget per L1 merge group, not a per-bucket budget."
+      )
+      .stringConf
+      .createWithDefault("256MB")
+
+  val COMPACTION_L1_ROLLING_MAX_INPUT_FILES =
+    buildConf("compaction.l1.rolling.max.input.files")
+      .doc("Hard input-file budget per L1 merge group; at least two.")
+      .intConf
+      .createWithDefault(20)
+
+  val COMPACTION_L1_ROLLING_SMALL_FILE_LIMIT =
+    buildConf("compaction.l1.rolling.small.file.limit")
+      .doc(
+        "Actual small-file count enabling fallback across large boundaries; not an output cap."
+      )
+      .intConf
+      .createWithDefault(2)
+
   val COMPACTION_MAX_BYTES_FOR_LEVEL_BASE: ConfigEntry[String] =
     buildConf("compaction.max.bytes.for.level.base")
       .doc("""
