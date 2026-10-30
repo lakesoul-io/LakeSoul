@@ -140,6 +140,15 @@ jobs:
           RUST_BACKTRACE: full
         run: |
           cargo test --profile test-fast --lib --bins --tests --jobs 4
+      - name: PostgreSQL SQL compatibility (legacy merge)
+        env:
+          LAKESOUL_IO_USE_V2_MERGE: "false"
+          LAKESOUL_PG_URL: "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
+          LAKESOUL_PG_USERNAME: lakesoul_test
+          LAKESOUL_PG_PASSWORD: lakesoul_test
+          TZ: UTC
+          RUST_BACKTRACE: full
+        run: cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --jobs 4 -- --nocapture
       - name: Test v2 merge
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
@@ -147,6 +156,15 @@ jobs:
           RUST_BACKTRACE: full
         run: |
           cargo test --profile test-fast --lib --bins --tests --jobs 4
+      - name: PostgreSQL SQL compatibility (v2 merge)
+        env:
+          LAKESOUL_IO_USE_V2_MERGE: "true"
+          LAKESOUL_PG_URL: "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
+          LAKESOUL_PG_USERNAME: lakesoul_test
+          LAKESOUL_PG_PASSWORD: lakesoul_test
+          TZ: UTC
+          RUST_BACKTRACE: full
+        run: cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --jobs 4 -- --nocapture
 
   clippy_check:
     runs-on: ubuntu-24.04

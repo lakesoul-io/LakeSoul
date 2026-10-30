@@ -7239,6 +7239,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pgvector"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3673cba5b9a124916096a423b806a9f29620972c6c97b08db5f2053e9428b481"
+dependencies = [
+ "bytes",
+ "postgres-types",
+]
+
+[[package]]
 name = "pgwire"
 version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7756,6 +7766,7 @@ dependencies = [
 name = "postgres-lakesoul"
 version = "4.1.0-dev.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
  "clap",
@@ -7770,15 +7781,20 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "parking_lot 0.12.5",
+ "pgvector",
  "rootcause",
+ "rust_decimal",
  "rustls-pki-types",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
+ "tokio-postgres",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

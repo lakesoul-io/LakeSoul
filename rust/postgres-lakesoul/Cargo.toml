@@ -43,6 +43,12 @@ default = ["jemalloc"]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 
 [dev-dependencies]
+anyhow.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
+tokio-postgres = "0.7"
+rust_decimal = { version = "1", features = ["db-tokio-postgres"] }
+pgvector = { version = "0.4", features = ["postgres"] }
 metrics-exporter-prometheus = { workspace = true }
 rustls-pki-types = "1"
 bytes.workspace = true
