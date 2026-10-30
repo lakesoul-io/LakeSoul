@@ -41,8 +41,15 @@ class NewCompactionSuite
     with LakeSoulSQLCommandTest {
 
   override def sparkConf: SparkConf = {
+    // Keep legacy layout/count assertions independent of the new L1 default.
+    // CompactBucketIO reads Hadoop Configuration on the executors.
     super.sparkConf
       .set("spark.network.timeout", "10000000")
+      .set(LakeSoulSQLConf.COMPACTION_L1_ROLLING_ENABLED.key, "false")
+      .set(
+        "spark.hadoop." + LakeSoulSQLConf.COMPACTION_L1_ROLLING_ENABLED.key,
+        "false"
+      )
       .set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
       .set(SQLConf.DEFAULT_CATALOG.key, LakeSoulCatalog.CATALOG_NAME)
       .set(

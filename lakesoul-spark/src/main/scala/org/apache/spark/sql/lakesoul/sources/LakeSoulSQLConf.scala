@@ -181,10 +181,10 @@ object LakeSoulSQLConf {
   val COMPACTION_L1_ROLLING_ENABLED =
     buildConf("compaction.l1.rolling.enabled")
       .doc(
-        "Enable one-pass ordered L1 rolling compaction; disabled preserves legacy behavior."
+        "Enable sequential L1 small-file merging; disabled preserves legacy behavior."
       )
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMPACTION_L1_ROLLING_TABLES =
     buildConf("compaction.l1.rolling.tables")
@@ -195,27 +195,13 @@ object LakeSoulSQLConf {
       .stringConf
       .createWithDefault("")
 
-  val COMPACTION_L1_ROLLING_MAX_INPUT_BYTES =
-    buildConf("compaction.l1.rolling.max.input.bytes")
+  val COMPACTION_L1_TARGET_FILE_SIZE =
+    buildConf("compaction.l1.target.file.size")
       .doc(
-        "Hard input-byte budget per L1 merge group, not a per-bucket budget."
+        "Target input size for sequential L1 merges. Actual output size depends on compression and updates."
       )
       .stringConf
       .createWithDefault("256MB")
-
-  val COMPACTION_L1_ROLLING_MAX_INPUT_FILES =
-    buildConf("compaction.l1.rolling.max.input.files")
-      .doc("Hard input-file budget per L1 merge group; at least two.")
-      .intConf
-      .createWithDefault(20)
-
-  val COMPACTION_L1_ROLLING_SMALL_FILE_LIMIT =
-    buildConf("compaction.l1.rolling.small.file.limit")
-      .doc(
-        "Actual small-file count enabling fallback across large boundaries; not an output cap."
-      )
-      .intConf
-      .createWithDefault(2)
 
   val COMPACTION_MAX_BYTES_FOR_LEVEL_BASE: ConfigEntry[String] =
     buildConf("compaction.max.bytes.for.level.base")
@@ -252,10 +238,10 @@ object LakeSoulSQLConf {
   val COMPACTION_MAX_LEVEL0_FILE_NUM_LIMIT: ConfigEntry[Int] =
     buildConf("compaction.level0.file.number.limit")
       .doc("""
-          |COMPACTION LEVEL0 SINGLE TASK FILE NUMBER. Default is 10.
+          |COMPACTION LEVEL0 SINGLE TASK FILE NUMBER. Default is 4 (merge when more than three files).
         """.stripMargin)
       .intConf
-      .createWithDefault(10)
+      .createWithDefault(4)
 
   val COMPACTION_IGNORE_NOT_EXIST_FILE: ConfigEntry[Boolean] =
     buildConf("compaction.ignore.not.exist.file")
