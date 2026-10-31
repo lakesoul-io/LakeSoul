@@ -4756,6 +4756,38 @@ impl IvmRuntime {
             None => table.current_groups(&self.client).await?,
         };
         let groups = groups_by_bucket(groups, bucket_count);
+        // Sorted-merge lookup is experimental and opt-in until it has a
+        // measured win over the keyed lookup on the pilot.
+        let sort_merge_frame = if std::env::var("LAKESOUL_IVM_SORT_MERGE")
+            .ok()
+            .is_some_and(|value| matches!(value.as_str(), "on" | "1" | "true"))
+        {
+            match super::keyed_plan::sort_merge_source_state(
+                context,
+                table,
+                &self.client,
+                routed.clone(),
+                input_columns,
+                table_columns,
+                route_columns.clone(),
+                multi_match,
+                groups.clone(),
+            )
+            .await
+            {
+                Ok(frame) => Some(frame),
+                Err(error) => {
+                    tracing::warn!(
+                        table = %table.table_name,
+                        %error,
+                        "sort-merge source lookup failed; falling back to key lookup"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
         // Large key sets are cheaper as one streaming hash join than as one
         // random PK lookup per key.  The join rebuilds its physical plan on
         // every scan, so the same logical lookup can be executed repeatedly.
@@ -4796,7 +4828,9 @@ impl IvmRuntime {
         } else {
             None
         };
-        let (frame, prefixed) = if let Some(frame) = hash_join_frame {
+        let (frame, prefixed) = if let Some(frame) = sort_merge_frame {
+            (frame, false)
+        } else if let Some(frame) = hash_join_frame {
             (frame, false)
         } else {
             let provider = IvmLookupTable::columns(

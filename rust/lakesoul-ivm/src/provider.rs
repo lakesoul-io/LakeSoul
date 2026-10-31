@@ -118,6 +118,25 @@ impl IvmTableProvider {
         }
     }
 
+    /// A provider over explicit file groups in logical current mode.
+    ///
+    /// Unlike [`Self::groups`] this hides CDC tombstones after the merge, so
+    /// a sorted-merge join sees one current row per primary key.
+    pub(crate) fn groups_current(
+        table: IvmTable,
+        client: MetaDataClient,
+        groups: Vec<PartitionFiles>,
+    ) -> Self {
+        Self {
+            table,
+            client,
+            mode: IvmReadMode::Current,
+            groups: Some(groups),
+            merge: true,
+            bucket_filters: None,
+        }
+    }
+
     /// A provider over explicit delta groups **without** merge-on-read.
     pub(crate) fn unmerged_groups(
         table: IvmTable,
