@@ -542,6 +542,144 @@ fn inline_identity_rows(
     replaced
 }
 
+/// Whether the experimental filtering-row fusion is enabled.  It changes the
+/// definition of an existing aggregate step, so enabling it on a populated
+/// table pays a one-time downstream rebuild; keep it opt-in until measured.
+fn fuse_filter_rows_enabled() -> bool {
+    std::env::var("LAKESOUL_IVM_FUSE_FILTER_ROWS")
+        .ok()
+        .is_some_and(|value| matches!(value.as_str(), "on" | "1" | "true"))
+}
+
+/// Inline a filtering/renaming row step into its sole aggregate consumer.
+///
+/// A row such as `SELECT src_sys, order_no, net_num AS sum_num, ... FROM step
+/// WHERE net_num <> 0` is materialized only so its consumer can read it.  When
+/// the consumer is a multi-aggregate that does not use the renamed outputs,
+/// the filter can be applied directly to the row's source and the extra step
+/// (and its per-window rewrite) disappears.  The caller validates the
+/// resulting schema and falls back when the rewrite is not exact.
+fn inline_filtering_rows(
+    spec: &mut ViewSpec,
+    rows: &HashMap<String, ViewSpec>,
+    tables: &HashMap<String, crate::table::IvmTable>,
+    uses: &HashMap<String, usize>,
+) -> Vec<String> {
+    let ViewSpec::MultiAgg {
+        source_table_id,
+        group_keys,
+        group_exprs,
+        aggregates,
+        filter,
+        having_lookup,
+        ..
+    } = spec
+    else {
+        return Vec::new();
+    };
+    if having_lookup.is_some() {
+        return Vec::new();
+    }
+    let row_id = source_table_id.clone();
+    // Only a step with one reader can be dropped safely; a shared step keeps
+    // its own refresh.
+    if uses.get(&row_id).copied() != Some(1) {
+        return Vec::new();
+    }
+    let Some(ViewSpec::Row {
+        source_table_id: row_source,
+        output_columns,
+        output_exprs,
+        filter: Some(row_filter),
+        scalar,
+        ..
+    }) = rows.get(row_id.as_str())
+    else {
+        return Vec::new();
+    };
+    if scalar.is_some() {
+        return Vec::new();
+    }
+    let Some(source) = tables.values().find(|table| table.table_id == *row_source) else {
+        return Vec::new();
+    };
+    let context = refresh_session();
+    let Ok(df_schema) =
+        datafusion::common::DFSchema::try_from(source.schema.as_ref().clone())
+    else {
+        return Vec::new();
+    };
+    let mut refs = group_keys.clone();
+    let mut collect = |expression: &str| -> Option<()> {
+        let expression = context
+            .state()
+            .create_logical_expr(expression, &df_schema)
+            .ok()?;
+        refs.extend(
+            expression
+                .column_refs()
+                .into_iter()
+                .map(|column| column.name.clone()),
+        );
+        Some(())
+    };
+    for expression in group_exprs
+        .iter()
+        .filter(|expression| !expression.is_empty())
+    {
+        if collect(expression).is_none() {
+            return Vec::new();
+        }
+    }
+    for aggregate in aggregates {
+        if collect(&aggregate.call).is_none() {
+            return Vec::new();
+        }
+    }
+    if let Some(filter) = filter.as_deref()
+        && collect(filter).is_none()
+    {
+        return Vec::new();
+    }
+    // A rename that the consumer reads cannot be dropped without rewriting
+    // its SQL; leave that shape to the materialized step.
+    for (index, name) in output_columns.iter().enumerate() {
+        let expression = output_exprs
+            .get(index)
+            .filter(|expression| !expression.is_empty())
+            .unwrap_or(name);
+        if expression != name && refs.iter().any(|reference| reference == name) {
+            return Vec::new();
+        }
+    }
+    // Every referenced column must already exist in the upstream source.
+    if refs
+        .iter()
+        .any(|name| source.schema.field_with_name(name).is_err())
+    {
+        return Vec::new();
+    }
+    let combined = match filter.as_deref() {
+        Some(filter) => format!("({row_filter}) AND ({filter})"),
+        None => row_filter.clone(),
+    };
+    if context
+        .state()
+        .create_logical_expr(&combined, &df_schema)
+        .is_err()
+    {
+        return Vec::new();
+    }
+    *source_table_id = row_source.clone();
+    *filter = Some(combined);
+    tracing::debug!(
+        row = %row_id,
+        source = %row_source,
+        "folding a filtering row into its aggregate consumer"
+    );
+    vec![row_id]
+}
+
 /// The subplan of a derived source in an analyzer error, if any.
 fn derived_source(error: &rootcause::Report) -> Option<LogicalPlan> {
     error
@@ -2159,6 +2297,26 @@ impl IvmSqlExecutor {
                 }
             } else {
                 spec = before_inline;
+            }
+        }
+        // A filtering/renaming row with one aggregate reader can be folded
+        // into the reader: the filter moves onto the upstream source and the
+        // intermediate step is not refreshed.
+        let before_filter_inline = spec.clone();
+        let before_filter_schema = expected_mv_schema(&spec, tables)?;
+        let replaced_filters = if fuse_filter_rows_enabled() {
+            inline_filtering_rows(&mut spec, &caches.rows, tables, &caches.uses)
+        } else {
+            Vec::new()
+        };
+        if !replaced_filters.is_empty() {
+            let after_schema = expected_mv_schema(&spec, tables)?;
+            if schema_matches(after_schema.as_ref(), before_filter_schema.as_ref()) {
+                for row_id in replaced_filters {
+                    deferred.retain(|view_id| view_id != &row_id);
+                }
+            } else {
+                spec = before_filter_inline;
             }
         }
         let index = steps.len();
@@ -4173,6 +4331,62 @@ mod tests {
         }))
         .unwrap();
         assert!(identity_row_source(&row).is_none());
+    }
+
+    #[test]
+    fn folds_a_single_reader_filtering_row_into_its_aggregate() {
+        let row: ViewSpec = serde_json::from_value(serde_json::json!({
+            "kind": "row",
+            "view_id": "row_view",
+            "source_table_id": "upstream",
+            "mv_table_id": "row_view",
+            "output_columns": ["g", "v"],
+            "output_exprs": ["g", "v"],
+            "filter": "v <> 0",
+        }))
+        .unwrap();
+        let mut consumer: ViewSpec = serde_json::from_value(serde_json::json!({
+            "kind": "multi_agg",
+            "view_id": "consumer",
+            "source_table_id": "row_view",
+            "mv_table_id": "consumer",
+            "group_keys": ["g"],
+            "aggregates": [{
+                "call": "sum(v)",
+                "column": "sum_v",
+                "result": "int64",
+            }],
+        }))
+        .unwrap();
+        let upstream = crate::table::IvmTable {
+            table_id: "upstream".to_string(),
+            table_name: "upstream".to_string(),
+            namespace: "default".to_string(),
+            table_path: "/tmp/upstream".to_string(),
+            schema: source_schema(),
+            primary_keys: vec!["k".to_string()],
+            range_partition_columns: Vec::new(),
+            bucket_columns: vec!["k".to_string()],
+            hash_bucket_num: "1".to_string(),
+            cdc_column: None,
+            file_format: crate::table::internal_file_format(),
+            allow_fallback: true,
+        };
+        let rows = HashMap::from([("row_view".to_string(), row)]);
+        let tables = HashMap::from([("upstream".to_string(), upstream)]);
+        let uses = HashMap::from([("row_view".to_string(), 1)]);
+        let replaced = inline_filtering_rows(&mut consumer, &rows, &tables, &uses);
+        assert_eq!(replaced, ["row_view"]);
+        let ViewSpec::MultiAgg {
+            source_table_id,
+            filter,
+            ..
+        } = consumer
+        else {
+            panic!("expected a multi aggregate");
+        };
+        assert_eq!(source_table_id, "upstream");
+        assert_eq!(filter.as_deref(), Some("v <> 0"));
     }
 
     #[test]
