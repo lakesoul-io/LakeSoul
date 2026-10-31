@@ -3329,7 +3329,22 @@ impl IvmRuntime {
 
     /// The persisted group index for a top-k view, analogous to the window
     /// partition index.  It lets the refresh read only the affected groups.
+    /// For a single-row top-k with offset 0 the MV and the mirror state have
+    /// exactly the same rows and primary-key identity; the MV can serve as
+    /// the state, avoiding a second write and a second copy.  Only share when
+    /// the MV is keyed by the group itself, which is how a top-1 view created
+    /// by the runtime is laid out.
+    fn top_k_shared_state(view: &TopKView) -> bool {
+        view.offset == 0
+            && view.limit == 1
+            && !view.group_keys.is_empty()
+            && view.mv.primary_keys == view.group_keys
+    }
+
     async fn ensure_top_k_state(&self, view: &TopKView) -> Result<IvmTable> {
+        if Self::top_k_shared_state(view) {
+            return Ok(view.mv.clone());
+        }
         let states = self.metadata.list_states(&view.view_id).await?;
         if let Some(existing) = states.iter().find(|state| state.role == StateRole::State)
         {
@@ -3371,6 +3386,9 @@ impl IvmRuntime {
         state: &IvmTable,
         reset: bool,
     ) -> Result<()> {
+        if state.table_id == view.mv.table_id {
+            return Ok(());
+        }
         if view.mv.current_files(&self.client).await?.is_empty() {
             return Ok(());
         }
@@ -3943,6 +3961,13 @@ impl IvmRuntime {
                 },
             )
             .await?
+        } else if state.table_id == view.mv.table_id {
+            let mv_ids = view
+                .mv
+                .append_stream(&self.client, frame.execute_stream().await?)
+                .await?;
+            self.checkpoint_epoch_states(&record).await?;
+            (mv_ids, Vec::new())
         } else {
             // Execute the refresh SQL once and feed both the MV and its mirror
             // state from the same stream.  Two independent streams re-ran
@@ -3988,8 +4013,11 @@ impl IvmRuntime {
                 &rank_columns,
             )
             .await?;
+        let shared_state = state.table_id == view.mv.table_id;
         view.mv.truncate(&self.client).await?;
-        state.truncate(&self.client).await?;
+        if !shared_state {
+            state.truncate(&self.client).await?;
+        }
 
         let baseline = self
             .source_baseline_for_filter(&view.source, view.filter.as_deref())
@@ -4025,14 +4053,23 @@ impl IvmRuntime {
             Arc::new(self.table_provider_groups(&view.source, baseline.groups.clone())),
         )?;
         let frame = context.sql(&top_k_rebuild_sql(view, epoch)).await?;
-        let (mv_ids, state_ids) = futures::future::try_join(
-            view.mv
-                .append_stream(&self.client, frame.clone().execute_stream().await?),
-            state.append_stream(&self.client, frame.execute_stream().await?),
-        )
-        .await?;
-        commit_ids.extend(mv_ids);
-        commit_ids.extend(state_ids);
+        if shared_state {
+            // The state is the MV: one append serves both.
+            commit_ids.extend(
+                view.mv
+                    .append_stream(&self.client, frame.execute_stream().await?)
+                    .await?,
+            );
+        } else {
+            let (mv_ids, state_ids) = futures::future::try_join(
+                view.mv
+                    .append_stream(&self.client, frame.clone().execute_stream().await?),
+                state.append_stream(&self.client, frame.execute_stream().await?),
+            )
+            .await?;
+            commit_ids.extend(mv_ids);
+            commit_ids.extend(state_ids);
+        }
         self.checkpoint_epoch_states(&record).await?;
         if let Some(rank) = &rank_state {
             rank.truncate(&self.client).await?;
