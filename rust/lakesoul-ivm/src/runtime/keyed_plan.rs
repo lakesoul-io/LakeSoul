@@ -381,6 +381,17 @@ pub(crate) const IVM_STATE_COLUMN_PREFIX: &str = "__ivm_state_";
 /// contribution batch.
 pub(crate) const PK_LOOKUP_CHUNK_ROWS: usize = 4096;
 
+/// Contribution rows per keyed lookup request.  The default bounds the IN
+/// list and reader request; a larger chunk trades a bigger request for fewer
+/// reader/index setups.
+fn lookup_chunk_rows() -> usize {
+    std::env::var("LAKESOUL_IVM_LOOKUP_CHUNK_ROWS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(PK_LOOKUP_CHUNK_ROWS)
+        .clamp(1, 65_536)
+}
+
 /// Above this many values a pushed-down IN list costs more to evaluate over
 /// the state rows than reading the bucket and matching the exact row key in
 /// memory.  The lookup plan still performs the exact composite-key match.
@@ -643,6 +654,34 @@ enum PkFilters {
     ScanAll(Vec<datafusion::prelude::Expr>),
 }
 
+/// Order the contribution columns like the table key when both lists name the
+/// same columns.  The row encoder pairs them positionally, so a join key and a
+/// primary key listed in different orders would otherwise build the wrong
+/// tuple.  Aliased keys (different names) keep the caller's positional order.
+fn mapped_input_columns(
+    input_columns: &[String],
+    table_columns: &[String],
+) -> Vec<String> {
+    if input_columns.len() == table_columns.len()
+        && table_columns
+            .iter()
+            .all(|table| input_columns.iter().any(|input| input == table))
+    {
+        table_columns
+            .iter()
+            .map(|table| {
+                input_columns
+                    .iter()
+                    .find(|input| *input == table)
+                    .cloned()
+                    .unwrap_or_else(|| table.clone())
+            })
+            .collect()
+    } else {
+        input_columns.to_vec()
+    }
+}
+
 fn key_filter_exprs(
     batch: &RecordBatch,
     key: &PkLookupKey,
@@ -655,11 +694,12 @@ fn key_filter_exprs(
             input_columns,
             table_columns,
         } => {
+            let input_columns = mapped_input_columns(input_columns, table_columns);
             let mut rows = Vec::new();
             for row in 0..batch.num_rows() {
                 let mut values = Vec::with_capacity(input_columns.len());
                 let mut null = false;
-                for column in input_columns {
+                for column in &input_columns {
                     let index = batch.schema().index_of(column)?;
                     if batch.column(index).is_null(row) {
                         null = true;
@@ -766,6 +806,7 @@ fn key_rows(
             input_columns,
             table_columns,
         } => {
+            let input_columns = mapped_input_columns(input_columns, table_columns);
             let fields = table_columns
                 .iter()
                 .map(|column| {
@@ -1145,6 +1186,7 @@ impl ExecutionPlan for IvmPkLookupExec {
         let gate = self.gate.clone();
         let multi_match = self.multi_match;
         let emit_unmatched = self.emit_unmatched;
+        let chunk_rows = lookup_chunk_rows();
         let profile_io = self.profile_io.clone();
         let stream =
             futures::stream::try_unfold((input, groups), move |(mut input, groups)| {
@@ -1167,10 +1209,8 @@ impl ExecutionPlan for IvmPkLookupExec {
                         let mut outputs = Vec::new();
                         let mut state_rows = 0usize;
                         let mut chunks = 0usize;
-                        for offset in (0..batch.num_rows()).step_by(PK_LOOKUP_CHUNK_ROWS)
-                        {
-                            let length =
-                                PK_LOOKUP_CHUNK_ROWS.min(batch.num_rows() - offset);
+                        for offset in (0..batch.num_rows()).step_by(chunk_rows) {
+                            let length = chunk_rows.min(batch.num_rows() - offset);
                             let chunk = batch.slice(offset, length);
                             let filters = match key_filter_exprs(&chunk, &key)? {
                                 PkFilters::Pushdown(filters)
@@ -1200,6 +1240,7 @@ impl ExecutionPlan for IvmPkLookupExec {
                         };
                         tracing::debug!(
                             table = %table.table_name,
+                            key = %key.display(),
                             partition,
                             contribution_rows = batch.num_rows(),
                             chunks,
@@ -2637,6 +2678,20 @@ mod tests {
         assert_eq!(split[3][0].files.len(), 1);
         assert!(split[1].is_empty());
         assert!(split[2].is_empty());
+    }
+
+    #[test]
+    fn maps_permuted_key_columns_to_table_order() {
+        let input = ["order_item_id", "order_no", "src_sys"].map(str::to_string);
+        let table = ["src_sys", "order_no", "order_item_id"].map(str::to_string);
+        assert_eq!(mapped_input_columns(&input, &table), table);
+    }
+
+    #[test]
+    fn keeps_an_alias_mapping_positional() {
+        let input = ["left_key"].map(str::to_string);
+        let table = ["right_key"].map(str::to_string);
+        assert_eq!(mapped_input_columns(&input, &table), input);
     }
 
     #[test]
