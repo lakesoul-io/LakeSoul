@@ -2320,6 +2320,32 @@ async fn read_group_sums(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<(String, i6
     rows
 }
 
+/// The number of logically visible rows of a table (delete markers merged).
+async fn count_visible_rows(runtime: &IvmRuntime, table: &IvmTable) -> usize {
+    let context = SessionContext::new();
+    context
+        .register_table("t", Arc::new(runtime.table_provider(table)))
+        .unwrap();
+    let batches = context
+        .sql("select count(*) from t")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    batches
+        .iter()
+        .map(|batch| {
+            batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(0) as usize
+        })
+        .sum()
+}
+
 /// A lookup chain over a partitioned fact table prunes the MV partitions the
 /// delta did not touch.
 #[test_log::test(tokio::test)]
@@ -4964,4 +4990,525 @@ async fn select_star_over_a_derived_step_hides_the_internal_partition() {
             ("c".to_string(), 8)
         ]
     );
+}
+
+/// The multi-aggregate partial state lets a refresh read only the row-state
+/// partitions an affected group changed.  The group spanning d1/d2 must skip
+/// the d3/d4 state partitions.
+#[test_log::test(tokio::test)]
+async fn multi_agg_partial_state_prunes_state_reads() {
+    unsafe { std::env::set_var("LAKESOUL_IVM_PARTITION_STATS", "1") };
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = create_source(&runtime, &dir, &suffix).await;
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_dir_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                Arc::new(Schema::new(vec![
+                    Field::new("g", DataType::Utf8, false),
+                    Field::new("sum_v", DataType::Int64, true),
+                    Field::new("max_v", DataType::Int64, true),
+                    Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+                    Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+                ])),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "g1", 10, "d1", "insert"),
+                (2, "g1", 20, "d2", "insert"),
+                (3, "g2", 5, "d3", "insert"),
+                (4, "g2", 7, "d4", "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_dir_mv_{suffix} \
+         SELECT g, SUM(v) AS sum_v, MAX(v) AS max_v \
+         FROM ivm_part_src_{suffix} GROUP BY g"
+    );
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let runtime = executor.runtime();
+
+    let mut row_state = None;
+    let mut partial_state = None;
+    for view in runtime.metadata().list_views().await.unwrap() {
+        for state in runtime.metadata().list_states(&view.view_id).await.unwrap() {
+            if state.table_name.starts_with(&mv.table_name) {
+                match state.role {
+                    StateRole::MultiAggRows => row_state = Some(state),
+                    StateRole::MultiAggPartials => partial_state = Some(state),
+                    _ => {}
+                }
+            }
+        }
+    }
+    let state = row_state.expect("the aggregate row state exists");
+    let state = runtime.open_table_by_id(&state.table_id).await.unwrap();
+    let partial_state = partial_state.expect("the aggregate partial state exists");
+    let partial_state = runtime
+        .open_table_by_id(&partial_state.table_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        count_visible_rows(runtime, &partial_state).await,
+        4,
+        "one partial row per (group, partition)"
+    );
+    let context = SessionContext::new();
+    context
+        .register_table("partials", Arc::new(runtime.table_provider(&partial_state)))
+        .unwrap();
+    let batches = context
+        .sql(
+            "select g, day, __ivm_partial_0, __ivm_partial_1              from partials order by g, day",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut partials = Vec::new();
+    for batch in &batches {
+        let groups = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let days = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let maxima = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            partials.push((
+                groups.value(row).to_string(),
+                days.value(row).to_string(),
+                sums.value(row),
+                maxima.value(row),
+            ));
+        }
+    }
+    assert_eq!(
+        partials,
+        vec![
+            ("g1".to_string(), "d1".to_string(), 10, 10),
+            ("g1".to_string(), "d2".to_string(), 20, 20),
+            ("g2".to_string(), "d3".to_string(), 5, 5),
+            ("g2".to_string(), "d4".to_string(), 7, 7),
+        ]
+    );
+
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "g1", 15, "d1", "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    let (total, kept) =
+        state_partition_stats(&state.table_id).expect("the state lookup recorded stats");
+    assert!(
+        kept > 0 && kept < total,
+        "the state lookup did not prune the untouched group's partitions: \
+         total={total} kept={kept}"
+    );
+
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(&mv)))
+        .unwrap();
+    let batches = context
+        .sql("select g, sum_v from mv order by g")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let groups = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((groups.value(row).to_string(), sums.value(row)));
+        }
+    }
+    assert_eq!(rows, vec![("g1".to_string(), 35), ("g2".to_string(), 12)]);
+}
+
+/// The partial state follows a deleted group and rebuilds from the full row
+/// state when it is empty (the migration path for an existing view).
+#[test_log::test(tokio::test)]
+async fn multi_agg_partial_state_handles_group_deletes_and_rebuilds() {
+    unsafe { std::env::set_var("LAKESOUL_IVM_PARTITION_STATS", "1") };
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = create_source(&runtime, &dir, &suffix).await;
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_dir2_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                Arc::new(Schema::new(vec![
+                    Field::new("g", DataType::Utf8, false),
+                    Field::new("sum_v", DataType::Int64, true),
+                    Field::new("max_v", DataType::Int64, true),
+                    Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+                    Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+                ])),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "g1", 10, "d1", "insert"),
+                (2, "g1", 20, "d2", "insert"),
+                (3, "g2", 5, "d3", "insert"),
+                (4, "g2", 7, "d4", "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_dir2_mv_{suffix} \
+         SELECT g, SUM(v) AS sum_v, MAX(v) AS max_v \
+         FROM ivm_part_src_{suffix} GROUP BY g"
+    );
+    executor.execute(&statement).await.unwrap();
+    let runtime = executor.runtime();
+
+    let mut row_state = None;
+    let mut partial_state = None;
+    for view in runtime.metadata().list_views().await.unwrap() {
+        for state in runtime.metadata().list_states(&view.view_id).await.unwrap() {
+            if !state.table_name.starts_with(&mv.table_name) {
+                continue;
+            }
+            match state.role {
+                StateRole::MultiAggRows => row_state = Some(state),
+                StateRole::MultiAggPartials => partial_state = Some(state),
+                _ => {}
+            }
+        }
+    }
+    let state = row_state.expect("the aggregate row state exists");
+    let state = runtime.open_table_by_id(&state.table_id).await.unwrap();
+    let partial_state = partial_state.expect("the partial state exists");
+    let partial_state = runtime
+        .open_table_by_id(&partial_state.table_id)
+        .await
+        .unwrap();
+
+    // Deleting g2's two rows removes its MV row and both partial rows.
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(3, "g2", 5, "d3", "delete"), (4, "g2", 7, "d4", "delete")]),
+        )
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        read_group_sums(runtime, &mv).await,
+        vec![("g1".to_string(), 30)]
+    );
+    assert_eq!(
+        count_visible_rows(runtime, &partial_state).await,
+        2,
+        "g2's partial rows are removed"
+    );
+
+    // Simulate the migration case: an existing populated row state with an
+    // empty partial state.  The next refresh rebuilds the partial state first.
+    partial_state.truncate(runtime.client()).await.unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "g1", 20, "d1", "insert")]),
+        )
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        read_group_sums(runtime, &mv).await,
+        vec![("g1".to_string(), 40)]
+    );
+    assert_eq!(
+        count_visible_rows(runtime, &partial_state).await,
+        2,
+        "the rebuild keeps exactly g1's two state partitions"
+    );
+    let (total, kept) =
+        state_partition_stats(&state.table_id).expect("the state lookup recorded stats");
+    assert!(
+        kept > 0 && kept < total,
+        "the rebuilt partial_state still prunes untouched partitions: total={total} kept={kept}"
+    );
+}
+
+/// A non-decomposable aggregate keeps the full row-state read path: no
+/// partial state is created and the result stays correct across a refresh.
+#[test_log::test(tokio::test)]
+async fn multi_agg_non_decomposable_aggregate_falls_back() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = create_source(&runtime, &dir, &suffix).await;
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_avg_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                Arc::new(Schema::new(vec![
+                    Field::new("g", DataType::Utf8, false),
+                    Field::new("sum_v", DataType::Int64, true),
+                    Field::new("avg_v", DataType::Float64, true),
+                    Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+                    Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+                ])),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "g1", 10, "d1", "insert"),
+                (2, "g1", 20, "d2", "insert"),
+                (3, "g2", 5, "d3", "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_avg_mv_{suffix} \
+         SELECT g, SUM(v) AS sum_v, AVG(v) AS avg_v \
+         FROM ivm_part_src_{suffix} GROUP BY g"
+    );
+    executor.execute(&statement).await.unwrap();
+    let runtime = executor.runtime();
+
+    let mut partial_state = None;
+    for view in runtime.metadata().list_views().await.unwrap() {
+        for state in runtime.metadata().list_states(&view.view_id).await.unwrap() {
+            if state.role == StateRole::MultiAggPartials
+                && state.table_name.starts_with(&mv.table_name)
+            {
+                partial_state = Some(state);
+            }
+        }
+    }
+    assert!(
+        partial_state.is_none(),
+        "AVG is not decomposable and must not create a partial state"
+    );
+
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "g1", 30, "d1", "insert")]),
+        )
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(&mv)))
+        .unwrap();
+    let batches = context
+        .sql("select g, sum_v, avg_v from mv order by g")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let groups = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let averages = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<arrow_array::Float64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                groups.value(row).to_string(),
+                sums.value(row),
+                averages.value(row),
+            ));
+        }
+    }
+    assert_eq!(
+        rows,
+        vec![("g1".to_string(), 50, 25.0), ("g2".to_string(), 5, 5.0)]
+    );
+}
+
+/// A scalar expression over the group keys needs no partial column: it is
+/// re-evaluated when the partition partials are merged.
+#[test_log::test(tokio::test)]
+async fn multi_agg_scalar_is_re_evaluated_when_partials_merge() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = create_source(&runtime, &dir, &suffix).await;
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_scalar_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                Arc::new(Schema::new(vec![
+                    Field::new("g", DataType::Utf8, false),
+                    Field::new("sum_v", DataType::Int64, true),
+                    Field::new("tag", DataType::Utf8, true),
+                    Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+                    Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+                ])),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "g1", 10, "d1", "insert"), (2, "g1", 20, "d2", "insert")]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_scalar_mv_{suffix} \
+         SELECT g, SUM(v) AS sum_v, upper(g) AS tag \
+         FROM ivm_part_src_{suffix} GROUP BY g"
+    );
+    executor.execute(&statement).await.unwrap();
+    let runtime = executor.runtime();
+
+    let mut partial_state = None;
+    for view in runtime.metadata().list_views().await.unwrap() {
+        for state in runtime.metadata().list_states(&view.view_id).await.unwrap() {
+            if state.role == StateRole::MultiAggPartials
+                && state.table_name.starts_with(&mv.table_name)
+            {
+                partial_state = Some(state);
+            }
+        }
+    }
+    let partial_state = partial_state.expect("the partial state exists");
+    let partial_state = runtime
+        .open_table_by_id(&partial_state.table_id)
+        .await
+        .unwrap();
+    assert!(
+        partial_state
+            .schema
+            .field_with_name("__ivm_partial_0")
+            .is_ok(),
+        "the SUM aggregate has a partial column"
+    );
+    assert!(
+        partial_state.schema.field_with_name("tag").is_err(),
+        "the scalar group expression is not stored as a partial"
+    );
+
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "g1", 15, "d1", "insert")]),
+        )
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(&mv)))
+        .unwrap();
+    let batches = context
+        .sql("select g, sum_v, tag from mv order by g")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let groups = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let tags = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                groups.value(row).to_string(),
+                sums.value(row),
+                tags.value(row).to_string(),
+            ));
+        }
+    }
+    assert_eq!(rows, vec![("g1".to_string(), 35, "G1".to_string())]);
 }

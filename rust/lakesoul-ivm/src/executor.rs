@@ -40,18 +40,18 @@ use crate::runtime::{
     ChainPolicy, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_EPOCH_COLUMN,
     IVM_GROUP_ROW_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_PAIR_IDENTITY_COLUMN,
     IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
-    IvmRuntime, JoinOutputColumn, JoinSide, MultiAggSpec, MultiLookupColumn,
-    MultiLookupRight, SinkColumn, ViewSpec, approx_distinct_groups_mv_schema_for,
-    approx_percentile_groups_mv_schema_for, array_agg_groups_mv_schema_for,
-    bool_agg_groups_mv_schema_for, computed_agg_mv_schema_for,
-    cross_join_view_schema_for, decode_data_type, distinct_agg_groups_mv_schema_for,
-    encode_data_type, full_join_view_schema_with_keys, grouping_sets_mv_schema_for,
-    join_view_schema_with_keys, keyed_join_output_primary_keys,
-    keyed_join_view_schema_with_keys, left_aggregate_mv_schema_with_outputs,
-    left_join_view_schema_with_keys, lookup_chain_mv_schema_for,
-    lookup_chain_step_id_column, lookup_join_view_schema_for,
+    IvmRuntime, JoinOutputColumn, JoinSide, MultiAggPartialPlan, MultiAggSpec,
+    MultiLookupColumn, MultiLookupRight, SinkColumn, ViewSpec,
+    approx_distinct_groups_mv_schema_for, approx_percentile_groups_mv_schema_for,
+    array_agg_groups_mv_schema_for, bool_agg_groups_mv_schema_for,
+    computed_agg_mv_schema_for, cross_join_view_schema_for, decode_data_type,
+    distinct_agg_groups_mv_schema_for, encode_data_type, full_join_view_schema_with_keys,
+    grouping_sets_mv_schema_for, join_view_schema_with_keys,
+    keyed_join_output_primary_keys, keyed_join_view_schema_with_keys,
+    left_aggregate_mv_schema_with_outputs, left_join_view_schema_with_keys,
+    lookup_chain_mv_schema_for, lookup_chain_step_id_column, lookup_join_view_schema_for,
     median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
-    multi_agg_rows_state_schema_for, multi_agg_state_schema_for,
+    multi_agg_partial_plan, multi_agg_rows_state_schema_for, multi_agg_state_schema_for,
     multi_join_append_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
     multi_lookup_join_mv_schema_for, multi_window_mv_schema_for_with_payload,
     nullable_join_key_schema, parse_filter, refresh_session, row_expr_mv_schema_for,
@@ -2887,6 +2887,96 @@ impl IvmSqlExecutor {
         })
     }
 
+    /// Ensure the partial state of a decomposable multi-aggregate view.
+    ///
+    /// The partial state stores one row per `(group key, source partition)`
+    /// with the aggregates of that partition, so a refresh can recompute only
+    /// the changed partitions and then merge all partials for the affected
+    /// groups into the final MV.  It is only needed when the row state is
+    /// range-partitioned and the view has group keys.
+    async fn ensure_multi_agg_partial_state(
+        &self,
+        view_id: &str,
+        mv: &IvmTable,
+        state: &IvmTable,
+        group_keys: &[String],
+        range_partitions: &[String],
+        plan: &MultiAggPartialPlan,
+    ) -> Result<Option<IvmTable>> {
+        if group_keys.is_empty() || range_partitions.is_empty() {
+            return Ok(None);
+        }
+        let mut keys = group_keys.to_vec();
+        for column in range_partitions {
+            if !keys.contains(column) {
+                keys.push(column.clone());
+            }
+        }
+        let mut fields = Vec::with_capacity(keys.len() + plan.columns.len() + 2);
+        for column in &keys {
+            let field = state.schema.field_with_name(column)?;
+            fields.push(Arc::new(Field::new(
+                field.name(),
+                field.data_type().clone(),
+                field.is_nullable(),
+            )));
+        }
+        for (column, data_type) in plan.partial_columns() {
+            fields.push(Arc::new(Field::new(column, data_type, true)));
+        }
+        fields.push(Arc::new(Field::new(
+            IVM_ROW_KINDS_COLUMN,
+            DataType::Utf8,
+            false,
+        )));
+        fields.push(Arc::new(Field::new(
+            IVM_EPOCH_COLUMN,
+            DataType::Int64,
+            false,
+        )));
+        let schema = Arc::new(Schema::new(fields));
+        let name = format!("{}__partials", state.table_name);
+        let path = format!("{}__partials", state.table_path);
+        if let Ok(existing) = self.runtime.open_table(&name, &mv.namespace).await {
+            if schema_matches(&existing.schema, &schema)
+                && existing.primary_keys == keys
+                && existing.range_partition_columns == range_partitions
+                && existing.bucket_columns == group_keys
+            {
+                self.runtime
+                    .metadata()
+                    .register_state(view_id, StateRole::MultiAggPartials, &existing)
+                    .await?;
+                return Ok(Some(existing));
+            }
+            let _ = self
+                .runtime
+                .metadata()
+                .unregister_state(view_id, StateRole::MultiAggPartials)
+                .await;
+            let _ = self
+                .runtime
+                .metadata()
+                .delete_view(&existing.table_id)
+                .await;
+            let _ = self.runtime.client().drop_table(&name, &mv.namespace).await;
+        }
+        let mut options = IvmTableOptions::new(name, path, schema)
+            .with_namespace(mv.namespace.clone())
+            .with_primary_keys(keys)
+            .with_bucket_columns(group_keys.to_vec())
+            .with_range_partition_columns(range_partitions.to_vec())
+            .with_cdc_column(IVM_ROW_KINDS_COLUMN)
+            .with_file_format(keyed_state_file_format());
+        options.hash_bucket_num = state.hash_bucket_num.clone();
+        let table = create_ivm_table(self.runtime.client(), options).await?;
+        self.runtime
+            .metadata()
+            .register_state(view_id, StateRole::MultiAggPartials, &table)
+            .await?;
+        Ok(Some(table))
+    }
+
     /// The value-count state table of the view, reusing the registered one when
     /// its schema still matches and recreating it otherwise.
     async fn ensure_state_table(
@@ -3015,6 +3105,19 @@ impl IvmSqlExecutor {
             let bucket_columns = group_keys.clone();
             let range_partitions =
                 state_range_partition_columns(&state_source, &primary_keys);
+            let partial_plan = {
+                let aggregates = aggregates
+                    .iter()
+                    .map(|aggregate| {
+                        Ok((
+                            aggregate.call.clone(),
+                            aggregate.column.clone(),
+                            decode_data_type(&aggregate.result)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                multi_agg_partial_plan(group_keys, &aggregates, &source.schema)?
+            };
             let mut replaced = false;
             if let Some(existing) = self
                 .runtime
@@ -3032,6 +3135,17 @@ impl IvmSqlExecutor {
                     ))
                     && table.primary_keys == primary_keys
                 {
+                    if let Some(plan) = &partial_plan {
+                        self.ensure_multi_agg_partial_state(
+                            spec.view_id(),
+                            mv,
+                            &table,
+                            group_keys,
+                            &range_partitions,
+                            plan,
+                        )
+                        .await?;
+                    }
                     return Ok(Some(table.table_id));
                 }
                 self.runtime
@@ -3072,7 +3186,7 @@ impl IvmSqlExecutor {
             .with_cdc_column(IVM_ROW_KINDS_COLUMN)
             .with_file_format(keyed_state_file_format());
             if !range_partitions.is_empty() {
-                options = options.with_range_partition_columns(range_partitions);
+                options = options.with_range_partition_columns(range_partitions.clone());
             }
             options.hash_bucket_num = mv.hash_bucket_num.clone();
             let table = create_ivm_table(self.runtime.client(), options).await?;
@@ -3080,6 +3194,17 @@ impl IvmSqlExecutor {
                 .metadata()
                 .register_state(spec.view_id(), StateRole::MultiAggRows, &table)
                 .await?;
+            if let Some(plan) = &partial_plan {
+                self.ensure_multi_agg_partial_state(
+                    spec.view_id(),
+                    mv,
+                    &table,
+                    group_keys,
+                    &range_partitions,
+                    plan,
+                )
+                .await?;
+            }
             if replaced {
                 // An empty recreated row state cannot answer the old groups;
                 // rebuild the view from the source instead.

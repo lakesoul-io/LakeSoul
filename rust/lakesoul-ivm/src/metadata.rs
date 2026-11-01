@@ -240,6 +240,11 @@ pub enum StateRole {
     /// current source row keyed by the group keys plus the source primary key,
     /// so an affected group can be recomputed without scanning the source.
     MultiAggRows,
+    /// The partial aggregates of a multi-aggregate row state: one row per
+    /// `(group, source partition)` pair with the decomposable aggregate
+    /// values of that partition.  A refresh recomputes only the changed
+    /// partitions and merges all partials of the affected groups.
+    MultiAggPartials,
     /// A join source state keyed by the encoded join key.
     JoinLeft,
     /// A join source state keyed by the encoded join key.
@@ -265,6 +270,7 @@ impl StateRole {
             StateRole::Mv => "mv",
             StateRole::State => "state",
             StateRole::MultiAggRows => "multi_agg_rows",
+            StateRole::MultiAggPartials => "multi_agg_partials",
             StateRole::JoinLeft => "join_left",
             StateRole::JoinRight => "join_right",
             StateRole::JoinPairIndex => "join_pair_index",
@@ -290,6 +296,10 @@ impl StateRole {
             "mv" => Ok(StateRole::Mv),
             "state" => Ok(StateRole::State),
             "multi_agg_rows" => Ok(StateRole::MultiAggRows),
+            "multi_agg_partials" => Ok(StateRole::MultiAggPartials),
+            // An earlier development role name; keep reading it so a
+            // pre-existing metadata row does not fail the whole listing.
+            "multi_agg_partitions" => Ok(StateRole::MultiAggPartials),
             "join_left" => Ok(StateRole::JoinLeft),
             "join_right" => Ok(StateRole::JoinRight),
             "join_pair_index" => Ok(StateRole::JoinPairIndex),

@@ -4834,6 +4834,13 @@ impl IvmRuntime {
         let restriction = partitions
             .map(|restriction| restriction.to_vec())
             .or(inferred);
+        let stats_total = if restriction.is_some()
+            && std::env::var("LAKESOUL_IVM_PARTITION_STATS").is_ok()
+        {
+            Some(table.current_groups(&self.client).await?.len())
+        } else {
+            None
+        };
         let groups = match &restriction {
             Some(restriction) => {
                 table
@@ -4842,6 +4849,13 @@ impl IvmRuntime {
             }
             None => table.current_groups(&self.client).await?,
         };
+        if let Some(total) = stats_total {
+            super::keyed_plan::record_partition_stats(
+                &table.table_id,
+                total,
+                groups.len(),
+            );
+        }
         let groups = groups_by_bucket(groups, bucket_count);
         // Sorted-merge lookup is experimental and opt-in until it has a
         // measured win over the keyed lookup on the pilot.

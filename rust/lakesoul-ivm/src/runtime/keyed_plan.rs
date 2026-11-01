@@ -1351,12 +1351,17 @@ fn partition_stats() -> &'static Mutex<HashMap<String, (u64, u64)>> {
     PARTITION_STATS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn record_partition_stats(table_id: &str, total: usize, kept: usize) {
+pub(crate) fn record_partition_stats(table_id: &str, total: usize, kept: usize) {
     if std::env::var("LAKESOUL_IVM_PARTITION_STATS").is_err() {
         return;
     }
     if let Ok(mut stats) = partition_stats().lock() {
-        stats.insert(table_id.to_string(), (total as u64, kept as u64));
+        // Several stages can narrow the same lookup.  Keep the widest total
+        // seen and the narrowest kept set, so the reported pair describes the
+        // whole lookup rather than only its last stage.
+        let entry = stats.entry(table_id.to_string()).or_insert((0, u64::MAX));
+        entry.0 = entry.0.max(total as u64);
+        entry.1 = entry.1.min(kept as u64);
     }
 }
 
