@@ -4239,3 +4239,129 @@ async fn a_partitioned_join_side_state_uses_the_join_key_partition() {
         "the side state lookup did not prune: state_partitions={state_partitions} total={total} kept={kept}"
     );
 }
+
+/// A multi-aggregate row state over an ungrouped source partition mirrors the
+/// source's range partitioning.  The state key gains the real source
+/// partition column even though the SQL groups only by `g`; the final MV still
+/// aggregates across partitions.
+#[test_log::test(tokio::test)]
+async fn multi_agg_row_state_keeps_ungrouped_source_partition() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = create_source(&runtime, &dir, &suffix).await;
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_part_multi_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                multi_agg_mv_schema_for(
+                    &source.schema,
+                    &["g".to_string()],
+                    &[],
+                    &[
+                        ("sum_v".to_string(), DataType::Int64),
+                        ("max_v".to_string(), DataType::Int64),
+                    ],
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "a", 10, "d1", "insert"),
+                (2, "a", 20, "d2", "insert"),
+                (3, "b", 7, "d1", "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_part_multi_mv_{suffix} \
+         SELECT g, SUM(v) AS sum_v, MAX(v) AS max_v \
+         FROM ivm_part_src_{suffix} GROUP BY g"
+    );
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let runtime = executor.runtime();
+
+    let mut row_state = None;
+    for view in runtime.metadata().list_views().await.unwrap() {
+        for state in runtime.metadata().list_states(&view.view_id).await.unwrap() {
+            if state.role == StateRole::MultiAggRows
+                && state.table_name.starts_with(&mv.table_name)
+            {
+                row_state = Some(state);
+            }
+        }
+    }
+    let state = row_state.expect("the multi-agg row state exists");
+    let state = runtime.open_table_by_id(&state.table_id).await.unwrap();
+    assert!(
+        state.primary_keys.contains(&"day".to_string()),
+        "source partition must be a state key: {:?}",
+        state.primary_keys
+    );
+    assert_eq!(
+        state.range_partition_columns,
+        vec!["day".to_string()],
+        "the row state must mirror the source partitioning"
+    );
+
+    let read_sums = || async {
+        let context = SessionContext::new();
+        context
+            .register_table("mv", Arc::new(runtime.table_provider(&mv)))
+            .unwrap();
+        let batches = context
+            .sql("select g, sum_v from mv order by g")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+        for batch in &batches {
+            let groups = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let sums = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                rows.push((groups.value(row).to_string(), sums.value(row)));
+            }
+        }
+        rows
+    };
+
+    assert_eq!(
+        read_sums().await,
+        vec![("a".to_string(), 30), ("b".to_string(), 7)]
+    );
+
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 15, "d1", "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_sums().await,
+        vec![("a".to_string(), 35), ("b".to_string(), 7)]
+    );
+}

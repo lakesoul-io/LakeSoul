@@ -2968,6 +2968,17 @@ impl IvmSqlExecutor {
                 group_exprs,
             )?;
             let mut primary_keys = group_keys.clone();
+            // A source range partition column is a real state key even when
+            // the SQL does not group by it.  Keeping it in the key makes a
+            // row that moves between source partitions distinct, and lets the
+            // state table mirror the source partitioning.
+            for column in &source.range_partition_columns {
+                if source.schema.field_with_name(column).is_ok()
+                    && !primary_keys.contains(column)
+                {
+                    primary_keys.push(column.clone());
+                }
+            }
             for key in &state_source.primary_keys {
                 if !primary_keys.contains(key) {
                     primary_keys.push(key.clone());
