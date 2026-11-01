@@ -3570,6 +3570,93 @@ async fn latest_table_timestamp(
         .max())
 }
 
+/// Whether a mirror state that is older than its output is still current
+/// because the output's newer versions are only compactions.
+///
+/// The output is written before its mirror, so a state timestamp older than
+/// the output means either a missed state write or an external compaction of
+/// the output.  If every output partition's latest commit is a compaction and
+/// the state is at least as new as the version before that compaction, the
+/// state already contains the same rows and does not need a full rewrite.
+async fn mirror_state_compaction_only(
+    runtime: &IvmRuntime,
+    state: &IvmTable,
+    output: &IvmTable,
+) -> Result<bool> {
+    let Some(state_timestamp) = latest_table_timestamp(runtime, state).await? else {
+        return Ok(false);
+    };
+    let Some(output_timestamp) = latest_table_timestamp(runtime, output).await? else {
+        return Ok(false);
+    };
+    if state_timestamp >= output_timestamp {
+        return Ok(true);
+    }
+    let versions = super::output_partition_versions(&runtime.client, output).await?;
+    if versions.is_empty() {
+        return Ok(false);
+    }
+    for version in versions {
+        if version.version <= 0 {
+            return Ok(false);
+        }
+        let Some(current) = runtime
+            .client
+            .get_partition_info_by_version(
+                &output.table_id,
+                &version.partition_desc,
+                version.version as i32,
+            )
+            .await?
+        else {
+            return Ok(false);
+        };
+        if current.commit_op
+            != lakesoul_metadata_proto::entity::CommitOp::CompactionCommit as i32
+        {
+            return Ok(false);
+        }
+        let Some(previous) = runtime
+            .client
+            .get_partition_info_by_version(
+                &output.table_id,
+                &version.partition_desc,
+                (version.version - 1) as i32,
+            )
+            .await?
+        else {
+            return Ok(false);
+        };
+        // A sequence of compactions may have run since the state was written.
+        // Walk back to the last non-compaction commit; the state only has to
+        // be at least as new as that data version.
+        let mut previous = previous;
+        let mut previous_version = version.version - 1;
+        while previous.commit_op
+            == lakesoul_metadata_proto::entity::CommitOp::CompactionCommit as i32
+            && previous_version > 0
+        {
+            previous_version -= 1;
+            let Some(earlier) = runtime
+                .client
+                .get_partition_info_by_version(
+                    &output.table_id,
+                    &version.partition_desc,
+                    previous_version as i32,
+                )
+                .await?
+            else {
+                return Ok(false);
+            };
+            previous = earlier;
+        }
+        if previous.timestamp > state_timestamp {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Whether a join view takes the keyed (upsert) path.
 fn join_is_keyed(view: &JoinView) -> bool {
     !view.left.primary_keys.is_empty() || !view.right.primary_keys.is_empty()
@@ -5180,16 +5267,31 @@ impl IvmRuntime {
         };
         let output_files = output.current_files(&self.client).await?;
         let state_files = state.current_files(&self.client).await?;
-        let state_stale = state_files.is_empty() && !output_files.is_empty();
+        let mut state_stale = state_files.is_empty() && !output_files.is_empty();
         // The MV is written before its optional mirror state.  If the state
         // commit failed after the MV commit, the state's latest partition
         // timestamp is behind the MV's; repair it from the MV before applying
-        // the next window.  Equal timestamps are left alone (both writes land
-        // in the same refresh, and a compaction is allowed to be newer).
-        let state_stale = state_stale
-            || (!output_files.is_empty()
-                && latest_table_timestamp(self, state).await?
-                    < latest_table_timestamp(self, output).await?);
+        // the next window.  Equal timestamps are left alone.  A newer output
+        // compaction is not a missing state write: the compaction preserves
+        // the rows, so the mirror is still current.
+        if !state_stale
+            && !output_files.is_empty()
+            && latest_table_timestamp(self, state).await?
+                < latest_table_timestamp(self, output).await?
+        {
+            let compaction_only = mirror_state_compaction_only(self, state, output)
+                .await
+                .unwrap_or(false);
+            if compaction_only {
+                tracing::debug!(
+                    state = %state.table_name,
+                    output = %output.table_name,
+                    "join mirror timestamp difference is compaction only"
+                );
+            } else {
+                state_stale = true;
+            }
+        }
         if state_stale {
             self.sync_join_state(output, state).await
         } else {
@@ -5244,10 +5346,26 @@ impl IvmRuntime {
             if table.schema == output.schema && table.primary_keys == primary_keys {
                 let output_files = output.current_files(&self.client).await?;
                 let index_files = table.current_files(&self.client).await?;
-                let stale = index_files.is_empty() && !output_files.is_empty()
-                    || (!output_files.is_empty()
-                        && latest_table_timestamp(self, &table).await?
-                            < latest_table_timestamp(self, output).await?);
+                let mut stale = index_files.is_empty() && !output_files.is_empty();
+                if !stale
+                    && !output_files.is_empty()
+                    && latest_table_timestamp(self, &table).await?
+                        < latest_table_timestamp(self, output).await?
+                {
+                    let compaction_only =
+                        mirror_state_compaction_only(self, &table, output)
+                            .await
+                            .unwrap_or(false);
+                    if compaction_only {
+                        tracing::debug!(
+                            index = %table.table_name,
+                            output = %output.table_name,
+                            "join pair index timestamp difference is compaction only"
+                        );
+                    } else {
+                        stale = true;
+                    }
+                }
                 if stale {
                     // The MV is committed before this duplicate index.  A
                     // crash between those two writes leaves a non-empty but
