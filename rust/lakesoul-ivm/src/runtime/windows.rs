@@ -3404,6 +3404,63 @@ impl IvmRuntime {
         Ok(())
     }
 
+    /// Whether a rank-state version change is only the external compaction.
+    ///
+    /// Compaction rewrites the files but not the logical rows.  A newer
+    /// compaction commit over the version the last epoch recorded therefore
+    /// keeps the same row set, and a full re-seed from the source is
+    /// unnecessary.  A version that is behind the epoch, or a newer merge
+    /// commit, still needs the sync.
+    async fn rank_state_compaction_only(
+        &self,
+        state: &IvmTable,
+        expected: &[PartitionVersion],
+        current: &[PartitionVersion],
+    ) -> Result<bool> {
+        if expected.is_empty() || expected.len() != current.len() {
+            return Ok(false);
+        }
+        for current_version in current {
+            let Some(expected_version) = expected
+                .iter()
+                .find(|version| version.partition_desc == current_version.partition_desc)
+            else {
+                return Ok(false);
+            };
+            if expected_version.version == current_version.version {
+                continue;
+            }
+            if current_version.version <= expected_version.version {
+                return Ok(false);
+            }
+            let Some(current_info) = self
+                .client
+                .get_partition_info_by_version(
+                    &state.table_id,
+                    &current_version.partition_desc,
+                    current_version.version as i32,
+                )
+                .await?
+            else {
+                return Ok(false);
+            };
+            if current_info.commit_op
+                != lakesoul_metadata_proto::entity::CommitOp::CompactionCommit as i32
+            {
+                tracing::debug!(
+                    table = %state.table_name,
+                    partition = %current_version.partition_desc,
+                    expected_version = expected_version.version,
+                    current_version = current_version.version,
+                    commit_op = current_info.commit_op,
+                    "rank state compaction check: current commit is not compaction"
+                );
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// A source-row state used to recompute window/top-k ranks without
     /// scanning the whole source.  It keeps all source columns, keyed by the
     /// partition/group keys and the source primary key.
@@ -3459,26 +3516,43 @@ impl IvmRuntime {
                         .map(|version| version.versions.clone());
                     let current = output_partition_versions(&self.client, &state).await?;
                     if expected.as_ref() != Some(&current) {
-                        // The rank state is ahead of or behind the last
-                        // committed epoch (for example after a crash or a
-                        // compaction).  Re-seed it from the source so the next
-                        // window starts from a known current row set.
-                        tracing::debug!(
-                            table = %state.table_name,
-                            source = %source.table_name,
-                            reason = "version_mismatch",
-                            ?expected,
-                            ?current,
-                            "sync rank state"
-                        );
-                        let started = std::time::Instant::now();
-                        state.truncate(&self.client).await?;
-                        self.sync_rank_state(source, &state).await?;
-                        tracing::debug!(
-                            table = %state.table_name,
-                            elapsed_ms = started.elapsed().as_millis() as u64,
-                            "rank state synced"
-                        );
+                        let compaction_only = match expected.as_deref() {
+                            Some(expected) => self
+                                .rank_state_compaction_only(&state, expected, &current)
+                                .await
+                                .unwrap_or(false),
+                            None => false,
+                        };
+                        if compaction_only {
+                            tracing::debug!(
+                                table = %state.table_name,
+                                source = %source.table_name,
+                                ?expected,
+                                ?current,
+                                "rank state version change is compaction only"
+                            );
+                        } else {
+                            // The rank state is ahead of or behind the last
+                            // committed epoch (for example after a crash).  Re-seed
+                            // it from the source so the next window starts from a
+                            // known current row set.
+                            tracing::debug!(
+                                table = %state.table_name,
+                                source = %source.table_name,
+                                reason = "version_mismatch",
+                                ?expected,
+                                ?current,
+                                "sync rank state"
+                            );
+                            let started = std::time::Instant::now();
+                            state.truncate(&self.client).await?;
+                            self.sync_rank_state(source, &state).await?;
+                            tracing::debug!(
+                                table = %state.table_name,
+                                elapsed_ms = started.elapsed().as_millis() as u64,
+                                "rank state synced"
+                            );
+                        }
                     }
                 }
                 return Ok(Some(state));
