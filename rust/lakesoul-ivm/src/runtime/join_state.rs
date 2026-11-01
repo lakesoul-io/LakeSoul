@@ -77,10 +77,20 @@ pub(crate) fn join_side_state_schema_for(
 }
 
 /// Primary keys of a side state table: the encoded join key followed by the
-/// source row identity.
-pub(crate) fn join_side_state_primary_keys(source: &IvmTable) -> Vec<String> {
+/// source row identity.  A source range partition column that is also a join
+/// key is added as a raw key so the state can be range-partitioned by it and
+/// the lookup contribution (which carries the join key) can prune partitions.
+pub(crate) fn join_side_state_primary_keys(
+    source: &IvmTable,
+    join_keys: &[String],
+) -> Vec<String> {
     let mut keys = vec![IVM_JOIN_KEY_COLUMN.to_string()];
     keys.extend(source.primary_keys.iter().cloned());
+    for column in &source.range_partition_columns {
+        if join_keys.contains(column) && !keys.contains(column) {
+            keys.push(column.clone());
+        }
+    }
     keys
 }
 
@@ -365,7 +375,7 @@ impl super::IvmRuntime {
             return Ok(None);
         }
         let schema = join_side_state_schema_for(source, join_keys)?;
-        let primary_keys = join_side_state_primary_keys(source);
+        let primary_keys = join_side_state_primary_keys(source, join_keys);
         if let Some(existing) = self.metadata().get_state(view_id, role).await? {
             let table = self.open_table_by_id(&existing.table_id).await?;
             if table.schema == schema && table.primary_keys == primary_keys {
@@ -661,7 +671,28 @@ mod tests {
         assert!(!join_side_needs_state(&table, &["id".to_string()]));
         assert!(join_side_needs_state(&table, &["other".to_string()]));
         assert_eq!(
-            join_side_state_primary_keys(&table),
+            join_side_state_primary_keys(&table, &["id".to_string()]),
+            vec![IVM_JOIN_KEY_COLUMN.to_string(), "id".to_string()]
+        );
+    }
+
+    #[test]
+    fn adds_a_partition_join_key_to_the_side_state_primary_key() {
+        let mut table = source(Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("day", DataType::Utf8, false),
+        ])));
+        table.range_partition_columns = vec!["day".to_string()];
+        assert_eq!(
+            join_side_state_primary_keys(&table, &["id".to_string(), "day".to_string()]),
+            vec![
+                IVM_JOIN_KEY_COLUMN.to_string(),
+                "id".to_string(),
+                "day".to_string()
+            ]
+        );
+        assert_eq!(
+            join_side_state_primary_keys(&table, &["id".to_string()]),
             vec![IVM_JOIN_KEY_COLUMN.to_string(), "id".to_string()]
         );
     }

@@ -4047,3 +4047,180 @@ async fn a_multi_join_prunes_a_deep_source_by_chain_keys() {
         vec![(10, 100, 1000, 7, 55), (20, 200, 2000, 8, 6)]
     );
 }
+
+/// A join side state whose source partition column is also a join key is
+/// range-partitioned by it, so the state lookup can prune the untouched date
+/// partition.
+#[test_log::test(tokio::test)]
+async fn a_partitioned_join_side_state_uses_the_join_key_partition() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("jk", DataType::Int64, false),
+        Field::new("day", DataType::Utf8, false),
+        Field::new("lv", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("rid", DataType::Int64, false),
+        Field::new("jk", DataType::Int64, false),
+        Field::new("day", DataType::Utf8, false),
+        Field::new("rv", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pjss_left_{suffix}"),
+                table_path(&dir, "left"),
+                left_schema.clone(),
+            )
+            .with_primary_keys(vec!["id".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pjss_right_{suffix}"),
+                table_path(&dir, "right"),
+                right_schema.clone(),
+            )
+            .with_primary_keys(vec!["rid".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let output = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pjss_out_{suffix}"),
+                table_path(&dir, "out"),
+                keyed_join_view_schema_for(
+                    &left_schema,
+                    &right_schema,
+                    &["id".to_string()],
+                    &["rid".to_string()],
+                    &["jk".to_string(), "day".to_string()],
+                    "lv",
+                    "rv",
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(keyed_join_output_primary_keys(
+                &["id".to_string()],
+                &["rid".to_string()],
+            )),
+        )
+        .await
+        .unwrap();
+    let view = JoinView::new_with_join_keys(
+        format!("ivm_pjss_view_{suffix}"),
+        left.clone(),
+        right.clone(),
+        output.clone(),
+        vec!["jk".to_string(), "day".to_string()],
+        "lv",
+        "rv",
+    );
+
+    left.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            left_schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values([1, 2])),
+                Arc::new(Int64Array::from_iter_values([10, 20])),
+                Arc::new(StringArray::from_iter_values(["d1", "d2"])),
+                Arc::new(Int64Array::from_iter_values([100, 200])),
+                Arc::new(StringArray::from_iter_values(["insert", "insert"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                right_schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from_iter_values([1, 2])),
+                    Arc::new(Int64Array::from_iter_values([10, 20])),
+                    Arc::new(StringArray::from_iter_values(["d1", "d2"])),
+                    Arc::new(Int64Array::from_iter_values([5, 6])),
+                    Arc::new(StringArray::from_iter_values(["insert", "insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_join(&view).await.unwrap();
+
+    let state = runtime
+        .metadata()
+        .get_state(&view.view_id, StateRole::JoinLeft)
+        .await
+        .unwrap()
+        .expect("left side state");
+    let state = runtime.open_table_by_id(&state.table_id).await.unwrap();
+    assert!(
+        state.primary_keys.contains(&"day".to_string()),
+        "the join-key partition must be in the side state pk: {:?}",
+        state.primary_keys
+    );
+    assert_eq!(
+        state.range_partition_columns,
+        vec!["day".to_string()],
+        "the join side state must be range-partitioned by the join key"
+    );
+
+    // Only the d1 join key changes on the right; the d2 left state partition
+    // must remain untouched.
+    right
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                right_schema,
+                vec![
+                    Arc::new(Int64Array::from_iter_values([1])),
+                    Arc::new(Int64Array::from_iter_values([10])),
+                    Arc::new(StringArray::from_iter_values(["d1"])),
+                    Arc::new(Int64Array::from_iter_values([7])),
+                    Arc::new(StringArray::from_iter_values(["update"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_join(&view).await.unwrap();
+
+    let mut rows = Vec::new();
+    for batch in output.read_current(runtime.client()).await.unwrap() {
+        let schema = batch.schema();
+        let left_value = batch
+            .column(schema.index_of("left_value").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let right_value = batch
+            .column(schema.index_of("right_value").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((left_value.value(row), right_value.value(row)));
+        }
+    }
+    rows.sort_unstable();
+    assert_eq!(rows, vec![(100, 7), (200, 6)]);
+}
