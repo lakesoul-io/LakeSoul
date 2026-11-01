@@ -29,7 +29,7 @@ use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
 use async_trait::async_trait;
 use datafusion::catalog::{Session, TableProvider};
-use datafusion::common::{ScalarValue, tree_node::TreeNodeRecursion};
+use datafusion::common::{NullEquality, ScalarValue, tree_node::TreeNodeRecursion};
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::TableType;
 use datafusion::physical_expr::expressions::Column as PhysicalColumn;
@@ -38,15 +38,17 @@ use datafusion::physical_expr::{
 };
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode, SortMergeJoinExec};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning,
     PlanProperties, SendableRecordBatchStream,
 };
 use datafusion::physical_plan::{RangePartitioning, SplitPoint};
-use datafusion::prelude::{DataFrame, col, lit};
+use datafusion::prelude::{DataFrame, SessionContext, col, lit};
 use futures::StreamExt;
 use lakesoul_vector::IndexKey;
 use tokio::sync::Semaphore;
@@ -55,6 +57,7 @@ use super::{
     IVM_EPOCH_COLUMN, IVM_GROUP_ROW_COLUMN, IVM_ROW_COUNT_COLUMN, IVM_ROW_KINDS_COLUMN,
 };
 use crate::error::Result;
+use crate::provider::IvmTableProvider;
 use crate::table::{IvmTable, PartitionFiles, file_bucket, partition_matches};
 
 /// Hidden column carrying the LakeSoul bucket id during a shuffle.
@@ -378,6 +381,17 @@ pub(crate) const IVM_STATE_COLUMN_PREFIX: &str = "__ivm_state_";
 /// contribution batch.
 pub(crate) const PK_LOOKUP_CHUNK_ROWS: usize = 4096;
 
+/// Contribution rows per keyed lookup request.  The default bounds the IN
+/// list and reader request; a larger chunk trades a bigger request for fewer
+/// reader/index setups.
+fn lookup_chunk_rows() -> usize {
+    std::env::var("LAKESOUL_IVM_LOOKUP_CHUNK_ROWS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(PK_LOOKUP_CHUNK_ROWS)
+        .clamp(1, 65_536)
+}
+
 /// Above this many values a pushed-down IN list costs more to evaluate over
 /// the state rows than reading the bucket and matching the exact row key in
 /// memory.  The lookup plan still performs the exact composite-key match.
@@ -640,6 +654,34 @@ enum PkFilters {
     ScanAll(Vec<datafusion::prelude::Expr>),
 }
 
+/// Order the contribution columns like the table key when both lists name the
+/// same columns.  The row encoder pairs them positionally, so a join key and a
+/// primary key listed in different orders would otherwise build the wrong
+/// tuple.  Aliased keys (different names) keep the caller's positional order.
+fn mapped_input_columns(
+    input_columns: &[String],
+    table_columns: &[String],
+) -> Vec<String> {
+    if input_columns.len() == table_columns.len()
+        && table_columns
+            .iter()
+            .all(|table| input_columns.iter().any(|input| input == table))
+    {
+        table_columns
+            .iter()
+            .map(|table| {
+                input_columns
+                    .iter()
+                    .find(|input| *input == table)
+                    .cloned()
+                    .unwrap_or_else(|| table.clone())
+            })
+            .collect()
+    } else {
+        input_columns.to_vec()
+    }
+}
+
 fn key_filter_exprs(
     batch: &RecordBatch,
     key: &PkLookupKey,
@@ -652,11 +694,12 @@ fn key_filter_exprs(
             input_columns,
             table_columns,
         } => {
+            let input_columns = mapped_input_columns(input_columns, table_columns);
             let mut rows = Vec::new();
             for row in 0..batch.num_rows() {
                 let mut values = Vec::with_capacity(input_columns.len());
                 let mut null = false;
-                for column in input_columns {
+                for column in &input_columns {
                     let index = batch.schema().index_of(column)?;
                     if batch.column(index).is_null(row) {
                         null = true;
@@ -763,6 +806,7 @@ fn key_rows(
             input_columns,
             table_columns,
         } => {
+            let input_columns = mapped_input_columns(input_columns, table_columns);
             let fields = table_columns
                 .iter()
                 .map(|column| {
@@ -927,6 +971,7 @@ pub(crate) struct IvmPkLookupExec {
     gate: Arc<Semaphore>,
     multi_match: bool,
     emit_unmatched: bool,
+    profile_io: Option<crate::observability::ProfileHandle>,
     properties: Arc<PlanProperties>,
 }
 
@@ -1009,8 +1054,17 @@ impl IvmPkLookupExec {
             gate: Arc::new(Semaphore::new(max_active_tasks())),
             multi_match: false,
             emit_unmatched: false,
+            profile_io: None,
             properties,
         })
+    }
+
+    pub(crate) fn with_profile(
+        mut self,
+        profile_io: Option<crate::observability::ProfileHandle>,
+    ) -> Self {
+        self.profile_io = profile_io;
+        self
     }
     /// Join-side lookup mode: emit every matching state row and drop a
     /// contribution row without a match (inner-join semantics).
@@ -1107,6 +1161,7 @@ impl ExecutionPlan for IvmPkLookupExec {
         plan.gate = self.gate.clone();
         plan.multi_match = self.multi_match;
         plan.emit_unmatched = self.emit_unmatched;
+        plan.profile_io = self.profile_io.clone();
         Ok(Arc::new(plan))
     }
 
@@ -1131,6 +1186,8 @@ impl ExecutionPlan for IvmPkLookupExec {
         let gate = self.gate.clone();
         let multi_match = self.multi_match;
         let emit_unmatched = self.emit_unmatched;
+        let chunk_rows = lookup_chunk_rows();
+        let profile_io = self.profile_io.clone();
         let stream =
             futures::stream::try_unfold((input, groups), move |(mut input, groups)| {
                 let gate = gate.clone();
@@ -1138,6 +1195,7 @@ impl ExecutionPlan for IvmPkLookupExec {
                 let key = key.clone();
                 let state_schema = state_schema.clone();
                 let out_schema = out_schema.clone();
+                let profile_io = profile_io.clone();
                 async move {
                     let gate = gate.clone();
                     loop {
@@ -1151,10 +1209,8 @@ impl ExecutionPlan for IvmPkLookupExec {
                         let mut outputs = Vec::new();
                         let mut state_rows = 0usize;
                         let mut chunks = 0usize;
-                        for offset in (0..batch.num_rows()).step_by(PK_LOOKUP_CHUNK_ROWS)
-                        {
-                            let length =
-                                PK_LOOKUP_CHUNK_ROWS.min(batch.num_rows() - offset);
+                        for offset in (0..batch.num_rows()).step_by(chunk_rows) {
+                            let length = chunk_rows.min(batch.num_rows() - offset);
                             let chunk = batch.slice(offset, length);
                             let filters = match key_filter_exprs(&chunk, &key)? {
                                 PkFilters::Pushdown(filters)
@@ -1184,6 +1240,7 @@ impl ExecutionPlan for IvmPkLookupExec {
                         };
                         tracing::debug!(
                             table = %table.table_name,
+                            key = %key.display(),
                             partition,
                             contribution_rows = batch.num_rows(),
                             chunks,
@@ -1192,6 +1249,12 @@ impl ExecutionPlan for IvmPkLookupExec {
                             elapsed = ?started.elapsed(),
                             "keyed state lookup batch finished"
                         );
+                        if let Some(io) = &profile_io {
+                            crate::observability::add_lookup_time_shared(
+                                io,
+                                started.elapsed(),
+                            );
+                        }
                         return Ok(Some((output, (input, groups))));
                     }
                 }
@@ -1209,6 +1272,78 @@ impl ExecutionPlan for IvmPkLookupExec {
 /// reference the same lookup frame more than once (for example a join's
 /// `already` and `deletes` sides); reusing one physical lookup plan would
 /// consume its input partitions on the first execution.
+/// The `(partition column, contribution column)` pairs a lookup can prune
+/// by.  `None` means at least one partition column is not part of the lookup
+/// key, so the read must keep every partition.
+pub(crate) fn partition_pairs_for_key(
+    key: &PkLookupKey,
+    partitions: &[String],
+    contribution_schema: &Schema,
+) -> Option<Vec<(String, String)>> {
+    if partitions.is_empty() {
+        return None;
+    }
+    match key {
+        PkLookupKey::Columns {
+            input_columns,
+            table_columns,
+        } => partitions
+            .iter()
+            .map(|partition| {
+                let index = table_columns
+                    .iter()
+                    .position(|column| column == partition)?;
+                Some((partition.clone(), input_columns.get(index)?.clone()))
+            })
+            .collect(),
+        PkLookupKey::BinaryRow { .. } => partitions
+            .iter()
+            .map(|partition| {
+                contribution_schema.field_with_name(partition).ok()?;
+                Some((partition.clone(), partition.clone()))
+            })
+            .collect(),
+    }
+}
+
+/// The distinct partition values present in already-materialized contribution
+/// batches.  Empty or unparsable input returns `None`, which keeps every
+/// partition.
+pub(crate) fn partition_restriction_from_batches(
+    batches: &[RecordBatch],
+    pairs: &[(String, String)],
+) -> Option<Vec<(String, Vec<String>)>> {
+    if pairs.is_empty() {
+        return None;
+    }
+    let mut values: Vec<(String, std::collections::BTreeSet<String>)> = pairs
+        .iter()
+        .map(|(column, _)| (column.clone(), std::collections::BTreeSet::new()))
+        .collect();
+    let mut rows = 0usize;
+    for batch in batches {
+        for row in 0..batch.num_rows() {
+            for (index, (_, input)) in pairs.iter().enumerate() {
+                let array = batch.column_by_name(input)?;
+                let scalar = ScalarValue::try_from_array(array, row).ok()?;
+                values[index]
+                    .1
+                    .insert(lakesoul_io::helpers::format_scalar_value(&scalar));
+            }
+            rows += 1;
+        }
+    }
+    if rows == 0 {
+        return None;
+    }
+    Some(
+        values
+            .into_iter()
+            .map(|(column, values)| (column, values.into_iter().collect()))
+            .collect(),
+    )
+}
+
 pub(crate) struct IvmLookupTable {
     contribution: DataFrame,
     table: IvmTable,
@@ -1223,6 +1358,7 @@ pub(crate) struct IvmLookupTable {
     partition_columns: Vec<String>,
     /// The caller already fetched only the matching partition groups.
     prepruned: bool,
+    profile_io: Option<crate::observability::ProfileHandle>,
     schema: SchemaRef,
 }
 
@@ -1254,6 +1390,7 @@ impl IvmLookupTable {
             multi_match,
             partition_columns,
             prepruned: false,
+            profile_io: crate::observability::current_refresh_io(),
             schema,
         }
     }
@@ -1282,6 +1419,7 @@ impl IvmLookupTable {
             multi_match,
             partition_columns,
             prepruned: false,
+            profile_io: crate::observability::current_refresh_io(),
             schema,
         }
     }
@@ -1305,37 +1443,11 @@ impl IvmLookupTable {
             PkLookupKey::Columns { .. } => &self.table.range_partition_columns,
             PkLookupKey::BinaryRow { .. } => &self.partition_columns,
         };
-        if partitions.is_empty() {
-            return None;
-        }
-        let mut pairs = Vec::with_capacity(partitions.len());
-        match &self.key {
-            PkLookupKey::Columns {
-                input_columns,
-                table_columns,
-            } => {
-                for partition in partitions {
-                    let index = table_columns
-                        .iter()
-                        .position(|column| column == partition)?;
-                    pairs.push((partition.clone(), input_columns.get(index)?.clone()));
-                }
-            }
-            PkLookupKey::BinaryRow { .. } => {
-                // A binary state key hides its join-key columns.  The
-                // contribution still carries them under their join names; the
-                // caller only passes plain join keys that are also state
-                // partition columns, so every such column is safe to use.
-                for partition in partitions {
-                    self.contribution
-                        .schema()
-                        .as_arrow()
-                        .field_with_name(partition)
-                        .ok()?;
-                    pairs.push((partition.clone(), partition.clone()));
-                }
-            }
-        }
+        let pairs = partition_pairs_for_key(
+            &self.key,
+            partitions,
+            self.contribution.schema().as_arrow(),
+        )?;
         let frame = self
             .contribution
             .clone()
@@ -1349,32 +1461,7 @@ impl IvmLookupTable {
             .distinct()
             .ok()?;
         let batches = frame.collect().await.ok()?;
-        let mut values: Vec<(String, std::collections::BTreeSet<String>)> = pairs
-            .iter()
-            .map(|(column, _)| (column.clone(), std::collections::BTreeSet::new()))
-            .collect();
-        let mut rows = 0usize;
-        for batch in &batches {
-            for row in 0..batch.num_rows() {
-                for (index, (_, input)) in pairs.iter().enumerate() {
-                    let array = batch.column_by_name(input)?;
-                    let scalar = ScalarValue::try_from_array(array, row).ok()?;
-                    values[index]
-                        .1
-                        .insert(lakesoul_io::helpers::format_scalar_value(&scalar));
-                }
-                rows += 1;
-            }
-        }
-        if rows == 0 {
-            return None;
-        }
-        Some(
-            values
-                .into_iter()
-                .map(|(column, values)| (column, values.into_iter().collect()))
-                .collect(),
-        )
+        partition_restriction_from_batches(&batches, &pairs)
     }
 
     async fn build_plan(&self) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
@@ -1441,7 +1528,11 @@ impl IvmLookupTable {
                 self.bucket_count,
             )?,
         };
-        Ok(Arc::new(lookup.with_multi_match(self.multi_match)))
+        Ok(Arc::new(
+            lookup
+                .with_multi_match(self.multi_match)
+                .with_profile(self.profile_io.clone()),
+        ))
     }
 }
 
@@ -1449,6 +1540,692 @@ impl std::fmt::Debug for IvmLookupTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "IvmLookupTable")
     }
+}
+
+/// One execution partition per LakeSoul hash bucket.  Each child is already a
+/// single-partition plan over that bucket's state files, so the downstream
+/// hash join can run every bucket concurrently without shuffling the state.
+struct BucketPartitionedExec {
+    children: Vec<Arc<dyn ExecutionPlan>>,
+    properties: Arc<PlanProperties>,
+}
+
+impl BucketPartitionedExec {
+    fn new(children: Vec<Arc<dyn ExecutionPlan>>, schema: SchemaRef) -> Self {
+        let properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(schema),
+            Partitioning::UnknownPartitioning(children.len().max(1)),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        Self {
+            children,
+            properties,
+        }
+    }
+}
+
+impl std::fmt::Debug for BucketPartitionedExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BucketPartitionedExec buckets={}", self.children.len())
+    }
+}
+
+impl DisplayAs for BucketPartitionedExec {
+    fn fmt_as(
+        &self,
+        _format: DisplayFormatType,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        write!(f, "BucketPartitionedExec buckets={}", self.children.len())
+    }
+}
+
+impl ExecutionPlan for BucketPartitionedExec {
+    fn name(&self) -> &str {
+        "BucketPartitionedExec"
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.properties.eq_properties.schema().clone()
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        self.children.iter().collect()
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        Ok(Arc::new(Self::new(children, self.schema())))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<datafusion::execution::TaskContext>,
+    ) -> DataFusionResult<SendableRecordBatchStream> {
+        let child = self.children.get(partition).ok_or_else(|| {
+            DataFusionError::Execution(format!(
+                "bucket partition {partition} is out of range"
+            ))
+        })?;
+        child.execute(0, context)
+    }
+}
+
+/// Execute one selected partition of a multi-partition input as a one-partition
+/// plan.  Used to pair a bucket's contribution with the same bucket's state in
+/// a per-bucket sort-merge join.
+struct PartitionSelectorExec {
+    input: Arc<dyn ExecutionPlan>,
+    partition: usize,
+    properties: Arc<PlanProperties>,
+}
+
+impl PartitionSelectorExec {
+    fn new(input: Arc<dyn ExecutionPlan>, partition: usize) -> Self {
+        let schema = input.schema();
+        Self {
+            input,
+            partition,
+            properties: Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            )),
+        }
+    }
+}
+
+impl std::fmt::Debug for PartitionSelectorExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PartitionSelectorExec({})", self.partition)
+    }
+}
+
+impl DisplayAs for PartitionSelectorExec {
+    fn fmt_as(
+        &self,
+        _format: DisplayFormatType,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        write!(f, "PartitionSelectorExec({})", self.partition)
+    }
+}
+
+impl ExecutionPlan for PartitionSelectorExec {
+    fn name(&self) -> &str {
+        "PartitionSelectorExec"
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.input.schema()
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let input = children.into_iter().next().ok_or_else(|| {
+            DataFusionError::Internal("partition selector child".into())
+        })?;
+        Ok(Arc::new(Self::new(input, self.partition)))
+    }
+
+    fn execute(
+        &self,
+        _partition: usize,
+        context: Arc<datafusion::execution::TaskContext>,
+    ) -> DataFusionResult<SendableRecordBatchStream> {
+        self.input.execute(self.partition, context)
+    }
+}
+
+/// A table provider that builds a fresh partitioned hash join on every scan.
+///
+/// The refresh path may plan and execute the same logical lookup more than
+/// once.  `RepartitionExec` and `HashJoinExec` keep execution state, so the
+/// physical plan must not be cached in the provider: rebuilding it per scan
+/// is what makes the join reusable.
+#[derive(Debug)]
+pub(crate) struct IvmHashJoinTable {
+    state: IvmTable,
+    client: lakesoul_metadata::MetaDataClient,
+    contribution: DataFrame,
+    input_columns: Vec<String>,
+    table_columns: Vec<String>,
+    route_columns: Option<Vec<String>>,
+    join_type: datafusion::common::JoinType,
+    null_equality: NullEquality,
+    groups_by_bucket: Vec<Vec<PartitionFiles>>,
+}
+
+impl IvmHashJoinTable {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        state: IvmTable,
+        client: lakesoul_metadata::MetaDataClient,
+        contribution: DataFrame,
+        input_columns: Vec<String>,
+        table_columns: Vec<String>,
+        route_columns: Option<Vec<String>>,
+        join_type: datafusion::common::JoinType,
+        null_equality: NullEquality,
+        groups_by_bucket: Vec<Vec<PartitionFiles>>,
+    ) -> Self {
+        Self {
+            state,
+            client,
+            contribution,
+            input_columns,
+            table_columns,
+            route_columns,
+            join_type,
+            null_equality,
+            groups_by_bucket,
+        }
+    }
+
+    async fn build_plan(
+        &self,
+        session: &dyn Session,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let bucket_count = self.groups_by_bucket.len().max(1);
+        let mut state_children = Vec::with_capacity(bucket_count);
+        for groups in &self.groups_by_bucket {
+            let provider = IvmTableProvider::groups(
+                self.state.clone(),
+                self.client.clone(),
+                groups.clone(),
+            );
+            let plan = provider.scan(session, None, &[], None).await?;
+            state_children.push(
+                Arc::new(CoalescePartitionsExec::new(plan)) as Arc<dyn ExecutionPlan>
+            );
+        }
+        let state_plan: Arc<dyn ExecutionPlan> = Arc::new(BucketPartitionedExec::new(
+            state_children,
+            self.state.schema.clone(),
+        ));
+        let (partition_mode, contribution_plan) = if bucket_count > 1 {
+            let route_columns = self.route_columns.as_ref().ok_or_else(|| {
+                DataFusionError::Internal(
+                    "bucket hash join needs contribution route columns".to_string(),
+                )
+            })?;
+            (
+                PartitionMode::Partitioned,
+                bucket_repartition_by_columns(
+                    self.contribution.create_physical_plan().await?,
+                    route_columns,
+                    bucket_count,
+                )
+                .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?,
+            )
+        } else {
+            // A one-bucket state is a single partition; collect it as the
+            // build side and let the probe keep its own partitioning.
+            (
+                PartitionMode::CollectLeft,
+                self.contribution.create_physical_plan().await?,
+            )
+        };
+        let contribution_schema = contribution_plan.schema();
+        let on = self
+            .table_columns
+            .iter()
+            .zip(&self.input_columns)
+            .map(|(table_column, input_column)| {
+                let left = Arc::new(PhysicalColumn::new(
+                    table_column,
+                    self.state.schema.index_of(table_column)?,
+                )) as Arc<dyn PhysicalExpr>;
+                let right = Arc::new(PhysicalColumn::new(
+                    input_column,
+                    contribution_schema.index_of(input_column)?,
+                )) as Arc<dyn PhysicalExpr>;
+                Ok((left, right))
+            })
+            .collect::<DataFusionResult<Vec<_>>>()?;
+        let join = HashJoinExec::try_new(
+            state_plan,
+            contribution_plan,
+            on,
+            None,
+            &self.join_type,
+            None,
+            partition_mode,
+            self.null_equality,
+            false,
+        )?;
+        let projection = self
+            .state
+            .schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(index, field)| {
+                (
+                    Arc::new(PhysicalColumn::new(field.name(), index))
+                        as Arc<dyn PhysicalExpr>,
+                    field.name().clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        Ok(Arc::new(ProjectionExec::try_new(
+            projection,
+            Arc::new(join),
+        )?))
+    }
+}
+
+#[async_trait]
+impl TableProvider for IvmHashJoinTable {
+    fn schema(&self) -> SchemaRef {
+        self.state.schema.clone()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Temporary
+    }
+
+    async fn scan(
+        &self,
+        session: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        _filters: &[datafusion::prelude::Expr],
+        _limit: Option<usize>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let plan = self.build_plan(session).await?;
+        // Hide the join from the outer physical optimizer.  Otherwise
+        // EnforceDistribution sees the join's key-partitioned requirement and
+        // inserts another DataFusion hash repartition around it, shuffling the
+        // LakeSoul buckets and (worse) changing the join's partition layout.
+        // Coalesce only the output; the join still runs every bucket
+        // internally.
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(IvmHiddenPlanExec::new(Arc::new(
+            CoalescePartitionsExec::new(plan),
+        )));
+        let Some(projection) = projection else {
+            return Ok(plan);
+        };
+        let schema = plan.schema();
+        let exprs = projection
+            .iter()
+            .map(|index| {
+                let field = schema.field(*index);
+                (
+                    Arc::new(PhysicalColumn::new(field.name(), *index))
+                        as Arc<dyn PhysicalExpr>,
+                    field.name().clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        Ok(Arc::new(ProjectionExec::try_new(exprs, plan)?))
+    }
+}
+
+/// A table provider that builds a fresh partitioned sort-merge join on every
+/// scan.
+///
+/// The contribution is routed to LakeSoul buckets, each bucket's contribution
+/// and state are sorted by the join key, and one `SortMergeJoinExec` runs per
+/// bucket.  Unlike the hash join this never builds a hash table; state is read
+/// as a sorted stream and the join only buffers the current key group.
+#[derive(Debug)]
+pub(crate) struct IvmSortMergeJoinTable {
+    state: IvmTable,
+    client: lakesoul_metadata::MetaDataClient,
+    contribution: DataFrame,
+    input_columns: Vec<String>,
+    table_columns: Vec<String>,
+    route_columns: Option<Vec<String>>,
+    join_type: datafusion::common::JoinType,
+    null_equality: NullEquality,
+    groups_by_bucket: Vec<Vec<PartitionFiles>>,
+}
+
+impl IvmSortMergeJoinTable {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        state: IvmTable,
+        client: lakesoul_metadata::MetaDataClient,
+        contribution: DataFrame,
+        input_columns: Vec<String>,
+        table_columns: Vec<String>,
+        route_columns: Option<Vec<String>>,
+        join_type: datafusion::common::JoinType,
+        null_equality: NullEquality,
+        groups_by_bucket: Vec<Vec<PartitionFiles>>,
+    ) -> Self {
+        Self {
+            state,
+            client,
+            contribution,
+            input_columns,
+            table_columns,
+            route_columns,
+            join_type,
+            null_equality,
+            groups_by_bucket,
+        }
+    }
+
+    async fn build_plan(
+        &self,
+        session: &dyn Session,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let bucket_count = self.groups_by_bucket.len().max(1);
+        let mut state_children = Vec::with_capacity(bucket_count);
+        for groups in &self.groups_by_bucket {
+            let provider = IvmTableProvider::groups_current(
+                self.state.clone(),
+                self.client.clone(),
+                groups.clone(),
+            );
+            let plan = provider.scan(session, None, &[], None).await?;
+            state_children.push(
+                Arc::new(CoalescePartitionsExec::new(plan)) as Arc<dyn ExecutionPlan>
+            );
+        }
+        let contribution = self
+            .contribution
+            .clone()
+            .distinct()
+            .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?;
+        let contribution_plan: Arc<dyn ExecutionPlan> = if bucket_count > 1 {
+            let route_columns = self.route_columns.as_ref().ok_or_else(|| {
+                DataFusionError::Internal(
+                    "bucket sort-merge lookup needs contribution route columns"
+                        .to_string(),
+                )
+            })?;
+            bucket_repartition_by_columns(
+                contribution.create_physical_plan().await?,
+                route_columns,
+                bucket_count,
+            )
+            .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?
+        } else {
+            Arc::new(CoalescePartitionsExec::new(
+                contribution.create_physical_plan().await?,
+            ))
+        };
+        let contribution_schema = contribution_plan.schema();
+        let sort_options = vec![SortOptions::default(); self.table_columns.len()];
+        let contribution_ordering = LexOrdering::new(
+            self.input_columns
+                .iter()
+                .map(|column| {
+                    Ok(PhysicalSortExpr {
+                        expr: Arc::new(PhysicalColumn::new(
+                            column,
+                            contribution_schema.index_of(column)?,
+                        )),
+                        options: SortOptions::default(),
+                    })
+                })
+                .collect::<DataFusionResult<Vec<_>>>()?,
+        )
+        .ok_or_else(|| {
+            DataFusionError::Internal(
+                "sort-merge contribution ordering is empty".to_string(),
+            )
+        })?;
+        let projection = self
+            .state
+            .schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(index, field)| {
+                (
+                    Arc::new(PhysicalColumn::new(field.name(), index))
+                        as Arc<dyn PhysicalExpr>,
+                    field.name().clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut join_children = Vec::with_capacity(state_children.len());
+        for (bucket, state_child) in state_children.into_iter().enumerate() {
+            let contribution_child = Arc::new(PartitionSelectorExec::new(
+                contribution_plan.clone(),
+                bucket,
+            ));
+            let contribution_sorted = Arc::new(SortExec::new(
+                contribution_ordering.clone(),
+                contribution_child,
+            ));
+            let on = self
+                .table_columns
+                .iter()
+                .zip(&self.input_columns)
+                .map(|(table_column, input_column)| {
+                    let left = Arc::new(PhysicalColumn::new(
+                        table_column,
+                        state_child.schema().index_of(table_column)?,
+                    )) as Arc<dyn PhysicalExpr>;
+                    let right = Arc::new(PhysicalColumn::new(
+                        input_column,
+                        contribution_sorted.schema().index_of(input_column)?,
+                    )) as Arc<dyn PhysicalExpr>;
+                    Ok((left, right))
+                })
+                .collect::<DataFusionResult<Vec<_>>>()?;
+            let join = SortMergeJoinExec::try_new(
+                state_child,
+                contribution_sorted,
+                on,
+                None,
+                self.join_type,
+                sort_options.clone(),
+                self.null_equality,
+            )?;
+            join_children.push(Arc::new(ProjectionExec::try_new(
+                projection.clone(),
+                Arc::new(join),
+            )?) as Arc<dyn ExecutionPlan>);
+        }
+        Ok(Arc::new(BucketPartitionedExec::new(
+            join_children,
+            self.state.schema.clone(),
+        )))
+    }
+}
+
+#[async_trait]
+impl TableProvider for IvmSortMergeJoinTable {
+    fn schema(&self) -> SchemaRef {
+        self.state.schema.clone()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Temporary
+    }
+
+    async fn scan(
+        &self,
+        session: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        _filters: &[datafusion::prelude::Expr],
+        _limit: Option<usize>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let plan = self.build_plan(session).await?;
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(IvmHiddenPlanExec::new(Arc::new(
+            CoalescePartitionsExec::new(plan),
+        )));
+        let Some(projection) = projection else {
+            return Ok(plan);
+        };
+        let schema = plan.schema();
+        let exprs = projection
+            .iter()
+            .map(|index| {
+                let field = schema.field(*index);
+                (
+                    Arc::new(PhysicalColumn::new(field.name(), *index))
+                        as Arc<dyn PhysicalExpr>,
+                    field.name().clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        Ok(Arc::new(ProjectionExec::try_new(exprs, plan)?))
+    }
+}
+
+/// Build a partitioned DataFusion sort-merge join between one keyed source
+/// table and a contribution whose join-key columns are real table columns.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn sort_merge_source_state(
+    context: &SessionContext,
+    state: &IvmTable,
+    client: &lakesoul_metadata::MetaDataClient,
+    contribution: DataFrame,
+    input_columns: &[String],
+    table_columns: &[String],
+    route_columns: Option<Vec<String>>,
+    multi_match: bool,
+    groups_by_bucket: Vec<Vec<PartitionFiles>>,
+) -> DataFusionResult<DataFrame> {
+    let join_type = if multi_match {
+        datafusion::common::JoinType::Inner
+    } else {
+        datafusion::common::JoinType::Right
+    };
+    let table = IvmSortMergeJoinTable::new(
+        state.clone(),
+        client.clone(),
+        contribution,
+        input_columns.to_vec(),
+        table_columns.to_vec(),
+        route_columns,
+        join_type,
+        NullEquality::NullEqualsNothing,
+        groups_by_bucket,
+    );
+    context.read_table(Arc::new(table))
+}
+
+/// Build a partitioned DataFusion hash join between one state table and a
+/// binary-key contribution.  Both inputs stay streaming; only state columns
+/// are projected out.
+pub(crate) async fn hash_join_binary_state(
+    context: &SessionContext,
+    state: &IvmTable,
+    client: &lakesoul_metadata::MetaDataClient,
+    contribution: DataFrame,
+    key_column: &str,
+    groups_by_bucket: Vec<Vec<PartitionFiles>>,
+) -> DataFusionResult<DataFrame> {
+    let table = IvmHashJoinTable::new(
+        state.clone(),
+        client.clone(),
+        contribution,
+        vec![key_column.to_string()],
+        vec![key_column.to_string()],
+        Some(vec![key_column.to_string()]),
+        datafusion::common::JoinType::Inner,
+        NullEquality::NullEqualsNull,
+        groups_by_bucket,
+    );
+    context.read_table(Arc::new(table))
+}
+
+/// Build a partitioned DataFusion hash join between one keyed source table
+/// and a contribution whose join-key columns are real table columns.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn hash_join_source_state(
+    context: &SessionContext,
+    state: &IvmTable,
+    client: &lakesoul_metadata::MetaDataClient,
+    contribution: DataFrame,
+    input_columns: &[String],
+    table_columns: &[String],
+    route_columns: Option<Vec<String>>,
+    multi_match: bool,
+    groups_by_bucket: Vec<Vec<PartitionFiles>>,
+) -> DataFusionResult<DataFrame> {
+    let join_type = if multi_match {
+        datafusion::common::JoinType::Inner
+    } else {
+        datafusion::common::JoinType::Right
+    };
+    let table = IvmHashJoinTable::new(
+        state.clone(),
+        client.clone(),
+        contribution,
+        input_columns.to_vec(),
+        table_columns.to_vec(),
+        route_columns,
+        join_type,
+        NullEquality::NullEqualsNothing,
+        groups_by_bucket,
+    );
+    context.read_table(Arc::new(table))
+}
+
+/// Build the raw source hash-join plan for a benchmark.  The returned plan is
+/// not hidden from the optimizer, so its operator metrics can be inspected.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub async fn build_source_hash_join_plan(
+    context: &SessionContext,
+    state: &IvmTable,
+    client: &lakesoul_metadata::MetaDataClient,
+    contribution: DataFrame,
+    input_columns: &[String],
+    table_columns: &[String],
+    route_columns: Option<Vec<String>>,
+    multi_match: bool,
+    groups_by_bucket: Vec<Vec<PartitionFiles>>,
+) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+    let join_type = if multi_match {
+        datafusion::common::JoinType::Inner
+    } else {
+        datafusion::common::JoinType::Right
+    };
+    let table = IvmHashJoinTable::new(
+        state.clone(),
+        client.clone(),
+        contribution,
+        input_columns.to_vec(),
+        table_columns.to_vec(),
+        route_columns,
+        join_type,
+        NullEquality::NullEqualsNothing,
+        groups_by_bucket,
+    );
+    let session = context.state();
+    table.build_plan(&session).await
 }
 
 /// A one-partition plan that hides its inner plan from physical optimizers.
@@ -1901,6 +2678,20 @@ mod tests {
         assert_eq!(split[3][0].files.len(), 1);
         assert!(split[1].is_empty());
         assert!(split[2].is_empty());
+    }
+
+    #[test]
+    fn maps_permuted_key_columns_to_table_order() {
+        let input = ["order_item_id", "order_no", "src_sys"].map(str::to_string);
+        let table = ["src_sys", "order_no", "order_item_id"].map(str::to_string);
+        assert_eq!(mapped_input_columns(&input, &table), table);
+    }
+
+    #[test]
+    fn keeps_an_alias_mapping_positional() {
+        let input = ["left_key"].map(str::to_string);
+        let table = ["right_key"].map(str::to_string);
+        assert_eq!(mapped_input_columns(&input, &table), input);
     }
 
     #[test]

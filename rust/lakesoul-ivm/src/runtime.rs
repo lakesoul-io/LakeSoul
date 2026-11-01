@@ -11,7 +11,7 @@
 //! idempotent per cursor: the cursor only advances once its delta has been
 //! committed.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use arrow::array::{ArrayRef, BinaryArray, BinaryBuilder};
@@ -21,11 +21,11 @@ use arrow_array::Array;
 
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Column, DFSchema, NullEquality};
-use datafusion::logical_expr::ExprSchemable;
+use datafusion::common::{Column, DFSchema, NullEquality, ScalarValue};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::logical_expr::LogicalPlanBuilder;
 use datafusion::logical_expr::when;
+use datafusion::logical_expr::{ExprSchemable, Operator};
 use datafusion::prelude::{
     DataFrame, Expr, JoinType, SessionConfig, SessionContext, col, lit,
 };
@@ -280,6 +280,27 @@ pub enum ViewSpec {
         /// (`IS NOT DISTINCT FROM` keys).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         null_safe: bool,
+    },
+    /// A keyed lookup join with several 1:1 right sources that share one
+    /// set of join keys.  The left side keeps one join-key index, so a right
+    /// change maps back to affected left rows without scanning the left table.
+    MultiLookupJoin {
+        /// The view id.
+        view_id: String,
+        /// The left source table id (keyed).
+        left_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The join keys, shared by every right source.
+        join_keys: Vec<String>,
+        /// The right sources in output order.
+        rights: Vec<MultiLookupRight>,
+        /// The materialized columns; source 0 is the left, source `i + 1`
+        /// is `rights[i]`.
+        output_columns: Vec<MultiLookupColumn>,
+        /// The refresh interval hint persisted with the view.
+        #[serde(default)]
+        refresh_interval_ms: i64,
     },
     /// `LEFT JOIN` over two keyed sources: every left row with all its
     /// matching right rows (a NULL-padded row when nothing matches).
@@ -1255,6 +1276,7 @@ impl ViewSpec {
             | ViewSpec::MultiJoin { view_id, .. }
             | ViewSpec::MultiAgg { view_id, .. }
             | ViewSpec::LookupJoin { view_id, .. }
+            | ViewSpec::MultiLookupJoin { view_id, .. }
             | ViewSpec::LeftJoin { view_id, .. }
             | ViewSpec::FullJoin { view_id, .. }
             | ViewSpec::CrossJoin { view_id, .. }
@@ -1346,6 +1368,14 @@ impl ViewSpec {
             ViewSpec::Fallback { tables, .. } => {
                 ids.extend(tables.iter().map(String::as_str));
             }
+            ViewSpec::MultiLookupJoin {
+                left_table_id,
+                rights,
+                ..
+            } => {
+                ids.push(left_table_id.as_str());
+                ids.extend(rights.iter().map(|right| right.table_id.as_str()));
+            }
             ViewSpec::Join {
                 left_table_id,
                 right_table_id,
@@ -1434,6 +1464,11 @@ impl ViewSpec {
                 ..
             }
             | ViewSpec::MultiJoin {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::MultiLookupJoin {
                 view_id: id,
                 mv_table_id: mv,
                 ..
@@ -1634,6 +1669,7 @@ impl ViewSpec {
             ViewSpec::MultiJoin { .. } => "multi_join",
             ViewSpec::MultiAgg { .. } => "multi_agg",
             ViewSpec::LookupJoin { .. } => "lookup_join",
+            ViewSpec::MultiLookupJoin { .. } => "multi_lookup_join",
             ViewSpec::LeftJoin { .. } => "left_join",
             ViewSpec::FullJoin { .. } => "full_join",
             ViewSpec::CrossJoin { .. } => "cross_join",
@@ -1653,6 +1689,27 @@ impl ViewSpec {
             ViewSpec::Sink { .. } => "sink",
         }
     }
+}
+
+/// One right source of a [`ViewSpec::MultiLookupJoin`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MultiLookupRight {
+    /// The right table id; its primary key must equal `join_keys`.
+    pub table_id: String,
+    /// An optional filter the right rows must satisfy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+}
+
+/// One materialized column of a [`ViewSpec::MultiLookupJoin`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MultiLookupColumn {
+    /// Source index: 0 is the left, `i + 1` is `rights[i]`.
+    pub source: usize,
+    /// The source column.
+    pub column: String,
+    /// The MV column name.
+    pub name: String,
 }
 
 /// One source of a [`ViewSpec::LookupChain`] (index 0 is the base).
@@ -1723,6 +1780,7 @@ enum SpecView {
     MultiJoin(MultiJoinView),
     MultiAgg(MultiAggView),
     LookupJoin(LookupJoinView),
+    MultiLookupJoin(MultiLookupJoinView),
     LeftJoin(LeftJoinView),
     FullJoin(FullJoinView),
     CrossJoin(CrossJoinView),
@@ -2199,6 +2257,82 @@ fn group_key_fields(
         .collect()
 }
 
+/// One condition on a range-partition column extracted from a view filter.
+#[derive(Debug, Clone)]
+enum PartitionCondition {
+    In {
+        column: String,
+        values: std::collections::BTreeSet<String>,
+    },
+    Cmp {
+        column: String,
+        op: Operator,
+        value: String,
+        number: Option<i128>,
+    },
+}
+
+impl PartitionCondition {
+    fn column(&self) -> &str {
+        match self {
+            Self::In { column, .. } | Self::Cmp { column, .. } => column,
+        }
+    }
+
+    fn matches(&self, value: &str) -> Option<bool> {
+        match self {
+            Self::In { values, .. } => Some(values.contains(value)),
+            Self::Cmp {
+                op,
+                value: expected,
+                number,
+                ..
+            } => {
+                if let Some(number) = number {
+                    let actual = value.parse::<i128>().ok()?;
+                    Some(match op {
+                        Operator::Gt => actual > *number,
+                        Operator::GtEq => actual >= *number,
+                        Operator::Lt => actual < *number,
+                        Operator::LtEq => actual <= *number,
+                        _ => return None,
+                    })
+                } else {
+                    Some(match op {
+                        Operator::Gt => value > expected.as_str(),
+                        Operator::GtEq => value >= expected.as_str(),
+                        Operator::Lt => value < expected.as_str(),
+                        Operator::LtEq => value <= expected.as_str(),
+                        _ => return None,
+                    })
+                }
+            }
+        }
+    }
+}
+
+/// A conjunction of constant partition conditions from a view filter.
+#[derive(Debug, Clone, Default)]
+struct PartitionPredicate {
+    conditions: Vec<PartitionCondition>,
+}
+
+impl PartitionPredicate {
+    fn matches(&self, descriptor: &str, columns: &[String]) -> Option<bool> {
+        let values = crate::table::parse_partition_values(descriptor, columns)?;
+        for condition in &self.conditions {
+            let index = columns
+                .iter()
+                .position(|column| column == condition.column())?;
+            let value = values.get(index)?;
+            if !condition.matches(value)? {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
+}
+
 /// The IVM runtime: a metadata client plus the `ivm` schema access layer.
 pub struct IvmRuntime {
     client: MetaDataClient,
@@ -2208,6 +2342,66 @@ pub struct IvmRuntime {
     /// unique-key chains; unknown after a process restart until the next
     /// rebuild/bootstrap.
     view_rows: Mutex<HashMap<String, u64>>,
+    /// Right-key existence shared by the plain SEMI/ANTI views of one right
+    /// window.  The key is `(right table, right join keys)`, and the value is
+    /// the set of encoded keys already probed plus the subset that exists.
+    /// It is deliberately scoped to one source window: a right change starts
+    /// a new window and invalidates every previous answer.
+    semi_anti_right_keys: Mutex<SemiAntiRightKeyCache>,
+}
+
+/// The shared right-key answers of one source window.
+#[derive(Default)]
+pub(crate) struct SemiAntiRightKeyCache {
+    window: String,
+    tables: HashMap<String, SemiAntiRightKeySet>,
+}
+
+/// The encoded keys a plain SEMI/ANTI view already asked the right side for.
+#[derive(Default)]
+pub(crate) struct SemiAntiRightKeySet {
+    probed: HashSet<Vec<u8>>,
+    present: HashSet<Vec<u8>>,
+}
+
+impl SemiAntiRightKeyCache {
+    /// Start a new window, dropping answers from the previous one.
+    pub(crate) fn begin_window(&mut self, window: &str) {
+        if self.window != window {
+            self.window = window.to_string();
+            self.tables.clear();
+        }
+    }
+
+    /// The keys known present and the keys that still need a probe.
+    pub(crate) fn lookup(
+        &mut self,
+        table: &str,
+        requested: &HashSet<Vec<u8>>,
+    ) -> (HashSet<Vec<u8>>, HashSet<Vec<u8>>) {
+        let entry = self.tables.entry(table.to_string()).or_default();
+        let present = requested
+            .intersection(&entry.present)
+            .cloned()
+            .collect::<HashSet<_>>();
+        let unknown = requested
+            .difference(&entry.probed)
+            .cloned()
+            .collect::<HashSet<_>>();
+        (present, unknown)
+    }
+
+    /// Record one probe of `unknown` that found `present`.
+    pub(crate) fn record(
+        &mut self,
+        table: &str,
+        unknown: &HashSet<Vec<u8>>,
+        present: &HashSet<Vec<u8>>,
+    ) {
+        let entry = self.tables.entry(table.to_string()).or_default();
+        entry.probed.extend(unknown.iter().cloned());
+        entry.present.extend(present.iter().cloned());
+    }
 }
 
 /// The attachment a refresh failure carries when a source partition was
@@ -2823,19 +3017,6 @@ pub(crate) struct AppendOutcome {
     pub(crate) deletes: u64,
 }
 
-/// The state table file count at which a refresh compacts it (0 disables).
-///
-/// A state table gains one file set per refresh; compaction rewrites the
-/// current logical state into one file per bucket so the state read (and the
-/// metadata) stays bounded.  The default is a compromise between write
-/// amplification and read latency for a few-minute refresh cadence.
-fn state_compaction_threshold() -> usize {
-    std::env::var("LAKESOUL_IVM_STATE_COMPACT_FILES")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(32)
-}
-
 impl IvmRuntime {
     /// The partition versions of every auxiliary state table of a view.
     ///
@@ -2936,72 +3117,6 @@ impl IvmRuntime {
             .await
     }
 
-    /// Compact an auxiliary state table when it accumulated enough files.
-    pub(crate) async fn maybe_compact_state(&self, state: &IvmTable) -> Result<()> {
-        let threshold = state_compaction_threshold();
-        if threshold == 0 {
-            return Ok(());
-        }
-        let files = state.current_file_count(&self.client).await?;
-        if files < threshold {
-            return Ok(());
-        }
-        let started = std::time::Instant::now();
-        state.compact(&self.client).await?;
-        tracing::debug!(
-            table = %state.table_name,
-            files,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "state compaction finished"
-        );
-        Ok(())
-    }
-
-    /// Compact every auxiliary state table registered for a view when it has
-    /// accumulated enough files.  This is the single generic compaction entry
-    /// point; operators only write state, they do not own compaction policy.
-    ///
-    /// The MV is compacted only when `LAKESOUL_IVM_MV_COMPACT_FILES` is set to
-    /// a non-zero threshold.  It is disabled by default because rewriting a
-    /// large output is much more expensive than compacting its small auxiliary
-    /// state tables.
-    pub async fn compact_view_states(&self, view_id: &str) -> Result<()> {
-        for state in self.metadata.list_states(view_id).await? {
-            if state.role == StateRole::Mv {
-                continue;
-            }
-            let table = self.open_table_by_id(&state.table_id).await?;
-            self.maybe_compact_state(&table).await?;
-        }
-        self.maybe_compact_mv(view_id).await
-    }
-
-    async fn maybe_compact_mv(&self, view_id: &str) -> Result<()> {
-        let threshold = std::env::var("LAKESOUL_IVM_MV_COMPACT_FILES")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(0);
-        if threshold == 0 {
-            return Ok(());
-        }
-        let Some(state) = self.metadata.get_state(view_id, StateRole::Mv).await? else {
-            return Ok(());
-        };
-        let table = self.open_table_by_id(&state.table_id).await?;
-        let files = table.current_file_count(&self.client).await?;
-        if files >= threshold {
-            let started = std::time::Instant::now();
-            table.compact(&self.client).await?;
-            tracing::debug!(
-                table = %table.table_name,
-                files,
-                elapsed_ms = started.elapsed().as_millis() as u64,
-                "mv compaction finished"
-            );
-        }
-        Ok(())
-    }
-
     /// The estimated live row count of a view, when known.
     pub(crate) fn known_view_rows(&self, view_id: &str) -> Option<u64> {
         self.view_rows
@@ -3078,9 +3193,13 @@ pub(crate) async fn write_dataframe(
         // table stores `Utf8`.  Every write path funnels through here, so cast
         // once instead of relying on each view kind.
         let batch = table.cast_batch(batch)?;
+        let started = std::time::Instant::now();
         writer.write_record_batch(batch).await?;
+        crate::observability::add_write_time(started.elapsed());
     }
+    let started = std::time::Instant::now();
     let outputs = writer.flush_and_close().await?;
+    crate::observability::add_write_time(started.elapsed());
     let files = table.output_files(outputs, written_rows);
     Ok(WrittenFiles {
         files,
@@ -3208,7 +3327,7 @@ fn project_schema(schema: &Schema, columns: &[String]) -> Result<SchemaRef> {
 }
 
 /// The plain columns a rendered filter references.
-fn filter_columns(
+pub(crate) fn filter_columns(
     context: &SessionContext,
     schema: &SchemaRef,
     filter: &str,
@@ -3335,6 +3454,7 @@ impl IvmRuntime {
             client: MetaDataClient::from_env().await?,
             metadata: IvmMetadata::from_env().await?,
             view_rows: Mutex::new(HashMap::new()),
+            semi_anti_right_keys: Mutex::new(SemiAntiRightKeyCache::default()),
         })
     }
 
@@ -3346,6 +3466,11 @@ impl IvmRuntime {
     /// The `ivm` schema access layer.
     pub fn metadata(&self) -> &IvmMetadata {
         &self.metadata
+    }
+
+    /// The shared right-key cache used by plain SEMI/ANTI views.
+    pub(crate) fn semi_anti_right_key_cache(&self) -> &Mutex<SemiAntiRightKeyCache> {
+        &self.semi_anti_right_keys
     }
 
     /// Create the `ivm` schema and tables if they do not exist.
@@ -3587,6 +3712,32 @@ impl IvmRuntime {
                 null_safe: *null_safe,
                 refresh_interval_ms,
             }),
+            ViewSpec::MultiLookupJoin {
+                view_id,
+                left_table_id,
+                mv_table_id,
+                join_keys,
+                rights,
+                output_columns,
+                refresh_interval_ms,
+            } => {
+                let mut opened = Vec::with_capacity(rights.len());
+                for right in rights {
+                    opened.push((
+                        self.open_table_by_id(&right.table_id).await?,
+                        right.filter.clone(),
+                    ));
+                }
+                SpecView::MultiLookupJoin(MultiLookupJoinView {
+                    view_id: view_id.clone(),
+                    left: self.open_table_by_id(left_table_id).await?,
+                    rights: opened,
+                    mv: self.open_table_by_id(mv_table_id).await?,
+                    join_keys: join_keys.clone(),
+                    output_columns: output_columns.clone(),
+                    refresh_interval_ms: *refresh_interval_ms,
+                })
+            }
             ViewSpec::LeftJoin {
                 view_id,
                 left_table_id,
@@ -4275,7 +4426,7 @@ impl IvmRuntime {
             "view refresh started"
         );
         let view = self.spec_view(spec).await;
-        let result = crate::observability::scope_refresh_io(kind, async {
+        let (result, io) = crate::observability::scope_refresh_io(kind, async {
             match view {
                 Ok(SpecView::SumCount(view)) => self.refresh_sum_count(&view).await,
                 Ok(SpecView::Variance(view)) => self.refresh_variance(&view).await,
@@ -4294,6 +4445,9 @@ impl IvmRuntime {
                 Ok(SpecView::MultiJoin(view)) => self.refresh_multi_join(&view).await,
                 Ok(SpecView::MultiAgg(view)) => self.refresh_multi_agg(&view).await,
                 Ok(SpecView::LookupJoin(view)) => self.refresh_lookup_join(&view).await,
+                Ok(SpecView::MultiLookupJoin(view)) => {
+                    self.refresh_multi_lookup_join(&view).await
+                }
                 Ok(SpecView::LeftJoin(view)) => self.refresh_left_join(&view).await,
                 Ok(SpecView::FullJoin(view)) => self.refresh_full_join(&view).await,
                 Ok(SpecView::CrossJoin(view)) => self.refresh_cross_join(&view).await,
@@ -4331,11 +4485,18 @@ impl IvmRuntime {
             view_id = %spec.view_id(),
             applied = matches!(result, Ok(Some(_))),
             elapsed_ms = started.elapsed().as_millis() as u64,
+            full_scan = io.full_scans() > 0,
+            full_scans = io.full_scans(),
+            full_scan_tables = ?io.full_scan_tables(),
+            files_read = io.files_read(),
+            rows_scanned = io.rows_scanned(),
+            rows_written = io.rows_written(),
+            lookup_ms = io.lookup_ms(),
+            lookup_calls = io.lookup_calls(),
+            write_ms = io.write_ms(),
+            write_calls = io.write_calls(),
             "view refresh finished"
         );
-        if result.is_ok() {
-            self.compact_view_states(spec.view_id()).await?;
-        }
         result
     }
 
@@ -4347,7 +4508,7 @@ impl IvmRuntime {
         let kind = spec.kind();
         let started = std::time::Instant::now();
         let view = self.spec_view(spec).await;
-        let result = crate::observability::scope_refresh_io(kind, async {
+        let (result, io) = crate::observability::scope_refresh_io(kind, async {
             match view {
                 Ok(SpecView::SumCount(view)) => self.rebuild_sum_count(&view).await,
                 Ok(SpecView::Variance(view)) => self.rebuild_variance(&view).await,
@@ -4366,6 +4527,9 @@ impl IvmRuntime {
                 Ok(SpecView::MultiJoin(view)) => self.rebuild_multi_join(&view).await,
                 Ok(SpecView::MultiAgg(view)) => self.rebuild_multi_agg(&view).await,
                 Ok(SpecView::LookupJoin(view)) => self.rebuild_lookup_join(&view).await,
+                Ok(SpecView::MultiLookupJoin(view)) => {
+                    self.rebuild_multi_lookup_join(&view).await
+                }
                 Ok(SpecView::LeftJoin(view)) => self.rebuild_left_join(&view).await,
                 Ok(SpecView::FullJoin(view)) => self.rebuild_full_join(&view).await,
                 Ok(SpecView::CrossJoin(view)) => self.rebuild_cross_join(&view).await,
@@ -4393,8 +4557,23 @@ impl IvmRuntime {
             }
         })
         .await;
+        tracing::debug!(
+            kind,
+            view_id = %spec.view_id(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            full_scan = io.full_scans() > 0,
+            full_scans = io.full_scans(),
+            full_scan_tables = ?io.full_scan_tables(),
+            files_read = io.files_read(),
+            rows_scanned = io.rows_scanned(),
+            rows_written = io.rows_written(),
+            lookup_ms = io.lookup_ms(),
+            lookup_calls = io.lookup_calls(),
+            write_ms = io.write_ms(),
+            write_calls = io.write_calls(),
+            "view rebuild finished"
+        );
         if result.is_ok() {
-            self.compact_view_states(spec.view_id()).await?;
             crate::observability::record_rebuild(kind, started.elapsed());
         }
         result
@@ -4469,6 +4648,7 @@ impl IvmRuntime {
         context: &SessionContext,
         table: &IvmTable,
     ) -> Result<DataFrame> {
+        crate::observability::note_full_scan(&table.table_name);
         Ok(context.read_table(Arc::new(self.table_provider(table)))?)
     }
 
@@ -4660,6 +4840,24 @@ impl IvmRuntime {
         })
     }
 
+    /// The source baseline restricted to the partitions a constant filter can
+    /// match.  Cursors and versions still cover every partition, so future
+    /// windows start from the same boundary.
+    async fn source_baseline_for_filter(
+        &self,
+        source: &IvmTable,
+        filter: Option<&str>,
+    ) -> Result<SourceBaseline> {
+        let mut baseline = self.source_baseline(source).await?;
+        if let Some(predicate) = Self::filter_partition_predicate(source, filter) {
+            baseline.groups.retain(|group| {
+                predicate.matches(&group.partition_desc, &source.range_partition_columns)
+                    != Some(false)
+            });
+        }
+        Ok(baseline)
+    }
+
     async fn source_baseline_meta(
         &self,
         source: &IvmTable,
@@ -4833,6 +5031,198 @@ impl IvmRuntime {
     }
 
     /// Read the changelog window of every partition of a source.
+    /// A condition on one range-partition column extracted from a view filter.
+    fn filter_partition_predicate(
+        source: &IvmTable,
+        filter: Option<&str>,
+    ) -> Option<PartitionPredicate> {
+        let filter = filter?;
+        if source.range_partition_columns.is_empty() {
+            return None;
+        }
+        let context = refresh_session();
+        let expression = parse_filter(&context, &source.schema, filter).ok()?;
+        let mut predicate = PartitionPredicate::default();
+        Self::collect_partition_conditions(&expression, source, &mut predicate);
+        (!predicate.conditions.is_empty()).then_some(predicate)
+    }
+
+    fn collect_partition_conditions(
+        expression: &Expr,
+        source: &IvmTable,
+        predicate: &mut PartitionPredicate,
+    ) {
+        match expression {
+            Expr::BinaryExpr(binary) if binary.op == Operator::And => {
+                Self::collect_partition_conditions(&binary.left, source, predicate);
+                Self::collect_partition_conditions(&binary.right, source, predicate);
+            }
+            Expr::BinaryExpr(binary) if binary.op == Operator::Eq => {
+                if let Some((column, literal)) = Self::partition_column_literal(binary)
+                    && source.range_partition_columns.contains(&column.name)
+                {
+                    predicate.conditions.push(PartitionCondition::In {
+                        column: column.name.clone(),
+                        values: [lakesoul_io::helpers::format_scalar_value(literal)]
+                            .into_iter()
+                            .collect(),
+                    });
+                }
+            }
+            Expr::InList(list) if !list.negated => {
+                let Expr::Column(column) = list.expr.as_ref() else {
+                    return;
+                };
+                if !source.range_partition_columns.contains(&column.name) {
+                    return;
+                }
+                let mut values = std::collections::BTreeSet::new();
+                for item in &list.list {
+                    let Some(literal) = Self::partition_literal(item) else {
+                        // A non-literal item makes a partial IN unsound.
+                        return;
+                    };
+                    values.insert(lakesoul_io::helpers::format_scalar_value(literal));
+                }
+                if !values.is_empty() {
+                    predicate.conditions.push(PartitionCondition::In {
+                        column: column.name.clone(),
+                        values,
+                    });
+                }
+            }
+            Expr::BinaryExpr(binary)
+                if matches!(
+                    binary.op,
+                    Operator::Gt | Operator::GtEq | Operator::Lt | Operator::LtEq
+                ) =>
+            {
+                if let Some((column, literal)) = Self::partition_column_literal(binary) {
+                    Self::push_partition_comparison(
+                        source, predicate, column, literal, binary.op,
+                    );
+                }
+            }
+            Expr::Between(between) if !between.negated => {
+                let Expr::Column(column) = between.expr.as_ref() else {
+                    return;
+                };
+                let (Some(low), Some(high)) = (
+                    Self::partition_literal(&between.low),
+                    Self::partition_literal(&between.high),
+                ) else {
+                    return;
+                };
+                Self::push_partition_comparison(
+                    source,
+                    predicate,
+                    column,
+                    low,
+                    Operator::GtEq,
+                );
+                Self::push_partition_comparison(
+                    source,
+                    predicate,
+                    column,
+                    high,
+                    Operator::LtEq,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn push_partition_comparison(
+        source: &IvmTable,
+        predicate: &mut PartitionPredicate,
+        column: &Column,
+        literal: &ScalarValue,
+        op: Operator,
+    ) {
+        if !source.range_partition_columns.contains(&column.name) {
+            return;
+        }
+        let Ok(field) = source.schema.field_with_name(&column.name) else {
+            return;
+        };
+        let value = lakesoul_io::helpers::format_scalar_value(literal);
+        let number = match field.data_type() {
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64 => match value.parse::<i128>() {
+                Ok(number) => Some(number),
+                Err(_) => return,
+            },
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Utf8View
+            | DataType::Date32
+            | DataType::Date64
+            | DataType::Timestamp(_, _) => None,
+            _ => return,
+        };
+        predicate.conditions.push(PartitionCondition::Cmp {
+            column: column.name.clone(),
+            op,
+            value,
+            number,
+        });
+    }
+
+    fn partition_column_literal(
+        binary: &datafusion::logical_expr::BinaryExpr,
+    ) -> Option<(&Column, &ScalarValue)> {
+        match (&*binary.left, &*binary.right) {
+            (Expr::Column(column), other) => {
+                Self::partition_literal(other).map(|literal| (column, literal))
+            }
+            (other, Expr::Column(column)) => {
+                Self::partition_literal(other).map(|literal| (column, literal))
+            }
+            _ => None,
+        }
+    }
+
+    fn partition_literal(expression: &Expr) -> Option<&ScalarValue> {
+        match expression {
+            Expr::Literal(literal, _) => Some(literal),
+            Expr::Cast(cast) => Self::partition_literal(&cast.expr),
+            _ => None,
+        }
+    }
+
+    /// Collect the source window and drop the changed partitions a constant
+    /// filter excludes.  Skipped partitions still advance their cursors; they
+    /// cannot affect this view.
+    async fn collect_source_window_for_filter(
+        &self,
+        view_id: &str,
+        source: &IvmTable,
+        filter: Option<&str>,
+    ) -> Result<SourceWindow> {
+        let mut window = self.collect_source_window(view_id, source).await?;
+        let Some(predicate) = Self::filter_partition_predicate(source, filter) else {
+            return Ok(window);
+        };
+        let columns = &source.range_partition_columns;
+        let keep = |desc: &str| predicate.matches(desc, columns) != Some(false);
+        window
+            .added_files
+            .retain(|group| keep(&group.partition_desc));
+        window.before_versions.retain(|desc, _| keep(desc));
+        window.identity.retain(|(_, desc, _, _)| keep(desc));
+        if window.added_files.is_empty() && !window.cursors.is_empty() {
+            self.advance_cursors(view_id, window.cursors.clone())
+                .await?;
+        }
+        Ok(window)
+    }
+
     async fn collect_source_window(
         &self,
         view_id: &str,

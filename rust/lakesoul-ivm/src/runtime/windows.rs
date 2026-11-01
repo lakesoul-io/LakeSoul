@@ -2133,6 +2133,51 @@ fn window_rank_columns(
         .collect())
 }
 
+/// Default memory budget for one materialized top-k frame.
+const TOP_K_MATERIALIZE_BYTES: usize = 1024 * 1024 * 1024;
+
+/// Materialize a top-k frame for reuse, but stop at a memory budget.
+///
+/// `mv` and `before` are each consumed by several plan branches.  Keeping
+/// them lazy re-runs the same keyed lookup, so the refresh materializes them
+/// by default.  A large window could otherwise pin the whole frame in memory:
+/// once the budget is crossed, drop the partial result and let the caller use
+/// the lazy frame again.  The budget is per frame and overridable with
+/// `LAKESOUL_IVM_TOPK_MATERIALIZE_BYTES`; `0` disables materialization.
+async fn materialize_top_k_frame(
+    frame: DataFrame,
+    label: &'static str,
+) -> Result<Option<Vec<RecordBatch>>> {
+    use futures::StreamExt;
+    let limit = std::env::var("LAKESOUL_IVM_TOPK_MATERIALIZE_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(TOP_K_MATERIALIZE_BYTES);
+    if limit == 0 {
+        return Ok(None);
+    }
+    let mut stream = frame.execute_stream().await?;
+    let mut batches = Vec::new();
+    let mut bytes = 0usize;
+    while let Some(batch) = stream.next().await {
+        let batch = batch?;
+        bytes += batch.get_array_memory_size();
+        if bytes > limit {
+            tracing::warn!(
+                label,
+                limit,
+                bytes,
+                "top-k materialization budget exceeded; falling back to lazy scan"
+            );
+            return Ok(None);
+        }
+        batches.push(batch);
+    }
+    let rows = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
+    tracing::debug!(label, bytes, rows, "top-k frame materialized");
+    Ok(Some(batches))
+}
+
 fn top_k_rank_columns(view: &TopKView, context: &SessionContext) -> Result<Vec<String>> {
     let mut columns = view.source.primary_keys.clone();
     for column in top_k_output_columns(view)
@@ -2317,7 +2362,11 @@ impl IvmRuntime {
         validate_window_view(view)?;
 
         let window = self
-            .collect_source_window(&view.view_id, &view.source)
+            .collect_source_window_for_filter(
+                &view.view_id,
+                &view.source,
+                view.filter.as_deref(),
+            )
             .await?;
         if window.added_files.is_empty() {
             return Ok(None);
@@ -3003,7 +3052,11 @@ impl IvmRuntime {
         validate_multi_window_view(view)?;
 
         let window = self
-            .collect_source_window(&view.view_id, &view.source)
+            .collect_source_window_for_filter(
+                &view.view_id,
+                &view.source,
+                view.filter.as_deref(),
+            )
             .await?;
         if window.added_files.is_empty() {
             return Ok(None);
@@ -3127,7 +3180,9 @@ impl IvmRuntime {
         self.metadata.delete_cursors(&view.view_id).await?;
         view.mv.truncate(&self.client).await?;
 
-        let baseline = self.source_baseline(&view.source).await?;
+        let baseline = self
+            .source_baseline_for_filter(&view.source, view.filter.as_deref())
+            .await?;
         let mv_versions_before =
             output_partition_versions(&self.client, &view.mv).await?;
         let record = match self
@@ -3213,7 +3268,9 @@ impl IvmRuntime {
         view.mv.truncate(&self.client).await?;
         state.truncate(&self.client).await?;
 
-        let baseline = self.source_baseline(&view.source).await?;
+        let baseline = self
+            .source_baseline_for_filter(&view.source, view.filter.as_deref())
+            .await?;
         let mv_versions_before =
             output_partition_versions(&self.client, &view.mv).await?;
         let record = match self
@@ -3272,7 +3329,22 @@ impl IvmRuntime {
 
     /// The persisted group index for a top-k view, analogous to the window
     /// partition index.  It lets the refresh read only the affected groups.
+    /// For a single-row top-k with offset 0 the MV and the mirror state have
+    /// exactly the same rows and primary-key identity; the MV can serve as
+    /// the state, avoiding a second write and a second copy.  Only share when
+    /// the MV is keyed by the group itself, which is how a top-1 view created
+    /// by the runtime is laid out.
+    fn top_k_shared_state(view: &TopKView) -> bool {
+        view.offset == 0
+            && view.limit == 1
+            && !view.group_keys.is_empty()
+            && view.mv.primary_keys == view.group_keys
+    }
+
     async fn ensure_top_k_state(&self, view: &TopKView) -> Result<IvmTable> {
+        if Self::top_k_shared_state(view) {
+            return Ok(view.mv.clone());
+        }
         let states = self.metadata.list_states(&view.view_id).await?;
         if let Some(existing) = states.iter().find(|state| state.role == StateRole::State)
         {
@@ -3314,6 +3386,9 @@ impl IvmRuntime {
         state: &IvmTable,
         reset: bool,
     ) -> Result<()> {
+        if state.table_id == view.mv.table_id {
+            return Ok(());
+        }
         if view.mv.current_files(&self.client).await?.is_empty() {
             return Ok(());
         }
@@ -3327,6 +3402,63 @@ impl IvmRuntime {
             .append_stream(&self.client, frame.execute_stream().await?)
             .await?;
         Ok(())
+    }
+
+    /// Whether a rank-state version change is only the external compaction.
+    ///
+    /// Compaction rewrites the files but not the logical rows.  A newer
+    /// compaction commit over the version the last epoch recorded therefore
+    /// keeps the same row set, and a full re-seed from the source is
+    /// unnecessary.  A version that is behind the epoch, or a newer merge
+    /// commit, still needs the sync.
+    async fn rank_state_compaction_only(
+        &self,
+        state: &IvmTable,
+        expected: &[PartitionVersion],
+        current: &[PartitionVersion],
+    ) -> Result<bool> {
+        if expected.is_empty() || expected.len() != current.len() {
+            return Ok(false);
+        }
+        for current_version in current {
+            let Some(expected_version) = expected
+                .iter()
+                .find(|version| version.partition_desc == current_version.partition_desc)
+            else {
+                return Ok(false);
+            };
+            if expected_version.version == current_version.version {
+                continue;
+            }
+            if current_version.version <= expected_version.version {
+                return Ok(false);
+            }
+            let Some(current_info) = self
+                .client
+                .get_partition_info_by_version(
+                    &state.table_id,
+                    &current_version.partition_desc,
+                    current_version.version as i32,
+                )
+                .await?
+            else {
+                return Ok(false);
+            };
+            if current_info.commit_op
+                != lakesoul_metadata_proto::entity::CommitOp::CompactionCommit as i32
+            {
+                tracing::debug!(
+                    table = %state.table_name,
+                    partition = %current_version.partition_desc,
+                    expected_version = expected_version.version,
+                    current_version = current_version.version,
+                    commit_op = current_info.commit_op,
+                    "rank state compaction check: current commit is not compaction"
+                );
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// A source-row state used to recompute window/top-k ranks without
@@ -3384,26 +3516,43 @@ impl IvmRuntime {
                         .map(|version| version.versions.clone());
                     let current = output_partition_versions(&self.client, &state).await?;
                     if expected.as_ref() != Some(&current) {
-                        // The rank state is ahead of or behind the last
-                        // committed epoch (for example after a crash or a
-                        // compaction).  Re-seed it from the source so the next
-                        // window starts from a known current row set.
-                        tracing::debug!(
-                            table = %state.table_name,
-                            source = %source.table_name,
-                            reason = "version_mismatch",
-                            ?expected,
-                            ?current,
-                            "sync rank state"
-                        );
-                        let started = std::time::Instant::now();
-                        state.truncate(&self.client).await?;
-                        self.sync_rank_state(source, &state).await?;
-                        tracing::debug!(
-                            table = %state.table_name,
-                            elapsed_ms = started.elapsed().as_millis() as u64,
-                            "rank state synced"
-                        );
+                        let compaction_only = match expected.as_deref() {
+                            Some(expected) => self
+                                .rank_state_compaction_only(&state, expected, &current)
+                                .await
+                                .unwrap_or(false),
+                            None => false,
+                        };
+                        if compaction_only {
+                            tracing::debug!(
+                                table = %state.table_name,
+                                source = %source.table_name,
+                                ?expected,
+                                ?current,
+                                "rank state version change is compaction only"
+                            );
+                        } else {
+                            // The rank state is ahead of or behind the last
+                            // committed epoch (for example after a crash).  Re-seed
+                            // it from the source so the next window starts from a
+                            // known current row set.
+                            tracing::debug!(
+                                table = %state.table_name,
+                                source = %source.table_name,
+                                reason = "version_mismatch",
+                                ?expected,
+                                ?current,
+                                "sync rank state"
+                            );
+                            let started = std::time::Instant::now();
+                            state.truncate(&self.client).await?;
+                            self.sync_rank_state(source, &state).await?;
+                            tracing::debug!(
+                                table = %state.table_name,
+                                elapsed_ms = started.elapsed().as_millis() as u64,
+                                "rank state synced"
+                            );
+                        }
                     }
                 }
                 return Ok(Some(state));
@@ -3550,7 +3699,11 @@ impl IvmRuntime {
         validate_top_k_view(view)?;
 
         let window = self
-            .collect_source_window(&view.view_id, &view.source)
+            .collect_source_window_for_filter(
+                &view.view_id,
+                &view.source,
+                view.filter.as_deref(),
+            )
             .await?;
         if window.added_files.is_empty() {
             return Ok(None);
@@ -3601,6 +3754,14 @@ impl IvmRuntime {
             super::mv_partitions_for_source(&view.mv, &view.source, &window);
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
+        // The rank update and both affected-group frames reference `delta`
+        // several times.  Project it to the rank columns and keep one
+        // materialized copy, bounded by the same budget as `before`.
+        let delta = project_frame(delta, &rank_columns)?;
+        let delta = match materialize_top_k_frame(delta.clone(), "top-k delta").await? {
+            Some(batches) if !batches.is_empty() => context.read_batches(batches)?,
+            _ => delta,
+        };
         phase_done!("delta");
         let pk_exprs = view
             .source
@@ -3612,7 +3773,16 @@ impl IvmRuntime {
         let before = self
             .lookup_source_before_by_pks(&context, &view.source, &window, contribution)
             .await?;
+        // `before` feeds the rank update and both affected-group frames; a
+        // lazy lookup would re-run the same 400k-key probe for each use.
+        // Keep only the rank columns and materialize the rows once.
+        let before = project_frame(before, &rank_columns)?;
         let before = filter_deletes(before, change_column(&view.source))?;
+        let before = match materialize_top_k_frame(before.clone(), "top-k before").await?
+        {
+            Some(batches) if !batches.is_empty() => context.read_batches(batches)?,
+            _ => before,
+        };
         if let Some(rank) = &rank_state {
             let change = change_column(&view.source).unwrap_or(IVM_ROW_KINDS_COLUMN);
             commit_ids.extend(
@@ -3713,6 +3883,18 @@ impl IvmRuntime {
             }
         };
         context.register_table("delta", delta.clone().into_view())?;
+        // The SQL below scans `mv` twice (`already` and `active`).  A lazy
+        // keyed lookup would run the same 400k-key probe for each reference;
+        // materialize the affected groups once and register those batches.
+        // A global top-k reads the whole state, so keep it streaming.
+        let mv = if view.group_keys.is_empty() {
+            mv
+        } else {
+            match materialize_top_k_frame(mv.clone(), "top-k mv").await? {
+                Some(batches) if !batches.is_empty() => context.read_batches(batches)?,
+                _ => mv,
+            }
+        };
         context.register_table("mv", mv.clone().into_view())?;
         let src = if let Some(rank) = &rank_state {
             let affected = if view.group_keys.is_empty() {
@@ -3839,17 +4021,38 @@ impl IvmRuntime {
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&top_k_refresh_sql(view, epoch)).await?;
         phase_done!("sql_plan");
-        let state_frame = frame.clone().execute_stream().await?;
-        let (mv_ids, state_ids) = futures::future::try_join(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?),
-            async {
-                let ids = state.append_stream(&self.client, state_frame).await?;
-                self.checkpoint_epoch_states(&record).await?;
-                Ok::<_, rootcause::Report>(ids)
-            },
-        )
-        .await?;
+        let (mv_ids, state_ids) = if view.group_keys.is_empty() {
+            // A global top-k can rewrite the whole state; keep the streaming
+            // path instead of collecting the full result in memory.
+            let state_frame = frame.clone().execute_stream().await?;
+            futures::future::try_join(
+                view.mv
+                    .append_stream(&self.client, frame.execute_stream().await?),
+                async {
+                    let ids = state.append_stream(&self.client, state_frame).await?;
+                    self.checkpoint_epoch_states(&record).await?;
+                    Ok::<_, rootcause::Report>(ids)
+                },
+            )
+            .await?
+        } else if state.table_id == view.mv.table_id {
+            let mv_ids = view
+                .mv
+                .append_stream(&self.client, frame.execute_stream().await?)
+                .await?;
+            self.checkpoint_epoch_states(&record).await?;
+            (mv_ids, Vec::new())
+        } else {
+            // Execute the refresh SQL once and feed both the MV and its mirror
+            // state from the same stream.  Two independent streams re-ran
+            // every keyed lookup inside the plan (including before-image).
+            let (mv_ids, state_ids) = view
+                .mv
+                .append_stream_pair(&self.client, frame.execute_stream().await?, &state)
+                .await?;
+            self.checkpoint_epoch_states(&record).await?;
+            (mv_ids, state_ids)
+        };
         commit_ids.extend(mv_ids);
         commit_ids.extend(state_ids);
         phase_done!("sql_execute_and_append");
@@ -3884,10 +4087,15 @@ impl IvmRuntime {
                 &rank_columns,
             )
             .await?;
+        let shared_state = state.table_id == view.mv.table_id;
         view.mv.truncate(&self.client).await?;
-        state.truncate(&self.client).await?;
+        if !shared_state {
+            state.truncate(&self.client).await?;
+        }
 
-        let baseline = self.source_baseline(&view.source).await?;
+        let baseline = self
+            .source_baseline_for_filter(&view.source, view.filter.as_deref())
+            .await?;
         let mv_versions_before =
             output_partition_versions(&self.client, &view.mv).await?;
         let record = match self
@@ -3919,14 +4127,23 @@ impl IvmRuntime {
             Arc::new(self.table_provider_groups(&view.source, baseline.groups.clone())),
         )?;
         let frame = context.sql(&top_k_rebuild_sql(view, epoch)).await?;
-        let (mv_ids, state_ids) = futures::future::try_join(
-            view.mv
-                .append_stream(&self.client, frame.clone().execute_stream().await?),
-            state.append_stream(&self.client, frame.execute_stream().await?),
-        )
-        .await?;
-        commit_ids.extend(mv_ids);
-        commit_ids.extend(state_ids);
+        if shared_state {
+            // The state is the MV: one append serves both.
+            commit_ids.extend(
+                view.mv
+                    .append_stream(&self.client, frame.execute_stream().await?)
+                    .await?,
+            );
+        } else {
+            let (mv_ids, state_ids) = futures::future::try_join(
+                view.mv
+                    .append_stream(&self.client, frame.clone().execute_stream().await?),
+                state.append_stream(&self.client, frame.execute_stream().await?),
+            )
+            .await?;
+            commit_ids.extend(mv_ids);
+            commit_ids.extend(state_ids);
+        }
         self.checkpoint_epoch_states(&record).await?;
         if let Some(rank) = &rank_state {
             rank.truncate(&self.client).await?;

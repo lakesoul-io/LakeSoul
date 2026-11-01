@@ -364,11 +364,22 @@ impl super::IvmRuntime {
         if !force && !join_side_needs_state(source, join_keys) {
             return Ok(None);
         }
-        if let Some(existing) = self.metadata().get_state(view_id, role).await? {
-            return Ok(Some(self.open_table_by_id(&existing.table_id).await?));
-        }
         let schema = join_side_state_schema_for(source, join_keys)?;
         let primary_keys = join_side_state_primary_keys(source);
+        if let Some(existing) = self.metadata().get_state(view_id, role).await? {
+            let table = self.open_table_by_id(&existing.table_id).await?;
+            if table.schema == schema && table.primary_keys == primary_keys {
+                return Ok(Some(table));
+            }
+            // A projected state (or a changed source shape) replaces the old
+            // auxiliary table.  The old table is not an MV, so dropping it is
+            // safe.
+            self.metadata().unregister_state(view_id, role).await?;
+            let _ = self
+                .client
+                .drop_table(&table.table_name, &table.namespace)
+                .await;
+        }
         let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
         let mut options = crate::table::IvmTableOptions::new(
             format!("{}__ivm_join_state_{suffix}", source.table_name),

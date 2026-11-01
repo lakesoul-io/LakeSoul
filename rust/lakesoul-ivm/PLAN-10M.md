@@ -17,7 +17,7 @@
 | 内存 | 不能像 Flink 一样为每个 key 维护本地状态；单次刷新峰值内存有界 |
 | 执行 | 集群、分布式 + 多线程；按 hash bucket 拆分任务 |
 | 读取 | source 读取与中间计算必须走 DataFusion 物理计划，不把数据整体读入驱动端内存 |
-| compaction | 状态表由写入方主动 compaction；用户可见表仍由外部 compaction 任务处理 |
+| compaction | 内部 state/MV 统一由外部 `NewCompactionTask` 压缩；refresh 内不做 compaction |
 
 关键推论：
 
@@ -115,7 +115,7 @@
 - 聚合从 join MV delta 更新；可合并聚合直接合并万级状态；不可合并聚合走 value-count 或
   代价回退。
 - 输出用 DataSink，按 bucket 分区写；驱动端不 collect。
-- 状态表 compaction 由写入方在 epoch 边界触发。
+- 状态表 compaction 由外部 `NewCompactionTask` 在 refresh 之外触发。
 
 ## 4. 工作流
 
@@ -295,8 +295,9 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
 
 ### P4：状态表 compaction 与布局
 
-- 状态表写入方 compaction（文件数/小文件阈值、新 generation、原子切换）；
-- 用户表外部 compaction；文件大小目标与 bucket 数按集群并行度设计。
+- 状态表与用户表统一由外部 `NewCompactionTask` compaction（文件数/小文件阈值、
+  新 generation、原子切换）；refresh 内不做 compaction；
+- 文件大小目标与 bucket 数按集群并行度设计。
 - 验收：100 轮后状态表文件数稳定；单文件大小接近目标。
 
 #### P4 结果：state 自动 compaction + MV 外部压缩（2026-10）
@@ -304,11 +305,10 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
 - **原语**：`IvmTable::compact` 读当前合并状态 → 丢弃 CDC 墓碑、`rowKinds=insert`、
   `__ivm_epoch=0` → 按桶重写 → `metadata.commit_compaction`（输入分区 + 输出文件，
   一次 `CompactionCommit` 替换分区快照；旧文件由保留清理回收）。
-- **state 表**：refresh 开始前，当前文件数 ≥ `LAKESOUL_IVM_STATE_COMPACT_FILES`
-  （默认 32，0 关闭）时自动压缩；MIN/MAX 12 轮测试中 state 文件数稳定 ≤9。
-- **MV**：生产由外部 `NewCompactionTask` 压缩；bench 在轮次之间调用
-  `IvmTable::compact` 模拟外部服务（`--compact-every N`），压缩耗时单独打印、**不计入**
-  refresh 的 join/agg/total。refresh 内不再做 MV compaction。
+- **state/MV**：生产由外部 `NewCompactionTask` 压缩。早期 refresh 前按文件数阈值
+  自动压缩 state 的逻辑（`LAKESOUL_IVM_STATE_COMPACT_FILES`）已在 Phase 3 删除；
+  state/MV 都只在 refresh 之外由外部任务压缩，压缩耗时**不计入** refresh 的
+  join/agg/total。
 - **1M/1%/4 桶/Vortex，100 轮（每 10 轮 out-of-band 压缩）**：
   - 平均 join **319ms**、agg **98ms**、total **417ms**；无 compaction 时平均 total
     1641ms，第 100 轮 2711ms（比 0.5s 全量重建慢 5.4×）。
@@ -321,9 +321,9 @@ cargo run --release -p lakesoul-ivm --example ivm_bench_star -- \
     成本，**不计入** refresh 延迟；全量重建 2.5s。
   - 无 compaction 的 10M 基线约 join 630ms / total 950ms，20 轮/80 文件时 join 仍
     ~630ms——对象存储 I/O 底噪掩盖了文件增长，10M 的 MV 压缩间隔可以更宽。
-- **阈值结论**：state 表 `LAKESOUL_IVM_STATE_COMPACT_FILES=32`；MV 外部压缩建议
-  **32–64 文件**（1M/4 桶约每 10 轮 = 40 文件；10M 可偏 64 以减少 ~10s 的重写次数）。
-  compaction 耗时不属于 IVM refresh 性能，评测时单独统计。
+- **阈值结论**：外部 compaction 建议从 **32–64 文件** 开始（1M/4 桶约每 10 轮 =
+  40 文件；10M 可偏 64 以减少 ~10s 的重写次数）。compaction 耗时不属于 IVM
+  refresh 性能，评测时单独统计。
 - 结论：MV/state 文件增长是 100 轮漂移的主因；外部按文件数阈值压缩可把 refresh 的
   增量读延迟稳定在数百 ms，避免增量退化为全量的数倍慢。
 
@@ -516,14 +516,11 @@ contrib stream (affected groups, bounded batches)
 
 ### 7.3 compaction
 
-- state：写入方提供 `IvmTable::compact` 能力；生产由外部 compaction 任务触发。
-- MV：保持外部 compaction。
-- 测试时在窗口之间显式执行 state/MV compaction，单独统计 compaction
-  时间、RSS、文件数；compaction 不进入增量 refresh 的计时。
-- 多聚合 state 路径也需要接入 state compaction 触发/测试，不能只覆盖
-  `refresh_sum_count`。
-- 测试关注 100 轮后 state/MV 文件数是否稳定，以及 compaction 后下一次
-  增量 lookup 是否仍正确。
+- state/MV：统一由外部 `NewCompactionTask` 触发，refresh 代码不包含 compaction。
+- 测试统一通过外部 listener 观察 compaction 结果，不再在 refresh 内按文件数
+  自动压缩；`IvmTable::compact` 只作为外部任务的等价原语，其单元测试保留。
+- 测试关注 compaction 后 state/MV 文件数是否稳定，以及下一次增量 lookup
+  是否仍正确。
 
 ### 7.4 首轮实现结果
 

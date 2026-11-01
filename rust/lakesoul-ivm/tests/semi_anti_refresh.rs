@@ -537,3 +537,161 @@ async fn semi_join_with_differently_named_right_key() {
     assert!(view_state(runtime, mv).await.is_empty());
     fixture.cleanup().await;
 }
+
+#[test_log::test(tokio::test)]
+async fn plain_semi_views_share_the_right_key_set() {
+    // Two views read the same right source, keyed by the join key, so the
+    // refresh can answer both from one per-window existence set.
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+
+    let mut lefts = Vec::new();
+    let mut mvs = Vec::new();
+    for index in 0..2 {
+        let left = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_shared_left_{index}_{suffix}"),
+                    table_path(&dir, &format!("left{index}")),
+                    left_schema(),
+                )
+                .with_primary_keys(vec!["k".to_string()])
+                .with_cdc_column(CHANGE_COLUMN),
+            )
+            .await
+            .unwrap();
+        let mv = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_shared_mv_{index}_{suffix}"),
+                    table_path(&dir, &format!("mv{index}")),
+                    semi_anti_mv_schema(&left.schema),
+                )
+                .with_primary_keys(vec!["k".to_string()]),
+            )
+            .await
+            .unwrap();
+        lefts.push(left);
+        mvs.push(mv);
+    }
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_shared_right_{suffix}"),
+                table_path(&dir, "right"),
+                right_schema(),
+            )
+            .with_primary_keys(vec!["g".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let views = lefts
+        .iter()
+        .zip(&mvs)
+        .enumerate()
+        .map(|(index, (left, mv))| {
+            SemiAntiView::new(
+                format!("ivm_shared_semi_{index}_{suffix}"),
+                left.clone(),
+                right.clone(),
+                mv.clone(),
+                vec!["g".to_string()],
+                false,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    lefts[0]
+        .append_batch(
+            runtime.client(),
+            left_batch(&[(1, 1, 10, "insert"), (2, 2, 20, "insert")]),
+        )
+        .await
+        .unwrap();
+    lefts[1]
+        .append_batch(
+            runtime.client(),
+            left_batch(&[(3, 1, 30, "insert"), (4, 3, 40, "insert")]),
+        )
+        .await
+        .unwrap();
+    right
+        .append_batch(runtime.client(), right_batch(&[(100, 1, "insert")]))
+        .await
+        .unwrap();
+
+    for view in &views {
+        runtime.refresh_semi_anti(view).await.unwrap().unwrap();
+    }
+    assert_eq!(
+        view_state(&runtime, &mvs[0]).await,
+        HashMap::from([(1, (1, 10))])
+    );
+    assert_eq!(
+        view_state(&runtime, &mvs[1]).await,
+        HashMap::from([(3, (1, 30))])
+    );
+
+    // A right-only window is seen by both views through the same key set.
+    right
+        .append_batch(runtime.client(), right_batch(&[(101, 2, "insert")]))
+        .await
+        .unwrap();
+    for view in &views {
+        runtime.refresh_semi_anti(view).await.unwrap().unwrap();
+    }
+    assert_eq!(
+        view_state(&runtime, &mvs[0]).await,
+        HashMap::from([(1, (1, 10)), (2, (2, 20))])
+    );
+    assert_eq!(
+        view_state(&runtime, &mvs[1]).await,
+        HashMap::from([(3, (1, 30))])
+    );
+
+    // A left-only window of one view re-probes from the empty right window
+    // and still sees the current right state.
+    lefts[0]
+        .append_batch(runtime.client(), left_batch(&[(5, 2, 50, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_semi_anti(&views[0]).await.unwrap().unwrap();
+    assert_eq!(
+        view_state(&runtime, &mvs[0]).await,
+        HashMap::from([(1, (1, 10)), (2, (2, 20)), (5, (2, 50))])
+    );
+
+    // Removing the shared key retracts the rows of both views.
+    right
+        .append_batch(runtime.client(), right_batch(&[(100, 1, "delete")]))
+        .await
+        .unwrap();
+    for view in &views {
+        runtime.refresh_semi_anti(view).await.unwrap().unwrap();
+    }
+    assert_eq!(
+        view_state(&runtime, &mvs[0]).await,
+        full_result(&runtime, &lefts[0], &right, false).await
+    );
+    assert_eq!(
+        view_state(&runtime, &mvs[1]).await,
+        full_result(&runtime, &lefts[1], &right, false).await
+    );
+    assert!(view_state(&runtime, &mvs[1]).await.is_empty());
+
+    for table in lefts
+        .iter()
+        .chain(mvs.iter())
+        .chain(std::iter::once(&right))
+    {
+        runtime
+            .client()
+            .drop_table(&table.table_name, &table.namespace)
+            .await
+            .unwrap();
+    }
+    drop(dir);
+}

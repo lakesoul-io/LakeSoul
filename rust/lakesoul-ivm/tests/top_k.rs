@@ -848,7 +848,8 @@ async fn keyed_group_source_refreshes() {
         .map(|state| state.role.as_str())
         .collect::<Vec<_>>();
     roles.sort_unstable();
-    assert_eq!(roles, vec!["mv", "rank_state", "state"]);
+    // A top-1 view keyed by its group shares the MV as the mirror state.
+    assert_eq!(roles, vec!["mv", "rank_state"]);
     let epoch = fixture
         .runtime
         .latest_epoch(&fixture.view.view_id)
@@ -861,7 +862,7 @@ async fn keyed_group_source_refreshes() {
         .map(|state| state.role.as_str())
         .collect::<Vec<_>>();
     state_roles.sort_unstable();
-    assert_eq!(state_roles, vec!["rank_state", "state"]);
+    assert_eq!(state_roles, vec!["rank_state"]);
     assert_eq!(
         top_k_rows(&fixture).await,
         HashSet::from([(1, "a".to_string(), 10, 100), (2, "b".to_string(), 20, 200),])

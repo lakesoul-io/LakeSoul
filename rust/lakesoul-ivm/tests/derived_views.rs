@@ -16,7 +16,7 @@ use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_COUNT_COLUMN, IVM_EPOCH_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_ROW_KINDS_COLUMN,
     IVM_SOURCE_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions,
-    WindowColumn, WindowFunction, WindowGroupSpec,
+    WindowColumn, WindowFunction, WindowGroupSpec, multi_agg_mv_schema_for,
     multi_window_mv_schema_for_with_payload, row_expr_mv_schema_for,
     sum_count_mv_schema_for, top_k_mv_schema_for, window_columns_mv_schema_for,
     window_columns_mv_schema_for_with_payload,
@@ -4695,4 +4695,336 @@ async fn a_top_k_over_a_distinct_step_is_materialized() {
         .await,
         read_pair_rows(runtime, &fact, &expected).await
     );
+}
+
+/// The `(k, c1, c2)` rows of a two-count aggregate over a lookup chain.
+async fn read_chain_counts(
+    runtime: &IvmRuntime,
+    mv: &IvmTable,
+) -> Vec<(Option<i64>, Option<i64>, Option<i64>)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql("select k, c1, c2 from mv order by k")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    triple_rows(&batches)
+}
+
+/// The full recompute of the two-count aggregate over the current source rows.
+async fn full_chain_counts(
+    runtime: &IvmRuntime,
+    base: &IvmTable,
+    first: &IvmTable,
+    second: &IvmTable,
+    reference: &str,
+) -> Vec<(Option<i64>, Option<i64>, Option<i64>)> {
+    let context = SessionContext::new();
+    for (name, table) in [("base", base), ("r1", first), ("r2", second)] {
+        context
+            .register_table(name, Arc::new(runtime.table_provider(table)))
+            .unwrap();
+    }
+    let batches = context
+        .sql(reference)
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    triple_rows(&batches)
+}
+
+/// Build one chain of two 1:1 left lookups that share the same join keys.  The
+/// compiler fuses the two steps into one multi-right lookup, so a right change
+/// still probes the shared left key index instead of scanning the base.
+#[test_log::test(tokio::test)]
+async fn two_lookups_with_the_same_keys_fuse_and_stay_correct() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+
+    let base_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("k", DataType::Int64, false),
+        Field::new("av", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let base = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_ml_base_{suffix}"),
+                table_path(&dir, "base"),
+                base_schema.clone(),
+            )
+            .with_primary_keys(vec!["id".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let first = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_ml_first_{suffix}"),
+                table_path(&dir, "first"),
+                right_schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let second = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_ml_second_{suffix}"),
+                table_path(&dir, "second"),
+                right_schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+
+    let derived_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("v1", DataType::Int64, true),
+        Field::new("v2", DataType::Int64, true),
+    ]));
+    let mv_schema = multi_agg_mv_schema_for(
+        &derived_schema,
+        &["k".to_string()],
+        &[],
+        &[
+            ("c1".to_string(), DataType::Int64),
+            ("c2".to_string(), DataType::Int64),
+        ],
+    )
+    .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_ml_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                mv_schema,
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let runtime = executor.runtime();
+    let statement = format!(
+        "INSERT INTO {} SELECT k, COUNT(v1) AS c1, COUNT(v2) AS c2 FROM (\
+         SELECT x.k, x.v1, r2.v AS v2 FROM (\
+           SELECT b.id, b.k, r1.v AS v1 FROM {} b \
+           LEFT JOIN {} r1 ON b.k = r1.k) x \
+         LEFT JOIN {} r2 ON x.k = r2.k) t GROUP BY k",
+        mv.table_name, base.table_name, first.table_name, second.table_name
+    );
+    let reference = format!(
+        "select b.k as k, count(r1.v) as c1, count(r2.v) as c2 \
+         from (select * from base where \"{CHANGE_COLUMN}\" <> 'delete') b \
+         left join (select * from r1 where \"{CHANGE_COLUMN}\" <> 'delete') r1 \
+         on b.k = r1.k \
+         left join (select * from r2 where \"{CHANGE_COLUMN}\" <> 'delete') r2 \
+         on b.k = r2.k \
+         group by b.k order by b.k"
+    );
+    base.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            base_schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values([1, 2, 3])),
+                Arc::new(Int64Array::from_iter_values([10, 20, 30])),
+                Arc::new(Int64Array::from_iter_values([100, 200, 300])),
+                Arc::new(StringArray::from_iter_values([
+                    "insert", "insert", "insert",
+                ])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    first
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                right_schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from_iter_values([10, 20])),
+                    Arc::new(Int64Array::from_iter_values([1, 2])),
+                    Arc::new(StringArray::from_iter_values(["insert", "insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    second
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                right_schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from_iter_values([10, 30])),
+                    Arc::new(Int64Array::from_iter_values([10, 30])),
+                    Arc::new(StringArray::from_iter_values(["insert", "insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(
+        read_chain_counts(runtime, &mv).await,
+        full_chain_counts(runtime, &base, &first, &second, &reference).await
+    );
+
+    // The target reads a fused multi-right lookup: the left source is the
+    // base, and both rights are unique by the shared key.
+    let mut fused = None;
+    for view in runtime.metadata().list_views().await.unwrap() {
+        let Some(spec) = runtime
+            .metadata()
+            .get_view_spec(&view.view_id)
+            .await
+            .unwrap()
+        else {
+            continue;
+        };
+        if spec["kind"] == "multi_lookup_join" && spec["left_table_id"] == base.table_id {
+            fused = Some(view.view_id);
+            break;
+        }
+    }
+    let fused = fused.expect("a fused multi lookup view");
+    let spec = runtime
+        .metadata()
+        .get_view_spec(&fused)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(spec["kind"], "multi_lookup_join");
+    assert_eq!(spec["left_table_id"], base.table_id);
+    let right_ids = spec["rights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|right| right["table_id"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        right_ids,
+        vec![first.table_id.clone(), second.table_id.clone()]
+    );
+
+    // A change in only the second right probes the shared left index.
+    second
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                right_schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from_iter_values([10])),
+                    Arc::new(Int64Array::from_iter_values([11])),
+                    Arc::new(StringArray::from_iter_values(["insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_chain_counts(runtime, &mv).await,
+        full_chain_counts(runtime, &base, &first, &second, &reference).await
+    );
+
+    // A base join-key change moves a base row between groups.
+    base.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            base_schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values([3])),
+                Arc::new(Int64Array::from_iter_values([10])),
+                Arc::new(Int64Array::from_iter_values([300])),
+                Arc::new(StringArray::from_iter_values(["insert"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_chain_counts(runtime, &mv).await,
+        full_chain_counts(runtime, &base, &first, &second, &reference).await
+    );
+
+    // A right delete and a base delete in one window.
+    first
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                right_schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from_iter_values([20])),
+                    Arc::new(Int64Array::from_iter_values([2])),
+                    Arc::new(StringArray::from_iter_values(["delete"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    base.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            base_schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values([1])),
+                Arc::new(Int64Array::from_iter_values([10])),
+                Arc::new(Int64Array::from_iter_values([100])),
+                Arc::new(StringArray::from_iter_values(["delete"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_chain_counts(runtime, &mv).await,
+        full_chain_counts(runtime, &base, &first, &second, &reference).await
+    );
+
+    for table in [&base, &first, &second, &mv] {
+        runtime
+            .client()
+            .drop_table(&table.table_name, "default")
+            .await
+            .unwrap();
+    }
+    drop(dir);
 }

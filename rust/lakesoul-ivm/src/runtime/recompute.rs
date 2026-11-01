@@ -53,17 +53,17 @@ pub fn multi_agg_state_schema_for(
 
 /// The schema of the row-level state of a multi-aggregate view.
 ///
-/// It carries every source column (apart from the internal change columns)
-/// plus its own row kind and epoch.  The state primary key is the group keys
-/// followed by the source primary keys, so a group lookup is a PK prefix
-/// lookup and a source-key update is an exact PK upsert.
+/// It carries the source columns the view reads (group keys, aggregate and
+/// filter inputs, and the source primary keys) plus its own row kind and
+/// epoch.  The state primary key is the group keys followed by the source
+/// primary keys, so a group lookup is a PK prefix lookup and a source-key
+/// update is an exact PK upsert.
 pub fn multi_agg_rows_state_schema_for(
     source_schema: &Schema,
     group_keys: &[String],
+    group_exprs: &[String],
 ) -> Result<SchemaRef> {
-    for key in group_keys {
-        source_schema.field_with_name(key)?;
-    }
+    let key_fields = super::group_key_fields(source_schema, group_keys, group_exprs)?;
     let mut fields = source_schema
         .fields()
         .iter()
@@ -75,6 +75,32 @@ pub fn multi_agg_rows_state_schema_for(
             ))
         })
         .collect::<Vec<_>>();
+    for (key, key_field) in group_keys.iter().zip(&key_fields) {
+        match source_schema.field_with_name(key) {
+            Ok(existing) => {
+                if existing.data_type() != key_field.data_type() {
+                    return Err(report!(
+                        "computed group key {key} has a different type than the source column"
+                    ));
+                }
+                let computed = group_exprs
+                    .iter()
+                    .zip(group_keys)
+                    .find(|(_, name)| *name == key)
+                    .is_some_and(|(expr, _)| !expr.is_empty() && expr != key);
+                if computed {
+                    return Err(report!(
+                        "computed group key {key} would overwrite a source column"
+                    ));
+                }
+            }
+            Err(_) => fields.push(Arc::new(Field::new(
+                key,
+                key_field.data_type().clone(),
+                key_field.is_nullable(),
+            ))),
+        }
+    }
     if source_schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_err() {
         fields.push(Arc::new(Field::new(
             IVM_ROW_KINDS_COLUMN,
@@ -2622,7 +2648,7 @@ impl IvmRuntime {
         parts: &RecomputeParts<'_>,
     ) -> Result<Option<i64>> {
         let window = self
-            .collect_source_window(parts.view_id, parts.source)
+            .collect_source_window_for_filter(parts.view_id, parts.source, parts.filter)
             .await?;
         let lookup_window = match &parts.lookup {
             Some(lookup) => Some(
@@ -2811,7 +2837,9 @@ impl IvmRuntime {
         self.metadata.delete_cursors(parts.view_id).await?;
         parts.mv.truncate(&self.client).await?;
 
-        let baseline = self.source_baseline(parts.source).await?;
+        let baseline = self
+            .source_baseline_for_filter(parts.source, parts.filter)
+            .await?;
         let mv_versions_before =
             output_partition_versions(&self.client, parts.mv).await?;
         let record = match self
@@ -3665,7 +3693,11 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::State, state)])
             .await?;
         let window = self
-            .collect_source_window(&view.view_id, &view.source)
+            .collect_source_window_for_filter(
+                &view.view_id,
+                &view.source,
+                view.filter.as_deref(),
+            )
             .await?;
         if window.added_files.is_empty() {
             return Ok(None);
@@ -4111,7 +4143,11 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::MultiAggRows, state)])
             .await?;
         let window = self
-            .collect_source_window(&view.view_id, &view.source)
+            .collect_source_window_for_filter(
+                &view.view_id,
+                &view.source,
+                view.filter.as_deref(),
+            )
             .await?;
         if window.added_files.is_empty() {
             return Ok(None);
@@ -4131,12 +4167,20 @@ impl IvmRuntime {
         let context = refresh_session();
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
-        let source_fields = view
-            .source
+        // The state is already projected to the columns the view reads.
+        // Computed group keys are part of its schema as well.  The epoch is
+        // bookkeeping; the source change marker stays because the recompute
+        // SQL reads it.
+        let state_fields = state
             .schema
             .fields()
             .iter()
             .map(|field| field.name().clone())
+            .filter(|column| {
+                column != IVM_EPOCH_COLUMN
+                    && (view.source.schema.field_with_name(column).is_ok()
+                        || view.group_keys.contains(column))
+            })
             .collect::<Vec<_>>();
         let pk_exprs = view
             .source
@@ -4162,9 +4206,39 @@ impl IvmRuntime {
                 .await?;
             filter_deletes(before, change_column(&view.source))?
         };
+        // `before` feeds the old-side state ops, the affected groups and the
+        // SQL old CTE.  Keep one materialized copy so the keyed before-image
+        // lookup runs once per window.
+        let before_batches = before.clone().collect().await?;
+        let before = if before_batches.is_empty() {
+            before
+        } else {
+            context.read_batches(before_batches)?
+        };
         let delta_clean = filter_deletes(delta.clone(), change_column(&view.source))?;
-        let before_data = project_frame(before.clone(), &source_fields)?;
-        let delta_data = project_frame(delta_clean, &source_fields)?;
+        let before_keys = project_group_keys_frame(
+            &context,
+            before.clone(),
+            &view.source.schema,
+            &view.group_keys,
+            &view.group_exprs,
+        )?;
+        let delta_keys = project_group_keys_frame(
+            &context,
+            delta.clone(),
+            &view.source.schema,
+            &view.group_keys,
+            &view.group_exprs,
+        )?;
+        let delta_clean_keys = project_group_keys_frame(
+            &context,
+            delta_clean,
+            &view.source.schema,
+            &view.group_keys,
+            &view.group_exprs,
+        )?;
+        let before_data = project_frame(before_keys.clone(), &state_fields)?;
+        let delta_data = project_frame(delta_clean_keys, &state_fields)?;
         let before_ops = before_data
             .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
@@ -4183,10 +4257,10 @@ impl IvmRuntime {
             .append_stream(&self.client, state_ops.execute_stream().await?)
             .await?;
 
-        context.register_table("old", before.clone().into_view())?;
-        context.register_table("delta", delta.clone().into_view())?;
-        let before_groups = project_frame(before, &view.group_keys)?.distinct()?;
-        let delta_groups = project_frame(delta, &view.group_keys)?.distinct()?;
+        context.register_table("old", before_keys.clone().into_view())?;
+        context.register_table("delta", delta_keys.clone().into_view())?;
+        let before_groups = project_frame(before_keys, &view.group_keys)?.distinct()?;
+        let delta_groups = project_frame(delta_keys, &view.group_keys)?.distinct()?;
         let affected = before_groups.union(delta_groups)?.distinct()?;
         // A state/MV keyed by the group keys can only hold rows of the
         // partitions the affected groups belong to.  The window's changed
@@ -4226,13 +4300,39 @@ impl IvmRuntime {
                 .await?
             }
         };
-        let src = project_frame(state_rows, &source_fields)?;
+        let src = project_frame(state_rows, &state_fields)?;
         context.register_table("src", src.into_view())?;
-        context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
         let parts = view.parts()?;
-        let frame = context
-            .sql(&recompute_refresh_sql(&parts, epoch, false))
-            .await?;
+        // The row-state refresh already knows the affected groups.  When the
+        // MV is keyed by exactly those groups and there is no lookup column,
+        // probe only those rows instead of scanning the whole MV for the
+        // delete/insert sides.
+        if parts.lookup.is_none() && view.mv.primary_keys == view.group_keys {
+            let mv_rows = self
+                .lookup_source_by_join_keys(
+                    &context,
+                    &view.mv,
+                    affected.clone(),
+                    &view.group_keys,
+                    &view.group_keys,
+                    true,
+                )
+                .await?;
+            context.register_table("mv", mv_rows.into_view())?;
+        } else {
+            crate::observability::note_full_scan(&view.mv.table_name);
+            context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
+        }
+        // A bootstrap writes only inserts into an empty MV: the delete side
+        // and its key ordering are unnecessary, and the global ORDER BY would
+        // sort the whole result in one plan.  Rebuild SQL streams the same
+        // groups in whatever order the aggregate produces them.
+        let sql = if bootstrap {
+            recompute_rebuild_sql(&parts, epoch)
+        } else {
+            recompute_refresh_sql(&parts, epoch, false)
+        };
+        let frame = context.sql(&sql).await?;
         commit_ids.extend(
             view.mv
                 .append_stream(&self.client, frame.execute_stream().await?)

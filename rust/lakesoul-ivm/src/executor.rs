@@ -25,7 +25,7 @@ use std::sync::Arc;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::TableProvider;
 use datafusion::common::ScalarValue;
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::datasource::provider_as_source;
 use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder, SubqueryAlias};
 use datafusion::prelude::{Expr, SessionContext};
@@ -40,26 +40,28 @@ use crate::runtime::{
     ChainPolicy, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_EPOCH_COLUMN,
     IVM_GROUP_ROW_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_PAIR_IDENTITY_COLUMN,
     IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
-    IvmRuntime, JoinOutputColumn, JoinSide, SinkColumn, ViewSpec,
-    approx_distinct_groups_mv_schema_for, approx_percentile_groups_mv_schema_for,
-    array_agg_groups_mv_schema_for, bool_agg_groups_mv_schema_for,
-    computed_agg_mv_schema_for, cross_join_view_schema_for, decode_data_type,
-    distinct_agg_groups_mv_schema_for, encode_data_type, full_join_view_schema_with_keys,
-    grouping_sets_mv_schema_for, join_view_schema_with_keys,
-    keyed_join_output_primary_keys, keyed_join_view_schema_with_keys,
-    left_aggregate_mv_schema_with_outputs, left_join_view_schema_with_keys,
-    lookup_chain_mv_schema_for, lookup_chain_step_id_column, lookup_join_view_schema_for,
+    IvmRuntime, JoinOutputColumn, JoinSide, MultiAggSpec, MultiLookupColumn,
+    MultiLookupRight, SinkColumn, ViewSpec, approx_distinct_groups_mv_schema_for,
+    approx_percentile_groups_mv_schema_for, array_agg_groups_mv_schema_for,
+    bool_agg_groups_mv_schema_for, computed_agg_mv_schema_for,
+    cross_join_view_schema_for, decode_data_type, distinct_agg_groups_mv_schema_for,
+    encode_data_type, full_join_view_schema_with_keys, grouping_sets_mv_schema_for,
+    join_view_schema_with_keys, keyed_join_output_primary_keys,
+    keyed_join_view_schema_with_keys, left_aggregate_mv_schema_with_outputs,
+    left_join_view_schema_with_keys, lookup_chain_mv_schema_for,
+    lookup_chain_step_id_column, lookup_join_view_schema_for,
     median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
     multi_agg_rows_state_schema_for, multi_agg_state_schema_for,
     multi_join_append_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
-    multi_window_mv_schema_for_with_payload, nullable_join_key_schema, parse_filter,
-    refresh_session, row_expr_mv_schema_for, semi_anti_mv_schema_for,
-    string_agg_groups_mv_schema_for, sum_count_groups_mv_schema_for,
-    top_k_expr_mv_schema_for, union_all_mv_schema_with_source,
-    union_distinct_mv_schema_for, union_output_schema_for,
-    value_count_groups_state_schema_for, variance_groups_mv_schema_for,
-    wide_full_join_view_schema_with_identity_and_keys, wide_join_view_schema_with_keys,
-    wide_keyed_join_view_schema_for, wide_keyed_join_view_schema_with_keys,
+    multi_lookup_join_mv_schema_for, multi_window_mv_schema_for_with_payload,
+    nullable_join_key_schema, parse_filter, refresh_session, row_expr_mv_schema_for,
+    semi_anti_mv_schema_for, string_agg_groups_mv_schema_for,
+    sum_count_groups_mv_schema_for, top_k_expr_mv_schema_for,
+    union_all_mv_schema_with_source, union_distinct_mv_schema_for,
+    union_output_schema_for, value_count_groups_state_schema_for,
+    variance_groups_mv_schema_for, wide_full_join_view_schema_with_identity_and_keys,
+    wide_join_view_schema_with_keys, wide_keyed_join_view_schema_for,
+    wide_keyed_join_view_schema_with_keys,
     wide_left_join_view_schema_with_identity_and_keys, wide_lookup_join_view_schema_for,
     wide_outer_join_view_schema_with_keys, window_columns_mv_schema_for_with_payload,
 };
@@ -129,6 +131,211 @@ struct CachedDerived {
     table: IvmTable,
     view_id: String,
     mapping: Vec<(String, String)>,
+}
+
+/// The identity of a multi-aggregate shape that several derived steps can
+/// share: same source, grouping and filter.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct MultiAggKey {
+    source_table_id: String,
+    group_keys: Vec<String>,
+    group_exprs: Vec<String>,
+    filter: Option<String>,
+}
+
+/// The first materialized multi-aggregate step of a shape.  A later step with
+/// the same source/grouping whose aggregates are a subset can reuse its MV and
+/// become a cheap row projection instead of a second row state.
+#[derive(Clone)]
+struct CachedMultiAgg {
+    table: IvmTable,
+    aggregates: Vec<MultiAggSpec>,
+}
+
+/// Caches shared by the two analyses of one statement (the probe and the
+/// widened state) and by the split-target path.
+#[derive(Default)]
+struct DerivedCaches {
+    derived: HashMap<String, CachedDerived>,
+    multi_agg: HashMap<MultiAggKey, CachedMultiAgg>,
+    rows: HashMap<String, ViewSpec>,
+    /// How often each derived view is read by the statement being analyzed.
+    /// A fused lookup owns its inner view only when that view has one reader,
+    /// so a shared step keeps its own refresh.
+    uses: HashMap<String, usize>,
+    /// Inner lookup steps replaced by a fused step.  Their tables are released
+    /// after the statement commits so they do not keep a second materialized
+    /// copy of the same rows.
+    fused_inner: Vec<String>,
+}
+
+fn multi_agg_key(spec: &ViewSpec) -> Option<MultiAggKey> {
+    let ViewSpec::MultiAgg {
+        source_table_id,
+        group_keys,
+        group_exprs,
+        filter,
+        ..
+    } = spec
+    else {
+        return None;
+    };
+    Some(MultiAggKey {
+        source_table_id: source_table_id.clone(),
+        group_keys: group_keys.clone(),
+        group_exprs: group_exprs.clone(),
+        filter: filter.clone(),
+    })
+}
+
+/// Build a row projection over an existing multi-aggregate MV when every
+/// aggregate of `spec` already exists there.  A HAVING predicate is rewritten
+/// onto the owner's column names and becomes the row filter; computed columns
+/// (e.g. a hash key) are matched by their aggregate call, not by name.
+fn merge_multi_agg_row(
+    spec: &ViewSpec,
+    owner_table_id: &str,
+    owner_schema: &SchemaRef,
+    owner_aggregates: &[MultiAggSpec],
+    mv_schema: &SchemaRef,
+) -> Option<ViewSpec> {
+    let ViewSpec::MultiAgg {
+        group_keys,
+        aggregates,
+        having,
+        having_lookup,
+        ..
+    } = spec
+    else {
+        return None;
+    };
+    if having_lookup.is_some() {
+        return None;
+    }
+    let mut output_columns = Vec::new();
+    let mut output_exprs = Vec::new();
+    let mut column_map = HashMap::new();
+    for field in mv_schema.fields() {
+        let name = field.name();
+        if name == IVM_ROW_KINDS_COLUMN || name == IVM_EPOCH_COLUMN {
+            continue;
+        }
+        if group_keys.iter().any(|key| key == name) {
+            output_columns.push(name.clone());
+            output_exprs.push(name.clone());
+            continue;
+        }
+        let aggregate = aggregates
+            .iter()
+            .find(|aggregate| &aggregate.column == name)
+            .or_else(|| aggregates.iter().find(|aggregate| &aggregate.call == name))?;
+        let owner_column = owner_aggregates
+            .iter()
+            .find(|candidate| candidate.call == aggregate.call)
+            .map(|candidate| candidate.column.clone())?;
+        column_map.insert(aggregate.column.clone(), owner_column.clone());
+        column_map.insert(name.clone(), owner_column.clone());
+        output_columns.push(name.clone());
+        output_exprs.push(owner_column);
+    }
+    let filter = match having {
+        None => None,
+        Some(having) => {
+            let translated = rewrite_filter_columns(having, &column_map);
+            parse_filter(&refresh_session(), owner_schema, &translated).ok()?;
+            Some(translated)
+        }
+    };
+    Some(ViewSpec::Row {
+        view_id: DERIVED_PLACEHOLDER.to_string(),
+        source_table_id: owner_table_id.to_string(),
+        mv_table_id: DERIVED_PLACEHOLDER.to_string(),
+        output_columns,
+        output_exprs,
+        filter,
+        scalar: None,
+    })
+}
+
+/// Rewrite the identifiers of a rendered HAVING predicate through `mapping`.
+/// String literals are copied verbatim; quoted and unquoted column identifiers
+/// are replaced by the quoted owner column.
+fn rewrite_filter_columns(filter: &str, mapping: &HashMap<String, String>) -> String {
+    fn quoted(name: &str) -> String {
+        format!("\"{}\"", name.replace('\"', "\"\""))
+    }
+    let bytes = filter.as_bytes();
+    let mut out = String::with_capacity(filter.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let ch = filter[index..].chars().next().expect("in bounds");
+        if ch == '\'' {
+            // Copy a SQL string literal, including doubled quotes.
+            out.push(ch);
+            index += 1;
+            while index < bytes.len() {
+                let next = filter[index..].chars().next().expect("in bounds");
+                out.push(next);
+                index += next.len_utf8();
+                if next == '\'' {
+                    if filter[index..].starts_with('\'') {
+                        out.push('\'');
+                        index += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if ch == '\"' {
+            let start = index;
+            index += 1;
+            let mut name = String::new();
+            while index < bytes.len() {
+                let next = filter[index..].chars().next().expect("in bounds");
+                index += next.len_utf8();
+                if next == '\"' {
+                    if filter[index..].starts_with('\"') {
+                        name.push('\"');
+                        index += 1;
+                    } else {
+                        break;
+                    }
+                } else {
+                    name.push(next);
+                }
+            }
+            if let Some(owner) = mapping.get(&name) {
+                out.push_str(&quoted(owner));
+            } else {
+                out.push_str(&filter[start..index]);
+            }
+            continue;
+        }
+        if ch.is_ascii_alphabetic() || ch == '_' {
+            let start = index;
+            index += ch.len_utf8();
+            while index < bytes.len() {
+                let next = filter[index..].chars().next().expect("in bounds");
+                if next.is_ascii_alphanumeric() || next == '_' {
+                    index += next.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            let name = &filter[start..index];
+            if let Some(owner) = mapping.get(name) {
+                out.push_str(&quoted(owner));
+            } else {
+                out.push_str(name);
+            }
+            continue;
+        }
+        out.push(ch);
+        index += ch.len_utf8();
+    }
+    out
 }
 
 fn plan_key(plan: &LogicalPlan) -> String {
@@ -204,6 +411,273 @@ fn widen_derived_join(spec: &mut ViewSpec) {
             name: names.1,
         },
     ];
+}
+
+/// Whether a table's primary key is exactly the lookup key set.
+fn same_key_set(primary_keys: &[String], keys: &[String]) -> bool {
+    let mut primary = primary_keys.to_vec();
+    let mut keys = keys.to_vec();
+    primary.sort();
+    keys.sort();
+    primary == keys
+}
+
+/// The source table of a row view that is a pure identity projection.  Such a
+/// view can be skipped: a consumer may read the upstream MV directly and keep
+/// its output columns, which are a subset of the upstream schema.
+fn identity_row_source(spec: &ViewSpec) -> Option<&str> {
+    let ViewSpec::Row {
+        source_table_id,
+        output_columns,
+        output_exprs,
+        filter,
+        ..
+    } = spec
+    else {
+        return None;
+    };
+    if filter.is_some() {
+        return None;
+    }
+    for (index, expression) in output_exprs.iter().enumerate() {
+        if !expression.is_empty()
+            && output_columns
+                .get(index)
+                .is_none_or(|column| column != expression)
+        {
+            return None;
+        }
+    }
+    Some(source_table_id)
+}
+
+/// Replace row-view sources of a consumer with the row's upstream table.  The
+/// row is a projection, so the consumer's referenced columns still resolve;
+/// the caller validates the expected schema and reverts on a mismatch.
+fn inline_identity_rows(
+    spec: &mut ViewSpec,
+    rows: &HashMap<String, ViewSpec>,
+) -> Vec<String> {
+    let mut replaced = Vec::new();
+    let mut inline = |table_id: &mut String| {
+        let Some(source) = rows.get(table_id.as_str()).and_then(identity_row_source)
+        else {
+            return;
+        };
+        let source = source.to_string();
+        replaced.push(std::mem::replace(table_id, source));
+    };
+    match spec {
+        ViewSpec::LookupJoin {
+            left_table_id,
+            right_table_id,
+            ..
+        }
+        | ViewSpec::LeftJoin {
+            left_table_id,
+            right_table_id,
+            ..
+        }
+        | ViewSpec::FullJoin {
+            left_table_id,
+            right_table_id,
+            ..
+        }
+        | ViewSpec::Join {
+            left_table_id,
+            right_table_id,
+            ..
+        } => {
+            inline(left_table_id);
+            inline(right_table_id);
+        }
+        ViewSpec::MultiAgg {
+            source_table_id, ..
+        }
+        | ViewSpec::SumCount {
+            source_table_id, ..
+        }
+        | ViewSpec::MinMax {
+            source_table_id, ..
+        }
+        | ViewSpec::DistinctAgg {
+            source_table_id, ..
+        }
+        | ViewSpec::Variance {
+            source_table_id, ..
+        }
+        | ViewSpec::Median {
+            source_table_id, ..
+        }
+        | ViewSpec::BoolAgg {
+            source_table_id, ..
+        }
+        | ViewSpec::StringAgg {
+            source_table_id, ..
+        }
+        | ViewSpec::ArrayAgg {
+            source_table_id, ..
+        }
+        | ViewSpec::ApproxDistinct {
+            source_table_id, ..
+        }
+        | ViewSpec::ApproxPercentile {
+            source_table_id, ..
+        }
+        | ViewSpec::ComputedAgg {
+            source_table_id, ..
+        }
+        | ViewSpec::Window {
+            source_table_id, ..
+        }
+        | ViewSpec::SemiAnti {
+            left_table_id: source_table_id,
+            ..
+        }
+        | ViewSpec::TopK {
+            source_table_id, ..
+        } => inline(source_table_id),
+        _ => {}
+    }
+    replaced
+}
+
+/// Whether the experimental filtering-row fusion is enabled.  It changes the
+/// definition of an existing aggregate step, so enabling it on a populated
+/// table pays a one-time downstream rebuild; keep it opt-in until measured.
+fn fuse_filter_rows_enabled() -> bool {
+    std::env::var("LAKESOUL_IVM_FUSE_FILTER_ROWS")
+        .ok()
+        .is_some_and(|value| matches!(value.as_str(), "on" | "1" | "true"))
+}
+
+/// Inline a filtering/renaming row step into its sole aggregate consumer.
+///
+/// A row such as `SELECT src_sys, order_no, net_num AS sum_num, ... FROM step
+/// WHERE net_num <> 0` is materialized only so its consumer can read it.  When
+/// the consumer is a multi-aggregate that does not use the renamed outputs,
+/// the filter can be applied directly to the row's source and the extra step
+/// (and its per-window rewrite) disappears.  The caller validates the
+/// resulting schema and falls back when the rewrite is not exact.
+fn inline_filtering_rows(
+    spec: &mut ViewSpec,
+    rows: &HashMap<String, ViewSpec>,
+    tables: &HashMap<String, crate::table::IvmTable>,
+    uses: &HashMap<String, usize>,
+) -> Vec<String> {
+    let ViewSpec::MultiAgg {
+        source_table_id,
+        group_keys,
+        group_exprs,
+        aggregates,
+        filter,
+        having_lookup,
+        ..
+    } = spec
+    else {
+        return Vec::new();
+    };
+    if having_lookup.is_some() {
+        return Vec::new();
+    }
+    let row_id = source_table_id.clone();
+    // Only a step with one reader can be dropped safely; a shared step keeps
+    // its own refresh.
+    if uses.get(&row_id).copied() != Some(1) {
+        return Vec::new();
+    }
+    let Some(ViewSpec::Row {
+        source_table_id: row_source,
+        output_columns,
+        output_exprs,
+        filter: Some(row_filter),
+        scalar,
+        ..
+    }) = rows.get(row_id.as_str())
+    else {
+        return Vec::new();
+    };
+    if scalar.is_some() {
+        return Vec::new();
+    }
+    let Some(source) = tables.values().find(|table| table.table_id == *row_source) else {
+        return Vec::new();
+    };
+    let context = refresh_session();
+    let Ok(df_schema) =
+        datafusion::common::DFSchema::try_from(source.schema.as_ref().clone())
+    else {
+        return Vec::new();
+    };
+    let mut refs = group_keys.clone();
+    let mut collect = |expression: &str| -> Option<()> {
+        let expression = context
+            .state()
+            .create_logical_expr(expression, &df_schema)
+            .ok()?;
+        refs.extend(
+            expression
+                .column_refs()
+                .into_iter()
+                .map(|column| column.name.clone()),
+        );
+        Some(())
+    };
+    for expression in group_exprs
+        .iter()
+        .filter(|expression| !expression.is_empty())
+    {
+        if collect(expression).is_none() {
+            return Vec::new();
+        }
+    }
+    for aggregate in aggregates {
+        if collect(&aggregate.call).is_none() {
+            return Vec::new();
+        }
+    }
+    if let Some(filter) = filter.as_deref()
+        && collect(filter).is_none()
+    {
+        return Vec::new();
+    }
+    // A rename that the consumer reads cannot be dropped without rewriting
+    // its SQL; leave that shape to the materialized step.
+    for (index, name) in output_columns.iter().enumerate() {
+        let expression = output_exprs
+            .get(index)
+            .filter(|expression| !expression.is_empty())
+            .unwrap_or(name);
+        if expression != name && refs.iter().any(|reference| reference == name) {
+            return Vec::new();
+        }
+    }
+    // Every referenced column must already exist in the upstream source.
+    if refs
+        .iter()
+        .any(|name| source.schema.field_with_name(name).is_err())
+    {
+        return Vec::new();
+    }
+    let combined = match filter.as_deref() {
+        Some(filter) => format!("({row_filter}) AND ({filter})"),
+        None => row_filter.clone(),
+    };
+    if context
+        .state()
+        .create_logical_expr(&combined, &df_schema)
+        .is_err()
+    {
+        return Vec::new();
+    }
+    *source_table_id = row_source.clone();
+    *filter = Some(combined);
+    tracing::debug!(
+        row = %row_id,
+        source = %row_source,
+        "folding a filtering row into its aggregate consumer"
+    );
+    vec![row_id]
 }
 
 /// The subplan of a derived source in an analyzer error, if any.
@@ -556,6 +1030,27 @@ fn derived_output_mapping(
         .collect())
 }
 
+/// A fused multi-right lookup and the inner view whose join-key index it
+/// adopts, so the same left rows are not indexed twice.
+struct FusedMultiLookup {
+    spec: ViewSpec,
+    inner_view_id: String,
+}
+
+/// Count the nodes a derived-source rewrite replaces.  A plan may read the
+/// same derived source twice; the fusion below only owns the inner view when
+/// it has exactly one reader.
+fn plan_occurrences(plan: &LogicalPlan, target: &LogicalPlan) -> usize {
+    let mut count = 0;
+    let _ = plan.apply(|node| {
+        if node == target {
+            count += 1;
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    count.max(1)
+}
+
 /// Replace every occurrence of `target` in `plan` with `replacement`.
 ///
 /// Identical subplans map to the same derived view, so replacing all of their
@@ -760,7 +1255,8 @@ impl IvmSqlExecutor {
         // derived steps are idempotent by name, while the target checks below
         // still run before the target itself is touched.
         let mut derived = Vec::new();
-        let mut derived_cache = HashMap::new();
+        let mut deferred = Vec::new();
+        let mut caches = DerivedCaches::default();
         let analyzed = self
             .analyze_with_derived(
                 &plan,
@@ -768,7 +1264,8 @@ impl IvmSqlExecutor {
                 &request,
                 &mv,
                 &mut derived,
-                &mut derived_cache,
+                &mut deferred,
+                &mut caches,
             )
             .await;
         let (probe, fallback, expected, plan) = match analyzed {
@@ -835,6 +1332,8 @@ impl IvmSqlExecutor {
                     sql,
                     insert.overwrite,
                     derived,
+                    deferred,
+                    caches,
                 )
                 .await;
         }
@@ -898,22 +1397,27 @@ impl IvmSqlExecutor {
         }
         let mut generated_state_id = None;
         let spec = if !fallback && needs_state_table(&probe) {
-            let state_table_id = self.ensure_state_table(&mv, &probe).await?;
-            generated_state_id = Some(state_table_id.clone());
-            let request = AnalyzeRequest {
-                state_table_id: Some(state_table_id),
-                ..request
-            };
-            self.analyze_with_derived(
-                &plan,
-                &mut tables,
-                &request,
-                &mv,
-                &mut derived,
-                &mut derived_cache,
-            )
-            .await?
-            .0
+            match self.ensure_state_table(&mv, &probe).await? {
+                Some(state_table_id) => {
+                    generated_state_id = Some(state_table_id.clone());
+                    let request = AnalyzeRequest {
+                        state_table_id: Some(state_table_id),
+                        ..request
+                    };
+                    self.analyze_with_derived(
+                        &plan,
+                        &mut tables,
+                        &request,
+                        &mv,
+                        &mut derived,
+                        &mut deferred,
+                        &mut caches,
+                    )
+                    .await?
+                    .0
+                }
+                None => probe,
+            }
         } else {
             probe
         };
@@ -931,6 +1435,13 @@ impl IvmSqlExecutor {
         // statement only reads their current state; with the opt-in flag the
         // views it reads are brought up to date first, in one traversal (the
         // policy retries, rebuilds and marks a stuck view dirty).
+        if fallback {
+            // A fallback statement recomputes its whole output; the derived
+            // steps of a failed analysis are not part of its definition.
+            deferred.clear();
+        } else {
+            self.flush_deferred(&mut deferred).await?;
+        }
         if self.refresh_upstream {
             let roots = tables
                 .values()
@@ -1049,6 +1560,7 @@ impl IvmSqlExecutor {
             self.drop_stale_derived(&mv, derived.len()).await?;
         }
 
+        self.release_fused_inner_views(&caches).await?;
         Ok(IvmExecution {
             action,
             epoch,
@@ -1069,6 +1581,8 @@ impl IvmSqlExecutor {
         sql: &str,
         overwrite: bool,
         mut derived: Vec<String>,
+        mut deferred: Vec<String>,
+        mut caches: DerivedCaches,
     ) -> Result<IvmExecution> {
         if self.refresh_upstream {
             let roots = tables
@@ -1088,7 +1602,6 @@ impl IvmSqlExecutor {
             state_table_id: Some(STATE_PLACEHOLDER.to_string()),
             derived: true,
         };
-        let mut derived_cache = HashMap::new();
         let (state_spec, _) = self
             .analyze_with_derived(
                 &plan,
@@ -1096,7 +1609,8 @@ impl IvmSqlExecutor {
                 &request,
                 target,
                 &mut derived,
-                &mut derived_cache,
+                &mut deferred,
+                &mut caches,
             )
             .await?;
         let expected = expected_mv_schema(&state_spec, &tables)?;
@@ -1178,9 +1692,10 @@ impl IvmSqlExecutor {
             .ensure_internal_state_table(target, &state_spec, expected.clone())
             .await?;
         state_spec.set_derived_identity(&state_table.table_id, &state_table.table_id)?;
-        if needs_state_table(&state_spec) {
-            let state_table_id =
-                self.ensure_state_table(&state_table, &state_spec).await?;
+        if needs_state_table(&state_spec)
+            && let Some(state_table_id) =
+                self.ensure_state_table(&state_table, &state_spec).await?
+        {
             state_spec.set_derived_state_table(&state_table_id)?;
         }
         let state_definition = definition_hash(&state_spec)?;
@@ -1192,6 +1707,7 @@ impl IvmSqlExecutor {
         let same_state = stored_state
             .as_ref()
             .is_some_and(|(hash, _)| hash == &state_definition);
+        self.flush_deferred(&mut deferred).await?;
         let state_dirty = self
             .runtime
             .metadata()
@@ -1361,6 +1877,7 @@ impl IvmSqlExecutor {
         } else {
             IvmExecutionAction::Incremental
         };
+        self.release_fused_inner_views(&caches).await?;
         Ok(IvmExecution {
             action,
             epoch: sink_epoch,
@@ -1434,6 +1951,203 @@ impl IvmSqlExecutor {
         self.runtime.create_table(options).await
     }
 
+    /// Refresh the derived views whose unchanged definitions were deferred
+    /// during analysis.  The chain scheduler discovers their dependencies and
+    /// runs independent views concurrently (see `LAKESOUL_IVM_VIEW_PARALLELISM`).
+    async fn flush_deferred(&self, deferred: &mut Vec<String>) -> Result<()> {
+        if deferred.is_empty() {
+            return Ok(());
+        }
+        let roots = std::mem::take(deferred);
+        let refreshed = self
+            .runtime
+            .refresh_view_chains(&roots, &ChainPolicy::default())
+            .await?;
+        tracing::debug!(views = refreshed.len(), "deferred derived views refreshed");
+        Ok(())
+    }
+
+    /// Fuse `outer LookupJoin(left = inner LookupJoin)` into one
+    /// MultiLookupJoin when both lookups use the same plain join keys and both
+    /// rights are unique by key.  The shared left index remains the only
+    /// right-change fanout path; no base scan is introduced.
+    async fn fuse_multi_lookup(
+        &self,
+        spec: &ViewSpec,
+        tables: &HashMap<String, IvmTable>,
+        deferred: &mut Vec<String>,
+        caches: &DerivedCaches,
+    ) -> Result<Option<FusedMultiLookup>> {
+        let ViewSpec::LookupJoin {
+            left_table_id,
+            right_table_id,
+            join_keys,
+            right_keys,
+            key_exprs,
+            left_filter,
+            right_filter,
+            output_columns,
+            state_table_id,
+            ..
+        } = spec
+        else {
+            return Ok(None);
+        };
+        if output_columns.is_empty()
+            || left_filter.is_some()
+            || state_table_id.is_some()
+            || key_exprs
+                .left
+                .iter()
+                .chain(&key_exprs.right)
+                .any(|expr| !expr.is_empty())
+        {
+            return Ok(None);
+        }
+        let outer_right_keys = if right_keys.is_empty() {
+            join_keys.clone()
+        } else {
+            right_keys.clone()
+        };
+        let outer_right = self.runtime.open_table_by_id(right_table_id).await?;
+        if !same_key_set(&outer_right.primary_keys, &outer_right_keys)
+            || !same_key_set(&outer_right.primary_keys, join_keys)
+        {
+            return Ok(None);
+        }
+        if caches.uses.get(left_table_id).copied() != Some(1) {
+            return Ok(None);
+        }
+        let Some(value) = self.runtime.metadata().get_view_spec(left_table_id).await?
+        else {
+            return Ok(None);
+        };
+        let inner: ViewSpec = serde_json::from_value(value)?;
+        let ViewSpec::LookupJoin {
+            left_table_id: base_id,
+            right_table_id: inner_right_id,
+            join_keys: inner_keys,
+            right_keys: inner_right_keys,
+            key_exprs: inner_key_exprs,
+            left_filter: inner_left_filter,
+            right_filter: inner_right_filter,
+            output_columns: inner_columns,
+            state_table_id: inner_state,
+            ..
+        } = inner
+        else {
+            return Ok(None);
+        };
+        if inner_keys != *join_keys
+            || inner_left_filter.is_some()
+            || inner_state.is_some()
+            || inner_columns.is_empty()
+            || inner_key_exprs
+                .left
+                .iter()
+                .chain(&inner_key_exprs.right)
+                .any(|expr| !expr.is_empty())
+        {
+            return Ok(None);
+        }
+        let inner_right_keys = if inner_right_keys.is_empty() {
+            inner_keys.clone()
+        } else {
+            inner_right_keys
+        };
+        if inner_right_keys != outer_right_keys {
+            return Ok(None);
+        }
+        let base = self.runtime.open_table_by_id(&base_id).await?;
+        let inner_right = self.runtime.open_table_by_id(&inner_right_id).await?;
+        if !same_key_set(&inner_right.primary_keys, &inner_right_keys)
+            || !same_key_set(&inner_right.primary_keys, join_keys)
+        {
+            return Ok(None);
+        }
+        let mut columns = Vec::new();
+        for key in join_keys {
+            columns.push(MultiLookupColumn {
+                source: 0,
+                column: key.clone(),
+                name: key.clone(),
+            });
+        }
+        for column in output_columns {
+            if column.side == JoinSide::Right {
+                columns.push(MultiLookupColumn {
+                    source: 2,
+                    column: column.column.clone(),
+                    name: column.name.clone(),
+                });
+                continue;
+            }
+            let Some(inner_column) = inner_columns
+                .iter()
+                .find(|candidate| candidate.name == column.column)
+            else {
+                return Ok(None);
+            };
+            columns.push(MultiLookupColumn {
+                source: if inner_column.side == JoinSide::Right {
+                    1
+                } else {
+                    0
+                },
+                column: inner_column.column.clone(),
+                name: column.name.clone(),
+            });
+        }
+        for key in &base.primary_keys {
+            if !join_keys.contains(key)
+                && !columns
+                    .iter()
+                    .any(|column| column.column == *key && column.name == *key)
+            {
+                columns.push(MultiLookupColumn {
+                    source: 0,
+                    column: key.clone(),
+                    name: key.clone(),
+                });
+            }
+        }
+        let chain = ViewSpec::MultiLookupJoin {
+            view_id: DERIVED_PLACEHOLDER.to_string(),
+            left_table_id: base_id,
+            mv_table_id: DERIVED_PLACEHOLDER.to_string(),
+            join_keys: join_keys.clone(),
+            rights: vec![
+                MultiLookupRight {
+                    table_id: inner_right_id,
+                    filter: inner_right_filter,
+                },
+                MultiLookupRight {
+                    table_id: right_table_id.clone(),
+                    filter: right_filter.clone(),
+                },
+            ],
+            output_columns: columns,
+            refresh_interval_ms: 0,
+        };
+        let Ok(expected) = expected_mv_schema(spec, tables) else {
+            return Ok(None);
+        };
+        let Ok(actual) = expected_mv_schema(&chain, tables) else {
+            return Ok(None);
+        };
+        let schema_ok = schema_matches(actual.as_ref(), expected.as_ref());
+        let keys_ok = self.derived_primary_keys(spec).await?
+            == self.derived_primary_keys(&chain).await?;
+        if !schema_ok || !keys_ok {
+            return Ok(None);
+        }
+        deferred.retain(|view_id| view_id != left_table_id);
+        Ok(Some(FusedMultiLookup {
+            spec: chain,
+            inner_view_id: left_table_id.clone(),
+        }))
+    }
+
     /// Analyze `plan`, materializing the derived views its compound sources
     /// need (bottom-up), and return the outer spec with the rewritten plan.
     async fn analyze_with_derived(
@@ -1443,7 +2157,8 @@ impl IvmSqlExecutor {
         request: &AnalyzeRequest,
         target: &IvmTable,
         steps: &mut Vec<String>,
-        cache: &mut HashMap<String, CachedDerived>,
+        deferred: &mut Vec<String>,
+        caches: &mut DerivedCaches,
     ) -> Result<(ViewSpec, LogicalPlan)> {
         let mut plan = plan.clone();
         loop {
@@ -1463,16 +2178,16 @@ impl IvmSqlExecutor {
                         .attach(UnsupportedShape));
                     }
                     let key = plan_key(&source);
-                    let reused = cache.get(&key).cloned();
+                    let reused = caches.derived.get(&key).cloned();
                     let (table, view_id, mapping, fresh) = match reused {
                         Some(step) => (step.table, step.view_id, step.mapping, false),
                         None => {
                             let (table, view_id, mapping) = self
                                 .materialize_derived(
-                                    &source, target, tables, steps, cache,
+                                    &source, target, tables, steps, deferred, caches,
                                 )
                                 .await?;
-                            cache.insert(
+                            caches.derived.insert(
                                 key,
                                 CachedDerived {
                                     table: table.clone(),
@@ -1484,6 +2199,7 @@ impl IvmSqlExecutor {
                         }
                     };
                     let scan = derived_scan(&table, &self.runtime)?;
+                    let uses = plan_occurrences(&plan, &source);
                     plan = replace_plan(&plan, &source, &scan)?;
                     let renames = mapping
                         .into_iter()
@@ -1493,6 +2209,7 @@ impl IvmSqlExecutor {
                         plan = rename_derived_columns(plan, &renames)?;
                     }
                     tables.insert(table.table_name.clone(), table);
+                    *caches.uses.entry(view_id.clone()).or_default() += uses;
                     if fresh {
                         steps.push(view_id);
                     }
@@ -1509,7 +2226,8 @@ impl IvmSqlExecutor {
         target: &IvmTable,
         tables: &mut HashMap<String, IvmTable>,
         steps: &mut Vec<String>,
-        cache: &mut HashMap<String, CachedDerived>,
+        deferred: &mut Vec<String>,
+        caches: &mut DerivedCaches,
     ) -> Result<(IvmTable, String, Vec<(String, String)>)> {
         derived_step_supported(subplan)?;
         let request = AnalyzeRequest {
@@ -1520,9 +2238,9 @@ impl IvmSqlExecutor {
         };
         // The subplan may itself need derived views; they are materialized
         // first and take the lower step indices.
-        let (mut spec, _) = Box::pin(
-            self.analyze_with_derived(subplan, tables, &request, target, steps, cache),
-        )
+        let (mut spec, _) = Box::pin(self.analyze_with_derived(
+            subplan, tables, &request, target, steps, deferred, caches,
+        ))
         .await?;
         // A derived outer-join step gets a non-null row identity, so a
         // consumer can read its MV as a keyed source; the keys must be
@@ -1533,11 +2251,22 @@ impl IvmSqlExecutor {
         // derived view widens them to the subplan's column names so the
         // rewritten plan resolves its columns.
         widen_derived_join(&mut spec);
+        let mut adopt_state_from = None;
+        if let Some(fused) = self
+            .fuse_multi_lookup(&spec, tables, deferred, caches)
+            .await?
+        {
+            if !caches.fused_inner.contains(&fused.inner_view_id) {
+                caches.fused_inner.push(fused.inner_view_id.clone());
+            }
+            spec = fused.spec;
+            adopt_state_from = Some(fused.inner_view_id);
+        }
         // Two occurrences of the same CTE may differ only in relation aliases;
         // their normalized specs are identical, so reuse the step table (and
         // skip creating a new one).
         let spec_key = format!("spec:{}", definition_hash(&spec)?);
-        if let Some(step) = cache.get(&spec_key).cloned() {
+        if let Some(step) = caches.derived.get(&spec_key).cloned() {
             let mapping = derived_output_mapping(&spec, subplan)?;
             return Ok((step.table, step.view_id, mapping));
         }
@@ -1554,7 +2283,58 @@ impl IvmSqlExecutor {
                 .attach(UnsupportedShape));
             }
         }
+        // A pure identity row step can be skipped: let this consumer read the
+        // row's upstream MV directly, and remove the row from the deferred
+        // refresh set.  The expected schema check makes the rewrite safe.
+        let before_inline = spec.clone();
+        let before_schema = schema.clone();
+        let replaced_rows = inline_identity_rows(&mut spec, &caches.rows);
+        if !replaced_rows.is_empty() {
+            let after_schema = expected_mv_schema(&spec, tables)?;
+            if schema_matches(after_schema.as_ref(), before_schema.as_ref()) {
+                for row_id in replaced_rows {
+                    deferred.retain(|view_id| view_id != &row_id);
+                }
+            } else {
+                spec = before_inline;
+            }
+        }
+        // A filtering/renaming row with one aggregate reader can be folded
+        // into the reader: the filter moves onto the upstream source and the
+        // intermediate step is not refreshed.
+        let before_filter_inline = spec.clone();
+        let before_filter_schema = expected_mv_schema(&spec, tables)?;
+        let replaced_filters = if fuse_filter_rows_enabled() {
+            inline_filtering_rows(&mut spec, &caches.rows, tables, &caches.uses)
+        } else {
+            Vec::new()
+        };
+        if !replaced_filters.is_empty() {
+            let after_schema = expected_mv_schema(&spec, tables)?;
+            if schema_matches(after_schema.as_ref(), before_filter_schema.as_ref()) {
+                for row_id in replaced_filters {
+                    deferred.retain(|view_id| view_id != &row_id);
+                }
+            } else {
+                spec = before_filter_inline;
+            }
+        }
         let index = steps.len();
+        let original_spec = spec.clone();
+        let merge_key = multi_agg_key(&original_spec);
+        let merge_owner = merge_key
+            .as_ref()
+            .and_then(|key| caches.multi_agg.get(key))
+            .cloned();
+        let merged = merge_owner.as_ref().and_then(|owner| {
+            merge_multi_agg_row(
+                &original_spec,
+                &owner.table.table_id,
+                &owner.table.schema,
+                &owner.aggregates,
+                &schema,
+            )
+        });
         let table = self
             .ensure_derived_table(target, index, &spec, tables)
             .await?;
@@ -1562,11 +2342,51 @@ impl IvmSqlExecutor {
         // identity of every view), so the chain graph finds it when the outer
         // spec lists the derived table as a source.
         let view_id = table.table_id.clone();
+        let mut merged_into_owner = false;
+        if let Some(mut row) = merged {
+            row.set_derived_identity(&view_id, &view_id)?;
+            let row_schema = expected_mv_schema(&row, tables)?;
+            if schema_matches(row_schema.as_ref(), schema.as_ref()) {
+                // The existing MV carries every aggregate this step needs;
+                // a row projection (with the HAVING as a filter) replaces the
+                // second multi-aggregate state.
+                spec = row;
+                merged_into_owner = true;
+                self.drop_generated_state(&view_id).await?;
+            }
+        }
+        if !merged_into_owner
+            && let Some(key) = merge_key
+            && let ViewSpec::MultiAgg {
+                aggregates,
+                having,
+                having_lookup,
+                ..
+            } = &original_spec
+            && having.is_none()
+            && having_lookup.is_none()
+        {
+            caches
+                .multi_agg
+                .entry(key)
+                .or_insert_with(|| CachedMultiAgg {
+                    table: table.clone(),
+                    aggregates: aggregates.clone(),
+                });
+        }
         spec.set_derived_identity(&view_id, &view_id)?;
+        if let Some(inner_view_id) = adopt_state_from {
+            self.adopt_lookup_join_state(&inner_view_id, &view_id)
+                .await?;
+        }
+        if matches!(spec, ViewSpec::Row { .. }) {
+            caches.rows.insert(view_id.clone(), spec.clone());
+        }
         // A `MIN`/`MAX` or `DISTINCT` aggregate step carries its own
         // value-count state table, created next to the step MV.
-        if needs_state_table(&spec) {
-            let state_table_id = self.ensure_state_table(&table, &spec).await?;
+        if needs_state_table(&spec)
+            && let Some(state_table_id) = self.ensure_state_table(&table, &spec).await?
+        {
             spec.set_derived_state_table(&state_table_id)?;
         }
         let definition = definition_hash(&spec)?;
@@ -1574,15 +2394,23 @@ impl IvmSqlExecutor {
         let same_definition =
             stored.as_ref().is_some_and(|(hash, _)| hash == &definition);
         if same_definition {
-            self.runtime.refresh_spec(&spec).await?;
+            // Defer the incremental refresh to the chain scheduler: all
+            // derived steps of this statement are materialized first, then
+            // refreshed together in dependency order and in parallel.
+            if !deferred.contains(&view_id) {
+                deferred.push(view_id.clone());
+            }
         } else {
+            // A changed definition must see current upstreams; flush the
+            // deferred steps before rebuilding it.
+            self.flush_deferred(deferred).await?;
             self.runtime.rebuild_spec(&spec).await?;
             self.runtime
                 .metadata()
                 .set_view_definition(&view_id, &definition, "")
                 .await?;
         }
-        cache.insert(
+        caches.derived.insert(
             spec_key,
             CachedDerived {
                 table: table.clone(),
@@ -1881,6 +2709,7 @@ impl IvmSqlExecutor {
                 keys
             }
             ViewSpec::LookupJoin { left_table_id, .. }
+            | ViewSpec::MultiLookupJoin { left_table_id, .. }
             | ViewSpec::SemiAnti { left_table_id, .. } => self
                 .runtime
                 .open_table_by_id(left_table_id)
@@ -1957,9 +2786,86 @@ impl IvmSqlExecutor {
         Ok(())
     }
 
+    /// The source columns the row-level state of a multi-aggregate view must
+    /// keep: the group keys, every column an aggregate call or filter references,
+    /// and the source primary keys (added by the projected source).  Columns the
+    /// view never reads are not copied into the state.
+    fn multi_agg_rows_state_columns(
+        context: &datafusion::prelude::SessionContext,
+        source_schema: &arrow_schema::SchemaRef,
+        group_keys: &[String],
+        group_exprs: &[String],
+        aggregates: &[crate::runtime::MultiAggSpec],
+        filter: Option<&str>,
+    ) -> Result<Vec<String>> {
+        let mut columns = group_keys.to_vec();
+        let df_schema =
+            datafusion::common::DFSchema::try_from(source_schema.as_ref().clone())
+                .map_err(|error| rootcause::report!("invalid source schema: {error}"))?;
+        let mut add = |expression: &str| -> Result<()> {
+            let expression = context
+                .state()
+                .create_logical_expr(expression, &df_schema)
+                .map_err(|error| {
+                    rootcause::report!(
+                        "invalid aggregate expression {expression:?}: {error}"
+                    )
+                })?;
+            for column in expression.column_refs() {
+                if !columns.contains(&column.name) {
+                    columns.push(column.name.clone());
+                }
+            }
+            Ok(())
+        };
+        for (key, expression) in group_keys.iter().zip(group_exprs) {
+            if !expression.is_empty() && expression != key {
+                add(expression)?;
+            }
+        }
+        for aggregate in aggregates {
+            add(&aggregate.call)?;
+        }
+        if let Some(filter) = filter {
+            for column in crate::runtime::filter_columns(context, source_schema, filter)?
+            {
+                if !columns.contains(&column) {
+                    columns.push(column);
+                }
+            }
+        }
+        Ok(columns)
+    }
+
+    /// Whether an older row state still has every column the projection
+    /// reads.  Such a state is used as-is: its extra source columns stay in
+    /// the physical schema (and are maintained on writes) instead of forcing
+    /// a full rebuild just to trim them.  New states are created projected.
+    fn state_schema_compatible(
+        actual: &arrow_schema::SchemaRef,
+        expected: &arrow_schema::SchemaRef,
+        source: &arrow_schema::SchemaRef,
+        group_keys: &[String],
+    ) -> bool {
+        expected.fields().iter().all(|field| {
+            actual
+                .field_with_name(field.name())
+                .is_ok_and(|actual| actual.data_type() == field.data_type())
+        }) && actual.fields().iter().all(|field| {
+            source.field_with_name(field.name()).is_ok()
+                || group_keys.contains(field.name())
+                || field.name() == IVM_ROW_KINDS_COLUMN
+                || field.name() == IVM_EPOCH_COLUMN
+        })
+    }
+
     /// The value-count state table of the view, reusing the registered one when
     /// its schema still matches and recreating it otherwise.
-    async fn ensure_state_table(&self, mv: &IvmTable, spec: &ViewSpec) -> Result<String> {
+    async fn ensure_state_table(
+        &self,
+        mv: &IvmTable,
+        spec: &ViewSpec,
+    ) -> Result<Option<String>> {
         if matches!(spec, ViewSpec::Join { .. } | ViewSpec::LookupJoin { .. }) {
             let schema = mv.schema.clone();
             let primary_keys = mv.primary_keys.clone();
@@ -1974,6 +2880,7 @@ impl IvmSqlExecutor {
             } else {
                 vec![primary_keys[0].clone()]
             };
+            let mut replaced = false;
             if let Some(existing) = self
                 .runtime
                 .metadata()
@@ -1984,17 +2891,15 @@ impl IvmSqlExecutor {
                 if schema_matches(&table.schema, &schema)
                     && table.primary_keys == primary_keys
                 {
-                    return Ok(table.table_id);
+                    return Ok(Some(table.table_id));
                 }
                 self.runtime
                     .metadata()
                     .unregister_state(spec.view_id(), StateRole::State)
                     .await?;
-                let _ = self
-                    .runtime
-                    .client()
-                    .drop_table(&table.table_name, &table.namespace)
-                    .await;
+                // Keep the old physical table: a stored spec may still carry
+                // its id until the re-analysis persists the replacement.
+                replaced = true;
             }
             let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
             let mut options = IvmTableOptions::new(
@@ -2011,12 +2916,23 @@ impl IvmSqlExecutor {
             }
             options.hash_bucket_num = mv.hash_bucket_num.clone();
             let table = create_ivm_table(self.runtime.client(), options).await?;
-            return Ok(table.table_id);
+            if replaced {
+                // The state starts empty, so the next refresh must rebuild the
+                // view instead of applying a delta to an empty state.
+                self.runtime
+                    .metadata()
+                    .set_view_status(spec.view_id(), "dirty")
+                    .await?;
+            }
+            return Ok(Some(table.table_id));
         }
         if !multi_agg_value_state_eligible(spec)
             && let ViewSpec::MultiAgg {
                 source_table_id,
                 group_keys,
+                group_exprs,
+                aggregates,
+                filter,
                 ..
             } = spec
         {
@@ -2026,15 +2942,41 @@ impl IvmSqlExecutor {
                     "multi-agg row state needs a keyed source"
                 ));
             }
-            let schema = multi_agg_rows_state_schema_for(&source.schema, group_keys)?;
+            if group_exprs.iter().zip(group_keys).any(|(expr, key)| {
+                !expr.is_empty()
+                    && expr != key
+                    && source.schema.field_with_name(key).is_ok()
+            }) {
+                tracing::debug!(
+                    table = %source.table_name,
+                    "multi-agg group expression reuses a source column; using full recompute"
+                );
+                return Ok(None);
+            }
+            let state_columns = Self::multi_agg_rows_state_columns(
+                &refresh_session(),
+                &source.schema,
+                group_keys,
+                group_exprs,
+                aggregates,
+                filter.as_deref(),
+            )?;
+            let state_source = source.projected_state_source(&state_columns)?;
+            let schema = multi_agg_rows_state_schema_for(
+                &state_source.schema,
+                group_keys,
+                group_exprs,
+            )?;
             let mut primary_keys = group_keys.clone();
-            for key in &source.primary_keys {
+            for key in &state_source.primary_keys {
                 if !primary_keys.contains(key) {
                     primary_keys.push(key.clone());
                 }
             }
             let bucket_columns = group_keys.clone();
-            let range_partitions = state_range_partition_columns(&source, &primary_keys);
+            let range_partitions =
+                state_range_partition_columns(&state_source, &primary_keys);
+            let mut replaced = false;
             if let Some(existing) = self
                 .runtime
                 .metadata()
@@ -2042,40 +2984,42 @@ impl IvmSqlExecutor {
                 .await?
             {
                 let table = self.runtime.open_table_by_id(&existing.table_id).await?;
-                if schema_matches(&table.schema, &schema)
+                if (schema_matches(&table.schema, &schema)
+                    || Self::state_schema_compatible(
+                        &table.schema,
+                        &schema,
+                        &state_source.schema,
+                        group_keys,
+                    ))
                     && table.primary_keys == primary_keys
                 {
-                    return Ok(table.table_id);
+                    return Ok(Some(table.table_id));
                 }
                 self.runtime
                     .metadata()
                     .unregister_state(spec.view_id(), StateRole::MultiAggRows)
                     .await?;
-                let _ = self
-                    .runtime
-                    .client()
-                    .drop_table(&table.table_name, &table.namespace)
-                    .await;
+                replaced = true;
+                // Keep the old physical table: a stored view spec may still
+                // reference its id until the re-analysis below persists the
+                // new state id.  It stays unregistered and inert afterwards.
             }
             // A compact aggregate state from an older definition would make
             // the refresh pick the wrong path; remove it when switching to
             // row-level state.
-            if let Some(existing) = self
+            if self
                 .runtime
                 .metadata()
                 .get_state(spec.view_id(), StateRole::State)
                 .await?
+                .is_some()
             {
                 self.runtime
                     .metadata()
                     .unregister_state(spec.view_id(), StateRole::State)
                     .await?;
-                let table = self.runtime.open_table_by_id(&existing.table_id).await?;
-                let _ = self
-                    .runtime
-                    .client()
-                    .drop_table(&table.table_name, &table.namespace)
-                    .await;
+                // The same physical table can be registered under both roles;
+                // leave it in place for the same migration reason as above.
             }
             let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
             let mut options = IvmTableOptions::new(
@@ -2097,7 +3041,15 @@ impl IvmSqlExecutor {
                 .metadata()
                 .register_state(spec.view_id(), StateRole::MultiAggRows, &table)
                 .await?;
-            return Ok(table.table_id);
+            if replaced {
+                // An empty recreated row state cannot answer the old groups;
+                // rebuild the view from the source instead.
+                self.runtime
+                    .metadata()
+                    .set_view_status(spec.view_id(), "dirty")
+                    .await?;
+            }
+            return Ok(Some(table.table_id));
         }
         if let ViewSpec::MultiAgg {
             source_table_id,
@@ -2126,7 +3078,7 @@ impl IvmSqlExecutor {
             {
                 let table = self.runtime.open_table_by_id(&existing.table_id).await?;
                 if schema_matches(&table.schema, &schema) {
-                    return Ok(table.table_id);
+                    return Ok(Some(table.table_id));
                 }
                 self.runtime
                     .metadata()
@@ -2153,7 +3105,7 @@ impl IvmSqlExecutor {
             }
             options.hash_bucket_num = mv.hash_bucket_num.clone();
             let table = create_ivm_table(self.runtime.client(), options).await?;
-            return Ok(table.table_id);
+            return Ok(Some(table.table_id));
         }
         let (source_table_id, group_keys, group_exprs, value_column, value_expr) =
             match spec {
@@ -2208,7 +3160,7 @@ impl IvmSqlExecutor {
         {
             let table = self.runtime.open_table_by_id(&existing.table_id).await?;
             if schema_matches(&table.schema, &schema) {
-                return Ok(table.table_id);
+                return Ok(Some(table.table_id));
             }
             self.runtime
                 .metadata()
@@ -2237,11 +3189,67 @@ impl IvmSqlExecutor {
             options = options.with_range_partition_columns(range_partitions);
         }
         let table = create_ivm_table(self.runtime.client(), options).await?;
-        Ok(table.table_id)
+        Ok(Some(table.table_id))
     }
 
     /// Drop the generated state tables of a view (the MV is recycled by the
     /// rebuild, not dropped).
+    /// Move the inner lookup's join-key index to the fused view.  Both views
+    /// have the same left source and join keys, so the rows are the same; the
+    /// inner step is no longer refreshed after fusion.
+    async fn adopt_lookup_join_state(&self, from: &str, to: &str) -> Result<()> {
+        if from == to {
+            return Ok(());
+        }
+        let Some(state) = self
+            .runtime
+            .metadata()
+            .get_state(from, StateRole::JoinLeft)
+            .await?
+        else {
+            return Ok(());
+        };
+        if self
+            .runtime
+            .metadata()
+            .get_state(to, StateRole::JoinLeft)
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let table = self.runtime.open_table_by_id(&state.table_id).await?;
+        self.runtime
+            .metadata()
+            .register_state(to, StateRole::JoinLeft, &table)
+            .await?;
+        self.runtime
+            .metadata()
+            .unregister_state(from, StateRole::JoinLeft)
+            .await?;
+        Ok(())
+    }
+
+    /// Release the inner lookup steps that a fused step replaced.  The view
+    /// metadata stays so a later execution reuses its shape, but its table is
+    /// emptied and its cursors are gone; if it is ever maintained on its own
+    /// again the dirty marker forces a rebuild.
+    async fn release_fused_inner_views(&self, caches: &DerivedCaches) -> Result<()> {
+        for view_id in &caches.fused_inner {
+            let Ok(table) = self.runtime.open_table_by_id(view_id).await else {
+                continue;
+            };
+            self.drop_generated_state(view_id).await?;
+            table.truncate(self.runtime.client()).await?;
+            self.runtime.metadata().delete_cursors(view_id).await?;
+            self.runtime
+                .metadata()
+                .set_view_status(view_id, "dirty")
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn drop_generated_state(&self, view_id: &str) -> Result<()> {
         for state in self.runtime.metadata().list_states(view_id).await? {
             if state.role == StateRole::Mv {
@@ -2413,10 +3421,9 @@ fn needs_state_table(spec: &ViewSpec) -> bool {
         ViewSpec::MinMax { .. } | ViewSpec::DistinctAgg { .. } => true,
         ViewSpec::MultiAgg {
             group_keys,
-            group_exprs,
             having_lookup,
             ..
-        } => group_exprs.is_empty() && !group_keys.is_empty() && having_lookup.is_none(),
+        } => !group_keys.is_empty() && having_lookup.is_none(),
         _ => false,
     }
 }
@@ -2636,6 +3643,26 @@ fn expected_mv_schema(
             } else {
                 schema
             }
+        }
+        ViewSpec::MultiLookupJoin {
+            left_table_id,
+            rights,
+            join_keys,
+            output_columns,
+            ..
+        } => {
+            let left = find_table(tables, left_table_id)?;
+            let mut right_schemas = Vec::with_capacity(rights.len());
+            for right in rights {
+                right_schemas.push(find_table(tables, &right.table_id)?.schema.clone());
+            }
+            multi_lookup_join_mv_schema_for(
+                &left.schema,
+                &right_schemas,
+                &left.primary_keys,
+                join_keys,
+                output_columns,
+            )?
         }
         ViewSpec::LookupJoin {
             left_table_id,
@@ -3153,4 +4180,242 @@ fn schema_matches(actual: &Schema, expected: &Schema) -> bool {
                     && actual.data_type() == expected.data_type()
                     && actual.is_nullable() == expected.is_nullable()
             })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_schema::{DataType, Field, Schema};
+
+    fn source_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("g", DataType::Utf8, false),
+            Field::new("v", DataType::Int64, false),
+        ]))
+    }
+
+    fn multi_agg(call: &str, column: &str, having: Option<&str>) -> ViewSpec {
+        let mut spec = serde_json::json!({
+            "kind": "multi_agg",
+            "view_id": "new",
+            "source_table_id": "src",
+            "mv_table_id": "new_mv",
+            "group_keys": ["g"],
+            "aggregates": [{
+                "call": call,
+                "column": column,
+                "result": "int64",
+            }],
+        });
+        if let Some(having) = having {
+            spec["having"] = serde_json::Value::String(having.to_string());
+        }
+        serde_json::from_value(spec).unwrap()
+    }
+
+    fn owner_aggregates() -> Vec<MultiAggSpec> {
+        vec![
+            MultiAggSpec {
+                call: "sum(v)".to_string(),
+                column: "net_v".to_string(),
+                result: "int64".to_string(),
+            },
+            MultiAggSpec {
+                call: "count(*)".to_string(),
+                column: "cnt_v".to_string(),
+                result: "int64".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn rewrites_having_columns_but_not_string_literals() {
+        let mapping = HashMap::from([("sum_v".to_string(), "net_v".to_string())]);
+        let rewritten = rewrite_filter_columns("sum_v <> 0 AND note = 'sum_v'", &mapping);
+        assert!(rewritten.contains("\"net_v\" <> 0"), "{rewritten}");
+        assert!(rewritten.contains("'sum_v'"), "{rewritten}");
+    }
+
+    #[test]
+    fn merges_a_subset_multi_agg_into_a_row_projection() {
+        let source = source_schema();
+        let owner_schema = multi_agg_mv_schema_for(
+            &source,
+            &["g".to_string()],
+            &[],
+            &[
+                ("net_v".to_string(), DataType::Int64),
+                ("cnt_v".to_string(), DataType::Int64),
+            ],
+        )
+        .unwrap();
+        let new_schema = multi_agg_mv_schema_for(
+            &source,
+            &["g".to_string()],
+            &[],
+            &[("sum_v".to_string(), DataType::Int64)],
+        )
+        .unwrap();
+        let spec = multi_agg("sum(v)", "sum_v", Some("\"sum_v\" <> 0"));
+        let row = merge_multi_agg_row(
+            &spec,
+            "owner",
+            &owner_schema,
+            &owner_aggregates(),
+            &new_schema,
+        )
+        .expect("the SUM aggregate is present in the owner");
+        let ViewSpec::Row {
+            source_table_id,
+            output_columns,
+            output_exprs,
+            filter,
+            ..
+        } = row
+        else {
+            panic!("expected a row projection");
+        };
+        assert_eq!(source_table_id, "owner");
+        assert_eq!(output_columns, ["g", "sum_v"]);
+        assert_eq!(output_exprs, ["g", "net_v"]);
+        assert!(filter.unwrap().contains("net_v"));
+    }
+
+    #[test]
+    fn recognizes_an_identity_row_and_inlines_its_source() {
+        let row: ViewSpec = serde_json::from_value(serde_json::json!({
+            "kind": "row",
+            "view_id": "row_view",
+            "source_table_id": "upstream",
+            "mv_table_id": "row_view",
+            "output_columns": ["g", "v"],
+            "output_exprs": ["g", "v"],
+        }))
+        .unwrap();
+        assert_eq!(identity_row_source(&row), Some("upstream"));
+
+        let mut consumer: ViewSpec = serde_json::from_value(serde_json::json!({
+            "kind": "multi_agg",
+            "view_id": "consumer",
+            "source_table_id": "row_view",
+            "mv_table_id": "consumer",
+            "group_keys": ["g"],
+            "aggregates": [{
+                "call": "sum(v)",
+                "column": "sum_v",
+                "result": "int64",
+            }],
+        }))
+        .unwrap();
+        let rows = HashMap::from([("row_view".to_string(), row)]);
+        assert_eq!(inline_identity_rows(&mut consumer, &rows), ["row_view"]);
+        let ViewSpec::MultiAgg {
+            source_table_id, ..
+        } = consumer
+        else {
+            panic!("expected a multi aggregate");
+        };
+        assert_eq!(source_table_id, "upstream");
+    }
+
+    #[test]
+    fn keeps_a_filtering_row_as_a_source() {
+        let row: ViewSpec = serde_json::from_value(serde_json::json!({
+            "kind": "row",
+            "view_id": "row_view",
+            "source_table_id": "upstream",
+            "mv_table_id": "row_view",
+            "output_columns": ["g", "v"],
+            "filter": "v <> 0",
+        }))
+        .unwrap();
+        assert!(identity_row_source(&row).is_none());
+    }
+
+    #[test]
+    fn folds_a_single_reader_filtering_row_into_its_aggregate() {
+        let row: ViewSpec = serde_json::from_value(serde_json::json!({
+            "kind": "row",
+            "view_id": "row_view",
+            "source_table_id": "upstream",
+            "mv_table_id": "row_view",
+            "output_columns": ["g", "v"],
+            "output_exprs": ["g", "v"],
+            "filter": "v <> 0",
+        }))
+        .unwrap();
+        let mut consumer: ViewSpec = serde_json::from_value(serde_json::json!({
+            "kind": "multi_agg",
+            "view_id": "consumer",
+            "source_table_id": "row_view",
+            "mv_table_id": "consumer",
+            "group_keys": ["g"],
+            "aggregates": [{
+                "call": "sum(v)",
+                "column": "sum_v",
+                "result": "int64",
+            }],
+        }))
+        .unwrap();
+        let upstream = crate::table::IvmTable {
+            table_id: "upstream".to_string(),
+            table_name: "upstream".to_string(),
+            namespace: "default".to_string(),
+            table_path: "/tmp/upstream".to_string(),
+            schema: source_schema(),
+            primary_keys: vec!["k".to_string()],
+            range_partition_columns: Vec::new(),
+            bucket_columns: vec!["k".to_string()],
+            hash_bucket_num: "1".to_string(),
+            cdc_column: None,
+            file_format: crate::table::internal_file_format(),
+            allow_fallback: true,
+        };
+        let rows = HashMap::from([("row_view".to_string(), row)]);
+        let tables = HashMap::from([("upstream".to_string(), upstream)]);
+        let uses = HashMap::from([("row_view".to_string(), 1)]);
+        let replaced = inline_filtering_rows(&mut consumer, &rows, &tables, &uses);
+        assert_eq!(replaced, ["row_view"]);
+        let ViewSpec::MultiAgg {
+            source_table_id,
+            filter,
+            ..
+        } = consumer
+        else {
+            panic!("expected a multi aggregate");
+        };
+        assert_eq!(source_table_id, "upstream");
+        assert_eq!(filter.as_deref(), Some("v <> 0"));
+    }
+
+    #[test]
+    fn refuses_a_missing_aggregate() {
+        let source = source_schema();
+        let owner_schema = multi_agg_mv_schema_for(
+            &source,
+            &["g".to_string()],
+            &[],
+            &[("net_v".to_string(), DataType::Int64)],
+        )
+        .unwrap();
+        let new_schema = multi_agg_mv_schema_for(
+            &source,
+            &["g".to_string()],
+            &[],
+            &[("max_v".to_string(), DataType::Int64)],
+        )
+        .unwrap();
+        let spec = multi_agg("max(v)", "max_v", None);
+        assert!(
+            merge_multi_agg_row(
+                &spec,
+                "owner",
+                &owner_schema,
+                &owner_aggregates(),
+                &new_schema,
+            )
+            .is_none()
+        );
+    }
 }

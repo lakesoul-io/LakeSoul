@@ -9,6 +9,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
+use futures::StreamExt;
+
 use super::*;
 
 /// The policy of a chain refresh.
@@ -92,6 +94,47 @@ impl ViewGraph {
         let order = topological_order(&edges, roots)?;
         Ok(Self { specs, order })
     }
+
+    /// Group the topological order into dependency levels.  A view's level is
+    /// one more than the deepest source view, so views in one level never
+    /// depend on each other and can be refreshed concurrently.
+    fn levels(&self) -> Vec<Vec<String>> {
+        dependency_levels(&self.order, |view_id| {
+            self.specs
+                .get(view_id)
+                .map(|spec| {
+                    spec.source_table_ids()
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+    }
+}
+
+/// Group a topological order into dependency levels.  A view's level is one
+/// more than the deepest source view, so views in one level never depend on
+/// each other and can be refreshed concurrently.
+fn dependency_levels(
+    order: &[String],
+    sources: impl Fn(&str) -> Vec<String>,
+) -> Vec<Vec<String>> {
+    let mut level_of: HashMap<String, usize> = HashMap::new();
+    let mut levels: Vec<Vec<String>> = Vec::new();
+    for view_id in order {
+        let level = sources(view_id)
+            .into_iter()
+            .filter_map(|source| level_of.get(&source).copied())
+            .max()
+            .map_or(0, |source| source + 1);
+        level_of.insert(view_id.clone(), level);
+        while levels.len() <= level {
+            levels.push(Vec::new());
+        }
+        levels[level].push(view_id.clone());
+    }
+    levels
 }
 
 /// Order the view edges sources-first, starting from the roots (their
@@ -154,6 +197,19 @@ fn topological_order(
     Ok(order)
 }
 
+/// The number of independent views a chain refresh may run at once.
+///
+/// One keeps the historical sequential order.  Values above one run views of
+/// the same dependency level concurrently; the shared DataFusion pool and the
+/// metadata client still bound the real resource usage.
+fn view_parallelism() -> usize {
+    std::env::var("LAKESOUL_IVM_VIEW_PARALLELISM")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1)
+        .max(1)
+}
+
 impl IvmRuntime {
     /// Refresh a view and every view it reads, upstream first, with the
     /// default [`ChainPolicy`].
@@ -185,14 +241,56 @@ impl IvmRuntime {
         policy: &ChainPolicy,
     ) -> Result<Vec<ViewRefresh>> {
         let graph = ViewGraph::load(self, view_ids).await?;
-        let mut refreshed = Vec::with_capacity(graph.order.len());
-        for view_id in &graph.order {
-            let Some(spec) = graph.specs.get(view_id) else {
-                continue;
-            };
-            refreshed.push(self.refresh_chain_view(view_id, spec, policy).await?);
+        let parallelism = view_parallelism();
+        if parallelism == 1 {
+            let mut refreshed = Vec::with_capacity(graph.order.len());
+            for view_id in &graph.order {
+                let Some(spec) = graph.specs.get(view_id) else {
+                    continue;
+                };
+                refreshed.push(self.refresh_chain_view(view_id, spec, policy).await?);
+            }
+            return Ok(refreshed);
         }
-        Ok(refreshed)
+
+        let positions = graph
+            .order
+            .iter()
+            .enumerate()
+            .map(|(index, view_id)| (view_id.as_str(), index))
+            .collect::<HashMap<_, _>>();
+        let mut refreshed: Vec<Option<ViewRefresh>> =
+            (0..graph.order.len()).map(|_| None).collect();
+        for level in graph.levels() {
+            let mut results = futures::stream::iter(level)
+                .map(|view_id| {
+                    let spec = graph.specs.get(&view_id).cloned();
+                    async move {
+                        let spec = spec?;
+                        Some((
+                            view_id.clone(),
+                            self.refresh_chain_view(&view_id, &spec, policy).await,
+                        ))
+                    }
+                })
+                .buffer_unordered(parallelism)
+                .collect::<Vec<_>>()
+                .await;
+            results.sort_by_key(|entry| {
+                entry
+                    .as_ref()
+                    .and_then(|(view_id, _)| positions.get(view_id.as_str()).copied())
+                    .unwrap_or(usize::MAX)
+            });
+            for entry in results {
+                let Some((view_id, result)) = entry else {
+                    continue;
+                };
+                let index = positions[view_id.as_str()];
+                refreshed[index] = Some(result?);
+            }
+        }
+        Ok(refreshed.into_iter().flatten().collect())
     }
 
     /// Refresh one view of a chain: the incremental refresh with the policy
@@ -339,6 +437,40 @@ mod tests {
         assert_eq!(
             topological_order(&graph, &roots(&["a"])).unwrap(),
             ["b", "a"]
+        );
+    }
+
+    #[test]
+    fn groups_independent_views_into_one_level() {
+        let order = ["d", "b", "c", "a"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let levels = dependency_levels(&order, |view| match view {
+            "a" => vec!["b".to_string(), "c".to_string()],
+            "b" | "c" => vec!["d".to_string()],
+            _ => Vec::new(),
+        });
+        assert_eq!(
+            levels,
+            vec![
+                vec!["d".to_string()],
+                vec!["b".to_string(), "c".to_string()],
+                vec!["a".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_unrelated_roots_in_one_level() {
+        let order = ["a", "b", "c"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let levels = dependency_levels(&order, |_| Vec::new());
+        assert_eq!(
+            levels,
+            vec![vec!["a".to_string(), "b".to_string(), "c".to_string()]]
         );
     }
 }
