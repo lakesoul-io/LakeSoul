@@ -319,6 +319,11 @@ pub struct IvmTable {
     /// not contain them and reads inject their values from the
     /// `partition_desc`.
     pub range_partition_columns: Vec<String>,
+    /// Internal payload columns of a derived step: real source range
+    /// partition columns materialized only so a downstream state can mirror
+    /// the source partitioning.  They are hidden from an implicit `SELECT *`
+    /// over the step and never part of the business output.
+    pub internal_columns: Vec<String>,
     /// The columns the writer buckets on; empty means the merge key.
     pub bucket_columns: Vec<String>,
     /// The number of hash buckets.
@@ -439,6 +444,9 @@ pub struct IvmTableOptions {
     /// The range partition columns of the table; they must be part of the
     /// schema and are stripped from the data files.
     pub range_partition_columns: Vec<String>,
+    /// Internal payload columns hidden from an implicit `SELECT *` over the
+    /// table; persisted as the `lakesoul.ivm.internal_columns` property.
+    pub internal_columns: Vec<String>,
     /// The bucket columns; must be a prefix of `primary_keys`.
     pub bucket_columns: Vec<String>,
     /// The number of hash buckets.
@@ -468,6 +476,7 @@ impl IvmTableOptions {
             schema,
             primary_keys: Vec::new(),
             range_partition_columns: Vec::new(),
+            internal_columns: Vec::new(),
             bucket_columns: Vec::new(),
             hash_bucket_num: "4".to_string(),
             cdc_column: None,
@@ -488,6 +497,12 @@ impl IvmTableOptions {
         range_partition_columns: Vec<String>,
     ) -> Self {
         self.range_partition_columns = range_partition_columns;
+        self
+    }
+
+    /// Set the internal payload columns hidden from an implicit `SELECT *`.
+    pub fn with_internal_columns(mut self, internal_columns: Vec<String>) -> Self {
+        self.internal_columns = internal_columns;
         self
     }
 
@@ -605,6 +620,10 @@ pub async fn create_ivm_table(
     }
     properties["lakesoul.ivm.allow_fallback"] =
         serde_json::Value::Bool(options.allow_fallback);
+    if !options.internal_columns.is_empty() {
+        properties["lakesoul.ivm.internal_columns"] =
+            serde_json::Value::String(options.internal_columns.join(","));
+    }
     if let Some(cdc_column) = &options.cdc_column {
         if options.schema.field_with_name(cdc_column).is_err() {
             return Err(rootcause::report!(
@@ -656,6 +675,7 @@ pub async fn create_ivm_table(
         schema: options.schema,
         primary_keys: options.primary_keys,
         range_partition_columns: options.range_partition_columns,
+        internal_columns: options.internal_columns,
         bucket_columns: options.bucket_columns,
         hash_bucket_num: options.hash_bucket_num,
         cdc_column: options.cdc_column,
@@ -713,6 +733,17 @@ impl IvmTable {
                 ));
             }
         }
+        let internal_columns = properties
+            .get("lakesoul.ivm.internal_columns")
+            .and_then(|value| value.as_str())
+            .map(|columns| {
+                columns
+                    .split(',')
+                    .filter(|column| !column.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let bucket_columns = properties
             .get("lakesoul.ivm.bucket_columns")
             .and_then(|value| value.as_str())
@@ -754,6 +785,7 @@ impl IvmTable {
             schema: Arc::new(schema),
             primary_keys,
             range_partition_columns,
+            internal_columns,
             bucket_columns,
             hash_bucket_num,
             cdc_column,
@@ -853,6 +885,9 @@ impl IvmTable {
         let schema = Arc::new(Schema::new(fields));
         let mut projected = self.clone();
         projected.schema = schema;
+        projected
+            .internal_columns
+            .retain(|column| names.contains(column));
         Ok(projected)
     }
 

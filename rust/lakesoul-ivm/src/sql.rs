@@ -2103,6 +2103,7 @@ mod tests {
             table_path: "file:///tmp/src".to_string(),
             schema: schema.clone(),
             range_partition_columns: Vec::new(),
+            internal_columns: Vec::new(),
             primary_keys: vec!["k".to_string()],
             bucket_columns: Vec::new(),
             hash_bucket_num: "1".to_string(),

@@ -13,8 +13,8 @@ use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions,
-    JoinView, SemiAntiView, StateRole, keyed_join_output_primary_keys,
+    IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTable,
+    IvmTableOptions, JoinView, SemiAntiView, StateRole, keyed_join_output_primary_keys,
     keyed_join_view_schema_for, multi_agg_mv_schema_for, row_mv_schema_for,
     semi_anti_mv_schema_for, state_partition_stats, sum_count_mv_schema_for,
 };
@@ -4363,5 +4363,605 @@ async fn multi_agg_row_state_keeps_ungrouped_source_partition() {
     assert_eq!(
         read_sums().await,
         vec![("a".to_string(), 35), ("b".to_string(), 7)]
+    );
+}
+
+/// A chain shaped like the production order-entry view: two item unions, a
+/// semi join that scopes them, another union and a final aggregate.  The real
+/// source partition column must survive every cardinality-preserving step so
+/// the aggregate row state mirrors the source partitioning.
+#[test_log::test(tokio::test)]
+async fn a_derived_chain_carries_source_partitions_into_the_state() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let schema = source_schema();
+    let q = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_chain_q_{suffix}"),
+                table_path(&dir, "q"),
+                schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let c = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_chain_c_{suffix}"),
+                table_path(&dir, "c"),
+                schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let orders_schema = Arc::new(Schema::new(vec![
+        Field::new("oid", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let orders = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_chain_o_{suffix}"),
+                table_path(&dir, "o"),
+                orders_schema.clone(),
+            )
+            .with_primary_keys(vec!["oid".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    orders
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                orders_schema,
+                vec![
+                    Arc::new(Int64Array::from_iter_values([1, 2, 3, 4, 5, 6])),
+                    Arc::new(StringArray::from_iter_values(["insert"; 6])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_chain_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                Arc::new(Schema::new(vec![
+                    Field::new("g", DataType::Utf8, false),
+                    Field::new("sum_v", DataType::Int64, true),
+                    Field::new("max_v", DataType::Int64, true),
+                    Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+                    Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+                ])),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    q.append_batch(
+        runtime.client(),
+        source_batch(&[
+            (1, "a", 10, "d1", "insert"),
+            (2, "b", 5, "d1", "insert"),
+            (4, "c", 8, "d1", "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    c.append_batch(
+        runtime.client(),
+        source_batch(&[(3, "a", 20, "d2", "insert"), (5, "b", 7, "d2", "insert")]),
+    )
+    .await
+    .unwrap();
+
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_chain_mv_{suffix} \
+         WITH items AS ( \
+           SELECT 'q' AS src, k, g, v, day FROM ivm_chain_q_{suffix} \
+             WHERE \"{CHANGE_COLUMN}\" <> 'delete' \
+           UNION ALL \
+           SELECT 'c', k, g, v, day FROM ivm_chain_c_{suffix} \
+             WHERE \"{CHANGE_COLUMN}\" <> 'delete' \
+         ), \
+         scoped AS ( \
+           SELECT i.* FROM items i \
+           WHERE EXISTS ( \
+             SELECT 1 FROM ivm_chain_o_{suffix} o WHERE o.oid = i.k \
+           ) \
+         ), \
+         packed AS ( \
+           SELECT src, k, g, v, day FROM scoped WHERE src = 'q' \
+           UNION ALL \
+           SELECT src, k, g, v, day FROM scoped WHERE src = 'c' \
+         ) \
+         SELECT g, SUM(v) AS sum_v, MAX(v) AS max_v FROM packed GROUP BY g"
+    );
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let runtime = executor.runtime();
+
+    let mut row_state = None;
+    for view in runtime.metadata().list_views().await.unwrap() {
+        for state in runtime.metadata().list_states(&view.view_id).await.unwrap() {
+            if state.role == StateRole::MultiAggRows
+                && state.table_name.starts_with(&mv.table_name)
+            {
+                row_state = Some(state);
+            }
+        }
+    }
+    let state = row_state.expect("the aggregate row state exists");
+    let state = runtime.open_table_by_id(&state.table_id).await.unwrap();
+    assert!(
+        state.primary_keys.contains(&"day".to_string()),
+        "the source partition must be in the row state key: {:?}",
+        state.primary_keys
+    );
+    assert_eq!(
+        state.range_partition_columns,
+        vec!["day".to_string()],
+        "the row state must mirror the source partitioning"
+    );
+
+    // Every cardinality-preserving step on the path carries the partition.
+    let step_prefix = format!("{}__ivm_step", mv.table_name);
+    let mut carried_steps = 0;
+    for view in runtime.metadata().list_views().await.unwrap() {
+        let Ok(table) = runtime.open_table_by_id(&view.view_id).await else {
+            continue;
+        };
+        if table.table_name.starts_with(&step_prefix)
+            && table.range_partition_columns == vec!["day".to_string()]
+        {
+            carried_steps += 1;
+        }
+    }
+    assert!(
+        carried_steps >= 3,
+        "the union, semi-join and union steps must carry the partition, got {carried_steps}"
+    );
+
+    let read_sums = || async {
+        let context = SessionContext::new();
+        context
+            .register_table("mv", Arc::new(runtime.table_provider(&mv)))
+            .unwrap();
+        let batches = context
+            .sql("select g, sum_v from mv order by g")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let mut rows = Vec::new();
+        for batch in &batches {
+            let groups = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let sums = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                rows.push((groups.value(row).to_string(), sums.value(row)));
+            }
+        }
+        rows
+    };
+    assert_eq!(
+        read_sums().await,
+        vec![
+            ("a".to_string(), 30),
+            ("b".to_string(), 12),
+            ("c".to_string(), 8)
+        ]
+    );
+
+    q.append_batch(
+        runtime.client(),
+        source_batch(&[(1, "a", 15, "d1", "insert"), (2, "b", 5, "d1", "delete")]),
+    )
+    .await
+    .unwrap();
+    c.append_batch(
+        runtime.client(),
+        source_batch(&[(6, "c", 3, "d2", "insert")]),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_sums().await,
+        vec![
+            ("a".to_string(), 35),
+            ("b".to_string(), 7),
+            ("c".to_string(), 11)
+        ]
+    );
+
+    // The same key moves from d1 to d3.  Both the old and the new state
+    // partition must be touched, and the final aggregate must retract the old
+    // value before adding the new one.
+    q.append_batch(
+        runtime.client(),
+        source_batch(&[(2, "b", 5, "d1", "delete"), (2, "b", 9, "d3", "insert")]),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_sums().await,
+        vec![
+            ("a".to_string(), 35),
+            ("b".to_string(), 16),
+            ("c".to_string(), 11)
+        ]
+    );
+}
+
+/// A window step between a partitioned union and an aggregate must carry the
+/// real source partition as a payload column; otherwise the aggregate row
+/// state loses the source partitioning.
+#[test_log::test(tokio::test)]
+async fn a_derived_window_carries_source_partition_into_the_state() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let schema = source_schema();
+    let q = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_winchain_q_{suffix}"),
+                table_path(&dir, "q"),
+                schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let c = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_winchain_c_{suffix}"),
+                table_path(&dir, "c"),
+                schema,
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let orders_schema = Arc::new(Schema::new(vec![
+        Field::new("oid", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let orders = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_winchain_o_{suffix}"),
+                table_path(&dir, "o"),
+                orders_schema.clone(),
+            )
+            .with_primary_keys(vec!["oid".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    orders
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                orders_schema,
+                vec![
+                    Arc::new(Int64Array::from_iter_values([1, 2, 3, 4])),
+                    Arc::new(StringArray::from_iter_values(["insert"; 4])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_winchain_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                Arc::new(Schema::new(vec![
+                    Field::new("g", DataType::Utf8, false),
+                    Field::new("sum_v", DataType::Int64, true),
+                    Field::new("max_v", DataType::Int64, true),
+                    Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+                    Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+                ])),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    q.append_batch(
+        runtime.client(),
+        source_batch(&[(1, "a", 10, "d1", "insert"), (2, "b", 5, "d1", "insert")]),
+    )
+    .await
+    .unwrap();
+    c.append_batch(
+        runtime.client(),
+        source_batch(&[(3, "a", 20, "d2", "insert"), (4, "c", 8, "d2", "insert")]),
+    )
+    .await
+    .unwrap();
+
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_winchain_mv_{suffix} \
+         WITH items AS ( \
+           SELECT 'q' AS src, k, g, v, day FROM ivm_winchain_q_{suffix} \
+             WHERE \"{CHANGE_COLUMN}\" <> 'delete' \
+           UNION ALL \
+           SELECT 'c', k, g, v, day FROM ivm_winchain_c_{suffix} \
+             WHERE \"{CHANGE_COLUMN}\" <> 'delete' \
+         ), \
+         scoped AS ( \
+           SELECT i.* FROM items i \
+           WHERE EXISTS ( \
+             SELECT 1 FROM ivm_winchain_o_{suffix} o WHERE o.oid = i.k \
+           ) \
+         ), \
+         ranked AS ( \
+           SELECT src, k, g, v, day, \
+                  ROW_NUMBER() OVER ( \
+                    PARTITION BY k ORDER BY v DESC, day DESC \
+                  ) AS rn \
+           FROM scoped \
+         ) \
+         SELECT g, SUM(v) AS sum_v, MAX(v) AS max_v \
+         FROM ranked WHERE rn = 1 GROUP BY g"
+    );
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let runtime = executor.runtime();
+
+    let mut row_state = None;
+    for view in runtime.metadata().list_views().await.unwrap() {
+        for state in runtime.metadata().list_states(&view.view_id).await.unwrap() {
+            if state.role == StateRole::MultiAggRows
+                && state.table_name.starts_with(&mv.table_name)
+            {
+                row_state = Some(state);
+            }
+        }
+    }
+    let state = row_state.expect("the aggregate row state exists");
+    let state = runtime.open_table_by_id(&state.table_id).await.unwrap();
+    assert!(
+        state.primary_keys.contains(&"day".to_string()),
+        "the source partition must be in the row state key: {:?}",
+        state.primary_keys
+    );
+    assert_eq!(
+        state.range_partition_columns,
+        vec!["day".to_string()],
+        "the row state must mirror the source partitioning"
+    );
+
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(&mv)))
+        .unwrap();
+    let batches = context
+        .sql("select g, sum_v from mv order by g")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let groups = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((groups.value(row).to_string(), sums.value(row)));
+        }
+    }
+    assert_eq!(
+        rows,
+        vec![
+            ("a".to_string(), 30),
+            ("b".to_string(), 5),
+            ("c".to_string(), 8)
+        ]
+    );
+}
+
+/// An implicit `SELECT *` over a derived step must not expose the partition
+/// payload the step carries for its own state, yet a union of those branches
+/// must still propagate the real partition downstream.
+#[test_log::test(tokio::test)]
+async fn select_star_over_a_derived_step_hides_the_internal_partition() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let schema = source_schema();
+    let q = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_star_q_{suffix}"),
+                table_path(&dir, "q"),
+                schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let c = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_star_c_{suffix}"),
+                table_path(&dir, "c"),
+                schema,
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_star_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                Arc::new(Schema::new(vec![
+                    Field::new("g", DataType::Utf8, false),
+                    Field::new("sum_v", DataType::Int64, true),
+                    Field::new("max_v", DataType::Int64, true),
+                    Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+                    Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+                ])),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    q.append_batch(
+        runtime.client(),
+        source_batch(&[(1, "a", 10, "d1", "insert"), (2, "b", 5, "d1", "insert")]),
+    )
+    .await
+    .unwrap();
+    c.append_batch(
+        runtime.client(),
+        source_batch(&[(3, "a", 20, "d2", "insert"), (4, "c", 8, "d2", "insert")]),
+    )
+    .await
+    .unwrap();
+
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_star_mv_{suffix} \
+         WITH u AS ( \
+           SELECT 'q' AS src, k, g, v FROM ivm_star_q_{suffix} \
+             WHERE \"{CHANGE_COLUMN}\" <> 'delete' \
+           UNION ALL \
+           SELECT 'c', k, g, v FROM ivm_star_c_{suffix} \
+             WHERE \"{CHANGE_COLUMN}\" <> 'delete' \
+         ), \
+         u2 AS ( \
+           SELECT * FROM u WHERE src = 'q' \
+           UNION ALL \
+           SELECT * FROM u WHERE src = 'c' \
+         ) \
+         SELECT g, SUM(v) AS sum_v, MAX(v) AS max_v FROM u2 GROUP BY g"
+    );
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let runtime = executor.runtime();
+
+    // The first union step carries the source partition as an internal
+    // payload; an implicit `SELECT *` must not show it.
+    let first_step = runtime
+        .open_table(&format!("{}__ivm_step0", mv.table_name), &mv.namespace)
+        .await
+        .unwrap();
+    assert_eq!(
+        first_step.internal_columns,
+        vec!["day".to_string()],
+        "the appended partition must be marked internal"
+    );
+    assert!(
+        first_step.schema.field_with_name("day").is_ok(),
+        "the internal partition is still materialized"
+    );
+
+    let mut row_state = None;
+    for view in runtime.metadata().list_views().await.unwrap() {
+        for state in runtime.metadata().list_states(&view.view_id).await.unwrap() {
+            if state.role == StateRole::MultiAggRows
+                && state.table_name.starts_with(&mv.table_name)
+            {
+                row_state = Some(state);
+            }
+        }
+    }
+    let state = row_state.expect("the aggregate row state exists");
+    let state = runtime.open_table_by_id(&state.table_id).await.unwrap();
+    assert!(
+        state.primary_keys.contains(&"day".to_string()),
+        "the source partition must reach the state through SELECT * branches"
+    );
+    assert_eq!(
+        state.range_partition_columns,
+        vec!["day".to_string()],
+        "the row state must mirror the source partitioning"
+    );
+
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(&mv)))
+        .unwrap();
+    let batches = context
+        .sql("select g, sum_v from mv order by g")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let groups = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((groups.value(row).to_string(), sums.value(row)));
+        }
+    }
+    assert_eq!(
+        rows,
+        vec![
+            ("a".to_string(), 30),
+            ("b".to_string(), 5),
+            ("c".to_string(), 8)
+        ]
     );
 }

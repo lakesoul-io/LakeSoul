@@ -1046,6 +1046,7 @@ mod partition_scope_tests {
             schema,
             primary_keys: vec!["k".to_string()],
             range_partition_columns: partitions.iter().map(|c| c.to_string()).collect(),
+            internal_columns: Vec::new(),
             bucket_columns: Vec::new(),
             hash_bucket_num: "1".to_string(),
             cdc_column: None,

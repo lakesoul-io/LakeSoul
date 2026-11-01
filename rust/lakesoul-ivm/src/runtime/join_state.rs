@@ -626,6 +626,7 @@ mod tests {
             schema,
             primary_keys: vec!["id".to_string()],
             range_partition_columns: Vec::new(),
+            internal_columns: Vec::new(),
             bucket_columns: vec!["id".to_string()],
             hash_bucket_num: "4".to_string(),
             cdc_column: None,

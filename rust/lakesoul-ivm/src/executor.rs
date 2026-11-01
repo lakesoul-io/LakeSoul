@@ -2335,8 +2335,27 @@ impl IvmSqlExecutor {
                 &schema,
             )
         });
+        // A cardinality-preserving step can carry its source's real range
+        // partition columns through its own MV.  The column is materialized
+        // for the internal step only; the business output mapping ignores it,
+        // while a downstream state table can mirror the source partitioning.
+        // A merged multi-aggregate row reuses the owner's layout, so it is not
+        // widened here.
+        let partitions = if merged.is_some() {
+            DerivedPartitions::default()
+        } else {
+            propagate_derived_partitions(&mut spec, tables)?
+        };
+        tracing::debug!(
+            target = %target.table_name,
+            index,
+            kind = spec.kind(),
+            carried = ?partitions.carried,
+            internal = ?partitions.internal,
+            "derived step partitions"
+        );
         let table = self
-            .ensure_derived_table(target, index, &spec, tables)
+            .ensure_derived_table(target, index, &spec, tables, &partitions)
             .await?;
         // The derived view is registered under its MV table id (the view
         // identity of every view), so the chain graph finds it when the outer
@@ -2430,6 +2449,7 @@ impl IvmSqlExecutor {
         index: usize,
         spec: &ViewSpec,
         tables: &HashMap<String, IvmTable>,
+        partitions: &DerivedPartitions,
     ) -> Result<IvmTable> {
         let name = derived_step_name(&target.table_name, index);
         let path = derived_step_path(&target.table_path, index);
@@ -2467,6 +2487,8 @@ impl IvmSqlExecutor {
                     || existing.bucket_columns == bucket_columns)
                 && existing.file_format == internal_file_format()
                 && existing.hash_bucket_num == target.hash_bucket_num
+                && existing.range_partition_columns == partitions.carried
+                && existing.internal_columns == partitions.internal
             {
                 return Ok(existing);
             }
@@ -2484,6 +2506,12 @@ impl IvmSqlExecutor {
             .with_primary_keys(primary_keys)
             .with_bucket_columns(bucket_columns)
             .with_file_format(internal_file_format());
+        if !partitions.carried.is_empty() {
+            options = options.with_range_partition_columns(partitions.carried.clone());
+        }
+        if !partitions.internal.is_empty() {
+            options = options.with_internal_columns(partitions.internal.clone());
+        }
         options.hash_bucket_num = target.hash_bucket_num.clone();
         self.runtime.create_table(options).await
     }
@@ -3469,6 +3497,231 @@ fn find_table<'a>(
         .ok_or_else(|| rootcause::report!("table {table_id} was not opened for analysis"))
 }
 
+/// Carry a source's real range partition columns through a derived step that
+/// preserves the source's cardinality.
+///
+/// A range-partitioned table treats the same key in two partitions as two
+/// rows.  A projection-like step (a row, a semi/anti filter, a union of rows
+/// or a window that already carries payload columns) therefore has to keep the
+/// partition value: dropping it would merge rows the source keeps apart, and a
+/// downstream state table could not mirror the source partitioning.  The
+/// column is appended to the step's materialized columns only; the derived
+/// output mapping ignores it, so the business output is unchanged.
+///
+/// Aggregate and join steps are not widened: grouping by a partition changes
+/// the row cardinality, and a join can multiply rows on the other side.
+fn propagate_derived_partitions(
+    spec: &mut ViewSpec,
+    tables: &HashMap<String, IvmTable>,
+) -> Result<DerivedPartitions> {
+    match spec {
+        ViewSpec::Row {
+            source_table_id,
+            output_columns,
+            output_exprs,
+            ..
+        } => {
+            let source = find_table(tables, source_table_id)?;
+            let mut partitions = DerivedPartitions::default();
+            for column in &source.range_partition_columns {
+                if source.schema.field_with_name(column).is_err() {
+                    continue;
+                }
+                if output_columns.is_empty() {
+                    // Every source column is materialized already.  A column
+                    // the source only carries for its own internal
+                    // partitioning stays internal here too.
+                    partitions.carried.push(column.clone());
+                    if source.internal_columns.contains(column) {
+                        partitions.internal.push(column.clone());
+                    }
+                    continue;
+                }
+                match output_columns
+                    .iter()
+                    .position(|candidate| candidate == column)
+                {
+                    Some(position) => {
+                        let unchanged = output_exprs.is_empty()
+                            || output_exprs.get(position) == Some(column);
+                        if unchanged {
+                            partitions.carried.push(column.clone());
+                        }
+                    }
+                    None => {
+                        output_columns.push(column.clone());
+                        if !output_exprs.is_empty() {
+                            output_exprs.push(column.clone());
+                        }
+                        partitions.carried.push(column.clone());
+                        partitions.internal.push(column.clone());
+                    }
+                }
+            }
+            Ok(partitions)
+        }
+        ViewSpec::SemiAnti {
+            left_table_id,
+            output_columns,
+            ..
+        } => {
+            let source = find_table(tables, left_table_id)?;
+            let mut partitions = DerivedPartitions::default();
+            for column in &source.range_partition_columns {
+                if source.schema.field_with_name(column).is_err() {
+                    continue;
+                }
+                if output_columns.is_empty() {
+                    // Every left column is materialized.  A column the left
+                    // source only carries for its own internal partitioning
+                    // stays internal here too.
+                    if source.internal_columns.contains(column) {
+                        partitions.internal.push(column.clone());
+                    }
+                } else if !output_columns.contains(column) {
+                    output_columns.push(column.clone());
+                    partitions.internal.push(column.clone());
+                }
+                partitions.carried.push(column.clone());
+            }
+            Ok(partitions)
+        }
+        ViewSpec::Window {
+            source_table_id,
+            partition_keys,
+            payload_columns,
+            ..
+        } => {
+            let source = find_table(tables, source_table_id)?;
+            let mut partitions = DerivedPartitions::default();
+            for column in &source.range_partition_columns {
+                if source.schema.field_with_name(column).is_err() {
+                    continue;
+                }
+                // The MV keys are materialized first; anything else has to be
+                // a payload column to survive the window projection.
+                if !partition_keys.contains(column)
+                    && !source.primary_keys.contains(column)
+                    && !payload_columns.contains(column)
+                {
+                    payload_columns.push(column.clone());
+                    partitions.internal.push(column.clone());
+                }
+                partitions.carried.push(column.clone());
+            }
+            Ok(partitions)
+        }
+        ViewSpec::MultiWindow {
+            source_table_id,
+            windows,
+            payload_columns,
+            ..
+        } => {
+            let source = find_table(tables, source_table_id)?;
+            let mut partitions = DerivedPartitions::default();
+            for column in &source.range_partition_columns {
+                if source.schema.field_with_name(column).is_err() {
+                    continue;
+                }
+                let keyed = windows
+                    .iter()
+                    .any(|window| window.partition_keys.contains(column));
+                if !keyed
+                    && !source.primary_keys.contains(column)
+                    && !payload_columns.contains(column)
+                {
+                    payload_columns.push(column.clone());
+                    partitions.internal.push(column.clone());
+                }
+                partitions.carried.push(column.clone());
+            }
+            Ok(partitions)
+        }
+        ViewSpec::UnionAll { sources, .. } => {
+            if sources.is_empty()
+                || sources.iter().any(|source| source.columns.is_empty())
+            {
+                // An implicit `SELECT *` branch has the whole source schema in
+                // its own order; adding a column to the other branches would
+                // make the branch schemas diverge.
+                return Ok(DerivedPartitions::default());
+            }
+            let mut candidates: Option<Vec<String>> = None;
+            for source in sources.iter() {
+                let table = find_table(tables, &source.table_id)?;
+                let available = table
+                    .range_partition_columns
+                    .iter()
+                    .filter(|column| table.schema.field_with_name(column).is_ok())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                candidates = Some(match candidates {
+                    None => available,
+                    Some(previous) => previous
+                        .into_iter()
+                        .filter(|column| available.contains(column))
+                        .collect(),
+                });
+            }
+            let mut partitions = DerivedPartitions::default();
+            for column in candidates.unwrap_or_default() {
+                let positions = sources
+                    .iter()
+                    .map(|source| {
+                        source
+                            .columns
+                            .iter()
+                            .position(|candidate| candidate == &column)
+                    })
+                    .collect::<Vec<_>>();
+                if positions.iter().all(Option::is_some) {
+                    // Every branch projects it; it must be unchanged and in
+                    // the same position so the branch schemas still agree.
+                    let first = positions[0];
+                    if positions.iter().any(|position| *position != first) {
+                        continue;
+                    }
+                    let unchanged = sources.iter().all(|source| {
+                        source.exprs.is_empty()
+                            || first.and_then(|index| source.exprs.get(index))
+                                == Some(&column)
+                    });
+                    if unchanged {
+                        partitions.carried.push(column);
+                    }
+                    continue;
+                }
+                if positions.iter().any(Option::is_some) {
+                    // Only some branches expose it; inserting it in the same
+                    // position everywhere would reorder their other columns.
+                    continue;
+                }
+                for source in sources.iter_mut() {
+                    source.columns.push(column.clone());
+                    if !source.exprs.is_empty() {
+                        source.exprs.push(column.clone());
+                    }
+                }
+                partitions.internal.push(column.clone());
+                partitions.carried.push(column);
+            }
+            Ok(partitions)
+        }
+        _ => Ok(DerivedPartitions::default()),
+    }
+}
+
+/// The range partitions a derived step MV mirrors and the payload columns
+/// materialized only for that purpose.
+#[derive(Debug, Default)]
+struct DerivedPartitions {
+    /// Real source range partition columns the step MV carries.
+    carried: Vec<String>,
+    /// The carried columns that are not part of the business output and stay
+    /// hidden from an implicit `SELECT *` over the step.
+    internal: Vec<String>,
+}
+
 /// The schema the target MV must have for this definition.
 fn expected_mv_schema(
     spec: &ViewSpec,
@@ -4377,6 +4630,7 @@ mod tests {
             schema: source_schema(),
             primary_keys: vec!["k".to_string()],
             range_partition_columns: Vec::new(),
+            internal_columns: Vec::new(),
             bucket_columns: vec!["k".to_string()],
             hash_bucket_num: "1".to_string(),
             cdc_column: None,
