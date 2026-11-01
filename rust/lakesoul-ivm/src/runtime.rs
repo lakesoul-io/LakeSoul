@@ -54,6 +54,7 @@ mod fallback;
 pub(crate) mod join_state;
 mod joins;
 pub(crate) mod keyed_plan;
+pub use keyed_plan::state_partition_stats;
 mod lookup_chain;
 mod multi_join;
 mod recompute;

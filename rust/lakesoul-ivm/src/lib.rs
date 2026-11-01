@@ -92,6 +92,7 @@ pub use metadata::{
     PartitionVersion, SourceVersionRange, StateRole, StateTable, StateVersion, ViewInfo,
 };
 pub use provider::{IvmReadMode, IvmTableProvider};
+pub use runtime::state_partition_stats;
 pub use runtime::{
     ApproxDistinctView, ApproxPercentileView, ArrayAggView, BoolAggKind, BoolAggView,
     ChainPolicy, CompareOp, ComputedAggArg, ComputedAggResult, ComputedAggView,

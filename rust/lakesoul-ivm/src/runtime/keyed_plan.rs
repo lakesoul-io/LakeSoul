@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use arrow::array::{
     Array, ArrayRef, BinaryArray, Decimal128Array, Int64Array, StringArray, UInt32Array,
@@ -1344,6 +1344,32 @@ pub(crate) fn partition_restriction_from_batches(
     )
 }
 
+/// Test/diagnostic counters for the last keyed lookup of each state table.
+static PARTITION_STATS: OnceLock<Mutex<HashMap<String, (u64, u64)>>> = OnceLock::new();
+
+fn partition_stats() -> &'static Mutex<HashMap<String, (u64, u64)>> {
+    PARTITION_STATS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn record_partition_stats(table_id: &str, total: usize, kept: usize) {
+    if std::env::var("LAKESOUL_IVM_PARTITION_STATS").is_err() {
+        return;
+    }
+    if let Ok(mut stats) = partition_stats().lock() {
+        stats.insert(table_id.to_string(), (total as u64, kept as u64));
+    }
+}
+
+/// The last keyed lookup's `(partition groups total, partition groups kept)`
+/// for a state table.  Enabled by `LAKESOUL_IVM_PARTITION_STATS`.
+#[doc(hidden)]
+pub fn state_partition_stats(table_id: &str) -> Option<(u64, u64)> {
+    partition_stats()
+        .lock()
+        .ok()
+        .and_then(|stats| stats.get(table_id).copied())
+}
+
 pub(crate) struct IvmLookupTable {
     contribution: DataFrame,
     table: IvmTable,
@@ -1498,6 +1524,11 @@ impl IvmLookupTable {
                 None => self.groups_by_bucket.clone(),
             }
         };
+        record_partition_stats(
+            &self.table.table_id,
+            self.groups_by_bucket.iter().flatten().count(),
+            groups_by_bucket.iter().flatten().count(),
+        );
         let plan = self.contribution.create_physical_plan().await?;
         let plan = if let Some(columns) = self.route_columns.as_deref() {
             bucket_repartition_by_columns(plan, columns, self.bucket_count)

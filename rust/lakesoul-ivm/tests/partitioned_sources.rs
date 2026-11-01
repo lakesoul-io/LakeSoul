@@ -16,7 +16,7 @@ use lakesoul_ivm::{
     IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions,
     JoinView, SemiAntiView, StateRole, keyed_join_output_primary_keys,
     keyed_join_view_schema_for, multi_agg_mv_schema_for, row_mv_schema_for,
-    semi_anti_mv_schema_for, sum_count_mv_schema_for,
+    semi_anti_mv_schema_for, state_partition_stats, sum_count_mv_schema_for,
 };
 use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo};
 use tempfile::tempdir;
@@ -4053,6 +4053,7 @@ async fn a_multi_join_prunes_a_deep_source_by_chain_keys() {
 /// partition.
 #[test_log::test(tokio::test)]
 async fn a_partitioned_join_side_state_uses_the_join_key_partition() {
+    unsafe { std::env::set_var("LAKESOUL_IVM_PARTITION_STATS", "1") };
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -4182,6 +4183,7 @@ async fn a_partitioned_join_side_state_uses_the_join_key_partition() {
         vec!["day".to_string()],
         "the join side state must be range-partitioned by the join key"
     );
+    let state_id = state.table_id.clone();
 
     // Only the d1 join key changes on the right; the d2 left state partition
     // must remain untouched.
@@ -4223,4 +4225,17 @@ async fn a_partitioned_join_side_state_uses_the_join_key_partition() {
     }
     rows.sort_unstable();
     assert_eq!(rows, vec![(100, 7), (200, 6)]);
+
+    let partitions = runtime
+        .client()
+        .get_all_partition_info(&state_id)
+        .await
+        .unwrap();
+    let state_partitions = partitions.len() as u64;
+    let (total, kept) =
+        state_partition_stats(&state_id).expect("the side state lookup recorded stats");
+    assert!(
+        kept > 0 && (kept < state_partitions || total > kept),
+        "the side state lookup did not prune: state_partitions={state_partitions} total={total} kept={kept}"
+    );
 }
