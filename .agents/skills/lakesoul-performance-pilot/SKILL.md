@@ -44,6 +44,8 @@ systemd-run --user --scope --collect --unit=<pilot-unit> \
 
 - Keep the same cgroup limits for every side of a comparison.
 - `taskset` alone is not a memory limit; use the cgroup.
+- Use `dirty_decay_ms=5000` and `muzzy_decay_ms=5000`.  `0` disables decay
+  and was measured slower on the 1M pilot; do not use it for comparisons.
 - Sample `/sys/fs/cgroup/<path>/memory.current` during the run when
   `memory.peak` is unavailable, and report the sampled peak.
 - Include `LAKESOUL_CACHE=1` and an explicit cache size/path for keyed lookups.

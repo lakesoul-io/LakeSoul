@@ -303,7 +303,10 @@ async fn vortex_internal_tables_refresh_and_merge() {
                 source_schema(),
             )
             .with_primary_keys(vec!["k".to_string()])
-            .with_cdc_column(CHANGE_COLUMN),
+            .with_cdc_column(CHANGE_COLUMN)
+            // Keep the source on Parquet so this test keeps covering the
+            // mixed Parquet-source / Vortex-internal layout.
+            .with_file_format(PhysicalFormat::Parquet),
         )
         .await
         .unwrap();
@@ -421,7 +424,8 @@ async fn vortex_internal_tables_refresh_and_merge() {
         min_state(&runtime, &min_mv).await,
         min_oracle(&runtime, &source).await
     );
-    // The writer produced vortex files for the MVs and parquet for the source.
+    // The writer produced vortex files for the MVs and parquet for the
+    // explicitly Parquet source.
     assert!(has_extension(&dir.path().join("sum_mv"), "vortex"));
     assert!(has_extension(&dir.path().join("min_mv"), "vortex"));
     assert!(has_extension(&dir.path().join("min_state"), "vortex"));

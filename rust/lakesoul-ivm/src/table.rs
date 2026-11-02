@@ -454,8 +454,8 @@ pub struct IvmTableOptions {
     /// The CDC change column of the table, persisted as the
     /// `lakesoul_cdc_change_column` table property.
     pub cdc_column: Option<String>,
-    /// The physical file format of the table (parquet by default; vortex
-    /// enables the row-level primary-key locator).
+    /// The physical file format of the table (vortex by default; parquet and
+    /// vortex-compact remain available as explicit experiments).
     pub file_format: PhysicalFormat,
     /// Whether an unsupported statement shape falls back to a full recompute
     /// (Tier-2) instead of being rejected.
@@ -480,7 +480,7 @@ impl IvmTableOptions {
             bucket_columns: Vec::new(),
             hash_bucket_num: "4".to_string(),
             cdc_column: None,
-            file_format: PhysicalFormat::Parquet,
+            file_format: internal_file_format(),
             allow_fallback: true,
         }
     }
@@ -524,7 +524,8 @@ impl IvmTableOptions {
         self
     }
 
-    /// Set the physical file format (parquet by default).
+    /// Set the physical file format (vortex by default; parquet and
+    /// vortex-compact remain explicit experiments).
     pub fn with_file_format(mut self, file_format: PhysicalFormat) -> Self {
         self.file_format = file_format;
         self
