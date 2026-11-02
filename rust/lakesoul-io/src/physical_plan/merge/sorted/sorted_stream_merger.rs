@@ -327,22 +327,30 @@ pub(crate) fn build_sorted_stream_merger(
     reservation: MemoryReservation,
     is_compacted: Vec<bool>,
 ) -> Result<SendableRecordBatchStream> {
-    let ledger = MergeMemory::new(reservation.new_empty());
-    let streams = streams
-        .into_iter()
-        .map(|sorted| {
-            let schema = sorted.stream.schema();
-            let ledger = ledger.clone();
-            SortedStream::new(Box::pin(
-                datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(
-                    schema,
-                    sorted.stream.map(move |batch| {
-                        batch.and_then(|batch| ledger.track_batch(batch))
-                    }),
-                ),
-            ))
-        })
-        .collect();
+    // Allocation-level buffer accounting is disabled: it rebuilt every
+    // Arrow buffer owner on the merge hot path and profiling showed it as a
+    // large share of CPU.  The merge still uses the reservation for its
+    // cursor streams.
+    let ledger = MergeMemory::disabled(reservation.new_empty());
+    let streams = if ledger.is_enabled() {
+        streams
+            .into_iter()
+            .map(|sorted| {
+                let schema = sorted.stream.schema();
+                let ledger = ledger.clone();
+                SortedStream::new(Box::pin(
+                    datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(
+                        schema,
+                        sorted.stream.map(move |batch| {
+                            batch.and_then(|batch| ledger.track_batch(batch))
+                        }),
+                    ),
+                ))
+            })
+            .collect()
+    } else {
+        streams
+    };
     let stream = build_sorted_stream_merger_inner(
         streams,
         primary_keys,

@@ -25,7 +25,10 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 #[derive(Clone, Debug)]
-pub(crate) struct MergeMemory(Arc<Mutex<Ledger>>);
+pub(crate) struct MergeMemory {
+    ledger: Arc<Mutex<Ledger>>,
+    enabled: bool,
+}
 
 #[derive(Debug)]
 struct Ledger {
@@ -59,19 +62,42 @@ impl Drop for Charge {
 }
 
 impl MergeMemory {
+    #[cfg(test)]
     pub(crate) fn new(reservation: MemoryReservation) -> Self {
-        Self(Arc::new(Mutex::new(Ledger {
-            reservation,
-            allocations: HashMap::new(),
-        })))
+        Self {
+            ledger: Arc::new(Mutex::new(Ledger {
+                reservation,
+                allocations: HashMap::new(),
+            })),
+            enabled: true,
+        }
+    }
+
+    /// A ledger that only keeps the reservation alive but does no allocation
+    /// tracking or buffer-owner rewriting.
+    pub(crate) fn disabled(reservation: MemoryReservation) -> Self {
+        Self {
+            ledger: Arc::new(Mutex::new(Ledger {
+                reservation,
+                allocations: HashMap::new(),
+            })),
+            enabled: false,
+        }
+    }
+
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.enabled
     }
 
     fn buffer(&self, buffer: &Buffer, track: bool) -> Result<Buffer> {
+        if !self.enabled {
+            return Ok(buffer.clone());
+        }
         if buffer.is_empty() && buffer.capacity() == 0 {
             return Ok(buffer.clone());
         }
         let key = buffer.data_ptr().as_ptr() as usize;
-        let mut ledger = self.0.lock();
+        let mut ledger = self.ledger.lock();
         let charge = ledger
             .allocations
             .get(&key)
@@ -96,7 +122,7 @@ impl MergeMemory {
                 ledger.reservation.try_grow(bytes)?;
                 let charge = Arc::new(Charge {
                     original: buffer.clone(),
-                    ledger: self.0.clone(),
+                    ledger: self.ledger.clone(),
                     key,
                 });
                 ledger
@@ -110,6 +136,9 @@ impl MergeMemory {
     }
 
     fn array_data(&self, data: ArrayData, track: bool) -> Result<ArrayData> {
+        if !self.enabled {
+            return Ok(data);
+        }
         let buffers = data
             .buffers()
             .iter()
@@ -154,6 +183,9 @@ impl MergeMemory {
     }
 
     fn batch(&self, batch: RecordBatch, track: bool) -> Result<RecordBatch> {
+        if !self.enabled {
+            return Ok(batch);
+        }
         let columns = batch
             .columns()
             .iter()
@@ -180,6 +212,9 @@ impl MergeMemory {
         &self,
         stream: SendableRecordBatchStream,
     ) -> SendableRecordBatchStream {
+        if !self.enabled {
+            return stream;
+        }
         Box::pin(MergeOutput {
             schema: stream.schema(),
             inner: Some(stream),
@@ -219,8 +254,8 @@ pub(crate) async fn send_batch(
     ledger: Option<&MergeMemory>,
 ) -> crate::Result<()> {
     let batch = match ledger {
-        Some(ledger) => ledger.track_batch(batch)?,
-        None => batch,
+        Some(ledger) if ledger.is_enabled() => ledger.track_batch(batch)?,
+        _ => batch,
     };
     tx.send(Ok(batch)).await?;
     Ok(())
@@ -307,7 +342,7 @@ mod tests {
         assert_eq!(pool.reserved(), bytes);
         drop(slices);
         assert_eq!(pool.reserved(), 0);
-        assert!(ledger.0.lock().allocations.is_empty());
+        assert!(ledger.ledger.lock().allocations.is_empty());
         // Reuse the same allocation address after all merge owners leave.
         let again = ledger.track_batch(batch).unwrap();
         assert_eq!(pool.reserved(), bytes);
@@ -326,7 +361,7 @@ mod tests {
             Err(DataFusionError::ResourcesExhausted(_))
         ));
         assert_eq!(pool.reserved(), 0);
-        assert!(ledger.0.lock().allocations.is_empty());
+        assert!(ledger.ledger.lock().allocations.is_empty());
     }
 }
 
