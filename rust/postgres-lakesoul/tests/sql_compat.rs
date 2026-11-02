@@ -41,7 +41,6 @@ async fn sql_compat_phase_two() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Known upstream rust_decimal NUMERIC-zero binary scale defect; explicit strict reproduction (see README)"]
 async fn decimal_zero_binary_scale_matches_postgres() -> Result<()> {
     support::run_suite(|h| Box::pin(codecs::zero_binary_scale(h))).await
 }

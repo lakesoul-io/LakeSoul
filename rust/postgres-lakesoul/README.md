@@ -225,7 +225,7 @@ DDL 由 `src/ddl.rs` 的语句钩子承接，既不经过 DataFusion 自己的 D
 - `RETURNING` 暂不支持：sink 在语句末尾提交，没有行流可回填。
 - 类型不匹配与列数不匹配仍是服务端 `XX000`，尚未映射 `22P02`／`42804`／`42601`；upsert 语句内的重复主键也未实现 `21000`。
 
-## 失败验收与已知缺陷复现
+## 失败验收
 
 以下命令**应非零退出**，不是正常通过命令。`expectation` 故意改错预期（merge 使用旧值、catalog 使用 peer database 身份、vector 使用错误 ID、TPC-H 使用错误 q06 数值答案），`startup` 给真实二进制传入非法启动参数；均必须打印 cleanup proof。存储、catalog、vector 与 TPC-H target 的故障发生在全部 fixture 创建后，额外验证新增表／第二个 namespace／已提交索引元数据和文件也被回收；TPC-H 的双 worker 启动故障还验证 RPC 端口与 worker tasks 回收。
 
@@ -241,27 +241,17 @@ LAKESOUL_SQL_COMPAT_FAULT=expectation cargo -q test -p postgres-lakesoul --test 
 LAKESOUL_SQL_COMPAT_FAULT=startup LAKESOUL_TPCH_LAYOUT=nopk LAKESOUL_TPCH_WORKERS=2 cargo -q test -p postgres-lakesoul --test tpch_contract -- tpch_q01_to_q22_and_strict_failures --exact --nocapture
 ```
 
-投影标量子查询多行已修复，真实协议验证返回 PostgreSQL `21000`，并转为正常门禁 `projection_scalar_subquery_cardinality`；不再列入缺陷。`SET TIME ZONE` 与 `RESET`／`DISCARD ALL` 的连接语义已修复，严格用例 `time_zone_changes_query_and_is_connection_local` 已移除 `ignored`，转为正常门禁。`SHOW` 的 extended Describe 元数据已修复：hook 在 Parse 阶段声明 `Execute` 实际返回的列，`SHOW TimeZone`／`SHOW timezone` 与 `SHOW ivfflat.probes` 的 Describe 分别为 `TimeZone`／`ivfflat.probes`，类型与响应同为 `text`（PG 的 `SHOW` 结果类型，OID 25），`vector_probes_show_describe_matches_query` 已移除 `ignored`，转为正常门禁。以下一项保留正确协议契约的严格预期，默认 `ignored`，原因直接写在测试声明中；**不接受当前错误值，也不使用宽泛 xfail**。该项在前期已显式运行并观察到失败及资源回收，本轮未重复运行：
+投影标量子查询多行已修复，真实协议验证返回 PostgreSQL `21000`，并转为正常门禁 `projection_scalar_subquery_cardinality`；不再列入缺陷。`SET TIME ZONE` 与 `RESET`／`DISCARD ALL` 的连接语义已修复，严格用例 `time_zone_changes_query_and_is_connection_local` 已移除 `ignored`，转为正常门禁。`SHOW` 的 extended Describe 元数据已修复：hook 在 Parse 阶段声明 `Execute` 实际返回的列，`SHOW TimeZone`／`SHOW timezone` 与 `SHOW ivfflat.probes` 的 Describe 分别为 `TimeZone`／`ivfflat.probes`，类型与响应同为 `text`（PG 的 `SHOW` 结果类型，OID 25），`vector_probes_show_describe_matches_query` 已移除 `ignored`，转为正常门禁。NUMERIC 零值 binary scale 也已修复：`src/pg_numeric.rs` 按 PostgreSQL `numeric_send` 从 `(mantissa, scale)` 重新编码零值 DECIMAL 单元，非零单元保持上游编码字节；`decimal_zero_binary_scale_matches_postgres` 已移除 `ignored`，差分覆盖 `0`、`0.00`、`1e-20`（按十进制文本写作 `0.00000000000000000001`）与 `-0.00`。至此不再保留默认 `ignored` 的严格缺陷复现。
 
-| 严格复现测试 | 未修复缺陷 |
-| --- | --- |
-| `decimal_zero_binary_scale_matches_postgres` | NUMERIC 零值 binary scale：PG 为 2，LakeSoul 为 0；上游 rust_decimal 零值编码分支丢失 scale |
-
-一并运行这些严格复现，当前**应非零退出**：
-
-```sh
-cargo -q test -p postgres-lakesoul --test sql_compat --no-fail-fast -- --ignored --nocapture
-```
-
-默认门禁通过不能被解释为上述缺陷已修复。修复后应让对应严格复现通过并移除该项 ignored，而不是修改预期迁就当前行为。
+严格复现清单已清空，`--ignored` 不再挑出已知缺陷用例；下列 targets 的通过数即正常门禁通过数。
 
 ## 本地验收
 
-本轮在 PostgreSQL 17.10 上实测：八个正常 targets（新增 `ddl_contract`、`insert_contract`）的 legacy／v2 各为 **20 passed／1 ignored**。`SHOW` Describe 修复后 `vector_contract` 为 **3 passed／0 ignored**，`session_contract` 保持 **3 passed／0 ignored**。下表为本轮实际观察值，包含各 target 的共享比较器 unit test，不是 SQL case 数：
+本轮在 PostgreSQL 17.10 上复跑 `sql_compat`：legacy／v2 各 **5 passed／0 ignored**（修复前为 4 passed／1 ignored）。其余七个 targets 沿用上一轮实测；八个正常 targets（新增 `ddl_contract`、`insert_contract`）合计 **21 passed／0 ignored**。`SHOW` Describe 修复后 `vector_contract` 为 **3 passed／0 ignored**，`session_contract` 保持 **3 passed／0 ignored**。下表为最近一轮实际观察值（`sql_compat` 为本轮复跑），包含各 target 的共享比较器 unit test，不是 SQL case 数：
 
 | Target | Passed | 显式已知缺陷 ignored |
 | --- | ---: | ---: |
-| `sql_compat` | 4 | 1 |
+| `sql_compat` | 5 | 0 |
 | `session_contract` | 3 | 0 |
 | `storage_contract` | 2 | 0 |
 | `catalog_contract` | 2 | 0 |
@@ -270,9 +260,9 @@ cargo -q test -p postgres-lakesoul --test sql_compat --no-fail-fast -- --ignored
 | `ddl_contract` | 2 | 0 |
 | `insert_contract` | 2 | 0 |
 
-二进制 unit test（`--bins`）在两种 merge 配置下均为 **123 passed／1 ignored**。
+二进制 unit test（`--bins`）在两种 merge 配置下均为 **127 passed／1 ignored**。
 
-切换到 fork 提交 `03441f8` 后（本地 crate 副本删除）复跑：六个既有 targets 的 legacy／v2 为 **16 passed／1 ignored**，`--bins` 为 121 passed／1 ignored，说明子查询语义由 fork 分支提供，不依赖本仓库副本。本轮加入 DDL 与 INSERT 后八个 targets 为 **20 passed／1 ignored**，`--bins` 为 **123 passed／1 ignored**（新增只读守卫放行 DDL／INSERT、INSERT 批量位置拒绝与 typed 写错误映射的单元测试）。
+切换到 fork 提交 `03441f8` 后（本地 crate 副本删除）复跑：六个既有 targets 的 legacy／v2 为 **16 passed／1 ignored**，`--bins` 为 121 passed／1 ignored，说明子查询语义由 fork 分支提供，不依赖本仓库副本。本轮加入 DDL、INSERT 与 NUMERIC 零值 scale 修复后八个 targets 为 **21 passed／0 ignored**，`--bins` 为 **127 passed／1 ignored**（新增只读守卫放行 DDL／INSERT、INSERT 批量位置拒绝与 typed 写错误映射的单元测试，以及 `pg_numeric` 的零值/非零编码对比测试）。
 
 本次修复后，TPC-H SF 0.1／PK 单机的 legacy／v2、SF 0.1／nopk／v2 双 worker 均 simple text 22/22、extended text 22/22；每次 target 的四类 CLI 负例也通过。双 worker 的实际远端 stage、network shuffle、runtime metrics 与退出回收均有证据。阶段四曾验证 SF 1 的三个布局／六个 merge 组合，以及 Python driver 的 34 tests；**本轮未重跑 SF 1 或 Python 单测，SF 10 仍未本地运行**。
 

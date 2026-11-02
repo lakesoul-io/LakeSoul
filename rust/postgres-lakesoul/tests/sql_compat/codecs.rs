@@ -8,9 +8,10 @@
 //!
 //! * `DECIMAL(p,s)` / `NUMERIC(p,s)` results are reported as PostgreSQL
 //!   `numeric` (OID 1700) and the extended-protocol binary payload decodes on
-//!   the client to the exact value *and* scale for the nonzero inputs below;
-//!   the same SQL is run against PostgreSQL. Zero's binary scale has a known
-//!   upstream defect, isolated in `decimal_zero_binary_scale_matches_postgres`.
+//!   the client to the exact value *and* scale; the same SQL is run against
+//!   PostgreSQL. Zero values keep their column scale too: the server re-encodes
+//!   zero binary cells in `src/pg_numeric.rs`, because upstream
+//!   `rust_decimal`'s zero branch writes scale 0.
 //! * a pgvector `vector` result type is discovered dynamically: the client
 //!   resolves the unknown result OID through `pg_catalog.pg_type` and reports
 //!   the type as name `vector` in schema `pg_catalog` with `Kind::Simple`, and
@@ -19,7 +20,8 @@
 //!   picks its own OID.
 //!
 //! Decimal fixtures stay inside rust_decimal's 96-bit mantissa / 28-digit
-//! scale (the server encodes a NUMERIC through `rust_decimal::Decimal`) and
+//! scale (the upstream nonzero encoder goes through `rust_decimal::Decimal`;
+//! zero cells are re-encoded from the column scale in `src/pg_numeric.rs`) and
 //! are written as string casts (`CAST('...' AS DECIMAL(p,s))`), so both sides
 //! parse the exact decimal text instead of a Float64 literal; the assertions
 //! describe the codec rather than literal parsing or decimal overflow.
@@ -128,49 +130,87 @@ pub async fn run(h: &Harness) -> Result<()> {
     Ok(())
 }
 
-/// Strict reproduction of the upstream zero-scale defect. Never normalize the
-/// scale or assert the broken value as a supported result.
+/// Zero-scale fixtures compared against PostgreSQL over the extended binary
+/// protocol: case name, `CAST` expression, exact text, declared scale.
+///
+/// `1e-20` is spelled with its digits because both sides cast the same text
+/// literal; an exponent would be a float input, not the decimal text the
+/// fixture contract uses.
+const ZERO_SCALE_CASES: &[(&str, &str, &str, u32)] = &[
+    ("zero_scale_zero", "CAST('0' AS DECIMAL(10,0))", "0", 0),
+    ("zero_two_places", "CAST('0' AS DECIMAL(10,2))", "0.00", 2),
+    (
+        "tiny_twenty_places",
+        "CAST('0.00000000000000000001' AS DECIMAL(21,20))",
+        "0.00000000000000000001",
+        20,
+    ),
+    // PostgreSQL normalizes the sign of numeric zero; the scale stays 2.
+    ("negative_zero", "CAST('-0.00' AS DECIMAL(10,2))", "0.00", 2),
+];
+
+/// NUMERIC zero results keep the column scale on the wire, like PostgreSQL.
+///
+/// A zero `numeric` has an empty digit array, but its `dscale` header field is
+/// the column scale. Upstream `rust_decimal` writes scale 0 for zero, so the
+/// server re-encodes zero DECIMAL cells from the statement's Arrow schema;
+/// nonzero cells keep the upstream encoder's bytes.
 pub async fn zero_binary_scale(h: &Harness) -> Result<()> {
-    let sql = "SELECT CAST('0' AS DECIMAL(10,2)) AS amount";
-    let context = || {
-        format!(
-            "case=decimal-zero-scale SQL={sql} params=[] protocol=extended-binary expected type=NUMERIC scale=2"
-        )
-    };
-    let reference = h
-        .reference
-        .query_one(sql, &[])
-        .await
-        .with_context(context)?;
-    let actual = h.lake.query_one(sql, &[]).await.with_context(context)?;
-    for row in [&reference, &actual] {
+    for (name, expression, expected_text, scale) in ZERO_SCALE_CASES {
+        let sql = format!("SELECT {expression} AS amount");
+        let context = || {
+            format!(
+                "case=decimal-zero-scale/{name} SQL={sql} params=[] protocol=extended-binary expected type=NUMERIC scale={scale}"
+            )
+        };
+        let reference = h
+            .reference
+            .query_one(&sql, &[])
+            .await
+            .with_context(context)?;
+        let actual = h.lake.query_one(&sql, &[]).await.with_context(context)?;
+        for row in [&reference, &actual] {
+            ensure!(
+                row.columns()[0].type_() == &Type::NUMERIC,
+                "{} actual type={:?}",
+                context(),
+                row.columns()[0].type_()
+            );
+        }
+        let expected: Decimal = reference.try_get(0).with_context(context)?;
+        let decoded: Decimal = actual.try_get(0).with_context(context)?;
+        let want = Decimal::from_str(expected_text).with_context(|| {
+            format!("{} fixing fixture text {expected_text:?}", context())
+        })?;
         ensure!(
-            row.columns()[0].type_() == &Type::NUMERIC,
-            "{} actual type={:?}",
+            expected == want && expected.scale() == *scale,
+            "{} unexpected reference={expected} scale={}",
             context(),
-            row.columns()[0].type_()
+            expected.scale()
+        );
+        ensure!(
+            decoded == expected,
+            "{} expected value={expected} actual={decoded}",
+            context()
+        );
+        ensure!(
+            decoded.scale() == expected.scale(),
+            "{} PostgreSQL scale={} LakeSoul scale={}",
+            context(),
+            expected.scale(),
+            decoded.scale()
+        );
+        ensure!(
+            decoded.scale() == *scale,
+            "{} expected scale={} actual={}",
+            context(),
+            scale,
+            decoded.scale()
+        );
+        eprintln!(
+            "PASS case=decimal-zero-scale/{name} protocol=extended-binary value={expected_text} scale={scale}"
         );
     }
-    let expected: Decimal = reference.try_get(0).with_context(context)?;
-    let decoded: Decimal = actual.try_get(0).with_context(context)?;
-    ensure!(
-        expected == Decimal::ZERO && expected.scale() == 2,
-        "{} unexpected reference={expected} scale={}",
-        context(),
-        expected.scale()
-    );
-    ensure!(
-        decoded == expected,
-        "{} expected value={expected} actual={decoded}",
-        context()
-    );
-    ensure!(
-        decoded.scale() == expected.scale(),
-        "{} PostgreSQL scale={} LakeSoul scale={}",
-        context(),
-        expected.scale(),
-        decoded.scale()
-    );
     Ok(())
 }
 

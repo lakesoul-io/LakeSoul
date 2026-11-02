@@ -20,9 +20,9 @@
 //! * `support-boundary`: type/error mappings asserted separately from PG
 //!   equivalence. Phase two adds the window `UInt64 -> numeric` mapping
 //!   and DataFusion's generic `XX000` error mapping.
-//! * Other suites' known semantic defects retain strict PG expectations in
-//!   separately named, explicitly ignored reproductions; they are never
-//!   assertions blessing bad values.
+//! * Other suites' known semantic defects keep strict PG expectations in
+//!   separately named cases; they are never assertions blessing bad values.
+//!   No `sql_compat` case is `#[ignore]`d.
 //!
 //! No case mutates fixtures, skips a protocol, or accepts actual output as the
 //! expected one.
@@ -316,8 +316,8 @@ const DECIMAL_SQL: &str = "SELECT \
 
 async fn decimal_arithmetic(h: &Harness) -> Result<()> {
     // Representative precision/scale arithmetic. The operands are nonzero on
-    // purpose: the zero-scale binary defect is reproduced separately by the
-    // ignored `decimal_zero_binary_scale_matches_postgres` phase-one case.
+    // purpose: zero's binary scale is covered by
+    // `decimal_zero_binary_scale_matches_postgres`.
     assert_sql(
         h,
         "decimal-arithmetic",

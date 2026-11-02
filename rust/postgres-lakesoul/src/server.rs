@@ -14,6 +14,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use datafusion::arrow::datatypes::DataType;
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::scalar_subquery::ScalarSubqueryCardinalityError;
 use datafusion::prelude::SessionContext;
@@ -818,6 +819,23 @@ impl SimpleQueryHandler for LakeSoulQueryRouter {
     }
 }
 
+/// Arrow result types of the portal's statement, in output order.
+///
+/// `None` when the statement has no logical plan (a protocol-level empty
+/// query); the response is then left untouched.
+fn plan_column_types(
+    portal: &Portal<<DfSessionService as ExtendedQueryHandler>::Statement>,
+) -> Option<Vec<DataType>> {
+    let (_, plan) = portal.statement.statement.1.as_ref()?;
+    Some(
+        plan.schema()
+            .fields()
+            .iter()
+            .map(|field| field.data_type().clone())
+            .collect(),
+    )
+}
+
 #[async_trait]
 impl ExtendedQueryHandler for LakeSoulQueryRouter {
     type Statement = <DfSessionService as ExtendedQueryHandler>::Statement;
@@ -1160,6 +1178,21 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
                 execution.end(StatementOutcome::Failed);
                 return Err(error);
             }
+        };
+        // A binary DECIMAL cell carries only its value: the column scale lives
+        // in the statement's Arrow schema. Re-encode zero cells with it so a
+        // typed client decodes `0.00` as scale 2, as PostgreSQL sends it.
+        let response = match plan_column_types(portal) {
+            Some(types) => {
+                match crate::pg_numeric::rewrite_decimal_scale(response, &types) {
+                    Ok(response) => response,
+                    Err(error) => {
+                        execution.end(StatementOutcome::Failed);
+                        return Err(error);
+                    }
+                }
+            }
+            None => response,
         };
         Ok(guard_response(response, &execution))
     }

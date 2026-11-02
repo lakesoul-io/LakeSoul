@@ -31,6 +31,7 @@ mod ddl;
 mod insert;
 mod limits;
 mod pg_compat;
+mod pg_numeric;
 mod pg_vector;
 mod read_only;
 mod server;
