@@ -1,6 +1,6 @@
 # PostgreSQL SQL compatibility tests
 
-`postgres-lakesoul` 是 PostgreSQL 协议的 LakeSoul 只读查询服务，不是完整 PostgreSQL。以下矩阵说明阶段一、二、三·3.1／3.2／3.3 及阶段四 integration targets 的具体证据，不将 DataFusion 的全部 SQL 能力视为已验证兼容。
+`postgres-lakesoul` 是 PostgreSQL 协议的 LakeSoul 服务：查询面是只读的，另支持 `CREATE TABLE`／`DROP TABLE` 两条 DDL，不是完整 PostgreSQL。以下矩阵说明阶段一、二、三·3.1／3.2／3.3、阶段四 integration targets 及阶段七 DDL 的具体证据，不将 DataFusion 的全部 SQL 能力视为已验证兼容。
 
 ## 运行
 
@@ -15,8 +15,8 @@ export TZ=UTC
 # 首次准备专用测试数据库；此脚本会清理测试库，勿用于生产库。
 ./script/meta_init_for_local_test.sh -j 1
 
-LAKESOUL_IO_USE_V2_MERGE=false cargo -q test -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract -- --nocapture
-LAKESOUL_IO_USE_V2_MERGE=true cargo -q test -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract -- --nocapture
+LAKESOUL_IO_USE_V2_MERGE=false cargo -q test -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract -- --nocapture
+LAKESOUL_IO_USE_V2_MERGE=true cargo -q test -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract -- --nocapture
 ```
 
 需要可连接、已初始化并迁移的 PostgreSQL，以及 `protoc`、Vortex 对应的 `flatc`、Clang/libclang 等仓库原生编译依赖；TPC-H target 还需要 Python 3.11+，只使用标准库。不需要额外启动 PG wire 服务或准备手工 fixture；六个 targets 使用本地 Parquet，不依赖 S3/RustFS，也不要求参考 PostgreSQL 安装 pgvector。
@@ -24,7 +24,7 @@ LAKESOUL_IO_USE_V2_MERGE=true cargo -q test -p postgres-lakesoul --test sql_comp
 CI 在现有 legacy/v2 默认成员测试之外，分别显式运行：
 
 ```sh
-cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --jobs 4 -- --nocapture
+cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --jobs 4 -- --nocapture
 ```
 
 不修改 workspace `default-members`。默认结果包含两个**具名、明确标记的已知缺陷严格复现**（见下文），它们不属于通过的兼容声明；其余测试不能因缺少服务而跳过。投影标量子查询多行与 `SET TIME ZONE`／连接重置已修复并转为正常门禁，不再计入缺陷。
@@ -38,7 +38,7 @@ cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test 
 - readiness 必须完成协议查询、三个 fixture 查询及 metrics 端口连接。缺依赖、子进程提前退出、超时或 fixture 错误均失败。
 - `tokio-postgres::simple_query` 验证 text；`prepare` / `query` 验证 extended binary、列名、公共类型 OID 和真实客户端解码。simple-query OID 被驱动隐藏，不声称已检查该字段。
 - 无序结果按多重集合比较，保留重复；有序结果逐行比较。NULL 不等于空串，文本不 trim，整数/DECIMAL 不经过浮点近似或 benchmark 容差。
-- 受控启动失败、suite 错误、panic 和超时都走 cleanup：关闭连接任务、kill + wait 子进程、验证两个端口释放、删除自建元数据/参考 schema/临时目录。失败保留原始错误、清理错误与服务日志；强杀测试进程等非受控退出依赖 CI 外层生命周期兜底。
+- 受控启动失败、suite 错误、panic 和超时都走 cleanup：关闭连接任务、kill + wait 子进程、验证两个端口释放、删除自建元数据/参考 schema/临时目录。元数据清理先按 fixture 记账删表，再从 primary PG 的 `table_info` 枚举该 namespace 剩余的表（被测服务自己建的表不在记账里，阶段七 DDL 会造出这种表），因此失败或中断的 suite 也不会留下表行。失败保留原始错误、清理错误与服务日志；强杀测试进程等非受控退出依赖 CI 外层生命周期兜底。
 - 同一 integration target 内，端口预留释放至子进程 readiness 的交接串行化，防止另一个 suite 选中尚未绑定的端口；独立 suite 的查询仍可并发。不要在同一 Cargo 输出目录中同时构建/覆盖正在启动的二进制，构建测试命令按上述方式串行运行。
 
 ## 支持矩阵
@@ -85,7 +85,7 @@ cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test 
 | 明确拒绝 | `SET LOCAL TIME ZONE`／`SET LOCAL timezone`／`SET GLOBAL timezone` 为 `0A000` 且不改状态；不支持的 `DISCARD PLANS/SEQUENCES/TEMP` 在 simple 与 extended Parse 均为 `0A000` | `time-zone-scope`、`time-zone-discard-variant`；PG 接受这些语句，因此不宣称等价；sqlparser 无法区分 `SET GLOBAL TIME ZONE` 与 SESSION 形式，该拼写按 SESSION 处理 |
 | LakeSoul 状态语义；SQLSTATE 缺陷 | simple 执行／extended Parse 错误使事务失败，随后读被拒；ROLLBACK 后第一条读成功。失败事务 LakeSoul 为 25P01，PG 为 25P02，不宣称错误码兼容 | `failed-transaction-simple`、`failed-transaction-extended-parse` |
 | 明确拒绝 | REPEATABLE READ／SERIALIZABLE 及相应默认隔离级别 SET，simple 与 Parse 均 0A000；第一条后续读成功 | `isolation-simple/parse`、`isolation-guc-simple/parse` |
-| 明确拒绝，无持久化副作用 | INSERT/UPDATE/DELETE/CTAS/DROP/TRUNCATE/COPY，simple 与 Parse 均 0A000；第一条读、权威快照、重连读；batch 流中首条读确实执行，拒写后的 SET 不执行 | `read-only-*`、`read-only-batch` |
+| 明确拒绝，无持久化副作用 | INSERT/UPDATE/DELETE/CTAS/`DROP VIEW`/TRUNCATE/COPY，simple 与 Parse 均 0A000（`DROP TABLE` 已由阶段七支持，不再属于拒写）；第一条读、权威快照、重连读；batch 流中首条读确实执行，拒写后的 SET 不执行 | `read-only-*`、`read-only-batch` |
 | 客户端拒绝，不冒充服务端错误 | 参数数量／Rust 参数类型不匹配，本地拒绝且无 SQLSTATE；随后连接可用 | `parameter-count-mismatch`、`parameter-type-mismatch` |
 | 错误映射 | 非法整数转换 LakeSoul XX000／PG 22P02 是已记录映射边界；WHERE 与投影中的多行标量子查询两端均为执行期 `21000`（非 Parse 拒绝）；均检查服务端错误与连接恢复 | `invalid-conversion`、`parameter-server-cast`、`scalar-subquery-multirow`、`projection-scalar-cardinality` |
 | 类型映射边界 | 未 CAST 的 rank/row_number：LakeSoul UInt64 映射 NUMERIC、PG 为 INT8；值相同，单独检查不同 OID | `window-native-types` |
@@ -179,6 +179,23 @@ LAKESOUL_TPCH_SCALE=1 LAKESOUL_TPCH_LAYOUT=nopk LAKESOUL_TPCH_WORKERS=2 \
 
 独立 CLI 针对已有同源数据的用法和报告契约见 [driver README](benchmark/driver/README.md#strict-tpc-h-regression-gate)。CLI 的 `--layout` 是数据标签；自动 fixture 才提供实际存储布局的元数据／物理证明。
 
+### 阶段七：DDL（`CREATE TABLE`／`DROP TABLE`）
+
+DDL 由 `src/ddl.rs` 的语句钩子承接，既不经过 DataFusion 自己的 DDL 规划，也不经过管理端 SQL。`CREATE TABLE` 用与服务内部相同的 `LakeSoulTableProvider::new_from_create_external_table` 构造 provider，再由 `SchemaProvider::register_table` 发布元数据；`DROP TABLE` 走 `SchemaProvider::deregister_table` 的级联删除。表路径固定为 `{warehouse}/{namespace}/{table}`，客户端不提供 `LOCATION`，因此不同 PG database 的表不会落到同一目录。
+
+| 契约 | 已验证范围 | 具体用例 |
+| --- | --- | --- |
+| LakeSoul 建表语义 | 建表后 `table_info` 行的 namespace 为连接的 database、`table_path` 位于本次 warehouse 下的 `{namespace}/{table}`、主键列写入 `partitions`（`;id`）、`hashBucketNum` 默认 4、`file_format` 为 `parquet`；无主键表没有 `hashBucketNum`；`pg_class` 可见、`SELECT` 返回零行且列 OID 为 INT8／TEXT／NUMERIC／TIMESTAMPTZ；新连接同样可见 | `create_table_publishes_metadata` |
+| PG 冲突语义 | 同名 `CREATE TABLE` 返回 `42P07` 且不改动原表；`IF NOT EXISTS` 成功且 `table_id` 不变，元数据行数仍为 1 | `duplicate_and_if_not_exists` |
+| `DROP TABLE` 级联 | 删表后 `table_info`／`table_name_id`／`table_path_id`／`partition_info`／`data_commit_info` 全为 0、`pg_class` 不再列出；再次 `DROP` 为 `42P01` | `drop_table_removes_metadata` |
+| `IF EXISTS` 幂等 | 不存在的表 `DROP TABLE IF EXISTS` 成功；一次多条名称同样成立 | `drop_absent_and_if_exists` |
+| `WITH` 选项 | `hashbucketnum`／`file_format` 写入表属性（实测 8／parquet） | `options_and_column_types` |
+| 明确拒绝，无副作用 | `CREATE TABLE AS`、`TEMPORARY`、`OR REPLACE`、`NUMERIC` 无精度、`UUID`、数组、`DEFAULT`、`UNIQUE`、`CHECK`、`FOREIGN KEY`、未知 `WITH` 选项、三段限定名、`CREATE SCHEMA`、`ALTER TABLE`、`DROP VIEW` 均为 `0A000`；`hashbucketnum = 0` 为 `22023`；不存在的 schema 为 `3F000`；每次拒绝后连接仍可查询，且不发布元数据、不出现在 `pg_class` 中 | `refusal_matrix_creates_nothing` |
+| extended 协议 | `CREATE`／`DROP` 经 extended Parse／Execute 与 simple 行为一致 | `extended_protocol_creates_and_drops` |
+| 事务边界 | `BEGIN` 内 `CREATE TABLE` 为 `0A000`：LakeSoul 表元数据立即提交、无法随 `ROLLBACK` 撤销，因此不伪装成事务性 DDL | `ddl_is_refused_inside_a_transaction` |
+
+已知边界：拒绝矩阵与 `Parse` 阶段校验覆盖的是 AST 可判定的部分（类型、选项、约束、schema 不存在、warehouse 未配置），表已存在属于执行期 `42P07`，与 PG 一致；`SELECT` 已删除的表仍是目录解析边界 `XX000`（见阶段三·3.2），不是 `42P01`。列类型映射只覆盖 `smallint/int/bigint/real/double/boolean/varchar/char/text/date/timestamp/timestamptz/decimal(p,s)/bytea`，且只允许一个主键；`CREATE TABLE AS` 依赖尚未实现的 INSERT 路径，当前明确拒绝。DDL 的表路径与表属性选择由服务决定，客户端不能用 `LOCATION`／`STORED AS` 覆盖。
+
 ## 失败验收与已知缺陷复现
 
 以下命令**应非零退出**，不是正常通过命令。`expectation` 故意改错预期（merge 使用旧值、catalog 使用 peer database 身份、vector 使用错误 ID、TPC-H 使用错误 q06 数值答案），`startup` 给真实二进制传入非法启动参数；均必须打印 cleanup proof。存储、catalog、vector 与 TPC-H target 的故障发生在全部 fixture 创建后，额外验证新增表／第二个 namespace／已提交索引元数据和文件也被回收；TPC-H 的双 worker 启动故障还验证 RPC 端口与 worker tasks 回收。
@@ -211,7 +228,7 @@ cargo -q test -p postgres-lakesoul --test sql_compat --no-fail-fast -- --ignored
 
 ## 本地验收
 
-本轮在 PostgreSQL 17.10 上实测：六个正常 targets 的 legacy／v2 各为 **16 passed／1 ignored**。`SHOW` Describe 修复后 `vector_contract` 为 **3 passed／0 ignored**，`session_contract` 保持 **3 passed／0 ignored**，其余 target 计数与上一轮一致。下表为本轮实际观察值，包含各 target 的共享比较器 unit test，不是 SQL case 数：
+本轮在 PostgreSQL 17.10 上实测：七个正常 targets（新增 `ddl_contract`）的 legacy／v2 各为 **18 passed／1 ignored**。`SHOW` Describe 修复后 `vector_contract` 为 **3 passed／0 ignored**，`session_contract` 保持 **3 passed／0 ignored**。下表为本轮实际观察值，包含各 target 的共享比较器 unit test，不是 SQL case 数：
 
 | Target | Passed | 显式已知缺陷 ignored |
 | --- | ---: | ---: |
@@ -221,15 +238,16 @@ cargo -q test -p postgres-lakesoul --test sql_compat --no-fail-fast -- --ignored
 | `catalog_contract` | 2 | 0 |
 | `vector_contract` | 3 | 0 |
 | `tpch_contract` | 2 | 0 |
+| `ddl_contract` | 2 | 0 |
 
-二进制 unit test（`--bins`）在两种 merge 配置下均为 **121 passed／1 ignored**。
+二进制 unit test（`--bins`）在两种 merge 配置下均为 **122 passed／1 ignored**。
 
-切换到 fork 提交 `03441f8` 后（本地 crate 副本删除）复跑：六个 targets 的 legacy／v2 仍为 **16 passed／1 ignored**，`--bins` 仍为 121 passed／1 ignored，说明子查询语义由 fork 分支提供，不依赖本仓库副本。
+切换到 fork 提交 `03441f8` 后（本地 crate 副本删除）复跑：六个既有 targets 的 legacy／v2 为 **16 passed／1 ignored**，`--bins` 为 121 passed／1 ignored，说明子查询语义由 fork 分支提供，不依赖本仓库副本。本轮加入 DDL 后七个 targets 为 **18 passed／1 ignored**，`--bins` 为 **122 passed／1 ignored**（新增只读守卫放行 DDL 的单元测试）。
 
 本次修复后，TPC-H SF 0.1／PK 单机的 legacy／v2、SF 0.1／nopk／v2 双 worker 均 simple text 22/22、extended text 22/22；每次 target 的四类 CLI 负例也通过。双 worker 的实际远端 stage、network shuffle、runtime metrics 与退出回收均有证据。阶段四曾验证 SF 1 的三个布局／六个 merge 组合，以及 Python driver 的 34 tests；**本轮未重跑 SF 1 或 Python 单测，SF 10 仍未本地运行**。
 
 CI 的 PostgreSQL 服务版本及 test-fast profile 由 workflow 配置；本地验收不冒充已运行 GitHub Actions。
 
-生产二进制及六个 targets 的 `cargo -q clippy --no-deps ... -- -D warnings` 通过；变更 Rust 文件与六个入口的 `rustfmt --check` 通过。`datafusion-pg-catalog` 来自 `datafusion-postgres` fork 的 `lakesoul-shared-static-tables` 分支（提交 `03441f8`，已删除 `RemoveSubqueryFromProjection`），本仓库只 pin `rev`，不保留 crate 副本，也没有需要单独格式化的 vendored catalog 代码。既有 `topk/mod.rs:290` 的 `fetch_update` 弃用 warning 保留，未为通过检查抑制告警或修改该算子。Workflows 未变，本轮未重跑 actionlint、物理执行器 row-count regression 或 Python 单测。
+生产二进制及七个 targets 的 `cargo -q clippy --no-deps ... -- -D warnings` 通过；变更 Rust 文件（含 `src/ddl.rs`、`tests/ddl_contract.rs`）与七个入口的 `rustfmt --check` 通过。`datafusion-pg-catalog` 来自 `datafusion-postgres` fork 的 `lakesoul-shared-static-tables` 分支（提交 `03441f8`，已删除 `RemoveSubqueryFromProjection`），本仓库只 pin `rev`，不保留 crate 副本，也没有需要单独格式化的 vendored catalog 代码。既有 `topk/mod.rs:290` 的 `fetch_update` 弃用 warning 保留，未为通过检查抑制告警或修改该算子。Workflows 未变，本轮未重跑 actionlint、物理执行器 row-count regression 或 Python 单测。
 
 本轮正常入口的 coordinator／Python 子进程均已回收，双 worker tasks 已 join，PG／metrics／Flight 端口释放。最终 `table_info`／`table_name_id`／`table_path_id`／`partition_info`／`data_commit_info`／`index_shard`／`index_commit`／`index_lease`、`sqlcompat_ref_%` 参考 schema 与额外客户端连接共 10 项计数均为零；`namespace` 仅剩 `meta_init.sql` 建立的 `default` 行。自建 PostgreSQL 已正常停止并删除数据目录及日志。

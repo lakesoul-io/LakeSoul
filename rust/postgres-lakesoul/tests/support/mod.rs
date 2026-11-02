@@ -793,6 +793,18 @@ impl StartupState {
                 .push("metadata namespaces were not created".to_string());
         }
         for (namespace, tables) in namespaces {
+            let mut tables = tables;
+            // Tables a suite created through the server under test are not in
+            // the fixture bookkeeping; enumerate the namespace so they cannot
+            // outlive the run.
+            match self.metadata_table_names(&namespace).await {
+                Ok(remaining) => tables.extend(remaining),
+                Err(error) => outcome
+                    .errors
+                    .push(format!("list metadata tables for {namespace}: {error:#}")),
+            }
+            tables.sort();
+            tables.dedup();
             let meta = Arc::clone(&self.meta);
             for table in tables {
                 let meta = Arc::clone(&meta);

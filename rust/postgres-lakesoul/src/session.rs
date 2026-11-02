@@ -154,6 +154,9 @@ pub struct PgSessionFactory {
     auth_manager: Arc<AuthManager>,
     catalog_options: PgCatalogOptions,
     distributed: bool,
+    /// Object-store prefix new tables are created under; `CREATE TABLE`
+    /// refuses to run without one.
+    warehouse: Option<String>,
 }
 
 impl PgSessionFactory {
@@ -190,6 +193,7 @@ impl PgSessionFactory {
             catalog_options: PgCatalogOptions {
                 include_synthetic_postgres_database: false,
             },
+            warehouse: args.warehouse_prefix.clone(),
         })
     }
 
@@ -203,6 +207,16 @@ impl PgSessionFactory {
         self.base = self.base.with_distributed(options);
         self.distributed = true;
         self
+    }
+
+    /// The metadata client `CREATE TABLE`/`DROP TABLE` write through.
+    pub fn meta_client(&self) -> &MetaDataClientRef {
+        &self.meta_client
+    }
+
+    /// The object-store prefix new tables are created under.
+    pub fn warehouse(&self) -> Option<&str> {
+        self.warehouse.as_deref()
     }
 
     /// The metadata view shared by every connection of this factory.

@@ -27,6 +27,7 @@ use crate::session::PgSessionFactory;
 mod allocator;
 mod cancel;
 mod catalog;
+mod ddl;
 mod limits;
 mod pg_compat;
 mod pg_vector;

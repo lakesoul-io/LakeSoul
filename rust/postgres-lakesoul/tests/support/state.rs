@@ -10,8 +10,8 @@ use datafusion::arrow::util::display::array_value_to_string;
 use tokio_postgres::{Client, Config};
 
 use super::{
-    Harness, OPERATION_TIMEOUT, bounded, configure_session, connect_pg, lake_config,
-    management_execute,
+    Harness, OPERATION_TIMEOUT, StartupState, bounded, configure_session, connect_pg,
+    lake_config, management_execute,
 };
 
 impl Harness {
@@ -149,6 +149,30 @@ impl Harness {
             row.try_get(2)?,
             row.try_get(3)?,
         ))
+    }
+}
+
+impl StartupState {
+    /// Table names the metadata database still lists for `namespace`.
+    ///
+    /// Cleanup drops the tables the fixture created, but a suite can also
+    /// create (or fail to drop) tables through the server under test. Those
+    /// are not in the fixture bookkeeping, so the namespace is enumerated in
+    /// metadata instead of trusting the recorded list to be complete.
+    pub async fn metadata_table_names(&self, namespace: &str) -> Result<Vec<String>> {
+        let (client, task) =
+            connect_pg(&self.reference_config, "sql_compat_cleanup").await?;
+        self.connections.lock().push(task);
+        let rows = bounded(
+            OPERATION_TIMEOUT,
+            "list metadata tables",
+            client.query(
+                "SELECT table_name FROM public.table_info WHERE table_namespace = $1 ORDER BY table_name",
+                &[&namespace],
+            ),
+        )
+        .await?;
+        Ok(rows.iter().map(|row| row.get(0)).collect())
     }
 }
 

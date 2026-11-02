@@ -54,7 +54,7 @@ use datafusion::common::ParamValues;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::{
-    CloseCursor, DiscardObject, Expr, ObjectName, Set, Statement,
+    CloseCursor, DiscardObject, Expr, ObjectName, ObjectType, Set, Statement,
     TransactionIsolationLevel, TransactionMode,
 };
 use datafusion_postgres::QueryHook;
@@ -460,6 +460,12 @@ impl ReadOnlyStatementGuard {
             // them (and refuses the untracked parameter / `DISCARD` variants
             // with their own SQLSTATE).
             | Statement::Reset(_) => true,
+            // DDL is claimed by `DdlStatementHook`, which refuses the
+            // unsupported clauses itself.
+            Statement::CreateTable(_) => true,
+            Statement::Drop { object_type, .. } => {
+                matches!(object_type, ObjectType::Table)
+            }
             Statement::Discard { object_type } => {
                 matches!(object_type, DiscardObject::ALL)
             }
@@ -632,11 +638,8 @@ mod tests {
         "COPY t TO STDOUT",
         "COPY t FROM STDIN",
         "TRUNCATE t",
-        "CREATE TABLE t (a INT)",
-        "CREATE TABLE t AS SELECT 1",
         "CREATE VIEW v AS SELECT 1",
         "CREATE SCHEMA s",
-        "DROP TABLE t",
         "ALTER TABLE t ADD COLUMN b INT",
         "GRANT SELECT ON t TO u",
         "REVOKE SELECT ON t FROM u",
@@ -707,6 +710,34 @@ mod tests {
         }
     }
 
+    /// `CREATE TABLE`/`DROP TABLE` are answered by `DdlStatementHook`, which
+    /// refuses the unsupported clauses itself, so the guard must not claim
+    /// them; every other DDL statement stays rejected.
+    #[test]
+    fn ddl_is_left_to_the_ddl_hook() {
+        use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
+        use datafusion::sql::sqlparser::parser::Parser;
+
+        for (sql, allowed) in [
+            ("CREATE TABLE t (a INT)", true),
+            ("CREATE TABLE t AS SELECT 1", true),
+            ("DROP TABLE t", true),
+            ("DROP TABLE IF EXISTS t", true),
+            ("DROP VIEW v", false),
+            ("DROP INDEX i", false),
+            ("ALTER TABLE t ADD COLUMN b INT", false),
+            ("CREATE SCHEMA s", false),
+        ] {
+            let statements = Parser::parse_sql(&PostgreSqlDialect {}, sql)
+                .unwrap_or_else(|error| panic!("{sql}: {error}"));
+            assert_eq!(
+                ReadOnlyStatementGuard::allow(&statements[0]),
+                allowed,
+                "sql: {sql}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn extended_parse_rejects_writes_and_ddl() {
         let service = service();
@@ -734,7 +765,7 @@ mod tests {
         // statement after the first rejected one can ever execute.
         for sql in [
             "INSERT INTO t VALUES (1)",
-            "CREATE TABLE t (a INT)",
+            "ALTER TABLE t ADD COLUMN b INT",
             "SELECT 1; DELETE FROM t",
         ] {
             let error = <DfSessionService as SimpleQueryHandler>::do_query(

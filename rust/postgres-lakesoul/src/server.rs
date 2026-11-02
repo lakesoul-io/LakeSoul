@@ -552,7 +552,7 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
         let defaults = SessionDefaults::capture(&session.context, client.metadata());
         let service = Arc::new(DfSessionService::new_with_hooks(
             Arc::clone(&session.context),
-            connection_statement_hooks(),
+            connection_statement_hooks(&self.session_factory, &session.identity.database),
         ));
         let cancellation = Arc::new(QueryCancellation::new(
             Arc::clone(&self.server_limits),
@@ -585,10 +585,20 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
 ///
 /// The pgvector GUC hook claims `ivfflat.probes` before the upstream
 /// `SetShowHook` offers the generic DataFusion config path, behind the
-/// transaction hook like every other `SET` hook.
-pub(crate) fn connection_statement_hooks() -> Vec<Arc<dyn datafusion_postgres::QueryHook>>
-{
-    statement_hooks_with(crate::pg_vector::statement_hooks())
+/// transaction hook like every other `SET` hook. The DDL hook claims
+/// `CREATE TABLE`/`DROP TABLE`, which DataFusion would otherwise plan as its
+/// own dialect-specific DDL.
+pub(crate) fn connection_statement_hooks(
+    factory: &PgSessionFactory,
+    database: &str,
+) -> Vec<Arc<dyn datafusion_postgres::QueryHook>> {
+    let mut hooks = crate::pg_vector::statement_hooks();
+    hooks.push(Arc::new(crate::ddl::DdlStatementHook::new(
+        Arc::clone(factory.meta_client()),
+        database.to_string(),
+        factory.warehouse().map(str::to_owned),
+    )));
+    statement_hooks_with(hooks)
 }
 
 /// Connection-aware parser facade.

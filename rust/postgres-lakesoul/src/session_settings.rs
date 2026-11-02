@@ -517,7 +517,7 @@ impl SessionSettingsHook {
     }
 
     /// Response for statements claimed at Parse time.
-    fn placeholder_plan() -> LogicalPlan {
+    pub(crate) fn placeholder_plan() -> LogicalPlan {
         LogicalPlan::EmptyRelation(EmptyRelation {
             produce_one_row: true,
             schema: Arc::new(DFSchema::empty()),

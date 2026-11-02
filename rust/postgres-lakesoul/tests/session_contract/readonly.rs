@@ -43,8 +43,8 @@ const REFUSALS: &[Refusal] = &[
         sql: "CREATE TABLE items_shadow AS SELECT id, val, label FROM items",
     },
     Refusal {
-        id: "drop-table",
-        sql: "DROP TABLE items",
+        id: "drop-view",
+        sql: "DROP VIEW items",
     },
     Refusal {
         id: "truncate",
