@@ -224,10 +224,12 @@ cargo -q test -p postgres-lakesoul --test sql_compat --no-fail-fast -- --ignored
 
 二进制 unit test（`--bins`）在两种 merge 配置下均为 **121 passed／1 ignored**。
 
+切换到 fork 提交 `03441f8` 后（本地 crate 副本删除）复跑：六个 targets 的 legacy／v2 仍为 **16 passed／1 ignored**，`--bins` 仍为 121 passed／1 ignored，说明子查询语义由 fork 分支提供，不依赖本仓库副本。
+
 本次修复后，TPC-H SF 0.1／PK 单机的 legacy／v2、SF 0.1／nopk／v2 双 worker 均 simple text 22/22、extended text 22/22；每次 target 的四类 CLI 负例也通过。双 worker 的实际远端 stage、network shuffle、runtime metrics 与退出回收均有证据。阶段四曾验证 SF 1 的三个布局／六个 merge 组合，以及 Python driver 的 34 tests；**本轮未重跑 SF 1 或 Python 单测，SF 10 仍未本地运行**。
 
 CI 的 PostgreSQL 服务版本及 test-fast profile 由 workflow 配置；本地验收不冒充已运行 GitHub Actions。
 
-生产二进制及六个 targets 的 `cargo -q clippy --no-deps ... -- -D warnings` 通过；变更 Rust 文件与六个入口的 `rustfmt --check` 通过，vendored catalog 保留上游默认 100 列格式。既有 `topk/mod.rs:290` 的 `fetch_update` 弃用 warning 保留，未为通过检查抑制告警或修改该算子。Workflows 未变，本轮未重跑 actionlint、物理执行器 row-count regression 或 Python 单测。
+生产二进制及六个 targets 的 `cargo -q clippy --no-deps ... -- -D warnings` 通过；变更 Rust 文件与六个入口的 `rustfmt --check` 通过。`datafusion-pg-catalog` 来自 `datafusion-postgres` fork 的 `lakesoul-shared-static-tables` 分支（提交 `03441f8`，已删除 `RemoveSubqueryFromProjection`），本仓库只 pin `rev`，不保留 crate 副本，也没有需要单独格式化的 vendored catalog 代码。既有 `topk/mod.rs:290` 的 `fetch_update` 弃用 warning 保留，未为通过检查抑制告警或修改该算子。Workflows 未变，本轮未重跑 actionlint、物理执行器 row-count regression 或 Python 单测。
 
 本轮正常入口的 coordinator／Python 子进程均已回收，双 worker tasks 已 join，PG／metrics／Flight 端口释放。最终 `table_info`／`table_name_id`／`table_path_id`／`partition_info`／`data_commit_info`／`index_shard`／`index_commit`／`index_lease`、`sqlcompat_ref_%` 参考 schema 与额外客户端连接共 10 项计数均为零；`namespace` 仅剩 `meta_init.sql` 建立的 `default` 行。自建 PostgreSQL 已正常停止并删除数据目录及日志。

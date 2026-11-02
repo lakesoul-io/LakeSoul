@@ -24,9 +24,6 @@ members = [
   "python",
   "rust/postgres-lakesoul",
 ]
-exclude = [
-  "rust/third_party/datafusion-pg-catalog",
-]
 default-members = [
   "rust/lakesoul-build-info",
   "rust/lakesoul-metadata-proto",
@@ -198,12 +195,11 @@ deprecated = "allow"
 [patch.crates-io]
 datafusion-physical-plan = { git = "https://github.com/mag1c1an1/datafusion.git", rev = "e668c7ab1ca6f4e563060d3d1013a03a7e7e2296" }
 
-# datafusion-pg-catalog 0.18.3 from the pinned datafusion-postgres fork, with
-# the obsolete RemoveSubqueryFromProjection rewrite rule deleted. That rule
-# injected `LIMIT 1` into uncorrelated projection scalar subqueries (silently
-# truncating multi-row results) and replaced correlated/parameterized ones with
-# NULL. DataFusion 55 plans both forms, and ScalarSubqueryExec enforces the
-# PostgreSQL zero-or-one-row contract. src/sql/rules.rs, src/sql/parser.rs and
-# the rule's tests differ.
-[patch."https://github.com/mag1c1an1/datafusion-postgres.git"]
-datafusion-pg-catalog = { path = "rust/third_party/datafusion-pg-catalog" }
+# datafusion-pg-catalog comes from the pinned datafusion-postgres fork. The
+# fork's lakesoul-shared-static-tables branch drops the obsolete
+# RemoveSubqueryFromProjection rewrite rule, which injected `LIMIT 1` into
+# uncorrelated projection scalar subqueries (silently truncating multi-row
+# results) and replaced correlated/parameterized ones with NULL. DataFusion 55
+# plans both forms, and ScalarSubqueryExec enforces the PostgreSQL
+# zero-or-one-row contract. Bump the `rev` in rust/postgres-lakesoul to pick up
+# further changes; no local copy of the crate is needed.
