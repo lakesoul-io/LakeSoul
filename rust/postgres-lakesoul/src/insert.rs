@@ -47,8 +47,10 @@ use datafusion::arrow::datatypes::{DataType, Field, SchemaRef};
 use datafusion::catalog::TableProvider;
 use datafusion::common::{DFSchemaRef, ParamValues, ScalarValue};
 use datafusion::error::DataFusionError;
-use datafusion::logical_expr::LogicalPlan;
-use datafusion::prelude::SessionContext;
+use datafusion::functions_aggregate::expr_fn::count;
+use datafusion::logical_expr::dml::{InsertOp, WriteOp};
+use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
+use datafusion::prelude::{SessionContext, col, lit};
 use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{
     AssignmentTarget, ConflictTarget, Expr, Insert, ObjectName, ObjectNamePart,
@@ -86,6 +88,8 @@ const SYNTAX_ERROR: &str = "42601";
 const DATATYPE_MISMATCH: &str = "42804";
 /// SQLSTATE `invalid_text_representation` (a string literal does not convert).
 const INVALID_TEXT_REPRESENTATION: &str = "22P02";
+/// SQLSTATE `cardinality_violation` (an upsert source repeats a key).
+const CARDINALITY_VIOLATION: &str = "21000";
 
 pub(crate) struct InsertStatementHook;
 
@@ -1146,6 +1150,7 @@ async fn run(
     let target = prepare(insert, session_context, status, database).await?;
     write_mode(session_context)?.set(target.mode);
     let plan = plan_target(&target, session_context).await?;
+    reject_duplicate_upsert_rows(&plan, session_context).await?;
     let dataframe = session_context
         .execute_logical_plan(plan)
         .await
@@ -1167,6 +1172,7 @@ async fn execute_bound(
         .clone()
         .replace_params_with_values(params)
         .map_err(insert_error)?;
+    reject_duplicate_upsert_rows(&plan, session_context).await?;
     let dataframe = session_context
         .execute_logical_plan(plan)
         .await
@@ -1199,6 +1205,69 @@ fn rows_affected(
             .sum::<usize>();
     }
     Ok(rows)
+}
+
+/// PostgreSQL rejects an `INSERT ... ON CONFLICT DO UPDATE` whose source
+/// produces the same key twice: the command would affect one row twice
+/// (`21000`). LakeSoul replace is last-wins, so the source is grouped by key
+/// before the write and one duplicated key rejects the statement before any
+/// file is written.
+///
+/// The check only runs for a replace plan. A plain `INSERT` reports `23505`
+/// from the sink, and `DO NOTHING` drops the duplicate as PostgreSQL does.
+async fn reject_duplicate_upsert_rows(
+    plan: &LogicalPlan,
+    session_context: &SessionContext,
+) -> PgWireResult<()> {
+    let LogicalPlan::Dml(dml) = plan else {
+        return Ok(());
+    };
+    if dml.op != WriteOp::Insert(InsertOp::Replace) {
+        return Ok(());
+    }
+    let provider = session_context
+        .table_provider(dml.table_name.clone())
+        .await
+        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+    let provider: &dyn std::any::Any = provider.as_ref();
+    let Some(provider) = provider.downcast_ref::<LakeSoulTableProvider>() else {
+        return Ok(());
+    };
+    let (_, primary_keys) = split_partitions(&provider.table_info().partitions);
+    if primary_keys.is_empty() {
+        return Ok(());
+    }
+    let groups = primary_keys
+        .iter()
+        .map(|column| col(column.as_str()))
+        .collect::<Vec<_>>();
+    let counted = LogicalPlanBuilder::from(dml.input.as_ref().clone())
+        .aggregate(
+            groups,
+            vec![count(lit(1i64)).alias("lakesoul_duplicate_keys")],
+        )
+        .map_err(insert_error)?;
+    let duplicated = counted
+        .filter(col("lakesoul_duplicate_keys").gt(lit(1i64)))
+        .map_err(insert_error)?
+        .limit(0, Some(1))
+        .map_err(insert_error)?
+        .build()
+        .map_err(insert_error)?;
+    let batches = session_context
+        .execute_logical_plan(duplicated)
+        .await
+        .map_err(insert_error)?
+        .collect()
+        .await
+        .map_err(insert_error)?;
+    if batches.iter().any(|batch| batch.num_rows() > 0) {
+        return Err(user_error(
+            CARDINALITY_VIOLATION,
+            "ON CONFLICT DO UPDATE command cannot affect row a second time".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Map a write violation to its PostgreSQL SQLSTATE; other errors keep the

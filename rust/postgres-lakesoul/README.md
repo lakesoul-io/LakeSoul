@@ -225,6 +225,7 @@ DDL 由 `src/ddl.rs` 的语句钩子承接，既不经过 DataFusion 自己的 D
 - 取消：结果流在提交开始前被 drop 时不发布并清理文件；进入元数据提交后不可中断（单事务、毫秒级）。
 - 并发写冲突：快照校验发现分区版本已被其他写者推进时返回 `40001`（可重试），而不是 `23505`——LakeSoul 在这一步无法区分“同键冲突”与“任意并发提交”，客户端重试后才会得到 `23505`。提交结果不确定（`InsertCommitOutcomeUnknown`）仍是服务端 `XX000`，文件保留。
 - 提交后维护失败：元数据提交成功后的 vector／text 索引自动构建失败仍使语句返回错误，但行已提交且可见。客户端不能把该错误的 INSERT 当作未生效。
+- `ON CONFLICT DO UPDATE` 的源重复同一主键：写入前按主键分组检查，发现重复即 `21000`（`ON CONFLICT DO UPDATE command cannot affect row a second time`），不写文件、不发布元数据；`DO NOTHING` 与 PG 一样丢弃重复行而不报错。检查在 `Execute` 执行，simple 与 extended 一致。
 - 事务：DataFusion 没有事务，`BEGIN` 块内和 simple-query 多语句批次内的 `INSERT` 一律 `0A000`，避免客户端误以为 `ROLLBACK` 能撤销。
 - `RETURNING` 暂不支持：sink 在语句末尾提交，没有行流可回填。
 - 源分析：规划前按 PostgreSQL 的语义检查源。显式列清单的表达式数与清单数不一致、无清单 `VALUES`／`SELECT` 比表宽时为 `42601`（`more expressions than target columns`），显式列清单比源宽时为 `42601`（`more target columns than expressions`）；无清单 `VALUES` 或 `SELECT` 比表窄时按 PG 默认值语义补 NULL（当前没有 `DEFAULT`，补的是 NULL）。无类型字面量与带类型表达式分开处理：`VALUES` 行与 `INSERT ... SELECT` 投影中的裸字面量都按目标列解析，字符串字面量做转换，失败为 `22P02`（`invalid input syntax for type ...`）；数字／布尔字面量、函数与 `CAST` 表达式、`SELECT` 投影中的列引用等带类型表达式按 PG assignment cast 矩阵检查，违反为 `42804`（`column "c" is of type X but expression is of type Y`）。矩阵覆盖数值族内部与数值→字符串、布尔→布尔／字符串、文本→文本、日期／时间戳族内部与→字符串、bytea→bytea／字符串；未列的源类型一律 `42804`。字符串长度溢出（`22001`）与 varchar(n)／char(n) 长度校验不在覆盖内；`SELECT` 投影含 `*` 通配符时无法从 AST 映射列位置，该用例回退到规划类型检查，不宣称与 PG 的未类型字面量规则完全等价。该分析不改变 `SELECT` 表达式转换：`SELECT 'abc'::int` 仍是已记录的 `XX000` 映射边界（见阶段二“错误映射”行）。upsert 语句内的重复主键仍未实现 `21000`。

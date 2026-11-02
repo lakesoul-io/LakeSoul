@@ -34,6 +34,7 @@ async fn insert_contract() -> Result<()> {
             not_null_violation_is_23502(h).await?;
             on_conflict_do_nothing_skips_conflicts(h).await?;
             on_conflict_do_update_replaces_the_row(h).await?;
+            upsert_source_duplicate_keys_are_21000(h).await?;
             multi_partition_insert_publishes_atomically(h).await?;
             refusal_matrix_changes_nothing(h).await?;
             prepared_insert_into_dropped_table_leaves_no_state(h).await?;
@@ -229,6 +230,96 @@ async fn on_conflict_do_update_replaces_the_row(h: &Harness) -> Result<()> {
         row.get::<_, Option<String>>(1).as_deref(),
         Some("updated"),
     )?;
+    Ok(())
+}
+
+/// PostgreSQL rejects an `INSERT ... ON CONFLICT DO UPDATE` whose source
+/// repeats a key (`21000`): the command cannot affect one row twice. The
+/// check runs before any file is written, and `DO NOTHING` still drops the
+/// duplicate instead of failing.
+async fn upsert_source_duplicate_keys_are_21000(h: &Harness) -> Result<()> {
+    let create = "CREATE TABLE upsert_dups (id BIGINT NOT NULL PRIMARY KEY, val BIGINT)";
+    for client in [&h.lake, &h.reference] {
+        client
+            .simple_query(create)
+            .await
+            .context("CREATE TABLE upsert_dups")?;
+        client
+            .simple_query("INSERT INTO upsert_dups (id, val) VALUES (1, 10), (2, 20)")
+            .await
+            .context("seed upsert_dups")?;
+    }
+    let before = h.authoritative_snapshot().await?;
+    let duplicated = "INSERT INTO upsert_dups (id, val) VALUES (3, 1), (3, 2) \
+                      ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val";
+    for protocol in Protocol::BOTH {
+        let lake = rejection(&h.lake, duplicated, protocol).await?;
+        let reference = rejection(&h.reference, duplicated, protocol).await?;
+        ensure_rejection(
+            lake,
+            reference,
+            "21000",
+            "upsert source repeats a key",
+            protocol.label(),
+        )?;
+    }
+    let after = h.authoritative_snapshot().await?;
+    ensure_snapshot_unchanged(&before, &after, "duplicate upsert source")?;
+    ensure_eq(
+        "duplicate upsert left the table unchanged",
+        lake_i64(h, "SELECT count(*) FROM upsert_dups").await?,
+        2,
+    )?;
+
+    let do_nothing =
+        "INSERT INTO upsert_dups (id, val) VALUES (4, 1), (4, 2) ON CONFLICT DO NOTHING";
+    for protocol in Protocol::BOTH {
+        ensure!(
+            rejection(&h.lake, do_nothing, protocol).await?.is_none(),
+            "case=upsert DO NOTHING duplicate protocol={}: LakeSoul rejected it",
+            protocol.label()
+        );
+        ensure!(
+            rejection(&h.reference, do_nothing, protocol)
+                .await?
+                .is_none(),
+            "case=upsert DO NOTHING duplicate protocol={}: PostgreSQL rejected it",
+            protocol.label()
+        );
+    }
+    ensure_eq(
+        "DO NOTHING kept one row of the duplicate source",
+        lake_i64(h, "SELECT count(*) FROM upsert_dups WHERE id = 4").await?,
+        1,
+    )?;
+
+    let distinct = "INSERT INTO upsert_dups (id, val) VALUES (1, 100), (5, 50) \
+                    ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val";
+    for protocol in Protocol::BOTH {
+        ensure!(
+            rejection(&h.lake, distinct, protocol).await?.is_none(),
+            "case=upsert distinct keys protocol={}: LakeSoul rejected it",
+            protocol.label()
+        );
+        ensure!(
+            rejection(&h.reference, distinct, protocol).await?.is_none(),
+            "case=upsert distinct keys protocol={}: PostgreSQL rejected it",
+            protocol.label()
+        );
+    }
+    ensure_eq(
+        "distinct upsert updated the existing row",
+        lake_i64(h, "SELECT val FROM upsert_dups WHERE id = 1").await?,
+        100,
+    )?;
+    ensure_eq(
+        "distinct upsert inserted the new row",
+        lake_i64(h, "SELECT val FROM upsert_dups WHERE id = 5").await?,
+        50,
+    )?;
+    eprintln!(
+        "PASS case=upsert-duplicate-source lake=21000 postgres=21000 do-nothing=accepted distinct=applied"
+    );
     Ok(())
 }
 
