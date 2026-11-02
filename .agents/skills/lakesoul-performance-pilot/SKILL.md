@@ -33,7 +33,7 @@ the scope so the limits apply to the whole process tree:
 
 ```bash
 export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so
-export MALLOC_CONF=background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0
+export MALLOC_CONF=background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000
 
 systemd-run --user --scope --collect --unit=<pilot-unit> \
   -p CPUQuota=1600% \

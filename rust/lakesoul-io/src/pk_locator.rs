@@ -1554,9 +1554,7 @@ async fn get_or_load_file(
 /// The shared vortex session, created on first use (opening one costs far
 /// more than the row-count check that decides whether to index at all).
 fn vortex_session(session: &mut Option<VortexSession>) -> VortexSession {
-    session
-        .get_or_insert_with(|| vortex_scan_session().with_tokio())
-        .clone()
+    session.get_or_insert_with(vortex_scan_session).clone()
 }
 
 /// Row count of one parquet file, from its footer.
