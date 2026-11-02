@@ -404,15 +404,15 @@ enum StreamLookupMode {
     Off,
     /// One request per input batch (the batch is already in memory).
     Batch,
-    /// One request for the whole execution partition (one bucket).
+    /// One request per bounded key window inside an execution partition.
     Partition,
 }
 
 /// `LAKESOUL_IVM_STREAM_LOOKUP`:
 /// - unset/off: 4k-key chunks;
 /// - `batch`/`on`/`1`/`true`: one request per input batch;
-/// - `partition`/`bulk`: one request per bucket (highest memory, fewest
-///   reader/merge setups).
+/// - `partition`/`bulk`: one request per bounded key window (default 32k
+///   keys; fewer reader/merge setups, higher memory than `batch`).
 fn stream_lookup_mode() -> StreamLookupMode {
     match std::env::var("LAKESOUL_IVM_STREAM_LOOKUP")
         .unwrap_or_default()
@@ -552,7 +552,7 @@ async fn lookup_streaming_chunk(
     Ok((outputs, state_rows))
 }
 
-/// One explicit-key lookup for a whole contribution partition.
+/// One explicit-key lookup for a bounded contribution window.
 ///
 /// The reader opens the bucket files once, resolves every key through the pk
 /// locator and merges the candidate rows once.  The exact key match is applied
@@ -1198,15 +1198,18 @@ impl ExecutionPlanProperties for IvmPkLookupExec {
 }
 
 impl IvmPkLookupExec {
-    /// Consume one execution partition's contribution and resolve it in one
-    /// explicit-key request.  Only one bucket's keys are buffered; the
-    /// contribution is never collected at the driver.
+    /// Consume one execution partition's contribution in bounded windows and
+    /// resolve each window with one explicit-key request.
+    ///
+    /// Only the current window is buffered; the contribution is never
+    /// collected at the driver and a bucket larger than the window is still
+    /// streamed window by window.
     fn execute_stream_lookup(
         &self,
         partition: usize,
         context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
-        let mut input = self.input.execute(partition, context)?;
+        let input = self.input.execute(partition, context)?;
         let groups = if self.bucket_count == 1 {
             self.groups_by_bucket.first().cloned().unwrap_or_default()
         } else {
@@ -1223,89 +1226,86 @@ impl IvmPkLookupExec {
         let multi_match = self.multi_match;
         let emit_unmatched = self.emit_unmatched;
         let profile_io = self.profile_io.clone();
-        let schema = self.schema.clone();
-        let stream = futures::stream::once(async move {
-            let input_schema = input.schema();
-            let mut batches = Vec::new();
-            while let Some(batch) = input.next().await {
-                let batch = batch?;
-                if batch.num_rows() > 0 {
-                    batches.push(batch);
-                }
-            }
-            if batches.is_empty() {
-                return Ok(RecordBatch::new_empty(out_schema));
-            }
-            let contribution = arrow::compute::concat_batches(&input_schema, &batches)
-                .map_err(|error| DataFusionError::Execution(error.to_string()))?;
-            let started = std::time::Instant::now();
-            let max_keys = std::env::var("LAKESOUL_IVM_BULK_LOOKUP_MAX_KEYS")
-                .ok()
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(131_072)
-                .max(1);
-            let (output, state_rows) = if contribution.num_rows() > max_keys {
-                // Keep the per-request key set bounded for very large
-                // windows; the partition is still streamed batch by batch.
-                let mut outputs = Vec::new();
-                let mut state_rows = 0usize;
-                for batch in &batches {
-                    let (part, rows) = lookup_streaming_bulk(
+        let window_keys = std::env::var("LAKESOUL_IVM_BULK_LOOKUP_MAX_KEYS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(32_768)
+            .max(1);
+        let stream = futures::stream::try_unfold(
+            (input, Vec::<RecordBatch>::new(), 0usize, false),
+            move |(mut input, mut pending, mut rows, mut done)| {
+                let table = table.clone();
+                let key = key.clone();
+                let state_schema = state_schema.clone();
+                let out_schema = out_schema.clone();
+                let gate = gate.clone();
+                let profile_io = profile_io.clone();
+                let groups = groups.clone();
+                async move {
+                    if done && pending.is_empty() {
+                        return Ok(None);
+                    }
+                    while rows < window_keys && !done {
+                        match input.next().await {
+                            None => done = true,
+                            Some(Err(error)) => return Err(error),
+                            Some(Ok(batch)) => {
+                                if batch.num_rows() == 0 {
+                                    continue;
+                                }
+                                rows += batch.num_rows();
+                                pending.push(batch);
+                            }
+                        }
+                    }
+                    if pending.is_empty() {
+                        return Ok(None);
+                    }
+                    let schema = pending[0].schema();
+                    let contribution = if pending.len() == 1 {
+                        pending.pop().expect("one pending batch")
+                    } else {
+                        arrow::compute::concat_batches(&schema, &pending).map_err(
+                            |error| DataFusionError::Execution(error.to_string()),
+                        )?
+                    };
+                    let started = std::time::Instant::now();
+                    let (output, state_rows) = lookup_streaming_bulk(
                         &table,
                         &groups,
-                        batch,
+                        &contribution,
                         &state_schema,
                         &out_schema,
                         &key,
                         multi_match,
                         emit_unmatched,
-                        gate.clone(),
+                        gate,
                     )
                     .await?;
-                    state_rows += rows;
-                    if part.num_rows() > 0 {
-                        outputs.push(part);
+                    tracing::debug!(
+                        table = %table.table_name,
+                        key = %key.display(),
+                        partition,
+                        contribution_rows = contribution.num_rows(),
+                        state_rows,
+                        output_rows = output.num_rows(),
+                        elapsed = ?started.elapsed(),
+                        "keyed state lookup bulk finished"
+                    );
+                    if let Some(io) = &profile_io {
+                        crate::observability::add_lookup_time_shared(
+                            io,
+                            started.elapsed(),
+                        );
                     }
+                    Ok(Some((output, (input, Vec::new(), 0usize, done))))
                 }
-                let output = if outputs.is_empty() {
-                    RecordBatch::new_empty(out_schema.clone())
-                } else if outputs.len() == 1 {
-                    outputs.pop().expect("one lookup output")
-                } else {
-                    arrow::compute::concat_batches(&out_schema, &outputs)
-                        .map_err(|error| DataFusionError::Execution(error.to_string()))?
-                };
-                (output, state_rows)
-            } else {
-                lookup_streaming_bulk(
-                    &table,
-                    &groups,
-                    &contribution,
-                    &state_schema,
-                    &out_schema,
-                    &key,
-                    multi_match,
-                    emit_unmatched,
-                    gate,
-                )
-                .await?
-            };
-            tracing::debug!(
-                table = %table.table_name,
-                key = %key.display(),
-                partition,
-                contribution_rows = contribution.num_rows(),
-                state_rows,
-                output_rows = output.num_rows(),
-                elapsed = ?started.elapsed(),
-                "keyed state lookup bulk finished"
-            );
-            if let Some(io) = &profile_io {
-                crate::observability::add_lookup_time_shared(io, started.elapsed());
-            }
-            Ok(output)
-        });
-        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+            },
+        );
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.schema.clone(),
+            stream,
+        )))
     }
 }
 
