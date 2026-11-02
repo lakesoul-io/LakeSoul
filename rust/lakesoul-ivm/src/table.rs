@@ -22,7 +22,7 @@ use arrow::compute::concat_batches;
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
 use arrow_array::Array;
-use arrow_schema::{Field, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::error::DataFusionError;
 use datafusion::prelude::Expr;
 use lakesoul_common::ser::arrow_java::{
@@ -1345,6 +1345,72 @@ impl IvmTable {
     ) -> Result<Vec<RecordBatch>> {
         self.read_groups_with_options(groups, Vec::new(), projection)
             .await
+    }
+
+    /// Reader configuration for one range-partition group.
+    ///
+    /// Mirrors [`Self::stream_files_with_group`] without filters or explicit
+    /// keys.  A persistent lookup source uses the same file list, schema,
+    /// range partitions and default values, and passes the resulting config
+    /// to the merge-on-read execution plan.
+    pub(crate) fn lookup_reader_io(&self, group: &PartitionFiles) -> LakeSoulIOConfig {
+        let schema = self.schema.clone();
+        let range_columns = self
+            .range_partition_columns
+            .iter()
+            .filter(|column| schema.field_with_name(column).is_ok())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut builder = with_reader_io(
+            LakeSoulIOConfig::builder()
+                .with_files(group.files.clone())
+                .with_schema(schema)
+                .with_primary_keys(self.primary_keys.clone())
+                .with_physical_format(self.file_format),
+        );
+        if !range_columns.is_empty() {
+            builder = builder.with_range_partitions(range_columns.clone());
+            if let Some(values) =
+                parse_partition_values(&group.partition_desc, &range_columns)
+            {
+                for (column, value) in range_columns.iter().zip(values) {
+                    builder = builder.with_default_column_value(column.clone(), value);
+                }
+            }
+        }
+        builder.build()
+    }
+
+    /// Open every file of one partition group exactly once for keyed lookup.
+    ///
+    /// Returns the persistent lookup source and the normalized reader config
+    /// (file paths and default partition values) for the merge plan.  `None`
+    /// means the locator is unavailable and the caller must fall back to the
+    /// regular reader path.
+    pub(crate) async fn open_lookup_source(
+        &self,
+        group: &PartitionFiles,
+        columns: &[String],
+        types: &[DataType],
+    ) -> Result<Option<(lakesoul_io::pk_locator::LookupSource, LakeSoulIOConfig)>> {
+        if group.files.is_empty() {
+            return Ok(None);
+        }
+        let session = lakesoul_io::session::LakeSoulIOSession::try_new(
+            self.lookup_reader_io(group),
+        )?;
+        let (configs, _) = session.lookup_scan_configs().await?;
+        let defaults = session.io_config().default_column_values().clone();
+        let source = lakesoul_io::pk_locator::LookupSource::open(
+            &session,
+            &configs,
+            columns,
+            types,
+            &self.schema,
+            &defaults,
+        )
+        .await;
+        Ok(source.map(|source| (source, session.io_config().clone())))
     }
 
     /// Read explicit partition groups with pushed primary-key filters.

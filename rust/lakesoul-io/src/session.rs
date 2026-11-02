@@ -511,6 +511,54 @@ impl LakeSoulIOSession {
         Ok(groups)
     }
 
+    /// Per-file scan configs for a row-level primary-key lookup.
+    ///
+    /// This mirrors the scan projection of [`Self::scan`] but skips filters,
+    /// CDC predicates and index-candidate injection.  The returned configs
+    /// keep the table's commit order, one file per config, so a persistent
+    /// [`crate::pk_locator::LookupSource`] can drive one merge input per file.
+    pub async fn lookup_scan_configs(
+        &self,
+    ) -> crate::Result<(Vec<FileScanConfig>, SchemaRef)> {
+        let listing_metas = self.io_listing_metas().await?;
+        let table_schema = self.io_table_schema().await?;
+        let scan_schema = table_schema.table_schema().clone();
+        if listing_metas.table_paths.is_empty() {
+            return Ok((Vec::new(), scan_schema));
+        }
+        let registry = self.io_file_format().await?;
+        let format_groups = self.format_scan_groups(listing_metas, registry)?;
+        let statistics = Statistics::new_unknown(scan_schema.as_ref());
+        let partition_schema = self.io_partition_schema().await?.clone();
+        let mut configs = Vec::new();
+        for group in format_groups {
+            let file_format = registry.file_format(group.physical_format);
+            let source = file_format.file_source(table_schema.as_ref().clone());
+            let scan_config = FileScanConfigBuilder::new(group.object_store_url, source)
+                .with_file_groups(vec![
+                    FileGroup::new(group.partition_files)
+                        .with_statistics(Arc::new(statistics.clone())),
+                ])
+                .with_file_compression_type(
+                    registry.file_compression_type(group.physical_format),
+                )
+                .with_statistics(statistics.clone())
+                .build();
+            let flattened = flatten_file_scan_config_for_format(
+                self,
+                file_format,
+                scan_config,
+                self.io_config.primary_keys_slice(),
+                &self.io_config.cdc_column(),
+                partition_schema.clone(),
+                scan_schema.clone(),
+            )
+            .await?;
+            configs.extend(flattened);
+        }
+        Ok((configs, scan_schema))
+    }
+
     async fn io_file_schema(&self) -> Result<&Arc<Schema>, Report> {
         self.inner
             .file_schema

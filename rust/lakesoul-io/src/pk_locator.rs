@@ -40,12 +40,13 @@
 //! Rows are fetched by row index in ascending order, which therefore yields
 //! batches sorted by primary key as the merge-on-read path requires.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, LazyLock};
 
 use arrow::array::{Array, ArrayRef, AsArray};
+use arrow::compute::cast;
 use arrow::datatypes::{DataType, Schema, SchemaRef, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
@@ -84,6 +85,7 @@ use vortex::session::VortexSession;
 use crate::cache::get_lakesoul_cache;
 use crate::config::LakeSoulIOConfig;
 use crate::file_format::{PhysicalFormat, vortex_scan_session};
+use crate::helpers::transform::make_default_array;
 
 /// Above this many candidate keys the locator is not worth it: the caller
 /// is better off scanning.
@@ -324,6 +326,74 @@ impl MmapIndex {
         }
         rows
     }
+
+    /// Like [`Self::rows_with_prefixes`], but keeps the scan position across
+    /// calls.
+    ///
+    /// A keyed refresh feeds sorted key batches.  Re-running the merge from
+    /// row zero for every batch would make the total scan `rows * batches`;
+    /// keeping the cursor makes the whole bucket `rows + keys`.  A duplicate
+    /// key that straddles two batches is rescanned from the start of its
+    /// range, so all of its rows are still returned.
+    fn rows_with_prefixes_from(
+        &self,
+        prefixes: &[&[u8]],
+        cursor: &mut IndexCursor,
+    ) -> Vec<u32> {
+        if prefixes.is_empty() {
+            return Vec::new();
+        }
+        let mut position = if !cursor.initialized {
+            self.lower_bound(prefixes[0])
+        } else if cursor.last_key.as_deref() == Some(prefixes[0]) {
+            // The first key of this batch is the last key of the previous
+            // one: re-emit its full range for the new contribution rows.
+            cursor.last_start
+        } else if cursor
+            .last_key
+            .as_deref()
+            .is_some_and(|last| prefixes[0] < last)
+        {
+            // The caller violated the sorted contract (or a fallback path
+            // reused the cursor); restart rather than silently drop rows.
+            self.lower_bound(prefixes[0])
+        } else {
+            cursor.row
+        };
+        cursor.initialized = true;
+        let mut rows = Vec::new();
+        let mut index = 0usize;
+        while index < prefixes.len() {
+            let prefix = prefixes[index];
+            // Duplicate prefixes only need one scan; every contribution row
+            // with that key is matched against the same state rows later.
+            while index + 1 < prefixes.len() && prefixes[index + 1] == prefix {
+                index += 1;
+            }
+            while position < self.rows && self.row(position) < prefix {
+                position += 1;
+            }
+            let start = position;
+            while position < self.rows && self.row(position).starts_with(prefix) {
+                rows.push(position as u32);
+                position += 1;
+            }
+            cursor.last_key = Some(prefix.to_vec());
+            cursor.last_start = start;
+            cursor.row = position;
+            index += 1;
+        }
+        rows
+    }
+}
+
+/// Scan position of a sorted index lookup across key batches.
+#[derive(Debug, Clone, Default)]
+struct IndexCursor {
+    initialized: bool,
+    row: usize,
+    last_key: Option<Vec<u8>>,
+    last_start: usize,
 }
 
 /// Streaming writer of a [`MmapIndex`] file.
@@ -449,6 +519,192 @@ enum FileSource {
         location: StorePath,
         size: u64,
     },
+}
+
+/// Candidate rows read from one file of a [`LookupSource`].
+#[derive(Debug)]
+pub struct LookupFileBatch {
+    /// Position of the file in the source's file list.
+    pub file_index: usize,
+    /// Projected schema of the file scan.
+    pub schema: SchemaRef,
+    /// Rows in file order (primary-key order).
+    pub batches: Vec<RecordBatch>,
+}
+
+/// A bucket-local lookup source that opens every state file and PK index once.
+///
+/// A keyed refresh reads one bucket over many contribution batches.  The
+/// ordinary reader path builds a new scan and merge plan for every batch, and
+/// the locator re-opens each file's mmap index.  This source keeps the opened
+/// Vortex/Parquet handle and the mmapped index alive for the whole bucket, so
+/// a key batch only performs the index lookup and the row fetch.
+///
+/// Keys must arrive sorted by the state primary-key prefix.  The per-file
+/// index cursor then walks each file's sorted index once instead of running a
+/// binary search per key.
+pub struct LookupSource {
+    files: Vec<LookupFile>,
+}
+
+struct LookupFile {
+    entry: Arc<CachedFile>,
+    location: StorePath,
+    projected_schema: SchemaRef,
+    projection_names: Vec<String>,
+    cursor: IndexCursor,
+}
+
+impl LookupSource {
+    /// Open all files of one partition group and build/load their PK indexes.
+    ///
+    /// Returns `None` when the locator is unavailable (no local cache, an
+    /// unsupported format or column type, or a file whose index cannot be
+    /// built).  The caller then falls back to the regular reader path.
+    pub async fn open(
+        state: &dyn Session,
+        configs: &[FileScanConfig],
+        columns: &[String],
+        types: &[DataType],
+        table_schema: &SchemaRef,
+        defaults: &HashMap<String, String>,
+    ) -> Option<Self> {
+        index_disk_cache()?;
+        if configs.is_empty() {
+            return Some(Self { files: Vec::new() });
+        }
+        let mut session: Option<VortexSession> = None;
+        let mut files = Vec::with_capacity(configs.len());
+        for config in configs {
+            let (location, format) = single_data_file(config)?;
+            let (file_schema, projection_names) = projected_file_schema(config)?;
+            let projected_schema = lookup_projected_schema(&file_schema, table_schema);
+            let store = state
+                .runtime_env()
+                .object_store(&config.object_store_url)
+                .ok()?;
+            let entry = get_or_load_file(
+                store,
+                location.clone(),
+                format,
+                columns,
+                types,
+                defaults,
+                &mut session,
+            )
+            .await?;
+            files.push(LookupFile {
+                entry,
+                location,
+                projected_schema,
+                projection_names,
+                cursor: IndexCursor::default(),
+            });
+        }
+        debug!(files = files.len(), "opened persistent pk lookup source");
+        Some(Self { files })
+    }
+
+    /// Number of files held by this source (one per state data file).
+    pub fn file_count(&self) -> usize {
+        self.files.len()
+    }
+
+    /// Resolve one sorted key batch in every open file.
+    ///
+    /// `keys` must be sorted and use the same key layout the indexes were
+    /// built for.  Every file gets one result entry, in file order, even when
+    /// it has no matching rows, so merge inputs stay aligned with
+    /// [`LakeSoulIOConfig::files_slice`](crate::config::LakeSoulIOConfig::files_slice).
+    pub async fn lookup_batch(
+        &mut self,
+        keys: &[IndexKey],
+    ) -> Option<Vec<LookupFileBatch>> {
+        // Consecutive duplicate contribution keys produce the same state
+        // rows; the exact join still matches every contribution row.
+        let mut encoded: Vec<&[u8]> = Vec::with_capacity(keys.len());
+        for key in keys {
+            let bytes = key.as_bytes();
+            if encoded.last().is_none_or(|last| *last != bytes) {
+                encoded.push(bytes);
+            }
+        }
+        let mut output = Vec::with_capacity(self.files.len());
+        for (file_index, file) in self.files.iter_mut().enumerate() {
+            let indices = file
+                .entry
+                .index
+                .rows_with_prefixes_from(&encoded, &mut file.cursor);
+            if indices.is_empty() {
+                output.push(LookupFileBatch {
+                    file_index,
+                    schema: Arc::clone(&file.projected_schema),
+                    batches: Vec::new(),
+                });
+                continue;
+            }
+            let indices: Vec<u64> = indices.into_iter().map(u64::from).collect();
+            let batches = match &file.entry.source {
+                FileSource::Vortex {
+                    file: vortex,
+                    session,
+                } => {
+                    take_rows(
+                        vortex,
+                        &file.location,
+                        session,
+                        &indices,
+                        &file.projected_schema,
+                        &file.projection_names,
+                    )
+                    .await
+                }
+                FileSource::Parquet {
+                    store,
+                    location,
+                    size,
+                } => {
+                    take_rows_parquet(
+                        store,
+                        location,
+                        *size,
+                        &indices,
+                        &file.projected_schema,
+                        &file.projection_names,
+                    )
+                    .await
+                }
+            }
+            .ok()?;
+            output.push(LookupFileBatch {
+                file_index,
+                schema: Arc::clone(&file.projected_schema),
+                batches,
+            });
+        }
+        Some(output)
+    }
+}
+
+/// Use the table schema's field (type and nullability) when it matches the
+/// file field, so merge inputs keep the declared contract across schema
+/// evolution.  A genuine type drift keeps the file type and is left to the
+/// regular merge coercion.
+fn lookup_projected_schema(
+    file_schema: &SchemaRef,
+    table_schema: &SchemaRef,
+) -> SchemaRef {
+    let fields = file_schema
+        .fields()
+        .iter()
+        .map(|field| match table_schema.field_with_name(field.name()) {
+            Ok(table) if table.data_type() == field.data_type() => {
+                Arc::new(table.clone())
+            }
+            _ => Arc::clone(field),
+        })
+        .collect::<Vec<_>>();
+    Arc::new(Schema::new(fields))
 }
 
 /// A finite candidate set on a prefix of a table's primary keys.
@@ -995,6 +1251,33 @@ fn index_kind(columns: &[String], types: &[DataType]) -> String {
     crate::index::key::key_layout_kind(columns, types)
 }
 
+/// Cache kind of a lookup index that includes range-partition constants.
+///
+/// Range partition columns are not stored in the data file, so a key that
+/// contains one is indexed by injecting the group's constant.  Different
+/// partition values therefore need different index entries even though the
+/// key layout is identical.
+fn lookup_index_kind(
+    columns: &[String],
+    types: &[DataType],
+    defaults: &HashMap<String, String>,
+) -> String {
+    let base = index_kind(columns, types);
+    if !columns.iter().any(|column| defaults.contains_key(column)) {
+        return base;
+    }
+    let suffix = columns
+        .iter()
+        .filter_map(|column| {
+            defaults
+                .get(column)
+                .map(|value| format!("{column}={value}"))
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{base}#defaults:{suffix}")
+}
+
 fn index_kind_hash(kind: &str) -> u64 {
     use std::hash::{Hash, Hasher};
 
@@ -1020,6 +1303,7 @@ async fn get_or_load_file(
     format: PhysicalFormat,
     columns: &[String],
     types: &[DataType],
+    defaults: &HashMap<String, String>,
     session: &mut Option<VortexSession>,
 ) -> Option<Arc<CachedFile>> {
     let cache = index_disk_cache()?;
@@ -1041,7 +1325,7 @@ async fn get_or_load_file(
         }
         _ => return None,
     };
-    let kind = index_kind(columns, types);
+    let kind = lookup_index_kind(columns, types, defaults);
     let kind_hash = index_kind_hash(&kind);
     let source_hash = index_source_hash(&location);
     let rejected_key = format!("{location}#{kind}");
@@ -1069,6 +1353,7 @@ async fn get_or_load_file(
                 &location,
                 columns,
                 types,
+                defaults,
                 session,
                 &temp,
                 kind_hash,
@@ -1087,6 +1372,7 @@ async fn get_or_load_file(
                 parquet_location,
                 columns,
                 types,
+                defaults,
                 &temp,
                 kind_hash,
                 source_hash,
@@ -1161,6 +1447,7 @@ async fn build_parquet_index_file(
     location: &StorePath,
     columns: &[String],
     types: &[DataType],
+    defaults: &HashMap<String, String>,
     temp: &std::path::Path,
     kind_hash: u64,
     source_hash: u64,
@@ -1184,25 +1471,63 @@ async fn build_parquet_index_file(
     let builder = ParquetRecordBatchStreamBuilder::new(reader)
         .await
         .map_err(|error| open_error(location, error))?;
-    let mask = ProjectionMask::columns(
-        builder.parquet_schema(),
-        columns.iter().map(String::as_str),
-    );
+    let mut writer = IndexWriter::create(temp, kind_hash, source_hash, max_bytes)?;
+
+    // Range-partition columns are not stored in the file.  When every key
+    // column is a partition constant, the index is a run of identical rows
+    // and the footer row count is all the input needed.
+    let physical = physical_key_columns(columns, defaults);
+    if physical.is_empty() {
+        let rows = builder.metadata().file_metadata().num_rows().max(0) as usize;
+        index_constant_rows(
+            &mut writer,
+            &converter,
+            columns,
+            types,
+            defaults,
+            rows,
+            location,
+        )?;
+        let size = writer.finish()?;
+        debug!("built pk index for {location} on {columns:?}: {size} bytes");
+        return Ok(size);
+    }
+
+    let mask = ProjectionMask::columns(builder.parquet_schema(), physical);
     let mut stream = builder
         .with_projection(mask)
         .build()
         .map_err(|error| open_error(location, error))?;
-    let mut writer = IndexWriter::create(temp, kind_hash, source_hash, max_bytes)?;
     while let Some(batch) = stream.next().await {
         let batch = batch.map_err(|error| open_error(location, error))?;
         if batch.num_rows() == 0 {
             continue;
         }
-        index_batch(&mut writer, &converter, &batch, columns, types, location)?;
+        index_batch(
+            &mut writer,
+            &converter,
+            &batch,
+            columns,
+            types,
+            defaults,
+            location,
+        )?;
     }
     let size = writer.finish()?;
     debug!("built pk index for {location} on {columns:?}: {size} bytes");
     Ok(size)
+}
+
+/// Key columns physically stored in the data file.
+fn physical_key_columns<'a>(
+    columns: &'a [String],
+    defaults: &HashMap<String, String>,
+) -> Vec<&'a str> {
+    columns
+        .iter()
+        .filter(|column| !defaults.contains_key(*column))
+        .map(String::as_str)
+        .collect()
 }
 
 /// Encode one batch's key columns into the index writer.
@@ -1212,30 +1537,83 @@ fn index_batch(
     batch: &RecordBatch,
     columns: &[String],
     types: &[DataType],
+    defaults: &HashMap<String, String>,
     location: &StorePath,
 ) -> crate::Result<()> {
     let mut arrays = Vec::with_capacity(columns.len());
     for (column, data_type) in columns.iter().zip(types) {
+        if let Some(value) = defaults.get(column) {
+            let array = make_default_array(data_type, value, batch.num_rows())
+                .map_err(|error| open_error(location, error))?;
+            if array.data_type() != data_type {
+                return Err(rootcause::report!(
+                    "partition column {column} of {location} cannot be encoded as {data_type}"
+                ));
+            }
+            arrays.push(array);
+            continue;
+        }
         let index = batch.schema().index_of(column).map_err(|_| {
             rootcause::report!("column {column} missing from file {location}")
         })?;
-        let array = batch.column(index);
+        let mut array = Arc::clone(batch.column(index));
         let found = array.data_type();
         if found != data_type {
-            // The file does not hold the type the table declares, so the
-            // key encoding is not comparable: bail out and let the caller
-            // fall back to a regular scan instead of misreading values.
-            return Err(rootcause::report!(
-                "column {column} of {location} has type {found}, expected {data_type}"
-            ));
+            // Vortex may hand back `Utf8View` for a table column declared as
+            // `Utf8` (and schema evolution may widen an integer).  The row
+            // encoding must use the table's type, so cast when Arrow can; a
+            // genuinely incompatible type still falls back to the reader.
+            array = cast(array.as_ref(), data_type).map_err(|error| {
+                rootcause::report!(
+                    "column {column} of {location} has type {found}, expected {data_type}: {error}"
+                )
+            })?;
         }
-        arrays.push(array.clone());
+        arrays.push(array);
     }
     let encoded = converter
         .convert_columns(&arrays)
         .map_err(|error| open_error(location, error))?;
     for row in 0..encoded.num_rows() {
         writer.push(encoded.row(row).data())?;
+    }
+    Ok(())
+}
+
+/// Encode a constant key run (all key columns are range-partition values).
+fn index_constant_rows(
+    writer: &mut IndexWriter,
+    converter: &RowConverter,
+    columns: &[String],
+    types: &[DataType],
+    defaults: &HashMap<String, String>,
+    rows: usize,
+    location: &StorePath,
+) -> crate::Result<()> {
+    let mut remaining = rows;
+    while remaining > 0 {
+        let chunk = remaining.min(8192);
+        let mut arrays = Vec::with_capacity(columns.len());
+        for (column, data_type) in columns.iter().zip(types) {
+            let value = defaults.get(column).ok_or_else(|| {
+                rootcause::report!("key column {column} has no constant value")
+            })?;
+            let array = make_default_array(data_type, value, chunk)
+                .map_err(|error| open_error(location, error))?;
+            if array.data_type() != data_type {
+                return Err(rootcause::report!(
+                    "partition column {column} of {location} cannot be encoded as {data_type}"
+                ));
+            }
+            arrays.push(array);
+        }
+        let encoded = converter
+            .convert_columns(&arrays)
+            .map_err(|error| open_error(location, error))?;
+        for row in 0..encoded.num_rows() {
+            writer.push(encoded.row(row).data())?;
+        }
+        remaining -= chunk;
     }
     Ok(())
 }
@@ -1334,6 +1712,7 @@ async fn build_index_file(
     location: &StorePath,
     columns: &[String],
     types: &[DataType],
+    defaults: &HashMap<String, String>,
     session: &VortexSession,
     temp: &std::path::Path,
     kind_hash: u64,
@@ -1348,7 +1727,26 @@ async fn build_index_file(
             .collect::<Vec<_>>(),
     )
     .map_err(|error| open_error(location, error))?;
-    let projection = select(FieldNames::from_iter(columns.iter().cloned()), root())
+    let mut writer = IndexWriter::create(temp, kind_hash, source_hash, max_bytes)?;
+
+    let physical = physical_key_columns(columns, defaults);
+    if physical.is_empty() {
+        let rows = file.row_count() as usize;
+        index_constant_rows(
+            &mut writer,
+            &converter,
+            columns,
+            types,
+            defaults,
+            rows,
+            location,
+        )?;
+        let size = writer.finish()?;
+        debug!("built pk index for {location} on {columns:?}: {size} bytes");
+        return Ok(size);
+    }
+
+    let projection = select(FieldNames::from_iter(physical.iter().copied()), root())
         .bind(file.dtype())
         .map_err(|error| open_error(location, error))?;
     let mut stream = file
@@ -1358,7 +1756,6 @@ async fn build_index_file(
         .into_array_stream()
         .map_err(|error| open_error(location, error))?;
     let mut ctx = session.create_execution_ctx();
-    let mut writer = IndexWriter::create(temp, kind_hash, source_hash, max_bytes)?;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| open_error(location, error))?;
         let arrow = session
@@ -1369,29 +1766,15 @@ async fn build_index_file(
         if batch.num_rows() == 0 {
             continue;
         }
-        let mut arrays = Vec::with_capacity(columns.len());
-        for (column, data_type) in columns.iter().zip(types) {
-            let index = batch.schema().index_of(column).map_err(|_| {
-                rootcause::report!("column {column} missing from file {location}")
-            })?;
-            let array = batch.column(index);
-            let found = array.data_type();
-            if found != data_type {
-                // The file does not hold the type the table declares, so the
-                // key encoding is not comparable: bail out and let the caller
-                // fall back to a regular scan instead of misreading values.
-                return Err(rootcause::report!(
-                    "column {column} of {location} has type {found}, expected {data_type}"
-                ));
-            }
-            arrays.push(array.clone());
-        }
-        let encoded = converter
-            .convert_columns(&arrays)
-            .map_err(|error| open_error(location, error))?;
-        for row in 0..encoded.num_rows() {
-            writer.push(encoded.row(row).data())?;
-        }
+        index_batch(
+            &mut writer,
+            &converter,
+            &batch,
+            columns,
+            types,
+            defaults,
+            location,
+        )?;
     }
     let size = writer.finish()?;
     debug!("built pk index for {location} on {columns:?}: {size} bytes");
@@ -1612,6 +1995,9 @@ async fn build_key_inputs(
     }
 
     let mut inputs = Vec::with_capacity(configs.len());
+    // This path has no partition constants: a key column that is not stored
+    // in the file is left to the regular reader (and its partition defaults).
+    let no_defaults = HashMap::new();
     for config in configs {
         let (location, format) = single_data_file(config)?;
         let (projected_schema, projection_names) = projected_file_schema(config)?;
@@ -1637,6 +2023,7 @@ async fn build_key_inputs(
             format,
             columns,
             types,
+            &no_defaults,
             &mut session,
         )
         .await?;
@@ -1790,21 +2177,23 @@ async fn take_rows(
 
 #[cfg(test)]
 mod tests {
-    use arrow::datatypes::DataType;
+    use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::prelude::{col, lit};
     use datafusion_expr::Expr;
     use smallvec::smallvec;
+    use std::collections::HashMap;
 
     use arrow::array::{ArrayRef, StringArray};
+    use arrow::record_batch::RecordBatch;
     use arrow::row::{RowConverter, SortField};
     use std::sync::Arc;
 
     use parquet::arrow::arrow_reader::RowSelector;
 
     use super::{
-        IndexWriter, Key, KeyConstraint, KeyValue, MmapIndex, extract_key_constraints,
-        extract_key_constraints_with_cap, extract_pk_candidates, key_values_to_arrays,
-        row_selection,
+        IndexCursor, IndexWriter, Key, KeyConstraint, KeyValue, MmapIndex,
+        extract_key_constraints, extract_key_constraints_with_cap, extract_pk_candidates,
+        key_values_to_arrays, row_selection,
     };
 
     #[test]
@@ -2096,6 +2485,96 @@ mod tests {
         }
         assert_eq!(bulk, expected);
         assert!(!bulk.is_empty());
+    }
+
+    #[test]
+    fn cursor_merge_answers_sorted_keys_across_batches() {
+        let (_dir, index) = build_test_index(&["a", "a", "ab", "b", "c", "c", "d"]);
+        let mut cursor = IndexCursor::default();
+
+        let first = ["a", "b", "c"].map(encode_utf8);
+        let refs: Vec<&[u8]> = first.iter().map(Vec::as_slice).collect();
+        assert_eq!(
+            index.rows_with_prefixes_from(&refs, &mut cursor),
+            vec![0, 1, 3, 4, 5]
+        );
+
+        // Duplicate prefixes inside one batch are scanned once.
+        let second = ["c", "c", "d"].map(encode_utf8);
+        let refs: Vec<&[u8]> = second.iter().map(Vec::as_slice).collect();
+        assert_eq!(
+            index.rows_with_prefixes_from(&refs, &mut cursor),
+            vec![4, 5, 6]
+        );
+
+        // A key repeated across batches re-emits its whole range.
+        let third = ["d"].map(encode_utf8);
+        let refs: Vec<&[u8]> = third.iter().map(Vec::as_slice).collect();
+        assert_eq!(index.rows_with_prefixes_from(&refs, &mut cursor), vec![6]);
+
+        // A miss advances the cursor without losing later keys.
+        let fourth = ["e", "z"].map(encode_utf8);
+        let refs: Vec<&[u8]> = fourth.iter().map(Vec::as_slice).collect();
+        assert_eq!(
+            index.rows_with_prefixes_from(&refs, &mut cursor),
+            Vec::<u32>::new()
+        );
+    }
+
+    #[test]
+    fn index_injects_partition_constants() {
+        let columns = vec!["g".to_string(), "day".to_string()];
+        let types = vec![DataType::Utf8, DataType::Utf8];
+        let defaults = HashMap::from([("day".to_string(), "2026-01-01".to_string())]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("g", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec!["a", "a", "b"])) as ArrayRef],
+        )
+        .unwrap();
+        let converter = RowConverter::new(vec![
+            SortField::new(DataType::Utf8),
+            SortField::new(DataType::Utf8),
+        ])
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("constant.idx");
+        let kind = super::lookup_index_kind(&columns, &types, &defaults);
+        let kind_hash = super::index_kind_hash(&kind);
+        let source_hash =
+            super::index_source_hash(&object_store::path::Path::from("test"));
+        let mut writer =
+            IndexWriter::create(&path, kind_hash, source_hash, u64::MAX).unwrap();
+        super::index_batch(
+            &mut writer,
+            &converter,
+            &batch,
+            &columns,
+            &types,
+            &defaults,
+            &object_store::path::Path::from("test"),
+        )
+        .unwrap();
+        let size = writer.finish().unwrap();
+        let file = Arc::new(std::fs::File::open(&path).unwrap());
+        let index = MmapIndex::open(file, size, kind_hash, source_hash).unwrap();
+
+        let key_converter = RowConverter::new(vec![
+            SortField::new(DataType::Utf8),
+            SortField::new(DataType::Utf8),
+        ])
+        .unwrap();
+        let key_array =
+            Arc::new(StringArray::from_iter_values(["a", "2026-01-01"])) as ArrayRef;
+        let day_array =
+            Arc::new(StringArray::from_iter_values(["2026-01-01", "2026-01-01"]))
+                as ArrayRef;
+        let rows = key_converter
+            .convert_columns(&[key_array, day_array])
+            .unwrap();
+        assert_eq!(
+            index.rows_with_prefix(rows.row(0).data()),
+            std::ops::Range { start: 0, end: 2 }
+        );
     }
 
     #[test]
