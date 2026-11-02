@@ -103,10 +103,14 @@ number reflects the reader path, not the intended keyed lookup.
 
 ## 6. Clean state between experiments
 
-When reusing a table root, clear stale IVM metadata and data directories first.
-Otherwise old commits, partitions, or cache entries leak into the next run.
+When reusing a table root, keep the source tables but clear stale IVM
+state/MV metadata and data directories first.  Otherwise old commits,
+partitions, or cache entries leak into the next run and waste disk/compaction
+work.
 
-- Reset the test metadata with the repository cleanup script.
+- Delete only the `mv` table metadata and directory; keep the source tables.
+- Drop the IVM view registry/cursors, then re-bootstrap the target from the
+  existing sources (the pilot supports `PILOT_REUSE_SOURCE`).
 - Remove old table roots, spill directories, and per-run cache directories.
 - Use a separate cache path per experiment so one run cannot warm another.
 - Re-bootstrap only when creating a new base; reuse a base only with a new
