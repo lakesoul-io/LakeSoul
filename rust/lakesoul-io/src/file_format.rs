@@ -7,8 +7,9 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
+use ::vortex::io::session::RuntimeSessionExt;
 use ::vortex::layout::scan::memory::{ScanMemoryBudget, ScanMemorySessionExt};
 use ::vortex::{VortexSessionDefault, session::VortexSession};
 use arrow::datatypes::SchemaRef;
@@ -134,8 +135,15 @@ pub fn install_vortex_decode_budget(bytes: usize) -> Result<()> {
 /// (`lakesoul_datafusion::distributed::codec::user_codecs`), so the coordinator
 /// and the workers decode files with identical codecs, expressions and
 /// coercions. Carries the [`install_vortex_decode_budget`] budget, if any.
+static VORTEX_SCAN_SESSION: LazyLock<VortexSession> =
+    LazyLock::new(|| VortexSession::default().with_tokio());
+
+/// The process-wide [`VortexSession`] every LakeSoul vortex read/write runs
+/// with.  Cloning a session is cheap and shares the registered arrays,
+/// layouts, expressions and kernels, so session initialization happens once
+/// per process instead of once per partition group or lookup source.
 pub fn vortex_scan_session() -> VortexSession {
-    let session = VortexSession::default();
+    let session = VORTEX_SCAN_SESSION.clone();
     match VORTEX_DECODE_BUDGET.get() {
         Some(budget) => session.with_scan_memory_budget(Arc::clone(budget)),
         None => session,

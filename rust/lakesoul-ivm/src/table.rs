@@ -22,7 +22,7 @@ use arrow::compute::concat_batches;
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
 use arrow_array::Array;
-use arrow_schema::{Field, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::error::DataFusionError;
 use datafusion::prelude::Expr;
 use lakesoul_common::ser::arrow_java::{
@@ -319,6 +319,11 @@ pub struct IvmTable {
     /// not contain them and reads inject their values from the
     /// `partition_desc`.
     pub range_partition_columns: Vec<String>,
+    /// Internal payload columns of a derived step: real source range
+    /// partition columns materialized only so a downstream state can mirror
+    /// the source partitioning.  They are hidden from an implicit `SELECT *`
+    /// over the step and never part of the business output.
+    pub internal_columns: Vec<String>,
     /// The columns the writer buckets on; empty means the merge key.
     pub bucket_columns: Vec<String>,
     /// The number of hash buckets.
@@ -439,6 +444,9 @@ pub struct IvmTableOptions {
     /// The range partition columns of the table; they must be part of the
     /// schema and are stripped from the data files.
     pub range_partition_columns: Vec<String>,
+    /// Internal payload columns hidden from an implicit `SELECT *` over the
+    /// table; persisted as the `lakesoul.ivm.internal_columns` property.
+    pub internal_columns: Vec<String>,
     /// The bucket columns; must be a prefix of `primary_keys`.
     pub bucket_columns: Vec<String>,
     /// The number of hash buckets.
@@ -446,8 +454,8 @@ pub struct IvmTableOptions {
     /// The CDC change column of the table, persisted as the
     /// `lakesoul_cdc_change_column` table property.
     pub cdc_column: Option<String>,
-    /// The physical file format of the table (parquet by default; vortex
-    /// enables the row-level primary-key locator).
+    /// The physical file format of the table (vortex by default; parquet and
+    /// vortex-compact remain available as explicit experiments).
     pub file_format: PhysicalFormat,
     /// Whether an unsupported statement shape falls back to a full recompute
     /// (Tier-2) instead of being rejected.
@@ -468,10 +476,11 @@ impl IvmTableOptions {
             schema,
             primary_keys: Vec::new(),
             range_partition_columns: Vec::new(),
+            internal_columns: Vec::new(),
             bucket_columns: Vec::new(),
             hash_bucket_num: "4".to_string(),
             cdc_column: None,
-            file_format: PhysicalFormat::Parquet,
+            file_format: internal_file_format(),
             allow_fallback: true,
         }
     }
@@ -488,6 +497,12 @@ impl IvmTableOptions {
         range_partition_columns: Vec<String>,
     ) -> Self {
         self.range_partition_columns = range_partition_columns;
+        self
+    }
+
+    /// Set the internal payload columns hidden from an implicit `SELECT *`.
+    pub fn with_internal_columns(mut self, internal_columns: Vec<String>) -> Self {
+        self.internal_columns = internal_columns;
         self
     }
 
@@ -509,7 +524,8 @@ impl IvmTableOptions {
         self
     }
 
-    /// Set the physical file format (parquet by default).
+    /// Set the physical file format (vortex by default; parquet and
+    /// vortex-compact remain explicit experiments).
     pub fn with_file_format(mut self, file_format: PhysicalFormat) -> Self {
         self.file_format = file_format;
         self
@@ -605,6 +621,10 @@ pub async fn create_ivm_table(
     }
     properties["lakesoul.ivm.allow_fallback"] =
         serde_json::Value::Bool(options.allow_fallback);
+    if !options.internal_columns.is_empty() {
+        properties["lakesoul.ivm.internal_columns"] =
+            serde_json::Value::String(options.internal_columns.join(","));
+    }
     if let Some(cdc_column) = &options.cdc_column {
         if options.schema.field_with_name(cdc_column).is_err() {
             return Err(rootcause::report!(
@@ -656,6 +676,7 @@ pub async fn create_ivm_table(
         schema: options.schema,
         primary_keys: options.primary_keys,
         range_partition_columns: options.range_partition_columns,
+        internal_columns: options.internal_columns,
         bucket_columns: options.bucket_columns,
         hash_bucket_num: options.hash_bucket_num,
         cdc_column: options.cdc_column,
@@ -713,6 +734,17 @@ impl IvmTable {
                 ));
             }
         }
+        let internal_columns = properties
+            .get("lakesoul.ivm.internal_columns")
+            .and_then(|value| value.as_str())
+            .map(|columns| {
+                columns
+                    .split(',')
+                    .filter(|column| !column.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let bucket_columns = properties
             .get("lakesoul.ivm.bucket_columns")
             .and_then(|value| value.as_str())
@@ -754,6 +786,7 @@ impl IvmTable {
             schema: Arc::new(schema),
             primary_keys,
             range_partition_columns,
+            internal_columns,
             bucket_columns,
             hash_bucket_num,
             cdc_column,
@@ -853,6 +886,9 @@ impl IvmTable {
         let schema = Arc::new(Schema::new(fields));
         let mut projected = self.clone();
         projected.schema = schema;
+        projected
+            .internal_columns
+            .retain(|column| names.contains(column));
         Ok(projected)
     }
 
@@ -1310,6 +1346,72 @@ impl IvmTable {
     ) -> Result<Vec<RecordBatch>> {
         self.read_groups_with_options(groups, Vec::new(), projection)
             .await
+    }
+
+    /// Reader configuration for one range-partition group.
+    ///
+    /// Mirrors [`Self::stream_files_with_group`] without filters or explicit
+    /// keys.  A persistent lookup source uses the same file list, schema,
+    /// range partitions and default values, and passes the resulting config
+    /// to the merge-on-read execution plan.
+    pub(crate) fn lookup_reader_io(&self, group: &PartitionFiles) -> LakeSoulIOConfig {
+        let schema = self.schema.clone();
+        let range_columns = self
+            .range_partition_columns
+            .iter()
+            .filter(|column| schema.field_with_name(column).is_ok())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut builder = with_reader_io(
+            LakeSoulIOConfig::builder()
+                .with_files(group.files.clone())
+                .with_schema(schema)
+                .with_primary_keys(self.primary_keys.clone())
+                .with_physical_format(self.file_format),
+        );
+        if !range_columns.is_empty() {
+            builder = builder.with_range_partitions(range_columns.clone());
+            if let Some(values) =
+                parse_partition_values(&group.partition_desc, &range_columns)
+            {
+                for (column, value) in range_columns.iter().zip(values) {
+                    builder = builder.with_default_column_value(column.clone(), value);
+                }
+            }
+        }
+        builder.build()
+    }
+
+    /// Open every file of one partition group exactly once for keyed lookup.
+    ///
+    /// Returns the persistent lookup source and the normalized reader config
+    /// (file paths and default partition values) for the merge plan.  `None`
+    /// means the locator is unavailable and the caller must fall back to the
+    /// regular reader path.
+    pub(crate) async fn open_lookup_source(
+        &self,
+        group: &PartitionFiles,
+        columns: &[String],
+        types: &[DataType],
+    ) -> Result<Option<(lakesoul_io::pk_locator::LookupSource, LakeSoulIOConfig)>> {
+        if group.files.is_empty() {
+            return Ok(None);
+        }
+        let session = lakesoul_io::session::LakeSoulIOSession::try_new(
+            self.lookup_reader_io(group),
+        )?;
+        let (configs, _) = session.lookup_scan_configs().await?;
+        let defaults = session.io_config().default_column_values().clone();
+        let source = lakesoul_io::pk_locator::LookupSource::open(
+            &session,
+            &configs,
+            columns,
+            types,
+            &self.schema,
+            &defaults,
+        )
+        .await;
+        Ok(source.map(|source| (source, session.io_config().clone())))
     }
 
     /// Read explicit partition groups with pushed primary-key filters.

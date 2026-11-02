@@ -2308,8 +2308,33 @@ impl IvmRuntime {
                 .iter()
                 .chain(view.source.primary_keys.iter()),
         );
+        let name = format!("{}__ivm_window_state", view.mv.table_name);
+        // A derived step can be recreated under a new table id while its
+        // fixed-name window state still exists.  Reuse it when it can answer
+        // the new reads; otherwise drop the stale state before recreating.
+        if let Ok(existing) = self.open_table(&name, &view.mv.namespace).await {
+            if existing.schema == view.mv.schema
+                && existing.primary_keys == keys
+                && existing.range_partition_columns == view.mv.range_partition_columns
+            {
+                self.register_state_tables(
+                    &view.view_id,
+                    &[(StateRole::State, &existing)],
+                )
+                .await?;
+                let reset = self
+                    .mirror_state_missing_partitions(&existing, &view.mv)
+                    .await?;
+                if reset {
+                    self.sync_window_state(view, &existing, true).await?;
+                }
+                return Ok(existing);
+            }
+            let _ = self.metadata.delete_view(&existing.table_id).await;
+            let _ = self.client().drop_table(&name, &view.mv.namespace).await;
+        }
         let mut options = IvmTableOptions::new(
-            format!("{}__ivm_window_state", view.mv.table_name),
+            name,
             format!("{}__ivm_window_state", view.mv.table_path),
             view.mv.schema.clone(),
         )

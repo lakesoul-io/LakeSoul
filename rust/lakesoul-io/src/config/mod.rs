@@ -274,6 +274,12 @@ impl LakeSoulIOConfig {
         &self.files
     }
 
+    /// Default values injected for columns absent from the data files
+    /// (range-partition columns).
+    pub fn default_column_values(&self) -> &HashMap<String, String> {
+        &self.default_column_value
+    }
+
     /// Returns a slice of auxiliary sort column names
     pub fn aux_sort_cols_slice(&self) -> &[String] {
         &self.aux_sort_cols

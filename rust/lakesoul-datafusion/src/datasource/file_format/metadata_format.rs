@@ -1281,7 +1281,13 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         // spawned write tasks. A Tokio task may be polled after moving away
         // from the thread where `execute` was called.
         let dispatch = tracing::dispatcher::get_default(|dispatch| dispatch.clone());
+        // Hold the current span explicitly: the implicit parent in
+        // `info_span!` clones the thread-local id after the macro has already
+        // observed it, which can race with a test/task closing that span.
+        // Keeping our own clone alive keeps the parent id valid.
+        let parent = tracing::Span::current();
         let span = info_span!(
+            parent: &parent,
             "hash_sink_execute",
             table_id = %self.table_info.table_id,
             table_name = %self.table_info.table_name,

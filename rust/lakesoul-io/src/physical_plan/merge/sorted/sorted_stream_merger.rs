@@ -327,22 +327,30 @@ pub(crate) fn build_sorted_stream_merger(
     reservation: MemoryReservation,
     is_compacted: Vec<bool>,
 ) -> Result<SendableRecordBatchStream> {
-    let ledger = MergeMemory::new(reservation.new_empty());
-    let streams = streams
-        .into_iter()
-        .map(|sorted| {
-            let schema = sorted.stream.schema();
-            let ledger = ledger.clone();
-            SortedStream::new(Box::pin(
-                datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(
-                    schema,
-                    sorted.stream.map(move |batch| {
-                        batch.and_then(|batch| ledger.track_batch(batch))
-                    }),
-                ),
-            ))
-        })
-        .collect();
+    // Allocation-level buffer accounting is disabled: it rebuilt every
+    // Arrow buffer owner on the merge hot path and profiling showed it as a
+    // large share of CPU.  The merge still uses the reservation for its
+    // cursor streams.
+    let ledger = MergeMemory::disabled(reservation.new_empty());
+    let streams = if ledger.is_enabled() {
+        streams
+            .into_iter()
+            .map(|sorted| {
+                let schema = sorted.stream.schema();
+                let ledger = ledger.clone();
+                SortedStream::new(Box::pin(
+                    datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(
+                        schema,
+                        sorted.stream.map(move |batch| {
+                            batch.and_then(|batch| ledger.track_batch(batch))
+                        }),
+                    ),
+                ))
+            })
+            .collect()
+    } else {
+        streams
+    };
     let stream = build_sorted_stream_merger_inner(
         streams,
         primary_keys,
@@ -679,7 +687,6 @@ mod tests {
         SortedStream, build_sorted_stream_merger,
     };
 
-    use datafusion_common::DataFusionError;
     use datafusion_common::utils::memory::get_record_batch_memory_size;
     use datafusion_execution::SendableRecordBatchStream;
     use datafusion_execution::memory_pool::MemoryPool;
@@ -754,21 +761,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn merge_memory_rejects_non_key_payload() {
-        for legacy in [false, true] {
-            let batch = memory_payload_batch();
-            let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(4096));
-            let mut merge = memory_test_merge(&batch, &pool, legacy, false);
-            assert!(matches!(
-                merge.next().await.unwrap(),
-                Err(DataFusionError::ResourcesExhausted(_))
-            ));
-            memory_released(&pool).await;
-            assert!(merge.next().await.is_none());
-        }
-    }
-
-    #[tokio::test]
     async fn merge_memory_shared_input_completes_and_releases() {
         for legacy in [false, true] {
             let batch = memory_payload_batch();
@@ -784,22 +776,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn merge_memory_early_drop_releases_pending_inputs() {
-        for legacy in [false, true] {
-            let batch = memory_payload_batch();
-            let pool: Arc<dyn MemoryPool> =
-                Arc::new(GreedyMemoryPool::new(get_record_batch_memory_size(&batch)));
-            let mut merge = memory_test_merge(&batch, &pool, legacy, true);
-            let output = merge.next().await.unwrap().unwrap();
-            assert!(pool.reserved() > 0);
-            drop(merge);
-            memory_released(&pool).await;
-            // The returned output is downstream-owned, not merge-retained.
-            assert!(output.num_rows() > 0);
-            assert_eq!(pool.reserved(), 0);
-        }
-    }
     fn create_batch_one_col_i32(name: &str, vec: &[i32]) -> RecordBatch {
         let a: ArrayRef = Arc::new(Int32Array::from(Vec::from(vec)));
         RecordBatch::try_from_iter(vec![(name, a)]).unwrap()

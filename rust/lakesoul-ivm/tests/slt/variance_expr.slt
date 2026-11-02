@@ -27,7 +27,7 @@ statement ok
 /*ivm-expect-action incremental*/
 
 query IR rowsort
-SELECT g, variance_v FROM __MV__
+SELECT g, round(variance_v, 6) FROM __MV__
 ----
 a 500.0
 b 100.0

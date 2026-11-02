@@ -54,12 +54,10 @@ use datafusion_expr::dml::InsertOp;
 use rootcause::{bail, report};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
-use vortex::io::session::RuntimeSessionExt;
-use vortex::{VortexSessionDefault, session::VortexSession};
 
 use crate::Result;
 use crate::config::{IOSchema, LakeSoulIOConfig};
-use crate::file_format::{PhysicalFormat, vortex::VortexSink};
+use crate::file_format::{PhysicalFormat, vortex::VortexSink, vortex_scan_session};
 use crate::helpers::get_batch_memory_size;
 use crate::helpers::transform::uniform_schema;
 use crate::session::LakeSoulIOSession;
@@ -199,7 +197,7 @@ pub(crate) fn create_leaf_writer(
             Arc::new(ParquetSink::new(sink_config, parquet_options(io_config)))
         }
         PhysicalFormat::Vortex => Arc::new(VortexSink::new(
-            VortexSession::default().with_tokio(),
+            vortex_scan_session(),
             sink_config,
             file_schema,
             false,
@@ -208,7 +206,7 @@ pub(crate) fn create_leaf_writer(
             io_config.column_policies(),
         )),
         PhysicalFormat::VortexCompact => Arc::new(VortexSink::new(
-            VortexSession::default().with_tokio(),
+            vortex_scan_session(),
             sink_config,
             file_schema,
             true,

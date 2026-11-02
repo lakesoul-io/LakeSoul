@@ -15,13 +15,13 @@
 //! resolves each bucket's state rows by primary key, and the merge plan
 //! computes the next state rows without a driver-side collect or SQL merge.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::{self, Display};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use arrow::array::{
     Array, ArrayRef, BinaryArray, Decimal128Array, Int64Array, StringArray, UInt32Array,
-    UInt32Builder,
+    UInt32Builder, new_null_array,
 };
 use arrow::compute::{SortOptions, cast, take};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -29,9 +29,12 @@ use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
 use async_trait::async_trait;
 use datafusion::catalog::{Session, TableProvider};
-use datafusion::common::{NullEquality, ScalarValue, tree_node::TreeNodeRecursion};
+use datafusion::common::{
+    JoinType, NullEquality, ScalarValue, tree_node::TreeNodeRecursion,
+};
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::TableType;
+use datafusion::physical_expr::expressions::CastExpr;
 use datafusion::physical_expr::expressions::Column as PhysicalColumn;
 use datafusion::physical_expr::{
     EquivalenceProperties, LexOrdering, PhysicalExpr, PhysicalSortExpr,
@@ -42,14 +45,21 @@ use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode, SortMergeJoi
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
+use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning,
     PlanProperties, SendableRecordBatchStream,
 };
 use datafusion::physical_plan::{RangePartitioning, SplitPoint};
-use datafusion::prelude::{DataFrame, SessionContext, col, lit};
+#[cfg(test)]
+use datafusion::prelude::lit;
+use datafusion::prelude::{DataFrame, SessionContext, col};
 use futures::StreamExt;
+use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
+use lakesoul_io::helpers::transform::make_default_array;
+use lakesoul_io::physical_plan::merge::MergeParquetExec;
+use lakesoul_io::pk_locator::LookupSource;
 use lakesoul_vector::IndexKey;
 use tokio::sync::Semaphore;
 
@@ -372,54 +382,63 @@ fn bucket_repartition_with_expr(
 /// lookup output keeps the old state columns under a distinct prefix.
 pub(crate) const IVM_STATE_COLUMN_PREFIX: &str = "__ivm_state_";
 
-/// Number of state reads that may execute concurrently in one plan.  The
-/// physical plan is partitioned by hash bucket, which can be more than the
-/// four active reader/state tasks the pilot is allowed to run.
-/// Maximum number of contribution keys in one binary side-state lookup read.
-/// Real-column lookups use bounded IN lists or a single bucket scan, while
-/// binary keys keep this bound so the reader request does not grow with the
-/// contribution batch.
-pub(crate) const PK_LOOKUP_CHUNK_ROWS: usize = 4096;
-
-/// Contribution rows per keyed lookup request.  The default bounds the IN
-/// list and reader request; a larger chunk trades a bigger request for fewer
-/// reader/index setups.
-fn lookup_chunk_rows() -> usize {
-    std::env::var("LAKESOUL_IVM_LOOKUP_CHUNK_ROWS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(PK_LOOKUP_CHUNK_ROWS)
-        .clamp(1, 65_536)
-}
-
 /// Above this many values a pushed-down IN list costs more to evaluate over
 /// the state rows than reading the bucket and matching the exact row key in
 /// memory.  The lookup plan still performs the exact composite-key match.
+#[cfg(test)]
 const PK_LOOKUP_IN_LIST_LIMIT: usize = 4096;
 
 pub(crate) fn max_active_tasks() -> usize {
     std::env::var("LAKESOUL_IVM_MAX_ACTIVE_TASKS")
-        .or_else(|_| std::env::var("LAKESOUL_IVM_MAX_ACTIVE_LOOKUPS"))
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(4)
         .max(1)
 }
 
-async fn lookup_streaming_chunk(
-    table: &IvmTable,
-    groups: &[PartitionFiles],
-    chunk: &RecordBatch,
-    state_schema: &SchemaRef,
-    out_schema: &SchemaRef,
+/// Sort each bucket's contribution by the lookup key before a persistent
+/// lookup consumes it.
+///
+/// The per-file index cursor only moves forward across key batches, and each
+/// file's lookup stream must stay sorted by the state primary key for the
+/// LakeSoul merge.  The sort must preserve the bucket partitioning; a plain
+/// `SortExec` coalesces to one partition and would collapse all buckets into
+/// a single task.
+fn sort_lookup_input(
+    input: Arc<dyn ExecutionPlan>,
     key: &PkLookupKey,
-    filters: Vec<datafusion::prelude::Expr>,
-    multi_match: bool,
-    emit_unmatched: bool,
-    gate: Arc<Semaphore>,
-) -> DataFusionResult<(Vec<RecordBatch>, usize)> {
-    let contribution_keys = key_rows(chunk, key, state_schema)?;
-    let explicit_pk = match key {
+) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+    let schema = input.schema();
+    let columns = match key {
+        PkLookupKey::Columns {
+            input_columns,
+            table_columns,
+        } => mapped_input_columns(input_columns, table_columns),
+        PkLookupKey::BinaryRow { column } => vec![column.clone()],
+    };
+    let expressions = columns
+        .iter()
+        .map(|column| {
+            Ok(PhysicalSortExpr {
+                expr: Arc::new(PhysicalColumn::new(column, schema.index_of(column)?)),
+                options: SortOptions::default(),
+            })
+        })
+        .collect::<DataFusionResult<Vec<_>>>()?;
+    let ordering = LexOrdering::new(expressions).ok_or_else(|| {
+        DataFusionError::Internal("persistent lookup sort key is empty".to_string())
+    })?;
+    Ok(Arc::new(
+        SortExec::new(ordering, input).with_preserve_partitioning(true),
+    ))
+}
+
+/// Encode the contribution keys into the index keys the locator fetches.
+fn explicit_pk_for_keys(
+    key: &PkLookupKey,
+    contribution_keys: &[Option<Vec<u8>>],
+) -> DataFusionResult<Option<(Vec<String>, Vec<IndexKey>)>> {
+    Ok(match key {
         PkLookupKey::Columns { table_columns, .. } => {
             let encoded: Vec<IndexKey> = contribution_keys
                 .iter()
@@ -450,70 +469,50 @@ async fn lookup_streaming_chunk(
                 .collect::<Vec<_>>();
             (!keys.is_empty()).then(|| (vec![column.clone()], keys))
         }
-    };
-    let mut matched: HashSet<Vec<u8>> = HashSet::new();
-    let mut outputs = Vec::new();
-    let mut state_rows = 0usize;
+    })
+}
+
+/// One explicit-key lookup for a bounded contribution window.
+///
+/// The reader opens the bucket files once, resolves every key through the pk
+/// locator and merges the candidate rows once.  The exact key match is applied
+/// by `lookup_batch`, so no pushed-down IN list is needed.
+async fn lookup_streaming_bulk(
+    table: &IvmTable,
+    groups: &[PartitionFiles],
+    contribution: &RecordBatch,
+    state_schema: &SchemaRef,
+    out_schema: &SchemaRef,
+    key: &PkLookupKey,
+    multi_match: bool,
+    emit_unmatched: bool,
+    gate: Arc<Semaphore>,
+) -> DataFusionResult<(RecordBatch, usize)> {
+    let contribution_keys = key_rows(contribution, key, state_schema)?;
+    let explicit_pk = explicit_pk_for_keys(key, &contribution_keys)?;
     let mut state_batches = table
-        .stream_partition_files_filtered(
-            groups.to_vec(),
-            filters,
-            explicit_pk,
-            gate.clone(),
-        )
+        .stream_partition_files_filtered(groups.to_vec(), Vec::new(), explicit_pk, gate)
         .await
         .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+    let mut batches = Vec::new();
+    let mut state_rows = 0usize;
     while let Some(batch) = state_batches.recv().await {
         let batch = batch?;
-        if batch.num_rows() == 0 {
-            continue;
-        }
         state_rows += batch.num_rows();
-        if !multi_match {
-            for key in key_rows(&batch, &key.for_table(), state_schema)?
-                .into_iter()
-                .flatten()
-            {
-                matched.insert(key);
-            }
-        }
-        let output = lookup_batch(
-            chunk,
-            &[batch],
-            state_schema,
-            out_schema,
-            key,
-            multi_match,
-            false,
-        )?;
-        if output.num_rows() > 0 {
-            outputs.push(output);
+        if batch.num_rows() > 0 {
+            batches.push(batch);
         }
     }
-    if emit_unmatched && !multi_match {
-        let mask = arrow::array::BooleanArray::from(
-            contribution_keys
-                .iter()
-                .map(|key| key.as_ref().is_none_or(|key| !matched.contains(key)))
-                .collect::<Vec<_>>(),
-        );
-        let unmatched = arrow::compute::filter_record_batch(chunk, &mask)?;
-        if unmatched.num_rows() > 0 {
-            let output = lookup_batch(
-                &unmatched,
-                &[],
-                state_schema,
-                out_schema,
-                key,
-                false,
-                true,
-            )?;
-            if output.num_rows() > 0 {
-                outputs.push(output);
-            }
-        }
-    }
-    Ok((outputs, state_rows))
+    let output = lookup_batch(
+        contribution,
+        &batches,
+        state_schema,
+        out_schema,
+        key,
+        multi_match,
+        emit_unmatched,
+    )?;
+    Ok((output, state_rows))
 }
 
 /// Split state file groups into the hash buckets the writer used.
@@ -603,6 +602,7 @@ impl PkLookupKey {
     }
 }
 
+#[cfg(test)]
 fn state_key_filter(
     batch: &RecordBatch,
     key_column: &str,
@@ -645,13 +645,14 @@ fn state_output_schema(input: &SchemaRef, state: &SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(fields))
 }
 
+#[cfg(test)]
 enum PkFilters {
     /// Read each contribution chunk with its own pushed-down filter.
     Pushdown(Vec<datafusion::prelude::Expr>),
     /// At least one key column has too many values for a cheap IN list.
     /// Read the bucket once for the whole contribution batch, then use the
     /// exact Arrow row keys to match.
-    ScanAll(Vec<datafusion::prelude::Expr>),
+    ScanAll,
 }
 
 /// Order the contribution columns like the table key when both lists name the
@@ -682,6 +683,7 @@ fn mapped_input_columns(
     }
 }
 
+#[cfg(test)]
 fn key_filter_exprs(
     batch: &RecordBatch,
     key: &PkLookupKey,
@@ -723,7 +725,7 @@ fn key_filter_exprs(
                     .map(|mut values| lit(values.remove(0)))
                     .collect::<Vec<_>>();
                 if list.len() > PK_LOOKUP_IN_LIST_LIMIT {
-                    return Ok(PkFilters::ScanAll(vec![lit(true)]));
+                    return Ok(PkFilters::ScanAll);
                 }
                 return Ok(PkFilters::Pushdown(vec![
                     col(table_columns[0].as_str()).in_list(list, false),
@@ -754,7 +756,7 @@ fn key_filter_exprs(
                 .iter()
                 .any(|values| values.len() > PK_LOOKUP_IN_LIST_LIMIT)
             {
-                return Ok(PkFilters::ScanAll(vec![lit(true)]));
+                return Ok(PkFilters::ScanAll);
             }
             // Apply all key columns, not only the shortest IN list.  The
             // reader still performs the exact Arrow-row match, but the
@@ -954,6 +956,496 @@ fn lookup_batch(
         .map_err(|error| DataFusionError::Execution(error.to_string()))
 }
 
+/// One range-partition group's persistent lookup source and merge config.
+struct GroupLookupSource {
+    source: LookupSource,
+    merge_config: LakeSoulIOConfig,
+    defaults: Arc<HashMap<String, String>>,
+}
+
+/// Opening state is lazy: the first contribution batch opens every file and
+/// index once, then the bucket runs one persistent merge and join.
+enum PersistentLookupState {
+    Unopened,
+    Joined(SendableRecordBatchStream),
+    Fallback,
+}
+
+/// Key columns and state types a persistent lookup source indexes.
+fn lookup_key_spec(
+    key: &PkLookupKey,
+    state_schema: &SchemaRef,
+) -> Option<(Vec<String>, Vec<DataType>)> {
+    match key {
+        PkLookupKey::Columns { table_columns, .. } => {
+            let types = table_columns
+                .iter()
+                .map(|column| {
+                    state_schema
+                        .field_with_name(column)
+                        .ok()
+                        .map(|field| field.data_type().clone())
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some((table_columns.clone(), types))
+        }
+        PkLookupKey::BinaryRow { column } => state_schema
+            .field_with_name(column)
+            .ok()
+            .map(|field| (vec![column.clone()], vec![field.data_type().clone()])),
+    }
+}
+
+async fn open_lookup_sources(
+    table: &IvmTable,
+    groups: &[PartitionFiles],
+    key: &PkLookupKey,
+    state_schema: &SchemaRef,
+) -> Option<Vec<GroupLookupSource>> {
+    let (columns, types) = lookup_key_spec(key, state_schema)?;
+    let mut opened = Vec::with_capacity(groups.len());
+    for group in groups {
+        if group.files.is_empty() {
+            continue;
+        }
+        let source_and_config = table
+            .open_lookup_source(group, &columns, &types)
+            .await
+            .ok()
+            .flatten();
+        let Some((source, config)) = source_and_config else {
+            tracing::warn!(
+                table = %table.table_name,
+                partition = %group.partition_desc,
+                "persistent pk lookup unavailable; falling back to the reader path"
+            );
+            return None;
+        };
+        let defaults = Arc::new(config.default_column_values().clone());
+        opened.push(GroupLookupSource {
+            source,
+            merge_config: config,
+            defaults,
+        });
+    }
+    Some(opened)
+}
+
+/// A one-partition execution plan backed by a bounded channel.
+struct ChannelInputExec {
+    schema: SchemaRef,
+    receiver: Mutex<Option<tokio::sync::mpsc::Receiver<DataFusionResult<RecordBatch>>>>,
+    properties: Arc<PlanProperties>,
+}
+
+impl ChannelInputExec {
+    fn new(
+        schema: SchemaRef,
+        receiver: tokio::sync::mpsc::Receiver<DataFusionResult<RecordBatch>>,
+    ) -> Self {
+        let properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(schema.clone()),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        Self {
+            schema,
+            receiver: Mutex::new(Some(receiver)),
+            properties,
+        }
+    }
+}
+
+impl std::fmt::Debug for ChannelInputExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ChannelInputExec")
+    }
+}
+
+impl DisplayAs for ChannelInputExec {
+    fn fmt_as(
+        &self,
+        _format: DisplayFormatType,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        f.write_str("ChannelInputExec")
+    }
+}
+
+impl ExecutionPlan for ChannelInputExec {
+    fn name(&self) -> &str {
+        "ChannelInputExec"
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        Vec::new()
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if !children.is_empty() {
+            return Err(DataFusionError::Internal(
+                "ChannelInputExec has no children".to_string(),
+            ));
+        }
+        Ok(self)
+    }
+
+    fn execute(
+        &self,
+        _partition: usize,
+        _context: Arc<datafusion::execution::TaskContext>,
+    ) -> DataFusionResult<SendableRecordBatchStream> {
+        let receiver = self
+            .receiver
+            .lock()
+            .map_err(|_| {
+                DataFusionError::Execution(
+                    "ChannelInputExec receiver poisoned".to_string(),
+                )
+            })?
+            .take()
+            .ok_or_else(|| {
+                DataFusionError::Execution(
+                    "ChannelInputExec can only be executed once".to_string(),
+                )
+            })?;
+        let schema = self.schema.clone();
+        let stream = futures::stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|item| (item, receiver))
+        });
+        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+    }
+}
+
+const PERSISTENT_LOOKUP_CHANNEL_CAPACITY: usize = 8;
+
+/// Add the state table's range-partition constants and any missing columns so
+/// every file stream has the full merge schema.
+fn state_batch_with_defaults(
+    batch: RecordBatch,
+    defaults: &HashMap<String, String>,
+    state_schema: &SchemaRef,
+) -> DataFusionResult<RecordBatch> {
+    let mut columns = Vec::with_capacity(state_schema.fields().len());
+    for field in state_schema.fields() {
+        let array = match batch.schema().index_of(field.name()) {
+            Ok(index) => {
+                let array = Arc::clone(batch.column(index));
+                if array.data_type() == field.data_type() {
+                    array
+                } else {
+                    cast(array.as_ref(), field.data_type()).map_err(|error| {
+                        DataFusionError::Execution(format!(
+                            "cast state column {}: {error}",
+                            field.name()
+                        ))
+                    })?
+                }
+            }
+            Err(_) => match defaults.get(field.name()) {
+                Some(value) => {
+                    make_default_array(field.data_type(), value, batch.num_rows())
+                        .map_err(|error| {
+                            DataFusionError::Execution(format!(
+                                "inject state partition column {}: {error}",
+                                field.name()
+                            ))
+                        })?
+                }
+                None => new_null_array(field.data_type(), batch.num_rows()),
+            },
+        };
+        columns.push(array);
+    }
+    RecordBatch::try_new(state_schema.clone(), columns)
+        .map_err(|error| DataFusionError::Execution(error.to_string()))
+}
+
+/// Feed one bucket's sorted contribution stream through the persistent
+/// per-file lookup sources into the file channels.  The contribution batch is
+/// cloned into the join channel before the lookup so the join can always make
+/// progress.
+async fn persistent_lookup_producer(
+    mut input: SendableRecordBatchStream,
+    mut sources: Vec<GroupLookupSource>,
+    file_txs: Vec<tokio::sync::mpsc::Sender<DataFusionResult<RecordBatch>>>,
+    contribution_tx: tokio::sync::mpsc::Sender<DataFusionResult<RecordBatch>>,
+    state_schema: SchemaRef,
+    key: PkLookupKey,
+) {
+    let offsets = sources
+        .iter()
+        .scan(0usize, |offset, group| {
+            let start = *offset;
+            *offset += group.source.file_count();
+            Some(start)
+        })
+        .collect::<Vec<_>>();
+    let mut error_message: Option<String> = None;
+    'batch: loop {
+        let batch = match input.next().await {
+            None => break,
+            Some(Err(error)) => {
+                error_message = Some(error.to_string());
+                break;
+            }
+            Some(Ok(batch)) if batch.num_rows() == 0 => continue,
+            Some(Ok(batch)) => batch,
+        };
+        if contribution_tx.send(Ok(batch.clone())).await.is_err() {
+            return;
+        }
+        let contribution_keys = match key_rows(&batch, &key, &state_schema) {
+            Ok(keys) => keys,
+            Err(error) => {
+                error_message = Some(error.to_string());
+                break;
+            }
+        };
+        let encoded = match explicit_pk_for_keys(&key, &contribution_keys) {
+            Ok(Some((_, keys))) => keys,
+            Ok(None) => continue,
+            Err(error) => {
+                error_message = Some(error.to_string());
+                break;
+            }
+        };
+        for (group_index, group) in sources.iter_mut().enumerate() {
+            let file_batches = match group.source.lookup_batch(&encoded).await {
+                Some(batches) => batches,
+                None => {
+                    error_message = Some(
+                        "persistent pk lookup failed after opening the source"
+                            .to_string(),
+                    );
+                    break 'batch;
+                }
+            };
+            for file in file_batches {
+                if file.batches.is_empty() {
+                    continue;
+                }
+                let index = offsets[group_index] + file.file_index;
+                for batch in file.batches {
+                    let batch = match state_batch_with_defaults(
+                        batch,
+                        &group.defaults,
+                        &state_schema,
+                    ) {
+                        Ok(batch) => batch,
+                        Err(error) => {
+                            error_message = Some(error.to_string());
+                            break 'batch;
+                        }
+                    };
+                    if file_txs[index].send(Ok(batch)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(message) = error_message {
+        for tx in &file_txs {
+            let _ = tx
+                .send(Err(DataFusionError::Execution(message.clone())))
+                .await;
+        }
+        let _ = contribution_tx
+            .send(Err(DataFusionError::Execution(message)))
+            .await;
+    }
+}
+
+/// Build the per-bucket persistent plan: one channel input per file, one
+/// long-lived `MergeParquetExec`, and one streaming sort-merge join against
+/// the contribution.
+#[allow(clippy::too_many_arguments)]
+fn build_persistent_join(
+    table: &IvmTable,
+    key: &PkLookupKey,
+    state_schema: &SchemaRef,
+    out_schema: &SchemaRef,
+    sources: Vec<GroupLookupSource>,
+    input: SendableRecordBatchStream,
+    context: Arc<datafusion::execution::TaskContext>,
+    multi_match: bool,
+    emit_unmatched: bool,
+) -> DataFusionResult<SendableRecordBatchStream> {
+    let contribution_schema = input.schema();
+    let mut file_txs = Vec::new();
+    let mut state_plans: Vec<Arc<dyn ExecutionPlan>> = Vec::new();
+    // A key may legally appear in more than one range partition (the target
+    // primary key need not contain the partition column).  Merge each group
+    // separately, then combine the group streams with a sort-preserving merge
+    // that keeps equal keys from different groups instead of deduplicating
+    // them.
+    for group in &sources {
+        let mut group_inputs: Vec<Arc<dyn ExecutionPlan>> = Vec::new();
+        let group_files = group.merge_config.files_slice().to_vec();
+        for _ in 0..group.source.file_count() {
+            let (tx, rx) = tokio::sync::mpsc::channel(PERSISTENT_LOOKUP_CHANNEL_CAPACITY);
+            file_txs.push(tx);
+            group_inputs.push(Arc::new(ChannelInputExec::new(state_schema.clone(), rx))
+                as Arc<dyn ExecutionPlan>);
+        }
+        if group_inputs.is_empty() {
+            continue;
+        }
+        // Inputs already contain the group's partition constants, so the
+        // merge must not inject defaults again.
+        let group_config = LakeSoulIOConfigBuilder::new()
+            .with_files(group_files)
+            .with_schema(state_schema.clone())
+            .with_primary_keys(table.primary_keys.clone())
+            .with_physical_format(table.file_format)
+            .build();
+        let group_merge = MergeParquetExec::new_with_inputs(
+            state_schema.clone(),
+            group_inputs,
+            group_config,
+            Arc::new(HashMap::new()),
+        )
+        .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+        state_plans.push(Arc::new(group_merge));
+    }
+    if state_plans.is_empty() {
+        return Err(DataFusionError::Execution(
+            "persistent lookup has no state files".to_string(),
+        ));
+    }
+    let ordering = LexOrdering::new(
+        table
+            .primary_keys
+            .iter()
+            .map(|key| {
+                Ok(PhysicalSortExpr {
+                    expr: Arc::new(PhysicalColumn::new(key, state_schema.index_of(key)?)),
+                    options: SortOptions::default(),
+                })
+            })
+            .collect::<DataFusionResult<Vec<_>>>()?,
+    )
+    .ok_or_else(|| {
+        DataFusionError::Internal("persistent lookup state ordering is empty".to_string())
+    })?;
+    let group_partitions: Arc<dyn ExecutionPlan> = Arc::new(BucketPartitionedExec::new(
+        state_plans,
+        state_schema.clone(),
+    ));
+    let state_stream: Arc<dyn ExecutionPlan> =
+        Arc::new(SortPreservingMergeExec::new(ordering, group_partitions));
+    let (contribution_tx, contribution_rx) =
+        tokio::sync::mpsc::channel(PERSISTENT_LOOKUP_CHANNEL_CAPACITY);
+    let contribution_input: Arc<dyn ExecutionPlan> = Arc::new(ChannelInputExec::new(
+        contribution_schema.clone(),
+        contribution_rx,
+    ));
+
+    let (table_columns, input_columns) = match key {
+        PkLookupKey::Columns {
+            input_columns,
+            table_columns,
+        } => (
+            table_columns.clone(),
+            mapped_input_columns(input_columns, table_columns),
+        ),
+        PkLookupKey::BinaryRow { column } => (vec![column.clone()], vec![column.clone()]),
+    };
+    let mut on = Vec::with_capacity(table_columns.len());
+    for (table_column, input_column) in table_columns.iter().zip(&input_columns) {
+        let left = Arc::new(PhysicalColumn::new(
+            table_column,
+            state_schema.index_of(table_column)?,
+        )) as Arc<dyn PhysicalExpr>;
+        let right_column = Arc::new(PhysicalColumn::new(
+            input_column,
+            contribution_schema.index_of(input_column)?,
+        ));
+        let left_type = state_schema
+            .field_with_name(table_column)?
+            .data_type()
+            .clone();
+        let right_type = contribution_schema
+            .field_with_name(input_column)?
+            .data_type()
+            .clone();
+        let right: Arc<dyn PhysicalExpr> = if left_type == right_type {
+            right_column
+        } else {
+            Arc::new(CastExpr::new(right_column, left_type, None))
+        };
+        on.push((left, right));
+    }
+    let sort_options = vec![SortOptions::default(); table_columns.len()];
+    let join_type = if multi_match {
+        JoinType::Inner
+    } else if emit_unmatched {
+        JoinType::Left
+    } else {
+        JoinType::Inner
+    };
+    let join = SortMergeJoinExec::try_new(
+        state_stream,
+        contribution_input,
+        on,
+        None,
+        join_type,
+        sort_options,
+        NullEquality::NullEqualsNothing,
+    )?;
+    let state_field_count = state_schema.fields().len();
+    let contribution_field_count = contribution_schema.fields().len();
+    let mut projection = Vec::with_capacity(out_schema.fields().len());
+    for (index, field) in out_schema.fields().iter().enumerate() {
+        if index < contribution_field_count {
+            projection.push((
+                Arc::new(PhysicalColumn::new(field.name(), state_field_count + index))
+                    as Arc<dyn PhysicalExpr>,
+                field.name().clone(),
+            ));
+        } else {
+            let state_index = index - contribution_field_count;
+            let state_name = state_schema.field(state_index).name();
+            projection.push((
+                Arc::new(PhysicalColumn::new(state_name, state_index))
+                    as Arc<dyn PhysicalExpr>,
+                format!("{IVM_STATE_COLUMN_PREFIX}{state_name}"),
+            ));
+        }
+    }
+    let projected = ProjectionExec::try_new(projection, Arc::new(join))?;
+
+    tokio::spawn(persistent_lookup_producer(
+        input,
+        sources,
+        file_txs,
+        contribution_tx,
+        state_schema.clone(),
+        key.clone(),
+    ));
+    projected.execute(0, context)
+}
+
 /// A physical scan of one bucket's state files, left-joined onto the
 /// contribution rows by group-row primary key.
 ///
@@ -1023,6 +1515,7 @@ impl IvmPkLookupExec {
         key: PkLookupKey,
         bucket_count: usize,
     ) -> DataFusionResult<Self> {
+        let input = sort_lookup_input(input, &key)?;
         let bucket_count = bucket_count.max(1);
         let input_partitions = input.output_partitioning().partition_count();
         if bucket_count > 1 && input_partitions != bucket_count {
@@ -1118,6 +1611,145 @@ impl ExecutionPlanProperties for IvmPkLookupExec {
     }
 }
 
+impl IvmPkLookupExec {
+    /// Resolve one bucket through persistent per-file lookup sources.
+    ///
+    /// The first contribution batch opens every state file and PK index once;
+    /// later batches only probe the in-memory index and fetch rows from the
+    /// already-open files.  Each batch's per-file results enter one LakeSoul
+    /// merge per range-partition group.
+    fn execute_persistent_lookup(
+        &self,
+        partition: usize,
+        context: Arc<datafusion::execution::TaskContext>,
+    ) -> DataFusionResult<SendableRecordBatchStream> {
+        let input = self.input.execute(partition, context.clone())?;
+        let groups = Arc::new(if self.bucket_count == 1 {
+            self.groups_by_bucket.first().cloned().unwrap_or_default()
+        } else {
+            self.groups_by_bucket
+                .get(partition)
+                .cloned()
+                .unwrap_or_default()
+        });
+        let table = self.table.clone();
+        let key = self.key.clone();
+        let state_schema = self.table.schema.clone();
+        let out_schema = self.schema.clone();
+        let gate = self.gate.clone();
+        let multi_match = self.multi_match;
+        let emit_unmatched = self.emit_unmatched;
+        let stream = futures::stream::try_unfold(
+            (Some(input), PersistentLookupState::Unopened),
+            move |(mut input, mut state)| {
+                let table = table.clone();
+                let key = key.clone();
+                let state_schema = state_schema.clone();
+                let out_schema = out_schema.clone();
+                let gate = gate.clone();
+                let groups = groups.clone();
+                let context = context.clone();
+                async move {
+                    loop {
+                        match state {
+                            PersistentLookupState::Unopened => {
+                                let opened = open_lookup_sources(
+                                    &table,
+                                    groups.as_slice(),
+                                    &key,
+                                    &state_schema,
+                                )
+                                .await;
+                                let Some(sources) =
+                                    opened.filter(|sources| !sources.is_empty())
+                                else {
+                                    state = PersistentLookupState::Fallback;
+                                    continue;
+                                };
+                                let contribution = input.take().ok_or_else(|| {
+                                    DataFusionError::Execution(
+                                        "persistent lookup lost its input".to_string(),
+                                    )
+                                })?;
+                                let joined = build_persistent_join(
+                                    &table,
+                                    &key,
+                                    &state_schema,
+                                    &out_schema,
+                                    sources,
+                                    contribution,
+                                    context.clone(),
+                                    multi_match,
+                                    emit_unmatched,
+                                )?;
+                                state = PersistentLookupState::Joined(joined);
+                            }
+                            PersistentLookupState::Joined(mut joined) => {
+                                match joined.next().await {
+                                    None => return Ok(None),
+                                    Some(Err(error)) => return Err(error),
+                                    Some(Ok(batch)) => {
+                                        state = PersistentLookupState::Joined(joined);
+                                        return Ok(Some((batch, (input, state))));
+                                    }
+                                }
+                            }
+                            PersistentLookupState::Fallback => {
+                                let input_stream = input.as_mut().ok_or_else(|| {
+                                    DataFusionError::Execution(
+                                        "fallback lookup lost its input".to_string(),
+                                    )
+                                })?;
+                                let batch = loop {
+                                    match input_stream.next().await {
+                                        None => return Ok(None),
+                                        Some(Err(error)) => return Err(error),
+                                        Some(Ok(batch)) if batch.num_rows() == 0 => {
+                                            continue;
+                                        }
+                                        Some(Ok(batch)) => break batch,
+                                    }
+                                };
+                                let started = std::time::Instant::now();
+                                let (output, state_rows) = lookup_streaming_bulk(
+                                    &table,
+                                    groups.as_slice(),
+                                    &batch,
+                                    &state_schema,
+                                    &out_schema,
+                                    &key,
+                                    multi_match,
+                                    emit_unmatched,
+                                    gate.clone(),
+                                )
+                                .await?;
+                                tracing::debug!(
+                                    table = %table.table_name,
+                                    key = %key.display(),
+                                    partition,
+                                    contribution_rows = batch.num_rows(),
+                                    state_rows,
+                                    output_rows = output.num_rows(),
+                                    elapsed = ?started.elapsed(),
+                                    "keyed state lookup fallback finished"
+                                );
+                                return Ok(Some((
+                                    output,
+                                    (input, PersistentLookupState::Fallback),
+                                )));
+                            }
+                        }
+                    }
+                }
+            },
+        );
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.schema.clone(),
+            stream,
+        )))
+    }
+}
+
 impl ExecutionPlan for IvmPkLookupExec {
     fn name(&self) -> &str {
         "IvmPkLookupExec"
@@ -1170,99 +1802,7 @@ impl ExecutionPlan for IvmPkLookupExec {
         partition: usize,
         context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
-        let input = self.input.execute(partition, context)?;
-        let groups = if self.bucket_count == 1 {
-            self.groups_by_bucket.first().cloned().unwrap_or_default()
-        } else {
-            self.groups_by_bucket
-                .get(partition)
-                .cloned()
-                .unwrap_or_default()
-        };
-        let table = self.table.clone();
-        let key = self.key.clone();
-        let state_schema = self.table.schema.clone();
-        let out_schema = self.schema.clone();
-        let gate = self.gate.clone();
-        let multi_match = self.multi_match;
-        let emit_unmatched = self.emit_unmatched;
-        let chunk_rows = lookup_chunk_rows();
-        let profile_io = self.profile_io.clone();
-        let stream =
-            futures::stream::try_unfold((input, groups), move |(mut input, groups)| {
-                let gate = gate.clone();
-                let table = table.clone();
-                let key = key.clone();
-                let state_schema = state_schema.clone();
-                let out_schema = out_schema.clone();
-                let profile_io = profile_io.clone();
-                async move {
-                    let gate = gate.clone();
-                    loop {
-                        let batch = match input.next().await {
-                            None => return Ok::<_, DataFusionError>(None),
-                            Some(Err(error)) => return Err(error),
-                            Some(Ok(batch)) if batch.num_rows() == 0 => continue,
-                            Some(Ok(batch)) => batch,
-                        };
-                        let started = std::time::Instant::now();
-                        let mut outputs = Vec::new();
-                        let mut state_rows = 0usize;
-                        let mut chunks = 0usize;
-                        for offset in (0..batch.num_rows()).step_by(chunk_rows) {
-                            let length = chunk_rows.min(batch.num_rows() - offset);
-                            let chunk = batch.slice(offset, length);
-                            let filters = match key_filter_exprs(&chunk, &key)? {
-                                PkFilters::Pushdown(filters)
-                                | PkFilters::ScanAll(filters) => filters,
-                            };
-                            let (mut found, rows) = lookup_streaming_chunk(
-                                &table,
-                                &groups,
-                                &chunk,
-                                &state_schema,
-                                &out_schema,
-                                &key,
-                                filters,
-                                multi_match,
-                                emit_unmatched,
-                                gate.clone(),
-                            )
-                            .await?;
-                            state_rows += rows;
-                            outputs.append(&mut found);
-                            chunks += 1;
-                        }
-                        let output = match outputs.len() {
-                            0 => RecordBatch::new_empty(out_schema.clone()),
-                            1 => outputs.pop().expect("one lookup output"),
-                            _ => arrow::compute::concat_batches(&out_schema, &outputs)?,
-                        };
-                        tracing::debug!(
-                            table = %table.table_name,
-                            key = %key.display(),
-                            partition,
-                            contribution_rows = batch.num_rows(),
-                            chunks,
-                            state_rows,
-                            output_rows = output.num_rows(),
-                            elapsed = ?started.elapsed(),
-                            "keyed state lookup batch finished"
-                        );
-                        if let Some(io) = &profile_io {
-                            crate::observability::add_lookup_time_shared(
-                                io,
-                                started.elapsed(),
-                            );
-                        }
-                        return Ok(Some((output, (input, groups))));
-                    }
-                }
-            });
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            self.schema.clone(),
-            stream,
-        )))
+        self.execute_persistent_lookup(partition, context)
     }
 }
 
@@ -1342,6 +1882,37 @@ pub(crate) fn partition_restriction_from_batches(
             .map(|(column, values)| (column, values.into_iter().collect()))
             .collect(),
     )
+}
+
+/// Test/diagnostic counters for the last keyed lookup of each state table.
+static PARTITION_STATS: OnceLock<Mutex<HashMap<String, (u64, u64)>>> = OnceLock::new();
+
+fn partition_stats() -> &'static Mutex<HashMap<String, (u64, u64)>> {
+    PARTITION_STATS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn record_partition_stats(table_id: &str, total: usize, kept: usize) {
+    if std::env::var("LAKESOUL_IVM_PARTITION_STATS").is_err() {
+        return;
+    }
+    if let Ok(mut stats) = partition_stats().lock() {
+        // Several stages can narrow the same lookup.  Keep the widest total
+        // seen and the narrowest kept set, so the reported pair describes the
+        // whole lookup rather than only its last stage.
+        let entry = stats.entry(table_id.to_string()).or_insert((0, u64::MAX));
+        entry.0 = entry.0.max(total as u64);
+        entry.1 = entry.1.min(kept as u64);
+    }
+}
+
+/// The last keyed lookup's `(partition groups total, partition groups kept)`
+/// for a state table.  Enabled by `LAKESOUL_IVM_PARTITION_STATS`.
+#[doc(hidden)]
+pub fn state_partition_stats(table_id: &str) -> Option<(u64, u64)> {
+    partition_stats()
+        .lock()
+        .ok()
+        .and_then(|stats| stats.get(table_id).copied())
 }
 
 pub(crate) struct IvmLookupTable {
@@ -1498,6 +2069,11 @@ impl IvmLookupTable {
                 None => self.groups_by_bucket.clone(),
             }
         };
+        record_partition_stats(
+            &self.table.table_id,
+            self.groups_by_bucket.iter().flatten().count(),
+            groups_by_bucket.iter().flatten().count(),
+        );
         let plan = self.contribution.create_physical_plan().await?;
         let plan = if let Some(columns) = self.route_columns.as_deref() {
             bucket_repartition_by_columns(plan, columns, self.bucket_count)
@@ -2793,7 +3369,7 @@ mod tests {
         };
         assert!(matches!(
             key_filter_exprs(&batch, &key).unwrap(),
-            PkFilters::ScanAll(_)
+            PkFilters::ScanAll
         ));
     }
 

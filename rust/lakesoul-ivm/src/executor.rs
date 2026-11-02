@@ -40,18 +40,18 @@ use crate::runtime::{
     ChainPolicy, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_EPOCH_COLUMN,
     IVM_GROUP_ROW_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_PAIR_IDENTITY_COLUMN,
     IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IVM_SUM_COLUMN, IVM_VALUE_COLUMN,
-    IvmRuntime, JoinOutputColumn, JoinSide, MultiAggSpec, MultiLookupColumn,
-    MultiLookupRight, SinkColumn, ViewSpec, approx_distinct_groups_mv_schema_for,
-    approx_percentile_groups_mv_schema_for, array_agg_groups_mv_schema_for,
-    bool_agg_groups_mv_schema_for, computed_agg_mv_schema_for,
-    cross_join_view_schema_for, decode_data_type, distinct_agg_groups_mv_schema_for,
-    encode_data_type, full_join_view_schema_with_keys, grouping_sets_mv_schema_for,
-    join_view_schema_with_keys, keyed_join_output_primary_keys,
-    keyed_join_view_schema_with_keys, left_aggregate_mv_schema_with_outputs,
-    left_join_view_schema_with_keys, lookup_chain_mv_schema_for,
-    lookup_chain_step_id_column, lookup_join_view_schema_for,
+    IvmRuntime, JoinOutputColumn, JoinSide, MultiAggPartialPlan, MultiAggSpec,
+    MultiLookupColumn, MultiLookupRight, SinkColumn, ViewSpec,
+    approx_distinct_groups_mv_schema_for, approx_percentile_groups_mv_schema_for,
+    array_agg_groups_mv_schema_for, bool_agg_groups_mv_schema_for,
+    computed_agg_mv_schema_for, cross_join_view_schema_for, decode_data_type,
+    distinct_agg_groups_mv_schema_for, encode_data_type, full_join_view_schema_with_keys,
+    grouping_sets_mv_schema_for, join_view_schema_with_keys,
+    keyed_join_output_primary_keys, keyed_join_view_schema_with_keys,
+    left_aggregate_mv_schema_with_outputs, left_join_view_schema_with_keys,
+    lookup_chain_mv_schema_for, lookup_chain_step_id_column, lookup_join_view_schema_for,
     median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
-    multi_agg_rows_state_schema_for, multi_agg_state_schema_for,
+    multi_agg_partial_plan, multi_agg_rows_state_schema_for, multi_agg_state_schema_for,
     multi_join_append_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
     multi_lookup_join_mv_schema_for, multi_window_mv_schema_for_with_payload,
     nullable_join_key_schema, parse_filter, refresh_session, row_expr_mv_schema_for,
@@ -2335,8 +2335,27 @@ impl IvmSqlExecutor {
                 &schema,
             )
         });
+        // A cardinality-preserving step can carry its source's real range
+        // partition columns through its own MV.  The column is materialized
+        // for the internal step only; the business output mapping ignores it,
+        // while a downstream state table can mirror the source partitioning.
+        // A merged multi-aggregate row reuses the owner's layout, so it is not
+        // widened here.
+        let partitions = if merged.is_some() {
+            DerivedPartitions::default()
+        } else {
+            propagate_derived_partitions(&mut spec, tables)?
+        };
+        tracing::debug!(
+            target = %target.table_name,
+            index,
+            kind = spec.kind(),
+            carried = ?partitions.carried,
+            internal = ?partitions.internal,
+            "derived step partitions"
+        );
         let table = self
-            .ensure_derived_table(target, index, &spec, tables)
+            .ensure_derived_table(target, index, &spec, tables, &partitions)
             .await?;
         // The derived view is registered under its MV table id (the view
         // identity of every view), so the chain graph finds it when the outer
@@ -2430,6 +2449,7 @@ impl IvmSqlExecutor {
         index: usize,
         spec: &ViewSpec,
         tables: &HashMap<String, IvmTable>,
+        partitions: &DerivedPartitions,
     ) -> Result<IvmTable> {
         let name = derived_step_name(&target.table_name, index);
         let path = derived_step_path(&target.table_path, index);
@@ -2467,6 +2487,8 @@ impl IvmSqlExecutor {
                     || existing.bucket_columns == bucket_columns)
                 && existing.file_format == internal_file_format()
                 && existing.hash_bucket_num == target.hash_bucket_num
+                && existing.range_partition_columns == partitions.carried
+                && existing.internal_columns == partitions.internal
             {
                 return Ok(existing);
             }
@@ -2484,6 +2506,12 @@ impl IvmSqlExecutor {
             .with_primary_keys(primary_keys)
             .with_bucket_columns(bucket_columns)
             .with_file_format(internal_file_format());
+        if !partitions.carried.is_empty() {
+            options = options.with_range_partition_columns(partitions.carried.clone());
+        }
+        if !partitions.internal.is_empty() {
+            options = options.with_internal_columns(partitions.internal.clone());
+        }
         options.hash_bucket_num = target.hash_bucket_num.clone();
         self.runtime.create_table(options).await
     }
@@ -2859,6 +2887,96 @@ impl IvmSqlExecutor {
         })
     }
 
+    /// Ensure the partial state of a decomposable multi-aggregate view.
+    ///
+    /// The partial state stores one row per `(group key, source partition)`
+    /// with the aggregates of that partition, so a refresh can recompute only
+    /// the changed partitions and then merge all partials for the affected
+    /// groups into the final MV.  It is only needed when the row state is
+    /// range-partitioned and the view has group keys.
+    async fn ensure_multi_agg_partial_state(
+        &self,
+        view_id: &str,
+        mv: &IvmTable,
+        state: &IvmTable,
+        group_keys: &[String],
+        range_partitions: &[String],
+        plan: &MultiAggPartialPlan,
+    ) -> Result<Option<IvmTable>> {
+        if group_keys.is_empty() || range_partitions.is_empty() {
+            return Ok(None);
+        }
+        let mut keys = group_keys.to_vec();
+        for column in range_partitions {
+            if !keys.contains(column) {
+                keys.push(column.clone());
+            }
+        }
+        let mut fields = Vec::with_capacity(keys.len() + plan.columns.len() + 2);
+        for column in &keys {
+            let field = state.schema.field_with_name(column)?;
+            fields.push(Arc::new(Field::new(
+                field.name(),
+                field.data_type().clone(),
+                field.is_nullable(),
+            )));
+        }
+        for (column, data_type) in plan.partial_columns() {
+            fields.push(Arc::new(Field::new(column, data_type, true)));
+        }
+        fields.push(Arc::new(Field::new(
+            IVM_ROW_KINDS_COLUMN,
+            DataType::Utf8,
+            false,
+        )));
+        fields.push(Arc::new(Field::new(
+            IVM_EPOCH_COLUMN,
+            DataType::Int64,
+            false,
+        )));
+        let schema = Arc::new(Schema::new(fields));
+        let name = format!("{}__partials", state.table_name);
+        let path = format!("{}__partials", state.table_path);
+        if let Ok(existing) = self.runtime.open_table(&name, &mv.namespace).await {
+            if schema_matches(&existing.schema, &schema)
+                && existing.primary_keys == keys
+                && existing.range_partition_columns == range_partitions
+                && existing.bucket_columns == group_keys
+            {
+                self.runtime
+                    .metadata()
+                    .register_state(view_id, StateRole::MultiAggPartials, &existing)
+                    .await?;
+                return Ok(Some(existing));
+            }
+            let _ = self
+                .runtime
+                .metadata()
+                .unregister_state(view_id, StateRole::MultiAggPartials)
+                .await;
+            let _ = self
+                .runtime
+                .metadata()
+                .delete_view(&existing.table_id)
+                .await;
+            let _ = self.runtime.client().drop_table(&name, &mv.namespace).await;
+        }
+        let mut options = IvmTableOptions::new(name, path, schema)
+            .with_namespace(mv.namespace.clone())
+            .with_primary_keys(keys)
+            .with_bucket_columns(group_keys.to_vec())
+            .with_range_partition_columns(range_partitions.to_vec())
+            .with_cdc_column(IVM_ROW_KINDS_COLUMN)
+            .with_file_format(keyed_state_file_format());
+        options.hash_bucket_num = state.hash_bucket_num.clone();
+        let table = create_ivm_table(self.runtime.client(), options).await?;
+        self.runtime
+            .metadata()
+            .register_state(view_id, StateRole::MultiAggPartials, &table)
+            .await?;
+        Ok(Some(table))
+    }
+
     /// The value-count state table of the view, reusing the registered one when
     /// its schema still matches and recreating it otherwise.
     async fn ensure_state_table(
@@ -2968,6 +3086,17 @@ impl IvmSqlExecutor {
                 group_exprs,
             )?;
             let mut primary_keys = group_keys.clone();
+            // A source range partition column is a real state key even when
+            // the SQL does not group by it.  Keeping it in the key makes a
+            // row that moves between source partitions distinct, and lets the
+            // state table mirror the source partitioning.
+            for column in &source.range_partition_columns {
+                if source.schema.field_with_name(column).is_ok()
+                    && !primary_keys.contains(column)
+                {
+                    primary_keys.push(column.clone());
+                }
+            }
             for key in &state_source.primary_keys {
                 if !primary_keys.contains(key) {
                     primary_keys.push(key.clone());
@@ -2976,6 +3105,19 @@ impl IvmSqlExecutor {
             let bucket_columns = group_keys.clone();
             let range_partitions =
                 state_range_partition_columns(&state_source, &primary_keys);
+            let partial_plan = {
+                let aggregates = aggregates
+                    .iter()
+                    .map(|aggregate| {
+                        Ok((
+                            aggregate.call.clone(),
+                            aggregate.column.clone(),
+                            decode_data_type(&aggregate.result)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                multi_agg_partial_plan(group_keys, &aggregates, &source.schema)?
+            };
             let mut replaced = false;
             if let Some(existing) = self
                 .runtime
@@ -2993,6 +3135,17 @@ impl IvmSqlExecutor {
                     ))
                     && table.primary_keys == primary_keys
                 {
+                    if let Some(plan) = &partial_plan {
+                        self.ensure_multi_agg_partial_state(
+                            spec.view_id(),
+                            mv,
+                            &table,
+                            group_keys,
+                            &range_partitions,
+                            plan,
+                        )
+                        .await?;
+                    }
                     return Ok(Some(table.table_id));
                 }
                 self.runtime
@@ -3033,7 +3186,7 @@ impl IvmSqlExecutor {
             .with_cdc_column(IVM_ROW_KINDS_COLUMN)
             .with_file_format(keyed_state_file_format());
             if !range_partitions.is_empty() {
-                options = options.with_range_partition_columns(range_partitions);
+                options = options.with_range_partition_columns(range_partitions.clone());
             }
             options.hash_bucket_num = mv.hash_bucket_num.clone();
             let table = create_ivm_table(self.runtime.client(), options).await?;
@@ -3041,6 +3194,17 @@ impl IvmSqlExecutor {
                 .metadata()
                 .register_state(spec.view_id(), StateRole::MultiAggRows, &table)
                 .await?;
+            if let Some(plan) = &partial_plan {
+                self.ensure_multi_agg_partial_state(
+                    spec.view_id(),
+                    mv,
+                    &table,
+                    group_keys,
+                    &range_partitions,
+                    plan,
+                )
+                .await?;
+            }
             if replaced {
                 // An empty recreated row state cannot answer the old groups;
                 // rebuild the view from the source instead.
@@ -3456,6 +3620,231 @@ fn find_table<'a>(
         .values()
         .find(|table| table.table_id == table_id)
         .ok_or_else(|| rootcause::report!("table {table_id} was not opened for analysis"))
+}
+
+/// Carry a source's real range partition columns through a derived step that
+/// preserves the source's cardinality.
+///
+/// A range-partitioned table treats the same key in two partitions as two
+/// rows.  A projection-like step (a row, a semi/anti filter, a union of rows
+/// or a window that already carries payload columns) therefore has to keep the
+/// partition value: dropping it would merge rows the source keeps apart, and a
+/// downstream state table could not mirror the source partitioning.  The
+/// column is appended to the step's materialized columns only; the derived
+/// output mapping ignores it, so the business output is unchanged.
+///
+/// Aggregate and join steps are not widened: grouping by a partition changes
+/// the row cardinality, and a join can multiply rows on the other side.
+fn propagate_derived_partitions(
+    spec: &mut ViewSpec,
+    tables: &HashMap<String, IvmTable>,
+) -> Result<DerivedPartitions> {
+    match spec {
+        ViewSpec::Row {
+            source_table_id,
+            output_columns,
+            output_exprs,
+            ..
+        } => {
+            let source = find_table(tables, source_table_id)?;
+            let mut partitions = DerivedPartitions::default();
+            for column in &source.range_partition_columns {
+                if source.schema.field_with_name(column).is_err() {
+                    continue;
+                }
+                if output_columns.is_empty() {
+                    // Every source column is materialized already.  A column
+                    // the source only carries for its own internal
+                    // partitioning stays internal here too.
+                    partitions.carried.push(column.clone());
+                    if source.internal_columns.contains(column) {
+                        partitions.internal.push(column.clone());
+                    }
+                    continue;
+                }
+                match output_columns
+                    .iter()
+                    .position(|candidate| candidate == column)
+                {
+                    Some(position) => {
+                        let unchanged = output_exprs.is_empty()
+                            || output_exprs.get(position) == Some(column);
+                        if unchanged {
+                            partitions.carried.push(column.clone());
+                        }
+                    }
+                    None => {
+                        output_columns.push(column.clone());
+                        if !output_exprs.is_empty() {
+                            output_exprs.push(column.clone());
+                        }
+                        partitions.carried.push(column.clone());
+                        partitions.internal.push(column.clone());
+                    }
+                }
+            }
+            Ok(partitions)
+        }
+        ViewSpec::SemiAnti {
+            left_table_id,
+            output_columns,
+            ..
+        } => {
+            let source = find_table(tables, left_table_id)?;
+            let mut partitions = DerivedPartitions::default();
+            for column in &source.range_partition_columns {
+                if source.schema.field_with_name(column).is_err() {
+                    continue;
+                }
+                if output_columns.is_empty() {
+                    // Every left column is materialized.  A column the left
+                    // source only carries for its own internal partitioning
+                    // stays internal here too.
+                    if source.internal_columns.contains(column) {
+                        partitions.internal.push(column.clone());
+                    }
+                } else if !output_columns.contains(column) {
+                    output_columns.push(column.clone());
+                    partitions.internal.push(column.clone());
+                }
+                partitions.carried.push(column.clone());
+            }
+            Ok(partitions)
+        }
+        ViewSpec::Window {
+            source_table_id,
+            partition_keys,
+            payload_columns,
+            ..
+        } => {
+            let source = find_table(tables, source_table_id)?;
+            let mut partitions = DerivedPartitions::default();
+            for column in &source.range_partition_columns {
+                if source.schema.field_with_name(column).is_err() {
+                    continue;
+                }
+                // The MV keys are materialized first; anything else has to be
+                // a payload column to survive the window projection.
+                if !partition_keys.contains(column)
+                    && !source.primary_keys.contains(column)
+                    && !payload_columns.contains(column)
+                {
+                    payload_columns.push(column.clone());
+                    partitions.internal.push(column.clone());
+                }
+                partitions.carried.push(column.clone());
+            }
+            Ok(partitions)
+        }
+        ViewSpec::MultiWindow {
+            source_table_id,
+            windows,
+            payload_columns,
+            ..
+        } => {
+            let source = find_table(tables, source_table_id)?;
+            let mut partitions = DerivedPartitions::default();
+            for column in &source.range_partition_columns {
+                if source.schema.field_with_name(column).is_err() {
+                    continue;
+                }
+                let keyed = windows
+                    .iter()
+                    .any(|window| window.partition_keys.contains(column));
+                if !keyed
+                    && !source.primary_keys.contains(column)
+                    && !payload_columns.contains(column)
+                {
+                    payload_columns.push(column.clone());
+                    partitions.internal.push(column.clone());
+                }
+                partitions.carried.push(column.clone());
+            }
+            Ok(partitions)
+        }
+        ViewSpec::UnionAll { sources, .. } => {
+            if sources.is_empty()
+                || sources.iter().any(|source| source.columns.is_empty())
+            {
+                // An implicit `SELECT *` branch has the whole source schema in
+                // its own order; adding a column to the other branches would
+                // make the branch schemas diverge.
+                return Ok(DerivedPartitions::default());
+            }
+            let mut candidates: Option<Vec<String>> = None;
+            for source in sources.iter() {
+                let table = find_table(tables, &source.table_id)?;
+                let available = table
+                    .range_partition_columns
+                    .iter()
+                    .filter(|column| table.schema.field_with_name(column).is_ok())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                candidates = Some(match candidates {
+                    None => available,
+                    Some(previous) => previous
+                        .into_iter()
+                        .filter(|column| available.contains(column))
+                        .collect(),
+                });
+            }
+            let mut partitions = DerivedPartitions::default();
+            for column in candidates.unwrap_or_default() {
+                let positions = sources
+                    .iter()
+                    .map(|source| {
+                        source
+                            .columns
+                            .iter()
+                            .position(|candidate| candidate == &column)
+                    })
+                    .collect::<Vec<_>>();
+                if positions.iter().all(Option::is_some) {
+                    // Every branch projects it; it must be unchanged and in
+                    // the same position so the branch schemas still agree.
+                    let first = positions[0];
+                    if positions.iter().any(|position| *position != first) {
+                        continue;
+                    }
+                    let unchanged = sources.iter().all(|source| {
+                        source.exprs.is_empty()
+                            || first.and_then(|index| source.exprs.get(index))
+                                == Some(&column)
+                    });
+                    if unchanged {
+                        partitions.carried.push(column);
+                    }
+                    continue;
+                }
+                if positions.iter().any(Option::is_some) {
+                    // Only some branches expose it; inserting it in the same
+                    // position everywhere would reorder their other columns.
+                    continue;
+                }
+                for source in sources.iter_mut() {
+                    source.columns.push(column.clone());
+                    if !source.exprs.is_empty() {
+                        source.exprs.push(column.clone());
+                    }
+                }
+                partitions.internal.push(column.clone());
+                partitions.carried.push(column);
+            }
+            Ok(partitions)
+        }
+        _ => Ok(DerivedPartitions::default()),
+    }
+}
+
+/// The range partitions a derived step MV mirrors and the payload columns
+/// materialized only for that purpose.
+#[derive(Debug, Default)]
+struct DerivedPartitions {
+    /// Real source range partition columns the step MV carries.
+    carried: Vec<String>,
+    /// The carried columns that are not part of the business output and stay
+    /// hidden from an implicit `SELECT *` over the step.
+    internal: Vec<String>,
 }
 
 /// The schema the target MV must have for this definition.
@@ -4366,6 +4755,7 @@ mod tests {
             schema: source_schema(),
             primary_keys: vec!["k".to_string()],
             range_partition_columns: Vec::new(),
+            internal_columns: Vec::new(),
             bucket_columns: vec!["k".to_string()],
             hash_bucket_num: "1".to_string(),
             cdc_column: None,

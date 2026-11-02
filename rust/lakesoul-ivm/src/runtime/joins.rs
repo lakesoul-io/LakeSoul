@@ -3934,7 +3934,7 @@ impl IvmRuntime {
             return Ok(None);
         }
         let mode = std::env::var("LAKESOUL_IVM_HASH_JOIN").unwrap_or_default();
-        if matches!(mode.as_str(), "off" | "0" | "false") {
+        if !matches!(mode.as_str(), "auto" | "on" | "1" | "true") {
             return Ok(None);
         }
         if table.table_name.contains("__ivm_topk_state")
@@ -4017,11 +4017,9 @@ impl IvmRuntime {
     /// Decide whether a side-state lookup should use a streaming hash join.
     ///
     /// The key lookup does one Vortex random read per distinct key; the hash
-    /// join scans the state once.  `LAKESOUL_IVM_HASH_JOIN=on|off` overrides
-    /// the estimate.  The constants are calibrated on the 10M pilot: a key
-    /// lookup costs about 0.177ms of wall time per key (before dividing by
-    /// the bucket parallelism), and a hash join scans state at about
-    /// 180MB/s plus a 0.5s hash build.
+    /// join scans the state once.  `LAKESOUL_IVM_HASH_JOIN=auto` enables the
+    /// cost estimate and `on` forces the join; unset/off keeps the keyed
+    /// lookup.  The estimate is experimental and off by default.
     async fn hash_join_state_input(
         &self,
         contribution: &DataFrame,
@@ -4030,7 +4028,7 @@ impl IvmRuntime {
         bucket_count: usize,
     ) -> Result<Option<DataFrame>> {
         let mode = std::env::var("LAKESOUL_IVM_HASH_JOIN").unwrap_or_default();
-        if matches!(mode.as_str(), "off" | "0" | "false") {
+        if !matches!(mode.as_str(), "auto" | "on" | "1" | "true") {
             return Ok(None);
         }
         // Top-k rank state is probed many times per refresh with a small key
@@ -4834,6 +4832,13 @@ impl IvmRuntime {
         let restriction = partitions
             .map(|restriction| restriction.to_vec())
             .or(inferred);
+        let stats_total = if restriction.is_some()
+            && std::env::var("LAKESOUL_IVM_PARTITION_STATS").is_ok()
+        {
+            Some(table.current_groups(&self.client).await?.len())
+        } else {
+            None
+        };
         let groups = match &restriction {
             Some(restriction) => {
                 table
@@ -4842,6 +4847,13 @@ impl IvmRuntime {
             }
             None => table.current_groups(&self.client).await?,
         };
+        if let Some(total) = stats_total {
+            super::keyed_plan::record_partition_stats(
+                &table.table_id,
+                total,
+                groups.len(),
+            );
+        }
         let groups = groups_by_bucket(groups, bucket_count);
         // Sorted-merge lookup is experimental and opt-in until it has a
         // measured win over the keyed lookup on the pilot.
@@ -6330,6 +6342,22 @@ impl IvmRuntime {
                     // every right key this window changed.  Probe the source
                     // only for the remaining left keys; with a 100k-item
                     // window the delta usually covers most of them.
+                    // The right delta comes from the source schema.  A
+                    // computed right key is only materialized in the join
+                    // state, so add it before the semi join below looks it up
+                    // by `right_join_keys()`.
+                    let delta_columns = delta
+                        .schema()
+                        .fields()
+                        .iter()
+                        .map(|field| field.name().clone())
+                        .collect::<Vec<_>>();
+                    let delta_with_keys = with_computed_keys(
+                        &context,
+                        delta.clone(),
+                        &view.key_exprs.right,
+                        view.right_join_keys(),
+                    )?;
                     let delta_key_exprs = view
                         .join_keys
                         .iter()
@@ -6349,7 +6377,10 @@ impl IvmRuntime {
                             Ok(expr.alias(key.as_str()))
                         })
                         .collect::<Result<Vec<_>>>()?;
-                    let delta_keys = delta.clone().select(delta_key_exprs)?.distinct()?;
+                    let delta_keys = delta_with_keys
+                        .clone()
+                        .select(delta_key_exprs)?
+                        .distinct()?;
                     let missing = contribution.clone().join(
                         delta_keys,
                         JoinType::LeftAnti,
@@ -6366,21 +6397,23 @@ impl IvmRuntime {
                         None,
                     )?;
                     let from_delta =
-                        filter_deletes(delta.clone(), change_column(&view.right))?.join(
-                            contribution,
-                            JoinType::LeftSemi,
-                            &view
-                                .right_join_keys()
-                                .iter()
-                                .map(String::as_str)
-                                .collect::<Vec<_>>(),
-                            &view
-                                .join_keys
-                                .iter()
-                                .map(String::as_str)
-                                .collect::<Vec<_>>(),
-                            None,
-                        )?;
+                        filter_deletes(delta_with_keys, change_column(&view.right))?
+                            .join(
+                                contribution,
+                                JoinType::LeftSemi,
+                                &view
+                                    .right_join_keys()
+                                    .iter()
+                                    .map(String::as_str)
+                                    .collect::<Vec<_>>(),
+                                &view
+                                    .join_keys
+                                    .iter()
+                                    .map(String::as_str)
+                                    .collect::<Vec<_>>(),
+                                None,
+                            )?;
+                    let from_delta = project_frame(from_delta, &delta_columns)?;
                     let from_source = self
                         .lookup_source_by_join_keys(
                             &context,
