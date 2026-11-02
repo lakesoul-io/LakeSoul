@@ -12,8 +12,10 @@
 //! written through [`SessionContext::state_ref`] instead — the same
 //! write-through path the pgvector `ivfflat.probes` hook already uses — and an
 //! invalid zone is a real statement error. It runs after the upstream
-//! transaction hook: in an aborted transaction (`25P01`) none of these
-//! statements is applied; the transaction hook rejects them first.
+//! transaction hook: in a failed transaction (`25P02`) none of these
+//! statements is applied; [`FailedTransactionGuard`] rejects them first.
+//!
+//! [`FailedTransactionGuard`]: crate::failed_transaction::FailedTransactionGuard
 //!
 //! The hook also answers the session-reset statements, which the read-only
 //! guard used to reject outright:

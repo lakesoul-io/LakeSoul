@@ -71,7 +71,7 @@ cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test 
 | PG 等价 | 多列总序、NULLS FIRST/LAST、LIMIT 0、OFFSET 0/越界、分页 | `order-nulls-first-last`、`limit-zero`、`offset-zero`、`limit-offset`、`offset-past-end` |
 | PG 等价 | 有符号整数除法/余数和整数边界；非零 DECIMAL 算术、精确值及独立 scale 断言 | `integer-division-and-bounds`、`decimal-arithmetic` |
 | PG 等价 | CTE、相关 EXISTS；真正返回零行的标量子查询产生 NULL | `cte-grouped`、`correlated-exists`、`scalar-subquery-zero-rows` |
-| PG 等价（标量值／基数） | 投影标量子查询零行→typed NULL、单行→值、显式 `LIMIT 1` 仍合法；多行（含额外 NULL 或相等值）两端执行期 `21000`；simple/extended、同连接首条读恢复、prepared 同一 Statement 重绑定及错误后复用；关联 MAX 逐外层行求值；低 batch 配置及物理执行器多 batch／多 partition 输入；两条协议均验证显式事务失败与 ROLLBACK 恢复，abort-state SQLSTATE 仍保留下述边界 | `projection-scalar-*`、`correlated-scalar-per-outer-row`；`ScalarSubqueryExec` row-count regression |
+| PG 等价（标量值／基数） | 投影标量子查询零行→typed NULL、单行→值、显式 `LIMIT 1` 仍合法；多行（含额外 NULL 或相等值）两端执行期 `21000`；simple/extended、同连接首条读恢复、prepared 同一 Statement 重绑定及错误后复用；关联 MAX 逐外层行求值；低 batch 配置及物理执行器多 batch／多 partition 输入；两条协议均验证显式事务失败与 ROLLBACK 恢复，失败事务两端同为 `25P02`（详见下述失败事务契约） | `projection-scalar-*`、`correlated-scalar-per-outer-row`；`ScalarSubqueryExec` row-count regression |
 | PG 等价 | UNION 去重、UNION ALL 重复次数、INTERSECT/EXCEPT 的 NULL 等价及去重 | `union-distinct`、`union-all-duplicates`、`intersect-null`、`except-null` |
 | PG 等价 | RANK 并列、带唯一排序键的 ROW_NUMBER、分区及显式 ROWS frame；排名两端均显式 CAST BIGINT | `window-rank-frame` |
 | PG 等价 | UTF-8、空串、引号/反斜线、字符长度/切片/替换/拼接、带大小写的引用别名 | `string-literals`、`string-operations-on-fixture`、`quoted-identifiers` |
@@ -83,7 +83,7 @@ cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test 
 | LakeSoul 连接默认 | `RESET TIME ZONE`／`RESET timezone`／`RESET ALL`／`DISCARD ALL` 恢复本连接启动默认（执行时区、statement_timeout、search_path、ivfflat.probes、client metadata），simple 与 extended 均验证；重置后同一复用连接仍能读取 fixture；peer 与新连接不受影响；未知参数 `42704` | `time-zone-reset-*`；启动默认从一次性未配置连接读取，子进程固定 `TZ=UTC`，不继承测试机时区；`RESET TIME ZONE` 只在单语句中可用（simple 与 extended Parse 均改写），多语句 batch 仍是语法错误 |
 | 规划语义 | 逻辑计划内嵌会话设置（如 `CAST(... AS TIMESTAMPTZ)` 的目标类型带计划时的时区），因此 `SET`／`RESET`／`DISCARD` 之后再次 `Execute` 的 Statement 会重新规划；已开始（suspended）的 portal 沿用其结果的计划 | 生成计数位于连接内，未跨连接共享；重新规划沿用该 Statement 的参数类型，客户端已 Describe 的结果类型不变 |
 | 明确拒绝 | `SET LOCAL TIME ZONE`／`SET LOCAL timezone`／`SET GLOBAL timezone` 为 `0A000` 且不改状态；不支持的 `DISCARD PLANS/SEQUENCES/TEMP` 在 simple 与 extended Parse 均为 `0A000` | `time-zone-scope`、`time-zone-discard-variant`；PG 接受这些语句，因此不宣称等价；sqlparser 无法区分 `SET GLOBAL TIME ZONE` 与 SESSION 形式，该拼写按 SESSION 处理 |
-| LakeSoul 状态语义；SQLSTATE 缺陷 | simple 执行／extended Parse 错误使事务失败，随后读被拒；ROLLBACK 后第一条读成功。失败事务 LakeSoul 为 25P01，PG 为 25P02，不宣称错误码兼容 | `failed-transaction-simple`、`failed-transaction-extended-parse` |
+| PG 等价（失败事务） | simple 执行／extended Parse 错误使事务失败，随后语句被拒；两端运行相同 SQL 同为 `25P02`，extended 覆盖 Parse 与「健康事务中已准备语句」的 Execute，语法错误仍先于 `25P02` 报出；失败块内 `COMMIT` 两端都不报错并以 ROLLBACK 结束事务；ROLLBACK 后第一条读成功 | `failed-transaction-simple`、`failed-transaction-extended-parse` |
 | 明确拒绝 | REPEATABLE READ／SERIALIZABLE 及相应默认隔离级别 SET，simple 与 Parse 均 0A000；第一条后续读成功 | `isolation-simple/parse`、`isolation-guc-simple/parse` |
 | 明确拒绝，无持久化副作用 | UPDATE/DELETE/CTAS/`DROP VIEW`/TRUNCATE/COPY，simple 与 Parse 均 0A000（`DROP TABLE` 由阶段七、`INSERT` 由阶段八支持，不再属于拒写）；第一条读、权威快照、重连读；batch 流中首条读确实执行，拒写后的 SET 不执行 | `read-only-*`、`read-only-batch` |
 | 客户端拒绝，不冒充服务端错误 | 参数数量／Rust 参数类型不匹配，本地拒绝且无 SQLSTATE；随后连接可用 | `parameter-count-mismatch`、`parameter-type-mismatch` |

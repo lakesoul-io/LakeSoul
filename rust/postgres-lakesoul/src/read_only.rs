@@ -13,8 +13,9 @@
 //! [`ReadOnlyStatementGuard`] is installed as the *last* statement hook of
 //! the connection-local `DfSessionService`, after the upstream
 //! cursor/set-show/transaction hooks: those keep handling their statements
-//! and can still short-circuit (e.g. with PostgreSQL's "current transaction
-//! is aborted" error) before the guard sees anything else. Rejections happen
+//! and can still short-circuit (e.g. with [`FailedTransactionGuard`]'s
+//! PostgreSQL "current transaction is aborted" error) before the guard sees
+//! anything else. Rejections happen
 //!
 //! - in the simple protocol: per statement, before `SessionContext::sql`
 //!   executes it;
@@ -30,8 +31,8 @@
 //! `SessionSettingsHook` claims `SET TIME ZONE` (whose upstream branch writes
 //! through a discarded `SessionContext::state()` clone), `RESET` and `DISCARD
 //! ALL`, i.e. the connection-local settings and their restoration. It is
-//! installed after `TransactionStatementHook`, so an aborted transaction
-//! rejects these statements with `25P01` before any setting is changed, and
+//! installed after `TransactionStatementHook`, so a failed transaction
+//! rejects these statements with `25P02` before any setting is changed, and
 //! after [`ReadCommittedOnlyGuard`], so isolation assignments keep their own
 //! validation. It still precedes `SetShowHook` so the broken upstream branch
 //! never sees a time-zone assignment.
@@ -67,6 +68,7 @@ use pgwire::api::ClientInfo;
 use pgwire::api::results::Response;
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 
+use crate::failed_transaction::FailedTransactionGuard;
 use crate::server::ConnectionSession;
 use crate::session_settings::SessionSettingsHook;
 
@@ -81,15 +83,20 @@ const FEATURE_NOT_SUPPORTED: &str = "0A000";
 /// The read-only guard runs last so the upstream hooks keep first claim on
 /// cursor, `SET`/`SHOW` and transaction statements; the isolation guard runs
 /// first because it must see `BEGIN`/`SET TRANSACTION` before the transaction
-/// hook answers them. [`SessionSettingsHook`] runs after the transaction hook
-/// so an aborted transaction (`25P01`) is reported before any `SET TIME
-/// ZONE`/`RESET`/`DISCARD ALL` could mutate session state, and before
-/// `SetShowHook` so the broken upstream `SET TIME ZONE` branch never runs.
+/// hook answers them. [`FailedTransactionGuard`] sits immediately in front of
+/// [`TransactionStatementHook`], so a failed transaction block is rejected with
+/// PostgreSQL's `25P02` by the in-repo guard instead of the upstream `25P01`,
+/// and only `COMMIT`/`ROLLBACK` still reach the upstream hook.
+/// [`SessionSettingsHook`] runs after the transaction hook so a failed
+/// transaction (`25P02`) is reported before any `SET TIME ZONE`/`RESET`/
+/// `DISCARD ALL` could mutate session state, and before `SetShowHook` so the
+/// broken upstream `SET TIME ZONE` branch never runs.
 ///
 /// A hook that answers `SET`/`SHOW` itself must sit behind
-/// [`TransactionStatementHook`]: an aborted transaction has to reject the
-/// statement with `25P01` before the hook could mutate session state, and in
-/// front of [`SetShowHook`] so it keeps first claim on its own variables.
+/// [`FailedTransactionGuard`] and [`TransactionStatementHook`]: a failed
+/// transaction has to reject the statement with `25P02` before the hook could
+/// mutate session state, and in front of [`SetShowHook`] so it keeps first
+/// claim on its own variables.
 pub(crate) fn statement_hooks_with(
     connection_hooks: Vec<Arc<dyn QueryHook>>,
 ) -> Vec<Arc<dyn QueryHook>> {
@@ -98,12 +105,13 @@ pub(crate) fn statement_hooks_with(
         Arc::new(UncancellableCursorGuard), // new
         Arc::new(PortalCloseCleanup),       // new
         Arc::new(CursorStatementHook),
+        Arc::new(FailedTransactionGuard), // new
         Arc::new(TransactionStatementHook),
     ];
     hooks.extend(connection_hooks);
     hooks.extend([
-        // After the transaction hook (aborted transactions must reject these
-        // statements with `25P01` rather than apply them) and before the
+        // After the transaction hook (a failed transaction must reject these
+        // statements with `25P02` rather than apply them) and before the
         // upstream `SetShowHook`: that hook's `SET TIME ZONE` branch writes
         // through an owned `SessionContext::state()` clone and discards the
         // write, and its generic `SET` fallback ignores errors.

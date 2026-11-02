@@ -28,6 +28,7 @@ mod allocator;
 mod cancel;
 mod catalog;
 mod ddl;
+mod failed_transaction;
 mod insert;
 mod limits;
 mod pg_compat;

@@ -1383,7 +1383,7 @@ async fn every_statement_of_a_batch_gets_its_own_deadline() {
 ///
 /// - `ROLLBACK; SELECT 1` starting from the aborted status must execute the
 ///   SELECT: the hook gates statements against the status it reads, and a
-///   stale pre-ROLLBACK status would reject the SELECT with `25P01`.
+///   stale pre-ROLLBACK status would reject the SELECT with `25P02`.
 /// - `COMMIT; BEGIN` must end the batch inside the transaction the `BEGIN`
 ///   opened: a stale post-COMMIT status would make the hook treat the BEGIN as
 ///   a nested one and begin nothing.

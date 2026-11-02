@@ -1197,8 +1197,8 @@ async fn cross_batch_scalar_cardinality(h: &Harness) -> Result<()> {
 
 /// The cardinality error is a real execution error inside an explicit
 /// transaction, not a silently truncated row. ROLLBACK then permits the first
-/// read; the transaction abort-state SQLSTATE boundary itself is covered by
-/// `session_contract`, not redefined here.
+/// read; the failed-transaction SQLSTATE is asserted here as PostgreSQL's
+/// `25P02` on both sides and detailed by `session_contract`.
 async fn explicit_transaction_scalar_error(h: &Harness) -> Result<()> {
     let sql =
         "SELECT (SELECT val FROM items WHERE val IS NOT NULL ORDER BY val) AS first_val";
@@ -1211,10 +1211,7 @@ async fn explicit_transaction_scalar_error(h: &Harness) -> Result<()> {
         .await
         .context("case=projection-scalar-explicit-transaction connect PostgreSQL")?;
     for mode in Mode::BOTH {
-        for (client, side, aborted_state) in [
-            (&lake, "lakesoul", "25P01"),
-            (&reference, "postgres", "25P02"),
-        ] {
+        for (client, side) in [(&lake, "lakesoul"), (&reference, "postgres")] {
             client.batch_execute("BEGIN").await.with_context(|| {
                 format!(
                     "case=projection-scalar-explicit-transaction side={side} SQL=BEGIN"
@@ -1240,12 +1237,13 @@ async fn explicit_transaction_scalar_error(h: &Harness) -> Result<()> {
             .with_context(|| {
                 format!("{context}: failed transaction returned rows before ROLLBACK")
             })?;
-            // Preserve the existing abort-state SQLSTATE boundary: this fix
-            // must not turn a transport or unrelated SQL error into proof.
+            // Both sides report PostgreSQL's `25P02` for a statement in a
+            // failed transaction block: this fix must not turn a transport or
+            // unrelated SQL error into proof.
             let actual_state = server_sqlstate(&error, &context)?;
             ensure!(
-                actual_state == aborted_state,
-                "{context}: expected aborted transaction SQLSTATE={aborted_state}, actual={actual_state}"
+                actual_state == "25P02",
+                "{context}: expected failed transaction SQLSTATE=25P02, actual={actual_state}"
             );
             client.batch_execute("ROLLBACK").await.with_context(|| {
                 format!(

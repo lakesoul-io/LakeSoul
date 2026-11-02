@@ -1407,15 +1407,15 @@ async fn time_zone_reset_restores_startup(
     Ok(())
 }
 
-/// A refused write inside a transaction aborts it; no read executes until
+/// A refused write inside a transaction fails it; no read executes until
 /// `ROLLBACK`; a simple batch then performs `ROLLBACK; SELECT ...` on the
 /// recovered connection.
 ///
-/// Known non-PostgreSQL defect boundary: LakeSoul reports `25P01`
-/// (no_active_sql_transaction) while PostgreSQL reports `25P02`
-/// (in_failed_sql_transaction) for the same aborted state. Both exact codes are
-/// asserted; this is a documented defect, not claimed PG compatibility, and no
-/// allowed-code list is accepted.
+/// PostgreSQL contract: a statement issued in a failed transaction block is
+/// rejected with `25P02` (in_failed_sql_transaction), and `COMMIT` in that
+/// block ends the transaction instead of erroring. LakeSoul must report the
+/// same code for the same SQL as the reference connection; both exact codes
+/// are asserted on both sides, and no allowed-code list is accepted.
 async fn failed_transaction_recovers_after_rollback(h: &Harness) -> Result<()> {
     let before = common::snapshot(h, "case=failed-transaction-simple").await?;
 
@@ -1441,17 +1441,17 @@ async fn failed_transaction_recovers_after_rollback(h: &Harness) -> Result<()> {
     let error = match h.lake.simple_query(aborted_read).await {
         Ok(_) => bail!(
             "case=failed-transaction-simple-after-error SQL={aborted_read} \
-             protocol=simple-text expected SQLSTATE 25P01 (aborted transaction), \
+             protocol=simple-text expected SQLSTATE 25P02 (failed transaction), \
              actual success"
         ),
         Err(error) => error,
     };
     common::ensure_sqlstate(
         &error,
-        "25P01",
+        "25P02",
         &format!(
             "case=failed-transaction-simple-after-error SQL={aborted_read} \
-             protocol=simple-text; known non-PG SQLSTATE defect (PostgreSQL: 25P02)"
+             protocol=simple-text"
         ),
     )?;
 
@@ -1484,8 +1484,8 @@ async fn failed_transaction_recovers_after_rollback(h: &Harness) -> Result<()> {
     common::ensure_snapshot_unchanged(&before, &after, "case=failed-transaction-simple")?;
 
     // Independent PostgreSQL oracle for the failed-transaction state. A cast
-    // error is used so the reference fixture is not written; PostgreSQL must
-    // reject the next command with its own exact code, 25P02.
+    // error is used so the reference fixture is not written; the same SQL that
+    // LakeSoul rejected above must then be rejected here with the same code.
     h.reference
         .batch_execute("BEGIN")
         .await
@@ -1506,9 +1506,9 @@ async fn failed_transaction_recovers_after_rollback(h: &Harness) -> Result<()> {
              protocol=simple-text"
         ),
     )?;
-    let error = match h.reference.simple_query("SELECT 1").await {
+    let error = match h.reference.simple_query(aborted_read).await {
         Ok(_) => bail!(
-            "case=failed-transaction-reference-aborted SQL=SELECT 1 \
+            "case=failed-transaction-reference-aborted SQL={aborted_read} \
              protocol=simple-text expected SQLSTATE 25P02, actual success"
         ),
         Err(error) => error,
@@ -1516,7 +1516,10 @@ async fn failed_transaction_recovers_after_rollback(h: &Harness) -> Result<()> {
     common::ensure_sqlstate(
         &error,
         "25P02",
-        "case=failed-transaction-reference-aborted SQL=SELECT 1 protocol=simple-text",
+        &format!(
+            "case=failed-transaction-reference-aborted SQL={aborted_read} \
+             protocol=simple-text"
+        ),
     )?;
     h.reference
         .batch_execute("ROLLBACK")
@@ -1529,21 +1532,80 @@ async fn failed_transaction_recovers_after_rollback(h: &Harness) -> Result<()> {
     )
     .await?;
 
+    // `COMMIT` is not rejected in a failed block: PostgreSQL ends the
+    // transaction with the `ROLLBACK` tag, so the same `COMMIT` must succeed on
+    // both sides and leave the connection readable.
+    for (client, failure, failure_state, side) in [
+        (&h.lake, rejected, "0A000", "lakesoul"),
+        (&h.reference, reference_failure, "22P02", "postgres"),
+    ] {
+        let context = format!("case=failed-transaction-commit side={side} SQL=BEGIN");
+        client
+            .batch_execute("BEGIN")
+            .await
+            .with_context(|| context.clone())?;
+        let context = format!(
+            "case=failed-transaction-commit side={side} SQL={failure} \
+             protocol=simple-text"
+        );
+        let error = match client.simple_query(failure).await {
+            Ok(_) => bail!("{context} expected SQLSTATE {failure_state}, actual success"),
+            Err(error) => error,
+        };
+        common::ensure_sqlstate(&error, failure_state, &context)?;
+        let context =
+            format!("case=failed-transaction-commit side={side} SQL=COMMIT failed block");
+        client
+            .batch_execute("COMMIT")
+            .await
+            .with_context(|| context.clone())?;
+        let context = format!(
+            "case=failed-transaction-commit side={side} SQL={aborted_read} \
+             protocol=simple-text first read after COMMIT"
+        );
+        let read = compare::simple(client, aborted_read)
+            .await
+            .with_context(|| context.clone())?;
+        ensure!(
+            read.names == vec!["n".to_owned()],
+            "{context}: expected column [\"n\"], actual {:?}",
+            read.names
+        );
+        ensure!(
+            read.rows == vec![vec![Some("4".to_owned())]],
+            "{context}: expected [[\"4\"]], actual {:?}",
+            read.rows
+        );
+    }
+
     eprintln!(
-        "sql-compat case=failed-transaction classification=non-pg-sqlstate-defect \
-         lake=25P01 postgres=25P02 no_read_before_rollback rollback=succeeds \
-         first_read=succeeds"
+        "sql-compat case=failed-transaction classification=pg-equivalent \
+         lake=25P02 postgres=25P02 no_read_before_rollback rollback=succeeds \
+         commit=succeeds first_read=succeeds"
     );
     Ok(())
 }
 
-/// The extended-protocol Parse failure must be followed by a real `Sync`
-/// recovery: the transaction remains aborted, a later Execute is rejected, and
-/// `ROLLBACK` restores both simple and extended reads.
+/// The extended-protocol paths follow PostgreSQL as well: `Parse` in a failed
+/// transaction block is rejected with `25P02` (only `COMMIT`/`ROLLBACK` still
+/// parse), and so is `Execute` of a statement prepared while the block was
+/// healthy. A `Sync` keeps the connection usable; `ROLLBACK` then restores both
+/// simple and extended reads.
 async fn failed_transaction_recovers_after_extended_parse_failure(
     h: &Harness,
 ) -> Result<()> {
     let before = common::snapshot(h, "case=failed-transaction-extended-parse").await?;
+
+    let read = "SELECT COUNT(*) AS n FROM items";
+    // Prepared while both transactions were still healthy: after the block
+    // fails, `Execute` is what must be rejected for these statements.
+    let lake_prepared =
+        h.lake.prepare(read).await.with_context(|| {
+            format!("case=failed-transaction-extended-parse SQL={read}")
+        })?;
+    let reference_prepared = h.reference.prepare(read).await.with_context(|| {
+        format!("case=failed-transaction-reference-extended-parse SQL={read}")
+    })?;
 
     h.lake
         .batch_execute("BEGIN")
@@ -1566,31 +1628,105 @@ async fn failed_transaction_recovers_after_extended_parse_failure(
         ),
     )?;
 
-    // Parse of a read is not blocked while aborted; the following Execute is.
-    let read = "SELECT COUNT(*) AS n FROM items";
-    let statement = h.lake.prepare(read).await.with_context(|| {
-        format!(
-            "case=failed-transaction-extended-parse-recovery SQL={read} \
-                 protocol=extended-Parse: connection must be usable after the \
-                 failed Parse and its Sync"
-        )
-    })?;
-    let error = match h.lake.query(&statement, &[]).await {
+    // PostgreSQL also rejects `Parse` in a failed block, with `25P02`.
+    let error = match h.lake.prepare(read).await {
         Ok(_) => bail!(
             "case=failed-transaction-extended-parse-aborted SQL={read} \
-             protocol=extended-Bind/Execute expected SQLSTATE 25P01, actual success"
+             protocol=extended-Parse expected SQLSTATE 25P02, actual success"
         ),
         Err(error) => error,
     };
     common::ensure_sqlstate(
         &error,
-        "25P01",
+        "25P02",
         &format!(
             "case=failed-transaction-extended-parse-aborted SQL={read} \
-             protocol=extended-Bind/Execute; known non-PG SQLSTATE defect \
-             (PostgreSQL: 25P02)"
+             protocol=extended-Parse"
         ),
     )?;
+
+    // A statement prepared before the failure is rejected when it executes.
+    let error = match h.lake.query(&lake_prepared, &[]).await {
+        Ok(_) => bail!(
+            "case=failed-transaction-extended-execute-aborted SQL={read} \
+             protocol=extended-Bind/Execute expected SQLSTATE 25P02, actual success"
+        ),
+        Err(error) => error,
+    };
+    common::ensure_sqlstate(
+        &error,
+        "25P02",
+        &format!(
+            "case=failed-transaction-extended-execute-aborted SQL={read} \
+             protocol=extended-Bind/Execute"
+        ),
+    )?;
+
+    // Reference oracle: the same SQL through the same protocol steps must be
+    // rejected with the same code. The failing statement is a cast error so the
+    // reference fixture is not written.
+    h.reference
+        .batch_execute("BEGIN")
+        .await
+        .context("case=failed-transaction-reference-extended-parse SQL=BEGIN")?;
+    let reference_failure = "SELECT CAST('not-an-integer' AS INTEGER)";
+    let error = match h.reference.simple_query(reference_failure).await {
+        Ok(_) => bail!(
+            "case=failed-transaction-reference-extended-parse \
+             SQL={reference_failure} protocol=simple-text expected SQLSTATE \
+             22P02, actual success"
+        ),
+        Err(error) => error,
+    };
+    common::ensure_sqlstate(
+        &error,
+        "22P02",
+        &format!(
+            "case=failed-transaction-reference-extended-parse \
+             SQL={reference_failure} protocol=simple-text"
+        ),
+    )?;
+    let error = match h.reference.prepare(read).await {
+        Ok(_) => bail!(
+            "case=failed-transaction-reference-extended-parse-aborted SQL={read} \
+             protocol=extended-Parse expected SQLSTATE 25P02, actual success"
+        ),
+        Err(error) => error,
+    };
+    common::ensure_sqlstate(
+        &error,
+        "25P02",
+        &format!(
+            "case=failed-transaction-reference-extended-parse-aborted SQL={read} \
+             protocol=extended-Parse"
+        ),
+    )?;
+    let error = match h.reference.query(&reference_prepared, &[]).await {
+        Ok(_) => bail!(
+            "case=failed-transaction-reference-extended-execute-aborted \
+             SQL={read} protocol=extended-Bind/Execute expected SQLSTATE 25P02, \
+             actual success"
+        ),
+        Err(error) => error,
+    };
+    common::ensure_sqlstate(
+        &error,
+        "25P02",
+        &format!(
+            "case=failed-transaction-reference-extended-execute-aborted \
+             SQL={read} protocol=extended-Bind/Execute"
+        ),
+    )?;
+    h.reference.batch_execute("ROLLBACK").await.context(
+        "case=failed-transaction-reference-extended-parse-rollback \
+             SQL=ROLLBACK",
+    )?;
+    common::assert_items_intact(
+        &h.reference,
+        "case=failed-transaction-reference-extended-parse-first-read-after-rollback \
+         protocol=extended-binary",
+    )
+    .await?;
 
     h.lake.batch_execute("ROLLBACK").await.context(
         "case=failed-transaction-extended-parse-rollback SQL=ROLLBACK \
@@ -1621,8 +1757,8 @@ async fn failed_transaction_recovers_after_extended_parse_failure(
 
     eprintln!(
         "sql-compat case=failed-transaction-extended-parse \
-         classification=non-pg-sqlstate-defect \
-         parse=0A000 abort=25P01 no_read_before_rollback rollback=succeeds"
+         classification=pg-equivalent parse=25P02 execute=25P02 \
+         no_read_before_rollback rollback=succeeds"
     );
     Ok(())
 }
