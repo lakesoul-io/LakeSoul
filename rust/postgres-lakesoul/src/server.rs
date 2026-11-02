@@ -249,6 +249,9 @@ impl LakeSoulQueryRouter {
                     ))
                     .await?;
             }
+            // A batch PostgreSQL would run in an implicit transaction cannot
+            // contain DDL: the metadata commit cannot be rolled back.
+            crate::ddl::refuse_ddl_in_batch(&statements)?;
             for statement in statements {
                 if is_empty_query(&statement) {
                     client

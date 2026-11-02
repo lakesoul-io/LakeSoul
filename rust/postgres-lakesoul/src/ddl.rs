@@ -27,11 +27,13 @@ use datafusion::common::{Constraints, TableReference, ToDFSchema};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::{
-    ColumnDef, ColumnOption, CreateTable, CreateTableOptions, DataType as SqlDataType,
-    ExactNumberInfo, Expr, ObjectName, ObjectType, SqlOption, Statement, TableConstraint,
-    TimezoneInfo, Value,
+    ColumnDef, ColumnOption, ConstraintCharacteristics, CreateTable, CreateTableOptions,
+    DataType as SqlDataType, ExactNumberInfo, Expr, Ident, IndexColumn, IndexOption,
+    IndexType, ObjectName, ObjectType, SqlOption, Statement, TableConstraint,
+    TimezoneInfo, UnaryOperator, Value,
 };
 use datafusion_postgres::QueryHook;
+use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire;
 use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
@@ -46,7 +48,11 @@ use crate::session_settings::SessionSettingsHook;
 
 const FEATURE_NOT_SUPPORTED: &str = "0A000";
 const UNDEFINED_TABLE: &str = "42P01";
+const UNDEFINED_COLUMN: &str = "42703";
 const DUPLICATE_TABLE: &str = "42P07";
+const DUPLICATE_COLUMN: &str = "42701";
+const INVALID_TABLE_DEFINITION: &str = "42P16";
+const SYNTAX_ERROR: &str = "42601";
 const INVALID_SCHEMA_NAME: &str = "3F000";
 const INVALID_PARAMETER_VALUE: &str = "22023";
 
@@ -99,13 +105,13 @@ impl DdlStatementHook {
         })
     }
 
-    /// Table name and optional schema from a PG object name.
+    /// Table name from a PG object name.
     ///
     /// One part is `public.<name>`; two parts must name the `public` schema;
     /// three parts would address another database, which this server refuses
     /// like the query path does.
     fn target(&self, name: &ObjectName) -> PgWireResult<String> {
-        let parts: Vec<String> = name_parts(name);
+        let parts = name_parts(name)?;
         match parts.as_slice() {
             [table] => Ok(table.clone()),
             [schema, table] if schema == PUBLIC_SCHEMA => Ok(table.clone()),
@@ -121,13 +127,16 @@ impl DdlStatementHook {
         }
     }
 
-    fn table_location(&self, warehouse: &str, table: &str) -> String {
-        format!(
+    fn table_location(&self, warehouse: &str, table: &str) -> PgWireResult<String> {
+        // The database and the table become path segments; validation keeps
+        // them from adding segments of their own.
+        validate_name(&self.database)?;
+        Ok(format!(
             "{}/{}/{}",
             warehouse.trim_end_matches('/'),
             self.database,
             table
-        )
+        ))
     }
 
     async fn create_table(
@@ -170,7 +179,7 @@ impl DdlStatementHook {
             // The provider reads the namespace from the schema part of the
             // name; registration below uses the bare table name in `public`.
             name: TableReference::partial(self.database.clone(), table.clone()),
-            locations: vec![self.table_location(warehouse, &table)],
+            locations: vec![self.table_location(warehouse, &table)?],
             file_type: "LAKESOUL".to_string(),
             table_partition_cols: Vec::new(),
             if_not_exists: create.if_not_exists,
@@ -217,10 +226,29 @@ impl DdlStatementHook {
         context: &SessionContext,
     ) -> PgWireResult<Response> {
         let schema_provider = self.public_schema(context)?;
+        // Resolve every name before the first deletion: PostgreSQL leaves the
+        // named tables alone when a later name in the same statement fails,
+        // and a metadata delete cannot be undone.
+        let mut targets: Vec<String> = Vec::with_capacity(names.len());
         for name in names {
             let table = self.target(name)?;
+            if !targets.contains(&table) {
+                targets.push(table);
+            }
+        }
+        if !if_exists {
+            for table in &targets {
+                if !schema_provider.table_exist(table) {
+                    return Err(user_error(
+                        UNDEFINED_TABLE,
+                        format!("table \"{table}\" does not exist"),
+                    ));
+                }
+            }
+        }
+        for table in &targets {
             let dropped = schema_provider
-                .deregister_table(&table)
+                .deregister_table(table)
                 .map_err(|error| PgWireError::ApiError(Box::new(error)))?
                 .is_some();
             if !dropped && !if_exists {
@@ -345,6 +373,34 @@ fn ddl_verb(statement: &Statement) -> Option<&'static str> {
     }
 }
 
+/// Refuse a simple-query batch that mixes DDL with other statements.
+///
+/// PostgreSQL runs the statements of one simple-query message in an implicit
+/// transaction, so a later failing statement rolls back an earlier
+/// `CREATE TABLE`. LakeSoul table metadata is committed when the statement
+/// runs and cannot be rolled back, so the batch is refused before its first
+/// statement instead of committing something PostgreSQL would have undone.
+pub(crate) fn refuse_ddl_in_batch(statements: &[String]) -> PgWireResult<()> {
+    if statements.len() < 2 {
+        return Ok(());
+    }
+    let parser = PostgresCompatibilityParser::new();
+    let mixes_ddl = statements.iter().any(|sql| {
+        parser.parse(sql).is_ok_and(|parsed| {
+            parsed.iter().any(|statement| ddl_verb(statement).is_some())
+        })
+    });
+    if !mixes_ddl {
+        return Ok(());
+    }
+    Err(feature_not_supported(
+        "CREATE/DROP TABLE cannot be combined with other statements in one \
+         simple-query message: PostgreSQL would run the batch in an implicit \
+         transaction, and LakeSoul table metadata cannot be rolled back"
+            .to_string(),
+    ))
+}
+
 /// PostgreSQL commits DDL inside a transaction block, so `ROLLBACK` undoes it.
 /// LakeSoul table metadata is written immediately through the metadata client
 /// and cannot be rolled back; executing DDL in a block would silently break
@@ -362,17 +418,64 @@ fn reject_in_transaction(
     )))
 }
 
-/// Split a parsed object name into its parts.
-fn name_parts(name: &ObjectName) -> Vec<String> {
+/// Split a parsed object name into normalized parts.
+///
+/// Unquoted identifiers are folded to lower case the way PostgreSQL folds
+/// them, so `PUBLIC.T` addresses `public.t`; a quoted name that folding would
+/// change is refused because LakeSoul stores lower-case names (the provider
+/// folds the schema and the table name itself, which would silently rename a
+/// quoted mixed-case table).
+fn name_parts(name: &ObjectName) -> PgWireResult<Vec<String>> {
     name.0
         .iter()
-        .filter_map(|part| match part {
+        .map(|part| match part {
             datafusion::sql::sqlparser::ast::ObjectNamePart::Identifier(ident) => {
-                Some(ident.value.clone())
+                normalize_ident(ident)
             }
-            _ => None,
+            other => Err(feature_not_supported(format!(
+                "object name part {other} is not supported"
+            ))),
         })
         .collect()
+}
+
+/// Fold and validate one identifier.
+fn normalize_ident(ident: &Ident) -> PgWireResult<String> {
+    let folded = ident.value.to_ascii_lowercase();
+    if ident.quote_style.is_some() && ident.value != folded {
+        return Err(feature_not_supported(format!(
+            "quoted identifier \"{}\" is not supported: LakeSoul stores table \
+             and column names in lower case, so it would be renamed to \
+             \"{folded}\"; declare it unquoted or in lower case",
+            ident.value
+        )));
+    }
+    validate_name(&folded)?;
+    Ok(folded)
+}
+
+/// Reject names LakeSoul cannot store.
+///
+/// A table name becomes a path segment under the database's warehouse
+/// directory and a column name becomes part of the partition description
+/// (`"<range>;<hash>"`, comma-separated), so separators and URL metacharacters
+/// would change what those strings mean.
+fn validate_name(name: &str) -> PgWireResult<()> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(feature_not_supported(format!(
+            "name \"{name}\" is not supported"
+        )));
+    }
+    let Some(bad) = name.chars().find(|c| {
+        matches!(c, '/' | '\\' | '?' | '#' | '%' | ',' | ';') || c.is_control()
+    }) else {
+        return Ok(());
+    };
+    Err(feature_not_supported(format!(
+        "name \"{name}\" contains \"{bad}\", which LakeSoul cannot represent: \
+         table names become data paths and column names become the partition \
+         description"
+    )))
 }
 
 /// Refuse the `CREATE TABLE` clauses whose PostgreSQL behaviour LakeSoul
@@ -391,6 +494,45 @@ fn reject_unsupported_create(create: &CreateTable) -> PgWireResult<()> {
         (create.external, "CREATE EXTERNAL TABLE"),
         (create.like.is_some(), "CREATE TABLE ... LIKE"),
         (create.clone.is_some(), "CREATE TABLE ... CLONE"),
+        (create.dynamic, "CREATE DYNAMIC TABLE"),
+        (create.global.is_some(), "CREATE GLOBAL TABLE"),
+        (create.transient, "CREATE TRANSIENT TABLE"),
+        (create.volatile, "CREATE VOLATILE TABLE"),
+        (create.iceberg, "CREATE ICEBERG TABLE"),
+        (create.snapshot, "CREATE SNAPSHOT TABLE"),
+        (create.without_rowid, "CREATE TABLE ... WITHOUT ROWID"),
+        (create.strict, "CREATE TABLE ... STRICT"),
+        (create.inherits.is_some(), "CREATE TABLE ... INHERITS"),
+        (
+            create.partition_by.is_some(),
+            "CREATE TABLE ... PARTITION BY",
+        ),
+        (
+            create.partition_of.is_some(),
+            "CREATE TABLE ... PARTITION OF",
+        ),
+        (create.for_values.is_some(), "CREATE TABLE ... FOR VALUES"),
+        (create.on_commit.is_some(), "CREATE TABLE ... ON COMMIT"),
+        (create.on_cluster.is_some(), "CREATE TABLE ... ON CLUSTER"),
+        (
+            create.primary_key.is_some(),
+            "CREATE TABLE ... PRIMARY KEY (clause)",
+        ),
+        (create.order_by.is_some(), "CREATE TABLE ... ORDER BY"),
+        (create.cluster_by.is_some(), "CREATE TABLE ... CLUSTER BY"),
+        (
+            create.clustered_by.is_some(),
+            "CREATE TABLE ... CLUSTERED BY",
+        ),
+        (create.version.is_some(), "CREATE TABLE ... VERSION"),
+        (create.comment.is_some(), "CREATE TABLE ... COMMENT"),
+        (
+            create.hive_distribution
+                != datafusion::sql::sqlparser::ast::HiveDistributionStyle::NONE,
+            "CREATE TABLE ... DISTRIBUTE BY",
+        ),
+        (create.hive_formats.is_some(), "CREATE TABLE ... ROW FORMAT"),
+        (create.copy_grants, "CREATE TABLE ... COPY GRANTS"),
     ] {
         if flag {
             return Err(feature_not_supported(format!("{clause} is not supported")));
@@ -407,6 +549,11 @@ fn reject_unsupported_create(create: &CreateTable) -> PgWireResult<()> {
 }
 
 /// PG columns → Arrow schema, plus the primary-key column indices.
+///
+/// Names are folded the way the provider stores them (lower case), duplicate
+/// columns and repeated key columns are rejected, and conflicting
+/// `NULL`/`NOT NULL` declarations are refused instead of letting the last one
+/// win: the metadata written here outlives the statement.
 fn build_schema(
     columns: &[ColumnDef],
     constraints: &[TableConstraint],
@@ -417,23 +564,50 @@ fn build_schema(
         ));
     }
     let mut fields = Vec::with_capacity(columns.len());
-    let mut names = Vec::with_capacity(columns.len());
+    let mut names: Vec<String> = Vec::with_capacity(columns.len());
+    let mut declared_not_null: Vec<Option<bool>> = Vec::with_capacity(columns.len());
     let mut primary_key: Option<Vec<usize>> = None;
     for (index, column) in columns.iter().enumerate() {
-        let name = column.name.value.clone();
+        let name = normalize_ident(&column.name)?;
+        if names.contains(&name) {
+            return Err(user_error(
+                DUPLICATE_COLUMN,
+                format!("column \"{name}\" specified more than once"),
+            ));
+        }
         let data_type = arrow_type(&column.data_type)?;
-        let mut not_null = false;
+        let mut not_null: Option<bool> = None;
         for option in &column.options {
             match &option.option {
-                ColumnOption::NotNull => not_null = true,
-                ColumnOption::Null => not_null = false,
-                ColumnOption::PrimaryKey(_) => {
+                ColumnOption::NotNull => {
+                    if not_null == Some(false) {
+                        return Err(conflicting_null_declaration(&name));
+                    }
+                    not_null = Some(true);
+                }
+                ColumnOption::Null => {
+                    if not_null == Some(true) {
+                        return Err(conflicting_null_declaration(&name));
+                    }
+                    not_null = Some(false);
+                }
+                ColumnOption::PrimaryKey(constraint) => {
+                    reject_key_characteristics(
+                        &name,
+                        constraint.characteristics.as_ref(),
+                        constraint.index_name.as_ref(),
+                        constraint.index_type.as_ref(),
+                        &constraint.index_options,
+                    )?;
                     if primary_key.is_some() {
                         return Err(feature_not_supported(
                             "more than one primary key is not supported".to_string(),
                         ));
                     }
-                    not_null = true;
+                    if not_null == Some(false) {
+                        return Err(conflicting_null_declaration(&name));
+                    }
+                    not_null = Some(true);
                     primary_key = Some(vec![index]);
                 }
                 other => {
@@ -444,12 +618,20 @@ fn build_schema(
             }
         }
         names.push(name.clone());
-        fields.push(Field::new(name, data_type, !not_null));
+        declared_not_null.push(not_null);
+        fields.push(Field::new(name, data_type, true));
     }
 
     for constraint in constraints {
         match constraint {
             TableConstraint::PrimaryKey(primary) => {
+                reject_key_characteristics(
+                    "primary key",
+                    primary.characteristics.as_ref(),
+                    primary.index_name.as_ref(),
+                    primary.index_type.as_ref(),
+                    &primary.index_options,
+                )?;
                 if primary_key.is_some() {
                     return Err(feature_not_supported(
                         "more than one primary key is not supported".to_string(),
@@ -457,23 +639,16 @@ fn build_schema(
                 }
                 let mut indices = Vec::with_capacity(primary.columns.len());
                 for column in &primary.columns {
-                    let Expr::Identifier(ident) = &column.column.expr else {
-                        return Err(feature_not_supported(
-                            "primary-key expressions are not supported".to_string(),
+                    let index = primary_key_index(column, &names)?;
+                    if indices.contains(&index) {
+                        return Err(user_error(
+                            INVALID_TABLE_DEFINITION,
+                            format!(
+                                "column \"{}\" appears twice in primary key constraint",
+                                names[index]
+                            ),
                         ));
-                    };
-                    let index = names
-                        .iter()
-                        .position(|name| name.eq_ignore_ascii_case(&ident.value))
-                        .ok_or_else(|| {
-                            user_error(
-                                UNDEFINED_TABLE,
-                                format!(
-                                    "column \"{}\" named in key does not exist",
-                                    ident.value
-                                ),
-                            )
-                        })?;
+                    }
                     indices.push(index);
                 }
                 primary_key = Some(indices);
@@ -487,14 +662,78 @@ fn build_schema(
         }
     }
 
-    // Primary-key columns are non-nullable whatever the column options said.
+    // Primary-key columns are non-nullable; an explicit `NULL` on one of them
+    // is a contradiction PostgreSQL refuses.
     if let Some(indices) = &primary_key {
         for index in indices {
+            if declared_not_null[*index] == Some(false) {
+                return Err(conflicting_null_declaration(&names[*index]));
+            }
             let field = &fields[*index];
             fields[*index] = Field::new(field.name(), field.data_type().clone(), false);
         }
     }
     Ok((Schema::new(fields), primary_key))
+}
+
+/// One primary-key column: a bare identifier naming an existing column.
+fn primary_key_index(column: &IndexColumn, names: &[String]) -> PgWireResult<usize> {
+    let Expr::Identifier(ident) = &column.column.expr else {
+        return Err(feature_not_supported(
+            "primary-key expressions are not supported".to_string(),
+        ));
+    };
+    if column.column.options.asc.is_some()
+        || column.column.options.nulls_first.is_some()
+        || column.column.with_fill.is_some()
+        || column.operator_class.is_some()
+    {
+        return Err(feature_not_supported(format!(
+            "ordering and operator classes in the primary key are not \
+             supported (column {})",
+            ident.value
+        )));
+    }
+    let name = normalize_ident(ident)?;
+    names
+        .iter()
+        .position(|candidate| candidate == &name)
+        .ok_or_else(|| {
+            user_error(
+                UNDEFINED_COLUMN,
+                format!("column \"{name}\" named in key does not exist"),
+            )
+        })
+}
+
+/// Refuse primary-key clauses LakeSoul cannot honour instead of dropping them.
+fn reject_key_characteristics(
+    description: &str,
+    characteristics: Option<&ConstraintCharacteristics>,
+    index_name: Option<&Ident>,
+    index_type: Option<&IndexType>,
+    index_options: &[IndexOption],
+) -> PgWireResult<()> {
+    if characteristics.is_some() {
+        return Err(feature_not_supported(format!(
+            "constraint characteristics (DEFERRABLE/INITIALLY ...) on \
+             {description} are not supported"
+        )));
+    }
+    if index_name.is_some() || index_type.is_some() || !index_options.is_empty() {
+        return Err(feature_not_supported(format!(
+            "index options (USING/INCLUDE/WITH ...) on {description} are not \
+             supported"
+        )));
+    }
+    Ok(())
+}
+
+fn conflicting_null_declaration(name: &str) -> PgWireError {
+    user_error(
+        SYNTAX_ERROR,
+        format!("conflicting NULL/NOT NULL declarations for column \"{name}\""),
+    )
 }
 
 /// PG column type → Arrow type. The mapping is deliberately small: an
@@ -513,14 +752,14 @@ fn arrow_type(data_type: &SqlDataType) -> PgWireResult<DataType> {
         }
         SqlDataType::Float(info) => match info {
             ExactNumberInfo::None => DataType::Float64,
-            ExactNumberInfo::Precision(precision) if *precision <= 24 => {
+            ExactNumberInfo::Precision(precision) if (1..=24).contains(precision) => {
                 DataType::Float32
             }
-            ExactNumberInfo::Precision(precision) if *precision <= 53 => {
+            ExactNumberInfo::Precision(precision) if (25..=53).contains(precision) => {
                 DataType::Float64
             }
             ExactNumberInfo::Precision(_) => {
-                return Err(invalid_type(data_type, "FLOAT precision exceeds 53"));
+                return Err(invalid_type(data_type, "precision must be within 1..=53"));
             }
             ExactNumberInfo::PrecisionAndScale(..) => {
                 return Err(invalid_type(data_type, "FLOAT takes a precision only"));
@@ -534,14 +773,30 @@ fn arrow_type(data_type: &SqlDataType) -> PgWireResult<DataType> {
         | SqlDataType::Character(_)
         | SqlDataType::CharacterVarying(_) => DataType::Utf8,
         SqlDataType::Date => DataType::Date32,
-        SqlDataType::Timestamp(_, time_zone) => DataType::Timestamp(
-            TimeUnit::Microsecond,
-            match time_zone {
-                TimezoneInfo::None | TimezoneInfo::WithoutTimeZone => None,
-                // `timestamptz` is an instant; it is stored in UTC.
-                _ => Some(Arc::<str>::from("UTC")),
-            },
-        ),
+        SqlDataType::Timestamp(precision, time_zone) => {
+            // Arrow stores microseconds; a declared precision would have to be
+            // enforced by a later write path, so only the default (6) is
+            // accepted instead of accepting a modifier nothing honours.
+            if let Some(precision) = precision
+                && *precision != 6
+            {
+                return Err(feature_not_supported(format!(
+                    "TIMESTAMP({precision}) is not supported: LakeSoul stores \
+                     microsecond timestamps"
+                )));
+            }
+            DataType::Timestamp(
+                TimeUnit::Microsecond,
+                match time_zone {
+                    TimezoneInfo::None | TimezoneInfo::WithoutTimeZone => None,
+                    // `TIMESTAMPTZ` (and the standard spelling) is an instant;
+                    // it is stored in UTC.
+                    TimezoneInfo::WithTimeZone | TimezoneInfo::Tz => {
+                        Some(Arc::<str>::from("UTC"))
+                    }
+                },
+            )
+        }
         SqlDataType::Bytea => DataType::Binary,
         SqlDataType::Decimal(info)
         | SqlDataType::Numeric(info)
@@ -609,7 +864,7 @@ fn table_options(options: &CreateTableOptions) -> PgWireResult<HashMap<String, S
         let value = literal_string(value)?;
         match name.as_str() {
             "hashbucketnum" => {
-                let bucket: u32 = value.parse().map_err(|_| {
+                let bucket: i64 = value.parse().map_err(|_| {
                     user_error(
                         INVALID_PARAMETER_VALUE,
                         format!(
@@ -618,7 +873,7 @@ fn table_options(options: &CreateTableOptions) -> PgWireResult<HashMap<String, S
                         ),
                     )
                 })?;
-                if !(1..=MAX_HASH_BUCKET_NUM).contains(&bucket) {
+                if !(1..=i64::from(MAX_HASH_BUCKET_NUM)).contains(&bucket) {
                     return Err(user_error(
                         INVALID_PARAMETER_VALUE,
                         format!(
@@ -653,13 +908,32 @@ fn table_options(options: &CreateTableOptions) -> PgWireResult<HashMap<String, S
 }
 
 fn literal_string(value: &Expr) -> PgWireResult<String> {
-    let Expr::Value(literal) = value else {
-        return Err(feature_not_supported(format!(
-            "table option value {value} is not a string or number literal"
-        )));
-    };
-    match &literal.value {
-        Value::SingleQuotedString(text) | Value::Number(text, _) => Ok(text.clone()),
+    match value {
+        Expr::Value(literal) => match &literal.value {
+            Value::SingleQuotedString(text) | Value::Number(text, _) => Ok(text.clone()),
+            other => Err(feature_not_supported(format!(
+                "table option value {other} is not a string or number literal"
+            ))),
+        },
+        // A negative number arrives as a unary minus over the literal; it is
+        // kept as text so the option validator reports the documented range
+        // error instead of a shape error.
+        Expr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr,
+        } => {
+            let Expr::Value(literal) = expr.as_ref() else {
+                return Err(feature_not_supported(format!(
+                    "table option value {value} is not a string or number literal"
+                )));
+            };
+            let Value::Number(text, _) = &literal.value else {
+                return Err(feature_not_supported(format!(
+                    "table option value {value} is not a string or number literal"
+                )));
+            };
+            Ok(format!("-{text}"))
+        }
         other => Err(feature_not_supported(format!(
             "table option value {other} is not a string or number literal"
         ))),

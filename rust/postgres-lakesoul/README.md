@@ -181,20 +181,23 @@ LAKESOUL_TPCH_SCALE=1 LAKESOUL_TPCH_LAYOUT=nopk LAKESOUL_TPCH_WORKERS=2 \
 
 ### 阶段七：DDL（`CREATE TABLE`／`DROP TABLE`）
 
-DDL 由 `src/ddl.rs` 的语句钩子承接，既不经过 DataFusion 自己的 DDL 规划，也不经过管理端 SQL。`CREATE TABLE` 用与服务内部相同的 `LakeSoulTableProvider::new_from_create_external_table` 构造 provider，再由 `SchemaProvider::register_table` 发布元数据；`DROP TABLE` 走 `SchemaProvider::deregister_table` 的级联删除。表路径固定为 `{warehouse}/{namespace}/{table}`，客户端不提供 `LOCATION`，因此不同 PG database 的表不会落到同一目录。
+DDL 由 `src/ddl.rs` 的语句钩子承接，既不经过 DataFusion 自己的 DDL 规划，也不经过管理端 SQL。`CREATE TABLE` 用与服务内部相同的 `LakeSoulTableProvider::new_from_create_external_table` 构造 provider，再由 `SchemaProvider::register_table` 发布元数据；`DROP TABLE` 走 `SchemaProvider::deregister_table` 的级联删除。表路径固定为 `{warehouse}/{namespace}/{table}`，客户端不提供 `LOCATION`，因此不同 PG database 的表不会落到同一目录。表名与列名按 PG 规则折叠为小写（未加引号），带引号且折叠会变化的名称直接拒绝：provider 会自行折叠 schema、列名和 `table_info.table_name`，接受这类名称等于静默改名，而 `table_info` 的 `partitions`、`table_path` 与后续读写都依赖这一个身份。
 
 | 契约 | 已验证范围 | 具体用例 |
 | --- | --- | --- |
 | LakeSoul 建表语义 | 建表后 `table_info` 行的 namespace 为连接的 database、`table_path` 位于本次 warehouse 下的 `{namespace}/{table}`、主键列写入 `partitions`（`;id`）、`hashBucketNum` 默认 4、`file_format` 为 `parquet`；无主键表没有 `hashBucketNum`；`pg_class` 可见、`SELECT` 返回零行且列 OID 为 INT8／TEXT／NUMERIC／TIMESTAMPTZ；新连接同样可见 | `create_table_publishes_metadata` |
-| PG 冲突语义 | 同名 `CREATE TABLE` 返回 `42P07` 且不改动原表；`IF NOT EXISTS` 成功且 `table_id` 不变，元数据行数仍为 1 | `duplicate_and_if_not_exists` |
-| `DROP TABLE` 级联 | 删表后 `table_info`／`table_name_id`／`table_path_id`／`partition_info`／`data_commit_info` 全为 0、`pg_class` 不再列出；再次 `DROP` 为 `42P01` | `drop_table_removes_metadata` |
+| PG 冲突语义 | 同名 `CREATE TABLE` 返回 `42P07` 且不改动原表；`IF NOT EXISTS` 成功且 `table_id` 不变，元数据行数仍为 1；已有表存在时 `IF NOT EXISTS` 配不同列声明也不改动原 schema | `duplicate_and_if_not_exists`、`if_not_exists_keeps_the_existing_schema` |
+| `DROP TABLE` 级联 | 删表前按捕获的 `table_id` 计数（`1/1/1/0/0`），删表后同一 `table_id` 的 `table_info`／`table_name_id`／`table_path_id`／`partition_info`／`data_commit_info` 全为 0、`pg_class` 不再列出；再次 `DROP` 为 `42P01` | `drop_table_removes_metadata` |
 | `IF EXISTS` 幂等 | 不存在的表 `DROP TABLE IF EXISTS` 成功；一次多条名称同样成立 | `drop_absent_and_if_exists` |
+| 多名称 `DROP` 全或无 | `DROP TABLE a, missing` 为 `42P01`、`DROP TABLE a, nosuchschema.b` 为 `3F000`，两种情况下 `a` 及其元数据都保持不变；名称在第一次删除前全部校验 | `drop_table_is_all_or_nothing` |
+| 标识符 | 未加引号名称折叠为小写：`Orders(ID, Label)` 建出 `orders`，`partitions` 为 `;id`、路径以 `/orders` 结尾、`pg_class` 与 `SELECT` 列名为 `id/label`；`"Orders"`、`"../../outside"`、`"/tmp/outside"`、`"escaped?x=1"`、列名 `"a,b"` 均 `0A000` 且不发布元数据 | `identifiers_are_folded_and_contained` |
 | `WITH` 选项 | `hashbucketnum`／`file_format` 写入表属性（实测 8／parquet） | `options_and_column_types` |
-| 明确拒绝，无副作用 | `CREATE TABLE AS`、`TEMPORARY`、`OR REPLACE`、`NUMERIC` 无精度、`UUID`、数组、`DEFAULT`、`UNIQUE`、`CHECK`、`FOREIGN KEY`、未知 `WITH` 选项、三段限定名、`CREATE SCHEMA`、`ALTER TABLE`、`DROP VIEW` 均为 `0A000`；`hashbucketnum = 0` 为 `22023`；不存在的 schema 为 `3F000`；每次拒绝后连接仍可查询，且不发布元数据、不出现在 `pg_class` 中 | `refusal_matrix_creates_nothing` |
-| extended 协议 | `CREATE`／`DROP` 经 extended Parse／Execute 与 simple 行为一致 | `extended_protocol_creates_and_drops` |
+| 明确拒绝，无副作用 | `CREATE TABLE AS`、`TEMPORARY`、`OR REPLACE`、`INHERITS`、`PARTITION BY`、`NUMERIC` 无精度、`UUID`、数组、`DEFAULT`、`UNIQUE`、`CHECK`、`FOREIGN KEY`、`DEFERRABLE` 等约束特征、`FLOAT(0)`、`TIMESTAMP(0)`、未知 `WITH` 选项、三段限定名、`CREATE SCHEMA`、`ALTER TABLE`、`DROP VIEW` 均为 `0A000`；重复列 `42701`、主键内重复列 `42P16`、主键引用不存在列 `42703`、`NULL`/`NOT NULL` 冲突 `42601`；`hashbucketnum = 0` 与 `-1` 为 `22023`；不存在的 schema 为 `3F000`；每次拒绝后连接仍可查询，且不发布元数据、不出现在 `pg_class` 中 | `refusal_matrix_creates_nothing` |
+| extended 协议 | `CREATE`／`DROP` 经 extended Parse／Execute 与 simple 行为一致；AST 可判定的拒绝（CTAS、`UUID`）在 Parse 阶段返回 `0A000`，`DROP` 的 schema 解析与 PG 一样留到 Execute（`3F000`） | `extended_protocol_creates_and_drops` |
 | 事务边界 | `BEGIN` 内 `CREATE TABLE` 为 `0A000`：LakeSoul 表元数据立即提交、无法随 `ROLLBACK` 撤销，因此不伪装成事务性 DDL | `ddl_is_refused_inside_a_transaction` |
+| 简单查询批次 | 一条 simple-query 消息里 DDL 与其它语句混用（`CREATE ...; SELECT 1/0`、`SELECT 1; CREATE ...`、`CREATE ...; DROP ...`）整体返回 `0A000` 并说明隐式事务无法回滚；拆成多条消息后同样语句成功 | `simple_query_batch_with_ddl_is_refused` |
 
-已知边界：拒绝矩阵与 `Parse` 阶段校验覆盖的是 AST 可判定的部分（类型、选项、约束、schema 不存在、warehouse 未配置），表已存在属于执行期 `42P07`，与 PG 一致；`SELECT` 已删除的表仍是目录解析边界 `XX000`（见阶段三·3.2），不是 `42P01`。列类型映射只覆盖 `smallint/int/bigint/real/double/boolean/varchar/char/text/date/timestamp/timestamptz/decimal(p,s)/bytea`，且只允许一个主键；`CREATE TABLE AS` 依赖尚未实现的 INSERT 路径，当前明确拒绝。DDL 的表路径与表属性选择由服务决定，客户端不能用 `LOCATION`／`STORED AS` 覆盖。
+已知边界：拒绝矩阵与 `Parse` 阶段校验覆盖的是 AST 可判定的部分（类型、选项、约束、schema 不存在、warehouse 未配置），表已存在属于执行期 `42P07`，与 PG 一致；`SELECT` 已删除的表仍是目录解析边界 `XX000`（见阶段三·3.2），不是 `42P01`。列类型映射只覆盖 `smallint/int/bigint/real/double/boolean/varchar/char/text/date/timestamp/timestamptz/decimal(p,s)/bytea`，且只允许一个主键；`varchar(n)`／`char(n)` 的长度修饰落到 Arrow `Utf8` 后不保留，`timestamp` 只接受默认（或无）精度——这两项是**已记录的限制**，不是等价语义：后续 INSERT 路径不得声称会校验长度或精度。`CREATE TABLE AS` 依赖尚未实现的 INSERT 路径，当前明确拒绝。DDL 的表路径与表属性选择由服务决定，客户端不能用 `LOCATION`／`STORED AS` 覆盖；多名称 `DROP` 在元数据级不是事务，校验通过后若级联删除中途失败仍可能部分完成。
 
 ## 失败验收与已知缺陷复现
 

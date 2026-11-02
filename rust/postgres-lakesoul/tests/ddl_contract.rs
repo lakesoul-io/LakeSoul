@@ -42,6 +42,10 @@ async fn ddl_create_and_drop_tables() -> Result<()> {
             options_and_column_types(h).await?;
             refusal_matrix_creates_nothing(h).await?;
             extended_protocol_creates_and_drops(h).await?;
+            identifiers_are_folded_and_contained(h).await?;
+            drop_table_is_all_or_nothing(h).await?;
+            simple_query_batch_with_ddl_is_refused(h).await?;
+            if_not_exists_keeps_the_existing_schema(h).await?;
             ddl_is_refused_inside_a_transaction(h).await?;
             Ok(())
         })
@@ -243,6 +247,24 @@ async fn duplicate_and_if_not_exists(h: &Harness) -> Result<()> {
 
 /// `DROP TABLE` removes the table and every metadata row that names it.
 async fn drop_table_removes_metadata(h: &Harness) -> Result<()> {
+    // Capture the identity before the drop: counting through `table_info`
+    // afterwards would return zero even if the dependent rows survived.
+    let table_id = metadata(h, "ddl_notes")
+        .await?
+        .with_context(|| context("ddl_notes", "before DROP", "metadata row"))?
+        .table_id;
+    let before = counts_for_table_id(h, &table_id).await?;
+    ensure!(
+        before == [1, 1, 1, 0, 0],
+        "{}",
+        detail(
+            "ddl_notes",
+            "rows by table_id before DROP",
+            &format!(
+                "expected [table_info, table_name_id, table_path_id, partition_info, data_commit_info] = [1, 1, 1, 0, 0], actual {before:?}"
+            )
+        )
+    );
     command(h, "DROP TABLE ddl_notes").await?;
     ensure!(
         metadata(h, "ddl_notes").await?.is_none(),
@@ -251,6 +273,16 @@ async fn drop_table_removes_metadata(h: &Harness) -> Result<()> {
             "ddl_notes",
             "after DROP TABLE",
             "table_info row must be gone"
+        )
+    );
+    let after = counts_for_table_id(h, &table_id).await?;
+    ensure!(
+        after == [0, 0, 0, 0, 0],
+        "{}",
+        detail(
+            "ddl_notes",
+            "rows by the pre-drop table_id after DROP TABLE",
+            &format!("expected every count to be 0, actual {after:?}")
         )
     );
     ensure!(
@@ -422,6 +454,63 @@ async fn refusal_matrix_creates_nothing(h: &Harness) -> Result<()> {
             "DROP TABLE nosuchschema.ddl_drop_missing",
             "3F000",
         ),
+        (
+            "ddl_dup_column",
+            "CREATE TABLE ddl_dup_column (id INT, id INT)",
+            "42701",
+        ),
+        (
+            "ddl_dup_key",
+            "CREATE TABLE ddl_dup_key (id INT, PRIMARY KEY (id, id))",
+            "42P16",
+        ),
+        (
+            "ddl_missing_key",
+            "CREATE TABLE ddl_missing_key (id INT, PRIMARY KEY (nope))",
+            "42703",
+        ),
+        (
+            "ddl_null_conflict",
+            "CREATE TABLE ddl_null_conflict (id INT NOT NULL NULL)",
+            "42601",
+        ),
+        (
+            "ddl_null_key_conflict",
+            "CREATE TABLE ddl_null_key_conflict (id INT NULL PRIMARY KEY)",
+            "42601",
+        ),
+        (
+            "ddl_deferrable",
+            "CREATE TABLE ddl_deferrable (id INT PRIMARY KEY DEFERRABLE \
+             INITIALLY DEFERRED)",
+            "0A000",
+        ),
+        (
+            "ddl_inherits",
+            "CREATE TABLE ddl_inherits (extra INT) INHERITS (ddl_orders)",
+            "0A000",
+        ),
+        (
+            "ddl_partition_by",
+            "CREATE TABLE ddl_partition_by (id INT) PARTITION BY RANGE (id)",
+            "0A000",
+        ),
+        (
+            "ddl_negative_buckets",
+            "CREATE TABLE ddl_negative_buckets (id INT) \
+             WITH (hashbucketnum = -1)",
+            "22023",
+        ),
+        (
+            "ddl_float_zero",
+            "CREATE TABLE ddl_float_zero (value FLOAT(0))",
+            "0A000",
+        ),
+        (
+            "ddl_timestamp_zero",
+            "CREATE TABLE ddl_timestamp_zero (at TIMESTAMP(0))",
+            "0A000",
+        ),
     ];
     for (table, sql, expected) in cases {
         let actual = error_code(h, sql).await.with_context(|| {
@@ -477,6 +566,272 @@ async fn extended_protocol_creates_and_drops(h: &Harness) -> Result<()> {
         metadata(h, "ddl_extended").await?.is_none(),
         "extended DROP TABLE must remove metadata"
     );
+
+    // The clauses analyzable from the AST are refused at Parse...
+    for sql in [
+        "CREATE TABLE ddl_ext_ctas AS SELECT id FROM items",
+        "CREATE TABLE ddl_ext_bad (id UUID)",
+    ] {
+        let error = h
+            .lake
+            .prepare(sql)
+            .await
+            .err()
+            .with_context(|| format!("SQL={sql}: expected a Parse-time rejection"))?;
+        let db = error
+            .as_db_error()
+            .with_context(|| format!("SQL={sql}: expected a server ErrorResponse"))?;
+        ensure!(
+            db.code().code() == "0A000",
+            "SQL={sql}: expected 0A000, actual {}",
+            db.code().code()
+        );
+    }
+    // ...while a utility statement is analyzed at Execute, like PostgreSQL,
+    // so the schema is reported there.
+    let drop = h
+        .lake
+        .prepare("DROP TABLE nosuchschema.ddl_ext_missing")
+        .await
+        .context("extended Parse of DROP TABLE with an unknown schema")?;
+    let error = h
+        .lake
+        .execute(&drop, &[])
+        .await
+        .err()
+        .context("extended Execute of DROP TABLE with an unknown schema")?;
+    let db = error
+        .as_db_error()
+        .context("extended Execute: expected a server ErrorResponse")?;
+    ensure!(
+        db.code().code() == "3F000",
+        "extended DROP TABLE with an unknown schema: expected 3F000, actual {}",
+        db.code().code()
+    );
+    Ok(())
+}
+
+/// Unquoted names fold to lower case, and a name that would change the data
+/// path or the partition description is refused before anything is created.
+async fn identifiers_are_folded_and_contained(h: &Harness) -> Result<()> {
+    let before = namespace_table_count(h).await?;
+    for (label, sql) in [
+        ("path traversal", "CREATE TABLE \"../../outside\" (id INT)"),
+        ("absolute path", "CREATE TABLE \"/tmp/outside\" (id INT)"),
+        ("url metacharacter", "CREATE TABLE \"escaped?x=1\" (id INT)"),
+        ("quoted upper case", "CREATE TABLE \"Orders\" (id INT)"),
+        (
+            "separator in a column",
+            "CREATE TABLE ddl_name_check (\"a,b\" INT)",
+        ),
+    ] {
+        let code = error_code(h, sql)
+            .await
+            .with_context(|| format!("case={label} SQL={sql}"))?;
+        ensure!(
+            code == "0A000",
+            "case={label} SQL={sql}: expected 0A000, actual {code}"
+        );
+        ensure!(
+            namespace_table_count(h).await? == before,
+            "case={label} SQL={sql}: a refused name must not publish a table"
+        );
+    }
+
+    // PostgreSQL folds the unquoted names, and so does the metadata: one
+    // lower-case identity for the table, its path, its columns and its key.
+    command(h, "CREATE TABLE Orders (ID BIGINT PRIMARY KEY, Label TEXT)").await?;
+    let row = metadata(h, "orders").await?.with_context(|| {
+        context("orders", "after folded CREATE TABLE", "metadata row")
+    })?;
+    ensure!(
+        row.partitions == ";id",
+        "{}",
+        detail(
+            "orders",
+            "folded primary key",
+            &format!("expected \";id\", actual {:?}", row.partitions)
+        )
+    );
+    ensure!(
+        row.table_path
+            .ends_with(&format!("/{}/orders", h.lake_namespace)),
+        "{}",
+        detail(
+            "orders",
+            "folded table path",
+            &format!("actual {:?}", row.table_path)
+        )
+    );
+    ensure!(
+        pg_class_count(h, "orders").await? == 1,
+        "{}",
+        detail("orders", "pg_class", "expected the folded name")
+    );
+    let statement = h
+        .lake
+        .prepare("SELECT id, label FROM orders")
+        .await
+        .context("SELECT of the folded names")?;
+    let columns: Vec<&str> = statement
+        .columns()
+        .iter()
+        .map(|column| column.name())
+        .collect();
+    ensure!(
+        columns == ["id", "label"],
+        "{}",
+        detail(
+            "orders",
+            "folded column names",
+            &format!("actual {columns:?}")
+        )
+    );
+    command(h, "DROP TABLE orders").await?;
+    Ok(())
+}
+
+/// A multi-name `DROP TABLE` that fails leaves every named table in place.
+async fn drop_table_is_all_or_nothing(h: &Harness) -> Result<()> {
+    command(h, "CREATE TABLE ddl_multi (id INT)").await?;
+    let table_id = metadata(h, "ddl_multi")
+        .await?
+        .with_context(|| context("ddl_multi", "after CREATE", "metadata row"))?
+        .table_id;
+
+    let code = error_code(h, "DROP TABLE ddl_multi, ddl_missing")
+        .await
+        .context("DROP TABLE with a missing second name")?;
+    ensure!(
+        code == "42P01",
+        "{}",
+        detail(
+            "ddl_multi",
+            "DROP TABLE with a missing second name",
+            &format!("expected 42P01, actual {code}")
+        )
+    );
+    ensure!(
+        metadata(h, "ddl_multi").await?.is_some(),
+        "{}",
+        detail(
+            "ddl_multi",
+            "after a failed multi-name DROP",
+            "the first table must still exist"
+        )
+    );
+    ensure!(
+        counts_for_table_id(h, &table_id).await? == [1, 1, 1, 0, 0],
+        "{}",
+        detail(
+            "ddl_multi",
+            "rows after a failed multi-name DROP",
+            "expected [table_info, table_name_id, table_path_id, partition_info, data_commit_info] = [1, 1, 1, 0, 0]"
+        )
+    );
+
+    let code = error_code(h, "DROP TABLE ddl_multi, nosuchschema.other")
+        .await
+        .context("DROP TABLE with a second name in an unknown schema")?;
+    ensure!(
+        code == "3F000",
+        "{}",
+        detail(
+            "ddl_multi",
+            "DROP TABLE with an unknown second schema",
+            &format!("expected 3F000, actual {code}")
+        )
+    );
+    ensure!(
+        metadata(h, "ddl_multi").await?.is_some(),
+        "{}",
+        detail(
+            "ddl_multi",
+            "after a failed multi-name DROP",
+            "the first table must still exist"
+        )
+    );
+
+    command(h, "DROP TABLE ddl_multi").await?;
+    ensure!(
+        metadata(h, "ddl_multi").await?.is_none(),
+        "{}",
+        detail(
+            "ddl_multi",
+            "after DROP TABLE",
+            "table_info row must be gone"
+        )
+    );
+    Ok(())
+}
+
+/// PostgreSQL runs a multi-statement simple query in an implicit transaction,
+/// so DDL cannot be mixed with other statements here: the metadata commit
+/// cannot be rolled back.
+async fn simple_query_batch_with_ddl_is_refused(h: &Harness) -> Result<()> {
+    for sql in [
+        "CREATE TABLE ddl_batch (id INT); SELECT 1 / 0",
+        "SELECT 1; CREATE TABLE ddl_batch (id INT)",
+        "CREATE TABLE ddl_batch (id INT); DROP TABLE ddl_batch",
+    ] {
+        let (code, message) = error_detail(h, sql)
+            .await
+            .with_context(|| format!("SQL={sql}"))?;
+        ensure!(
+            code == "0A000" && message.contains("implicit transaction"),
+            "SQL={sql}: expected 0A000 naming the implicit transaction, \
+             actual {code} ({message})"
+        );
+        ensure!(
+            metadata(h, "ddl_batch").await?.is_none(),
+            "SQL={sql}: a refused batch must not publish a table"
+        );
+    }
+    // The same statements work one message at a time.
+    command(h, "CREATE TABLE ddl_batch (id INT)").await?;
+    command(h, "DROP TABLE ddl_batch").await?;
+    Ok(())
+}
+
+/// `IF NOT EXISTS` keeps the existing identity and schema, as PostgreSQL does.
+async fn if_not_exists_keeps_the_existing_schema(h: &Harness) -> Result<()> {
+    command(h, "CREATE TABLE ddl_keep (id INT)").await?;
+    let before = metadata(h, "ddl_keep")
+        .await?
+        .with_context(|| context("ddl_keep", "after CREATE", "metadata row"))?;
+    command(h, "CREATE TABLE IF NOT EXISTS ddl_keep (other TEXT)").await?;
+    let after = metadata(h, "ddl_keep")
+        .await?
+        .with_context(|| context("ddl_keep", "after IF NOT EXISTS", "metadata row"))?;
+    ensure!(
+        before.table_id == after.table_id,
+        "{}",
+        detail(
+            "ddl_keep",
+            "IF NOT EXISTS identity",
+            &format!("expected {}, actual {}", before.table_id, after.table_id)
+        )
+    );
+    let statement = h
+        .lake
+        .prepare("SELECT * FROM ddl_keep")
+        .await
+        .context("SELECT * of the kept table")?;
+    let columns: Vec<&str> = statement
+        .columns()
+        .iter()
+        .map(|column| column.name())
+        .collect();
+    ensure!(
+        columns == ["id"],
+        "{}",
+        detail(
+            "ddl_keep",
+            "columns after IF NOT EXISTS with a different declaration",
+            &format!("expected [\"id\"], actual {columns:?}")
+        )
+    );
+    command(h, "DROP TABLE ddl_keep").await?;
     Ok(())
 }
 
@@ -571,9 +926,52 @@ async fn metadata_counts(h: &Harness, table: &str) -> Result<[i64; 5]> {
     Ok([row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)])
 }
 
+/// Table rows the test namespace holds, used to prove a refused statement
+/// published nothing even when its name is not a valid SQL identifier.
+async fn namespace_table_count(h: &Harness) -> Result<i64> {
+    let row = h
+        .reference
+        .query_one(
+            "SELECT count(*) FROM public.table_info WHERE table_namespace = $1",
+            &[&h.lake_namespace],
+        )
+        .await
+        .context("count table_info rows in the test namespace")?;
+    row.try_get(0)
+        .context("count table_info rows in the test namespace")
+}
+
+/// `[table_info, table_name_id, table_path_id, partition_info, data_commit_info]`
+/// counts keyed by `table_id`, so a drop is proven to cascade even after the
+/// `table_info` row it used to be found through is gone.
+async fn counts_for_table_id(h: &Harness, table_id: &str) -> Result<[i64; 5]> {
+    let row = h
+        .reference
+        .query_one(
+            "SELECT \
+             (SELECT count(*) FROM public.table_info WHERE table_id = $1), \
+             (SELECT count(*) FROM public.table_name_id WHERE table_id = $1), \
+             (SELECT count(*) FROM public.table_path_id WHERE table_id = $1), \
+             (SELECT count(*) FROM public.partition_info WHERE table_id = $1), \
+             (SELECT count(*) FROM public.data_commit_info WHERE table_id = $1)",
+            &[&table_id],
+        )
+        .await
+        .with_context(|| format!("metadata counts for table_id={table_id}"))?;
+    Ok([row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)])
+}
+
 async fn pg_class_count(h: &Harness, table: &str) -> Result<i64> {
-    let sql = format!("SELECT count(*) FROM pg_class WHERE relname = '{table}'");
-    scalar(&h.lake, &sql).await
+    let row = h
+        .lake
+        .query_one(
+            "SELECT count(*) FROM pg_class WHERE relname = $1",
+            &[&table],
+        )
+        .await
+        .with_context(|| format!("pg_class count for {table}"))?;
+    row.try_get(0)
+        .with_context(|| format!("pg_class count for {table}"))
 }
 
 /// First column of the single row `sql` returns, as an `i64`.
