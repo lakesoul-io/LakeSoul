@@ -47,6 +47,9 @@ async fn ddl_create_and_drop_tables() -> Result<()> {
             simple_query_batch_with_ddl_is_refused(h).await?;
             if_not_exists_keeps_the_existing_schema(h).await?;
             ddl_is_refused_inside_a_transaction(h).await?;
+            same_connection_ddl_replans_prepared_statements(h).await?;
+            cross_connection_drop_keeps_the_bound_plan(h).await?;
+            cross_connection_drop_and_recreate_keeps_the_bound_plan(h).await?;
             Ok(())
         })
     })
@@ -858,6 +861,280 @@ async fn ddl_is_refused_inside_a_transaction(h: &Harness) -> Result<()> {
     Ok(())
 }
 
+/// A successful `CREATE`/`DROP` on this connection advances its settings
+/// generation, so a statement parsed earlier is replanned at `Execute`: after
+/// `DROP` it reports `42P01`, and after `DROP` + same-name `CREATE` it binds
+/// the new table. A refused DDL statement must not invalidate anything.
+async fn same_connection_ddl_replans_prepared_statements(h: &Harness) -> Result<()> {
+    const CONTRACT: &str = "same-connection-ddl-plan-invalidation";
+    command(
+        h,
+        "CREATE TABLE ddl_replan (id BIGINT NOT NULL PRIMARY KEY, label TEXT)",
+    )
+    .await?;
+    h.lake
+        .simple_query("INSERT INTO ddl_replan VALUES (1, 'old')")
+        .await
+        .with_context(|| format!("case={CONTRACT} seed INSERT"))?;
+    let statement = h
+        .lake
+        .prepare("SELECT label FROM ddl_replan WHERE id = 1")
+        .await
+        .with_context(|| format!("case={CONTRACT} prepare"))?;
+    let before: Option<String> = h
+        .lake
+        .query_one(&statement, &[])
+        .await
+        .with_context(|| format!("case={CONTRACT} first Execute"))?
+        .get(0);
+    ensure!(
+        before.as_deref() == Some("old"),
+        "case={CONTRACT}: expected the seeded row before DROP, actual {before:?}"
+    );
+
+    // A failed DDL statement has not changed the catalog: the plan stays
+    // valid. The duplicate name is the easiest refusal to reach here.
+    let duplicate = error_code(h, "CREATE TABLE ddl_replan (id BIGINT)")
+        .await
+        .with_context(|| format!("case={CONTRACT} refused CREATE"))?;
+    ensure!(
+        duplicate == "42P07",
+        "case={CONTRACT}: duplicate CREATE expected 42P07, actual {duplicate}"
+    );
+    let still_valid: Option<String> = h
+        .lake
+        .query_one(&statement, &[])
+        .await
+        .with_context(|| format!("case={CONTRACT} Execute after refused DDL"))?
+        .get(0);
+    ensure!(
+        still_valid.as_deref() == Some("old"),
+        "case={CONTRACT}: a refused DDL must not break the bound plan, actual {still_valid:?}"
+    );
+
+    command(h, "DROP TABLE ddl_replan").await?;
+    let error = h
+        .lake
+        .query(&statement, &[])
+        .await
+        .expect_err("Execute after same-connection DROP must fail");
+    ensure_server_sqlstate(&error, "42P01", CONTRACT)?;
+
+    // The generated plan is replaced, not reused: the same Statement now
+    // binds the table re-created under the same name.
+    command(
+        h,
+        "CREATE TABLE ddl_replan (id BIGINT NOT NULL PRIMARY KEY, label TEXT)",
+    )
+    .await?;
+    h.lake
+        .simple_query("INSERT INTO ddl_replan VALUES (1, 'new')")
+        .await
+        .with_context(|| format!("case={CONTRACT} seed re-created table"))?;
+    let after: Option<String> = h
+        .lake
+        .query_one(&statement, &[])
+        .await
+        .with_context(|| format!("case={CONTRACT} Execute after DROP+CREATE"))?
+        .get(0);
+    ensure!(
+        after.as_deref() == Some("new"),
+        "case={CONTRACT}: DROP+CREATE must bind the new table, actual {after:?}"
+    );
+    eprintln!(
+        "PASS case={CONTRACT} DROP=42P01 DROP+CREATE=new-table refused-DDL=keeps-plan"
+    );
+    command(h, "DROP TABLE ddl_replan").await?;
+    Ok(())
+}
+
+/// A prepared statement binds catalog objects at Parse. A `DROP` from another
+/// connection removes the metadata but does not invalidate this connection's
+/// plan, so `Execute` still runs the old binding: its scan lists no committed
+/// files and the aggregate returns zero rows instead of PostgreSQL's
+/// `42P01`. Re-Prepare sees the deletion; its SQLSTATE is the documented
+/// catalog-resolution boundary (`XX000`), not PostgreSQL equivalence.
+async fn cross_connection_drop_keeps_the_bound_plan(h: &Harness) -> Result<()> {
+    const CONTRACT: &str = "cross-connection-drop-bound-plan";
+    const CLASSIFICATION: &str = "lakesoul-catalog-binding";
+    let other = h.connect_lake().await?;
+    other
+        .simple_query("CREATE TABLE ddl_cross_drop (id BIGINT, label TEXT)")
+        .await
+        .context("cross-connection fixture CREATE")?;
+    other
+        .simple_query("INSERT INTO ddl_cross_drop VALUES (1, 'a'), (2, 'b')")
+        .await
+        .context("cross-connection fixture INSERT")?;
+    let statement = h
+        .lake
+        .prepare("SELECT count(*) FROM ddl_cross_drop")
+        .await
+        .context("prepare before the cross-connection DROP")?;
+    let before: i64 = h
+        .lake
+        .query_one(&statement, &[])
+        .await
+        .context("first Execute before the cross-connection DROP")?
+        .get(0);
+    ensure!(
+        before == 2,
+        "case={CONTRACT}: expected 2 rows before the peer DROP, actual {before}"
+    );
+
+    other
+        .simple_query("DROP TABLE ddl_cross_drop")
+        .await
+        .context("peer DROP TABLE")?;
+    ensure!(
+        metadata(h, "ddl_cross_drop").await?.is_none(),
+        "case={CONTRACT}: peer DROP must remove the table_info row"
+    );
+
+    // A refused DDL statement on this connection must not advance the
+    // generation: if it did, the stale plan below would be replanned and
+    // report the now-missing table instead of running its old binding.
+    let refused = error_code(h, "CREATE TABLE items (id INT)")
+        .await
+        .with_context(|| format!("case={CONTRACT} refused DDL"))?;
+    ensure!(
+        refused == "42P07",
+        "case={CONTRACT}: duplicate CREATE expected 42P07, actual {refused}"
+    );
+
+    // The old binding still runs: no error, no rows.
+    let after: i64 = h
+        .lake
+        .query_one(&statement, &[])
+        .await
+        .with_context(|| {
+            format!(
+                "case={CONTRACT} classification={CLASSIFICATION}: the old \
+                 binding must keep executing after a peer DROP and a refused \
+                 local DDL"
+            )
+        })?
+        .get(0);
+    ensure!(
+        after == 0,
+        "case={CONTRACT} classification={CLASSIFICATION}: expected zero rows \
+         from the old table_id, actual {after}"
+    );
+
+    let error = h
+        .lake
+        .prepare("SELECT count(*) FROM ddl_cross_drop")
+        .await
+        .expect_err("a fresh Prepare after the peer DROP must fail");
+    ensure_server_sqlstate(&error, "XX000", "fresh Prepare after peer DROP")?;
+    eprintln!(
+        "PASS case={CONTRACT} classification={CLASSIFICATION} old-binding=zero-rows \
+         re-prepare=XX000 metadata=absent refused-DDL=no-invalidation"
+    );
+    Ok(())
+}
+
+/// `DROP` + same-name `CREATE` from another connection leaves the first
+/// connection's plan on the old `table_id`: the old binding returns no rows
+/// (the old commits were dropped) while a fresh Prepare reads the new table.
+/// This is the documented LakeSoul catalog-binding boundary, not PostgreSQL's
+/// catalog invalidation.
+async fn cross_connection_drop_and_recreate_keeps_the_bound_plan(
+    h: &Harness,
+) -> Result<()> {
+    const CONTRACT: &str = "cross-connection-drop-recreate-bound-plan";
+    const CLASSIFICATION: &str = "lakesoul-catalog-binding";
+    let other = h.connect_lake().await?;
+    other
+        .simple_query("CREATE TABLE ddl_cross_recreate (id BIGINT, label TEXT)")
+        .await
+        .context("cross-connection recreate fixture CREATE")?;
+    other
+        .simple_query("INSERT INTO ddl_cross_recreate VALUES (1, 'old')")
+        .await
+        .context("cross-connection recreate fixture INSERT")?;
+    let old_table_id = metadata(h, "ddl_cross_recreate")
+        .await?
+        .with_context(|| format!("case={CONTRACT}: metadata before DROP"))?
+        .table_id;
+    let statement = h
+        .lake
+        .prepare("SELECT label FROM ddl_cross_recreate WHERE id = 1")
+        .await
+        .context("prepare before the cross-connection DROP")?;
+    let before: Option<String> = h
+        .lake
+        .query_one(&statement, &[])
+        .await
+        .context("first Execute before the cross-connection DROP")?
+        .get(0);
+    ensure!(
+        before.as_deref() == Some("old"),
+        "case={CONTRACT}: expected the old row before DROP, actual {before:?}"
+    );
+
+    other
+        .simple_query("DROP TABLE ddl_cross_recreate")
+        .await
+        .context("peer DROP TABLE")?;
+    other
+        .simple_query("CREATE TABLE ddl_cross_recreate (id BIGINT, label TEXT)")
+        .await
+        .context("peer same-name CREATE TABLE")?;
+    other
+        .simple_query("INSERT INTO ddl_cross_recreate VALUES (1, 'new')")
+        .await
+        .context("peer INSERT into the re-created table")?;
+    let new_table_id = metadata(h, "ddl_cross_recreate")
+        .await?
+        .with_context(|| format!("case={CONTRACT}: metadata after re-create"))?
+        .table_id;
+    ensure!(
+        new_table_id != old_table_id,
+        "case={CONTRACT}: re-create must publish a new table_id, both were \
+         {old_table_id}"
+    );
+
+    let stale_rows = h.lake.query(&statement, &[]).await.with_context(|| {
+        format!(
+            "case={CONTRACT} classification={CLASSIFICATION}: the old \
+                 binding must keep executing after DROP+CREATE"
+        )
+    })?;
+    ensure!(
+        stale_rows.is_empty(),
+        "case={CONTRACT} classification={CLASSIFICATION}: the old table_id has \
+         no commits after its DROP, expected no rows, actual {}",
+        stale_rows.len()
+    );
+
+    let fresh = h
+        .lake
+        .prepare("SELECT label FROM ddl_cross_recreate WHERE id = 1")
+        .await
+        .context("fresh Prepare after DROP+CREATE")?;
+    let fresh_value: Option<String> = h
+        .lake
+        .query_one(&fresh, &[])
+        .await
+        .context("Execute of the fresh Prepare")?
+        .get(0);
+    ensure!(
+        fresh_value.as_deref() == Some("new"),
+        "case={CONTRACT}: a fresh Prepare must bind the new table, actual \
+         {fresh_value:?}"
+    );
+    eprintln!(
+        "PASS case={CONTRACT} classification={CLASSIFICATION} \
+         old-binding=no-rows fresh-prepare=new-table"
+    );
+    other
+        .simple_query("DROP TABLE ddl_cross_recreate")
+        .await
+        .context("cleanup DROP of the re-created table")?;
+    Ok(())
+}
+
 /// Run one DDL statement and require success.
 async fn command(h: &Harness, sql: &str) -> Result<()> {
     h.lake
@@ -870,6 +1147,27 @@ async fn command(h: &Harness, sql: &str) -> Result<()> {
 /// SQLSTATE of a statement that must fail with a server-side error.
 async fn error_code(h: &Harness, sql: &str) -> Result<String> {
     Ok(error_detail(h, sql).await?.0)
+}
+
+/// Require a client error to be a server `ErrorResponse` with `expected`.
+fn ensure_server_sqlstate(
+    error: &tokio_postgres::Error,
+    expected: &str,
+    context: &str,
+) -> Result<()> {
+    let db = error.as_db_error().with_context(|| {
+        format!(
+            "{context}: expected a server ErrorResponse, actual client-side \
+             rejection: {error}"
+        )
+    })?;
+    ensure!(
+        db.code().code() == expected,
+        "{context}: expected SQLSTATE {expected}, actual {} ({})",
+        db.code().code(),
+        db.message()
+    );
+    Ok(())
 }
 
 /// SQLSTATE and message of a statement that must fail server-side.

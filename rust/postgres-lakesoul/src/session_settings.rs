@@ -723,7 +723,9 @@ fn session_defaults(client: &dyn HookClient) -> PgWireResult<SessionDefaults> {
 }
 
 /// The connection's setting generation, shared with its statement executor.
-fn settings_generation(client: &dyn HookClient) -> PgWireResult<Arc<SettingsGeneration>> {
+pub(crate) fn settings_generation(
+    client: &dyn HookClient,
+) -> PgWireResult<Arc<SettingsGeneration>> {
     client
         .session_extensions()
         .get::<ConnectionSession>()

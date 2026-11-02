@@ -44,7 +44,7 @@ use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::response::TransactionStatus;
 
 use crate::catalog::PUBLIC_SCHEMA;
-use crate::session_settings::SessionSettingsHook;
+use crate::session_settings::{SessionSettingsHook, settings_generation};
 
 const FEATURE_NOT_SUPPORTED: &str = "0A000";
 const UNDEFINED_TABLE: &str = "42P01";
@@ -270,8 +270,7 @@ impl QueryHook for DdlStatementHook {
         session_context: &SessionContext,
         client: &mut dyn HookClient,
     ) -> Option<PgWireResult<Response>> {
-        self.handle(statement, session_context, client.transaction_status())
-            .await
+        self.handle(statement, session_context, client).await
     }
 
     async fn handle_extended_parse_query(
@@ -300,8 +299,7 @@ impl QueryHook for DdlStatementHook {
         session_context: &SessionContext,
         client: &mut dyn HookClient,
     ) -> Option<PgWireResult<Response>> {
-        self.handle(statement, session_context, client.transaction_status())
-            .await
+        self.handle(statement, session_context, client).await
     }
 }
 
@@ -338,25 +336,36 @@ impl DdlStatementHook {
         &self,
         statement: &Statement,
         session_context: &SessionContext,
-        transaction_status: TransactionStatus,
+        client: &mut dyn HookClient,
     ) -> Option<PgWireResult<Response>> {
         if let Err(error) =
-            reject_in_transaction(transaction_status, ddl_verb(statement)?)
+            reject_in_transaction(client.transaction_status(), ddl_verb(statement)?)
         {
             return Some(Err(error));
         }
-        match statement {
+        let result = match statement {
             Statement::CreateTable(create) => {
-                Some(self.create_table(create, session_context).await)
+                self.create_table(create, session_context).await
             }
             Statement::Drop {
                 object_type: ObjectType::Table,
                 if_exists,
                 names,
                 ..
-            } => Some(self.drop_table(*if_exists, names, session_context).await),
-            _ => None,
+            } => self.drop_table(*if_exists, names, session_context).await,
+            _ => return None,
+        };
+        // A successful CREATE/DROP changes the catalog objects the
+        // connection's prepared statements bound at Parse: advance the
+        // settings generation once for the whole statement, so their next
+        // `Execute` replans against the new catalog. A refused statement has
+        // not touched the catalog and must leave every plan valid.
+        if result.is_ok()
+            && let Ok(settings) = settings_generation(client)
+        {
+            settings.bump();
         }
+        Some(result)
     }
 }
 

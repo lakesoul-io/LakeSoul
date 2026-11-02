@@ -34,6 +34,7 @@ async fn insert_contract() -> Result<()> {
             on_conflict_do_update_replaces_the_row(h).await?;
             multi_partition_insert_publishes_atomically(h).await?;
             refusal_matrix_changes_nothing(h).await?;
+            prepared_insert_into_dropped_table_leaves_no_state(h).await?;
             Ok(())
         })
     })
@@ -295,6 +296,61 @@ async fn multi_partition_insert_publishes_atomically(h: &Harness) -> Result<()> 
         .await?
         .get::<_, i64>(0);
     ensure_eq("multi-partition second connection rows", count, 3)?;
+    Ok(())
+}
+
+/// A prepared `INSERT` whose target another connection dropped is rejected
+/// at Execute with `42P01`, and leaves no metadata row or file behind.
+///
+/// The target is resolved from metadata when the statement executes, so this
+/// is the insert path's own `42P01`; the prepared statement still exists on
+/// this connection, but it cannot reach the deleted table.
+async fn prepared_insert_into_dropped_table_leaves_no_state(h: &Harness) -> Result<()> {
+    let other = h.connect_lake().await?;
+    other
+        .simple_query(
+            "CREATE TABLE insert_drop_target (id BIGINT NOT NULL PRIMARY KEY, label TEXT)",
+        )
+        .await
+        .context("cross-connection INSERT fixture CREATE")?;
+    let insert = h
+        .lake
+        .prepare("INSERT INTO insert_drop_target (id, label) VALUES ($1, $2)")
+        .await
+        .context("prepare INSERT before the peer DROP")?;
+    other
+        .simple_query("DROP TABLE insert_drop_target")
+        .await
+        .context("peer DROP of the INSERT target")?;
+    let remaining = h
+        .reference
+        .query_one(
+            "SELECT count(*) FROM public.table_info \
+             WHERE table_namespace = $1 AND table_name = $2",
+            &[&h.lake_namespace, &"insert_drop_target"],
+        )
+        .await
+        .context("table_info count after the peer DROP")?
+        .get::<_, i64>(0);
+    ensure_eq("table_info rows after peer DROP", remaining, 0)?;
+
+    let before = h.authoritative_snapshot().await?;
+    let error = h
+        .lake
+        .execute(&insert, &[&1i64, &"x"])
+        .await
+        .expect_err("INSERT into a dropped table must fail");
+    ensure_sqlstate(
+        &error,
+        "42P01",
+        "prepared INSERT into a table dropped by another connection",
+    )?;
+    let after = h.authoritative_snapshot().await?;
+    ensure_snapshot_unchanged(&before, &after, "INSERT into a dropped table")?;
+    eprintln!(
+        "PASS case=prepared-insert-dropped-target SQLSTATE=42P01 \
+         authoritative-snapshot=unchanged"
+    );
     Ok(())
 }
 

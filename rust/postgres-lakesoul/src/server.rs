@@ -15,7 +15,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::DataType;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::error::DataFusionError;
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::scalar_subquery::ScalarSubqueryCardinalityError;
 use datafusion::prelude::SessionContext;
 use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
@@ -707,7 +709,17 @@ impl LakeSoulQueryRouter {
         if !matches!(*portal.state.lock().await, PortalExecutionState::Initial) {
             return Ok(());
         }
-        let (sql, _) = &statement.statement;
+        let (sql, planned) = &statement.statement;
+        // A table this plan bound may have been dropped by this connection's
+        // own `DROP TABLE`: replanning would then fail as a generic catalog
+        // resolution error (`XX000`), while PostgreSQL reports `42P01` for a
+        // relation that no longer exists. Report the missing binding before
+        // planning again, so same-connection DDL behaves like PostgreSQL.
+        if let Some((_, plan)) = planned
+            && let Some(table) = missing_bound_table(&state.session.context, plan)
+        {
+            return Err(undefined_relation(&table));
+        }
         let Some(planned) = self
             .parser
             .parse_sql(client, sql, &statement.parameter_types)
@@ -731,6 +743,49 @@ impl LakeSoulQueryRouter {
         state.settings.record(&statement.id);
         Ok(())
     }
+}
+
+/// The first table a stale plan scans that this connection's catalog no
+/// longer holds.
+///
+/// Only called before replanning a portal whose plan predates a session
+/// generation change. A same-connection `DROP TABLE` bumps that generation, so
+/// a scan bound before the drop is reported as `42P01` at `Execute`, as
+/// PostgreSQL does, instead of the generic catalog-resolution `XX000`.
+fn missing_bound_table(context: &SessionContext, plan: &LogicalPlan) -> Option<String> {
+    let state = context.state();
+    let catalog_options = &state.config_options().catalog;
+    let mut missing = None;
+    let _ = plan.apply(|node| {
+        if missing.is_some() {
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        if let LogicalPlan::TableScan(scan) = node {
+            let resolved = scan.table_name.clone().resolve(
+                &catalog_options.default_catalog,
+                &catalog_options.default_schema,
+            );
+            let exists = state
+                .catalog_list()
+                .catalog(resolved.catalog.as_ref())
+                .and_then(|catalog| catalog.schema(resolved.schema.as_ref()))
+                .is_some_and(|schema| schema.table_exist(resolved.table.as_ref()));
+            if !exists {
+                missing = Some(resolved.table.to_string());
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+    missing
+}
+
+/// PostgreSQL `undefined_table` for a binding the catalog lost.
+fn undefined_relation(name: &str) -> PgWireError {
+    PgWireError::UserError(Box::new(ErrorInfo::new(
+        "ERROR".to_string(),
+        "42P01".to_string(),
+        format!("relation \"{name}\" does not exist"),
+    )))
 }
 
 #[async_trait]
