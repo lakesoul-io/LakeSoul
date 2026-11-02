@@ -402,24 +402,26 @@ const PK_LOOKUP_IN_LIST_LIMIT: usize = 4096;
 enum StreamLookupMode {
     /// The historical 4096-key chunks.
     Off,
-    /// One request per input batch (the batch is already in memory).
-    Batch,
+    /// One request per input batch; the key stream is never buffered beyond
+    /// the batch the engine already produced.
+    Stream,
     /// One request per bounded key window inside an execution partition.
     Partition,
 }
 
 /// `LAKESOUL_IVM_STREAM_LOOKUP`:
 /// - unset/off: 4k-key chunks;
-/// - `batch`/`on`/`1`/`true`: one request per input batch;
+/// - `stream`/`batch`/`on`/`1`/`true`: one request per input batch, no key
+///   buffering beyond that batch;
 /// - `partition`/`bulk`: one request per bounded key window (default 32k
-///   keys; fewer reader/merge setups, higher memory than `batch`).
+///   keys; fewer reader/merge setups, higher memory than `stream`).
 fn stream_lookup_mode() -> StreamLookupMode {
     match std::env::var("LAKESOUL_IVM_STREAM_LOOKUP")
         .unwrap_or_default()
         .to_ascii_lowercase()
         .as_str()
     {
-        "on" | "1" | "true" | "batch" => StreamLookupMode::Batch,
+        "on" | "1" | "true" | "stream" | "batch" => StreamLookupMode::Stream,
         "partition" | "bulk" => StreamLookupMode::Partition,
         _ => StreamLookupMode::Off,
     }
@@ -1198,6 +1200,85 @@ impl ExecutionPlanProperties for IvmPkLookupExec {
 }
 
 impl IvmPkLookupExec {
+    /// Resolve each input batch as it arrives; no window or bucket key buffer.
+    fn execute_batch_stream(
+        &self,
+        partition: usize,
+        context: Arc<datafusion::execution::TaskContext>,
+    ) -> DataFusionResult<SendableRecordBatchStream> {
+        let input = self.input.execute(partition, context)?;
+        let groups = if self.bucket_count == 1 {
+            self.groups_by_bucket.first().cloned().unwrap_or_default()
+        } else {
+            self.groups_by_bucket
+                .get(partition)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let table = self.table.clone();
+        let key = self.key.clone();
+        let state_schema = self.table.schema.clone();
+        let out_schema = self.schema.clone();
+        let gate = self.gate.clone();
+        let multi_match = self.multi_match;
+        let emit_unmatched = self.emit_unmatched;
+        let profile_io = self.profile_io.clone();
+        let stream = futures::stream::try_unfold(input, move |mut input| {
+            let table = table.clone();
+            let key = key.clone();
+            let state_schema = state_schema.clone();
+            let out_schema = out_schema.clone();
+            let gate = gate.clone();
+            let profile_io = profile_io.clone();
+            let groups = groups.clone();
+            async move {
+                loop {
+                    match input.next().await {
+                        None => return Ok(None),
+                        Some(Err(error)) => return Err(error),
+                        Some(Ok(batch)) if batch.num_rows() == 0 => continue,
+                        Some(Ok(batch)) => {
+                            let started = std::time::Instant::now();
+                            let (output, state_rows) = lookup_streaming_bulk(
+                                &table,
+                                &groups,
+                                &batch,
+                                &state_schema,
+                                &out_schema,
+                                &key,
+                                multi_match,
+                                emit_unmatched,
+                                gate,
+                            )
+                            .await?;
+                            tracing::debug!(
+                                table = %table.table_name,
+                                key = %key.display(),
+                                partition,
+                                contribution_rows = batch.num_rows(),
+                                state_rows,
+                                output_rows = output.num_rows(),
+                                elapsed = ?started.elapsed(),
+                                "keyed state lookup stream finished"
+                            );
+                            if let Some(io) = &profile_io {
+                                crate::observability::add_lookup_time_shared(
+                                    io,
+                                    started.elapsed(),
+                                );
+                            }
+                            return Ok(Some((output, input)));
+                        }
+                    }
+                }
+            }
+        });
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.schema.clone(),
+            stream,
+        )))
+    }
+
     /// Consume one execution partition's contribution in bounded windows and
     /// resolve each window with one explicit-key request.
     ///
@@ -1361,9 +1442,14 @@ impl ExecutionPlan for IvmPkLookupExec {
         partition: usize,
         context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
-        let stream_mode = stream_lookup_mode();
-        if stream_mode == StreamLookupMode::Partition {
-            return self.execute_stream_lookup(partition, context);
+        match stream_lookup_mode() {
+            StreamLookupMode::Partition => {
+                return self.execute_stream_lookup(partition, context);
+            }
+            StreamLookupMode::Stream => {
+                return self.execute_batch_stream(partition, context);
+            }
+            StreamLookupMode::Off => {}
         }
         let input = self.input.execute(partition, context)?;
         let groups = if self.bucket_count == 1 {
@@ -1382,7 +1468,6 @@ impl ExecutionPlan for IvmPkLookupExec {
         let multi_match = self.multi_match;
         let emit_unmatched = self.emit_unmatched;
         let chunk_rows = lookup_chunk_rows();
-        let batch_chunks = stream_mode == StreamLookupMode::Batch;
         let profile_io = self.profile_io.clone();
         let stream =
             futures::stream::try_unfold((input, groups), move |(mut input, groups)| {
@@ -1405,11 +1490,6 @@ impl ExecutionPlan for IvmPkLookupExec {
                         let mut outputs = Vec::new();
                         let mut state_rows = 0usize;
                         let mut chunks = 0usize;
-                        let chunk_rows = if batch_chunks {
-                            batch.num_rows().clamp(1, 65_536)
-                        } else {
-                            chunk_rows
-                        };
                         for offset in (0..batch.num_rows()).step_by(chunk_rows) {
                             let length = chunk_rows.min(batch.num_rows() - offset);
                             let chunk = batch.slice(offset, length);
