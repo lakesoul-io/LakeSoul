@@ -30,20 +30,30 @@
 //! conflict is a plain duplicate key. Index auto-maintenance runs after the
 //! metadata commit, so a failed vector/text index build still returns an
 //! error even though the rows are committed and visible.
+//!
+//! Before planning, the statement is analysed the way PostgreSQL analyses it:
+//! the source must line up with the target columns (`42601`), a no-list
+//! source shorter than the table is completed with NULLs for the unlisted
+//! columns, an untyped string literal is converted to the target type
+//! (`22P02` when it does not convert), and every other expression must be
+//! assignment-castable (`42804`). `SELECT` expression casts keep their own
+//! documented boundary.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use datafusion::arrow::datatypes::{DataType, Field, SchemaRef};
 use datafusion::catalog::TableProvider;
-use datafusion::common::ParamValues;
+use datafusion::common::{DFSchemaRef, ParamValues, ScalarValue};
 use datafusion::error::DataFusionError;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{
     AssignmentTarget, ConflictTarget, Expr, Insert, ObjectName, ObjectNamePart,
-    OnConflictAction, OnInsert, Statement, TableObject,
+    OnConflictAction, OnInsert, Query, SelectItem, SetExpr, SqliteOnConflict, Statement,
+    TableObject, Value, Values,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
@@ -70,6 +80,12 @@ const INVALID_SCHEMA_NAME: &str = "3F000";
 const INVALID_CATALOG_NAME: &str = "3D000";
 /// SQLSTATE `invalid_column_reference` (no unique constraint for the target).
 const NO_UNIQUE_CONSTRAINT: &str = "42P10";
+/// SQLSTATE `syntax_error` (the source does not match the target column count).
+const SYNTAX_ERROR: &str = "42601";
+/// SQLSTATE `datatype_mismatch` (the source expression is not assignable).
+const DATATYPE_MISMATCH: &str = "42804";
+/// SQLSTATE `invalid_text_representation` (a string literal does not convert).
+const INVALID_TEXT_REPRESENTATION: &str = "22P02";
 
 pub(crate) struct InsertStatementHook;
 
@@ -102,7 +118,7 @@ impl QueryHook for InsertStatementHook {
             async {
                 let (status, database) = request_context(client)?;
                 let target = prepare(insert, session_context, status, &database).await?;
-                plan_target(insert, &target, session_context).await
+                plan_target(&target, session_context).await
             }
             .await,
         )
@@ -140,10 +156,13 @@ fn extract(statement: &Statement) -> Option<&Insert> {
 
 /// Everything the statement's execution depends on, resolved once.
 struct Target {
-    /// Whether the AST must be planned as a LakeSoul replace (`DO UPDATE`).
-    replace: bool,
     /// What the sink does with a key that is already present.
     mode: ConflictMode,
+    /// The statement to plan: `ON CONFLICT` is dropped (DataFusion refuses
+    /// it), `DO UPDATE` selects the replace write operation, and a no-list
+    /// `VALUES` source shorter than the table is padded with NULLs, which is
+    /// PostgreSQL's default semantics for the unlisted columns.
+    statement: Insert,
 }
 
 /// Connection state a hook may hold across an `await`.
@@ -197,7 +216,575 @@ async fn prepare(
         .collect::<BTreeSet<_>>();
 
     let (replace, mode) = conflict_plan(insert, &fields, &primary_keys, &range)?;
-    Ok(Target { replace, mode })
+    let statement =
+        checked_statement(insert, &provider.schema(), session_context, replace).await?;
+    Ok(Target { mode, statement })
+}
+
+/// PostgreSQL analyses an `INSERT` before planning it: the source must have
+/// one expression per target column, a no-list source shorter than the table
+/// is completed with NULLs for the unlisted columns, and every exported
+/// column is checked against the assignment cast matrix. This performs that
+/// analysis on the AST so the errors carry PostgreSQL's SQLSTATEs instead of
+/// the planner's internal `XX000`, and returns the statement to plan (with a
+/// possibly padded source).
+async fn checked_statement(
+    insert: &Insert,
+    schema: &SchemaRef,
+    session_context: &SessionContext,
+    replace: bool,
+) -> PgWireResult<Insert> {
+    let mut statement = insert.clone();
+    statement.on = None;
+    if replace {
+        statement.or = Some(SqliteOnConflict::Replace);
+    }
+    let targets = exported_columns(insert, schema)?;
+    validate_source(&mut statement, &targets, session_context).await?;
+    Ok(statement)
+}
+
+/// The table columns the statement's source is assigned to, in source order:
+/// an explicit column list, otherwise the table's schema order. A column the
+/// planner cannot resolve stays `None` (the planner reports its own error).
+fn exported_columns<'a>(
+    insert: &Insert,
+    schema: &'a SchemaRef,
+) -> PgWireResult<Vec<Option<&'a Field>>> {
+    if insert.columns.is_empty() {
+        return Ok(schema
+            .fields()
+            .iter()
+            .map(|field| Some(field.as_ref()))
+            .collect());
+    }
+    let mut columns = Vec::with_capacity(insert.columns.len());
+    for name in &insert.columns {
+        let column = single_column(name)?;
+        columns.push(
+            schema
+                .fields()
+                .iter()
+                .find(|field| field.name().to_lowercase() == column)
+                .map(|field| field.as_ref()),
+        );
+    }
+    Ok(columns)
+}
+
+/// Column-count and assignment rules of PostgreSQL's `INSERT` analysis.
+async fn validate_source(
+    statement: &mut Insert,
+    targets: &[Option<&Field>],
+    session_context: &SessionContext,
+) -> PgWireResult<()> {
+    let explicit = !statement.columns.is_empty();
+    let expected = targets.len();
+    let widths: Option<Vec<usize>> = statement
+        .source
+        .as_ref()
+        .and_then(|source| values(source))
+        .map(|values| values.rows.iter().map(|row| row.content.len()).collect());
+
+    // A `VALUES` source only needs a plan when one of its expressions is
+    // typed: untyped literals are resolved here instead, because PostgreSQL
+    // coerces them against the target column while the source query's own
+    // plan would infer a different type (or fail to cast the literal).
+    let source_schema = match &widths {
+        Some(_) => {
+            let typed = statement
+                .source
+                .as_ref()
+                .and_then(|source| values(source))
+                .is_some_and(values_have_typed);
+            match statement.source.as_ref() {
+                Some(source) if typed => plan_source(source, session_context).await,
+                _ => None,
+            }
+        }
+        None => match statement.source.as_ref() {
+            Some(source) => plan_source(source, session_context).await,
+            None => None,
+        },
+    };
+
+    match &widths {
+        Some(widths) => {
+            for &width in widths {
+                check_width(width, expected, !explicit)?;
+            }
+        }
+        None => {
+            if let Some(schema) = &source_schema {
+                check_width(schema.fields().len(), expected, !explicit)?;
+            }
+        }
+    }
+
+    if !explicit {
+        match &widths {
+            Some(_) => pad_source(statement, expected, 0),
+            None => {
+                if let Some(schema) = &source_schema {
+                    let width = schema.fields().len();
+                    if width < expected {
+                        pad_source(statement, expected, expected - width);
+                    }
+                }
+            }
+        }
+    }
+
+    match &widths {
+        Some(_) => {
+            let values = statement
+                .source
+                .as_ref()
+                .and_then(|source| values(source))
+                .expect("a VALUES source stays a VALUES source");
+            for (index, target) in targets.iter().enumerate() {
+                let Some(target) = target else { continue };
+                let column = values
+                    .rows
+                    .iter()
+                    .map(|row| &row.content[index])
+                    .collect::<Vec<_>>();
+                validate_values_column(index, &column, target, source_schema.as_ref())?;
+            }
+        }
+        None => {
+            let Some(schema) = &source_schema else {
+                return Ok(());
+            };
+            let width = schema.fields().len();
+            let source = statement
+                .source
+                .as_ref()
+                .expect("reject_unsupported guarantees a source");
+            for (index, target) in targets.iter().enumerate() {
+                if index >= width {
+                    // The column was added by the NULL completion above.
+                    continue;
+                }
+                let Some(target) = target else { continue };
+                validate_select_column(source, index, width, target, schema)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `more expressions` when the source is wider than the target, `more target
+/// columns` when it is narrower and padding is not allowed.
+fn check_width(width: usize, expected: usize, pad: bool) -> PgWireResult<()> {
+    if width > expected {
+        return Err(user_error(
+            SYNTAX_ERROR,
+            "INSERT has more expressions than target columns".to_string(),
+        ));
+    }
+    if width < expected && !pad {
+        return Err(user_error(
+            SYNTAX_ERROR,
+            "INSERT has more target columns than expressions".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Complete a no-list source to the table's width the way PostgreSQL fills
+/// the unlisted columns with their default (NULL, since LakeSoul has no
+/// `DEFAULT`): `VALUES` rows get trailing NULL expressions and `SELECT`
+/// projections get trailing NULL columns.
+fn pad_source(statement: &mut Insert, width: usize, added: usize) {
+    let Some(source) = statement.source.as_mut() else {
+        return;
+    };
+    pad_body(source.body.as_mut(), width, added);
+}
+
+fn pad_body(body: &mut SetExpr, width: usize, added: usize) {
+    match body {
+        SetExpr::Values(values) => {
+            for row in &mut values.rows {
+                while row.content.len() < width {
+                    row.content.push(Expr::Value(Value::Null.into()));
+                }
+            }
+        }
+        SetExpr::Select(select) => {
+            for _ in 0..added {
+                select
+                    .projection
+                    .push(SelectItem::UnnamedExpr(Expr::Value(Value::Null.into())));
+            }
+        }
+        SetExpr::Query(query) => pad_body(query.body.as_mut(), width, added),
+        SetExpr::SetOperation { left, right, .. } => {
+            pad_body(left, width, added);
+            pad_body(right, width, added);
+        }
+        _ => {}
+    }
+}
+
+/// The source query's own logical schema, or `None` when it cannot be planned
+/// on its own (for example while a parameter type is still unknown). The
+/// statement's plan reports that error itself, so a missing schema only
+/// disables the static check.
+async fn plan_source(
+    query: &Query,
+    session_context: &SessionContext,
+) -> Option<DFSchemaRef> {
+    session_context
+        .state()
+        .statement_to_plan(DfStatement::Statement(Box::new(Statement::Query(
+            Box::new(query.clone()),
+        ))))
+        .await
+        .ok()
+        .map(|plan| plan.schema().clone())
+}
+
+fn values(query: &Query) -> Option<&Values> {
+    match query.body.as_ref() {
+        SetExpr::Values(values) => Some(values),
+        _ => None,
+    }
+}
+
+fn values_have_typed(values: &Values) -> bool {
+    values
+        .rows
+        .iter()
+        .flat_map(|row| row.content.iter())
+        .any(|expr| literal(expr).is_none())
+}
+
+/// A literal PostgreSQL treats as `unknown` (or a parameter whose type is
+/// supplied by the target column), as opposed to a typed expression.
+enum Literal<'a> {
+    Null,
+    String(&'a str),
+    Number(&'a str),
+    Boolean,
+    Placeholder,
+}
+
+fn literal(expr: &Expr) -> Option<Literal<'_>> {
+    match expr {
+        Expr::Nested(inner) => literal(inner),
+        Expr::Value(value) => match &value.value {
+            Value::Null => Some(Literal::Null),
+            Value::SingleQuotedString(text) => Some(Literal::String(text)),
+            Value::Number(text, _) => Some(Literal::Number(text)),
+            Value::Boolean(_) => Some(Literal::Boolean),
+            Value::Placeholder(_) => Some(Literal::Placeholder),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn validate_values_column(
+    index: usize,
+    column: &[&Expr],
+    target: &Field,
+    source_schema: Option<&DFSchemaRef>,
+) -> PgWireResult<()> {
+    let mut literals = Vec::with_capacity(column.len());
+    let mut typed = false;
+    for expr in column {
+        match literal(expr) {
+            Some(value) => literals.push(value),
+            None => typed = true,
+        }
+    }
+    if typed {
+        // A typed expression resolves the column's type; the literals in the
+        // other rows are coerced to it, so the planned type decides.
+        if let Some(source) = source_schema
+            .and_then(|schema| schema.fields().get(index))
+            .map(|field| field.data_type())
+        {
+            return ensure_assignment(source, target);
+        }
+        return Ok(());
+    }
+    for value in literals {
+        check_literal(value, target)?;
+    }
+    Ok(())
+}
+
+fn check_literal(value: Literal<'_>, target: &Field) -> PgWireResult<()> {
+    let target_type = target.data_type();
+    match value {
+        Literal::Null | Literal::Placeholder => Ok(()),
+        Literal::String(text) => {
+            if is_string(target_type) {
+                return Ok(());
+            }
+            if is_numeric(target_type)
+                || is_temporal(target_type)
+                || *target_type == DataType::Boolean
+                || is_binary(target_type)
+            {
+                ScalarValue::Utf8(Some(text.to_string()))
+                    .cast_to(target_type)
+                    .map_err(|_| {
+                        user_error(
+                            INVALID_TEXT_REPRESENTATION,
+                            format!(
+                                "invalid input syntax for type {}: \"{text}\"",
+                                pg_type_name(target_type)
+                            ),
+                        )
+                    })?;
+            }
+            Ok(())
+        }
+        Literal::Number(text) => {
+            if is_numeric(target_type) || is_string(target_type) {
+                Ok(())
+            } else {
+                Err(datatype_mismatch(target, number_type(text)))
+            }
+        }
+        Literal::Boolean => {
+            if *target_type == DataType::Boolean || is_string(target_type) {
+                Ok(())
+            } else {
+                Err(datatype_mismatch(target, "boolean"))
+            }
+        }
+    }
+}
+
+/// Check one exported column of an `INSERT ... SELECT` source. A projection
+/// item that is an untyped literal is resolved against the target column,
+/// exactly as in a `VALUES` row; every other expression is checked by the
+/// type the source query plans to. Nested queries and set operations are
+/// walked like the padding above, so every branch's expression at the
+/// column's position is checked.
+fn validate_select_column(
+    query: &Query,
+    index: usize,
+    width: usize,
+    target: &Field,
+    planned: &DFSchemaRef,
+) -> PgWireResult<()> {
+    validate_body_column(query.body.as_ref(), index, width, target, planned)
+}
+
+fn validate_body_column(
+    body: &SetExpr,
+    index: usize,
+    width: usize,
+    target: &Field,
+    planned: &DFSchemaRef,
+) -> PgWireResult<()> {
+    match body {
+        SetExpr::Select(select) => {
+            if let Some(expr) = projected_expression(&select.projection, index, width)
+                && let Some(value) = literal(expr)
+            {
+                return check_literal(value, target);
+            }
+            ensure_planned_type(index, target, planned)
+        }
+        SetExpr::Query(query) => {
+            validate_body_column(query.body.as_ref(), index, width, target, planned)
+        }
+        SetExpr::SetOperation { left, right, .. } => {
+            validate_body_column(left, index, width, target, planned)?;
+            validate_body_column(right, index, width, target, planned)
+        }
+        SetExpr::Values(values) => {
+            let column = values
+                .rows
+                .iter()
+                .filter_map(|row| row.content.get(index))
+                .collect::<Vec<_>>();
+            let mut literals = Vec::with_capacity(column.len());
+            let mut typed = false;
+            for expr in column {
+                match literal(expr) {
+                    Some(value) => literals.push(value),
+                    None => typed = true,
+                }
+            }
+            if typed {
+                return ensure_planned_type(index, target, planned);
+            }
+            for value in literals {
+                check_literal(value, target)?;
+            }
+            Ok(())
+        }
+        _ => ensure_planned_type(index, target, planned),
+    }
+}
+
+/// The expression a `SELECT` projects at `index`, when its projection list is
+/// fully explicit. A wildcard expands to an unknown number of columns, so the
+/// AST position of the items after it cannot be mapped; those projections are
+/// left to the planned type.
+fn projected_expression(
+    projection: &[SelectItem],
+    index: usize,
+    width: usize,
+) -> Option<&Expr> {
+    let explicit = projection.iter().all(|item| {
+        matches!(
+            item,
+            SelectItem::UnnamedExpr(_) | SelectItem::ExprWithAlias { .. }
+        )
+    });
+    if !explicit || projection.len() < width {
+        return None;
+    }
+    match projection.get(index)? {
+        SelectItem::UnnamedExpr(expr) => Some(expr),
+        SelectItem::ExprWithAlias { expr, .. } => Some(expr),
+        _ => None,
+    }
+}
+
+fn ensure_planned_type(
+    index: usize,
+    target: &Field,
+    planned: &DFSchemaRef,
+) -> PgWireResult<()> {
+    match planned.fields().get(index) {
+        Some(source) => ensure_assignment(source.data_type(), target),
+        None => Ok(()),
+    }
+}
+
+/// PostgreSQL's assignment cast matrix for the types a LakeSoul column can
+/// have. Everything else is a `42804`.
+fn ensure_assignment(source: &DataType, target: &Field) -> PgWireResult<()> {
+    if *source == DataType::Null {
+        // An unresolved parameter takes its type from the target column.
+        return Ok(());
+    }
+    if assignment_allowed(source, target.data_type()) {
+        return Ok(());
+    }
+    Err(datatype_mismatch(target, pg_type_name(source)))
+}
+
+fn assignment_allowed(source: &DataType, target: &DataType) -> bool {
+    if is_numeric(source) {
+        is_numeric(target) || is_string(target)
+    } else if *source == DataType::Boolean {
+        *target == DataType::Boolean || is_string(target)
+    } else if is_string(source) {
+        is_string(target)
+    } else if is_temporal(source) {
+        is_temporal(target) || is_string(target)
+    } else if is_binary(source) {
+        is_binary(target) || is_string(target)
+    } else {
+        false
+    }
+}
+
+fn is_numeric(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+            | DataType::Float16
+            | DataType::Float32
+            | DataType::Float64
+            | DataType::Decimal128(..)
+            | DataType::Decimal256(..)
+    )
+}
+
+fn is_string(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+    )
+}
+
+fn is_temporal(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Date32
+            | DataType::Date64
+            | DataType::Time32(_)
+            | DataType::Time64(_)
+            | DataType::Timestamp(_, _)
+    )
+}
+
+fn is_binary(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Binary
+            | DataType::LargeBinary
+            | DataType::BinaryView
+            | DataType::FixedSizeBinary(_)
+    )
+}
+
+fn pg_type_name(data_type: &DataType) -> &'static str {
+    match data_type {
+        DataType::Boolean => "boolean",
+        DataType::Int8 | DataType::Int16 | DataType::UInt8 | DataType::UInt16 => {
+            "smallint"
+        }
+        DataType::Int32 | DataType::UInt32 => "integer",
+        DataType::Int64 | DataType::UInt64 => "bigint",
+        DataType::Float16 | DataType::Float32 => "real",
+        DataType::Float64 => "double precision",
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => "text",
+        DataType::Date32 | DataType::Date64 => "date",
+        DataType::Timestamp(_, timezone) => match timezone {
+            Some(_) => "timestamp with time zone",
+            None => "timestamp without time zone",
+        },
+        DataType::Decimal128(..) | DataType::Decimal256(..) => "numeric",
+        DataType::Binary
+        | DataType::LargeBinary
+        | DataType::BinaryView
+        | DataType::FixedSizeBinary(_) => "bytea",
+        _ => "unknown",
+    }
+}
+
+/// The PostgreSQL type an untyped numeric literal gets.
+fn number_type(text: &str) -> &'static str {
+    if text.contains(['.', 'e', 'E']) {
+        "numeric"
+    } else if text.parse::<i32>().is_ok() {
+        "integer"
+    } else if text.parse::<i64>().is_ok() {
+        "bigint"
+    } else {
+        "numeric"
+    }
+}
+
+fn datatype_mismatch(target: &Field, source: &str) -> PgWireError {
+    user_error(
+        DATATYPE_MISMATCH,
+        format!(
+            "column \"{}\" is of type {} but expression is of type {source}",
+            target.name(),
+            pg_type_name(target.data_type())
+        ),
+    )
 }
 
 /// `ON CONFLICT` mapped onto LakeSoul's write modes.
@@ -525,25 +1112,18 @@ fn split_partitions(partitions: &str) -> (Vec<String>, Vec<String>) {
     (split(range), split(primary_keys))
 }
 
-/// Build the plan from a rewritten statement: the `ON CONFLICT` clause is
-/// dropped (DataFusion refuses it) and `DO UPDATE` selects the replace write
-/// operation.
+/// Plan the checked statement: `ON CONFLICT` is already dropped and `DO
+/// UPDATE` already rewritten to a replace.
 async fn plan_target(
-    insert: &Insert,
     target: &Target,
     session_context: &SessionContext,
 ) -> PgWireResult<LogicalPlan> {
-    let mut rewritten = insert.clone();
-    rewritten.on = None;
-    if target.replace {
-        rewritten.or = Some(datafusion::sql::sqlparser::ast::SqliteOnConflict::Replace);
-    }
     // The namespace is resolved by the catalog while planning, so the
     // statement's own spelling is kept.
     session_context
         .state()
         .statement_to_plan(DfStatement::Statement(Box::new(Statement::Insert(
-            rewritten,
+            target.statement.clone(),
         ))))
         .await
         .map_err(|error| PgWireError::ApiError(Box::new(error)))
@@ -565,7 +1145,7 @@ async fn run(
 ) -> PgWireResult<Response> {
     let target = prepare(insert, session_context, status, database).await?;
     write_mode(session_context)?.set(target.mode);
-    let plan = plan_target(insert, &target, session_context).await?;
+    let plan = plan_target(&target, session_context).await?;
     let dataframe = session_context
         .execute_logical_plan(plan)
         .await

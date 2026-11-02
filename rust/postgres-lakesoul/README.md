@@ -216,6 +216,7 @@ DDL 由 `src/ddl.rs` 的语句钩子承接，既不经过 DataFusion 自己的 D
 | `ON CONFLICT DO UPDATE` | 仅接受 `SET col = EXCLUDED.col` 覆盖全部非键列，并映射为 LakeSoul 整行 replace；结果行被完整重写 | `insert_contract::on_conflict_do_update_replaces_the_row` |
 | 多分区原子发布 | 一条 `INSERT` 写 3 个 range 分区时全部行一次可见；每个分区一条已提交 `data_commit_info`，`partition_info` 3 行且版本均为 0；committed 文件均存在 | `insert_contract::multi_partition_insert_publishes_atomically` |
 | 明确拒绝，无副作用 | `RETURNING`、非主键冲突目标、部分列 `DO UPDATE`、非 `EXCLUDED` 赋值、不存在表 `42P01`、跨 database `3D000`、跨 schema `3F000`、事务块内 `0A000`、simple-query 多语句批次 `0A000`；每次拒绝后权威快照不变 | `insert_contract::refusal_matrix_changes_nothing` |
+| 源分析与 PG SQLSTATE | 规划前按 PG 语义分析源：列数不匹配 `42601`、赋值类型不匹配 `42804`、字符串字面量无法转换为目标类型 `22P02`，simple 与 extended 两条路径的 SQLSTATE 都与参考 PostgreSQL 相同；无清单 `VALUES` 与 `SELECT` 少于表列数时按默认值语义补 NULL 并成功写入；`VALUES ('42')`、`SELECT '42'` 与混合投影 `SELECT id, '7'` 写入 `INTEGER` 分别得到 42／42／7；每次拒绝前后权威快照不变 | `insert_contract::insert_analysis_matches_postgres` |
 
 语义边界（LakeSoul 特有，不宣称 PG 等价）：
 
@@ -226,7 +227,7 @@ DDL 由 `src/ddl.rs` 的语句钩子承接，既不经过 DataFusion 自己的 D
 - 提交后维护失败：元数据提交成功后的 vector／text 索引自动构建失败仍使语句返回错误，但行已提交且可见。客户端不能把该错误的 INSERT 当作未生效。
 - 事务：DataFusion 没有事务，`BEGIN` 块内和 simple-query 多语句批次内的 `INSERT` 一律 `0A000`，避免客户端误以为 `ROLLBACK` 能撤销。
 - `RETURNING` 暂不支持：sink 在语句末尾提交，没有行流可回填。
-- 类型不匹配与列数不匹配仍是服务端 `XX000`，尚未映射 `22P02`／`42804`／`42601`；upsert 语句内的重复主键也未实现 `21000`。
+- 源分析：规划前按 PostgreSQL 的语义检查源。显式列清单的表达式数与清单数不一致、无清单 `VALUES`／`SELECT` 比表宽时为 `42601`（`more expressions than target columns`），显式列清单比源宽时为 `42601`（`more target columns than expressions`）；无清单 `VALUES` 或 `SELECT` 比表窄时按 PG 默认值语义补 NULL（当前没有 `DEFAULT`，补的是 NULL）。无类型字面量与带类型表达式分开处理：`VALUES` 行与 `INSERT ... SELECT` 投影中的裸字面量都按目标列解析，字符串字面量做转换，失败为 `22P02`（`invalid input syntax for type ...`）；数字／布尔字面量、函数与 `CAST` 表达式、`SELECT` 投影中的列引用等带类型表达式按 PG assignment cast 矩阵检查，违反为 `42804`（`column "c" is of type X but expression is of type Y`）。矩阵覆盖数值族内部与数值→字符串、布尔→布尔／字符串、文本→文本、日期／时间戳族内部与→字符串、bytea→bytea／字符串；未列的源类型一律 `42804`。字符串长度溢出（`22001`）与 varchar(n)／char(n) 长度校验不在覆盖内；`SELECT` 投影含 `*` 通配符时无法从 AST 映射列位置，该用例回退到规划类型检查，不宣称与 PG 的未类型字面量规则完全等价。该分析不改变 `SELECT` 表达式转换：`SELECT 'abc'::int` 仍是已记录的 `XX000` 映射边界（见阶段二“错误映射”行）。upsert 语句内的重复主键仍未实现 `21000`。
 
 ## 失败验收
 

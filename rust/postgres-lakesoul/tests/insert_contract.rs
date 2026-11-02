@@ -12,7 +12,9 @@
 //!
 //! The cases share one warehouse and run in order: a successful insert into a
 //! plain table (metadata + files), a parameterized insert into a primary-key
-//! table, then the conflict and refusal matrix, which must not change state.
+//! table, then the conflict and refusal matrix, which must not change state,
+//! and finally the PostgreSQL `INSERT` analysis matrix (`42601`/`42804`/`22P02`
+//! plus NULL completion of unlisted columns).
 
 pub mod support;
 
@@ -35,6 +37,7 @@ async fn insert_contract() -> Result<()> {
             multi_partition_insert_publishes_atomically(h).await?;
             refusal_matrix_changes_nothing(h).await?;
             prepared_insert_into_dropped_table_leaves_no_state(h).await?;
+            insert_analysis_matches_postgres(h).await?;
             Ok(())
         })
     })
@@ -354,6 +357,401 @@ async fn prepared_insert_into_dropped_table_leaves_no_state(h: &Harness) -> Resu
     Ok(())
 }
 
+/// PostgreSQL analyses `INSERT` before planning it: the source must have one
+/// expression per target column (`42601`), an untyped string literal is
+/// converted to the target type (`22P02` when it does not convert) whether it
+/// appears in a `VALUES` row or a `SELECT` projection, and every typed
+/// expression must be assignment-castable (`42804`). Both servers must report
+/// the same SQLSTATE, through the simple and the extended protocol, and a
+/// rejection must leave no state.
+///
+/// The completion rules must still work: a no-list `VALUES` or `SELECT`
+/// source with fewer expressions than the table has columns is padded with
+/// NULLs and inserts, and a string literal that does convert (`'42'` into
+/// `INTEGER`) inserts its value.
+async fn insert_analysis_matches_postgres(h: &Harness) -> Result<()> {
+    // BOOLEAN and DATE targets for the assignment matrix. DDL commits
+    // metadata immediately, so create both before the snapshot below.
+    let create = "CREATE TABLE insert_types (\
+                  id BIGINT NOT NULL PRIMARY KEY, flag BOOLEAN, day DATE, note TEXT)";
+    h.lake
+        .simple_query(create)
+        .await
+        .context("LakeSoul CREATE TABLE insert_types")?;
+    h.reference
+        .simple_query(create)
+        .await
+        .context("reference CREATE TABLE insert_types")?;
+
+    let before = h.authoritative_snapshot().await?;
+    for (sql, expected, case) in [
+        (
+            "INSERT INTO empty_items (id, val, label) VALUES (1, 'abc', 'x')",
+            "22P02",
+            "string literal into INTEGER",
+        ),
+        (
+            "INSERT INTO empty_items (id, val) VALUES (2, now())",
+            "42804",
+            "now() into INTEGER",
+        ),
+        (
+            "INSERT INTO empty_items (id, val, label) VALUES (3, true, 'x')",
+            "42804",
+            "boolean literal into INTEGER",
+        ),
+        (
+            "INSERT INTO insert_types (id, flag) VALUES (4, 1)",
+            "42804",
+            "integer literal into BOOLEAN",
+        ),
+        (
+            "INSERT INTO insert_types (id, day) VALUES (5, 1)",
+            "42804",
+            "integer literal into DATE",
+        ),
+        (
+            "INSERT INTO empty_items (id) SELECT 'abc'",
+            "22P02",
+            "string literal SELECT into INTEGER",
+        ),
+        (
+            "INSERT INTO empty_items (id, val, label) \
+             SELECT id, label, val FROM pk_items LIMIT 1",
+            "42804",
+            "TEXT SELECT column into INTEGER",
+        ),
+        (
+            "INSERT INTO empty_items (id, val, label) VALUES (5, 6)",
+            "42601",
+            "explicit list with too few expressions",
+        ),
+        (
+            "INSERT INTO empty_items (id, val, label) VALUES (6, 1, 2, 3)",
+            "42601",
+            "explicit list with too many expressions",
+        ),
+        (
+            "INSERT INTO empty_items VALUES (1, 2, 'x', 4)",
+            "42601",
+            "no list with more expressions than columns",
+        ),
+    ] {
+        for protocol in Protocol::BOTH {
+            let lake = rejection(&h.lake, sql, protocol).await?;
+            let reference = rejection(&h.reference, sql, protocol).await?;
+            ensure_rejection(lake, reference, expected, case, protocol.label())?;
+        }
+    }
+    let after = h.authoritative_snapshot().await?;
+    ensure_snapshot_unchanged(&before, &after, "INSERT analysis rejection matrix")?;
+
+    // A no-list `VALUES` source shorter than the table is completed with
+    // NULLs, exactly as PostgreSQL does without a DEFAULT clause.
+    let simple_null_fill = "INSERT INTO empty_items VALUES (30, 40)";
+    ensure_eq(
+        "NULL-fill simple tag rows",
+        simple_rows(h, simple_null_fill).await?,
+        1,
+    )?;
+    let extended_null_fill = "INSERT INTO empty_items VALUES (32, 40)";
+    let statement = h
+        .lake
+        .prepare(extended_null_fill)
+        .await
+        .context("LakeSoul prepare NULL-fill insert")?;
+    ensure_eq(
+        "NULL-fill extended tag rows",
+        h.lake.execute(&statement, &[]).await?,
+        1,
+    )?;
+    for sql in [simple_null_fill, extended_null_fill] {
+        let statement = h
+            .reference
+            .prepare(sql)
+            .await
+            .context("reference prepare NULL-fill insert")?;
+        h.reference
+            .execute(&statement, &[])
+            .await
+            .context("reference NULL-fill insert")?;
+    }
+    for id in [30, 32] {
+        ensure_eq(
+            &format!("NULL-fill row {id} count"),
+            lake_i64(
+                h,
+                &format!("SELECT count(*) FROM empty_items WHERE id = {id}"),
+            )
+            .await?,
+            1,
+        )?;
+        ensure_eq(
+            &format!("NULL-fill row {id} unlisted label"),
+            lake_text(h, &format!("SELECT label FROM empty_items WHERE id = {id}"))
+                .await?
+                .as_deref(),
+            None,
+        )?;
+    }
+
+    // A no-list `INSERT ... SELECT` shorter than the table is completed the
+    // same way, also through both protocols.
+    let simple_select_fill =
+        "INSERT INTO empty_items SELECT id, val FROM items WHERE id = 2";
+    ensure_eq(
+        "SELECT-fill simple tag rows",
+        simple_rows(h, simple_select_fill).await?,
+        1,
+    )?;
+    let extended_select_fill =
+        "INSERT INTO empty_items SELECT id, val FROM items WHERE id = 1 AND val IS NULL";
+    let statement = h
+        .lake
+        .prepare(extended_select_fill)
+        .await
+        .context("LakeSoul prepare SELECT-fill insert")?;
+    ensure_eq(
+        "SELECT-fill extended tag rows",
+        h.lake.execute(&statement, &[]).await?,
+        1,
+    )?;
+    for sql in [simple_select_fill, extended_select_fill] {
+        let statement = h
+            .reference
+            .prepare(sql)
+            .await
+            .context("reference prepare SELECT-fill insert")?;
+        h.reference
+            .execute(&statement, &[])
+            .await
+            .context("reference SELECT-fill insert")?;
+    }
+    ensure_eq(
+        "SELECT-fill simple row",
+        lake_i64(
+            h,
+            "SELECT count(*) FROM empty_items \
+             WHERE id = 2 AND val = 20 AND label IS NULL",
+        )
+        .await?,
+        1,
+    )?;
+    ensure_eq(
+        "SELECT-fill extended row",
+        lake_i64(
+            h,
+            "SELECT count(*) FROM empty_items \
+             WHERE id = 1 AND val IS NULL AND label IS NULL",
+        )
+        .await?,
+        1,
+    )?;
+
+    // A bare string literal in a `SELECT` projection is untyped too, so the
+    // target column decides its type. A literal at one position must not mask
+    // a typed expression at another.
+    let simple_select_literal = "INSERT INTO empty_items (id) SELECT '42'";
+    ensure_eq(
+        "SELECT literal simple tag rows",
+        simple_rows(h, simple_select_literal).await?,
+        1,
+    )?;
+    let extended_select_literal = "INSERT INTO empty_items (id) SELECT '43'";
+    let statement = h
+        .lake
+        .prepare(extended_select_literal)
+        .await
+        .context("LakeSoul prepare SELECT literal insert")?;
+    ensure_eq(
+        "SELECT literal extended tag rows",
+        h.lake.execute(&statement, &[]).await?,
+        1,
+    )?;
+    let mixed_simple =
+        "INSERT INTO empty_items (id, val) SELECT id, '7' FROM pk_items LIMIT 1";
+    ensure_eq(
+        "mixed SELECT simple tag rows",
+        simple_rows(h, mixed_simple).await?,
+        1,
+    )?;
+    let mixed_extended =
+        "INSERT INTO empty_items (id, val) SELECT id, '8' FROM pk_items LIMIT 1";
+    let statement = h
+        .lake
+        .prepare(mixed_extended)
+        .await
+        .context("LakeSoul prepare mixed SELECT insert")?;
+    ensure_eq(
+        "mixed SELECT extended tag rows",
+        h.lake.execute(&statement, &[]).await?,
+        1,
+    )?;
+    for sql in [
+        simple_select_literal,
+        extended_select_literal,
+        mixed_simple,
+        mixed_extended,
+    ] {
+        let statement = h
+            .reference
+            .prepare(sql)
+            .await
+            .context("reference prepare SELECT literal insert")?;
+        h.reference
+            .execute(&statement, &[])
+            .await
+            .context("reference SELECT literal insert")?;
+    }
+    for id in [42, 43] {
+        ensure_eq(
+            &format!("SELECT literal row {id} count"),
+            lake_i64(
+                h,
+                &format!(
+                    "SELECT count(*) FROM empty_items \
+                     WHERE id = {id} AND val IS NULL AND label IS NULL"
+                ),
+            )
+            .await?,
+            1,
+        )?;
+    }
+    for value in [7, 8] {
+        ensure_eq(
+            &format!("mixed SELECT literal value {value}"),
+            lake_i64(
+                h,
+                &format!("SELECT count(*) FROM empty_items WHERE val = {value}"),
+            )
+            .await?,
+            1,
+        )?;
+    }
+
+    // A string literal that converts still inserts its value.
+    let simple_control =
+        "INSERT INTO empty_items (id, val, label) VALUES (31, '42', 'ctrl')";
+    ensure_eq(
+        "control simple tag rows",
+        simple_rows(h, simple_control).await?,
+        1,
+    )?;
+    let extended_control =
+        "INSERT INTO empty_items (id, val, label) VALUES (33, '42', 'ctrl')";
+    let statement = h
+        .lake
+        .prepare(extended_control)
+        .await
+        .context("LakeSoul prepare control insert")?;
+    ensure_eq(
+        "control extended tag rows",
+        h.lake.execute(&statement, &[]).await?,
+        1,
+    )?;
+    let reference_control = h
+        .reference
+        .prepare(simple_control)
+        .await
+        .context("reference prepare control insert")?;
+    h.reference
+        .execute(&reference_control, &[])
+        .await
+        .context("reference control insert")?;
+    for id in [31, 33] {
+        ensure_eq(
+            &format!("control row {id} converted val"),
+            lake_i32(h, &format!("SELECT val FROM empty_items WHERE id = {id}")).await?,
+            42,
+        )?;
+        ensure_eq(
+            &format!("control row {id} label"),
+            lake_text(h, &format!("SELECT label FROM empty_items WHERE id = {id}"))
+                .await?
+                .as_deref(),
+            Some("ctrl"),
+        )?;
+    }
+    eprintln!(
+        "PASS case=insert-analysis lake-and-postgres=agree \
+         checked=22P02,42804,42601,values-null-fill,select-null-fill,\
+         select-literal,control"
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum Protocol {
+    Simple,
+    Extended,
+}
+
+impl Protocol {
+    const BOTH: [Protocol; 2] = [Protocol::Simple, Protocol::Extended];
+
+    fn label(self) -> &'static str {
+        match self {
+            Protocol::Simple => "simple",
+            Protocol::Extended => "extended",
+        }
+    }
+}
+
+/// Run one statement and return the server SQLSTATE when it is rejected, or
+/// `None` when it succeeds. Extended-protocol analysis runs at Parse, but an
+/// implementation may defer a rejection to Execute, so both are observed.
+async fn rejection(
+    client: &tokio_postgres::Client,
+    sql: &str,
+    protocol: Protocol,
+) -> Result<Option<String>> {
+    match protocol {
+        Protocol::Simple => match client.simple_query(sql).await {
+            Ok(_) => Ok(None),
+            Err(error) => Ok(Some(server_sqlstate(&error)?)),
+        },
+        Protocol::Extended => match client.prepare(sql).await {
+            Err(error) => Ok(Some(server_sqlstate(&error)?)),
+            Ok(statement) => match client.execute(&statement, &[]).await {
+                Ok(_) => Ok(None),
+                Err(error) => Ok(Some(server_sqlstate(&error)?)),
+            },
+        },
+    }
+}
+
+fn server_sqlstate(error: &tokio_postgres::Error) -> Result<String> {
+    let database = error.as_db_error().with_context(|| {
+        format!("expected a server ErrorResponse, actual client-side error: {error}")
+    })?;
+    Ok(database.code().code().to_string())
+}
+
+fn ensure_rejection(
+    lake: Option<String>,
+    reference: Option<String>,
+    expected: &str,
+    case: &str,
+    protocol: &str,
+) -> Result<()> {
+    let lake = lake.with_context(|| {
+        format!("case={case} protocol={protocol}: LakeSoul accepted the statement")
+    })?;
+    let reference = reference.with_context(|| {
+        format!("case={case} protocol={protocol}: PostgreSQL accepted the statement")
+    })?;
+    ensure!(
+        lake == reference,
+        "case={case} protocol={protocol}: LakeSoul SQLSTATE={lake}, PostgreSQL SQLSTATE={reference}"
+    );
+    ensure!(
+        lake == expected,
+        "case={case} protocol={protocol}: expected SQLSTATE={expected}, actual {lake}"
+    );
+    eprintln!("PASS case={case} protocol={protocol} lake={lake} postgres={reference}");
+    Ok(())
+}
+
 /// Unsupported clauses and unsafe contexts are refused before any write.
 async fn refusal_matrix_changes_nothing(h: &Harness) -> Result<()> {
     let before = h.authoritative_snapshot().await?;
@@ -440,6 +838,10 @@ async fn simple_rows(h: &Harness, sql: &str) -> Result<u64> {
 
 async fn lake_i64(h: &Harness, sql: &str) -> Result<i64> {
     Ok(h.lake.query_one(sql, &[]).await?.get::<_, i64>(0))
+}
+
+async fn lake_i32(h: &Harness, sql: &str) -> Result<i32> {
+    Ok(h.lake.query_one(sql, &[]).await?.get::<_, i32>(0))
 }
 
 async fn lake_text(h: &Harness, sql: &str) -> Result<Option<String>> {
