@@ -15,7 +15,7 @@
 //! resolves each bucket's state rows by primary key, and the merge plan
 //! computes the next state rows without a driver-side collect or SQL merge.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::{self, Display};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -52,7 +52,9 @@ use datafusion::physical_plan::{
     PlanProperties, SendableRecordBatchStream,
 };
 use datafusion::physical_plan::{RangePartitioning, SplitPoint};
-use datafusion::prelude::{DataFrame, SessionContext, col, lit};
+#[cfg(test)]
+use datafusion::prelude::lit;
+use datafusion::prelude::{DataFrame, SessionContext, col};
 use futures::StreamExt;
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::helpers::transform::make_default_array;
@@ -380,71 +382,14 @@ fn bucket_repartition_with_expr(
 /// lookup output keeps the old state columns under a distinct prefix.
 pub(crate) const IVM_STATE_COLUMN_PREFIX: &str = "__ivm_state_";
 
-/// Number of state reads that may execute concurrently in one plan.  The
-/// physical plan is partitioned by hash bucket, which can be more than the
-/// four active reader/state tasks the pilot is allowed to run.
-/// Maximum number of contribution keys in one binary side-state lookup read.
-/// Real-column lookups use bounded IN lists or a single bucket scan, while
-/// binary keys keep this bound so the reader request does not grow with the
-/// contribution batch.
-pub(crate) const PK_LOOKUP_CHUNK_ROWS: usize = 4096;
-
-/// Contribution rows per keyed lookup request.  The default bounds the IN
-/// list and reader request; a larger chunk trades a bigger request for fewer
-/// reader/index setups.
-fn lookup_chunk_rows() -> usize {
-    std::env::var("LAKESOUL_IVM_LOOKUP_CHUNK_ROWS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(PK_LOOKUP_CHUNK_ROWS)
-        .clamp(1, 65_536)
-}
-
 /// Above this many values a pushed-down IN list costs more to evaluate over
 /// the state rows than reading the bucket and matching the exact row key in
 /// memory.  The lookup plan still performs the exact composite-key match.
+#[cfg(test)]
 const PK_LOOKUP_IN_LIST_LIMIT: usize = 4096;
-
-/// How much of a lookup contribution one reader/merge request consumes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamLookupMode {
-    /// The historical 4096-key chunks.
-    Off,
-    /// One reader request per input batch (the historical streaming mode).
-    Batch,
-    /// One persistent per-file lookup source per bucket: every file and PK
-    /// index is opened once, each sorted key batch probes all files, and the
-    /// per-file result streams feed the LakeSoul merge.
-    Stream,
-    /// One request per bounded key window inside an execution partition.
-    Partition,
-}
-
-/// `LAKESOUL_IVM_STREAM_LOOKUP`:
-/// - unset/off: 4k-key chunks;
-/// - `batch`: one reader request per input batch;
-/// - `stream`/`persistent`/`sorted`/`on`/`1`/`true`: persistent per-file
-///   lookup, opened once per bucket, with sorted key batches;
-/// - `partition`/`bulk`: one request per bounded key window (default 32k
-///   keys; fewer reader/merge setups, higher memory than `stream`).
-fn stream_lookup_mode() -> StreamLookupMode {
-    match std::env::var("LAKESOUL_IVM_STREAM_LOOKUP")
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "batch" => StreamLookupMode::Batch,
-        "on" | "1" | "true" | "stream" | "persistent" | "sorted" => {
-            StreamLookupMode::Stream
-        }
-        "partition" | "bulk" => StreamLookupMode::Partition,
-        _ => StreamLookupMode::Off,
-    }
-}
 
 pub(crate) fn max_active_tasks() -> usize {
     std::env::var("LAKESOUL_IVM_MAX_ACTIVE_TASKS")
-        .or_else(|_| std::env::var("LAKESOUL_IVM_MAX_ACTIVE_LOOKUPS"))
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(4)
@@ -463,9 +408,6 @@ fn sort_lookup_input(
     input: Arc<dyn ExecutionPlan>,
     key: &PkLookupKey,
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-    if stream_lookup_mode() != StreamLookupMode::Stream {
-        return Ok(input);
-    }
     let schema = input.schema();
     let columns = match key {
         PkLookupKey::Columns {
@@ -528,85 +470,6 @@ fn explicit_pk_for_keys(
             (!keys.is_empty()).then(|| (vec![column.clone()], keys))
         }
     })
-}
-
-async fn lookup_streaming_chunk(
-    table: &IvmTable,
-    groups: &[PartitionFiles],
-    chunk: &RecordBatch,
-    state_schema: &SchemaRef,
-    out_schema: &SchemaRef,
-    key: &PkLookupKey,
-    filters: Vec<datafusion::prelude::Expr>,
-    multi_match: bool,
-    emit_unmatched: bool,
-    gate: Arc<Semaphore>,
-) -> DataFusionResult<(Vec<RecordBatch>, usize)> {
-    let contribution_keys = key_rows(chunk, key, state_schema)?;
-    let explicit_pk = explicit_pk_for_keys(key, &contribution_keys)?;
-    let mut matched: HashSet<Vec<u8>> = HashSet::new();
-    let mut outputs = Vec::new();
-    let mut state_rows = 0usize;
-    let mut state_batches = table
-        .stream_partition_files_filtered(
-            groups.to_vec(),
-            filters,
-            explicit_pk,
-            gate.clone(),
-        )
-        .await
-        .map_err(|error| DataFusionError::Execution(error.to_string()))?;
-    while let Some(batch) = state_batches.recv().await {
-        let batch = batch?;
-        if batch.num_rows() == 0 {
-            continue;
-        }
-        state_rows += batch.num_rows();
-        if !multi_match {
-            for key in key_rows(&batch, &key.for_table(), state_schema)?
-                .into_iter()
-                .flatten()
-            {
-                matched.insert(key);
-            }
-        }
-        let output = lookup_batch(
-            chunk,
-            &[batch],
-            state_schema,
-            out_schema,
-            key,
-            multi_match,
-            false,
-        )?;
-        if output.num_rows() > 0 {
-            outputs.push(output);
-        }
-    }
-    if emit_unmatched && !multi_match {
-        let mask = arrow::array::BooleanArray::from(
-            contribution_keys
-                .iter()
-                .map(|key| key.as_ref().is_none_or(|key| !matched.contains(key)))
-                .collect::<Vec<_>>(),
-        );
-        let unmatched = arrow::compute::filter_record_batch(chunk, &mask)?;
-        if unmatched.num_rows() > 0 {
-            let output = lookup_batch(
-                &unmatched,
-                &[],
-                state_schema,
-                out_schema,
-                key,
-                false,
-                true,
-            )?;
-            if output.num_rows() > 0 {
-                outputs.push(output);
-            }
-        }
-    }
-    Ok((outputs, state_rows))
 }
 
 /// One explicit-key lookup for a bounded contribution window.
@@ -739,6 +602,7 @@ impl PkLookupKey {
     }
 }
 
+#[cfg(test)]
 fn state_key_filter(
     batch: &RecordBatch,
     key_column: &str,
@@ -781,13 +645,14 @@ fn state_output_schema(input: &SchemaRef, state: &SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(fields))
 }
 
+#[cfg(test)]
 enum PkFilters {
     /// Read each contribution chunk with its own pushed-down filter.
     Pushdown(Vec<datafusion::prelude::Expr>),
     /// At least one key column has too many values for a cheap IN list.
     /// Read the bucket once for the whole contribution batch, then use the
     /// exact Arrow row keys to match.
-    ScanAll(Vec<datafusion::prelude::Expr>),
+    ScanAll,
 }
 
 /// Order the contribution columns like the table key when both lists name the
@@ -818,6 +683,7 @@ fn mapped_input_columns(
     }
 }
 
+#[cfg(test)]
 fn key_filter_exprs(
     batch: &RecordBatch,
     key: &PkLookupKey,
@@ -859,7 +725,7 @@ fn key_filter_exprs(
                     .map(|mut values| lit(values.remove(0)))
                     .collect::<Vec<_>>();
                 if list.len() > PK_LOOKUP_IN_LIST_LIMIT {
-                    return Ok(PkFilters::ScanAll(vec![lit(true)]));
+                    return Ok(PkFilters::ScanAll);
                 }
                 return Ok(PkFilters::Pushdown(vec![
                     col(table_columns[0].as_str()).in_list(list, false),
@@ -890,7 +756,7 @@ fn key_filter_exprs(
                 .iter()
                 .any(|values| values.len() > PK_LOOKUP_IN_LIST_LIMIT)
             {
-                return Ok(PkFilters::ScanAll(vec![lit(true)]));
+                return Ok(PkFilters::ScanAll);
             }
             // Apply all key columns, not only the shortest IN list.  The
             // reader still performs the exact Arrow-row match, but the
@@ -1882,195 +1748,6 @@ impl IvmPkLookupExec {
             stream,
         )))
     }
-
-    /// Resolve each input batch as it arrives; no window or bucket key buffer.
-    fn execute_batch_stream(
-        &self,
-        partition: usize,
-        context: Arc<datafusion::execution::TaskContext>,
-    ) -> DataFusionResult<SendableRecordBatchStream> {
-        let input = self.input.execute(partition, context)?;
-        let groups = if self.bucket_count == 1 {
-            self.groups_by_bucket.first().cloned().unwrap_or_default()
-        } else {
-            self.groups_by_bucket
-                .get(partition)
-                .cloned()
-                .unwrap_or_default()
-        };
-        let table = self.table.clone();
-        let key = self.key.clone();
-        let state_schema = self.table.schema.clone();
-        let out_schema = self.schema.clone();
-        let gate = self.gate.clone();
-        let multi_match = self.multi_match;
-        let emit_unmatched = self.emit_unmatched;
-        let profile_io = self.profile_io.clone();
-        let stream = futures::stream::try_unfold(input, move |mut input| {
-            let table = table.clone();
-            let key = key.clone();
-            let state_schema = state_schema.clone();
-            let out_schema = out_schema.clone();
-            let gate = gate.clone();
-            let profile_io = profile_io.clone();
-            let groups = groups.clone();
-            async move {
-                loop {
-                    match input.next().await {
-                        None => return Ok(None),
-                        Some(Err(error)) => return Err(error),
-                        Some(Ok(batch)) if batch.num_rows() == 0 => continue,
-                        Some(Ok(batch)) => {
-                            let started = std::time::Instant::now();
-                            let (output, state_rows) = lookup_streaming_bulk(
-                                &table,
-                                &groups,
-                                &batch,
-                                &state_schema,
-                                &out_schema,
-                                &key,
-                                multi_match,
-                                emit_unmatched,
-                                gate,
-                            )
-                            .await?;
-                            tracing::debug!(
-                                table = %table.table_name,
-                                key = %key.display(),
-                                partition,
-                                contribution_rows = batch.num_rows(),
-                                state_rows,
-                                output_rows = output.num_rows(),
-                                elapsed = ?started.elapsed(),
-                                "keyed state lookup stream finished"
-                            );
-                            if let Some(io) = &profile_io {
-                                crate::observability::add_lookup_time_shared(
-                                    io,
-                                    started.elapsed(),
-                                );
-                            }
-                            return Ok(Some((output, input)));
-                        }
-                    }
-                }
-            }
-        });
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            self.schema.clone(),
-            stream,
-        )))
-    }
-
-    /// Consume one execution partition's contribution in bounded windows and
-    /// resolve each window with one explicit-key request.
-    ///
-    /// Only the current window is buffered; the contribution is never
-    /// collected at the driver and a bucket larger than the window is still
-    /// streamed window by window.
-    fn execute_stream_lookup(
-        &self,
-        partition: usize,
-        context: Arc<datafusion::execution::TaskContext>,
-    ) -> DataFusionResult<SendableRecordBatchStream> {
-        let input = self.input.execute(partition, context)?;
-        let groups = if self.bucket_count == 1 {
-            self.groups_by_bucket.first().cloned().unwrap_or_default()
-        } else {
-            self.groups_by_bucket
-                .get(partition)
-                .cloned()
-                .unwrap_or_default()
-        };
-        let table = self.table.clone();
-        let key = self.key.clone();
-        let state_schema = self.table.schema.clone();
-        let out_schema = self.schema.clone();
-        let gate = self.gate.clone();
-        let multi_match = self.multi_match;
-        let emit_unmatched = self.emit_unmatched;
-        let profile_io = self.profile_io.clone();
-        let window_keys = std::env::var("LAKESOUL_IVM_BULK_LOOKUP_MAX_KEYS")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(32_768)
-            .max(1);
-        let stream = futures::stream::try_unfold(
-            (input, Vec::<RecordBatch>::new(), 0usize, false),
-            move |(mut input, mut pending, mut rows, mut done)| {
-                let table = table.clone();
-                let key = key.clone();
-                let state_schema = state_schema.clone();
-                let out_schema = out_schema.clone();
-                let gate = gate.clone();
-                let profile_io = profile_io.clone();
-                let groups = groups.clone();
-                async move {
-                    if done && pending.is_empty() {
-                        return Ok(None);
-                    }
-                    while rows < window_keys && !done {
-                        match input.next().await {
-                            None => done = true,
-                            Some(Err(error)) => return Err(error),
-                            Some(Ok(batch)) => {
-                                if batch.num_rows() == 0 {
-                                    continue;
-                                }
-                                rows += batch.num_rows();
-                                pending.push(batch);
-                            }
-                        }
-                    }
-                    if pending.is_empty() {
-                        return Ok(None);
-                    }
-                    let schema = pending[0].schema();
-                    let contribution = if pending.len() == 1 {
-                        pending.pop().expect("one pending batch")
-                    } else {
-                        arrow::compute::concat_batches(&schema, &pending).map_err(
-                            |error| DataFusionError::Execution(error.to_string()),
-                        )?
-                    };
-                    let started = std::time::Instant::now();
-                    let (output, state_rows) = lookup_streaming_bulk(
-                        &table,
-                        &groups,
-                        &contribution,
-                        &state_schema,
-                        &out_schema,
-                        &key,
-                        multi_match,
-                        emit_unmatched,
-                        gate,
-                    )
-                    .await?;
-                    tracing::debug!(
-                        table = %table.table_name,
-                        key = %key.display(),
-                        partition,
-                        contribution_rows = contribution.num_rows(),
-                        state_rows,
-                        output_rows = output.num_rows(),
-                        elapsed = ?started.elapsed(),
-                        "keyed state lookup bulk finished"
-                    );
-                    if let Some(io) = &profile_io {
-                        crate::observability::add_lookup_time_shared(
-                            io,
-                            started.elapsed(),
-                        );
-                    }
-                    Ok(Some((output, (input, Vec::new(), 0usize, done))))
-                }
-            },
-        );
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            self.schema.clone(),
-            stream,
-        )))
-    }
 }
 
 impl ExecutionPlan for IvmPkLookupExec {
@@ -2125,111 +1802,7 @@ impl ExecutionPlan for IvmPkLookupExec {
         partition: usize,
         context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
-        match stream_lookup_mode() {
-            StreamLookupMode::Partition => {
-                return self.execute_stream_lookup(partition, context);
-            }
-            StreamLookupMode::Batch => {
-                return self.execute_batch_stream(partition, context);
-            }
-            StreamLookupMode::Stream => {
-                return self.execute_persistent_lookup(partition, context);
-            }
-            StreamLookupMode::Off => {}
-        }
-        let input = self.input.execute(partition, context)?;
-        let groups = if self.bucket_count == 1 {
-            self.groups_by_bucket.first().cloned().unwrap_or_default()
-        } else {
-            self.groups_by_bucket
-                .get(partition)
-                .cloned()
-                .unwrap_or_default()
-        };
-        let table = self.table.clone();
-        let key = self.key.clone();
-        let state_schema = self.table.schema.clone();
-        let out_schema = self.schema.clone();
-        let gate = self.gate.clone();
-        let multi_match = self.multi_match;
-        let emit_unmatched = self.emit_unmatched;
-        let chunk_rows = lookup_chunk_rows();
-        let profile_io = self.profile_io.clone();
-        let stream =
-            futures::stream::try_unfold((input, groups), move |(mut input, groups)| {
-                let gate = gate.clone();
-                let table = table.clone();
-                let key = key.clone();
-                let state_schema = state_schema.clone();
-                let out_schema = out_schema.clone();
-                let profile_io = profile_io.clone();
-                async move {
-                    let gate = gate.clone();
-                    loop {
-                        let batch = match input.next().await {
-                            None => return Ok::<_, DataFusionError>(None),
-                            Some(Err(error)) => return Err(error),
-                            Some(Ok(batch)) if batch.num_rows() == 0 => continue,
-                            Some(Ok(batch)) => batch,
-                        };
-                        let started = std::time::Instant::now();
-                        let mut outputs = Vec::new();
-                        let mut state_rows = 0usize;
-                        let mut chunks = 0usize;
-                        for offset in (0..batch.num_rows()).step_by(chunk_rows) {
-                            let length = chunk_rows.min(batch.num_rows() - offset);
-                            let chunk = batch.slice(offset, length);
-                            let filters = match key_filter_exprs(&chunk, &key)? {
-                                PkFilters::Pushdown(filters)
-                                | PkFilters::ScanAll(filters) => filters,
-                            };
-                            let (mut found, rows) = lookup_streaming_chunk(
-                                &table,
-                                &groups,
-                                &chunk,
-                                &state_schema,
-                                &out_schema,
-                                &key,
-                                filters,
-                                multi_match,
-                                emit_unmatched,
-                                gate.clone(),
-                            )
-                            .await?;
-                            state_rows += rows;
-                            outputs.append(&mut found);
-                            chunks += 1;
-                        }
-                        let output = match outputs.len() {
-                            0 => RecordBatch::new_empty(out_schema.clone()),
-                            1 => outputs.pop().expect("one lookup output"),
-                            _ => arrow::compute::concat_batches(&out_schema, &outputs)?,
-                        };
-                        tracing::debug!(
-                            table = %table.table_name,
-                            key = %key.display(),
-                            partition,
-                            contribution_rows = batch.num_rows(),
-                            chunks,
-                            state_rows,
-                            output_rows = output.num_rows(),
-                            elapsed = ?started.elapsed(),
-                            "keyed state lookup batch finished"
-                        );
-                        if let Some(io) = &profile_io {
-                            crate::observability::add_lookup_time_shared(
-                                io,
-                                started.elapsed(),
-                            );
-                        }
-                        return Ok(Some((output, (input, groups))));
-                    }
-                }
-            });
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            self.schema.clone(),
-            stream,
-        )))
+        self.execute_persistent_lookup(partition, context)
     }
 }
 
@@ -3796,7 +3369,7 @@ mod tests {
         };
         assert!(matches!(
             key_filter_exprs(&batch, &key).unwrap(),
-            PkFilters::ScanAll(_)
+            PkFilters::ScanAll
         ));
     }
 

@@ -306,20 +306,6 @@ pub(crate) fn add_bytes_written(bytes: u64) {
     }
 }
 
-/// One finished keyed lookup batch.  The elapsed value is the batch's own
-/// wall time; the sum is diagnostic and can exceed the view's wall time.
-/// The profile is captured before the plan moves into a DataFusion task,
-/// because task-locals do not follow it.
-pub(crate) fn add_lookup_time_shared(
-    io: &std::sync::Arc<std::sync::Mutex<RefreshIo>>,
-    elapsed: std::time::Duration,
-) {
-    if let Ok(mut io) = io.lock() {
-        io.lookup_nanos += elapsed.as_nanos() as u64;
-        io.lookup_calls += 1;
-    }
-}
-
 /// Time spent inside a writer call (write_record_batch / flush_and_close),
 /// not the time spent producing the input stream.
 pub(crate) fn add_write_time(elapsed: std::time::Duration) {
