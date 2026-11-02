@@ -74,6 +74,12 @@ tuned settings:
   percentage-based discovery so partial state tables are covered.
 - Compact source and hot MV/state tables between windows.
 - Do not compare a compacted run with an uncompacted run.
+- Run compaction as a separate, bounded phase.  Put the listener in its own
+  cgroup (for example `CPUQuota=400%`, `MemoryMax=8G`), let it drain pending
+  notifications, then stop it before the timed refresh.  Do not let a listener
+  started on the whole machine process notifications while the pilot is being
+  measured: a fresh table root can replay dozens of notifications and saturate
+  every CPU.
 - Stop the external compaction listener before running the automated test
   suites.  Concurrent compaction of temporary test tables can race with the
   tests; it is a pilot-only service.
