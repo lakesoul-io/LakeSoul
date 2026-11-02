@@ -460,6 +460,9 @@ impl ReadOnlyStatementGuard {
             // them (and refuses the untracked parameter / `DISCARD` variants
             // with their own SQLSTATE).
             | Statement::Reset(_) => true,
+            // Writes are claimed by `InsertStatementHook`, which executes
+            // them and maps their violations to PostgreSQL SQLSTATEs.
+            Statement::Insert(_) => true,
             // DDL is claimed by `DdlStatementHook`, which refuses the
             // unsupported clauses itself.
             Statement::CreateTable(_) => true,
@@ -631,7 +634,6 @@ mod tests {
     }
 
     const REJECTED: &[&str] = &[
-        "INSERT INTO t VALUES (1)",
         "UPDATE t SET a = 1",
         "DELETE FROM t",
         "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET a = 1",
@@ -710,6 +712,32 @@ mod tests {
         }
     }
 
+    /// `INSERT` is answered by `InsertStatementHook`, which refuses the
+    /// unsupported clauses itself, so the guard must not claim it; UPDATE,
+    /// DELETE and `EXPLAIN INSERT` stay rejected.
+    #[test]
+    fn insert_is_left_to_the_insert_hook() {
+        use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
+        use datafusion::sql::sqlparser::parser::Parser;
+
+        for (sql, allowed) in [
+            ("INSERT INTO t VALUES (1)", true),
+            ("INSERT INTO t (a) SELECT a FROM s", true),
+            ("INSERT INTO t VALUES (1) ON CONFLICT (id) DO NOTHING", true),
+            ("UPDATE t SET a = 1", false),
+            ("DELETE FROM t", false),
+            ("EXPLAIN INSERT INTO t VALUES (1)", false),
+        ] {
+            let statements = Parser::parse_sql(&PostgreSqlDialect {}, sql)
+                .unwrap_or_else(|error| panic!("{sql}: {error}"));
+            assert_eq!(
+                ReadOnlyStatementGuard::allow(&statements[0]),
+                allowed,
+                "sql: {sql}"
+            );
+        }
+    }
+
     /// `CREATE TABLE`/`DROP TABLE` are answered by `DdlStatementHook`, which
     /// refuses the unsupported clauses itself, so the guard must not claim
     /// them; every other DDL statement stays rejected.
@@ -763,11 +791,7 @@ mod tests {
         let mut client = MockClient::new();
         // The trailing statement of a batch is rejected as well, so no
         // statement after the first rejected one can ever execute.
-        for sql in [
-            "INSERT INTO t VALUES (1)",
-            "ALTER TABLE t ADD COLUMN b INT",
-            "SELECT 1; DELETE FROM t",
-        ] {
+        for sql in ["ALTER TABLE t ADD COLUMN b INT", "SELECT 1; DELETE FROM t"] {
             let error = <DfSessionService as SimpleQueryHandler>::do_query(
                 &service,
                 &mut client,
@@ -881,7 +905,7 @@ mod tests {
         // Second line of defense behind the parse hook: feed a write
         // statement straight into the execute-phase hook.
         let statements = PostgresCompatibilityParser::new()
-            .parse("INSERT INTO t VALUES (1)")
+            .parse("UPDATE t SET a = 1")
             .expect("parse");
         let statement = statements.first().expect("statement");
         let mut client = MockClient::new();

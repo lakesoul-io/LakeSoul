@@ -1217,6 +1217,105 @@ impl MetaDataClient {
         .await
     }
 
+    /// Publish several partitions' files in one PostgreSQL transaction.
+    ///
+    /// This is the atomic form of [`commit_data_commit_info`](Self::commit_data_commit_info):
+    /// either every partition's snapshot is extended and every data-commit row
+    /// is marked published, or none of them is. Rows whose commit is already
+    /// published are left alone, and rows staged by an earlier attempt are
+    /// reused instead of inserted twice.
+    pub async fn commit_data_commit_infos(
+        &self,
+        data_commit_info_list: Vec<DataCommitInfo>,
+    ) -> Result<CommitOutcome> {
+        let Some(first) = data_commit_info_list.first() else {
+            return Ok(CommitOutcome::AlreadyCommitted);
+        };
+        let table_id = first.table_id.clone();
+        if data_commit_info_list
+            .iter()
+            .any(|info| info.table_id != table_id)
+        {
+            return Err(LakeSoulMetaDataError::Internal(
+                "a data commit batch must belong to one table".to_string(),
+            ));
+        }
+
+        let mut to_stage = Vec::new();
+        let mut to_publish = Vec::new();
+        for data_commit_info in data_commit_info_list {
+            let commit_id =
+                data_commit_info
+                    .commit_id
+                    .ok_or(LakeSoulMetaDataError::Internal(
+                        "commit_id missing".to_string(),
+                    ))?;
+            let commit_id_str =
+                uuid::Uuid::from_u64_pair(commit_id.high, commit_id.low).to_string();
+            match self
+                .get_single_data_commit_info(
+                    &table_id,
+                    &data_commit_info.partition_desc,
+                    &commit_id_str,
+                )
+                .await?
+            {
+                Some(existing) if existing.committed => {}
+                Some(_) => to_publish.push(data_commit_info),
+                None => {
+                    to_stage.push(data_commit_info.clone());
+                    to_publish.push(data_commit_info);
+                }
+            }
+        }
+        if to_publish.is_empty() {
+            return Ok(CommitOutcome::AlreadyCommitted);
+        }
+        // A consistent order avoids opposite-order partition conflicts when
+        // two statements publish the same partition set concurrently.
+        to_stage.sort_by(|left, right| left.partition_desc.cmp(&right.partition_desc));
+        to_publish.sort_by(|left, right| left.partition_desc.cmp(&right.partition_desc));
+        // Stage the new rows in one transaction; publication below flips them
+        // to committed together with the partition versions.
+        if !to_stage.is_empty() {
+            self.transaction_insert_data_commit_info(to_stage).await?;
+        }
+
+        let table_info = self
+            .get_table_info_by_table_id(&table_id)
+            .await?
+            .ok_or_else(|| {
+                LakeSoulMetaDataError::Internal(format!(
+                    "table {table_id} not found while publishing data commits"
+                ))
+            })?;
+        let domain = self.get_table_domain(&table_id).await?.domain;
+        let list_partition = to_publish
+            .iter()
+            .map(|data_commit_info| {
+                let commit_id =
+                    data_commit_info.commit_id.expect("commit id checked above");
+                PartitionInfo {
+                    table_id: table_id.clone(),
+                    partition_desc: data_commit_info.partition_desc.clone(),
+                    commit_op: data_commit_info.commit_op,
+                    domain: domain.clone(),
+                    snapshot: vec![commit_id],
+                    ..Default::default()
+                }
+            })
+            .collect::<Vec<_>>();
+        self.commit_data(
+            MetaInfo {
+                table_info: Some(table_info),
+                list_partition,
+                ..Default::default()
+            },
+            CommitOp::AppendCommit,
+        )
+        .await
+    }
+
     /// Publish files whose keys were validated against `expected_partitions`.
     ///
     /// Capture those partition versions before planning the existing-key scan.

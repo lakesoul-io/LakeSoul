@@ -287,6 +287,12 @@ impl PgSessionFactory {
             .options_mut()
             .extensions
             .insert(LakeSoulVectorSearchConfig::default());
+        // How the next statement treats a key that is already present. The
+        // INSERT hook sets it before every write; the sink reads it while
+        // planning, so `ON CONFLICT DO NOTHING` drops rows instead of failing.
+        config.set_extension(Arc::new(
+            lakesoul_datafusion::write_mode::LakeSoulWriteMode::new(),
+        ));
         let state = SessionStateBuilder::new_from_existing(state)
             .with_config(config)
             .build();

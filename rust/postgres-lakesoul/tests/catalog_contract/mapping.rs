@@ -79,6 +79,7 @@ fn primary_relations() -> Rows {
         &[Some("mapping_items"), Some("r")],
         &[Some("only_a"), Some("r")],
         &[Some("pk_items"), Some("r")],
+        &[Some("range_items"), Some("r")],
     ])
 }
 
@@ -106,6 +107,9 @@ fn primary_columns() -> Rows {
         &[Some("pk_items"), Some("id")],
         &[Some("pk_items"), Some("val")],
         &[Some("pk_items"), Some("label")],
+        &[Some("range_items"), Some("part")],
+        &[Some("range_items"), Some("id")],
+        &[Some("range_items"), Some("val")],
     ])
 }
 

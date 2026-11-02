@@ -21,6 +21,8 @@ use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 
 use async_trait::async_trait;
 
+use datafusion::datasource::default_table_source::DefaultTableSource;
+use datafusion::logical_expr::TableSource;
 use datafusion::logical_expr::{DmlStatement, WriteOp};
 use lakesoul_io::helpers::{
     column_names_to_physical_expr, column_names_to_physical_sort_expr,
@@ -29,7 +31,17 @@ use lakesoul_io::physical_plan::RepartitionByRangeAndHashExec;
 use rootcause::compat::boxed_error::IntoBoxedError;
 
 use crate::catalog::LakeSoulProviderOptions;
+use crate::datasource::table_provider::LakeSoulTableProvider;
 use crate::lakesoul_table::LakeSoulTable;
+
+/// The LakeSoul provider a DML statement's source was resolved to, if any.
+fn lake_soul_table_source(
+    table_source: &Arc<dyn TableSource>,
+) -> Option<&LakeSoulTableProvider> {
+    let source = table_source.downcast_ref::<DefaultTableSource>()?;
+    let provider: &dyn std::any::Any = source.table_provider.as_ref();
+    provider.downcast_ref::<LakeSoulTableProvider>()
+}
 
 pub struct LakeSoulPhysicalPlanner {
     default_planner: DefaultPhysicalPlanner,
@@ -83,20 +95,29 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
             }
             LogicalPlan::Dml(DmlStatement {
                 table_name,
+                target,
                 op: WriteOp::Insert(insert_op),
                 input,
                 ..
             }) => {
                 debug!("insert into: {}, {}", &table_name, &input);
                 let name = table_name.table();
-                let schema = table_name.schema();
-                let lakesoul_table = LakeSoulTable::for_namespace_and_name(
-                    schema.unwrap_or("default"),
-                    name,
-                    None,
-                )
-                .await
-                .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+                // The namespace is the one the catalog resolved while planning,
+                // not the one written in the statement: a PostgreSQL front end
+                // addresses `public.t` and a bare `t` through its own catalog,
+                // and the DML node's table name keeps the SQL spelling. A
+                // LakeSoul provider in the plan is authoritative; the name is
+                // only a fallback for planners that pass a bare source.
+                let namespace = lake_soul_table_source(target)
+                    .map(|provider| provider.table_info().table_namespace.clone())
+                    .or_else(|| table_name.schema().map(str::to_owned))
+                    .unwrap_or_else(|| "default".to_string());
+                let lakesoul_table =
+                    LakeSoulTable::for_namespace_and_name(&namespace, name, None)
+                        .await
+                        .map_err(|report| {
+                            DataFusionError::External(report.into_boxed_error())
+                        })?;
 
                 let provider_options =
                     LakeSoulProviderOptions::from_session(session_state);

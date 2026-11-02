@@ -27,10 +27,6 @@ struct Refusal {
 /// than accidentally succeed against a missing object.
 const REFUSALS: &[Refusal] = &[
     Refusal {
-        id: "insert",
-        sql: "INSERT INTO items (id, val, label) VALUES (99, 99, 'must-not-persist')",
-    },
-    Refusal {
         id: "update",
         sql: "UPDATE items SET val = -1 WHERE id = 1",
     },

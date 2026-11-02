@@ -440,7 +440,7 @@ fn name_parts(name: &ObjectName) -> PgWireResult<Vec<String>> {
 }
 
 /// Fold and validate one identifier.
-fn normalize_ident(ident: &Ident) -> PgWireResult<String> {
+pub(crate) fn normalize_ident(ident: &Ident) -> PgWireResult<String> {
     let folded = ident.value.to_ascii_lowercase();
     if ident.quote_style.is_some() && ident.value != folded {
         return Err(feature_not_supported(format!(
@@ -948,6 +948,6 @@ fn user_error(code: &str, message: impl Into<String>) -> PgWireError {
     )))
 }
 
-fn feature_not_supported(message: String) -> PgWireError {
+pub(crate) fn feature_not_supported(message: String) -> PgWireError {
     user_error(FEATURE_NOT_SUPPORTED, message)
 }

@@ -1,6 +1,6 @@
 # PostgreSQL SQL compatibility tests
 
-`postgres-lakesoul` 是 PostgreSQL 协议的 LakeSoul 服务：查询面是只读的，另支持 `CREATE TABLE`／`DROP TABLE` 两条 DDL，不是完整 PostgreSQL。以下矩阵说明阶段一、二、三·3.1／3.2／3.3、阶段四 integration targets 及阶段七 DDL 的具体证据，不将 DataFusion 的全部 SQL 能力视为已验证兼容。
+`postgres-lakesoul` 是 PostgreSQL 协议的 LakeSoul 服务：查询面是只读的，另支持 `CREATE TABLE`／`DROP TABLE` 与 `INSERT`，不是完整 PostgreSQL。以下矩阵说明阶段一、二、三·3.1／3.2／3.3、阶段四 integration targets、阶段七 DDL 及阶段八 INSERT 的具体证据，不将 DataFusion 的全部 SQL 能力视为已验证兼容。
 
 ## 运行
 
@@ -15,8 +15,8 @@ export TZ=UTC
 # 首次准备专用测试数据库；此脚本会清理测试库，勿用于生产库。
 ./script/meta_init_for_local_test.sh -j 1
 
-LAKESOUL_IO_USE_V2_MERGE=false cargo -q test -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract -- --nocapture
-LAKESOUL_IO_USE_V2_MERGE=true cargo -q test -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract -- --nocapture
+LAKESOUL_IO_USE_V2_MERGE=false cargo -q test -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract -- --nocapture
+LAKESOUL_IO_USE_V2_MERGE=true cargo -q test -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract -- --nocapture
 ```
 
 需要可连接、已初始化并迁移的 PostgreSQL，以及 `protoc`、Vortex 对应的 `flatc`、Clang/libclang 等仓库原生编译依赖；TPC-H target 还需要 Python 3.11+，只使用标准库。不需要额外启动 PG wire 服务或准备手工 fixture；六个 targets 使用本地 Parquet，不依赖 S3/RustFS，也不要求参考 PostgreSQL 安装 pgvector。
@@ -24,7 +24,7 @@ LAKESOUL_IO_USE_V2_MERGE=true cargo -q test -p postgres-lakesoul --test sql_comp
 CI 在现有 legacy/v2 默认成员测试之外，分别显式运行：
 
 ```sh
-cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --jobs 4 -- --nocapture
+cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --jobs 4 -- --nocapture
 ```
 
 不修改 workspace `default-members`。默认结果包含两个**具名、明确标记的已知缺陷严格复现**（见下文），它们不属于通过的兼容声明；其余测试不能因缺少服务而跳过。投影标量子查询多行与 `SET TIME ZONE`／连接重置已修复并转为正常门禁，不再计入缺陷。
@@ -85,7 +85,7 @@ cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test 
 | 明确拒绝 | `SET LOCAL TIME ZONE`／`SET LOCAL timezone`／`SET GLOBAL timezone` 为 `0A000` 且不改状态；不支持的 `DISCARD PLANS/SEQUENCES/TEMP` 在 simple 与 extended Parse 均为 `0A000` | `time-zone-scope`、`time-zone-discard-variant`；PG 接受这些语句，因此不宣称等价；sqlparser 无法区分 `SET GLOBAL TIME ZONE` 与 SESSION 形式，该拼写按 SESSION 处理 |
 | LakeSoul 状态语义；SQLSTATE 缺陷 | simple 执行／extended Parse 错误使事务失败，随后读被拒；ROLLBACK 后第一条读成功。失败事务 LakeSoul 为 25P01，PG 为 25P02，不宣称错误码兼容 | `failed-transaction-simple`、`failed-transaction-extended-parse` |
 | 明确拒绝 | REPEATABLE READ／SERIALIZABLE 及相应默认隔离级别 SET，simple 与 Parse 均 0A000；第一条后续读成功 | `isolation-simple/parse`、`isolation-guc-simple/parse` |
-| 明确拒绝，无持久化副作用 | INSERT/UPDATE/DELETE/CTAS/`DROP VIEW`/TRUNCATE/COPY，simple 与 Parse 均 0A000（`DROP TABLE` 已由阶段七支持，不再属于拒写）；第一条读、权威快照、重连读；batch 流中首条读确实执行，拒写后的 SET 不执行 | `read-only-*`、`read-only-batch` |
+| 明确拒绝，无持久化副作用 | UPDATE/DELETE/CTAS/`DROP VIEW`/TRUNCATE/COPY，simple 与 Parse 均 0A000（`DROP TABLE` 由阶段七、`INSERT` 由阶段八支持，不再属于拒写）；第一条读、权威快照、重连读；batch 流中首条读确实执行，拒写后的 SET 不执行 | `read-only-*`、`read-only-batch` |
 | 客户端拒绝，不冒充服务端错误 | 参数数量／Rust 参数类型不匹配，本地拒绝且无 SQLSTATE；随后连接可用 | `parameter-count-mismatch`、`parameter-type-mismatch` |
 | 错误映射 | 非法整数转换 LakeSoul XX000／PG 22P02 是已记录映射边界；WHERE 与投影中的多行标量子查询两端均为执行期 `21000`（非 Parse 拒绝）；均检查服务端错误与连接恢复 | `invalid-conversion`、`parameter-server-cast`、`scalar-subquery-multirow`、`projection-scalar-cardinality` |
 | 类型映射边界 | 未 CAST 的 rank/row_number：LakeSoul UInt64 映射 NUMERIC、PG 为 INT8；值相同，单独检查不同 OID | `window-native-types` |
@@ -199,6 +199,32 @@ DDL 由 `src/ddl.rs` 的语句钩子承接，既不经过 DataFusion 自己的 D
 
 已知边界：拒绝矩阵与 `Parse` 阶段校验覆盖的是 AST 可判定的部分（类型、选项、约束、schema 不存在、warehouse 未配置），表已存在属于执行期 `42P07`，与 PG 一致；`SELECT` 已删除的表仍是目录解析边界 `XX000`（见阶段三·3.2），不是 `42P01`。列类型映射只覆盖 `smallint/int/bigint/real/double/boolean/varchar/char/text/date/timestamp/timestamptz/decimal(p,s)/bytea`，且只允许一个主键；`varchar(n)`／`char(n)` 的长度修饰落到 Arrow `Utf8` 后不保留，`timestamp` 只接受默认（或无）精度——这两项是**已记录的限制**，不是等价语义：后续 INSERT 路径不得声称会校验长度或精度。`CREATE TABLE AS` 依赖尚未实现的 INSERT 路径，当前明确拒绝。DDL 的表路径与表属性选择由服务决定，客户端不能用 `LOCATION`／`STORED AS` 覆盖；多名称 `DROP` 在元数据级不是事务，校验通过后若级联删除中途失败仍可能部分完成。
 
+### 阶段八：INSERT
+
+`INSERT` 由 `src/insert.rs` 的 `InsertStatementHook` 承接，在 Parse 与 Execute 两个阶段都接管语句，再交给 DataFusion 自己的 DML 规划与 LakeSoul sink 执行。写入仍是一条语句一次提交：`INSERT INTO t VALUES (...)`（多行）、`INSERT INTO t SELECT ...`、显式列清单和 `$n` 参数绑定共用同一路径。成功标签为 `INSERT 0 n`，`n` 是 sink 实际写入的行数。
+
+| 契约 | 已验证范围 | 具体用例 |
+| --- | --- | --- |
+| 写入、可见性与元数据 | 多行 `VALUES` 写入 append 表后同一连接与新连接都立即可读；一次 `INSERT` 只产生一条已提交 `data_commit_info` 和一个 `partition_info`（首个版本为 0）；committed 文件存在于本次 warehouse | `insert_contract::plain_insert_writes_rows_metadata_and_files` |
+| extended 协议与参数 | 显式列清单的 prepared `INSERT` 声明参数类型（主键 `int8`），同一 Statement 连续两次绑定执行，行数与结果正确 | `insert_contract::parameterized_insert_executes_twice` |
+| 主键冲突语义 | 主键表 plain `INSERT` 遇到已存在键返回 `23505`，不覆盖、不提交；语句失败前后权威快照完全一致 | `insert_contract::duplicate_key_leaves_no_state` |
+| NOT NULL | 主键列为 NULL 返回 `23502`，且不提交任何文件或元数据 | `insert_contract::not_null_violation_is_23502` |
+| `ON CONFLICT DO NOTHING` | 冲突行被丢弃、非冲突行写入，标签只计实际插入行；已有键的值不变 | `insert_contract::on_conflict_do_nothing_skips_conflicts` |
+| `ON CONFLICT DO UPDATE` | 仅接受 `SET col = EXCLUDED.col` 覆盖全部非键列，并映射为 LakeSoul 整行 replace；结果行被完整重写 | `insert_contract::on_conflict_do_update_replaces_the_row` |
+| 多分区原子发布 | 一条 `INSERT` 写 3 个 range 分区时全部行一次可见；每个分区一条已提交 `data_commit_info`，`partition_info` 3 行且版本均为 0；committed 文件均存在 | `insert_contract::multi_partition_insert_publishes_atomically` |
+| 明确拒绝，无副作用 | `RETURNING`、非主键冲突目标、部分列 `DO UPDATE`、非 `EXCLUDED` 赋值、不存在表 `42P01`、跨 database `3D000`、跨 schema `3F000`、事务块内 `0A000`、simple-query 多语句批次 `0A000`；每次拒绝后权威快照不变 | `insert_contract::refusal_matrix_changes_nothing` |
+
+语义边界（LakeSoul 特有，不宣称 PG 等价）：
+
+- 主键表是 merge-on-read。plain `INSERT` 走 insert-only，重复键报错而不是 PG 的“先删后插”；`ON CONFLICT DO NOTHING` 在 sink 侧过滤冲突行；`ON CONFLICT DO UPDATE` 只映射“全列 + 每列 `= EXCLUDED.col`”的整行重写，任意表达式需要读旧行，直接 `0A000`。
+- 非主键 range 分区表的一条语句可能写多个 partition。提交把所有 `DataCommitInfo` 放进一个 PostgreSQL 事务，并一次发布全部分区版本；读者只会看到整条语句。Parquet 文件先于元数据写入对象存储，语句失败或取消（包括元数据发布失败）会删除本次 attempted files，进程崩溃留下的孤儿文件由 GC 处理——文件层不是原子的。
+- 取消：结果流在提交开始前被 drop 时不发布并清理文件；进入元数据提交后不可中断（单事务、毫秒级）。
+- 并发写冲突：快照校验发现分区版本已被其他写者推进时返回 `40001`（可重试），而不是 `23505`——LakeSoul 在这一步无法区分“同键冲突”与“任意并发提交”，客户端重试后才会得到 `23505`。提交结果不确定（`InsertCommitOutcomeUnknown`）仍是服务端 `XX000`，文件保留。
+- 提交后维护失败：元数据提交成功后的 vector／text 索引自动构建失败仍使语句返回错误，但行已提交且可见。客户端不能把该错误的 INSERT 当作未生效。
+- 事务：DataFusion 没有事务，`BEGIN` 块内和 simple-query 多语句批次内的 `INSERT` 一律 `0A000`，避免客户端误以为 `ROLLBACK` 能撤销。
+- `RETURNING` 暂不支持：sink 在语句末尾提交，没有行流可回填。
+- 类型不匹配与列数不匹配仍是服务端 `XX000`，尚未映射 `22P02`／`42804`／`42601`；upsert 语句内的重复主键也未实现 `21000`。
+
 ## 失败验收与已知缺陷复现
 
 以下命令**应非零退出**，不是正常通过命令。`expectation` 故意改错预期（merge 使用旧值、catalog 使用 peer database 身份、vector 使用错误 ID、TPC-H 使用错误 q06 数值答案），`startup` 给真实二进制传入非法启动参数；均必须打印 cleanup proof。存储、catalog、vector 与 TPC-H target 的故障发生在全部 fixture 创建后，额外验证新增表／第二个 namespace／已提交索引元数据和文件也被回收；TPC-H 的双 worker 启动故障还验证 RPC 端口与 worker tasks 回收。
@@ -231,7 +257,7 @@ cargo -q test -p postgres-lakesoul --test sql_compat --no-fail-fast -- --ignored
 
 ## 本地验收
 
-本轮在 PostgreSQL 17.10 上实测：七个正常 targets（新增 `ddl_contract`）的 legacy／v2 各为 **18 passed／1 ignored**。`SHOW` Describe 修复后 `vector_contract` 为 **3 passed／0 ignored**，`session_contract` 保持 **3 passed／0 ignored**。下表为本轮实际观察值，包含各 target 的共享比较器 unit test，不是 SQL case 数：
+本轮在 PostgreSQL 17.10 上实测：八个正常 targets（新增 `ddl_contract`、`insert_contract`）的 legacy／v2 各为 **20 passed／1 ignored**。`SHOW` Describe 修复后 `vector_contract` 为 **3 passed／0 ignored**，`session_contract` 保持 **3 passed／0 ignored**。下表为本轮实际观察值，包含各 target 的共享比较器 unit test，不是 SQL case 数：
 
 | Target | Passed | 显式已知缺陷 ignored |
 | --- | ---: | ---: |
@@ -242,15 +268,16 @@ cargo -q test -p postgres-lakesoul --test sql_compat --no-fail-fast -- --ignored
 | `vector_contract` | 3 | 0 |
 | `tpch_contract` | 2 | 0 |
 | `ddl_contract` | 2 | 0 |
+| `insert_contract` | 2 | 0 |
 
-二进制 unit test（`--bins`）在两种 merge 配置下均为 **122 passed／1 ignored**。
+二进制 unit test（`--bins`）在两种 merge 配置下均为 **123 passed／1 ignored**。
 
-切换到 fork 提交 `03441f8` 后（本地 crate 副本删除）复跑：六个既有 targets 的 legacy／v2 为 **16 passed／1 ignored**，`--bins` 为 121 passed／1 ignored，说明子查询语义由 fork 分支提供，不依赖本仓库副本。本轮加入 DDL 后七个 targets 为 **18 passed／1 ignored**，`--bins` 为 **122 passed／1 ignored**（新增只读守卫放行 DDL 的单元测试）。
+切换到 fork 提交 `03441f8` 后（本地 crate 副本删除）复跑：六个既有 targets 的 legacy／v2 为 **16 passed／1 ignored**，`--bins` 为 121 passed／1 ignored，说明子查询语义由 fork 分支提供，不依赖本仓库副本。本轮加入 DDL 与 INSERT 后八个 targets 为 **20 passed／1 ignored**，`--bins` 为 **123 passed／1 ignored**（新增只读守卫放行 DDL／INSERT、INSERT 批量位置拒绝与 typed 写错误映射的单元测试）。
 
 本次修复后，TPC-H SF 0.1／PK 单机的 legacy／v2、SF 0.1／nopk／v2 双 worker 均 simple text 22/22、extended text 22/22；每次 target 的四类 CLI 负例也通过。双 worker 的实际远端 stage、network shuffle、runtime metrics 与退出回收均有证据。阶段四曾验证 SF 1 的三个布局／六个 merge 组合，以及 Python driver 的 34 tests；**本轮未重跑 SF 1 或 Python 单测，SF 10 仍未本地运行**。
 
 CI 的 PostgreSQL 服务版本及 test-fast profile 由 workflow 配置；本地验收不冒充已运行 GitHub Actions。
 
-生产二进制及七个 targets 的 `cargo -q clippy --no-deps ... -- -D warnings` 通过；变更 Rust 文件（含 `src/ddl.rs`、`tests/ddl_contract.rs`）与七个入口的 `rustfmt --check` 通过。`datafusion-pg-catalog` 来自 `datafusion-postgres` fork 的 `lakesoul-shared-static-tables` 分支（提交 `03441f8`，已删除 `RemoveSubqueryFromProjection`），本仓库只 pin `rev`，不保留 crate 副本，也没有需要单独格式化的 vendored catalog 代码。既有 `topk/mod.rs:290` 的 `fetch_update` 弃用 warning 保留，未为通过检查抑制告警或修改该算子。Workflows 未变，本轮未重跑 actionlint、物理执行器 row-count regression 或 Python 单测。
+生产二进制及八个 targets 的 `cargo -q clippy --no-deps ... -- -D warnings` 在 `postgres-lakesoul`／`lakesoul-io` 上通过；`lakesoul-datafusion` 仅剩既有 lint（`distributed/resolver.rs` 的 `needless_borrows_for_generic_args` 与 `src/tests/vector_search_tests.rs` 的 `field_reassign_with_default`），本轮未修改这些无关文件。变更 Rust 文件（含 `src/ddl.rs`、`src/insert.rs`、`src/write_mode.rs`、`tests/ddl_contract.rs`、`tests/insert_contract.rs`）经 `cargo fmt -p ...` 格式化并通过 `--check`。`datafusion-pg-catalog` 来自 `datafusion-postgres` fork 的 `lakesoul-shared-static-tables` 分支（提交 `03441f8`，已删除 `RemoveSubqueryFromProjection`），本仓库只 pin `rev`，不保留 crate 副本，也没有需要单独格式化的 vendored catalog 代码。既有 `topk/mod.rs:290` 的 `fetch_update` 弃用 warning 保留，未为通过检查抑制告警或修改该算子。Workflows 未变，本轮未重跑 actionlint、物理执行器 row-count regression 或 Python 单测。
 
 本轮正常入口的 coordinator／Python 子进程均已回收，双 worker tasks 已 join，PG／metrics／Flight 端口释放。最终 `table_info`／`table_name_id`／`table_path_id`／`partition_info`／`data_commit_info`／`index_shard`／`index_commit`／`index_lease`、`sqlcompat_ref_%` 参考 schema 与额外客户端连接共 10 项计数均为零；`namespace` 仅剩 `meta_init.sql` 建立的 `default` 行。自建 PostgreSQL 已正常停止并删除数据目录及日志。

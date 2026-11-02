@@ -401,6 +401,15 @@ impl StartupState {
             ),
         )
         .await?;
+        reference_execute(
+            client,
+            &format!(
+                "CREATE TABLE \"{schema}\".range_items (\
+                   part INTEGER NOT NULL, id INTEGER NOT NULL, val INTEGER\
+                 )"
+            ),
+        )
+        .await?;
 
         reference_execute(
             client,
@@ -500,6 +509,18 @@ impl StartupState {
         )
         .await?;
         self.created_tables.push("pk_items".to_string());
+        management_execute(
+            &context,
+            &format!(
+                "CREATE EXTERNAL TABLE lakesoul.{namespace}.range_items (\
+                   part INTEGER NOT NULL, id INTEGER NOT NULL, val INTEGER\
+                 ) STORED AS LAKESOUL PARTITIONED BY (part) LOCATION '{}' \
+                 OPTIONS ('file_format' 'parquet')",
+                location("range_items")
+            ),
+        )
+        .await?;
+        self.created_tables.push("range_items".to_string());
 
         management_execute(
             &context,

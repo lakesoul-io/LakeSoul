@@ -675,12 +675,9 @@ async fn discovery_snapshot_goes_stale_after_failed_refreshes() {
 
 /// Value of the exact series `series` (name plus labels) in `rendered`.
 fn metric_value(rendered: &str, series: &str) -> Option<f64> {
-    rendered.lines().find_map(|line| {
-        line.strip_prefix(series)?
-            .strip_prefix(' ')?
-            .parse()
-            .ok()
-    })
+    rendered
+        .lines()
+        .find_map(|line| line.strip_prefix(series)?.strip_prefix(' ')?.parse().ok())
 }
 
 /// Bounded wait until `series` satisfies `accept`.
@@ -695,12 +692,16 @@ async fn wait_for_metric(
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    panic!("{series} never reached the expected value in:\n{}", exporter.render());
+    panic!(
+        "{series} never reached the expected value in:\n{}",
+        exporter.render()
+    );
 }
 
 const ELIGIBLE: &str = "lakesoul_worker_discovery_eligible_workers";
 const AGE: &str = "lakesoul_worker_discovery_snapshot_age_seconds";
-const HARD_FAILURES: &str = r#"lakesoul_worker_discovery_refresh_failures_total{kind="hard"}"#;
+const HARD_FAILURES: &str =
+    r#"lakesoul_worker_discovery_refresh_failures_total{kind="hard"}"#;
 const TRANSIENT_FAILURES: &str =
     r#"lakesoul_worker_discovery_refresh_failures_total{kind="transient"}"#;
 
@@ -723,8 +724,16 @@ async fn discovery_metrics_expose_refresh_outage() {
 
     let rendered = exporter.render();
     assert_eq!(metric_value(&rendered, ELIGIBLE), Some(0.0), "{rendered}");
-    assert_eq!(metric_value(&rendered, HARD_FAILURES), Some(0.0), "{rendered}");
-    assert_eq!(metric_value(&rendered, TRANSIENT_FAILURES), Some(0.0), "{rendered}");
+    assert_eq!(
+        metric_value(&rendered, HARD_FAILURES),
+        Some(0.0),
+        "{rendered}"
+    );
+    assert_eq!(
+        metric_value(&rendered, TRANSIENT_FAILURES),
+        Some(0.0),
+        "{rendered}"
+    );
     assert_eq!(
         metric_value(&rendered, AGE),
         Some(f64::INFINITY),
@@ -742,7 +751,11 @@ async fn discovery_metrics_expose_refresh_outage() {
     wait_for_metric(&exporter, AGE, |age| age >= 0.3 && age.is_finite()).await;
     let rendered = exporter.render();
     assert_eq!(metric_value(&rendered, ELIGIBLE), Some(1.0), "{rendered}");
-    assert_eq!(metric_value(&rendered, HARD_FAILURES), Some(0.0), "{rendered}");
+    assert_eq!(
+        metric_value(&rendered, HARD_FAILURES),
+        Some(0.0),
+        "{rendered}"
+    );
 
     api.set_response(mocked(403, String::new()));
     wait_for_metric(&exporter, HARD_FAILURES, |failures| failures >= 1.0).await;

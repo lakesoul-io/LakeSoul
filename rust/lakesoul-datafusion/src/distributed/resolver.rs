@@ -116,9 +116,8 @@ impl DiscoveryMetrics {
     }
 
     fn record_age(&self, last_success: Option<Instant>) {
-        self.snapshot_age.set(
-            last_success.map_or(f64::INFINITY, |at| at.elapsed().as_secs_f64()),
-        );
+        self.snapshot_age
+            .set(last_success.map_or(f64::INFINITY, |at| at.elapsed().as_secs_f64()));
     }
 }
 

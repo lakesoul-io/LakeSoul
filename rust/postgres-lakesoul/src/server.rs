@@ -252,7 +252,13 @@ impl LakeSoulQueryRouter {
             // A batch PostgreSQL would run in an implicit transaction cannot
             // contain DDL: the metadata commit cannot be rolled back.
             crate::ddl::refuse_ddl_in_batch(&statements)?;
-            for statement in statements {
+            // Refused at the INSERT itself so statements before it still run
+            // and stream their rows, as PostgreSQL does before the failure.
+            let insert_position = crate::insert::first_insert_in_batch(&statements);
+            for (index, statement) in statements.into_iter().enumerate() {
+                if insert_position == Some(index) {
+                    return Err(crate::insert::refuse_insert_in_batch());
+                }
                 if is_empty_query(&statement) {
                     client
                         .feed(PgWireBackendMessage::EmptyQueryResponse(
@@ -601,6 +607,7 @@ pub(crate) fn connection_statement_hooks(
         database.to_string(),
         factory.warehouse().map(str::to_owned),
     )));
+    hooks.push(Arc::new(crate::insert::InsertStatementHook));
     statement_hooks_with(hooks)
 }
 

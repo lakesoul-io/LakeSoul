@@ -29,6 +29,7 @@ pub mod text_index;
 pub mod tpch;
 pub mod udf;
 pub mod vector_index;
+pub mod write_mode;
 
 // re export
 pub use lakesoul_common::ser;

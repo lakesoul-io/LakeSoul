@@ -7,12 +7,15 @@
 use lakesoul_common::misc::SecretMap;
 use std::fmt::Debug;
 use std::sync::Arc;
+#[cfg(test)]
 use std::time::SystemTime;
 
+#[cfg(test)]
 use datafusion_common::TableReference;
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_metadata::MetaDataClientRef;
+#[cfg(test)]
 use lakesoul_metadata_proto::entity::{
     CommitOp, DataCommitInfo, DataFileOp, FileOp, Uuid,
 };
@@ -253,6 +256,7 @@ pub(crate) fn format_table_info_partitions(
 ///
 /// The timestamp is milliseconds since the epoch, like `partition_info`,
 /// `commit_data_files` and the JVM writers (`System.currentTimeMillis`).
+#[cfg(test)]
 pub(crate) async fn commit_data(
     client: MetaDataClientRef,
     table_name: &str,
