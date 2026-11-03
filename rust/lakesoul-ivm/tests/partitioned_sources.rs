@@ -14,9 +14,10 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTable,
-    IvmTableOptions, JoinView, SemiAntiView, StateRole, keyed_join_output_primary_keys,
-    keyed_join_view_schema_for, multi_agg_mv_schema_for, row_mv_schema_for,
-    semi_anti_mv_schema_for, state_partition_stats, sum_count_mv_schema_for,
+    IvmTableOptions, JoinView, SemiAntiView, StateRole, enable_partition_stats,
+    keyed_join_output_primary_keys, keyed_join_view_schema_for, multi_agg_mv_schema_for,
+    row_mv_schema_for, semi_anti_mv_schema_for, state_partition_stats,
+    sum_count_mv_schema_for,
 };
 use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo};
 use tempfile::tempdir;
@@ -4079,7 +4080,7 @@ async fn a_multi_join_prunes_a_deep_source_by_chain_keys() {
 /// partition.
 #[test_log::test(tokio::test)]
 async fn a_partitioned_join_side_state_uses_the_join_key_partition() {
-    unsafe { std::env::set_var("LAKESOUL_IVM_PARTITION_STATS", "1") };
+    enable_partition_stats();
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -4997,7 +4998,7 @@ async fn select_star_over_a_derived_step_hides_the_internal_partition() {
 /// the d3/d4 state partitions.
 #[test_log::test(tokio::test)]
 async fn multi_agg_partial_state_prunes_state_reads() {
-    unsafe { std::env::set_var("LAKESOUL_IVM_PARTITION_STATS", "1") };
+    enable_partition_stats();
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -5173,7 +5174,7 @@ async fn multi_agg_partial_state_prunes_state_reads() {
 /// state when it is empty (the migration path for an existing view).
 #[test_log::test(tokio::test)]
 async fn multi_agg_partial_state_handles_group_deletes_and_rebuilds() {
-    unsafe { std::env::set_var("LAKESOUL_IVM_PARTITION_STATS", "1") };
+    enable_partition_stats();
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();

@@ -2142,16 +2142,16 @@ const TOP_K_MATERIALIZE_BYTES: usize = 1024 * 1024 * 1024;
 /// them lazy re-runs the same keyed lookup, so the refresh materializes them
 /// by default.  A large window could otherwise pin the whole frame in memory:
 /// once the budget is crossed, drop the partial result and let the caller use
-/// the lazy frame again.  The budget is per frame and overridable with
-/// `LAKESOUL_IVM_TOPK_MATERIALIZE_BYTES`; `0` disables materialization.
+/// the lazy frame again.  The per-frame budget comes from
+/// [`IvmOptions::topk_materialize_bytes`](crate::config::IvmOptions::topk_materialize_bytes);
+/// `Some(0)` disables materialization.
 async fn materialize_top_k_frame(
     frame: DataFrame,
     label: &'static str,
 ) -> Result<Option<Vec<RecordBatch>>> {
     use futures::StreamExt;
-    let limit = std::env::var("LAKESOUL_IVM_TOPK_MATERIALIZE_BYTES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
+    let limit = crate::config::options()
+        .topk_materialize_bytes
         .unwrap_or(TOP_K_MATERIALIZE_BYTES);
     if limit == 0 {
         return Ok(None);

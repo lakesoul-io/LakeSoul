@@ -75,6 +75,7 @@
 //! collection (checking `min(ivm.cursors.last_timestamp)` before deleting) is a
 //! follow-up.
 
+pub mod config;
 pub mod error;
 pub mod executor;
 pub mod metadata;
@@ -84,6 +85,7 @@ pub mod runtime;
 pub mod sql;
 pub mod table;
 
+pub use config::{IvmOptions, IvmRuntimeConfig, StateIndexMode};
 pub use error::Result;
 pub use executor::{IvmExecution, IvmExecutionAction, IvmSqlExecutor};
 pub use lakesoul_io::file_format::PhysicalFormat;
@@ -92,7 +94,6 @@ pub use metadata::{
     PartitionVersion, SourceVersionRange, StateRole, StateTable, StateVersion, ViewInfo,
 };
 pub use provider::{IvmReadMode, IvmTableProvider};
-pub use runtime::state_partition_stats;
 pub use runtime::{
     ApproxDistinctView, ApproxPercentileView, ArrayAggView, BoolAggKind, BoolAggView,
     ChainPolicy, CompareOp, ComputedAggArg, ComputedAggResult, ComputedAggView,
@@ -155,6 +156,7 @@ pub use runtime::{
     window_columns_mv_schema_for_with_payload, window_key, window_mv_schema,
     window_mv_schema_for, window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
+pub use runtime::{enable_partition_stats, state_partition_stats};
 pub use sql::{AnalyzeRequest, AnalyzedView, analyze_select, definition_hash};
 pub use table::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, create_ivm_table,

@@ -201,13 +201,10 @@ fn topological_order(
 ///
 /// One keeps the historical sequential order.  Values above one run views of
 /// the same dependency level concurrently; the shared DataFusion pool and the
-/// metadata client still bound the real resource usage.
+/// metadata client still bound the real resource usage.  The value comes from
+/// [`IvmOptions::view_parallelism`](crate::config::IvmOptions::view_parallelism).
 fn view_parallelism() -> usize {
-    std::env::var("LAKESOUL_IVM_VIEW_PARALLELISM")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(1)
-        .max(1)
+    crate::config::options().view_parallelism.max(1)
 }
 
 impl IvmRuntime {

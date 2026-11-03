@@ -41,6 +41,7 @@ use lakesoul_io::{
 use lakesoul_metadata::{MetaDataClient, transfusion::DataFileInfo};
 use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo, TableInfo};
 
+use crate::config::IvmOptions;
 use crate::error::Result;
 use crate::metadata::PartitionVersion;
 use crate::provider::IvmTableProvider;
@@ -174,56 +175,48 @@ where
 /// The in-memory multipart buffer used by the LakeSoul writer.
 pub(crate) const WRITE_MEMORY_BUFFER: usize = 8 * 1024 * 1024;
 
-/// Apply IO threads to a reader.  Readers stream batches and never spill, so
-/// they do not get a private memory pool: a pool per reader multiplied the
-/// refresh's memory by the number of open buckets.  An explicit
-/// `LAKESOUL_IVM_READ_POOL_SIZE` still opts into the old bounded-reader
-/// behavior for deployments that rely on it.
+/// Readers stream batches and never spill, so they do not get a private
+/// memory pool: a pool per reader multiplied the refresh's memory by the
+/// number of open buckets.  The caller's DataFusion memory pool is the only
+/// budget; the reader thread count is likewise owned by the IO layer.
 fn with_reader_io(builder: LakeSoulIOConfigBuilder) -> LakeSoulIOConfigBuilder {
-    let threads = std::env::var("LAKESOUL_IVM_IO_THREADS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(4);
-    let builder = builder.with_thread_num(threads);
-    let Ok(size) = std::env::var("LAKESOUL_IVM_READ_POOL_SIZE") else {
-        return builder;
-    };
-    let directory = std::env::var("LAKESOUL_IVM_SPILL_DIR")
-        .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
-    let _ = std::fs::create_dir_all(&directory);
-    tracing::debug!(size, threads, %directory, "IVM reader spill pool configured");
+    with_object_store_options(builder)
+}
+
+/// Attach the object-store options copied from the caller's session.
+fn with_object_store_options(
+    mut builder: LakeSoulIOConfigBuilder,
+) -> LakeSoulIOConfigBuilder {
+    for (key, value) in crate::config::object_store_options() {
+        builder = builder.with_object_store_option(key, value);
+    }
     builder
-        .with_option(OPTION_KEY_POOL_SIZE, size)
-        .with_option(OPTION_KEY_POOL_DIR, directory)
 }
 
 /// Give a LakeSoul writer its own bounded memory pool and spill directory.
 /// DataFusion's session limit does not automatically apply to the IO layer:
-/// its sort and merge operators create a separate runtime.
-fn with_spill_pool(
+/// its sort and merge operators create a separate runtime.  Both values come
+/// from [`IvmOptions`]; `None` keeps the historical `500mb` pool under the
+/// default spill directory.
+fn with_write_pool(
     builder: LakeSoulIOConfigBuilder,
-    size_env: &str,
-    default_size: &str,
+    options: &IvmOptions,
 ) -> LakeSoulIOConfigBuilder {
-    let size = std::env::var(size_env).unwrap_or_else(|_| default_size.to_string());
-    let threads = std::env::var("LAKESOUL_IVM_IO_THREADS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(4);
-    let directory = std::env::var("LAKESOUL_IVM_SPILL_DIR")
-        .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
+    let size = options
+        .write_pool_size
+        .clone()
+        .unwrap_or_else(|| "500mb".to_string());
+    let directory = options
+        .write_pool_dir
+        .clone()
+        .unwrap_or_else(crate::config::default_spill_dir);
     let _ = std::fs::create_dir_all(&directory);
-    tracing::debug!(
-        size_env,
-        size,
-        threads,
-        %directory,
-        "IVM IO spill pool configured"
-    );
-    builder
-        .with_thread_num(threads)
-        .with_option(OPTION_KEY_POOL_SIZE, size)
-        .with_option(OPTION_KEY_POOL_DIR, directory)
+    tracing::debug!(size, %directory, "IVM IO spill pool configured");
+    with_object_store_options(
+        builder
+            .with_option(OPTION_KEY_POOL_SIZE, size)
+            .with_option(OPTION_KEY_POOL_DIR, directory),
+    )
 }
 
 /// The largest affected-key set a key-filtered state read resolves through the
@@ -245,22 +238,17 @@ pub(crate) const MAX_STATE_KEY_CANDIDATES: usize = 1_000_000;
 /// Parquet stays off by default: a page holds tens of thousands of rows, so at
 /// 0.1%–1% almost every page contains a key and the index cannot skip data —
 /// measured slower than the plain scan (639–674 ms vs 367–422 ms at 10M/0.01%).
-/// `LAKESOUL_IVM_STATE_INDEX=1` forces it on for any format (clustered key sets
-/// and point lookups can still benefit on Parquet).  The index needs the local
+/// `StateIndexMode::Force` enables it for any format (clustered key sets and
+/// point lookups can still benefit on Parquet).  The index needs the local
 /// disk cache (`LAKESOUL_CACHE`); without it the read falls back to a scan.
 fn with_state_key_lookup(
     builder: lakesoul_io::config::LakeSoulIOConfigBuilder,
     file_format: PhysicalFormat,
 ) -> lakesoul_io::config::LakeSoulIOConfigBuilder {
-    let configured = std::env::var("LAKESOUL_IVM_STATE_INDEX").ok();
-    if matches!(
-        configured.as_deref(),
-        Some("0") | Some("false") | Some("off")
-    ) {
-        return builder;
-    }
-    let vortex = !matches!(file_format, PhysicalFormat::Parquet);
-    if !vortex && configured.is_none() {
+    if !crate::config::options()
+        .state_index
+        .enabled_for(file_format)
+    {
         return builder;
     }
     builder
@@ -273,18 +261,10 @@ fn with_state_key_lookup(
 /// Internal state and derived steps are read by point lookups far more often
 /// than by full scans, so they use Vortex even when the user target/source
 /// tables are Parquet.  Vortex's small row blocks let the row-level primary
-/// key locator skip most of a file; `LAKESOUL_IVM_INTERNAL_FILE_FORMAT` can
+/// key locator skip most of a file; [`IvmOptions::internal_file_format`] can
 /// still select parquet or vortex-compact for experiments.
 pub fn internal_file_format() -> PhysicalFormat {
-    match std::env::var("LAKESOUL_IVM_INTERNAL_FILE_FORMAT")
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "parquet" => PhysicalFormat::Parquet,
-        "vortex-compact" | "vortex_compact" => PhysicalFormat::VortexCompact,
-        _ => PhysicalFormat::Vortex,
-    }
+    crate::config::options().internal_file_format
 }
 
 /// The format of keyed auxiliary state tables.  IVM keeps these on Vortex as
@@ -812,7 +792,8 @@ impl IvmTable {
     }
 
     fn writer_builder(&self) -> LakeSoulIOConfigBuilder {
-        let mut builder = with_spill_pool(
+        let options = crate::config::options();
+        let mut builder = with_write_pool(
             LakeSoulIOConfig::builder()
                 .with_prefix(self.table_path.clone())
                 .with_schema(self.schema.clone())
@@ -822,8 +803,7 @@ impl IvmTable {
                 .with_physical_format(self.file_format)
                 .with_max_file_size(MAX_WRITE_FILE_SIZE)
                 .with_memory_buffer_capacity(WRITE_MEMORY_BUFFER),
-            "LAKESOUL_IVM_WRITE_POOL_SIZE",
-            "500mb",
+            &options,
         );
         if !self.range_partition_columns.is_empty() {
             builder = builder.with_range_partitions(self.range_partition_columns.clone());
@@ -837,12 +817,15 @@ impl IvmTable {
             self.file_format,
             PhysicalFormat::Vortex | PhysicalFormat::VortexCompact
         ) {
-            if let Ok(value) = std::env::var("LAKESOUL_IVM_VORTEX_ROW_BLOCK_SIZE") {
-                builder = builder.with_option(OPTION_KEY_VORTEX_ROW_BLOCK_SIZE, value);
-            }
-            if let Ok(value) = std::env::var("LAKESOUL_IVM_VORTEX_DATA_BLOCK_BYTES") {
+            if let Some(value) = &options.vortex_row_block_size {
                 builder =
-                    builder.with_option(OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES, value);
+                    builder.with_option(OPTION_KEY_VORTEX_ROW_BLOCK_SIZE, value.clone());
+            }
+            if let Some(value) = &options.vortex_data_block_bytes {
+                builder = builder.with_option(
+                    OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES,
+                    value.clone(),
+                );
             }
         }
         builder
@@ -1921,11 +1904,10 @@ impl IvmTable {
             // The row-level index is only a win on Vortex's small blocks; a
             // Parquet page holds too many rows, and building the index on the
             // fly is much slower than the regular scan.
-            let vortex = !matches!(self.file_format, PhysicalFormat::Parquet);
-            let forced = std::env::var("LAKESOUL_IVM_STATE_INDEX")
-                .ok()
-                .is_some_and(|value| !matches!(value.as_str(), "0" | "false" | "off"));
-            if vortex || forced {
+            if crate::config::options()
+                .state_index
+                .enabled_for(self.file_format)
+            {
                 builder = with_state_key_lookup(builder, self.file_format);
                 builder = builder.with_explicit_pk_keys(columns, keys);
             }
