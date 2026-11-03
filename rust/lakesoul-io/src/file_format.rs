@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock};
+use std::time::Instant;
 
 use ::vortex::io::session::RuntimeSessionExt;
 use ::vortex::layout::scan::memory::{ScanMemoryBudget, ScanMemorySessionExt};
@@ -44,7 +46,9 @@ use rootcause::{Report, bail, report};
 use vortex_datafusion::{VortexFormat, VortexTableOptions};
 
 use crate::Result;
+use crate::cache::stats::SchemaInferenceTiming;
 use crate::config::LakeSoulIOConfig;
+use crate::object_store_metrics::SchemaInferenceStore;
 use crate::physical_plan::merge::MergeParquetExec;
 
 pub(crate) mod vortex;
@@ -773,6 +777,11 @@ pub async fn flatten_file_scan_config_for_format(
     partition_schema: SchemaRef,
     target_schema: SchemaRef,
 ) -> Result<Vec<FileScanConfig>> {
+    let started = Instant::now();
+    let schema_ns = AtomicU64::new(0);
+    let stats_ns = AtomicU64::new(0);
+    let build_ns = AtomicU64::new(0);
+    let schema_timing = Arc::new(SchemaInferenceTiming::default());
     debug!("partition schema: {}", partition_schema);
     let store = state.runtime_env().object_store(&conf.object_store_url)?;
     let meta_fetch_concurrency: usize = state
@@ -782,6 +791,14 @@ pub async fn flatten_file_scan_config_for_format(
         .into();
     // Keep the template file-free: copying all input groups per file is quadratic.
     let file_groups = std::mem::take(&mut conf.file_groups);
+    let file_group_count = file_groups.len();
+    let file_count = file_groups
+        .iter()
+        .map(|group| group.files().len())
+        .sum::<usize>();
+    let schema_ns = &schema_ns;
+    let stats_ns = &stats_ns;
+    let build_ns = &build_ns;
     let mut flatten_configs =
         futures::stream::iter(file_groups.iter().flat_map(FileGroup::files).enumerate())
             .map(|(index, file): (usize, &PartitionedFile)| {
@@ -790,11 +807,21 @@ pub async fn flatten_file_scan_config_for_format(
                 let partition_schema = &partition_schema;
                 let target_schema = &target_schema;
                 let conf = &conf;
+                let schema_timing = &schema_timing;
                 async move {
                     let conf = conf.clone();
+                    let file_started = Instant::now();
                     let objects = std::slice::from_ref(&file.object_meta);
                     let files = vec![file.clone()];
-                    let file_schema = format.infer_schema(state, &store, objects).await?;
+                    let schema_started = Instant::now();
+                    // Carry timing through Vortex's spawned tasks,
+                    // which do not inherit task locals.
+                    let schema_store: Arc<dyn ObjectStore> = Arc::new(SchemaInferenceStore::new(
+                        store.clone(),
+                        Arc::clone(schema_timing),
+                    ));
+                    let file_schema = format.infer_schema(state, &schema_store, objects).await?;
+                    let schema_elapsed = schema_started.elapsed();
                     let file_schema =
                         strip_partition_columns(file_schema, partition_schema.clone());
                     debug!("file schema:{}", file_schema);
@@ -802,6 +829,7 @@ pub async fn flatten_file_scan_config_for_format(
                     debug!("partition cols: {:?}", cols);
                     debug!("flatten: file_schema: {}", file_schema);
                     let table_schema = TableSchema::new(file_schema, cols.to_vec());
+                    let stats_started = Instant::now();
                     let file_statistics = format
                         .infer_stats(
                             state,
@@ -810,6 +838,7 @@ pub async fn flatten_file_scan_config_for_format(
                             &file.object_meta,
                         )
                         .await?;
+                    let stats_elapsed = stats_started.elapsed();
                     let statistics = table_statistics(file_statistics, &table_schema);
                     let physical_target_schema =
                         strip_partition_columns(target_schema.clone(), partition_schema.clone());
@@ -837,6 +866,11 @@ pub async fn flatten_file_scan_config_for_format(
                         .with_statistics(statistics)
                         .with_projection_indices(projection_indices)?
                         .build();
+                    let build_elapsed = file_started.elapsed() - schema_elapsed - stats_elapsed;
+                    schema_ns.fetch_add(schema_elapsed.as_nanos() as u64, Ordering::Relaxed);
+                    stats_ns.fetch_add(stats_elapsed.as_nanos() as u64, Ordering::Relaxed);
+                    build_ns.fetch_add(build_elapsed.as_nanos() as u64, Ordering::Relaxed);
+
                     Ok::<(usize, FileScanConfig), DataFusionError>((index, config))
                 }
             })
@@ -846,6 +880,18 @@ pub async fn flatten_file_scan_config_for_format(
             .await?;
     // Completion order must never become the merge's file/version order.
     flatten_configs.sort_unstable_by_key(|(index, _)| *index);
+    schema_timing.log_summary();
+    tracing::info!(
+        wall_ms = started.elapsed().as_secs_f64() * 1000.0,
+        physical_format = %format.get_ext(),
+        file_group_count,
+        file_count,
+        meta_fetch_concurrency,
+        schema_sum_ms = schema_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0,
+        stats_sum_ms = stats_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0,
+        build_sum_ms = build_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0,
+        "scan planning flatten summary"
+    );
     Ok(flatten_configs
         .into_iter()
         .map(|(_, config)| config)

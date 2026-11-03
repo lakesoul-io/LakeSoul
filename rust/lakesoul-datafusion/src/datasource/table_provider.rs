@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Instant;
 
 use arrow::compute::SortOptions;
 use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
@@ -27,7 +28,9 @@ use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::expr::Sort;
 use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion::logical_expr::utils::split_conjunction;
-use datafusion::logical_expr::{CreateExternalTable, TableProviderFilterPushDown, TableType};
+use datafusion::logical_expr::{
+    CreateExternalTable, TableProviderFilterPushDown, TableType,
+};
 use datafusion::physical_expr::{
     LexOrdering, PhysicalExpr, PhysicalSortExpr, create_physical_expr,
 };
@@ -48,12 +51,12 @@ use futures::stream::FuturesUnordered;
 
 use lakesoul_io::config::LakeSoulIOConfig;
 use lakesoul_io::file_format::{
-    LakeSoulFormatRegistry, PhysicalFormat, append_only_scan_exec, compute_project_column_indices,
-    flatten_file_scan_config_for_format,
+    LakeSoulFormatRegistry, PhysicalFormat, append_only_scan_exec,
+    compute_project_column_indices, flatten_file_scan_config_for_format,
 };
 use lakesoul_io::helpers::{
-    listing_sink_table_from_lakesoul_io_config, listing_source_table_from_lakesoul_io_config,
-    partition_desc_from_file_scan_config,
+    listing_sink_table_from_lakesoul_io_config,
+    listing_source_table_from_lakesoul_io_config, partition_desc_from_file_scan_config,
 };
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata::utils::qualify_path;
@@ -68,10 +71,13 @@ use crate::catalog::{
     parse_table_info_partitions,
 };
 use crate::lakesoul_table::helpers::{
-    case_fold_column_name, case_fold_table_name, create_io_config_builder_from_table_info,
-    listing_partition_info, parse_partitions_for_partition_desc, prune_partitions,
+    case_fold_column_name, case_fold_table_name,
+    create_io_config_builder_from_table_info, listing_partition_info,
+    parse_partitions_for_partition_desc, prune_partitions,
 };
-use lakesoul_common::ser::arrow_java::{schema_from_table_info_metadata, schema_to_metadata_parts};
+use lakesoul_common::ser::arrow_java::{
+    schema_from_table_info_metadata, schema_to_metadata_parts,
+};
 
 use super::file_format::LakeSoulMetaDataFormat;
 
@@ -180,7 +186,10 @@ pub struct LakeSoulTableProvider {
     pub(crate) format_registry: Arc<LakeSoulFormatRegistry>,
 }
 impl LakeSoulTableProvider {
-    fn needs_output_projection(target_schema: &SchemaRef, merged_schema: &SchemaRef) -> bool {
+    fn needs_output_projection(
+        target_schema: &SchemaRef,
+        merged_schema: &SchemaRef,
+    ) -> bool {
         if target_schema.fields().len() != merged_schema.fields().len() {
             return true;
         }
@@ -219,7 +228,9 @@ impl LakeSoulTableProvider {
             }
         }
         match fields {
-            Some(fields) => Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone())),
+            Some(fields) => {
+                Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
+            }
             None => schema,
         }
     }
@@ -269,7 +280,10 @@ impl LakeSoulTableProvider {
         Ok(Some(projection_indices))
     }
 
-    fn scan_projection(&self, projection: Option<&Vec<usize>>) -> DFResult<Option<Vec<usize>>> {
+    fn scan_projection(
+        &self,
+        projection: Option<&Vec<usize>>,
+    ) -> DFResult<Option<Vec<usize>>> {
         Self::logical_projection_to_scan_indices(
             projection,
             &self.logical_schema,
@@ -338,8 +352,10 @@ impl LakeSoulTableProvider {
             &table_info.table_schema_arrow_ipc_json_hash,
         )?);
         let vector_index_configs =
-            crate::vector_index::parse_vector_index_from_table_properties(&table_info.properties)
-                .unwrap_or_default();
+            crate::vector_index::parse_vector_index_from_table_properties(
+                &table_info.properties,
+            )
+            .unwrap_or_default();
         // A frontend may ask for its own marker on the vector columns (the
         // PostgreSQL wire server reports them as its `vector` type); the
         // scan, file and execution schemas are all derived from this one, so
@@ -351,7 +367,8 @@ impl LakeSoulTableProvider {
         );
         let (range_partitions, hash_partitions) =
             parse_table_info_partitions(&table_info.partitions)?;
-        let logical_schema = Self::read_schema(logical_schema, &hash_partitions, &range_partitions);
+        let logical_schema =
+            Self::read_schema(logical_schema, &hash_partitions, &range_partitions);
         let (file_schema, scan_schema) =
             Self::split_schemas(logical_schema.clone(), &range_partitions)?;
 
@@ -376,16 +393,19 @@ impl LakeSoulTableProvider {
                 )
                 .await?
             }
-            None => {
-                listing_sink_table_from_lakesoul_io_config(lakesoul_io_config.clone(), file_format)?
-            }
+            None => listing_sink_table_from_lakesoul_io_config(
+                lakesoul_io_config.clone(),
+                file_format,
+            )?,
         };
 
         let listing_options = listing_table.options().clone();
         let listing_table_paths = listing_table.table_paths().clone();
         let text_index_configs =
-            crate::text_index::parse_text_index_from_table_properties(&table_info.properties)
-                .unwrap_or_default();
+            crate::text_index::parse_text_index_from_table_properties(
+                &table_info.properties,
+            )
+            .unwrap_or_default();
         Ok(Self {
             listing_options,
             listing_table_paths,
@@ -462,7 +482,8 @@ impl LakeSoulTableProvider {
                 .get("format.use_cdc")
                 .unwrap_or(&"false".to_string())
                 .to_string();
-            let cdc_field = Arc::new(Field::new(cdc_column.clone(), DataType::Utf8, true));
+            let cdc_field =
+                Arc::new(Field::new(cdc_column.clone(), DataType::Utf8, true));
             schema_builder.try_merge(&cdc_field)?;
             (Some(cdc_column), Some(use_cdc))
         } else {
@@ -495,7 +516,9 @@ impl LakeSoulTableProvider {
             .cloned();
         if let Some(raw) = &vector_index_columns {
             let configs = crate::vector_index::parse_vector_index_columns(Some(raw))
-                .map_err(|report| report!("invalid vector_index_columns option: {report}"))?;
+                .map_err(|report| {
+                    report!("invalid vector_index_columns option: {report}")
+                })?;
             crate::vector_index::validate_vector_index_configs(
                 &configs,
                 logical_schema.as_ref(),
@@ -516,7 +539,9 @@ impl LakeSoulTableProvider {
             .cloned();
         if let Some(raw) = &text_index_columns {
             let configs = crate::text_index::parse_text_index_columns(Some(raw))
-                .map_err(|report| report!("invalid text_index_columns option: {report}"))?;
+                .map_err(|report| {
+                    report!("invalid text_index_columns option: {report}")
+                })?;
             crate::text_index::validate_text_index_configs(
                 &configs,
                 logical_schema.as_ref(),
@@ -535,7 +560,9 @@ impl LakeSoulTableProvider {
             .cloned();
         if let Some(raw) = &file_format {
             raw.parse::<lakesoul_io::file_format::PhysicalFormat>()
-                .map_err(|report| report!("invalid file_format option '{raw}': {report}"))?;
+                .map_err(|report| {
+                    report!("invalid file_format option '{raw}': {report}")
+                })?;
         }
 
         // `appendOnly` (the Spark/Flink table property). Persisted as-is so
@@ -550,57 +577,56 @@ impl LakeSoulTableProvider {
         let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
             schema_to_metadata_parts(logical_schema.as_ref());
 
-        let table_info =
-            Arc::new(TableInfo {
-                table_id: format!("table_{}", uuid::Uuid::new_v4()),
-                table_namespace: cmd.name.schema().unwrap_or("default").to_string(),
-                table_name: case_fold_table_name(cmd.name.table()),
-                table_schema,
-                table_schema_arrow_ipc,
-                table_schema_arrow_ipc_json_hash,
-                properties: serde_json::to_string(&LakeSoulTableProperty {
-                    hash_bucket_num: if primary_keys.is_empty() {
-                        None
-                    } else {
-                        // `hashBucketNum`, matching the Spark/Flink connectors.
-                        // DataFusion lower-cases option keys and prefixes
-                        // namespace-less keys with `format.` (so the SQL spelling
-                        // `'hashBucketNum'` arrives as `format.hashbucketnum`).
-                        Some(
-                            cmd.options
-                                .get("format.hashbucketnum")
-                                .or_else(|| cmd.options.get("hashbucketnum"))
-                                .or_else(|| cmd.options.get("format.hash_bucket_num"))
-                                .or_else(|| cmd.options.get("hash_bucket_num"))
-                                .cloned()
-                                .unwrap_or(String::from("4")),
-                        )
-                    },
-                    cdc_change_column: cdc_column,
-                    use_cdc,
-                    append_only,
-                    vector_index_columns,
-                    text_index_columns,
-                    file_format,
-                    ..Default::default()
-                })
-                .unwrap(),
-                partitions: format_table_info_partitions(&range_partitions, &primary_keys),
-                table_path: if cmd.locations.is_empty() {
-                    format!(
-                        "file://{}/{}/{}",
-                        env::current_dir().unwrap().to_str().unwrap(),
-                        cmd.name.schema().unwrap_or("default"),
-                        cmd.name.table()
-                    )
+        let table_info = Arc::new(TableInfo {
+            table_id: format!("table_{}", uuid::Uuid::new_v4()),
+            table_namespace: cmd.name.schema().unwrap_or("default").to_string(),
+            table_name: case_fold_table_name(cmd.name.table()),
+            table_schema,
+            table_schema_arrow_ipc,
+            table_schema_arrow_ipc_json_hash,
+            properties: serde_json::to_string(&LakeSoulTableProperty {
+                hash_bucket_num: if primary_keys.is_empty() {
+                    None
                 } else {
-                    // hdfs is not checked
-                    qualify_path(cmd.locations.first().ok_or_else(|| {
-                        DataFusionError::Internal("missing location".to_string())
-                    })?)?
+                    // `hashBucketNum`, matching the Spark/Flink connectors.
+                    // DataFusion lower-cases option keys and prefixes
+                    // namespace-less keys with `format.` (so the SQL spelling
+                    // `'hashBucketNum'` arrives as `format.hashbucketnum`).
+                    Some(
+                        cmd.options
+                            .get("format.hashbucketnum")
+                            .or_else(|| cmd.options.get("hashbucketnum"))
+                            .or_else(|| cmd.options.get("format.hash_bucket_num"))
+                            .or_else(|| cmd.options.get("hash_bucket_num"))
+                            .cloned()
+                            .unwrap_or(String::from("4")),
+                    )
                 },
-                domain: "public".to_string(),
-            });
+                cdc_change_column: cdc_column,
+                use_cdc,
+                append_only,
+                vector_index_columns,
+                text_index_columns,
+                file_format,
+                ..Default::default()
+            })
+            .unwrap(),
+            partitions: format_table_info_partitions(&range_partitions, &primary_keys),
+            table_path: if cmd.locations.is_empty() {
+                format!(
+                    "file://{}/{}/{}",
+                    env::current_dir().unwrap().to_str().unwrap(),
+                    cmd.name.schema().unwrap_or("default"),
+                    cmd.name.table()
+                )
+            } else {
+                // hdfs is not checked
+                qualify_path(cmd.locations.first().ok_or_else(|| {
+                    DataFusionError::Internal("missing location".to_string())
+                })?)?
+            },
+            domain: "public".to_string(),
+        });
         // The object-store options captured on the session (`fs.s3a.*`, …)
         // must reach the table's io config: stores built outside the session
         // runtime — the vector search scan's native reader and the vector
@@ -622,12 +648,17 @@ impl LakeSoulTableProvider {
                 .schema_force_view_types,
         )?);
         let vector_index_configs =
-            crate::vector_index::parse_vector_index_from_table_properties(&table_info.properties)
-                .unwrap_or_default();
+            crate::vector_index::parse_vector_index_from_table_properties(
+                &table_info.properties,
+            )
+            .unwrap_or_default();
         let text_index_configs =
-            crate::text_index::parse_text_index_from_table_properties(&table_info.properties)
-                .unwrap_or_default();
-        let logical_schema = Self::read_schema(logical_schema, &primary_keys, &range_partitions);
+            crate::text_index::parse_text_index_from_table_properties(
+                &table_info.properties,
+            )
+            .unwrap_or_default();
+        let logical_schema =
+            Self::read_schema(logical_schema, &primary_keys, &range_partitions);
         let (file_schema, scan_schema) =
             Self::split_schemas(logical_schema.clone(), &range_partitions)?;
         Ok(Self {
@@ -710,16 +741,9 @@ impl LakeSoulTableProvider {
             let sort_exprs = exprs
                 .iter()
                 .map(|sort| {
-                    let Sort {
-                        expr,
-                        asc,
-                        nulls_first,
-                    } = sort;
+                    let Sort { expr, asc, nulls_first } = sort;
                     if let Expr::Column(col) = expr {
-                        let expr = datafusion::physical_plan::expressions::col(
-                            &col.name,
-                            self.schema().as_ref(),
-                        )?;
+                        let expr = datafusion::physical_plan::expressions::col(&col.name, self.schema().as_ref())?;
                         Ok(PhysicalSortExpr {
                             expr,
                             options: SortOptions {
@@ -730,14 +754,11 @@ impl LakeSoulTableProvider {
                     } else {
                         Err(DataFusionError::Plan(
                             // Return an error if the schema of the input query does not match with the table schema.
-                            format!(
-                                "Expected single column references in output_ordering, got {}",
-                                expr
-                            ),
+                            format!("Expected single column references in output_ordering, got {}", expr),
                         ))
                     }
                 })
-                .collect::<Result<Vec<_>, DataFusionError>>()?;
+                .collect::<Result<Vec<_>,DataFusionError>>()?;
             if let Some(ordering) = LexOrdering::new(sort_exprs) {
                 all_sort_orders.push(ordering);
             }
@@ -796,7 +817,8 @@ impl LakeSoulTableProvider {
         debug!(
             total_partition_count,
             selected_partition_count,
-            pruned_partition_count = total_partition_count.saturating_sub(selected_partition_count),
+            pruned_partition_count =
+                total_partition_count.saturating_sub(selected_partition_count),
             "partition pruning completed"
         );
 
@@ -813,7 +835,8 @@ impl LakeSoulTableProvider {
 
         while let Some((partition, object_metas)) = futures.next().await.transpose()? {
             let cols = self.table_partition_cols().iter().map(|x| x.0.as_str());
-            let parsed = parse_partitions_for_partition_desc(&partition.partition_desc, cols);
+            let parsed =
+                parse_partitions_for_partition_desc(&partition.partition_desc, cols);
 
             let partition_values = parsed
                 .into_iter()
@@ -1135,9 +1158,9 @@ impl LakeSoulTableProvider {
         span.record("bucket_group_count", bucket_group_count as u64);
         record_index_selected("text");
 
-        let catalog = self
-            .client
-            .index_catalog::<lakesoul_text::TextSplitEntry>(lakesoul_common::IndexKind::Text);
+        let catalog = self.client.index_catalog::<lakesoul_text::TextSplitEntry>(
+            lakesoul_common::IndexKind::Text,
+        );
         let exec = crate::datasource::file_format::LakeSoulTextSearchExec::try_new(
             self.scan_schema.clone(),
             self.file_schema.clone(),
@@ -1176,7 +1199,9 @@ impl LakeSoulTableProvider {
             self.format_registry.file_format(
                 self.format_registry
                     .physical_format_for_path(path)
-                    .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
+                    .map_err(|report| {
+                        DataFusionError::External(report.into_boxed_error())
+                    })?,
             ),
         ))
     }
@@ -1193,8 +1218,8 @@ impl LakeSoulTableProvider {
             let mut current_files = vec![];
 
             for file in partitioned_files {
-                let physical_format =
-                    format_registry.physical_format_for_path(file.object_meta.location.as_ref())?;
+                let physical_format = format_registry
+                    .physical_format_for_path(file.object_meta.location.as_ref())?;
 
                 match current_format {
                     Some(format) if format == physical_format => {
@@ -1241,7 +1266,8 @@ impl LakeSoulTableProvider {
         }
 
         if let Some(group) = groups.last_mut().filter(|group| {
-            group.object_store_url == object_store_url && group.physical_format == physical_format
+            group.object_store_url == object_store_url
+                && group.physical_format == physical_format
         }) {
             group.partitioned_file_lists.push(files);
         } else {
@@ -1494,7 +1520,8 @@ impl ClassifiedFilters {
     ) -> Self {
         let mut classified = Self::default();
         for expr in filters.iter().flat_map(|filter| split_conjunction(filter)) {
-            let role = classify_filter(pushdown_filters, primary_keys, range_partitions, expr);
+            let role =
+                classify_filter(pushdown_filters, primary_keys, range_partitions, expr);
             if role.partition_pruning {
                 classified.partition_pruning.push(expr.clone());
             }
@@ -1565,6 +1592,7 @@ impl TableProvider for LakeSoulTableProvider {
         filters: &[Expr], // TODO
         limit: Option<usize>,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        let scan_started = Instant::now();
         let session_state = session_state
             .as_any()
             .downcast_ref::<SessionState>()
@@ -1573,13 +1601,15 @@ impl TableProvider for LakeSoulTableProvider {
         // Both index pushdowns are optimizations: they only need the
         // partition-pruning half of the filters to enumerate candidate work
         // units, so they receive `classified.partition_pruning` below.
-        let vector_search = crate::udf::vector_search_marker::parse_vector_search_request(filters);
+        let vector_search =
+            crate::udf::vector_search_marker::parse_vector_search_request(filters);
         let filters: Vec<Expr> = filters
             .iter()
             .filter(|f| !crate::udf::vector_search_marker::is_marker_expr(f))
             .cloned()
             .collect();
-        let text_search = crate::udf::text_search_marker::parse_text_search_request(&filters);
+        let text_search =
+            crate::udf::text_search_marker::parse_text_search_request(&filters);
         let filters: Vec<Expr> = filters
             .iter()
             .filter(|f| !crate::udf::text_search_marker::is_marker_expr(f))
@@ -1660,7 +1690,10 @@ impl TableProvider for LakeSoulTableProvider {
                 })
                 .collect::<Vec<_>>();
             if fields.len() == self.primary_keys.len() {
-                lakesoul_io::pk_locator::extract_key_constraints(&classified.pk_candidates, &fields)
+                lakesoul_io::pk_locator::extract_key_constraints(
+                    &classified.pk_candidates,
+                    &fields,
+                )
             } else {
                 None
             }
@@ -1672,10 +1705,13 @@ impl TableProvider for LakeSoulTableProvider {
             );
         }
 
+        let list_started = Instant::now();
         let (partitioned_file_lists, statistics) = self
             .list_files_for_scan(session_state, &classified.partition_pruning, limit)
             .await
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+        let list_ms = list_started.elapsed().as_secs_f64() * 1000.0;
+        let prepare_started = Instant::now();
 
         // if no files need to be read, return an `EmptyExec`
         if partitioned_file_lists.is_empty() {
@@ -1698,7 +1734,8 @@ impl TableProvider for LakeSoulTableProvider {
                 ))
             })
             .collect::<Result<Vec<_>, ArrowError>>()?;
-        let table_schema = TableSchema::new(self.file_schema.clone(), table_partition_cols.clone());
+        let table_schema =
+            TableSchema::new(self.file_schema.clone(), table_partition_cols.clone());
         let statistics = Arc::new(statistics);
 
         let object_store_url = if let Some(url) = self.table_paths().first() {
@@ -1708,7 +1745,8 @@ impl TableProvider for LakeSoulTableProvider {
         };
 
         let projection_indices = self.scan_projection(projection)?;
-        let scan_schema = project_schema(table_schema.table_schema(), projection_indices.as_ref())?;
+        let scan_schema =
+            project_schema(table_schema.table_schema(), projection_indices.as_ref())?;
         let merged_projection = compute_project_column_indices(
             table_schema.table_schema().clone(),
             scan_schema.clone(),
@@ -1731,27 +1769,28 @@ impl TableProvider for LakeSoulTableProvider {
         // v = ..` shape mixes a partition column - which has no file-schema
         // entry - with file columns, so a conjunction judged as a whole is
         // refused outright and takes the file columns' pushdown with it.
-        let pushed_filters: Vec<Arc<dyn PhysicalExpr>> = if classified.pre_merge_pushdown.is_empty()
-        {
-            Vec::new()
-        } else {
-            // Filters are evaluated before projection and may reference
-            // partition columns or columns omitted from the output
-            // projection.
-            let table_df_schema = table_schema.table_schema().as_ref().clone().to_dfschema()?;
-            classified
-                .pre_merge_pushdown
-                .iter()
-                .map(|expr| {
-                    create_physical_expr(
-                        expr,
-                        &table_df_schema,
-                        session_state.execution_props(),
-                        &PhysicalPlanningContext::default(),
-                    )
-                })
-                .collect::<DFResult<Vec<_>>>()?
-        };
+        let pushed_filters: Vec<Arc<dyn PhysicalExpr>> =
+            if classified.pre_merge_pushdown.is_empty() {
+                Vec::new()
+            } else {
+                // Filters are evaluated before projection and may reference
+                // partition columns or columns omitted from the output
+                // projection.
+                let table_df_schema =
+                    table_schema.table_schema().as_ref().clone().to_dfschema()?;
+                classified
+                    .pre_merge_pushdown
+                    .iter()
+                    .map(|expr| {
+                        create_physical_expr(
+                            expr,
+                            &table_df_schema,
+                            session_state.execution_props(),
+                            &PhysicalPlanningContext::default(),
+                        )
+                    })
+                    .collect::<DFResult<Vec<_>>>()?
+            };
 
         let partition_schema = Arc::new(Schema::new(table_partition_cols));
         let output_ordering = self
@@ -1765,35 +1804,42 @@ impl TableProvider for LakeSoulTableProvider {
         .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
 
         let format_group_count = format_groups.len();
+        let prepare_ms = prepare_started.elapsed().as_secs_f64() * 1000.0;
+        let flatten_started = Instant::now();
         let mut flatten_configs = vec![];
         for group in format_groups {
             let file_format = self.format_registry.file_format(group.physical_format);
             let mut file_source = file_format.file_source(table_schema.clone());
             if !pushed_filters.is_empty() {
-                let result = file_source
-                    .try_pushdown_filters(pushed_filters.clone(), session_state.config_options())?;
+                let result = file_source.try_pushdown_filters(
+                    pushed_filters.clone(),
+                    session_state.config_options(),
+                )?;
                 if let Some(updated_source) = result.updated_node {
                     file_source = updated_source;
                 }
             }
 
-            let scan_config = FileScanConfigBuilder::new(group.object_store_url, file_source)
-                .with_file_groups(
-                    group
-                        .partitioned_file_lists
-                        .into_iter()
-                        .map(|files| FileGroup::new(files).with_statistics(statistics.clone()))
-                        .collect(),
-                )
-                .with_statistics((*statistics).clone())
-                .with_projection_indices(projection_indices.clone())?
-                .with_limit(limit)
-                .with_output_ordering(output_ordering.clone())
-                .with_file_compression_type(
-                    self.format_registry
-                        .file_compression_type(group.physical_format),
-                )
-                .build();
+            let scan_config =
+                FileScanConfigBuilder::new(group.object_store_url, file_source)
+                    .with_file_groups(
+                        group
+                            .partitioned_file_lists
+                            .into_iter()
+                            .map(|files| {
+                                FileGroup::new(files).with_statistics(statistics.clone())
+                            })
+                            .collect(),
+                    )
+                    .with_statistics((*statistics).clone())
+                    .with_projection_indices(projection_indices.clone())?
+                    .with_limit(limit)
+                    .with_output_ordering(output_ordering.clone())
+                    .with_file_compression_type(
+                        self.format_registry
+                            .file_compression_type(group.physical_format),
+                    )
+                    .build();
 
             let group_flatten_configs = flatten_file_scan_config_for_format(
                 session_state,
@@ -1808,12 +1854,14 @@ impl TableProvider for LakeSoulTableProvider {
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
             flatten_configs.extend(group_flatten_configs);
         }
+        let flatten_ms = flatten_started.elapsed().as_secs_f64() * 1000.0;
         debug!(
             format_group_count,
             file_scan_config_count = flatten_configs.len(),
             "built file scan configurations"
         );
 
+        let locator_started = Instant::now();
         let candidate_inputs = match &key_constraint {
             Some(constraint) => {
                 let candidate_count = constraint.values.len();
@@ -1833,6 +1881,8 @@ impl TableProvider for LakeSoulTableProvider {
             }
             None => None,
         };
+        let locator_ms = locator_started.elapsed().as_secs_f64() * 1000.0;
+        let inputs_started = Instant::now();
 
         // Keyed by partition description, so ranges are packed into merges in
         // a stable order.
@@ -1850,8 +1900,10 @@ impl TableProvider for LakeSoulTableProvider {
         let mut all_inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
 
         for (index, config) in flatten_configs.into_iter().enumerate() {
-            let (partition_desc, partition_values) = partition_desc_from_file_scan_config(&config)
-                .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+            let (partition_desc, partition_values) =
+                partition_desc_from_file_scan_config(&config).map_err(|report| {
+                    DataFusionError::External(report.into_boxed_error())
+                })?;
             let partition_values = Arc::new(partition_values);
             let file_path = config.file_groups[0].files()[0].path().to_string();
             let input: Arc<dyn ExecutionPlan> = match &candidate_inputs {
@@ -1886,6 +1938,8 @@ impl TableProvider for LakeSoulTableProvider {
         } else {
             merged_schema
         };
+        let input_scans_ms = inputs_started.elapsed().as_secs_f64() * 1000.0;
+        let work_units_started = Instant::now();
 
         let mut partitioned_execs = Vec::new();
         let mut range_merges = Vec::new();
@@ -1904,7 +1958,9 @@ impl TableProvider for LakeSoulTableProvider {
                         &configs,
                         &merged_schema,
                     )
-                    .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
+                    .map_err(|report| {
+                        DataFusionError::External(report.into_boxed_error())
+                    })?,
                     None => None,
                 }
             } else {
@@ -1928,6 +1984,8 @@ impl TableProvider for LakeSoulTableProvider {
                 }
             }
         }
+        let work_units_ms = work_units_started.elapsed().as_secs_f64() * 1000.0;
+        let merges_started = Instant::now();
 
         // Every open merge holds a non-spillable reservation, and a parent
         // pulls every partition of its input at once: a merge per bucket
@@ -1961,9 +2019,13 @@ impl TableProvider for LakeSoulTableProvider {
                 .map_err(|report| DataFusionError::External(report.into_boxed_error()))?,
             ) as Arc<dyn ExecutionPlan>);
         }
+        let merge_execs_ms = merges_started.elapsed().as_secs_f64() * 1000.0;
+        let finish_started = Instant::now();
 
-        let empty_exec_schema =
-            Self::empty_partitioned_exec_schema(scan_schema.clone(), merged_schema.clone());
+        let empty_exec_schema = Self::empty_partitioned_exec_schema(
+            scan_schema.clone(),
+            merged_schema.clone(),
+        );
         let scan_node_count = partitioned_execs.len();
         let exec = Self::build_partitioned_exec(partitioned_execs, empty_exec_schema)?;
 
@@ -1993,7 +2055,8 @@ impl TableProvider for LakeSoulTableProvider {
         };
         record_scan_strategy(scan_strategy);
 
-        let needs_output_projection = Self::needs_output_projection(&scan_schema, &merged_schema);
+        let needs_output_projection =
+            Self::needs_output_projection(&scan_schema, &merged_schema);
         debug!(
             strategy = scan_strategy,
             scan_node_count,
@@ -2005,7 +2068,7 @@ impl TableProvider for LakeSoulTableProvider {
             "built table scan physical plan"
         );
 
-        if needs_output_projection {
+        let result: DFResult<Arc<dyn ExecutionPlan>> = if needs_output_projection {
             let mut projection_expr = vec![];
             for field in scan_schema.fields() {
                 projection_expr.push((
@@ -2019,7 +2082,21 @@ impl TableProvider for LakeSoulTableProvider {
             Ok(Arc::new(ProjectionExec::try_new(projection_expr, exec)?))
         } else {
             Ok(exec)
-        }
+        };
+        info!(
+            table_name = %self._table_name(),
+            wall_ms = scan_started.elapsed().as_secs_f64() * 1000.0,
+            list_ms,
+            prepare_ms,
+            flatten_ms,
+            locator_ms,
+            input_scans_ms,
+            work_units_ms,
+            merge_execs_ms,
+            finish_ms = finish_started.elapsed().as_secs_f64() * 1000.0,
+            "scan planning table summary"
+        );
+        result
     }
 
     fn supports_filters_pushdown(
@@ -2157,8 +2234,8 @@ mod tests {
     use chrono::TimeZone;
     use datafusion::execution::TaskContext;
     use datafusion::physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlanProperties, PlanProperties, RecordBatchStream,
-        SendableRecordBatchStream,
+        DisplayAs, DisplayFormatType, ExecutionPlanProperties, PlanProperties,
+        RecordBatchStream, SendableRecordBatchStream,
     };
     use object_store::{ObjectMeta, path::Path};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2171,7 +2248,11 @@ mod tests {
     }
 
     impl DisplayAs for LaneProbe {
-        fn fmt_as(&self, _: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        fn fmt_as(
+            &self,
+            _: DisplayFormatType,
+            f: &mut std::fmt::Formatter,
+        ) -> std::fmt::Result {
             write!(f, "LaneProbe")
         }
     }
@@ -2190,8 +2271,9 @@ mod tests {
             &self,
             _f: &mut dyn FnMut(
                 &Arc<dyn PhysicalExpr>,
-            )
-                -> DFResult<datafusion_common::tree_node::TreeNodeRecursion>,
+            ) -> DFResult<
+                datafusion_common::tree_node::TreeNodeRecursion,
+            >,
         ) -> DFResult<datafusion_common::tree_node::TreeNodeRecursion> {
             Ok(datafusion_common::tree_node::TreeNodeRecursion::Continue)
         }
@@ -2288,7 +2370,9 @@ mod tests {
         ]))
     }
 
-    async fn collect_bucket_rows(exec: Arc<dyn ExecutionPlan>) -> Vec<(i32, i32, String)> {
+    async fn collect_bucket_rows(
+        exec: Arc<dyn ExecutionPlan>,
+    ) -> Vec<(i32, i32, String)> {
         use arrow::array::{Int32Array, StringArray};
         let batches = datafusion::physical_plan::collect(
             exec,
@@ -2327,7 +2411,8 @@ mod tests {
 
     /// Packs a single range partition into one merge.
     fn pack_one(range: RangeMergeUnits, lane_budget: usize) -> PackedMerge {
-        let mut merges = LakeSoulTableProvider::pack_range_merges(vec![range], 1, lane_budget);
+        let mut merges =
+            LakeSoulTableProvider::pack_range_merges(vec![range], 1, lane_budget);
         assert_eq!(merges.len(), 1);
         merges.pop().unwrap()
     }
@@ -2335,7 +2420,8 @@ mod tests {
     /// A range partition `name` with one single-input work unit per entry of
     /// `buckets`, its inputs distinct by pointer.
     fn packing_range(name: &str, buckets: &[u32]) -> RangeMergeUnits {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
         let inputs: Vec<Arc<dyn ExecutionPlan>> = buckets
             .iter()
             .map(|_| Arc::new(EmptyExec::new(schema.clone())) as Arc<dyn ExecutionPlan>)
@@ -2364,8 +2450,11 @@ mod tests {
         assert_eq!(merges.len(), 1);
         assert_eq!((merges[0].1.len(), merges[0].2), (168, 2));
         // More task slots than units: one merge per bucket, not per range.
-        let merges =
-            LakeSoulTableProvider::pack_range_merges(ranges().into_iter().take(3).collect(), 8, 8);
+        let merges = LakeSoulTableProvider::pack_range_merges(
+            ranges().into_iter().take(3).collect(),
+            8,
+            8,
+        );
         assert_eq!(merges.len(), 6);
         assert!(
             merges
@@ -2510,7 +2599,10 @@ mod tests {
             .map(|(index, part)| MergeWorkUnit {
                 input_range: index..index + 1,
                 files: vec![format!("part-{index}_0000.parquet")],
-                default_column_value: Arc::new(HashMap::from([("part".into(), part.into())])),
+                default_column_value: Arc::new(HashMap::from([(
+                    "part".into(),
+                    part.into(),
+                )])),
                 lane: 0,
             })
             .collect();
@@ -2553,7 +2645,10 @@ mod tests {
             units.push(MergeWorkUnit {
                 input_range: index..index + 1,
                 files: vec![format!("part-{index}_0000.parquet")],
-                default_column_value: Arc::new(HashMap::from([("part".into(), "range-a".into())])),
+                default_column_value: Arc::new(HashMap::from([(
+                    "part".into(),
+                    "range-a".into(),
+                )])),
                 lane: 0,
             });
         }
@@ -2753,7 +2848,12 @@ mod tests {
         // modes; pk and range predicates reach `scan` in both modes.
         for pushdown_filters in [true, false] {
             let verdict = |expr: &Expr| {
-                filter_pushdown_verdict(pushdown_filters, &primary_keys, &range_partitions, expr)
+                filter_pushdown_verdict(
+                    pushdown_filters,
+                    &primary_keys,
+                    &range_partitions,
+                    expr,
+                )
             };
             assert_eq!(verdict(&pk_filter), TableProviderFilterPushDown::Inexact);
             assert_eq!(verdict(&range_filter), TableProviderFilterPushDown::Inexact);
@@ -2768,26 +2868,47 @@ mod tests {
         // pushdown is enabled.
         let no_primary_keys: Vec<String> = vec![];
         assert_eq!(
-            filter_pushdown_verdict(true, &no_primary_keys, &range_partitions, &range_filter),
+            filter_pushdown_verdict(
+                true,
+                &no_primary_keys,
+                &range_partitions,
+                &range_filter
+            ),
             TableProviderFilterPushDown::Inexact
         );
         assert_eq!(
-            filter_pushdown_verdict(false, &no_primary_keys, &range_partitions, &range_filter),
+            filter_pushdown_verdict(
+                false,
+                &no_primary_keys,
+                &range_partitions,
+                &range_filter
+            ),
             TableProviderFilterPushDown::Inexact
         );
         assert_eq!(
-            filter_pushdown_verdict(true, &no_primary_keys, &range_partitions, &value_filter),
+            filter_pushdown_verdict(
+                true,
+                &no_primary_keys,
+                &range_partitions,
+                &value_filter
+            ),
             TableProviderFilterPushDown::Inexact
         );
         assert_eq!(
-            filter_pushdown_verdict(false, &no_primary_keys, &range_partitions, &value_filter),
+            filter_pushdown_verdict(
+                false,
+                &no_primary_keys,
+                &range_partitions,
+                &value_filter
+            ),
             TableProviderFilterPushDown::Unsupported
         );
     }
 
     #[test]
     fn format_scan_groups_split_mixed_physical_formats() {
-        let registry = LakeSoulFormatRegistry::new(LakeSoulIOConfig::default(), false).unwrap();
+        let registry =
+            LakeSoulFormatRegistry::new(LakeSoulIOConfig::default(), false).unwrap();
         let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
         let groups = LakeSoulTableProvider::format_scan_groups(
             &registry,
@@ -2822,7 +2943,8 @@ mod tests {
 
     #[test]
     fn format_scan_groups_preserve_non_adjacent_format_order() {
-        let registry = LakeSoulFormatRegistry::new(LakeSoulIOConfig::default(), false).unwrap();
+        let registry =
+            LakeSoulFormatRegistry::new(LakeSoulIOConfig::default(), false).unwrap();
         let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
         let groups = LakeSoulTableProvider::format_scan_groups(
             &registry,
@@ -2852,7 +2974,8 @@ mod tests {
     fn build_partitioned_exec_returns_empty_exec_for_empty_partitions() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
 
-        let exec = LakeSoulTableProvider::build_partitioned_exec(vec![], schema.clone()).unwrap();
+        let exec = LakeSoulTableProvider::build_partitioned_exec(vec![], schema.clone())
+            .unwrap();
 
         assert!(exec.is::<EmptyExec>());
         assert_eq!(exec.schema(), schema);
@@ -2860,7 +2983,8 @@ mod tests {
 
     #[test]
     fn build_empty_partitioned_exec_preserves_cdc_column_for_filtering() {
-        let scan_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+        let scan_schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
         let merged_schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, true),
             Field::new("op", DataType::Utf8, true),
@@ -2870,7 +2994,8 @@ mod tests {
             scan_schema,
             merged_schema.clone(),
         );
-        let exec = LakeSoulTableProvider::build_partitioned_exec(vec![], empty_schema).unwrap();
+        let exec =
+            LakeSoulTableProvider::build_partitioned_exec(vec![], empty_schema).unwrap();
 
         assert!(exec.schema().field_with_name("op").is_ok());
         assert_eq!(exec.schema(), merged_schema);
@@ -2882,13 +3007,16 @@ mod tests {
             Field::new("id", DataType::Int32, false),
             Field::new("evolved", DataType::Utf8, false),
         ]));
-        let old_file_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let old_file_schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
         let new_file_schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new("evolved", DataType::Utf8, false),
         ]));
-        let old_input = Arc::new(EmptyExec::new(old_file_schema)) as Arc<dyn ExecutionPlan>;
-        let new_input = Arc::new(EmptyExec::new(new_file_schema)) as Arc<dyn ExecutionPlan>;
+        let old_input =
+            Arc::new(EmptyExec::new(old_file_schema)) as Arc<dyn ExecutionPlan>;
+        let new_input =
+            Arc::new(EmptyExec::new(new_file_schema)) as Arc<dyn ExecutionPlan>;
         let merged_schema = LakeSoulTableProvider::merged_schema_with_input_nullability(
             merged_schema,
             &[old_input.clone(), new_input.clone()],
@@ -2907,14 +3035,15 @@ mod tests {
             ),
             2,
         );
-        let bucket_partition = lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
-            merged_schema.clone(),
-            bucket_inputs,
-            LakeSoulIOConfig::default(),
-            bucket_units,
-            lanes,
-        )
-        .unwrap();
+        let bucket_partition =
+            lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
+                merged_schema.clone(),
+                bucket_inputs,
+                LakeSoulIOConfig::default(),
+                bucket_units,
+                lanes,
+            )
+            .unwrap();
         assert_eq!(bucket_partition.output_partitioning().partition_count(), 2);
         assert_eq!(bucket_partition.schema(), merged_schema);
 

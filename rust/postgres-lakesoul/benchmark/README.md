@@ -97,6 +97,72 @@ once, avoiding a full file-list copy for every file. Monthly fan-out still
 increases metadata inference and scan-plan construction, so balanced worker
 assignments do not by themselves establish good end-to-end scaling.
 
+For scan-planning diagnosis, coordinator INFO logs include `scan planning table
+summary` (per-table wall time split into listing, preparation, flattening,
+locator, input scans, work units, merge executors and finishing), `scan planning
+flatten summary` (file/group counts and cumulative schema, statistics and local
+configuration-building time), and physical/distributed planner summaries. Match
+them by `query_id` and `table_name`; timestamps and elapsed times locate
+overlapping table scans. Per-file `schema_sum_ms` and `stats_sum_ms` include async
+waiting, not just CPU or remote I/O, and must not be added as sequential wall
+time. The summaries cover
+successful regular scans, not empty/index early returns or failed operations.
+
+`scan planning schema summary` isolates reads issued by `infer_schema`, including
+Vortex's spawned inference and I/O tasks. A schema-only store wrapper carries the
+counter handle through requests and streamed payload consumption; stats and
+execution continue using the original store. `files_with_reads` counts files
+that issued non-HEAD reads, not page-cache misses. `page_hits`/`page_misses`,
+`remote_bytes`, and `requested_bytes` distinguish cached bytes from remote page
+fills. The flatten summary's `physical_format` identifies the actual format;
+an `infer_stats` span by itself does not establish Parquet use.
+
+All schema timing fields are cumulative, not sequential query wall time:
+`store_read_sum_ms` covers requests through stream completion;
+`range_sum_ms` nests inside it; `remote_sum_ms`, `lookup_read_sum_ms`, and
+`cache_write_sum_ms` nest inside cached range reads. `range_head_sum_ms` is also
+inside range time, while `get_opts_head_sum_ms` precedes payload consumption.
+Cache-write time includes cache-entry contention, blocking-task scheduling and
+disk writes, not just device service time. Schema time outside store reads
+includes task/runtime scheduling, metadata decoding, schema conversion and
+merging; it is not a pure decoder measurement. Independent PG connections build
+new runtime metadata caches, while the process-wide disk page cache may stay
+warm. Do not infer metadata-cache hits from a faster second query.
+
+`scan planning cache put summary` splits successful schema-read cache fills by
+table and `outcome` (`write` or existing-entry `nop`). It emits no event when that
+outcome has no calls. `count` counts operations; `bytes` counts their input
+payloads, so only the `write` outcome represents bytes actually written.
+`total_sum_ms`/`total_max_ms` measure inside `DiskCache::put`, before recording
+the aggregate counters; the caller's `cache_write_sum_ms` also includes that
+recording and the call boundary.
+
+The `stages` array names the matching `stage_sum_ns` and `stage_max_ns` positions:
+preparation, entry admission, path preparation, payload copy, blocking queue,
+open, write, resume, commit, and bookkeeping. Entry admission runs until the
+Moka compute closure begins and is not a pure lock measurement. Copy includes
+the existing `to_vec` before blocking-task submission. Blocking queue runs from
+that submission boundary until the blocking closure starts. Open and write
+measure `OpenOptions::open` and `write_all` separately; no `fsync` is added.
+Resume includes the blocking closure's epilogue, join delivery and async
+rescheduling after the write completes. Commit includes result construction and
+Moka completion after async resumption; bookkeeping covers size/key registration.
+For a `nop`, copy and blocking/file stages remain zero.
+
+Each successful call checks its stage sum against its own total. Unclassified
+checkpoint gaps accumulate in `residual_sum_ns`/`residual_max_ns`;
+`overlap_count` must be zero. Sum the stage totals plus residual to reconcile
+`total_sum_ms` (allowing float-format rounding), but never add independent
+per-stage maxima. These are cumulative elapsed durations, not sequential query
+wall time or device service time. A dominant blocking-queue stage locates the
+wait before closure execution; it does not by itself identify the runtime's
+pool size, other pool users, or the underlying storage/CPU cause.
+
+Keep the metadata concurrency budget fixed when comparing planning-stage
+measurements.
+Label the first query after a coordinator rollout as coordinator-cold only:
+worker and remote-store caches have not necessarily been reset.
+
 `deploy` always recreates the pods, so the first measured iteration is cold.
 It returns only after the coordinator log reports
 `EndpointSlice refresh ok ... eligible=<workers>`; queries issued earlier fail

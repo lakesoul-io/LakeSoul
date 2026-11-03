@@ -80,7 +80,9 @@ pub mod worker;
 
 pub use codec::LakeSoulCodec;
 pub use planner::LakeSoulDistributedQueryPlanner;
-pub use resolver::{KubernetesDiscovery, StaticWorkerResolver, WorkerDiscovery, WorkerSnapshot};
+pub use resolver::{
+    KubernetesDiscovery, StaticWorkerResolver, WorkerDiscovery, WorkerSnapshot,
+};
 
 /// Protocol version exchanged between coordinators and workers.
 ///
@@ -111,7 +113,8 @@ pub use resolver::{KubernetesDiscovery, StaticWorkerResolver, WorkerDiscovery, W
 pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2";
 
 pub use worker::{
-    LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker, spawn_lakesoul_worker,
+    LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker,
+    spawn_lakesoul_worker,
 };
 
 #[derive(Debug, Clone)]

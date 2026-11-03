@@ -127,8 +127,8 @@ use datafusion::physical_plan::{Distribution, ExecutionPlan, collect, execute_st
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::grpc::{GetTaskProgressRequest, ObservabilityServiceClient};
 use datafusion_distributed::{
-    DistributedExec, DistributedExt, DistributedLeafExec, NetworkBoundaryExt, Stage, Worker,
-    display_plan_ascii,
+    DistributedExec, DistributedExt, DistributedLeafExec, NetworkBoundaryExt, Stage,
+    Worker, display_plan_ascii,
 };
 use futures::StreamExt;
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
@@ -144,7 +144,9 @@ use vortex_datafusion::VortexSource;
 use crate::distributed::{
     DistributedOptions, LakeSoulWorkerOptions, StaticWorkerResolver, WorkerDiscovery,
 };
-use crate::session::{ExecutionMemoryArgs, LakeSoulSessionFactory, LakeSoulSessionOptions};
+use crate::session::{
+    ExecutionMemoryArgs, LakeSoulSessionFactory, LakeSoulSessionOptions,
+};
 use crate::tests::{
     assert_batches_eq, assert_batches_eq_ordered, cdc_batch, create_cdc_table,
     create_cdc_table_with_range_partitions, create_table_with_file_format,
@@ -183,7 +185,8 @@ async fn create_distributed_table(
     table_name: &str,
     config: LakeSoulIOConfig,
 ) -> Result<()> {
-    create_table_with_file_format(client, table_name, config, PhysicalFormat::Parquet).await
+    create_table_with_file_format(client, table_name, config, PhysicalFormat::Parquet)
+        .await
 }
 
 /// Spawns `workers` in-process LakeSoul workers on free ports and returns
@@ -580,7 +583,9 @@ async fn test_merge_work_units_pinned_to_one_task_inner() -> Result<()> {
             vec!["+-----+", "| cnt |", "+-----+", "| 4   |", "+-----+"],
         ),
         (
-            format!("SELECT id, count(*) AS c FROM {single_unit} GROUP BY id ORDER BY id"),
+            format!(
+                "SELECT id, count(*) AS c FROM {single_unit} GROUP BY id ORDER BY id"
+            ),
             vec![
                 "+----+---+",
                 "| id | c |",
@@ -608,7 +613,9 @@ async fn test_merge_work_units_pinned_to_one_task_inner() -> Result<()> {
             ],
         ),
         (
-            format!("SELECT hash, count(*) AS c FROM {multi_unit} GROUP BY hash ORDER BY hash"),
+            format!(
+                "SELECT hash, count(*) AS c FROM {multi_unit} GROUP BY hash ORDER BY hash"
+            ),
             vec![
                 "+------+---+",
                 "| hash | c |",
@@ -739,7 +746,9 @@ async fn test_queries_during_concurrent_upserts_stay_consistent_inner() -> Resul
     let (worker_urls, mut workers) = spawn_workers(WORKER_COUNT).await;
     let distributed = distributed_factory(client.clone(), worker_urls, false)?;
     let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
-    let sql = format!("SELECT count(*) AS c, count(DISTINCT id) AS d, sum(v) AS s FROM {table}");
+    let sql = format!(
+        "SELECT count(*) AS c, count(DISTINCT id) AS d, sum(v) AS s FROM {table}"
+    );
 
     let mut samples = 0usize;
     let mut last_count: Option<i64> = None;
@@ -859,8 +868,16 @@ async fn assert_matches_single_node_ordered(
     for (sql, expected) in queries {
         let dist_result = dist_ctx.sql(sql).await?.collect().await?;
         let local_result = local_ctx.sql(sql).await?.collect().await?;
-        assert_batches_eq_ordered(&format!("{sql} (distributed)"), expected, &dist_result);
-        assert_batches_eq_ordered(&format!("{sql} (single-node)"), expected, &local_result);
+        assert_batches_eq_ordered(
+            &format!("{sql} (distributed)"),
+            expected,
+            &dist_result,
+        );
+        assert_batches_eq_ordered(
+            &format!("{sql} (single-node)"),
+            expected,
+            &local_result,
+        );
     }
     Ok(())
 }
@@ -1056,14 +1073,16 @@ impl object_store::ObjectStore for GatedStore {
             'static,
             object_store::Result<object_store::path::Path>,
         >,
-    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>> {
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
+    {
         self.inner.delete_stream(locations)
     }
 
     fn list(
         &self,
         prefix: Option<&object_store::path::Path>,
-    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>> {
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+    {
         self.inner.list(prefix)
     }
 
@@ -1133,8 +1152,9 @@ async fn spawn_gated_workers(
             .with_runtime_env(runtime)
             .with_version(crate::distributed::DISTRIBUTED_PROTOCOL_VERSION);
         handles.push(worker.clone());
-        let observability = worker
-            .with_observability_service(Arc::new(StaticWorkerResolver::new(Vec::new()).unwrap()));
+        let observability = worker.with_observability_service(Arc::new(
+            StaticWorkerResolver::new(Vec::new()).unwrap(),
+        ));
         join_set.spawn(async move {
             let _ = tonic::transport::Server::builder()
                 .add_service(worker.into_worker_server())
@@ -1277,7 +1297,12 @@ async fn connect_observers(
 /// Runs a `count(*)` on `ctx` under the execution timeout and asserts it
 /// returns `expected`: workers stay usable after a query ends, is cancelled
 /// or fails.
-async fn assert_count(ctx: &SessionContext, table: &str, expected: i64, why: &str) -> Result<()> {
+async fn assert_count(
+    ctx: &SessionContext,
+    table: &str,
+    expected: i64,
+    why: &str,
+) -> Result<()> {
     let batches = collect_within_timeout(
         ctx,
         &format!("SELECT count(*) AS c FROM {table}"),
@@ -1500,7 +1525,8 @@ async fn test_no_ready_workers_runs_on_the_coordinator_inner() -> Result<()> {
     let single_node = single_node_factory(client.clone())?;
 
     for fallback_to_local in [false, true] {
-        let distributed = distributed_factory(client.clone(), Vec::new(), fallback_to_local)?;
+        let distributed =
+            distributed_factory(client.clone(), Vec::new(), fallback_to_local)?;
         assert_matches_single_node(&distributed, &single_node, &queries).await?;
 
         // The plan must not pretend to have run on a worker: with no ready
@@ -1660,7 +1686,8 @@ const SPLIT_TARGET_PARTITIONS: usize = 4;
 const SPLIT_FILES: i64 = 4;
 
 /// The physical formats an append-only scan leaf is built for.
-const SCAN_FORMATS: [PhysicalFormat; 2] = [PhysicalFormat::Parquet, PhysicalFormat::Vortex];
+const SCAN_FORMATS: [PhysicalFormat; 2] =
+    [PhysicalFormat::Parquet, PhysicalFormat::Vortex];
 
 /// `bytes_per_partition` of the two distributed configurations the split
 /// tests run under: the library default, under which this suite's
@@ -1815,7 +1842,9 @@ fn assert_scan_split_over_tasks(plan: &Arc<dyn ExecutionPlan>, sql: &str) {
 /// plan the distributed planner kept on the coordinator, runs in one task.
 fn stage_nodes(plan: &Arc<dyn ExecutionPlan>) -> Vec<(usize, Arc<dyn ExecutionPlan>)> {
     let mut nodes = vec![];
-    for (tasks, stage) in std::iter::once((1, Arc::clone(plan))).chain(worker_stages(plan)) {
+    for (tasks, stage) in
+        std::iter::once((1, Arc::clone(plan))).chain(worker_stages(plan))
+    {
         stage
             .apply(|node| {
                 if node.is_network_boundary() {
@@ -2018,7 +2047,10 @@ fn assert_merge_lane_layout(
 /// Derived from the committed files rather than assumed, because which
 /// buckets a set of keys hashes into is the writer's business; the caller
 /// asserts the counts the fixtures must produce.
-async fn bucket_units_per_partition(client: MetaDataClientRef, table: &str) -> Result<Vec<usize>> {
+async fn bucket_units_per_partition(
+    client: MetaDataClientRef,
+    table: &str,
+) -> Result<Vec<usize>> {
     let files = client
         .get_data_files_by_table_name(table, "default")
         .await?;
@@ -2080,8 +2112,12 @@ fn test_filters_past_the_scan_projection_run_on_workers() {
 async fn test_filters_past_the_scan_projection_run_on_workers_inner() -> Result<()> {
     let client = Arc::new(MetaDataClient::from_env().await?);
     let (worker_urls, mut workers) = spawn_workers(SPLIT_WORKERS).await;
-    let distributed =
-        distributed_factory_with(client.clone(), worker_urls, SPLIT_TARGET_PARTITIONS, false)?;
+    let distributed = distributed_factory_with(
+        client.clone(),
+        worker_urls,
+        SPLIT_TARGET_PARTITIONS,
+        false,
+    )?;
     let single_node = single_node_factory(client.clone())?;
     let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
 
@@ -2189,10 +2225,14 @@ fn large_split_batches() -> Vec<RecordBatch> {
                     )) as ArrayRef,
                     Arc::new(Int32Array::from(
                         (0..rows)
-                            .map(|row| round * 100 + [1, 2, 3, 11, 12, 13, 21, 22, 23][row % 9])
+                            .map(|row| {
+                                round * 100 + [1, 2, 3, 11, 12, 13, 21, 22, 23][row % 9]
+                            })
                             .collect::<Vec<_>>(),
                     )),
-                    Arc::new(BinaryArray::from_iter_values(padding.as_chunks::<2048>().0)),
+                    Arc::new(BinaryArray::from_iter_values(
+                        padding.as_chunks::<2048>().0,
+                    )),
                 ],
             )
             .unwrap()
@@ -2319,7 +2359,8 @@ async fn test_scalar_subquery_aggregates_once_over_split_scans_inner() -> Result
                         && aggregates.iter().any(|aggregate| {
                             aggregate.mode == AggregateMode::Partial
                                 && aggregate.tasks > 1
-                                && aggregate.split_scan_partitions == Some(SPLIT_TARGET_PARTITIONS)
+                                && aggregate.split_scan_partitions
+                                    == Some(SPLIT_TARGET_PARTITIONS)
                         }),
                     "{label}: DataFusion must split the subquery's scan into \
                      {SPLIT_TARGET_PARTITIONS} partitions, aggregated partially in a \
@@ -2462,11 +2503,13 @@ async fn test_split_scans_keep_operator_input_requirements_inner() -> Result<()>
                 bytes_per_partition,
                 false,
             )?;
-            assert_matches_single_node_ordered(&distributed, &single_node, &expected).await?;
+            assert_matches_single_node_ordered(&distributed, &single_node, &expected)
+                .await?;
             let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
             for (sql, _, shuffles_scan) in &queries {
-                let label =
-                    format!("{format:?}, bytes_per_partition={bytes_per_partition:?}: {sql}");
+                let label = format!(
+                    "{format:?}, bytes_per_partition={bytes_per_partition:?}: {sql}"
+                );
                 let plan = ctx.sql(sql).await?.create_physical_plan().await?;
                 assert_input_distributions_hold(&plan, &label);
                 assert_stages_keep_input_requirements(&plan, &label);
@@ -2632,11 +2675,13 @@ async fn test_merge_inputs_stay_sorted_streams_inner() -> Result<()> {
                 bytes_per_partition,
                 false,
             )?;
-            assert_matches_single_node_ordered(&distributed, &single_node, &queries).await?;
+            assert_matches_single_node_ordered(&distributed, &single_node, &queries)
+                .await?;
             let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
             for (sql, _) in &queries {
-                let label =
-                    format!("{format:?}, bytes_per_partition={bytes_per_partition:?}: {sql}");
+                let label = format!(
+                    "{format:?}, bytes_per_partition={bytes_per_partition:?}: {sql}"
+                );
                 let plan = ctx.sql(sql).await?.create_physical_plan().await?;
                 assert_eq!(
                     count_merge_nodes(&plan),
@@ -2756,7 +2801,9 @@ async fn seed_shape_matrix(client: MetaDataClientRef) -> Result<ShapeTables> {
             LakeSoulIOConfigBuilder::new()
                 .with_schema(shape_schema())
                 .with_primary_keys(primary_keys.iter().map(|k| k.to_string()).collect())
-                .with_range_partitions(range_partitions.iter().map(|p| p.to_string()).collect())
+                .with_range_partitions(
+                    range_partitions.iter().map(|p| p.to_string()).collect(),
+                )
                 .build(),
         )
         .await?;
@@ -2775,7 +2822,9 @@ async fn seed_shape_matrix(client: MetaDataClientRef) -> Result<ShapeTables> {
 
     // A range-partitioned primary-key table with a single populated range
     // partition: one merge work unit, which must stay on the coordinator.
-    let table = crate::lakesoul_table::LakeSoulTable::for_name(&tables.single_partition_pk).await?;
+    let table =
+        crate::lakesoul_table::LakeSoulTable::for_name(&tables.single_partition_pk)
+            .await?;
     table.execute_upsert(shape_batch(0, &[0])).await?;
     table.execute_upsert(shape_batch(1, &[0])).await?;
 
@@ -2785,7 +2834,8 @@ async fn seed_shape_matrix(client: MetaDataClientRef) -> Result<ShapeTables> {
 /// One identical `GROUP BY` per shape: the only variable is the scan leaf the
 /// table shape produces.
 fn shape_matrix_cases(tables: &ShapeTables) -> Vec<ShapeCase> {
-    let group_by = |table: &str| format!("SELECT id, count(*) AS c FROM {table} GROUP BY id");
+    let group_by =
+        |table: &str| format!("SELECT id, count(*) AS c FROM {table} GROUP BY id");
     vec![
         ShapeCase {
             shape: "append-only, no range partition",
@@ -3256,7 +3306,9 @@ async fn seed_large_table(
 
 #[test]
 fn test_dropping_a_running_distributed_stream_stops_the_workers() {
-    run_distributed_test(test_dropping_a_running_distributed_stream_stops_the_workers_inner());
+    run_distributed_test(
+        test_dropping_a_running_distributed_stream_stops_the_workers_inner(),
+    );
 }
 
 /// A distributed stream dropped mid-execution must stop the worker tasks
@@ -3296,7 +3348,8 @@ fn test_dropping_a_running_distributed_stream_stops_the_workers() {
 /// cleanup, a late `ExecuteTask` can recreate an empty entry that waits for a
 /// plan and lingers until the ten-minute TTI. Such an entry has no execution
 /// plan, so it must not be mistaken for a leaked initialized task.
-async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() -> Result<()> {
+async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() -> Result<()>
+{
     let client = Arc::new(MetaDataClient::from_env().await?);
     // Four million rows: the scan outlasts the first batch by far, and its
     // buffered batches far exceed every boundary buffer, so a task left
@@ -3330,7 +3383,8 @@ async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() ->
     drop(stream);
 
     for (index, observer) in observers.iter_mut().enumerate() {
-        wait_until_no_initialized_tasks(observer, &format!("scan worker {index}")).await?;
+        wait_until_no_initialized_tasks(observer, &format!("scan worker {index}"))
+            .await?;
     }
 
     // The workers are still usable afterwards: a fresh distributed query
@@ -3399,8 +3453,11 @@ async fn test_dropping_a_running_distributed_stream_stops_the_workers_inner() ->
         // naturally, so reaching zero proves the drop cancelled them.
         drop(stream);
         for (index, observer) in observers.iter_mut().enumerate() {
-            wait_until_no_initialized_tasks(observer, &format!("head-stage worker {index}"))
-                .await?;
+            wait_until_no_initialized_tasks(
+                observer,
+                &format!("head-stage worker {index}"),
+            )
+            .await?;
         }
         // Recovery on the very workers whose tasks were just cancelled: the
         // gate stays closed, but each worker's first read already passed it,
@@ -3495,14 +3552,16 @@ impl object_store::ObjectStore for FailAfterFirstRead {
             'static,
             object_store::Result<object_store::path::Path>,
         >,
-    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>> {
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
+    {
         self.inner.delete_stream(locations)
     }
 
     fn list(
         &self,
         prefix: Option<&object_store::path::Path>,
-    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>> {
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+    {
         self.inner.list(prefix)
     }
 
@@ -3550,22 +3609,26 @@ fn test_a_read_failing_after_progress_fails_distributed_query() {
                     fail_enabled: Arc::clone(&fail_enabled),
                 }),
             );
-            let worker =
-                crate::distributed::lakesoul_worker(&crate::distributed::LakeSoulWorkerOptions {
+            let worker = crate::distributed::lakesoul_worker(
+                &crate::distributed::LakeSoulWorkerOptions {
                     core_args: CoreArgs::default(),
                     memory_pool: ExecutionMemoryArgs::default().create_pool(),
-                })?
-                .with_runtime_env(runtime);
+                },
+            )?
+            .with_runtime_env(runtime);
             fault_workers.spawn(async move {
                 let _ = tonic::transport::Server::builder()
                     .add_service(worker.into_worker_server())
-                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
+                        listener,
+                    ))
                     .await;
             });
         }
         let factory = distributed_factory(Arc::clone(&client), urls, false)?;
         let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
-        expect_query_failure_within(&ctx, &format!("select count(*) from {table}")).await?;
+        expect_query_failure_within(&ctx, &format!("select count(*) from {table}"))
+            .await?;
         assert!(
             served.load(Ordering::SeqCst) > 0,
             "a read must succeed first"
@@ -3626,30 +3689,38 @@ fn test_two_statements_on_one_session_deliver_distinct_ids_to_workers() {
                 &CoreArgs::default(),
                 ExecutionMemoryArgs::default().create_pool(),
             )?;
-            let worker =
-                datafusion_distributed::Worker::from_session_builder(RecordingQueryIdBuilder {
+            let worker = datafusion_distributed::Worker::from_session_builder(
+                RecordingQueryIdBuilder {
                     seen: Arc::clone(&seen),
-                })
-                .with_runtime_env(runtime)
-                .with_version(crate::distributed::DISTRIBUTED_PROTOCOL_VERSION);
+                },
+            )
+            .with_runtime_env(runtime)
+            .with_version(crate::distributed::DISTRIBUTED_PROTOCOL_VERSION);
             workers.spawn(async move {
                 let _ = tonic::transport::Server::builder()
                     .add_service(worker.into_worker_server())
-                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
+                        listener,
+                    ))
                     .await;
             });
         }
         let factory = distributed_factory(Arc::clone(&client), urls, false)?;
-        let context = Arc::new(factory.create_session(&LakeSoulSessionOptions::default())?);
-        let actor = crate::distributed::headers::SessionActor::new("alice", "", "default");
+        let context =
+            Arc::new(factory.create_session(&LakeSoulSessionOptions::default())?);
+        let actor =
+            crate::distributed::headers::SessionActor::new("alice", "", "default");
 
         for query_id in [501_u64, 502] {
             seen.lock().clear();
             let context_for_query = Arc::clone(&context);
             let sql = format!("select count(*) from {table}");
-            crate::distributed::headers::with_query_id(&context, &actor, query_id, async move {
-                context_for_query.sql(&sql).await?.collect().await
-            })
+            crate::distributed::headers::with_query_id(
+                &context,
+                &actor,
+                query_id,
+                async move { context_for_query.sql(&sql).await?.collect().await },
+            )
             .await?;
             let delivered = seen.lock().clone();
             assert!(!delivered.is_empty(), "query {query_id} reached no worker");
@@ -3701,7 +3772,11 @@ fn test_two_statements_on_one_session_deliver_distinct_ids_to_workers() {
 /// needs: with far more files than workers, the scan stage is split into far
 /// more tasks than there are workers, every registered worker is given some,
 /// and one of them failing is what the query must report.
-async fn seed_wide_table(client: MetaDataClientRef, files: usize, rows: usize) -> Result<String> {
+async fn seed_wide_table(
+    client: MetaDataClientRef,
+    files: usize,
+    rows: usize,
+) -> Result<String> {
     let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
     let name = format!("distributed_wide_{suffix}");
     create_distributed_table(
@@ -3753,7 +3828,8 @@ impl datafusion_distributed::WorkerSessionBuilder for FailingSessionBuilder {
 /// The failing worker's URL is the last one; the others expose their
 /// observability service, so a test can check that the query's tasks are
 /// drained from the healthy workers after the failure.
-async fn spawn_workers_with_one_failing() -> (Vec<String>, JoinSet<()>, Arc<AtomicUsize>) {
+async fn spawn_workers_with_one_failing() -> (Vec<String>, JoinSet<()>, Arc<AtomicUsize>)
+{
     let (mut urls, mut workers) = spawn_observable_workers(2).await;
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -3803,7 +3879,8 @@ fn test_a_worker_that_cannot_serve_fails_the_query() {
         let factory = distributed_factory(Arc::clone(&client), urls, false)?;
         let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
 
-        expect_query_failure_within(&ctx, &format!("select count(*) from {wide}")).await?;
+        expect_query_failure_within(&ctx, &format!("select count(*) from {wide}"))
+            .await?;
         assert!(
             asked.load(Ordering::SeqCst) > 0,
             "the worker that cannot serve has to be given a task for this test to \
@@ -3818,7 +3895,8 @@ fn test_a_worker_that_cannot_serve_fails_the_query() {
         // documents: such an entry holds no plan and no running execution,
         // and is what the TTL is for.
         for (index, observer) in observers.iter_mut().enumerate() {
-            wait_until_no_initialized_tasks(observer, &format!("healthy worker {index}")).await?;
+            wait_until_no_initialized_tasks(observer, &format!("healthy worker {index}"))
+                .await?;
         }
 
         workers.abort_all();
@@ -3982,7 +4060,8 @@ async fn test_remote_cdc_merge_with_non_key_filter_inner() -> Result<()> {
         ),
     ];
     for (sql, expected, ordered) in &queries {
-        assert_query_runs_on_workers(&distributed, &receipts, sql, expected, *ordered).await?;
+        assert_query_runs_on_workers(&distributed, &receipts, sql, expected, *ordered)
+            .await?;
     }
 
     // Three populated partitions packed one merge per worker: every merge
@@ -4135,7 +4214,9 @@ async fn test_multi_bucket_composite_pk_merge_on_workers_inner() -> Result<()> {
             true,
         ),
         (
-            format!("SELECT count(*) AS c, count(DISTINCT k1) AS d, sum(v) AS s FROM {name}"),
+            format!(
+                "SELECT count(*) AS c, count(DISTINCT k1) AS d, sum(v) AS s FROM {name}"
+            ),
             vec![
                 "+---+---+-----+",
                 "| c | d | s   |",
@@ -4149,8 +4230,8 @@ async fn test_multi_bucket_composite_pk_merge_on_workers_inner() -> Result<()> {
         (
             format!("SELECT v FROM {name} WHERE v > 2 ORDER BY v"),
             vec![
-                "+----+", "| v  |", "+----+", "| 3  |", "| 3  |", "| 30 |", "| 31 |", "| 32 |",
-                "+----+",
+                "+----+", "| v  |", "+----+", "| 3  |", "| 3  |", "| 30 |", "| 31 |",
+                "| 32 |", "+----+",
             ],
             true,
         ),
@@ -4160,11 +4241,14 @@ async fn test_multi_bucket_composite_pk_merge_on_workers_inner() -> Result<()> {
     // workers allow, so more units than range partitions means more worker
     // tasks than the three ranges would give on their own.
     {
-        let (worker_urls, receipts, mut workers) = spawn_workers_with_task_recording(5).await;
-        let distributed = distributed_factory_with(client.clone(), worker_urls, 6, false)?;
+        let (worker_urls, receipts, mut workers) =
+            spawn_workers_with_task_recording(5).await;
+        let distributed =
+            distributed_factory_with(client.clone(), worker_urls, 6, false)?;
         let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
         let merges =
-            assert_bucket_packing(&ctx, &queries[0].0, &["k1", "k2"], total_units, 5, 6).await?;
+            assert_bucket_packing(&ctx, &queries[0].0, &["k1", "k2"], total_units, 5, 6)
+                .await?;
         assert!(
             merges > unit_counts.len(),
             "the bucket units must spread over more merge tasks ({merges}) \
@@ -4176,11 +4260,18 @@ async fn test_multi_bucket_composite_pk_merge_on_workers_inner() -> Result<()> {
             if index == 0 {
                 // The merge tasks must land on a worker each: the coordinator
                 // cannot absorb this shape on its own.
-                let batches = collect_on_workers(&distributed, &receipts, sql, merges).await?;
+                let batches =
+                    collect_on_workers(&distributed, &receipts, sql, merges).await?;
                 assert_batches_eq_ordered(sql, expected, &batches);
             } else {
-                assert_query_runs_on_workers(&distributed, &receipts, sql, expected, *ordered)
-                    .await?;
+                assert_query_runs_on_workers(
+                    &distributed,
+                    &receipts,
+                    sql,
+                    expected,
+                    *ordered,
+                )
+                .await?;
             }
         }
         workers.abort_all();
@@ -4189,11 +4280,14 @@ async fn test_multi_bucket_composite_pk_merge_on_workers_inner() -> Result<()> {
     // Two workers for more bucket units than workers: one merge per worker,
     // each holding several units on up to two lanes.
     {
-        let (worker_urls, receipts, mut workers) = spawn_workers_with_task_recording(2).await;
-        let distributed = distributed_factory_with(client.clone(), worker_urls, 2, false)?;
+        let (worker_urls, receipts, mut workers) =
+            spawn_workers_with_task_recording(2).await;
+        let distributed =
+            distributed_factory_with(client.clone(), worker_urls, 2, false)?;
         let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
         let merges =
-            assert_bucket_packing(&ctx, &queries[0].0, &["k1", "k2"], total_units, 2, 2).await?;
+            assert_bucket_packing(&ctx, &queries[0].0, &["k1", "k2"], total_units, 2, 2)
+                .await?;
         assert_eq!(merges, 2, "one merge per worker");
         assert!(
             total_units > merges,
@@ -4203,14 +4297,21 @@ async fn test_multi_bucket_composite_pk_merge_on_workers_inner() -> Result<()> {
         for (index, (sql, expected, ordered)) in queries.iter().enumerate() {
             if index == 0 {
                 // Both workers must be busy: one merge task each.
-                let batches = collect_on_workers(&distributed, &receipts, sql, merges).await?;
+                let batches =
+                    collect_on_workers(&distributed, &receipts, sql, merges).await?;
                 assert_batches_eq_ordered(sql, expected, &batches);
             } else {
                 let pair = (sql.clone(), expected.clone());
                 if *ordered {
-                    assert_matches_single_node_ordered(&distributed, &single_node, &[pair]).await?;
+                    assert_matches_single_node_ordered(
+                        &distributed,
+                        &single_node,
+                        &[pair],
+                    )
+                    .await?;
                 } else {
-                    assert_matches_single_node(&distributed, &single_node, &[pair]).await?;
+                    assert_matches_single_node(&distributed, &single_node, &[pair])
+                        .await?;
                 }
             }
         }
@@ -4333,15 +4434,20 @@ async fn test_single_partition_bucket_units_run_on_workers_inner() -> Result<()>
         // its own worker, so the whole table is read by that many workers at
         // once.
         {
-            let (worker_urls, receipts, mut workers) = spawn_workers_with_task_recording(5).await;
-            let distributed = distributed_factory_with(client.clone(), worker_urls, LANES, false)?;
+            let (worker_urls, receipts, mut workers) =
+                spawn_workers_with_task_recording(5).await;
+            let distributed =
+                distributed_factory_with(client.clone(), worker_urls, LANES, false)?;
             let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
-            let merges = assert_bucket_packing(&ctx, &rows_sql, &["id"], units, 5, LANES).await?;
+            let merges =
+                assert_bucket_packing(&ctx, &rows_sql, &["id"], units, 5, LANES).await?;
             assert_eq!(merges, units, "{shape}: one merge per bucket unit");
 
-            let batches = collect_on_workers(&distributed, &receipts, &rows_sql, merges).await?;
+            let batches =
+                collect_on_workers(&distributed, &receipts, &rows_sql, merges).await?;
             assert_eq!(shape_rows(&batches), expected_rows, "{shape}: {rows_sql}");
-            let batches = collect_on_workers(&distributed, &receipts, &aggregate_sql, 1).await?;
+            let batches =
+                collect_on_workers(&distributed, &receipts, &aggregate_sql, 1).await?;
             assert_batches_eq(&aggregate_sql, &AGGREGATE, &batches);
             workers.abort_all();
         }
@@ -4349,10 +4455,13 @@ async fn test_single_partition_bucket_units_run_on_workers_inner() -> Result<()>
         // More bucket units than workers: one merge per worker, each packing
         // several units on up to `LANES` local lanes, and both workers busy.
         {
-            let (worker_urls, receipts, mut workers) = spawn_workers_with_task_recording(2).await;
-            let distributed = distributed_factory_with(client.clone(), worker_urls, 2, false)?;
+            let (worker_urls, receipts, mut workers) =
+                spawn_workers_with_task_recording(2).await;
+            let distributed =
+                distributed_factory_with(client.clone(), worker_urls, 2, false)?;
             let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
-            let merges = assert_bucket_packing(&ctx, &rows_sql, &["id"], units, 2, 2).await?;
+            let merges =
+                assert_bucket_packing(&ctx, &rows_sql, &["id"], units, 2, 2).await?;
             assert_eq!(merges, 2, "{shape}: one merge per worker");
             assert!(
                 units > merges,
@@ -4360,9 +4469,11 @@ async fn test_single_partition_bucket_units_run_on_workers_inner() -> Result<()>
                  than workers ({merges})"
             );
 
-            let batches = collect_on_workers(&distributed, &receipts, &rows_sql, merges).await?;
+            let batches =
+                collect_on_workers(&distributed, &receipts, &rows_sql, merges).await?;
             assert_eq!(shape_rows(&batches), expected_rows, "{shape}: {rows_sql}");
-            let batches = collect_on_workers(&distributed, &receipts, &aggregate_sql, 1).await?;
+            let batches =
+                collect_on_workers(&distributed, &receipts, &aggregate_sql, 1).await?;
             assert_batches_eq(&aggregate_sql, &AGGREGATE, &batches);
             workers.abort_all();
         }
@@ -4370,7 +4481,8 @@ async fn test_single_partition_bucket_units_run_on_workers_inner() -> Result<()>
         // The single-node session returns the same rows: the split changes
         // where the merge runs, not what it returns.
         let local = single_node.create_session(&LakeSoulSessionOptions::default())?;
-        let batches = collect_within_timeout(&local, &rows_sql, EXECUTION_TIMEOUT).await?;
+        let batches =
+            collect_within_timeout(&local, &rows_sql, EXECUTION_TIMEOUT).await?;
         assert_eq!(
             shape_rows(&batches),
             expected_rows,
@@ -4392,14 +4504,16 @@ fn test_many_ranges_pack_one_merge_per_worker_task() {
 }
 
 async fn test_many_ranges_pack_one_merge_per_worker_task_inner() -> Result<()> {
-    use crate::tests::merge_scheduling_tests::{expected_groups, grouped_result, seed_ranges};
+    use crate::tests::merge_scheduling_tests::{
+        expected_groups, grouped_result, seed_ranges,
+    };
     const RANGES: i32 = 7;
     const TARGET_PARTITIONS: usize = 2;
 
     let client = Arc::new(MetaDataClient::from_env().await?);
     let table = seed_ranges(client.clone(), RANGES).await?;
-    let single_node =
-        single_node_factory(client.clone())?.create_session(&LakeSoulSessionOptions::default())?;
+    let single_node = single_node_factory(client.clone())?
+        .create_session(&LakeSoulSessionOptions::default())?;
     assert_eq!(
         grouped_result(&single_node, &table).await?,
         expected_groups(RANGES)
@@ -4417,7 +4531,8 @@ async fn test_many_ranges_pack_one_merge_per_worker_task_inner() -> Result<()> {
         "the scan must be distributed:\n{}",
         display_plan_ascii(plan.as_ref(), false)
     );
-    let (units, lanes) = assert_merge_lane_layout(&plan, WORKER_COUNT, TARGET_PARTITIONS, &sql);
+    let (units, lanes) =
+        assert_merge_lane_layout(&plan, WORKER_COUNT, TARGET_PARTITIONS, &sql);
     assert_eq!(
         units,
         RANGES as usize * 2,
@@ -4574,7 +4689,8 @@ async fn test_remote_topk_limit_offset_keeps_output_order_inner() -> Result<()> 
         ),
     ];
     for (sql, expected, ordered) in &queries {
-        assert_query_runs_on_workers(&distributed, &receipts, sql, expected, *ordered).await?;
+        assert_query_runs_on_workers(&distributed, &receipts, sql, expected, *ordered)
+            .await?;
     }
 
     // Three merge work units feed the sort; none may be split across tasks.
@@ -4592,7 +4708,10 @@ async fn test_remote_topk_limit_offset_keeps_output_order_inner() -> Result<()> 
 /// one version. Many partitions keep a streaming merge query running for a
 /// while after its first batch, so a commit can be ordered against it
 /// deterministically.
-async fn seed_snapshot_table(client: MetaDataClientRef, partitions: usize) -> Result<String> {
+async fn seed_snapshot_table(
+    client: MetaDataClientRef,
+    partitions: usize,
+) -> Result<String> {
     let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
     let name = format!("distributed_snapshot_{suffix}");
     create_distributed_table(
@@ -4717,9 +4836,9 @@ async fn test_a_query_keeps_the_file_set_it_captured_inner() -> Result<()> {
     wait_until_all_reached(&arrived, "snapshot worker").await;
     // The commit lands while the query is running and blocked, mid-merge.
     upsert_shape_rows(&name, snapshot_rows(300, PARTITIONS)).await?;
-    gate_tx
-        .send(true)
-        .map_err(|_| DataFusionError::Execution("the gate receiver was dropped".to_string()))?;
+    gate_tx.send(true).map_err(|_| {
+        DataFusionError::Execution("the gate receiver was dropped".to_string())
+    })?;
     let mut batches = Vec::new();
     while let Some(batch) = stream.next().await {
         batches.push(batch?);
@@ -4776,10 +4895,12 @@ async fn assert_merge_units_pinned(
         "unexpected merge nodes for {sql}:\n{explain}"
     );
     let batches =
-        collect_within_timeout(ctx, &format!("EXPLAIN ANALYZE {sql}"), EXECUTION_TIMEOUT).await?;
-    let explain_analyze = datafusion::arrow::util::pretty::pretty_format_batches(&batches)
-        .unwrap()
-        .to_string();
+        collect_within_timeout(ctx, &format!("EXPLAIN ANALYZE {sql}"), EXECUTION_TIMEOUT)
+            .await?;
+    let explain_analyze =
+        datafusion::arrow::util::pretty::pretty_format_batches(&batches)
+            .unwrap()
+            .to_string();
     assert!(
         explain_analyze.contains("MergeParquetExec"),
         "the analyzed plan must show the merge operators for the pinning check \
@@ -4827,12 +4948,13 @@ fn test_a_failing_read_cleans_up_tasks_and_recovers() {
                     fail_enabled: Arc::clone(&fail_enabled),
                 }),
             );
-            let worker =
-                crate::distributed::lakesoul_worker(&crate::distributed::LakeSoulWorkerOptions {
+            let worker = crate::distributed::lakesoul_worker(
+                &crate::distributed::LakeSoulWorkerOptions {
                     core_args: CoreArgs::default(),
                     memory_pool: ExecutionMemoryArgs::default().create_pool(),
-                })?
-                .with_runtime_env(runtime);
+                },
+            )?
+            .with_runtime_env(runtime);
             let observability = worker.with_observability_service(Arc::new(
                 StaticWorkerResolver::new(vec![url]).expect("worker url is well formed"),
             ));
@@ -4840,7 +4962,9 @@ fn test_a_failing_read_cleans_up_tasks_and_recovers() {
                 let _ = tonic::transport::Server::builder()
                     .add_service(worker.into_worker_server())
                     .add_service(observability)
-                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
+                        listener,
+                    ))
                     .await;
             });
         }
@@ -4848,7 +4972,8 @@ fn test_a_failing_read_cleans_up_tasks_and_recovers() {
         let factory = distributed_factory(Arc::clone(&client), urls, false)?;
         let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
 
-        expect_query_failure_within(&ctx, &format!("select count(*) from {table}")).await?;
+        expect_query_failure_within(&ctx, &format!("select count(*) from {table}"))
+            .await?;
         assert!(
             served.load(Ordering::SeqCst) > 0,
             "a read must succeed first"
@@ -4863,7 +4988,11 @@ fn test_a_failing_read_cleans_up_tasks_and_recovers() {
         // entries recreated by a late `ExecuteTask` hold no plan and are not
         // counted (see `test_dropping_a_running_distributed_stream_stops_the_workers`).
         for (index, observer) in observers.iter_mut().enumerate() {
-            wait_until_no_initialized_tasks(observer, &format!("recovery worker {index}")).await?;
+            wait_until_no_initialized_tasks(
+                observer,
+                &format!("recovery worker {index}"),
+            )
+            .await?;
         }
 
         // Once the fault is removed, the workers serve a full query again.
@@ -4909,7 +5038,8 @@ fn test_a_session_builder_failure_is_not_rerun_locally() {
         let factory = distributed_factory(Arc::clone(&client), urls, true)?;
         let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
 
-        expect_query_failure_within(&ctx, &format!("select count(*) from {wide}")).await?;
+        expect_query_failure_within(&ctx, &format!("select count(*) from {wide}"))
+            .await?;
         assert!(
             asked.load(Ordering::SeqCst) > 0,
             "the worker that cannot serve has to be given a task for this test to \
@@ -4920,7 +5050,8 @@ fn test_a_session_builder_failure_is_not_rerun_locally() {
         // served a task must drain their initialized tasks; the session-build
         // failure never initialized one and relies on the TTL.
         for (index, observer) in observers.iter_mut().enumerate() {
-            wait_until_no_initialized_tasks(observer, &format!("healthy worker {index}")).await?;
+            wait_until_no_initialized_tasks(observer, &format!("healthy worker {index}"))
+                .await?;
         }
 
         workers.abort_all();

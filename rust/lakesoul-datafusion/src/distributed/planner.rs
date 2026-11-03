@@ -55,6 +55,7 @@ use lakesoul_io::file_format::PhysicalFormat;
 
 use crate::distributed::codec::source_has_wire_form;
 use crate::planner::LakeSoulQueryPlanner;
+use crate::planner::query_planner::end_current_otel_span;
 
 /// Session extension marking a query the coordinator plans locally after the
 /// distributed planner gave up on it ([`LakeSoulDistributedQueryPlanner`]
@@ -84,7 +85,9 @@ pub(crate) fn scan_task_budget(config: &SessionConfig) -> usize {
         return 1;
     };
     match DistributedConfig::from_config_options(config.options()) {
-        Ok(distributed) if distributed.max_tasks_per_stage > 0 => distributed.max_tasks_per_stage,
+        Ok(distributed) if distributed.max_tasks_per_stage > 0 => {
+            distributed.max_tasks_per_stage
+        }
         _ => resolver.get_urls().map_or(1, |urls| urls.len().max(1)),
     }
 }
@@ -233,13 +236,32 @@ fn unshippable_stage_error(leaf: &str) -> DataFusionError {
     ))
 }
 
+/// Records the plan root and outcome on the current `distributed_plan` span,
+/// so a distributed plan and a local fallback are told apart in the trace.
+fn record_distributed_plan(plan: &Arc<dyn ExecutionPlan>, outcome: &'static str) {
+    tracing::Span::current().record("physical_plan_root", plan.name());
+    tracing::Span::current().record("outcome", outcome);
+}
+
 #[async_trait::async_trait]
 impl QueryPlanner for LakeSoulDistributedQueryPlanner {
+    #[tracing::instrument(
+        name = "distributed_plan",
+        level = "info",
+        skip_all,
+        fields(
+            output_field_count = logical_plan.schema().fields().len(),
+            physical_plan_root = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+        ),
+        err
+    )]
     async fn create_physical_plan(
         &self,
         logical_plan: &LogicalPlan,
         session: &dyn Session,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        let started = std::time::Instant::now();
         if let Some(resolver) = &self.resolver {
             let available_workers = resolver.get_urls()?;
             info!(
@@ -259,9 +281,16 @@ impl QueryPlanner for LakeSoulDistributedQueryPlanner {
                 if !self.fallback_to_local {
                     return Err(e);
                 }
-                return self.plan_locally(logical_plan, session).await;
+                let plan = self.plan_locally(logical_plan, session).await?;
+                record_distributed_plan(&plan, "local_fallback");
+                end_current_otel_span();
+                return Ok(plan);
             }
         };
+        info!(
+            wall_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "scan planning distributed conversion complete"
+        );
         // A stage no worker could decode is a planning failure, not an
         // execution failure: the coordinator only fails when it sends the
         // stage, and the user then sees a worker-side timeout instead.
@@ -272,8 +301,17 @@ impl QueryPlanner for LakeSoulDistributedQueryPlanner {
                 return Err(error);
             }
             warn!("{error}; planning the query locally instead");
-            return self.plan_locally(logical_plan, session).await;
+            let plan = self.plan_locally(logical_plan, session).await?;
+            record_distributed_plan(&plan, "local_fallback");
+            end_current_otel_span();
+            return Ok(plan);
         }
+        record_distributed_plan(&plan, "distributed");
+        info!(
+            wall_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "scan planning distributed planner summary"
+        );
+        end_current_otel_span();
         Ok(plan)
     }
 }
@@ -284,7 +322,9 @@ mod tests {
 
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::listing::PartitionedFile;
-    use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, FileSource};
+    use datafusion::datasource::physical_plan::{
+        FileGroup, FileScanConfigBuilder, FileSource,
+    };
     use datafusion::datasource::table_schema::TableSchema;
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::physical_expr::Partitioning;
@@ -343,7 +383,8 @@ mod tests {
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
         let ctx = SessionContext::new();
         let frame = ctx.sql("SELECT 1 AS one").await?;
-        let planner = LakeSoulDistributedQueryPlanner::new(distributed, fallback_to_local, None);
+        let planner =
+            LakeSoulDistributedQueryPlanner::new(distributed, fallback_to_local, None);
         planner
             .create_physical_plan(frame.logical_plan(), &ctx.state())
             .await
@@ -355,7 +396,8 @@ mod tests {
         let io_config = LakeSoulIOConfigBuilder::new()
             .with_files(vec![file.to_string()])
             .build();
-        let registry = LakeSoulFormatRegistry::new(io_config, false).expect("format registry");
+        let registry =
+            LakeSoulFormatRegistry::new(io_config, false).expect("format registry");
         let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
         let source = registry
             .file_format(format)
@@ -471,7 +513,8 @@ mod tests {
     /// boundary from.
     fn stage(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
         let partitioning = Partitioning::Hash(vec![Arc::new(Column::new("v", 0))], 2);
-        let repartition = RepartitionExec::try_new(plan, partitioning).expect("hash repartition");
+        let repartition =
+            RepartitionExec::try_new(plan, partitioning).expect("hash repartition");
         Arc::new(
             NetworkShuffleExec::try_new(Arc::new(repartition), 2)
                 .expect("a hash repartition is a valid boundary input"),
@@ -626,7 +669,8 @@ mod tests {
         use datafusion_distributed::DistributedExt;
 
         assert_eq!(scan_task_budget(&SessionConfig::new()), 1, "no resolver");
-        let workers = |count| SessionConfig::new().with_distributed_worker_resolver(Workers(count));
+        let workers =
+            |count| SessionConfig::new().with_distributed_worker_resolver(Workers(count));
         assert_eq!(scan_task_budget(&workers(Some(3))), 3);
         assert_eq!(scan_task_budget(&workers(Some(0))), 1, "no worker listed");
         assert_eq!(scan_task_budget(&workers(None)), 1, "discovery failed");
