@@ -615,7 +615,7 @@ fn build_http_client(discovery: &KubernetesDiscovery) -> Result<reqwest::Client>
     // trust pool for the in-cluster CA.
     if discovery.api_url().scheme() == "https" {
         let ca_path = CA_CERT_PATH;
-        let pem = std::fs::read(&ca_path).context(format!(
+        let pem = std::fs::read(ca_path).context(format!(
             "kubernetes API is HTTPS but the CA bundle is unreadable at {};",
             ca_path
         ))?;

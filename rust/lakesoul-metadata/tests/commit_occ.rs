@@ -116,11 +116,7 @@ async fn commit_with_read(
         let commit_id_str =
             uuid::Uuid::from_u64_pair(commit_id.high, commit_id.low).to_string();
         if client
-            .get_single_data_commit_info(
-                &table_id,
-                &partition_desc.to_string(),
-                &commit_id_str,
-            )
+            .get_single_data_commit_info(table_id, partition_desc, &commit_id_str)
             .await?
             .is_none()
         {
@@ -610,13 +606,12 @@ async fn replayed_commit_is_idempotent() -> Result<()> {
         CommitOutcome::Committed
     );
     let head = latest_partition_info(&client, &table_id, "p1").await?;
-    assert_eq!(
+    assert!(
         client
             .get_single_data_commit_info(&table_id, "p1", &commit_id_str)
             .await?
             .expect("staged commit row")
-            .committed,
-        true
+            .committed
     );
     // Replaying the same append must not mint a second version: every staged
     // data commit is already published.
@@ -704,7 +699,7 @@ async fn multi_partition_publication_marks_every_commit() -> Result<()> {
         let head = latest_partition_info(&client, &table_id, partition_desc).await?;
         assert_eq!(head.version, 0);
         assert!(snapshot_ids(&head).contains(&(commit_uuid.high, commit_uuid.low)));
-        assert_eq!(
+        assert!(
             client
                 .get_single_data_commit_info(
                     &table_id,
@@ -713,8 +708,7 @@ async fn multi_partition_publication_marks_every_commit() -> Result<()> {
                 )
                 .await?
                 .expect("staged commit row")
-                .committed,
-            true
+                .committed
         );
     }
 
@@ -923,7 +917,11 @@ async fn table_without_name_row_commits() -> Result<()> {
     assert_eq!(head.domain, table.domain);
 
     client
-        .commit_insert_only(&table, &[head.clone()], vec![file("p1", "insert")])
+        .commit_insert_only(
+            &table,
+            std::slice::from_ref(&head),
+            vec![file("p1", "insert")],
+        )
         .await?;
     let latest = latest_partition_info(&client, &table_id, "p1").await?;
     assert_eq!(latest.version, head.version + 1);

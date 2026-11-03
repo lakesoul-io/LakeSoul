@@ -21,6 +21,13 @@ LAKESOUL_IO_USE_V2_MERGE=true cargo -q test -p postgres-lakesoul --test sql_comp
 
 需要可连接、已初始化并迁移的 PostgreSQL，以及 `protoc`、Vortex 对应的 `flatc`、Clang/libclang 等仓库原生编译依赖；TPC-H target 还需要 Python 3.11+，只使用标准库。不需要额外启动 PG wire 服务或准备手工 fixture；六个 targets 使用本地 Parquet，不依赖 S3/RustFS，也不要求参考 PostgreSQL 安装 pgvector。
 
+物理执行器使用根 `Cargo.toml` 中固定 Git `rev` 的 `datafusion-physical-plan`
+补丁（`mag1c1an1/datafusion` 的 `feature/lakesoul-physical-plan-55.2` 分支），
+不再保留本地 crate 副本。该分支基于官方 `55.2.0`，保留 repartition spill-pool
+死锁修复和供 SQLSTATE `21000` 映射使用的 `ScalarSubqueryCardinalityError`。
+补丁 manifest 的其它 DataFusion 依赖仍来自 crates.io，避免引入两套不兼容类型；
+更新 `rev` 时应保留现有依赖版本，并复跑 scalar-subquery、spill 和真实 PG 协议回归。
+
 CI 在现有 legacy/v2 默认成员测试之外，分别显式运行：
 
 ```sh

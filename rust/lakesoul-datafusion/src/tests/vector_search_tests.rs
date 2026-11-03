@@ -281,8 +281,10 @@ fn index_only_context() -> datafusion::optimizer::OptimizerContext {
     use datafusion::optimizer::OptimizerContext;
 
     let mut options = ConfigOptions::default();
-    let mut config = LakeSoulVectorSearchConfig::default();
-    config.rerank = "index".to_string();
+    let config = LakeSoulVectorSearchConfig {
+        rerank: "index".to_string(),
+        ..Default::default()
+    };
     options.extensions.insert(config);
     OptimizerContext::new_with_config_options(Arc::new(options))
 }
@@ -772,8 +774,10 @@ async fn sql_vector_search_end_to_end() {
     // 4b. The parallel cluster probe partitions the clusters and merges the
     //     per-group top-k; it must return the same rows.
     let mut parallel_config = crate::create_lakesoul_session_config().unwrap();
-    let mut parallel_options = LakeSoulVectorSearchConfig::default();
-    parallel_options.parallelism = 4;
+    let parallel_options = LakeSoulVectorSearchConfig {
+        parallelism: 4,
+        ..Default::default()
+    };
     parallel_config
         .options_mut()
         .extensions
@@ -901,8 +905,10 @@ async fn sql_vector_search_with_where_and_nprobe() {
 
     // A session with a custom nprobe option.
     let mut session_config = crate::create_lakesoul_session_config().unwrap();
-    let mut vector_options = LakeSoulVectorSearchConfig::default();
-    vector_options.nprobe = 1;
+    let vector_options = LakeSoulVectorSearchConfig {
+        nprobe: 1,
+        ..Default::default()
+    };
     session_config
         .options_mut()
         .extensions
@@ -2073,9 +2079,11 @@ async fn sql_vector_search_index_only_ordering() {
 
     // Index-only session (nprobe covers every cluster of this tiny table).
     let mut session_config = crate::create_lakesoul_session_config().unwrap();
-    let mut options = LakeSoulVectorSearchConfig::default();
-    options.nprobe = 4;
-    options.rerank = "index".to_string();
+    let options = LakeSoulVectorSearchConfig {
+        nprobe: 4,
+        rerank: "index".to_string(),
+        ..Default::default()
+    };
     session_config.options_mut().extensions.insert(options);
     let ctx = crate::create_lakesoul_session_ctx_with_config(
         client,
@@ -2241,9 +2249,11 @@ async fn sql_vector_search_multi_column_fusion() {
     // 4. Index-only ordering: the fused index distance orders the rows and
     //    no stored vector column is read; the Sort disappears from the plan.
     let mut session_config = crate::create_lakesoul_session_config().unwrap();
-    let mut options = LakeSoulVectorSearchConfig::default();
-    options.nprobe = 4;
-    options.rerank = "index".to_string();
+    let options = LakeSoulVectorSearchConfig {
+        nprobe: 4,
+        rerank: "index".to_string(),
+        ..Default::default()
+    };
     session_config.options_mut().extensions.insert(options);
     let index_ctx = crate::create_lakesoul_session_ctx_with_config(
         client,
@@ -2574,10 +2584,9 @@ fn plan_counter(
                 name: metric_name,
                 count,
             } = metric.value()
+                && metric_name.as_ref() == name
             {
-                if metric_name.as_ref() == name {
-                    return Some(count.value());
-                }
+                return Some(count.value());
             }
         }
     }
