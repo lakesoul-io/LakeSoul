@@ -35,6 +35,7 @@ async fn insert_contract() -> Result<()> {
         Box::pin(async move {
             plain_insert_writes_rows_metadata_and_files(h).await?;
             parameterized_insert_executes_twice(h).await?;
+            cdc_delete_marker_hides_the_key(h).await?;
             duplicate_key_leaves_no_state(h).await?;
             not_null_violation_is_23502(h).await?;
             on_conflict_do_nothing_skips_conflicts(h).await?;
@@ -145,6 +146,63 @@ async fn parameterized_insert_executes_twice(h: &Harness) -> Result<()> {
         lake_i64(h, "SELECT count(*) FROM pk_items WHERE id >= 9001").await?,
         2,
     )?;
+    Ok(())
+}
+
+/// A CDC table drops a key whose newest version is a `delete` marker, and a
+/// later `insert` revives it.
+async fn cdc_delete_marker_hides_the_key(h: &Harness) -> Result<()> {
+    h.lake
+        .simple_query(
+            "CREATE TABLE cdc_items (id BIGINT PRIMARY KEY, op TEXT, val BIGINT) \
+             WITH (use_cdc = true, lakesoul_cdc_change_column = 'op')",
+        )
+        .await
+        .context("create the CDC table")?;
+
+    simple_rows(
+        h,
+        "INSERT INTO cdc_items (id, op, val) VALUES (1, 'insert', 10)",
+    )
+    .await?;
+    ensure_eq(
+        "insert row is visible",
+        lake_i64(h, "SELECT count(*) FROM cdc_items").await?,
+        1,
+    )?;
+
+    // The delete marker is the newest version of key 1: it takes part in the
+    // merge and is then filtered out, so the key disappears from SELECT. A
+    // second write for an existing key is an upsert, as for any primary-key
+    // table (a plain INSERT would be `23505`).
+    simple_rows(
+        h,
+        "INSERT INTO cdc_items (id, op, val) VALUES (1, 'delete', 10) \
+         ON CONFLICT (id) DO UPDATE SET op = EXCLUDED.op, val = EXCLUDED.val",
+    )
+    .await?;
+    ensure_eq(
+        "delete marker hides the key",
+        lake_i64(h, "SELECT count(*) FROM cdc_items").await?,
+        0,
+    )?;
+
+    simple_rows(
+        h,
+        "INSERT INTO cdc_items (id, op, val) VALUES (1, 'insert', 20) \
+         ON CONFLICT (id) DO UPDATE SET op = EXCLUDED.op, val = EXCLUDED.val",
+    )
+    .await?;
+    ensure_eq(
+        "a later insert revives the key",
+        lake_i64(h, "SELECT count(*) FROM cdc_items WHERE val = 20").await?,
+        1,
+    )?;
+
+    h.lake
+        .simple_query("DROP TABLE cdc_items")
+        .await
+        .context("drop the CDC table")?;
     Ok(())
 }
 
