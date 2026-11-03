@@ -42,16 +42,20 @@ case "$SF" in
 esac
 SF_NAME=$(printf '%s' "$SF" | tr . _)
 # LAYOUT=pk (default): primary-key MOR tables, `hashBucketNum` buckets.
+# PK scans distribute by work unit, a (range partition, hash bucket) pair
+# read from the committed file names; each merge owns whole units. A table
+# without range columns is one implicit partition and still yields one unit
+# per populated bucket, so it distributes too.
 # LAYOUT=pkmonth: the pk layout with orders and lineitem range-partitioned
-# by month (schema `tpch_sf<N>_pkmonth`): an extra trailing 'YYYY-MM' column,
-# `o_ordermonth` from o_orderdate and `l_shipmonth` from l_shipdate (80 and 84
-# partitions). Each month is its own merge, so the distributed planner can
-# spread a scan over up to one task per month; the other six tables have no
-# date and stay unpartitioned pk tables. The query files never reference the
-# month columns, so they run unchanged but do not prune partitions. Every
-# month gets a file per bucket and chunk: lower BUCKETS at small SF to avoid
-# tiny files.
-# LAYOUT=nopk: append-only tables without key or buckets, schema
+# by month (default schema `tpch_sf<N>_pkmonth`): an extra trailing
+# 'YYYY-MM' column, `o_ordermonth` from o_orderdate and `l_shipmonth` from
+# l_shipdate (80 and 84 partitions). Each (month, bucket) pair is its own
+# work unit; the other six tables have no date and stay unpartitioned pk
+# tables, still split by bucket. The query files never reference the month
+# columns, so they run unchanged but do not prune partitions. Every month
+# gets a file per bucket and chunk: lower BUCKETS at small SF to avoid tiny
+# files.
+# LAYOUT=nopk: append-only tables without key or buckets, default schema
 # `tpch_sf<N>_nopk` (plain file scans the distributed planner can split).
 LAYOUT="${LAYOUT:-pk}"
 case "$LAYOUT" in

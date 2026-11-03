@@ -29,6 +29,14 @@
 //! the planner drops a boundary between two one-task stages, and a plan left
 //! without any boundary runs on the coordinator as the single-node plan.
 //!
+//! A primary-key scan groups its files into atomic `(range partition, hash
+//! bucket)` work units, preserving version order within each unit. Whole units
+//! are packed across the scan's task budget, so even one range partition (or
+//! a table without range columns) can use several workers when it has several
+//! populated buckets. Each task's merge runs at most `target_partitions` local
+//! lanes, executing further units sequentially. If any file has a missing or
+//! out-of-range bucket ID, its whole range stays one indivisible unit instead.
+//!
 //! DataFusion splits file scans into partitions by a rule of its own, before
 //! the distributed planner runs: `EnforceDistribution` byte-splits a scan of
 //! at least `repartition_file_min_size` bytes, while the distributed planner
@@ -72,9 +80,7 @@ pub mod worker;
 
 pub use codec::LakeSoulCodec;
 pub use planner::LakeSoulDistributedQueryPlanner;
-pub use resolver::{
-    KubernetesDiscovery, StaticWorkerResolver, WorkerDiscovery, WorkerSnapshot,
-};
+pub use resolver::{KubernetesDiscovery, StaticWorkerResolver, WorkerDiscovery, WorkerSnapshot};
 
 /// Protocol version exchanged between coordinators and workers.
 ///
@@ -105,8 +111,7 @@ pub use resolver::{
 pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2";
 
 pub use worker::{
-    LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker,
-    spawn_lakesoul_worker,
+    LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker, spawn_lakesoul_worker,
 };
 
 #[derive(Debug, Clone)]

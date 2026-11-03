@@ -71,9 +71,14 @@ Layouts (`datagen/tpch.sh` documents them in full):
 
 | `--layout` | Schema | Distributed execution |
 |---|---|---|
-| `pk` | `tpch_sf<N>` | none: an unpartitioned PK table is one merge pinned to one task, so the whole query stays on the coordinator |
-| `pkmonth` | `tpch_sf<N>_pkmonth` | orders/lineitem range-partitioned by month (80/84 merges): scans spread over up to one task per month; the six dimension tables stay single-task |
+| `pk` | `tpch_sf<N>` | one work unit per (range partition, hash bucket) pair, read from the committed file names; a table without range columns is one implicit partition, so it still yields one unit per populated bucket |
+| `pkmonth` | `tpch_sf<N>_pkmonth` | orders/lineitem range-partitioned by month (80/84 partitions) on top of the hash buckets, so their units are (month, bucket) pairs; the six dimension tables stay unpartitioned and split by bucket alone |
 | `nopk` | `tpch_sf<N>_nopk` | append-only: scans split by bytes across worker tasks |
+
+Each merge owns whole work units, and the units are packed over the
+distributed tasks. Both `pk` and `pkmonth` therefore distribute. For a
+like-for-like comparison, pass `--buckets 16` for both layouts; other runs
+can choose a different bucket count.
 
 `pkmonth` writes a file per month × bucket × chunk, so lower `--buckets` at
 small SF. The TPC-H queries do not filter the month columns, so they measure

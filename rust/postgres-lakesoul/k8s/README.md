@@ -45,6 +45,22 @@ Deliberately **not** included (later phases):
   **not** migrate old queries; queries already running on a worker that then
   leaves fail at dispatch.
 
+## Primary-key scan placement
+
+Primary-key scans distribute whole `(range partition, hash bucket)` work units
+across workers. All version files of a unit stay together, in version order;
+different buckets of the same range can run on different workers, even when
+a query prunes the scan to just that range. This also allows a table without
+range columns to scale out across its populated buckets.
+If any filename in a range has a missing or out-of-range bucket ID, that whole
+range remains one atomic unit.
+
+Units are packed into at most the scan's task budget (by default the discovered
+worker count), with at most `target_partitions` concurrently active merge lanes
+per task. More units run sequentially on those lanes. A local scan keeps one
+merge with the same lane bound. These are per-task bounds, not process-wide
+admission control when a worker serves multiple tasks.
+
 ## Lifecycle
 
 1. Images build from this repository; a single image carries both binaries

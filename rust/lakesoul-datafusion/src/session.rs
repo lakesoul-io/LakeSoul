@@ -15,8 +15,8 @@ use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::execution::memory_pool::{
-    FairSpillPool, GreedyMemoryPool, MemoryConsumer, MemoryLimit, MemoryPool,
-    MemoryReservation, TrackConsumersPool, UnboundedMemoryPool,
+    FairSpillPool, GreedyMemoryPool, MemoryConsumer, MemoryLimit, MemoryPool, MemoryReservation,
+    TrackConsumersPool, UnboundedMemoryPool,
 };
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -25,8 +25,8 @@ use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMerge
 use datafusion::physical_plan::{Distribution, ExecutionPlan, Partitioning};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_distributed::{
-    BroadcastExec, DesiredTaskCountEvent, DesiredTaskCountEventResponse,
-    DistributedConfig, DistributedExt, SessionStateBuilderExt, WorkerResolver,
+    BroadcastExec, DesiredTaskCountEvent, DesiredTaskCountEventResponse, DistributedConfig,
+    DistributedExt, SessionStateBuilderExt, WorkerResolver,
 };
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::object_store::{register_hdfs_object_store, register_s3_object_store};
@@ -41,8 +41,7 @@ use url::Url;
 
 use crate::Result;
 use crate::catalog::{
-    CatalogSnapshot, DEFAULT_CATALOG_REFRESH_INTERVAL, LakeSoulCatalog,
-    LakeSoulProviderOptions,
+    CatalogSnapshot, DEFAULT_CATALOG_REFRESH_INTERVAL, LakeSoulCatalog, LakeSoulProviderOptions,
 };
 use crate::cli::CoreArgs;
 use crate::datasource::table_factory::LakeSoulTableProviderFactory;
@@ -212,11 +211,7 @@ impl MemoryPool for MonitoredMemoryPool {
         self.reserved.decrement(shrink as f64);
     }
 
-    fn try_grow(
-        &self,
-        reservation: &MemoryReservation,
-        additional: usize,
-    ) -> DataFusionResult<()> {
+    fn try_grow(&self, reservation: &MemoryReservation, additional: usize) -> DataFusionResult<()> {
         match self.inner.try_grow(reservation, additional) {
             Ok(()) => {
                 self.reserved.increment(additional as f64);
@@ -272,15 +267,14 @@ pub enum WarehouseConfig {
     Local,
 }
 
-type CatalogDecorator =
-    dyn Fn(Arc<LakeSoulCatalog>) -> Arc<dyn CatalogProvider> + Send + Sync;
+type CatalogDecorator = dyn Fn(Arc<LakeSoulCatalog>) -> Arc<dyn CatalogProvider> + Send + Sync;
 
 /// Pins every `MergeParquetExec` to a single distributed task.
 ///
-/// A merge holds whole range partitions (one per distributed task of the scan
-/// stage; see `LakeSoulTableProvider::scan`), and every bucket work unit in it
-/// must see all its version files. This distributed-task cap does not limit
-/// the merge's local output lanes. Without it the distributed planner derives
+/// A merge holds whole (range partition, bucket) work units, packed into one
+/// merge per distributed task of the scan stage; see `LakeSoulTableProvider::scan`.
+/// Every unit must see all its version files. This distributed-task cap does
+/// not limit the merge's local output lanes. Without it the planner derives
 /// the merge subtree's task count from its file scans (`Desired(N)` for large
 /// file sets or a small `bytes_per_partition`), the children-isolator union
 /// allocates several tasks to one merge, and the leaf scale-up slices every
@@ -355,9 +349,7 @@ fn closes_stage(plan: &dyn ExecutionPlan) -> bool {
         || plan.is::<SortPreservingMergeExec>()
         || plan
             .downcast_ref::<RepartitionExec>()
-            .is_some_and(|repartition| {
-                matches!(repartition.partitioning(), Partitioning::Hash(..))
-            })
+            .is_some_and(|repartition| matches!(repartition.partitioning(), Partitioning::Hash(..)))
 }
 
 /// Caps `datafusion.optimizer.repartition_file_min_size` at the scan size
@@ -384,10 +376,7 @@ fn closes_stage(plan: &dyn ExecutionPlan) -> bool {
 /// after the session was created), and `input_distribution_single_task`
 /// keeps those plans correct. Only ever lowers the threshold, so a template
 /// asking for a smaller one keeps it.
-fn align_repartition_file_min_size(
-    config: &mut SessionConfig,
-    bytes_per_partition: usize,
-) {
+fn align_repartition_file_min_size(config: &mut SessionConfig, bytes_per_partition: usize) {
     let options = config.options_mut();
     let distributed_split_size =
         bytes_per_partition.saturating_mul(options.execution.target_partitions);
@@ -443,17 +432,14 @@ impl LakeSoulSessionFactory {
     ) -> Result<Self> {
         let session_template = Self::session_template()?;
         let object_store_config =
-            LakeSoulIOConfigBuilder::new_with_object_store_options(args.s3_options())
-                .build();
+            LakeSoulIOConfigBuilder::new_with_object_store_options(args.s3_options()).build();
         let warehouse = parse_warehouse(args.warehouse_prefix.as_deref())?;
         let table_factory = Arc::new(LakeSoulTableProviderFactory::new(
             Arc::clone(&meta_client),
             args.warehouse_prefix.clone(),
         ));
-        let catalog_snapshot = CatalogSnapshot::new(
-            Arc::clone(&meta_client),
-            DEFAULT_CATALOG_REFRESH_INTERVAL,
-        );
+        let catalog_snapshot =
+            CatalogSnapshot::new(Arc::clone(&meta_client), DEFAULT_CATALOG_REFRESH_INTERVAL);
         Ok(Self {
             meta_client,
             session_template,
@@ -489,10 +475,7 @@ impl LakeSoulSessionFactory {
     }
 
     /// Build a fresh [`SessionContext`].
-    pub fn create_session(
-        &self,
-        options: &LakeSoulSessionOptions,
-    ) -> Result<Arc<SessionContext>> {
+    pub fn create_session(&self, options: &LakeSoulSessionOptions) -> Result<Arc<SessionContext>> {
         let mut session_config = self
             .session_template
             .clone()
@@ -519,10 +502,9 @@ impl LakeSoulSessionFactory {
         };
         session_config.options_mut().execution.target_partitions = target_partitions;
         if let Some(distributed) = &distributed {
-            let bytes_per_partition =
-                distributed.bytes_per_partition.unwrap_or_else(|| {
-                    DistributedConfig::default().file_scan_config_bytes_per_partition
-                });
+            let bytes_per_partition = distributed.bytes_per_partition.unwrap_or_else(|| {
+                DistributedConfig::default().file_scan_config_bytes_per_partition
+            });
             align_repartition_file_min_size(&mut session_config, bytes_per_partition);
         }
 
@@ -538,11 +520,7 @@ impl LakeSoulSessionFactory {
         let runtime = RuntimeEnvBuilder::new()
             .with_memory_pool(Arc::clone(&self.memory_pool))
             .build_arc()?;
-        register_warehouse_object_store(
-            &self.warehouse,
-            &self.object_store_config,
-            &runtime,
-        )?;
+        register_warehouse_object_store(&self.warehouse, &self.object_store_config, &runtime)?;
 
         // `DistributedOptions::discovery` is one resolver per process: the
         // shared variant (used by coordinator binaries after start-up
@@ -575,20 +553,16 @@ impl LakeSoulSessionFactory {
             builder = builder
                 .with_distributed_worker_resolver(Arc::clone(resolver))
                 .with_distributed_metrics_collection(true)?
-                .with_distributed_desired_task_count_handler(
-                    merge_parquet_exec_single_task,
-                )
-                .with_distributed_desired_task_count_handler(
-                    input_distribution_single_task,
-                );
+                .with_distributed_desired_task_count_handler(merge_parquet_exec_single_task)
+                .with_distributed_desired_task_count_handler(input_distribution_single_task);
             // The codec list is position-addressed on the wire, so it comes
             // from one function the workers call too; see `codec::user_codecs`.
             for codec in crate::distributed::codec::user_codecs() {
                 builder = builder.with_distributed_user_codec_arc(codec);
             }
-            // Merge-work-unit atomicity: the range partitions a merge-on-read
-            // scan reads are packed whole into `MergeParquetExec`s, one per
-            // task the scan stage may get, each one child of the scan's union.
+            // Merge-work-unit atomicity: whole (range, bucket) units are
+            // packed into `MergeParquetExec`s, one per task the scan stage
+            // may get, each one child of the scan's union.
             // The children-isolator union runs each child whole inside a
             // single task, so a merge never sees only a subset of its versions
             // — which would duplicate primary keys or lose the version that
@@ -596,9 +570,8 @@ impl LakeSoulSessionFactory {
             // library default.
             builder = builder.with_distributed_children_isolator_unions(true)?;
             if let Some(bytes_per_partition) = dist.bytes_per_partition {
-                builder = builder.with_distributed_file_scan_config_bytes_per_partition(
-                    bytes_per_partition,
-                )?;
+                builder = builder
+                    .with_distributed_file_scan_config_bytes_per_partition(bytes_per_partition)?;
             }
             builder = builder.with_distributed_planner();
 
@@ -607,13 +580,11 @@ impl LakeSoulSessionFactory {
             // development.
             let distributed_planner = std::mem::take(builder.query_planner())
                 .expect("with_distributed_planner installed a query planner");
-            builder = builder.with_query_planner(Arc::new(
-                LakeSoulDistributedQueryPlanner::new(
-                    distributed_planner,
-                    dist.fallback_to_local,
-                    Some(Arc::clone(resolver)),
-                ),
-            ));
+            builder = builder.with_query_planner(Arc::new(LakeSoulDistributedQueryPlanner::new(
+                distributed_planner,
+                dist.fallback_to_local,
+                Some(Arc::clone(resolver)),
+            )));
         }
 
         let mut state = builder.build();
@@ -707,9 +678,7 @@ fn register_warehouse_object_store(
     runtime: &RuntimeEnv,
 ) -> Result<()> {
     match warehouse {
-        WarehouseConfig::S3(url) => {
-            register_s3_object_store(url, object_store_config, runtime)?
-        }
+        WarehouseConfig::S3(url) => register_s3_object_store(url, object_store_config, runtime)?,
         WarehouseConfig::Hdfs(url) => {
             if !url.has_host() {
                 bail!("HDFS warehouse prefix without host is not supported");
@@ -759,13 +728,9 @@ pub fn build_worker_runtime_env(
 /// [`WorkerDiscovery::Shared`] this returns the same single instance every
 /// session of the process passes its resolver from, which is how
 /// "one discovery loop per process" is preserved across sessions.
-pub fn build_worker_resolver(
-    discovery: &WorkerDiscovery,
-) -> Result<Arc<dyn WorkerResolver>> {
+pub fn build_worker_resolver(discovery: &WorkerDiscovery) -> Result<Arc<dyn WorkerResolver>> {
     match discovery {
-        WorkerDiscovery::Static(urls) => {
-            Ok(Arc::new(StaticWorkerResolver::new(urls.clone())?))
-        }
+        WorkerDiscovery::Static(urls) => Ok(Arc::new(StaticWorkerResolver::new(urls.clone())?)),
         WorkerDiscovery::Kubernetes(config) => {
             Ok(Arc::new(KubernetesWorkerResolver::start(config)?))
         }

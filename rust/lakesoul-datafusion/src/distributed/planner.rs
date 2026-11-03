@@ -71,11 +71,11 @@ struct LocalFallback;
 /// worker or fails (the distributed planner fails such a query, and a
 /// fallback plans it locally), and the local fallback itself.
 ///
-/// A merge-on-read scan packs its range partitions into at most this many
-/// merges, one per task; see `LakeSoulTableProvider::scan`. The value only
-/// shapes the plan: a resolver whose answer changes before the distributed
-/// planner asks again yields more or fewer merges per task, never a merge
-/// split across tasks.
+/// A merge-on-read scan packs whole (range partition, bucket) units into at
+/// most this many merges, one per task; see `LakeSoulTableProvider::scan`. It
+/// only shapes the plan: a resolver whose answer changes before the
+/// distributed planner asks again yields more or fewer merges per task, never
+/// a merge split across tasks.
 pub(crate) fn scan_task_budget(config: &SessionConfig) -> usize {
     if config.get_extension::<LocalFallback>().is_some() {
         return 1;
@@ -84,9 +84,7 @@ pub(crate) fn scan_task_budget(config: &SessionConfig) -> usize {
         return 1;
     };
     match DistributedConfig::from_config_options(config.options()) {
-        Ok(distributed) if distributed.max_tasks_per_stage > 0 => {
-            distributed.max_tasks_per_stage
-        }
+        Ok(distributed) if distributed.max_tasks_per_stage > 0 => distributed.max_tasks_per_stage,
         _ => resolver.get_urls().map_or(1, |urls| urls.len().max(1)),
     }
 }
@@ -286,9 +284,7 @@ mod tests {
 
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::listing::PartitionedFile;
-    use datafusion::datasource::physical_plan::{
-        FileGroup, FileScanConfigBuilder, FileSource,
-    };
+    use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, FileSource};
     use datafusion::datasource::table_schema::TableSchema;
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::physical_expr::Partitioning;
@@ -347,8 +343,7 @@ mod tests {
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
         let ctx = SessionContext::new();
         let frame = ctx.sql("SELECT 1 AS one").await?;
-        let planner =
-            LakeSoulDistributedQueryPlanner::new(distributed, fallback_to_local, None);
+        let planner = LakeSoulDistributedQueryPlanner::new(distributed, fallback_to_local, None);
         planner
             .create_physical_plan(frame.logical_plan(), &ctx.state())
             .await
@@ -360,8 +355,7 @@ mod tests {
         let io_config = LakeSoulIOConfigBuilder::new()
             .with_files(vec![file.to_string()])
             .build();
-        let registry =
-            LakeSoulFormatRegistry::new(io_config, false).expect("format registry");
+        let registry = LakeSoulFormatRegistry::new(io_config, false).expect("format registry");
         let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
         let source = registry
             .file_format(format)
@@ -477,8 +471,7 @@ mod tests {
     /// boundary from.
     fn stage(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
         let partitioning = Partitioning::Hash(vec![Arc::new(Column::new("v", 0))], 2);
-        let repartition =
-            RepartitionExec::try_new(plan, partitioning).expect("hash repartition");
+        let repartition = RepartitionExec::try_new(plan, partitioning).expect("hash repartition");
         Arc::new(
             NetworkShuffleExec::try_new(Arc::new(repartition), 2)
                 .expect("a hash repartition is a valid boundary input"),
@@ -633,8 +626,7 @@ mod tests {
         use datafusion_distributed::DistributedExt;
 
         assert_eq!(scan_task_budget(&SessionConfig::new()), 1, "no resolver");
-        let workers =
-            |count| SessionConfig::new().with_distributed_worker_resolver(Workers(count));
+        let workers = |count| SessionConfig::new().with_distributed_worker_resolver(Workers(count));
         assert_eq!(scan_task_budget(&workers(Some(3))), 3);
         assert_eq!(scan_task_budget(&workers(Some(0))), 1, "no worker listed");
         assert_eq!(scan_task_budget(&workers(None)), 1, "discovery failed");
