@@ -520,12 +520,27 @@ impl LakeSoulIOSession {
     pub async fn lookup_scan_configs(
         &self,
     ) -> crate::Result<(Vec<FileScanConfig>, SchemaRef)> {
+        let scan_schema = self.io_table_schema().await?.table_schema().clone();
+        let configs = self.scan_configs(scan_schema.clone()).await?;
+        Ok((configs, scan_schema))
+    }
+
+    /// Per-file scan configs projected to `target_schema`.
+    ///
+    /// Like [`Self::lookup_scan_configs`], this skips filters, CDC predicates
+    /// and index candidates, and returns one config per input file in commit
+    /// order.  The caller can therefore drive one merge input per file and
+    /// recover which file contributed each surviving row.
+    pub async fn scan_configs(
+        &self,
+        target_schema: SchemaRef,
+    ) -> crate::Result<Vec<FileScanConfig>> {
         let listing_metas = self.io_listing_metas().await?;
-        let table_schema = self.io_table_schema().await?;
-        let scan_schema = table_schema.table_schema().clone();
         if listing_metas.table_paths.is_empty() {
-            return Ok((Vec::new(), scan_schema));
+            return Ok(Vec::new());
         }
+        let table_schema = self.io_table_schema().await?;
+        let scan_schema = target_schema;
         let registry = self.io_file_format().await?;
         let format_groups = self.format_scan_groups(listing_metas, registry)?;
         let statistics = Statistics::new_unknown(scan_schema.as_ref());
@@ -556,7 +571,7 @@ impl LakeSoulIOSession {
             .await?;
             configs.extend(flattened);
         }
-        Ok((configs, scan_schema))
+        Ok(configs)
     }
 
     async fn io_file_schema(&self) -> Result<&Arc<Schema>, Report> {
