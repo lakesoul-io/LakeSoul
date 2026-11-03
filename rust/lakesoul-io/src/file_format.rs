@@ -25,7 +25,8 @@ use datafusion::datasource::file_format::{FileFormat, parquet::ParquetFormat};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
 use datafusion::datasource::physical_plan::{
-    FileGroup, FileScanConfig, FileScanConfigBuilder, FileSinkConfig, FileSource, ParquetSource,
+    FileGroup, FileScanConfig, FileScanConfigBuilder, FileSinkConfig, FileSource,
+    ParquetSource,
 };
 use datafusion::datasource::table_schema::TableSchema;
 use datafusion::physical_expr::utils::{collect_columns, reassign_expr_columns};
@@ -35,6 +36,7 @@ use datafusion::physical_expr::{
 };
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::prelude::SessionConfig;
 use datafusion_common::{
     Constraints, DataFusionError, Statistics, error::Result as DFResult, project_schema,
 };
@@ -43,6 +45,7 @@ use object_store::{ObjectMeta, ObjectStore};
 use parquet::arrow::parquet_to_arrow_schema;
 use rootcause::compat::boxed_error::IntoBoxedError;
 use rootcause::{Report, bail, report};
+use tokio::sync::{Semaphore, SemaphorePermit};
 use vortex_datafusion::{VortexFormat, VortexTableOptions};
 
 use crate::Result;
@@ -108,6 +111,32 @@ impl FromStr for PhysicalFormat {
     }
 }
 
+// Read the process budget from the environment, not the first planning
+// session: sessions can lower their own concurrency, but cannot each create
+// another budget for the same blocking pool and scratch volume.
+static METADATA_FETCH_BUDGET: LazyLock<DFResult<Semaphore>> = LazyLock::new(|| {
+    let config = SessionConfig::from_env()?;
+    let limit: usize = config.options().execution.meta_fetch_concurrency.into();
+    if limit > Semaphore::MAX_PERMITS {
+        return Err(DataFusionError::Configuration(format!(
+            "metadata fetch concurrency {limit} exceeds {}",
+            Semaphore::MAX_PERMITS
+        )));
+    }
+    Ok(Semaphore::new(limit))
+});
+
+async fn acquire_metadata_fetch_permit() -> DFResult<SemaphorePermit<'static>> {
+    let budget = METADATA_FETCH_BUDGET.as_ref().map_err(|error| {
+        DataFusionError::Configuration(format!(
+            "invalid process metadata budget: {error}"
+        ))
+    })?;
+    budget.acquire().await.map_err(|error| {
+        DataFusionError::Internal(format!("metadata fetch budget closed: {error}"))
+    })
+}
+
 /// The process-wide budget for decoded Vortex data in flight. Set at most once,
 /// at startup, from the process configuration.
 static VORTEX_DECODE_BUDGET: OnceLock<Arc<ScanMemoryBudget>> = OnceLock::new();
@@ -161,9 +190,14 @@ pub struct LakeSoulFormatRegistry {
 }
 
 impl LakeSoulFormatRegistry {
-    pub fn new(io_config: LakeSoulIOConfig, parquet_force_view_types: bool) -> Result<Self> {
+    pub fn new(
+        io_config: LakeSoulIOConfig,
+        parquet_force_view_types: bool,
+    ) -> Result<Self> {
         let parquet = Arc::new(LakeSoulParquetFormat::new(
-            Arc::new(ParquetFormat::new().with_force_view_types(parquet_force_view_types)),
+            Arc::new(
+                ParquetFormat::new().with_force_view_types(parquet_force_view_types),
+            ),
             io_config.clone(),
         ));
         let opts = {
@@ -192,7 +226,10 @@ impl LakeSoulFormatRegistry {
         }
     }
 
-    pub fn file_compression_type(&self, physical_format: PhysicalFormat) -> FileCompressionType {
+    pub fn file_compression_type(
+        &self,
+        physical_format: PhysicalFormat,
+    ) -> FileCompressionType {
         match physical_format {
             PhysicalFormat::Parquet => FileCompressionType::ZSTD,
             PhysicalFormat::Vortex => FileCompressionType::UNCOMPRESSED,
@@ -339,18 +376,25 @@ impl FileFormat for LakeSoulParquetFormat {
 
         // merge on read files
         let merge_exec = Arc::new(
-            MergeParquetExec::new(merged_schema.clone(), flatten_conf, self.io_config.clone())
-                .map_err(|e| {
-                    error!("{e}");
-                    e.into_boxed_error()
-                })?,
+            MergeParquetExec::new(
+                merged_schema.clone(),
+                flatten_conf,
+                self.io_config.clone(),
+            )
+            .map_err(|e| {
+                error!("{e}");
+                e.into_boxed_error()
+            })?,
         );
 
         if target_schema.fields().len() < merged_schema.fields().len() {
             let mut projection_expr = vec![];
             for field in target_schema.fields() {
                 projection_expr.push((
-                    datafusion::physical_expr::expressions::col(field.name(), &merged_schema)?,
+                    datafusion::physical_expr::expressions::col(
+                        field.name(),
+                        &merged_schema,
+                    )?,
                     field.name().clone(),
                 ));
             }
@@ -494,18 +538,25 @@ impl FileFormat for LakeSoulVortexFormat {
         .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
 
         let merge_exec = Arc::new(
-            MergeParquetExec::new(merged_schema.clone(), flatten_conf, self.io_config.clone())
-                .map_err(|e| {
-                    error!("{e}");
-                    e.into_boxed_error()
-                })?,
+            MergeParquetExec::new(
+                merged_schema.clone(),
+                flatten_conf,
+                self.io_config.clone(),
+            )
+            .map_err(|e| {
+                error!("{e}");
+                e.into_boxed_error()
+            })?,
         );
 
         if target_schema.fields().len() < merged_schema.fields().len() {
             let mut projection_expr = vec![];
             for field in target_schema.fields() {
                 projection_expr.push((
-                    datafusion::physical_expr::expressions::col(field.name(), &merged_schema)?,
+                    datafusion::physical_expr::expressions::col(
+                        field.name(),
+                        &merged_schema,
+                    )?,
                     field.name().clone(),
                 ));
             }
@@ -554,7 +605,9 @@ async fn fetch_schema(
     Ok(schema)
 }
 
-fn clear_metadata(schemas: impl IntoIterator<Item = Schema>) -> impl Iterator<Item = Schema> {
+fn clear_metadata(
+    schemas: impl IntoIterator<Item = Schema>,
+) -> impl Iterator<Item = Schema> {
     schemas.into_iter().map(|schema| {
         let fields = schema
             .fields()
@@ -578,7 +631,9 @@ fn clear_metadata(schemas: impl IntoIterator<Item = Schema>) -> impl Iterator<It
 /// Field-level metadata is cleared before merging to avoid metadata-only
 /// differences between files from causing schema conflicts. Schema metadata is
 /// merged conservatively: the same key must have the same value in every file.
-fn merge_schemas_with_cast(schemas: impl IntoIterator<Item = Schema>) -> DFResult<SchemaRef> {
+fn merge_schemas_with_cast(
+    schemas: impl IntoIterator<Item = Schema>,
+) -> DFResult<SchemaRef> {
     let mut out_meta = HashMap::new();
     let mut out_fields = CanCastSchemaBuilder::new();
     for schema in clear_metadata(schemas) {
@@ -684,6 +739,7 @@ pub async fn flatten_file_scan_config(
                 let target_schema = &target_schema;
                 let conf = &conf;
                 async move {
+                    let _permit = acquire_metadata_fetch_permit().await?;
                     let conf = conf.clone();
                     let objects = std::slice::from_ref(&file.object_meta);
                     let files = vec![file.clone()];
@@ -705,13 +761,21 @@ pub async fn flatten_file_scan_config(
                     debug!("partition cols: {:?}", cols);
                     debug!("flatten: file_schema: {}", file_schema);
                     // only file schema
-                    let table_schema = TableSchema::new(file_schema.clone(), cols.to_vec());
+                    let table_schema =
+                        TableSchema::new(file_schema.clone(), cols.to_vec());
                     let file_statistics = format
-                        .infer_stats(state, &store, file_schema.clone(), &file.object_meta)
+                        .infer_stats(
+                            state,
+                            &store,
+                            file_schema.clone(),
+                            &file.object_meta,
+                        )
                         .await?;
                     let statistics = table_statistics(file_statistics, &table_schema);
-                    let physical_target_schema =
-                        strip_partition_columns(target_schema.clone(), partition_schema.clone());
+                    let physical_target_schema = strip_partition_columns(
+                        target_schema.clone(),
+                        partition_schema.clone(),
+                    );
                     let projection_indices = compute_project_column_indices(
                         table_schema.file_schema().clone(),
                         physical_target_schema,
@@ -734,20 +798,22 @@ pub async fn flatten_file_scan_config(
                         }
                     }
                     if let Some(metadata_size_hint) = format.metadata_size_hint() {
-                        parquet_source = parquet_source.with_metadata_size_hint(metadata_size_hint);
+                        parquet_source =
+                            parquet_source.with_metadata_size_hint(metadata_size_hint);
                     }
                     if let Some(reader_factory) = conf
                         .file_source
                         .downcast_ref::<ParquetSource>()
                         .and_then(|source| source.parquet_file_reader_factory().cloned())
                     {
-                        parquet_source =
-                            parquet_source.with_parquet_file_reader_factory(reader_factory);
+                        parquet_source = parquet_source
+                            .with_parquet_file_reader_factory(reader_factory);
                     }
                     let config = FileScanConfigBuilder::from(conf)
                         .with_source(Arc::new(parquet_source))
                         .with_file_groups(vec![
-                            FileGroup::new(files).with_statistics(Arc::new(statistics.clone())),
+                            FileGroup::new(files)
+                                .with_statistics(Arc::new(statistics.clone())),
                         ])
                         .with_statistics(statistics)
                         .with_projection_indices(projection_indices)?
@@ -809,6 +875,7 @@ pub async fn flatten_file_scan_config_for_format(
                 let conf = &conf;
                 let schema_timing = &schema_timing;
                 async move {
+                    let _permit = acquire_metadata_fetch_permit().await?;
                     let conf = conf.clone();
                     let file_started = Instant::now();
                     let objects = std::slice::from_ref(&file.object_meta);
@@ -816,11 +883,13 @@ pub async fn flatten_file_scan_config_for_format(
                     let schema_started = Instant::now();
                     // Carry timing through Vortex's spawned tasks,
                     // which do not inherit task locals.
-                    let schema_store: Arc<dyn ObjectStore> = Arc::new(SchemaInferenceStore::new(
-                        store.clone(),
-                        Arc::clone(schema_timing),
-                    ));
-                    let file_schema = format.infer_schema(state, &schema_store, objects).await?;
+                    let schema_store: Arc<dyn ObjectStore> =
+                        Arc::new(SchemaInferenceStore::new(
+                            store.clone(),
+                            Arc::clone(schema_timing),
+                        ));
+                    let file_schema =
+                        format.infer_schema(state, &schema_store, objects).await?;
                     let schema_elapsed = schema_started.elapsed();
                     let file_schema =
                         strip_partition_columns(file_schema, partition_schema.clone());
@@ -840,8 +909,10 @@ pub async fn flatten_file_scan_config_for_format(
                         .await?;
                     let stats_elapsed = stats_started.elapsed();
                     let statistics = table_statistics(file_statistics, &table_schema);
-                    let physical_target_schema =
-                        strip_partition_columns(target_schema.clone(), partition_schema.clone());
+                    let physical_target_schema = strip_partition_columns(
+                        target_schema.clone(),
+                        partition_schema.clone(),
+                    );
                     let projection_indices = compute_project_column_indices(
                         table_schema.file_schema().clone(),
                         physical_target_schema,
@@ -849,7 +920,11 @@ pub async fn flatten_file_scan_config_for_format(
                         cdc_column,
                     );
                     let mut source = format.file_source(table_schema);
-                    source = adapt_file_source_for_single_file(source, format.as_ref(), &conf)?;
+                    source = adapt_file_source_for_single_file(
+                        source,
+                        format.as_ref(),
+                        &conf,
+                    )?;
                     if let Some(predicate) = conf.file_source.filter() {
                         source = push_predicate_into(
                             source,
@@ -861,15 +936,20 @@ pub async fn flatten_file_scan_config_for_format(
                     let config = FileScanConfigBuilder::from(conf)
                         .with_source(source)
                         .with_file_groups(vec![
-                            FileGroup::new(files).with_statistics(Arc::new(statistics.clone())),
+                            FileGroup::new(files)
+                                .with_statistics(Arc::new(statistics.clone())),
                         ])
                         .with_statistics(statistics)
                         .with_projection_indices(projection_indices)?
                         .build();
-                    let build_elapsed = file_started.elapsed() - schema_elapsed - stats_elapsed;
-                    schema_ns.fetch_add(schema_elapsed.as_nanos() as u64, Ordering::Relaxed);
-                    stats_ns.fetch_add(stats_elapsed.as_nanos() as u64, Ordering::Relaxed);
-                    build_ns.fetch_add(build_elapsed.as_nanos() as u64, Ordering::Relaxed);
+                    let build_elapsed =
+                        file_started.elapsed() - schema_elapsed - stats_elapsed;
+                    schema_ns
+                        .fetch_add(schema_elapsed.as_nanos() as u64, Ordering::Relaxed);
+                    stats_ns
+                        .fetch_add(stats_elapsed.as_nanos() as u64, Ordering::Relaxed);
+                    build_ns
+                        .fetch_add(build_elapsed.as_nanos() as u64, Ordering::Relaxed);
 
                     Ok::<(usize, FileScanConfig), DataFusionError>((index, config))
                 }
@@ -898,7 +978,9 @@ pub async fn flatten_file_scan_config_for_format(
         .collect())
 }
 
-pub fn merge_schema_refs(schemas: impl IntoIterator<Item = SchemaRef>) -> Result<SchemaRef> {
+pub fn merge_schema_refs(
+    schemas: impl IntoIterator<Item = SchemaRef>,
+) -> Result<SchemaRef> {
     let mut out_fields = CanCastSchemaBuilder::new();
     for schema in schemas {
         for field in schema.fields() {
@@ -908,7 +990,10 @@ pub fn merge_schema_refs(schemas: impl IntoIterator<Item = SchemaRef>) -> Result
     Ok(Arc::new(out_fields.finish()))
 }
 
-fn strip_partition_columns(file_schema: SchemaRef, partition_schema: SchemaRef) -> SchemaRef {
+fn strip_partition_columns(
+    file_schema: SchemaRef,
+    partition_schema: SchemaRef,
+) -> SchemaRef {
     let mut builder = SchemaBuilder::new();
     for field in file_schema.fields() {
         if partition_schema.field_with_name(field.name()).is_err() {
@@ -918,11 +1003,16 @@ fn strip_partition_columns(file_schema: SchemaRef, partition_schema: SchemaRef) 
     SchemaRef::new(builder.finish())
 }
 
-fn table_statistics(file_statistics: Statistics, table_schema: &TableSchema) -> Statistics {
+fn table_statistics(
+    file_statistics: Statistics,
+    table_schema: &TableSchema,
+) -> Statistics {
     let mut statistics = Statistics::new_unknown(table_schema.table_schema());
     statistics.num_rows = file_statistics.num_rows;
     statistics.total_byte_size = file_statistics.total_byte_size;
-    for (idx, column_statistics) in file_statistics.column_statistics.into_iter().enumerate() {
+    for (idx, column_statistics) in
+        file_statistics.column_statistics.into_iter().enumerate()
+    {
         if idx < statistics.column_statistics.len() {
             statistics.column_statistics[idx] = column_statistics;
         }
@@ -1007,7 +1097,8 @@ fn push_predicate_into(
     from: &Schema,
     state: &dyn Session,
 ) -> DFResult<Arc<dyn FileSource>> {
-    let filters = rebind_predicate(predicate, from, source.table_schema().table_schema())?;
+    let filters =
+        rebind_predicate(predicate, from, source.table_schema().table_schema())?;
     if filters.is_empty() {
         return Ok(source);
     }
@@ -1184,10 +1275,9 @@ pub fn append_only_scan_exec(
         .fields()
         .iter()
         .map(|field| {
-            let index = leaf
-                .schema()
-                .index_of(field.name())
-                .map_err(|_| report!("scan leaf cannot read column '{}'", field.name()))?;
+            let index = leaf.schema().index_of(field.name()).map_err(|_| {
+                report!("scan leaf cannot read column '{}'", field.name())
+            })?;
             Ok((
                 Arc::new(Column::new(field.name(), index)) as Arc<dyn PhysicalExpr>,
                 field.name().clone(),
@@ -1210,8 +1300,10 @@ mod tests {
 
     #[test]
     fn merge_schema_refs_allows_castable_field_types() {
-        let int32_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
-        let int64_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let int32_schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+        let int64_schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
 
         let merged = merge_schema_refs([int32_schema, int64_schema]).unwrap();
 
@@ -1224,7 +1316,9 @@ mod tests {
     fn object_meta(location: &str) -> ObjectMeta {
         ObjectMeta {
             location: object_store::path::Path::from(location),
-            last_modified: chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::UNIX_EPOCH),
+            last_modified: chrono::DateTime::<chrono::Utc>::from(
+                std::time::SystemTime::UNIX_EPOCH,
+            ),
             size: 100,
             e_tag: None,
             version: None,
@@ -1266,7 +1360,10 @@ mod tests {
     }
 
     /// Scans one append-only work unit as a plain leaf.
-    fn build_leaf(configs: &[FileScanConfig], merged: &SchemaRef) -> Arc<dyn ExecutionPlan> {
+    fn build_leaf(
+        configs: &[FileScanConfig],
+        merged: &SchemaRef,
+    ) -> Arc<dyn ExecutionPlan> {
         let state = SessionContext::new().state();
         let format = ParquetFormat::default();
         append_only_scan_exec(&state, &format, configs, merged)
@@ -1299,7 +1396,8 @@ mod tests {
     /// have, so such a work unit still scans as one distributable leaf.
     #[test]
     fn append_only_scan_exec_serves_files_that_drift_apart() {
-        let old: SchemaRef = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let old: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
         let merged: SchemaRef = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new("evolved", DataType::Utf8, true),
@@ -1458,7 +1556,8 @@ mod tests {
     /// a comparison binds whatever column sits at the stale index.
     #[test]
     fn append_only_scan_exec_binds_its_predicate_to_the_leaf_schema() {
-        let registry = LakeSoulFormatRegistry::new(LakeSoulIOConfig::default(), false).unwrap();
+        let registry =
+            LakeSoulFormatRegistry::new(LakeSoulIOConfig::default(), false).unwrap();
         let table = part_schema();
         let merged: SchemaRef = Arc::new(Schema::new(vec![
             Field::new("p_brand", DataType::Utf8, false),
@@ -1473,11 +1572,14 @@ mod tests {
                 .try_pushdown_filters(part_predicates(&table), state.config_options())
                 .unwrap()
                 .updated_node
-                .unwrap_or_else(|| panic!("{physical_format}: source refused the filters"));
+                .unwrap_or_else(|| {
+                    panic!("{physical_format}: source refused the filters")
+                });
             let file = PartitionedFile::new_from_meta(object_meta("part-0"));
-            let config = FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source)
-                .with_file_groups(vec![FileGroup::new(vec![file])])
-                .build();
+            let config =
+                FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source)
+                    .with_file_groups(vec![FileGroup::new(vec![file])])
+                    .build();
 
             let leaf = append_only_scan_exec(&state, format.as_ref(), &[config], &merged)
                 .expect("the leaf builder must not fail")
@@ -1485,10 +1587,9 @@ mod tests {
 
             let scan = leaf_scan_config(leaf.as_ref());
             let leaf_schema = scan.file_source.table_schema().table_schema();
-            let filter = scan
-                .file_source
-                .filter()
-                .unwrap_or_else(|| panic!("{physical_format}: the leaf lost its predicate"));
+            let filter = scan.file_source.filter().unwrap_or_else(|| {
+                panic!("{physical_format}: the leaf lost its predicate")
+            });
             let mut names = vec![];
             for column in collect_columns(&filter) {
                 assert_eq!(

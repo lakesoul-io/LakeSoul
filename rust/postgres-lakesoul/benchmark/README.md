@@ -97,6 +97,16 @@ once, avoiding a full file-list copy for every file. Monthly fan-out still
 increases metadata inference and scan-plan construction, so balanced worker
 assignments do not by themselves establish good end-to-end scaling.
 
+Per-file scan preparation shares one process-wide admission budget across file
+groups, tables and planning sessions, for both Parquet and Vortex. It is read
+from `DATAFUSION_EXECUTION_META_FETCH_CONCURRENCY` on first use (DataFusion's
+default when unset); set it before starting the process. A session can lower
+its own concurrency but cannot raise the process budget. Admission precedes
+metadata reads and per-file configuration allocation, and covers schema/statistics
+inference and configuration construction. Completed files immediately free a
+slot; returned plans retain input group/file order for merge version semantics.
+This is a planning concurrency budget, not a query memory or execution-I/O limit.
+
 For scan-planning diagnosis, coordinator INFO logs include `scan planning table
 summary` (per-table wall time split into listing, preparation, flattening,
 locator, input scans, work units, merge executors and finishing), `scan planning
@@ -105,7 +115,8 @@ configuration-building time), and physical/distributed planner summaries. Match
 them by `query_id` and `table_name`; timestamps and elapsed times locate
 overlapping table scans. Per-file `schema_sum_ms` and `stats_sum_ms` include async
 waiting, not just CPU or remote I/O, and must not be added as sequential wall
-time. The summaries cover
+time. Waiting for admission contributes to flatten wall time, not the cumulative
+schema, statistics or configuration-building times. The summaries cover
 successful regular scans, not empty/index early returns or failed operations.
 
 `scan planning schema summary` isolates reads issued by `infer_schema`, including
