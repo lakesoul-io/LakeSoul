@@ -91,6 +91,12 @@ so use a run-specific Job environment for isolated loads.
 small SF. The TPC-H queries do not filter the month columns, so they measure
 full-scan merge throughput, not partition pruning.
 
+The coordinator prepares per-file scan plans before dispatching worker tasks.
+Scan flattening moves the input file groups out of its configuration template
+once, avoiding a full file-list copy for every file. Monthly fan-out still
+increases metadata inference and scan-plan construction, so balanced worker
+assignments do not by themselves establish good end-to-end scaling.
+
 `deploy` always recreates the pods, so the first measured iteration is cold.
 It returns only after the coordinator log reports
 `EndpointSlice refresh ok ... eligible=<workers>`; queries issued earlier fail
