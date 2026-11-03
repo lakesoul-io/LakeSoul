@@ -124,3 +124,44 @@ Report bootstrap and incremental refresh separately. Measure only the refresh
 execution time, excluding source appends, oracle comparison, and external
 compaction. Record CPU/memory limits, cache size, compaction state, file format,
 and fallback status with every comparison.
+
+## 8. Flamegraph profiling
+
+Use `cargo flamegraph` with the pilot's `profiling` profile (release +
+`debug = true`).  Build and run it under the same jemalloc and cgroup settings
+as the benchmark:
+
+```bash
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so
+export MALLOC_CONF=background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000
+
+systemd-run --user --scope --collect --unit=<pilot-flame> \
+  -p CPUQuota=1600% -p MemoryMax=48G -p MemorySwapMax=0 \
+  -- cargo flamegraph --profile profiling --no-inline --freq 99 \
+       --bin <pilot-binary> -o flame-<case>.svg
+```
+
+- `--no-inline` keeps inlined callees out of the stack, so the SVG attributes
+  samples to real functions.  It can under-report tiny inlined helpers, but it
+  is the consistent choice for comparing flamegraphs.
+- `--freq 99` is the low-overhead sampling rate used for the 1M/10M pilots.
+  Do not leave the default 997 Hz for long runs if you need the run's wall
+  time to stay close to the unprofiled number.
+- Use the same jemalloc `MALLOC_CONF` (including `dirty_decay_ms=5000` and
+  `muzzy_decay_ms=5000`) and the same cgroup limits as the timed run.
+- Stop external compaction and use a fresh `LAKESOUL_CACHE_PATH` before the
+  profile, exactly as for a timed window.
+- Check that perf is permitted before profiling:
+  `cat /proc/sys/kernel/perf_event_paranoid`; a value above 1 needs `sudo` or
+  a temporary sysctl change.
+- If perf reports `lost ... chunks` or the SVG has large `[unknown]`
+  sections, the stacks are incomplete: reduce the profiled window, raise the
+  perf ring buffer / `perf_event_mlock_kb`, or try
+  `--call-graph=fp` when the binary keeps frame pointers.  Do not attribute
+  the missing samples to a function.
+- The SVG is drawn with the call stack **bottom-up**: the root is at the
+  bottom, callers sit below their callees, and the leaves are at the top.
+  Read it bottom-up when following a hot path.  `cargo flamegraph
+  --inverted` draws the opposite orientation, so do not mix orientations
+  between runs.
+
