@@ -134,6 +134,7 @@ as the benchmark:
 ```bash
 export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so
 export MALLOC_CONF=background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000
+export RUSTFLAGS='-Clink-arg=-Wl,--no-rosegment'
 
 systemd-run --user --scope --collect --unit=<pilot-flame> \
   -p CPUQuota=1600% -p MemoryMax=48G -p MemorySwapMax=0 \
@@ -141,6 +142,11 @@ systemd-run --user --scope --collect --unit=<pilot-flame> \
        --bin <pilot-binary> -o flame-<case>.svg
 ```
 
+- Set `RUSTFLAGS='-Clink-arg=-Wl,--no-rosegment'` when building the
+  profiling binary.  Without it the linker emits a separate read-only
+  segment and perf cannot unwind the Rust stacks reliably, so most samples
+  show up as `[unknown]`.  Changing `RUSTFLAGS` changes Cargo's fingerprint,
+  so the profiling profile is rebuilt once with the flag.
 - `--no-inline` keeps inlined callees out of the stack, so the SVG attributes
   samples to real functions.  It can under-report tiny inlined helpers, but it
   is the consistent choice for comparing flamegraphs.
