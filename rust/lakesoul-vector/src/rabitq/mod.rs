@@ -3,6 +3,7 @@
 //! Only the IVF + RaBitQ index and builder are included.
 //! MSTG, brute-force, HNSW, and Python bindings are excluded.
 
+mod assignment;
 pub mod ivf;
 pub mod key;
 pub mod math;

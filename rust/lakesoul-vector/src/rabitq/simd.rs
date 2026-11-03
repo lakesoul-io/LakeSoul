@@ -5,6 +5,10 @@
 //! instructions. On other platforms (including ARM), it falls back to
 //! portable scalar implementations.
 
+#![allow(unsafe_op_in_unsafe_fn)]
+
+use crate::rabitq::Metric;
+
 /// Pack binary codes (1 bit per element) into bytes
 ///
 /// # Arguments
@@ -16,15 +20,19 @@ pub fn pack_binary_code(binary_code: &[u8], packed: &mut [u8], dim: usize) {
     debug_assert_eq!(binary_code.len(), dim);
     debug_assert_eq!(packed.len(), dim.div_ceil(8));
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-    unsafe {
-        pack_binary_code_avx512(binary_code, packed, dim);
+    // Runtime detection: use AVX-512 in any build, not only when the
+    // compile-time target features happen to include it.
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
+            unsafe {
+                pack_binary_code_avx512(binary_code, packed, dim);
+            }
+            return;
+        }
     }
 
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
-    {
-        pack_binary_code_scalar(binary_code, packed, dim);
-    }
+    pack_binary_code_scalar(binary_code, packed, dim);
 }
 
 /// Unpack binary codes from packed bytes
@@ -38,15 +46,17 @@ pub fn unpack_binary_code(packed: &[u8], binary_code: &mut [u8], dim: usize) {
     debug_assert_eq!(packed.len(), dim.div_ceil(8));
     debug_assert_eq!(binary_code.len(), dim);
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-    unsafe {
-        unpack_binary_code_avx512(packed, binary_code, dim);
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
+            unsafe {
+                unpack_binary_code_avx512(packed, binary_code, dim);
+            }
+            return;
+        }
     }
 
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
-    {
-        unpack_binary_code_scalar(packed, binary_code, dim);
-    }
+    unpack_binary_code_scalar(packed, binary_code, dim);
 }
 
 /// Pack extended codes (ex_bits per element) into bytes
@@ -79,15 +89,17 @@ pub fn pack_ex_code(ex_code: &[u16], packed: &mut [u8], dim: usize, ex_bits: u8)
     let expected_bytes = (dim * ex_bits as usize).div_ceil(8);
     debug_assert_eq!(packed.len(), expected_bytes);
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-    unsafe {
-        pack_ex_code_avx512(ex_code, packed, dim, ex_bits);
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            unsafe {
+                pack_ex_code_avx512(ex_code, packed, dim, ex_bits);
+            }
+            return;
+        }
     }
 
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
-    {
-        pack_ex_code_scalar(ex_code, packed, dim, ex_bits);
-    }
+    pack_ex_code_scalar(ex_code, packed, dim, ex_bits);
 }
 
 /// Unpack extended codes from packed bytes
@@ -122,15 +134,17 @@ pub fn unpack_ex_code(packed: &[u8], ex_code: &mut [u16], dim: usize, ex_bits: u
     let expected_bytes = (dim * ex_bits as usize).div_ceil(8);
     debug_assert_eq!(packed.len(), expected_bytes);
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-    unsafe {
-        unpack_ex_code_avx512(packed, ex_code, dim, ex_bits);
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            unsafe {
+                unpack_ex_code_avx512(packed, ex_code, dim, ex_bits);
+            }
+            return;
+        }
     }
 
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
-    {
-        unpack_ex_code_scalar(packed, ex_code, dim, ex_bits);
-    }
+    unpack_ex_code_scalar(packed, ex_code, dim, ex_bits);
 }
 
 // ============================================================================
@@ -226,23 +240,131 @@ fn unpack_ex_code_scalar(packed: &[u8], ex_code: &mut [u16], dim: usize, ex_bits
 // AVX512 implementations (x86_64 only)
 // ============================================================================
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-#[target_feature(enable = "avx512f")]
+/// 将 value 的低 bits 位按 LSB-first 位流写入 bit_offset 处（目标字节需已清零）
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn write_bits_lsb(packed: &mut [u8], bit_offset: usize, value: u16, bits: usize) {
+    let mut remaining_bits = bits;
+    let mut remaining = value;
+    let mut byte = bit_offset / 8;
+    let mut bit = bit_offset % 8;
+
+    while remaining_bits > 0 {
+        let n = (8 - bit).min(remaining_bits);
+        let mask = ((1u16 << n) - 1) as u8;
+        packed[byte] |= ((remaining & mask as u16) as u8) << bit;
+        remaining >>= n;
+        remaining_bits -= n;
+        byte += 1;
+        bit = 0;
+    }
+}
+
+/// 从 LSB-first 位流中读取 bit_offset 处的 bits 位
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn read_bits_lsb(packed: &[u8], bit_offset: usize, bits: usize) -> u16 {
+    let mut value = 0u16;
+    let mut remaining_bits = bits;
+    let mut byte = bit_offset / 8;
+    let mut bit = bit_offset % 8;
+    let mut shift = 0;
+
+    while remaining_bits > 0 {
+        let n = (8 - bit).min(remaining_bits);
+        let mask = ((1u16 << n) - 1) as u8;
+        value |= (((packed[byte] >> bit) & mask) as u16) << shift;
+        shift += n;
+        remaining_bits -= n;
+        byte += 1;
+        bit = 0;
+    }
+    value
+}
+// ============================================================================
+// AVX512 implementations (x86_64 only)
+// ============================================================================
+/// 每字节内部反转位序（保持字节顺序不变）
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn reverse_bits_per_byte(x: u64) -> u64 {
+    let mut v = x;
+    v = ((v & 0x5555_5555_5555_5555) << 1) | ((v >> 1) & 0x5555_5555_5555_5555);
+    v = ((v & 0x3333_3333_3333_3333) << 2) | ((v >> 2) & 0x3333_3333_3333_3333);
+    v = ((v & 0x0F0F_0F0F_0F0F_0F0F) << 4) | ((v >> 4) & 0x0F0F_0F0F_0F0F_0F0F);
+    v
+}
+
+/// 每次处理 64 维：非零归一化为 1，左移把 LSB 抬到符号位，用 movemask 一次取 64 个位，
+/// 再按字节反转位序得到 MSB-first 布局。
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
 unsafe fn pack_binary_code_avx512(binary_code: &[u8], packed: &mut [u8], dim: usize) {
-    // For now, use scalar implementation
-    // TODO: Implement AVX512 optimized version
-    pack_binary_code_scalar(binary_code, packed, dim);
+    use std::arch::x86_64::{
+        __m512i, _mm512_loadu_si512, _mm512_min_epu8, _mm512_movepi8_mask,
+        _mm512_set1_epi8, _mm512_slli_epi16,
+    };
+
+    let chunks = dim / 64;
+    let one = _mm512_set1_epi8(1);
+
+    for chunk in 0..chunks {
+        let v =
+            _mm512_loadu_si512(binary_code.as_ptr().add(chunk * 64) as *const __m512i);
+        // 掩码的 bit k 对应第 k 维（LSB-first），目标布局是每字节 MSB-first
+        let bits = _mm512_slli_epi16::<7>(_mm512_min_epu8(v, one));
+        let mask: u64 = _mm512_movepi8_mask(bits);
+        let rev = reverse_bits_per_byte(mask);
+        packed[chunk * 8..chunk * 8 + 8].copy_from_slice(&rev.to_le_bytes());
+    }
+
+    // 余数走标量（先把尾部清零，因为下面用的是 |=）
+    for b in packed[chunks * 8..].iter_mut() {
+        *b = 0;
+    }
+    for i in chunks * 64..dim {
+        if binary_code[i] != 0 {
+            packed[i / 8] |= 1 << (7 - (i % 8));
+        }
+    }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-#[target_feature(enable = "avx512f")]
+/// 每次处理 64 维：8 个打包字节先按字节反转位序，再用 movm_epi8 一条指令展开成
+/// 64 个 0x00/0xFF 字节，最后 &1 得到 0/1。
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
 unsafe fn unpack_binary_code_avx512(packed: &[u8], binary_code: &mut [u8], dim: usize) {
-    // For now, use scalar implementation
-    // TODO: Implement AVX512 optimized version
-    unpack_binary_code_scalar(packed, binary_code, dim);
+    use std::arch::x86_64::{
+        __m512i, _mm512_and_si512, _mm512_movm_epi8, _mm512_set1_epi8,
+        _mm512_storeu_si512,
+    };
+
+    let chunks = dim / 64;
+    let one = _mm512_set1_epi8(1);
+
+    for chunk in 0..chunks {
+        // 整个 8 字节块都在缓冲区范围内
+        let word = u64::from_le(std::ptr::read_unaligned(
+            packed.as_ptr().add(chunk * 8) as *const u64
+        ));
+        // 打包布局是每字节 MSB-first，反转字节内位序后 bit k 才对应第 k 维
+        let bits = _mm512_movm_epi8(reverse_bits_per_byte(word));
+        _mm512_storeu_si512(
+            binary_code.as_mut_ptr().add(chunk * 64) as *mut __m512i,
+            _mm512_and_si512(bits, one),
+        );
+    }
+
+    // 余数走标量
+    for i in chunks * 64..dim {
+        binary_code[i] = if (packed[i / 8] & (1 << (7 - (i % 8)))) != 0 {
+            1
+        } else {
+            0
+        };
+    }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[target_feature(enable = "avx512f")]
 unsafe fn pack_ex_code_avx512(
     ex_code: &[u16],
@@ -250,7 +372,7 @@ unsafe fn pack_ex_code_avx512(
     dim: usize,
     ex_bits: u8,
 ) {
-    // Delegate to specific bit-width optimized functions
+    // 专门给特定位宽优化
     match ex_bits {
         1 => pack_1bit_ex_code_avx512(ex_code, packed, dim),
         2 => pack_2bit_ex_code_avx512(ex_code, packed, dim),
@@ -260,7 +382,7 @@ unsafe fn pack_ex_code_avx512(
         6 => pack_6bit_ex_code_avx512(ex_code, packed, dim),
         7 => pack_7bit_ex_code_avx512(ex_code, packed, dim),
         8 => {
-            // 8-bit is just memcpy
+            // 8bit是memcpy
             for (i, &code) in ex_code.iter().take(dim).enumerate() {
                 packed[i] = code as u8;
             }
@@ -269,7 +391,7 @@ unsafe fn pack_ex_code_avx512(
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+// 解包操作
 #[target_feature(enable = "avx512f")]
 unsafe fn unpack_ex_code_avx512(
     packed: &[u8],
@@ -277,7 +399,7 @@ unsafe fn unpack_ex_code_avx512(
     dim: usize,
     ex_bits: u8,
 ) {
-    // Delegate to specific bit-width optimized functions
+    // 针对特定位宽进行优化
     match ex_bits {
         1 => unpack_1bit_ex_code_avx512(packed, ex_code, dim),
         2 => unpack_2bit_ex_code_avx512(packed, ex_code, dim),
@@ -287,7 +409,6 @@ unsafe fn unpack_ex_code_avx512(
         6 => unpack_6bit_ex_code_avx512(packed, ex_code, dim),
         7 => unpack_7bit_ex_code_avx512(packed, ex_code, dim),
         8 => {
-            // 8-bit is just memcpy
             for (i, code_out) in ex_code.iter_mut().take(dim).enumerate() {
                 *code_out = packed[i] as u16;
             }
@@ -299,37 +420,44 @@ unsafe fn unpack_ex_code_avx512(
 // ============================================================================
 // AVX512 bit-specific implementations
 // ============================================================================
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[allow(clippy::explicit_counter_loop)]
 #[target_feature(enable = "avx512f")]
 unsafe fn pack_1bit_ex_code_avx512(ex_code: &[u16], packed: &mut [u8], dim: usize) {
-    // Requires dim % 16 == 0 for optimal performance
+    //专门用于将 u16 数组中每个元素的 最低有效位（LSB） 提取出来，压缩成紧凑的字节流
+    //要求 dim % 16 == 0
     let chunks = dim / 16;
     let remainder = dim % 16;
 
+    //对于每个块，从 ex_code 的 offset 开始取 16 个元素
     for chunk in 0..chunks {
         let offset = chunk * 16;
         let mut code = 0u16;
         for i in 0..16 {
+            //对每个元素取最低位 ex_code[...] & 1，然后左移 i 位，再按位或合并到 code 中。
+            //最终 code 的 第 i 位 对应原数组第 offset + i 个元素的 LSB。
             code |= (ex_code[offset + i] & 1) << i;
         }
+        //将 code 转换为小端字节序（to_le_bytes()），并复制到 packed 的对应位置（每块占 2 字节）。
         let out_offset = chunk * 2;
         packed[out_offset..out_offset + 2].copy_from_slice(&code.to_le_bytes());
     }
 
-    // Handle remainder
+    // 余数处理
     if remainder > 0 {
-        let offset = chunks * 16;
-        let mut code = 0u16;
-        for i in 0..remainder {
-            code |= (ex_code[offset + i] & 1) << i;
+        let region_start = chunks * 2;
+        for b in packed[region_start..].iter_mut() {
+            *b = 0;
         }
-        let out_offset = chunks * 2;
-        packed[out_offset..out_offset + 2].copy_from_slice(&code.to_le_bytes());
+        let mut bit_offset = region_start * 8;
+        for &code in &ex_code[chunks * 16..dim] {
+            write_bits_lsb(packed, bit_offset, code & 1, 1);
+            bit_offset += 1;
+        }
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+//这段代码的作用是将压缩存储的位数据解包成一个 u16 数组，其中每个输入位被扩展为 0 或 1 的 u16 值
+#[allow(clippy::explicit_counter_loop)]
 #[target_feature(enable = "avx512f")]
 unsafe fn unpack_1bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: usize) {
     let chunks = dim / 16;
@@ -344,24 +472,23 @@ unsafe fn unpack_1bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: us
         }
     }
 
-    // Handle remainder
+    //处理余数
     if remainder > 0 {
-        let in_offset = chunks * 2;
-        let code = u16::from_le_bytes([packed[in_offset], packed[in_offset + 1]]);
-        let out_offset = chunks * 16;
+        let mut bit_offset = chunks * 16;
         for i in 0..remainder {
-            ex_code[out_offset + i] = (code >> i) & 1;
+            ex_code[chunks * 16 + i] = read_bits_lsb(packed, bit_offset, 1);
+            bit_offset += 1;
         }
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[target_feature(enable = "avx512f")]
 unsafe fn pack_2bit_ex_code_avx512(ex_code: &[u16], packed: &mut [u8], dim: usize) {
     // Pack 16 2-bit codes into 4 bytes (32 bits)
     let chunks = dim / 16;
     let remainder = dim % 16;
 
+    //每个块从 ex_code[offset] 开始读 16 个值，依次将低 2 位移位并或入 cod
     for chunk in 0..chunks {
         let offset = chunk * 16;
         let mut code = 0u32;
@@ -372,19 +499,20 @@ unsafe fn pack_2bit_ex_code_avx512(ex_code: &[u16], packed: &mut [u8], dim: usiz
         packed[out_offset..out_offset + 4].copy_from_slice(&code.to_le_bytes());
     }
 
-    // Handle remainder
+    //解决余数
     if remainder > 0 {
-        let offset = chunks * 16;
-        let mut code = 0u32;
-        for i in 0..remainder {
-            code |= ((ex_code[offset + i] & 0x3) as u32) << (i * 2);
+        let region_start = chunks * 4;
+        for b in packed[region_start..].iter_mut() {
+            *b = 0;
         }
-        let out_offset = chunks * 4;
-        packed[out_offset..out_offset + 4].copy_from_slice(&code.to_le_bytes());
+        let mut bit_offset = region_start * 8;
+        for &code in &ex_code[chunks * 16..dim] {
+            write_bits_lsb(packed, bit_offset, code & 0x3, 2);
+            bit_offset += 2;
+        }
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[target_feature(enable = "avx512f")]
 unsafe fn unpack_2bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: usize) {
     let chunks = dim / 16;
@@ -403,36 +531,26 @@ unsafe fn unpack_2bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: us
             ex_code[out_offset + i] = ((code >> (i * 2)) & 0x3) as u16;
         }
     }
-
-    // Handle remainder
+    //处理余数
     if remainder > 0 {
-        let in_offset = chunks * 4;
-        let code = u32::from_le_bytes([
-            packed[in_offset],
-            packed[in_offset + 1],
-            packed[in_offset + 2],
-            packed[in_offset + 3],
-        ]);
-        let out_offset = chunks * 16;
+        let mut bit_offset = chunks * 16 * 2;
         for i in 0..remainder {
-            ex_code[out_offset + i] = ((code >> (i * 2)) & 0x3) as u16;
+            ex_code[chunks * 16 + i] = read_bits_lsb(packed, bit_offset, 2);
+            bit_offset += 2;
         }
     }
 }
 
-// Placeholder implementations for 3-7 bits
-// These can be optimized later with proper SIMD intrinsics
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+// 3-7 位占位符实现
+// 这些实现稍后可以使用合适的 SIMD 内联函数进行优化。
 #[target_feature(enable = "avx512f")]
 unsafe fn pack_3bit_ex_code_avx512(ex_code: &[u16], packed: &mut [u8], dim: usize) {
     pack_ex_code_scalar(ex_code, packed, dim, 3);
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[target_feature(enable = "avx512f")]
 unsafe fn unpack_3bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: usize) {
-    // Process 8 elements at a time (8 * 3 bits = 24 bits = 3 bytes)
+    // 一次处理8个元素 （8 * 3 bits = 24 bits = 3bytes)
     let chunks = dim / 8;
     let remainder = dim % 8;
 
@@ -440,15 +558,15 @@ unsafe fn unpack_3bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: us
         let in_offset = chunk * 3;
         let out_offset = chunk * 8;
 
-        // Read 3 bytes = 24 bits containing 8 3-bit values
+        //读取 3 bytes
         let b0 = packed[in_offset] as u32;
         let b1 = packed[in_offset + 1] as u32;
         let b2 = packed[in_offset + 2] as u32;
 
-        // Combine into single 32-bit value
+        // 组合成一个32 bit的值
         let data = b0 | (b1 << 8) | (b2 << 16);
 
-        // Extract 8 3-bit values
+        // 提取8个3bit的值
         ex_code[out_offset] = (data & 0x7) as u16;
         ex_code[out_offset + 1] = ((data >> 3) & 0x7) as u16;
         ex_code[out_offset + 2] = ((data >> 6) & 0x7) as u16;
@@ -459,22 +577,19 @@ unsafe fn unpack_3bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: us
         ex_code[out_offset + 7] = ((data >> 21) & 0x7) as u16;
     }
 
-    // Handle remainder with scalar code
+    //解决剩余的标量
     if remainder > 0 {
-        let offset = chunks * 8;
-        unpack_ex_code_scalar(
-            &packed[chunks * 3..],
-            &mut ex_code[offset..],
-            remainder,
-            3,
-        );
+        let mut bit_offset = chunks * 8 * 3;
+        for i in 0..remainder {
+            ex_code[chunks * 8 + i] = read_bits_lsb(packed, bit_offset, 3);
+            bit_offset += 3;
+        }
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[target_feature(enable = "avx512f")]
 unsafe fn pack_4bit_ex_code_avx512(ex_code: &[u16], packed: &mut [u8], dim: usize) {
-    // Pack 2 4-bit codes into 1 byte
+    // 将2个4 bit打包出1byte
     let chunks = dim / 2;
     let remainder = dim % 2;
 
@@ -489,7 +604,6 @@ unsafe fn pack_4bit_ex_code_avx512(ex_code: &[u16], packed: &mut [u8], dim: usiz
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[target_feature(enable = "avx512f")]
 unsafe fn unpack_4bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: usize) {
     let chunks = dim / 2;
@@ -497,7 +611,7 @@ unsafe fn unpack_4bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: us
 
     for i in 0..chunks {
         ex_code[i * 2] = (packed[i] & 0xF) as u16;
-        ex_code[i * 2 + 1] = (packed[i] >> 4) as u16;
+        ex_code[i * 2 + 1] = (packed[i] >> 4) as u16
     }
 
     if remainder > 0 {
@@ -505,34 +619,34 @@ unsafe fn unpack_4bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: us
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[target_feature(enable = "avx512f")]
 unsafe fn pack_5bit_ex_code_avx512(ex_code: &[u16], packed: &mut [u8], dim: usize) {
     pack_ex_code_scalar(ex_code, packed, dim, 5);
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+//将每 5 个字节压缩存储的 8 个 5‑位值解包成 u16 数组
 #[target_feature(enable = "avx512f")]
 unsafe fn unpack_5bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: usize) {
-    // Process 8 elements at a time (8 * 5 bits = 40 bits = 5 bytes)
+    // 一次处理8个元素
+    //每块解包 8 个 5‑位值
     let chunks = dim / 8;
     let remainder = dim % 8;
 
     for chunk in 0..chunks {
+        //从 packed 中读取连续的 5 个字节
         let in_offset = chunk * 5;
         let out_offset = chunk * 8;
 
-        // Read 5 bytes = 40 bits containing 8 5-bit values
         let b0 = packed[in_offset] as u64;
         let b1 = packed[in_offset + 1] as u64;
         let b2 = packed[in_offset + 2] as u64;
         let b3 = packed[in_offset + 3] as u64;
         let b4 = packed[in_offset + 4] as u64;
 
-        // Combine into single 64-bit value
+        //组合成一个64位的值
         let data = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24) | (b4 << 32);
 
-        // Extract 8 5-bit values
+        // 提取8个5bit的值
         ex_code[out_offset] = (data & 0x1F) as u16;
         ex_code[out_offset + 1] = ((data >> 5) & 0x1F) as u16;
         ex_code[out_offset + 2] = ((data >> 10) & 0x1F) as u16;
@@ -543,28 +657,23 @@ unsafe fn unpack_5bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: us
         ex_code[out_offset + 7] = ((data >> 35) & 0x1F) as u16;
     }
 
-    // Handle remainder with scalar code
     if remainder > 0 {
-        let offset = chunks * 8;
-        unpack_ex_code_scalar(
-            &packed[chunks * 5..],
-            &mut ex_code[offset..],
-            remainder,
-            5,
-        );
+        let mut bit_offset = chunks * 8 * 5;
+        for i in 0..remainder {
+            ex_code[chunks * 8 + i] = read_bits_lsb(packed, bit_offset, 5);
+            bit_offset += 5;
+        }
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[target_feature(enable = "avx512f")]
 unsafe fn pack_6bit_ex_code_avx512(ex_code: &[u16], packed: &mut [u8], dim: usize) {
     pack_ex_code_scalar(ex_code, packed, dim, 6);
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[target_feature(enable = "avx512f")]
 unsafe fn unpack_6bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: usize) {
-    // Process 4 elements at a time (4 * 6 bits = 24 bits = 3 bytes)
+    // 一次处理4个元素 (4 * 6 bits = 24bits = 3bytes)
     let chunks = dim / 4;
     let remainder = dim % 4;
 
@@ -572,43 +681,39 @@ unsafe fn unpack_6bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: us
         let in_offset = chunk * 3;
         let out_offset = chunk * 4;
 
-        // Read 3 bytes = 24 bits containing 4 6-bit values
+        //读取3byte = 24bits 包含了4个6-bit的值
         let b0 = packed[in_offset] as u32;
         let b1 = packed[in_offset + 1] as u32;
         let b2 = packed[in_offset + 2] as u32;
 
-        // Combine into single 32-bit value
+        // 将这些合并成一个32位的值
         let data = b0 | (b1 << 8) | (b2 << 16);
 
-        // Extract 4 6-bit values
+        // 提取4个 6-bit的值
         ex_code[out_offset] = (data & 0x3F) as u16;
         ex_code[out_offset + 1] = ((data >> 6) & 0x3F) as u16;
         ex_code[out_offset + 2] = ((data >> 12) & 0x3F) as u16;
         ex_code[out_offset + 3] = ((data >> 18) & 0x3F) as u16;
     }
 
-    // Handle remainder with scalar code
+    // 解决剩余的
     if remainder > 0 {
-        let offset = chunks * 4;
-        unpack_ex_code_scalar(
-            &packed[chunks * 3..],
-            &mut ex_code[offset..],
-            remainder,
-            6,
-        );
+        let mut bit_offset = chunks * 4 * 6;
+        for i in 0..remainder {
+            ex_code[chunks * 4 + i] = read_bits_lsb(packed, bit_offset, 6);
+            bit_offset += 6;
+        }
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[target_feature(enable = "avx512f")]
 unsafe fn pack_7bit_ex_code_avx512(ex_code: &[u16], packed: &mut [u8], dim: usize) {
     pack_ex_code_scalar(ex_code, packed, dim, 7);
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[target_feature(enable = "avx512f")]
 unsafe fn unpack_7bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: usize) {
-    // Process 8 elements at a time (8 * 7 bits = 56 bits = 7 bytes)
+    // 一次处理8个元素
     let chunks = dim / 8;
     let remainder = dim % 8;
 
@@ -616,7 +721,7 @@ unsafe fn unpack_7bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: us
         let in_offset = chunk * 7;
         let out_offset = chunk * 8;
 
-        // Read 7 bytes = 56 bits containing 8 7-bit values
+        // 读7bytes = 56 bits 包含了8个7bit的值
         let b0 = packed[in_offset] as u64;
         let b1 = packed[in_offset + 1] as u64;
         let b2 = packed[in_offset + 2] as u64;
@@ -625,7 +730,7 @@ unsafe fn unpack_7bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: us
         let b5 = packed[in_offset + 5] as u64;
         let b6 = packed[in_offset + 6] as u64;
 
-        // Combine into single 64-bit value
+        //将值合并为一个64bit的值
         let data = b0
             | (b1 << 8)
             | (b2 << 16)
@@ -634,7 +739,7 @@ unsafe fn unpack_7bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: us
             | (b5 << 40)
             | (b6 << 48);
 
-        // Extract 8 7-bit values
+        // 提取8个7位的值
         ex_code[out_offset] = (data & 0x7F) as u16;
         ex_code[out_offset + 1] = ((data >> 7) & 0x7F) as u16;
         ex_code[out_offset + 2] = ((data >> 14) & 0x7F) as u16;
@@ -645,7 +750,7 @@ unsafe fn unpack_7bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: us
         ex_code[out_offset + 7] = ((data >> 49) & 0x7F) as u16;
     }
 
-    // Handle remainder with scalar code
+    // 处理剩余的值
     if remainder > 0 {
         let offset = chunks * 8;
         unpack_ex_code_scalar(
@@ -656,7 +761,6 @@ unsafe fn unpack_7bit_ex_code_avx512(packed: &[u8], ex_code: &mut [u16], dim: us
         );
     }
 }
-
 /// SIMD-accelerated dot product: u8 vector with f32 vector
 /// Converts u8 to f32 and computes dot product
 #[inline]
@@ -845,11 +949,18 @@ pub fn pack_lut_i8(query: &[f32], lut: &mut [i8]) {
         let q_offset = i * 4;
         let lut_offset = i * 16;
 
+        // Keep the intermediate values in a stack f32 array: reading the i8
+        // back at every step adds a store->load stall and an extra conversion.
+        let mut sums = [0f32; 16];
         lut[lut_offset] = 0;
         for j in 1..16 {
             let prev_idx = j - lowbit(j);
-            let sum = (lut[lut_offset + prev_idx] as f32) + query[q_offset + KPOS[j]];
-            lut[lut_offset + j] = sum.round() as i8;
+            // Same result as `sum.round() as i8`, but trunc(x ± 0.5) lowers to
+            // a single ROUNDSS instead of LLVM's expanded round-away-from-zero.
+            let raw = sums[prev_idx] + query[q_offset + KPOS[j]];
+            let v = (raw + 0.5f32.copysign(raw)).trunc().clamp(-128.0, 127.0);
+            sums[j] = v;
+            lut[lut_offset + j] = v as i8;
         }
     }
 }
@@ -1107,188 +1218,108 @@ fn lower_bound_mask_scalar(lower_bounds: &[f32; FASTSCAN_BATCH_SIZE], distk: f32
     mask
 }
 
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn accumulate_batch_avx2_impl(
-    packed_codes: &[u8],
-    lut: &[i8],
-    dim: usize,
-    results: &mut [u16; FASTSCAN_BATCH_SIZE],
-) {
-    unsafe {
-        use std::arch::x86_64::*;
-
-        let code_length = dim << 2; // dim * 4
-        let low_mask = _mm256_set1_epi8(0x0f);
-
-        // 4 independent accumulators following C++ logic:
-        // accu0: accumulates res_lo (vectors 8-15)
-        // accu1: accumulates res_lo >> 8 (vectors 0-7)
-        // accu2: accumulates res_hi (vectors 24-31)
-        // accu3: accumulates res_hi >> 8 (vectors 16-23)
-        let mut accu0 = _mm256_setzero_si256();
-        let mut accu1 = _mm256_setzero_si256();
-        let mut accu2 = _mm256_setzero_si256();
-        let mut accu3 = _mm256_setzero_si256();
-
-        // Process 64 bytes at a time (2 * 32) to match C++ implementation
-        // Let CPU hardware prefetcher handle memory prefetching automatically
-        let mut i = 0;
-        while i + 63 < code_length {
-            // First 32 bytes
-            let c = _mm256_loadu_si256(packed_codes.as_ptr().add(i) as *const __m256i);
-            let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i) as *const __m256i);
-            let lo = _mm256_and_si256(c, low_mask);
-            let hi = _mm256_and_si256(_mm256_srli_epi16(c, 4), low_mask);
-
-            let res_lo = _mm256_shuffle_epi8(lut_val, lo);
-            let res_hi = _mm256_shuffle_epi8(lut_val, hi);
-
-            // Accumulate following C++ pattern
-            accu0 = _mm256_add_epi16(accu0, res_lo);
-            accu1 = _mm256_add_epi16(accu1, _mm256_srli_epi16(res_lo, 8));
-            accu2 = _mm256_add_epi16(accu2, res_hi);
-            accu3 = _mm256_add_epi16(accu3, _mm256_srli_epi16(res_hi, 8));
-
-            // Second 32 bytes
-            let c =
-                _mm256_loadu_si256(packed_codes.as_ptr().add(i + 32) as *const __m256i);
-            let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i + 32) as *const __m256i);
-            let lo = _mm256_and_si256(c, low_mask);
-            let hi = _mm256_and_si256(_mm256_srli_epi16(c, 4), low_mask);
-
-            let res_lo = _mm256_shuffle_epi8(lut_val, lo);
-            let res_hi = _mm256_shuffle_epi8(lut_val, hi);
-
-            accu0 = _mm256_add_epi16(accu0, res_lo);
-            accu1 = _mm256_add_epi16(accu1, _mm256_srli_epi16(res_lo, 8));
-            accu2 = _mm256_add_epi16(accu2, res_hi);
-            accu3 = _mm256_add_epi16(accu3, _mm256_srli_epi16(res_hi, 8));
-
-            i += 64;
+/// Non-finite lower bounds are repaired according to the metric before the
+/// comparison: L2 treats them as 0, InnerProduct uses the caller-provided
+/// fallback. Finite values compare unchanged.
+#[inline]
+fn sanitized_lower_bound_mask_32_scalar(
+    lower_bounds: &[f32; FASTSCAN_BATCH_SIZE],
+    threshold: f32,
+    metric: Metric,
+    fallback: f32,
+) -> u32 {
+    let mut mask = 0u32;
+    for (i, &value) in lower_bounds.iter().enumerate() {
+        let sanitized = if value.is_finite() {
+            value
+        } else {
+            match metric {
+                Metric::L2 => 0.0,
+                Metric::InnerProduct => fallback,
+            }
+        };
+        if sanitized < threshold {
+            mask |= 1u32 << i;
         }
-
-        // Handle remaining bytes
-        while i < code_length {
-            let c = _mm256_loadu_si256(packed_codes.as_ptr().add(i) as *const __m256i);
-            let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i) as *const __m256i);
-            let lo = _mm256_and_si256(c, low_mask);
-            let hi = _mm256_and_si256(_mm256_srli_epi16(c, 4), low_mask);
-
-            let res_lo = _mm256_shuffle_epi8(lut_val, lo);
-            let res_hi = _mm256_shuffle_epi8(lut_val, hi);
-
-            accu0 = _mm256_add_epi16(accu0, res_lo);
-            accu1 = _mm256_add_epi16(accu1, _mm256_srli_epi16(res_lo, 8));
-            accu2 = _mm256_add_epi16(accu2, res_hi);
-            accu3 = _mm256_add_epi16(accu3, _mm256_srli_epi16(res_hi, 8));
-
-            i += 32;
-        }
-
-        // Remove the influence of upper 8 bits for accu0 and accu2
-        accu0 = _mm256_sub_epi16(accu0, _mm256_slli_epi16(accu1, 8));
-        accu2 = _mm256_sub_epi16(accu2, _mm256_slli_epi16(accu3, 8));
-
-        // Final assembly for vectors 0-15
-        let dis0 = _mm256_add_epi16(
-            _mm256_permute2f128_si256(accu0, accu1, 0x21),
-            _mm256_blend_epi32(accu0, accu1, 0xF0),
-        );
-        _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, dis0);
-
-        // Final assembly for vectors 16-31
-        let dis1 = _mm256_add_epi16(
-            _mm256_permute2f128_si256(accu2, accu3, 0x21),
-            _mm256_blend_epi32(accu2, accu3, 0xF0),
-        );
-        _mm256_storeu_si256(results.as_mut_ptr().add(16) as *mut __m256i, dis1);
     }
+    mask
 }
 
-/// AVX-512 implementation for accumulate_batch
-/// Processes 64 bytes per iteration (double the AVX2 throughput)
-/// Requires AVX-512F and AVX-512BW CPU features
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f", enable = "avx512bw")]
-unsafe fn accumulate_batch_avx512_impl(
-    packed_codes: &[u8],
-    lut: &[i8],
-    dim: usize,
-    results: &mut [u16; FASTSCAN_BATCH_SIZE],
-) {
-    unsafe {
-        use std::arch::x86_64::*;
-
-        let code_length = dim << 2; // dim * 4
-        let low_mask = _mm512_set1_epi8(0x0f);
-
-        let mut accu0 = _mm512_setzero_si512();
-        let mut accu1 = _mm512_setzero_si512();
-        let mut accu2 = _mm512_setzero_si512();
-        let mut accu3 = _mm512_setzero_si512();
-
-        // Process 64 bytes per iteration (single AVX-512 load vs. two AVX2 loads)
-        // This is the key performance advantage: half the loop iterations
-        for i in (0..code_length).step_by(64) {
-            // Load 64 bytes of codes and LUT in one operation
-            let c = _mm512_loadu_si512(packed_codes.as_ptr().add(i) as *const __m512i);
-            let lut_val = _mm512_loadu_si512(lut.as_ptr().add(i) as *const __m512i);
-
-            // Extract low and high nibbles
-            // lo contains codes for vectors 0-15, hi contains codes for vectors 16-31
-            let lo = _mm512_and_si512(c, low_mask);
-            let hi = _mm512_and_si512(_mm512_srli_epi16(c, 4), low_mask);
-
-            // Look up distance values using shuffle
-            let res_lo = _mm512_shuffle_epi8(lut_val, lo);
-            let res_hi = _mm512_shuffle_epi8(lut_val, hi);
-
-            // Accumulate in i16 to avoid overflow
-            // Due to data layout (0,8,1,9,2,10,3,11,4,12,5,13,6,14,7,15):
-            // - accu0: vectors 8-15 (lower 8 bits in each u16)
-            // - accu1: vectors 0-7 (upper 8 bits need extraction)
-            // - accu2: vectors 24-31 (lower 8 bits)
-            // - accu3: vectors 16-23 (upper 8 bits need extraction)
-            accu0 = _mm512_add_epi16(accu0, res_lo);
-            accu1 = _mm512_add_epi16(accu1, _mm512_srli_epi16(res_lo, 8));
-            accu2 = _mm512_add_epi16(accu2, res_hi);
-            accu3 = _mm512_add_epi16(accu3, _mm512_srli_epi16(res_hi, 8));
-        }
-
-        // Remove influence of upper 8 bits from accu0 and accu2
-        accu0 = _mm512_sub_epi16(accu0, _mm512_slli_epi16(accu1, 8));
-        accu2 = _mm512_sub_epi16(accu2, _mm512_slli_epi16(accu3, 8));
-
-        // Combine results from 4 lanes into final output
-        // Each accumulator contains 4 x __m128i worth of data that needs to be summed
-        // The result is 32 x u16 values that fit in a single __m512i
-        let ret1 = _mm512_add_epi16(
-            _mm512_mask_blend_epi64(0b11110000, accu0, accu1),
-            _mm512_shuffle_i64x2::<0b01001110>(accu0, accu1),
-        );
-        let ret2 = _mm512_add_epi16(
-            _mm512_mask_blend_epi64(0b11110000, accu2, accu3),
-            _mm512_shuffle_i64x2::<0b01001110>(accu2, accu3),
-        );
-
-        // Final merge: combine ret1 (vecs 0-15) and ret2 (vecs 16-31)
-        let mut ret = _mm512_setzero_si512();
-        ret = _mm512_add_epi16(ret, _mm512_shuffle_i64x2::<0b10001000>(ret1, ret2));
-        ret = _mm512_add_epi16(ret, _mm512_shuffle_i64x2::<0b11011101>(ret1, ret2));
-
-        // Write back the 32 x u16 results
-        _mm512_storeu_si512(results.as_mut_ptr() as *mut __m512i, ret);
+#[target_feature(enable = "avx512f")]
+unsafe fn sanitized_lower_bound_mask_32_avx512(
+    lower_bounds: &[f32; FASTSCAN_BATCH_SIZE],
+    threshold: f32,
+    metric: Metric,
+    fallback: f32,
+) -> u32 {
+    use std::arch::x86_64::*;
+    let repair = _mm512_set1_ps(match metric {
+        Metric::L2 => 0.0,
+        Metric::InnerProduct => fallback,
+    });
+    let limit = _mm512_set1_ps(threshold);
+    let exponent = _mm512_set1_epi32(0x7f80_0000);
+    let mut mask = 0u32;
+    for group in 0..2 {
+        let values = _mm512_loadu_ps(lower_bounds.as_ptr().add(group * 16));
+        let bits = _mm512_castps_si512(values);
+        let nonfinite =
+            _mm512_cmpeq_epi32_mask(_mm512_and_si512(bits, exponent), exponent);
+        let sanitized = _mm512_mask_mov_ps(values, nonfinite, repair);
+        mask |=
+            (_mm512_cmp_ps_mask::<_CMP_LT_OQ>(sanitized, limit) as u32) << (group * 16);
     }
+    mask
 }
 
-/// High-accuracy version of accumulate_batch using int32 accumulators
-/// This version prevents overflow for high-dimensional data (dim > 2048)
-/// and provides better precision at the cost of slightly lower performance
+/// Fused non-finite repair and threshold comparison using AVX-512 when
+/// available; scalar otherwise.
+#[inline]
+pub fn sanitized_lower_bound_mask_32(
+    lower_bounds: &[f32; FASTSCAN_BATCH_SIZE],
+    threshold: f32,
+    metric: Metric,
+    fallback: f32,
+) -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx512f") {
+        // SAFETY: runtime detection covers all AVX-512 instructions used.
+        return unsafe {
+            sanitized_lower_bound_mask_32_avx512(
+                lower_bounds,
+                threshold,
+                metric,
+                fallback,
+            )
+        };
+    }
+    sanitized_lower_bound_mask_32_scalar(lower_bounds, threshold, metric, fallback)
+}
+
+/// Dimension-gated mask path: the AVX-512 kernel is only used for the compact
+/// HACC LUT scan range, matching the profiling-based crossover.
+#[inline]
+pub fn sanitized_lower_bound_mask_32_for_dim(
+    lower_bounds: &[f32; FASTSCAN_BATCH_SIZE],
+    threshold: f32,
+    metric: Metric,
+    fallback: f32,
+    padded_dim: usize,
+) -> u32 {
+    if (192..=256).contains(&padded_dim) {
+        return sanitized_lower_bound_mask_32(lower_bounds, threshold, metric, fallback);
+    }
+    sanitized_lower_bound_mask_32_scalar(lower_bounds, threshold, metric, fallback)
+}
+
+/// 使用 int32 累加器的高精度 accumulate_batch 版本
+/// 此版本可防止高维数据（维度 > 2048）溢出
+/// 并以略微降低的性能为代价，提供更高的精度。
 pub fn accumulate_batch_highacc_avx2(
     packed_codes: &[u8],
-    lut_low8: &[u8],  // Low 8 bits of LUT values
-    lut_high8: &[u8], // High 8 bits of LUT values
+    lut_low8: &[u8],  // LUT值的低8位
+    lut_high8: &[u8], // LUT值的高8位
     dim: usize,
     results: &mut [i32; FASTSCAN_BATCH_SIZE],
 ) {
@@ -1299,8 +1330,27 @@ pub fn accumulate_batch_highacc_avx2(
 
     #[cfg(target_arch = "x86_64")]
     {
-        // Runtime CPU feature detection
+        // 运行时CPU特征检测
         {
+            if dim > 0
+                && dim <= 1024
+                && is_x86_feature_detected!("avx512f")
+                && is_x86_feature_detected!("avx512bw")
+                && is_x86_feature_detected!("avx512vbmi")
+                && is_x86_feature_detected!("avx512vnni")
+            {
+                // SAFETY: the dispatch checks every required feature; the
+                // kernel validates dimensions and all three input lengths.
+                return unsafe {
+                    accumulate_batch_highacc_vnni(
+                        packed_codes,
+                        lut_low8,
+                        lut_high8,
+                        dim,
+                        results,
+                    )
+                };
+            }
             if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw")
             {
                 unsafe {
@@ -1328,7 +1378,102 @@ pub fn accumulate_batch_highacc_avx2(
         }
     }
 
+    // 最终用scalar兜底
     accumulate_batch_highacc_scalar(packed_codes, lut_low8, lut_high8, dim, results);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn accumulate_batch_avx2_impl(
+    packed_codes: &[u8],
+    lut: &[i8],
+    dim: usize,
+    results: &mut [u16; FASTSCAN_BATCH_SIZE],
+) {
+    use std::arch::x86_64::*;
+
+    let code_length = dim << 2; // dim * 4
+    let low_mask = _mm256_set1_epi8(0x0f);
+
+    let mut accu0 = _mm256_setzero_si256();
+    let mut accu1 = _mm256_setzero_si256();
+    let mut accu2 = _mm256_setzero_si256();
+    let mut accu3 = _mm256_setzero_si256();
+
+    // 一次处理64个字节
+    //让 CPU 硬件预取器自动处理内存预取。
+    let mut i = 0;
+    while i + 63 < code_length {
+        // 第一个32字节
+        let c = _mm256_loadu_si256(packed_codes.as_ptr().add(i) as *const __m256i);
+        let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i) as *const __m256i);
+        let lo = _mm256_and_si256(c, low_mask);
+        let hi = _mm256_and_si256(_mm256_srli_epi16(c, 4), low_mask);
+
+        //取数
+        let res_lo = _mm256_shuffle_epi8(lut_val, lo);
+        let res_hi = _mm256_shuffle_epi8(lut_val, hi);
+
+        //累加
+        accu0 = _mm256_add_epi16(accu0, res_lo);
+        accu1 = _mm256_add_epi16(accu1, _mm256_srli_epi16(res_lo, 8));
+        accu2 = _mm256_add_epi16(accu2, res_hi);
+        accu3 = _mm256_add_epi16(accu3, _mm256_srli_epi16(res_hi, 8));
+
+        // 第二个32字节
+        let c = _mm256_loadu_si256(packed_codes.as_ptr().add(i + 32) as *const __m256i);
+        let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i + 32) as *const __m256i);
+        let lo = _mm256_and_si256(c, low_mask);
+        let hi = _mm256_and_si256(_mm256_srli_epi16(c, 4), low_mask);
+
+        let res_lo = _mm256_shuffle_epi8(lut_val, lo);
+        let res_hi = _mm256_shuffle_epi8(lut_val, hi);
+
+        accu0 = _mm256_add_epi16(accu0, res_lo);
+        accu1 = _mm256_add_epi16(accu1, _mm256_srli_epi16(res_lo, 8));
+        accu2 = _mm256_add_epi16(accu2, res_hi);
+        accu3 = _mm256_add_epi16(accu3, _mm256_srli_epi16(res_hi, 8));
+
+        i += 64;
+    }
+
+    // 处理剩余的字节
+    while i < code_length {
+        let c = _mm256_loadu_si256(packed_codes.as_ptr().add(i) as *const __m256i);
+        let lut_val = _mm256_loadu_si256(lut.as_ptr().add(i) as *const __m256i);
+        let lo = _mm256_and_si256(c, low_mask);
+        let hi = _mm256_and_si256(_mm256_srli_epi16(c, 4), low_mask);
+
+        let res_lo = _mm256_shuffle_epi8(lut_val, lo);
+        let res_hi = _mm256_shuffle_epi8(lut_val, hi);
+
+        accu0 = _mm256_add_epi16(accu0, res_lo);
+        accu1 = _mm256_add_epi16(accu1, _mm256_srli_epi16(res_lo, 8));
+        accu2 = _mm256_add_epi16(accu2, res_hi);
+        accu3 = _mm256_add_epi16(accu3, _mm256_srli_epi16(res_hi, 8));
+
+        i += 32;
+    }
+
+    // 移除高8位对accu0 和 accu2的影响
+    accu0 = _mm256_sub_epi16(accu0, _mm256_slli_epi16(accu1, 8));
+    accu2 = _mm256_sub_epi16(accu2, _mm256_slli_epi16(accu3, 8));
+
+    //对0-15的最终融合
+    //accu0/accu1 的高 128 位保存同一批向量的另一半码本（其高半部分是 +16 的向量），
+    //因此分别把低 128 位与高 128 位相加，得到向量 0-7 与 8-15 的完整结果。
+    let dis0 = _mm256_add_epi16(
+        _mm256_permute2f128_si256(accu0, accu1, 0x21),
+        _mm256_permute2f128_si256(accu0, accu1, 0x30),
+    );
+    _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, dis0);
+
+    // 最终的融合对于向量16-31
+    let dis1 = _mm256_add_epi16(
+        _mm256_permute2f128_si256(accu2, accu3, 0x21),
+        _mm256_permute2f128_si256(accu2, accu3, 0x30),
+    );
+    _mm256_storeu_si256(results.as_mut_ptr().add(16) as *mut __m256i, dis1);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1340,90 +1485,188 @@ unsafe fn accumulate_batch_highacc_avx2_impl(
     dim: usize,
     results: &mut [i32; FASTSCAN_BATCH_SIZE],
 ) {
-    unsafe {
-        use std::arch::x86_64::*;
+    use std::arch::x86_64::*;
 
-        let code_length = dim << 2; // dim * 4
+    // Accumulate both byte planes while loading the packed codes once. The
+    // previous implementation called the regular kernel twice, which doubled
+    // code/LUT traffic and prevented the compiler from sharing the nibble
+    // extraction work.
+    const CHUNK_DIM: usize = 1024;
+    results.fill(0);
+
+    let mut col = 0;
+    while col < dim / 8 {
+        let chunk_cols = (dim / 8 - col).min(CHUNK_DIM / 8);
+        let byte_off = col * 32;
+        let chunk_bytes = chunk_cols * 32;
+
+        let codes = &packed_codes[byte_off..byte_off + chunk_bytes];
+        let low = &lut_low8[byte_off..byte_off + chunk_bytes];
+        let high = &lut_high8[byte_off..byte_off + chunk_bytes];
+        let mut low0 = _mm256_setzero_si256();
+        let mut low1 = _mm256_setzero_si256();
+        let mut low2 = _mm256_setzero_si256();
+        let mut low3 = _mm256_setzero_si256();
+        let mut high0 = _mm256_setzero_si256();
+        let mut high1 = _mm256_setzero_si256();
+        let mut high2 = _mm256_setzero_si256();
+        let mut high3 = _mm256_setzero_si256();
         let low_mask = _mm256_set1_epi8(0x0f);
 
-        // Use 32-bit accumulators to prevent overflow
-        let mut accu0_low = [_mm256_setzero_si256(); 2];
-        let mut accu0_high = [_mm256_setzero_si256(); 2];
-        let mut accu1_low = [_mm256_setzero_si256(); 2];
-        let mut accu1_high = [_mm256_setzero_si256(); 2];
+        macro_rules! accumulate_plane {
+            ($lut:expr, $base:expr, $lo:expr, $hi:expr, $a0:ident, $a1:ident, $a2:ident, $a3:ident) => {{
+                let lut = _mm256_loadu_si256($lut.as_ptr().add($base) as *const __m256i);
+                let res_lo = _mm256_shuffle_epi8(lut, $lo);
+                let res_hi = _mm256_shuffle_epi8(lut, $hi);
+                $a0 = _mm256_add_epi16($a0, res_lo);
+                $a1 = _mm256_add_epi16($a1, _mm256_srli_epi16(res_lo, 8));
+                $a2 = _mm256_add_epi16($a2, res_hi);
+                $a3 = _mm256_add_epi16($a3, _mm256_srli_epi16(res_hi, 8));
+            }};
+        }
 
-        // Process 64 bytes per iteration (matching AVX2 implementation)
-        for i in (0..code_length).step_by(64) {
-            // Process first 32 bytes
-            let c0 = _mm256_loadu_si256(packed_codes.as_ptr().add(i) as *const __m256i);
-            let lut_low0 = _mm256_loadu_si256(lut_low8.as_ptr().add(i) as *const __m256i);
-            let lut_high0 =
-                _mm256_loadu_si256(lut_high8.as_ptr().add(i) as *const __m256i);
-
+        for i in (0..chunk_bytes).step_by(64) {
+            let c0 = _mm256_loadu_si256(codes.as_ptr().add(i) as *const __m256i);
             let lo0 = _mm256_and_si256(c0, low_mask);
             let hi0 = _mm256_and_si256(_mm256_srli_epi16(c0, 4), low_mask);
-
-            let res_lo0_low = _mm256_shuffle_epi8(lut_low0, lo0);
-            let res_lo0_high = _mm256_shuffle_epi8(lut_high0, lo0);
-            let _res_hi0_low = _mm256_shuffle_epi8(lut_low0, hi0);
-            let _res_hi0_high = _mm256_shuffle_epi8(lut_high0, hi0);
-
-            // Accumulate with sign extension to 32-bit
-            let res_lo0_low_32 =
-                _mm256_cvtepi8_epi32(_mm256_extracti128_si256(res_lo0_low, 0));
-            let res_lo0_high_32 =
-                _mm256_cvtepi8_epi32(_mm256_extracti128_si256(res_lo0_high, 0));
-
-            accu0_low[0] = _mm256_add_epi32(accu0_low[0], res_lo0_low_32);
-            accu0_high[0] = _mm256_add_epi32(accu0_high[0], res_lo0_high_32);
-
-            // Process second 32 bytes
-            if i + 32 < code_length {
-                let c1 = _mm256_loadu_si256(
-                    packed_codes.as_ptr().add(i + 32) as *const __m256i
-                );
-                let lut_low1 =
-                    _mm256_loadu_si256(lut_low8.as_ptr().add(i + 32) as *const __m256i);
-                let lut_high1 =
-                    _mm256_loadu_si256(lut_high8.as_ptr().add(i + 32) as *const __m256i);
-
-                let lo1 = _mm256_and_si256(c1, low_mask);
-                let hi1 = _mm256_and_si256(_mm256_srli_epi16(c1, 4), low_mask);
-
-                let res_lo1_low = _mm256_shuffle_epi8(lut_low1, lo1);
-                let res_lo1_high = _mm256_shuffle_epi8(lut_high1, lo1);
-                let _res_hi1_low = _mm256_shuffle_epi8(lut_low1, hi1);
-                let _res_hi1_high = _mm256_shuffle_epi8(lut_high1, hi1);
-
-                let res_lo1_low_32 =
-                    _mm256_cvtepi8_epi32(_mm256_extracti128_si256(res_lo1_low, 0));
-                let res_lo1_high_32 =
-                    _mm256_cvtepi8_epi32(_mm256_extracti128_si256(res_lo1_high, 0));
-
-                accu1_low[0] = _mm256_add_epi32(accu1_low[0], res_lo1_low_32);
-                accu1_high[0] = _mm256_add_epi32(accu1_high[0], res_lo1_high_32);
-            }
+            let c1 = _mm256_loadu_si256(codes.as_ptr().add(i + 32) as *const __m256i);
+            let lo1 = _mm256_and_si256(c1, low_mask);
+            let hi1 = _mm256_and_si256(_mm256_srli_epi16(c1, 4), low_mask);
+            accumulate_plane!(low, i, lo0, hi0, low0, low1, low2, low3);
+            accumulate_plane!(low, i + 32, lo1, hi1, low0, low1, low2, low3);
+            accumulate_plane!(high, i, lo0, hi0, high0, high1, high2, high3);
+            accumulate_plane!(high, i + 32, lo1, hi1, high0, high1, high2, high3);
         }
 
-        // Combine high and low parts: result = low + (high << 8)
-        const SHIFT_AMOUNT: i32 = 8;
-        accu0_high[0] = _mm256_slli_epi32(accu0_high[0], SHIFT_AMOUNT);
-        accu1_high[0] = _mm256_slli_epi32(accu1_high[0], SHIFT_AMOUNT);
-
-        let final0 = _mm256_add_epi32(accu0_low[0], accu0_high[0]);
-        let final1 = _mm256_add_epi32(accu1_low[0], accu1_high[0]);
-
-        // Store results
-        _mm256_storeu_si256(results.as_mut_ptr() as *mut __m256i, final0);
-        _mm256_storeu_si256(results.as_mut_ptr().add(8) as *mut __m256i, final1);
-
-        // Zero out remaining entries
-        for result in results.iter_mut().skip(16).take(FASTSCAN_BATCH_SIZE - 16) {
-            *result = 0;
+        low0 = _mm256_sub_epi16(low0, _mm256_slli_epi16(low1, 8));
+        low2 = _mm256_sub_epi16(low2, _mm256_slli_epi16(low3, 8));
+        high0 = _mm256_sub_epi16(high0, _mm256_slli_epi16(high1, 8));
+        high2 = _mm256_sub_epi16(high2, _mm256_slli_epi16(high3, 8));
+        let low_dis0 = _mm256_add_epi16(
+            _mm256_permute2f128_si256(low0, low1, 0x21),
+            _mm256_blend_epi32(low0, low1, 0xF0),
+        );
+        let low_dis1 = _mm256_add_epi16(
+            _mm256_permute2f128_si256(low2, low3, 0x21),
+            _mm256_blend_epi32(low2, low3, 0xF0),
+        );
+        let high_dis0 = _mm256_add_epi16(
+            _mm256_permute2f128_si256(high0, high1, 0x21),
+            _mm256_blend_epi32(high0, high1, 0xF0),
+        );
+        let high_dis1 = _mm256_add_epi16(
+            _mm256_permute2f128_si256(high2, high3, 0x21),
+            _mm256_blend_epi32(high2, high3, 0xF0),
+        );
+        let low_lo = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(low_dis0));
+        let low_hi = _mm256_cvtepu16_epi32(_mm256_extracti128_si256(low_dis0, 1));
+        let low_lo2 = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(low_dis1));
+        let low_hi2 = _mm256_cvtepu16_epi32(_mm256_extracti128_si256(low_dis1, 1));
+        let high_lo = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(high_dis0));
+        let high_hi = _mm256_cvtepu16_epi32(_mm256_extracti128_si256(high_dis0, 1));
+        let high_lo2 = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(high_dis1));
+        let high_hi2 = _mm256_cvtepu16_epi32(_mm256_extracti128_si256(high_dis1, 1));
+        let outputs = [
+            _mm256_add_epi32(low_lo, _mm256_slli_epi32(high_lo, 8)),
+            _mm256_add_epi32(low_hi, _mm256_slli_epi32(high_hi, 8)),
+            _mm256_add_epi32(low_lo2, _mm256_slli_epi32(high_lo2, 8)),
+            _mm256_add_epi32(low_hi2, _mm256_slli_epi32(high_hi2, 8)),
+        ];
+        for (offset, output) in [0usize, 8, 16, 24].into_iter().zip(outputs) {
+            let previous =
+                _mm256_loadu_si256(results.as_ptr().add(offset) as *const __m256i);
+            _mm256_storeu_si256(
+                results.as_mut_ptr().add(offset) as *mut __m256i,
+                _mm256_add_epi32(previous, output),
+            );
         }
+        col += chunk_cols;
     }
+
+    // HACC stores the LUT as unsigned uint16 entries, matching RaBitQLib.
+    // No signed-center bias is removed here; the lower-bound correction is
+    // applied later through `sum_vl_lut`.
 }
 
+/// AVX-512 指令集实现的 accumulate_batch 函数
+/// 每次迭代处理 64 字节（吞吐量是 AVX2 的两倍）
+/// 需要 AVX-512F 和 AVX-512BW CPU 特性
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f", enable = "avx512bw")]
+unsafe fn accumulate_batch_avx512_impl(
+    packed_codes: &[u8],
+    lut: &[i8],
+    dim: usize,
+    results: &mut [u16; FASTSCAN_BATCH_SIZE],
+) {
+    use std::arch::x86_64::*;
+
+    //每个字节包含 2 个 4-bit 的码，所以 dim * 4 字节可以容纳 dim * 8 个 4-bit 码
+    let code_length = dim << 2;
+    //生成一个 512-bit 向量，里面 64 个字节全是 0x0f
+    let low_mask = _mm512_set1_epi8(0x0f);
+
+    // 四个 512 位寄存器，每个包含 32 个 i16 累加器
+    let mut accu0 = _mm512_setzero_si512();
+    let mut accu1 = _mm512_setzero_si512();
+    let mut accu2 = _mm512_setzero_si512();
+    let mut accu3 = _mm512_setzero_si512();
+
+    // 每次迭代处理 64 字节（单次 AVX-512 加载对比两次 AVX2 加载）
+    // 这是关键的性能优势：循环迭代次数减半。
+    for i in (0..code_length).step_by(64) {
+        // 一次性加载 64 字节的代码和查找表
+        let c = _mm512_loadu_si512(packed_codes.as_ptr().add(i) as *const __m512i);
+        let lut_val = _mm512_loadu_si512(lut.as_ptr().add(i) as *const __m512i);
+
+        // 提取低位和高位半字节
+        // lo 包含向量 0-15 的代码，hi 包含向量 16-31 的代码
+        //把 c 的每个字节和 0x0f 做按位与，得到每个字节的低 4 位，也就是一个 4-bit code。结果 lo 中每个字节的值范围是 0~15。
+        let lo = _mm512_and_si512(c, low_mask);
+        //先把 c 按 16-bit 元素逻辑右移 4 位，再和 0x0f 按位与。这样得到每个原始字节的高 4 位，也就是同一个字节里的第二个 4-bit code。这行代码的作用是：从 c 的每个字节中提取高 4 位（高 nibble），得到另一组 4-bit code，存入 hi
+        let hi = _mm512_and_si512(_mm512_srli_epi16(c, 4), low_mask);
+
+        //用 lo 里的每个字节作为索引，在 lut_val 对应的 128-bit lane 的 16 字节 LUT 中查表。得到 res_lo，里面每个字节是对应 code 的距离值
+        //一个 16-bit 元素里其实塞了两个向量的距离值
+        let res_lo = _mm512_shuffle_epi8(lut_val, lo);
+        let res_hi = _mm512_shuffle_epi8(lut_val, hi);
+
+        //低 8 位的累加会产生进位，进位会跑到高 8 位，污染向量 B 的累加结果。
+        accu0 = _mm512_add_epi16(accu0, res_lo);
+        //upper 8 bits need extraction
+        accu1 = _mm512_add_epi16(accu1, _mm512_srli_epi16(res_lo, 8));
+        accu2 = _mm512_add_epi16(accu2, res_hi);
+        accu3 = _mm512_add_epi16(accu3, _mm512_srli_epi16(res_hi, 8));
+    }
+
+    // 移除 accu0 和 accu2 的高 8 位的影响
+    accu0 = _mm512_sub_epi16(accu0, _mm512_slli_epi16(accu1, 8));
+    accu2 = _mm512_sub_epi16(accu2, _mm512_slli_epi16(accu3, 8));
+
+    // 将 4 个通道的结果合并为最终输出
+    // 每个累加器包含 4 个 __m128i 的数据，需要进行求和
+    // 结果是 32 个 u16 值，可以放入单个 __m512i 中
+    //ret1 负责合并 accu0 和 accu1（向量 0–15）
+    let ret1 = _mm512_add_epi16(
+        _mm512_mask_blend_epi64(0b11110000, accu0, accu1),
+        _mm512_shuffle_i64x2::<0b01001110>(accu0, accu1),
+    );
+    let ret2 = _mm512_add_epi16(
+        _mm512_mask_blend_epi64(0b11110000, accu2, accu3),
+        _mm512_shuffle_i64x2::<0b01001110>(accu2, accu3),
+    );
+    // 最终合并：合并 ret1 (vecs 0-15) 和 ret2 (vecs 16-31)
+    let mut ret = _mm512_setzero_si512();
+    //[ ret1_块0, ret2_块2, ret1_块0, ret2_块2 ]
+    ret = _mm512_add_epi16(ret, _mm512_shuffle_i64x2::<0b10001000>(ret1, ret2));
+    //[ ret1_块1, ret2_块3, ret1_块1, ret2_块3 ]
+    ret = _mm512_add_epi16(ret, _mm512_shuffle_i64x2::<0b11011101>(ret1, ret2));
+
+    // 写回32 x u16
+    _mm512_storeu_si512(results.as_mut_ptr() as *mut __m512i, ret);
+}
+
+//把 4-bit 打包码通过 LUT 变成 16 位贡献，低 8 位和高 8 位分别累加，最后合并成 i32
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f", enable = "avx512bw")]
 unsafe fn accumulate_batch_highacc_avx512_impl(
@@ -1433,59 +1676,178 @@ unsafe fn accumulate_batch_highacc_avx512_impl(
     dim: usize,
     results: &mut [i32; FASTSCAN_BATCH_SIZE],
 ) {
-    unsafe {
-        use std::arch::x86_64::*;
+    use std::arch::x86_64::*;
 
-        let code_length = dim << 2;
+    // Same fused two-plane traversal as the AVX2 path. A 1024-dimensional
+    // chunk keeps each byte-plane reduction below the u16 wraparound limit.
+    const CHUNK_DIM: usize = 1024;
+    results.fill(0);
+
+    let mut col = 0;
+    while col < dim / 8 {
+        let chunk_cols = (dim / 8 - col).min(CHUNK_DIM / 8);
+        let byte_off = col * 32;
+        let chunk_bytes = chunk_cols * 32;
+
+        let codes = &packed_codes[byte_off..byte_off + chunk_bytes];
+        let low = &lut_low8[byte_off..byte_off + chunk_bytes];
+        let high = &lut_high8[byte_off..byte_off + chunk_bytes];
+        let mut low0 = _mm512_setzero_si512();
+        let mut low1 = _mm512_setzero_si512();
+        let mut low2 = _mm512_setzero_si512();
+        let mut low3 = _mm512_setzero_si512();
+        let mut high0 = _mm512_setzero_si512();
+        let mut high1 = _mm512_setzero_si512();
+        let mut high2 = _mm512_setzero_si512();
+        let mut high3 = _mm512_setzero_si512();
         let low_mask = _mm512_set1_epi8(0x0f);
 
-        // 512-bit accumulators for 32-bit values
-        let mut accu_low = [_mm512_setzero_si512(); 2];
-        let mut accu_high = [_mm512_setzero_si512(); 2];
+        macro_rules! accumulate_plane {
+            ($lut:expr, $base:expr, $lo:expr, $hi:expr, $a0:ident, $a1:ident, $a2:ident, $a3:ident) => {{
+                let lut = _mm512_loadu_si512($lut.as_ptr().add($base) as *const __m512i);
+                let res_lo = _mm512_shuffle_epi8(lut, $lo);
+                let res_hi = _mm512_shuffle_epi8(lut, $hi);
+                $a0 = _mm512_add_epi16($a0, res_lo);
+                $a1 = _mm512_add_epi16($a1, _mm512_srli_epi16(res_lo, 8));
+                $a2 = _mm512_add_epi16($a2, res_hi);
+                $a3 = _mm512_add_epi16($a3, _mm512_srli_epi16(res_hi, 8));
+            }};
+        }
 
-        // Process 64 bytes per iteration with AVX-512
-        for i in (0..code_length).step_by(64) {
-            let c = _mm512_loadu_si512(packed_codes.as_ptr().add(i) as *const __m512i);
-            let lut_low = _mm512_loadu_si512(lut_low8.as_ptr().add(i) as *const __m512i);
-            let lut_high =
-                _mm512_loadu_si512(lut_high8.as_ptr().add(i) as *const __m512i);
-
+        for i in (0..chunk_bytes).step_by(64) {
+            let c = _mm512_loadu_si512(codes.as_ptr().add(i) as *const __m512i);
             let lo = _mm512_and_si512(c, low_mask);
             let hi = _mm512_and_si512(_mm512_srli_epi16(c, 4), low_mask);
-
-            let res_lo_low = _mm512_shuffle_epi8(lut_low, lo);
-            let res_lo_high = _mm512_shuffle_epi8(lut_high, lo);
-            let _res_hi_low = _mm512_shuffle_epi8(lut_low, hi);
-            let _res_hi_high = _mm512_shuffle_epi8(lut_high, hi);
-
-            // Convert to 32-bit and accumulate
-            // Use _mm512_extracti32x4_epi32 to extract 128-bit chunks
-            let res_lo_low_128 = _mm512_extracti32x4_epi32::<0>(res_lo_low);
-            let res_lo_high_128 = _mm512_extracti32x4_epi32::<0>(res_lo_high);
-            let res_lo_low_32 = _mm512_cvtepi8_epi32(res_lo_low_128);
-            let res_lo_high_32 = _mm512_cvtepi8_epi32(res_lo_high_128);
-
-            accu_low[0] = _mm512_add_epi32(accu_low[0], res_lo_low_32);
-            accu_high[0] = _mm512_add_epi32(accu_high[0], res_lo_high_32);
+            accumulate_plane!(low, i, lo, hi, low0, low1, low2, low3);
+            accumulate_plane!(high, i, lo, hi, high0, high1, high2, high3);
         }
 
-        // Combine high and low: result = low + (high << 8)
-        accu_high[0] = _mm512_slli_epi32(accu_high[0], 8);
-        let final_result = _mm512_add_epi32(accu_low[0], accu_high[0]);
-
-        // Store all 32 results
-        _mm512_storeu_si512(results.as_mut_ptr() as *mut _, final_result);
-
-        // Store second half if needed
-        if FASTSCAN_BATCH_SIZE > 16 {
-            _mm512_storeu_si512(results.as_mut_ptr().add(16) as *mut _, accu_low[1]);
+        low0 = _mm512_sub_epi16(low0, _mm512_slli_epi16(low1, 8));
+        low2 = _mm512_sub_epi16(low2, _mm512_slli_epi16(low3, 8));
+        high0 = _mm512_sub_epi16(high0, _mm512_slli_epi16(high1, 8));
+        high2 = _mm512_sub_epi16(high2, _mm512_slli_epi16(high3, 8));
+        let low_ret1 = _mm512_add_epi16(
+            _mm512_mask_blend_epi64(0b11110000, low0, low1),
+            _mm512_shuffle_i64x2::<0b01001110>(low0, low1),
+        );
+        let low_ret2 = _mm512_add_epi16(
+            _mm512_mask_blend_epi64(0b11110000, low2, low3),
+            _mm512_shuffle_i64x2::<0b01001110>(low2, low3),
+        );
+        let mut low_ret = _mm512_setzero_si512();
+        low_ret = _mm512_add_epi16(
+            low_ret,
+            _mm512_shuffle_i64x2::<0b10001000>(low_ret1, low_ret2),
+        );
+        low_ret = _mm512_add_epi16(
+            low_ret,
+            _mm512_shuffle_i64x2::<0b11011101>(low_ret1, low_ret2),
+        );
+        let high_ret1 = _mm512_add_epi16(
+            _mm512_mask_blend_epi64(0b11110000, high0, high1),
+            _mm512_shuffle_i64x2::<0b01001110>(high0, high1),
+        );
+        let high_ret2 = _mm512_add_epi16(
+            _mm512_mask_blend_epi64(0b11110000, high2, high3),
+            _mm512_shuffle_i64x2::<0b01001110>(high2, high3),
+        );
+        let mut high_ret = _mm512_setzero_si512();
+        high_ret = _mm512_add_epi16(
+            high_ret,
+            _mm512_shuffle_i64x2::<0b10001000>(high_ret1, high_ret2),
+        );
+        high_ret = _mm512_add_epi16(
+            high_ret,
+            _mm512_shuffle_i64x2::<0b11011101>(high_ret1, high_ret2),
+        );
+        let low_lo = _mm512_cvtepu16_epi32(_mm512_castsi512_si256(low_ret));
+        let low_hi = _mm512_cvtepu16_epi32(_mm512_extracti64x4_epi64(low_ret, 1));
+        let high_lo = _mm512_cvtepu16_epi32(_mm512_castsi512_si256(high_ret));
+        let high_hi = _mm512_cvtepu16_epi32(_mm512_extracti64x4_epi64(high_ret, 1));
+        let outputs = [
+            _mm512_add_epi32(low_lo, _mm512_slli_epi32(high_lo, 8)),
+            _mm512_add_epi32(low_hi, _mm512_slli_epi32(high_hi, 8)),
+        ];
+        for (offset, output) in [0usize, 16].into_iter().zip(outputs) {
+            let previous =
+                _mm512_loadu_si512(results.as_ptr().add(offset) as *const __m512i);
+            _mm512_storeu_si512(
+                results.as_mut_ptr().add(offset) as *mut __m512i,
+                _mm512_add_epi32(previous, output),
+            );
         }
+        col += chunk_cols;
     }
+
+    // HACC stores the LUT as unsigned uint16 entries, matching RaBitQLib.
+    // No signed-center bias is removed here; the lower-bound correction is
+    // applied later through `sum_vl_lut`.
 }
 
-/// Scalar fallback for high-accuracy accumulation
-///
-/// Correct implementation that handles KPERM0 permutation
+/// Exact one-chunk HACC reduction on CPUs with VBMI and VNNI.
+/// Four i32 accumulators replace the two byte planes' carry-corrected u16
+/// reductions. At dim <= 1024 the largest result is 256 * 65535 < i32::MAX.
+/// Unsupported CPUs and multi-chunk dimensions keep the existing kernels.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi,avx512vnni")]
+unsafe fn accumulate_batch_highacc_vnni(
+    packed_codes: &[u8],
+    lut_low8: &[u8],
+    lut_high8: &[u8],
+    dim: usize,
+    results: &mut [i32; FASTSCAN_BATCH_SIZE],
+) {
+    use std::arch::x86_64::*;
+    assert!(dim > 0 && dim <= 1024 && dim.is_multiple_of(16));
+    // Each 128-bit lane holds one four-coordinate codebook in KPERM0
+    // row order. Group the four contributions for one original row into
+    // adjacent bytes so unsigned-byte dot-products with ones sum to i32.
+    // This is a register permutation, not a new LUT or code layout.
+    const ROW_BOOKS: [u8; 64] = [
+        0, 16, 32, 48, 2, 18, 34, 50, 4, 20, 36, 52, 6, 22, 38, 54, 8, 24, 40, 56, 10,
+        26, 42, 58, 12, 28, 44, 60, 14, 30, 46, 62, 1, 17, 33, 49, 3, 19, 35, 51, 5, 21,
+        37, 53, 7, 23, 39, 55, 9, 25, 41, 57, 11, 27, 43, 59, 13, 29, 45, 61, 15, 31, 47,
+        63,
+    ];
+    let row_books = _mm512_loadu_si512(ROW_BOOKS.as_ptr().cast());
+    let ones = _mm512_set1_epi8(1);
+    let nibble_mask = _mm512_set1_epi8(15);
+    let mut low0 = _mm512_setzero_si512();
+    let mut low1 = _mm512_setzero_si512();
+    let mut high0 = _mm512_setzero_si512();
+    let mut high1 = _mm512_setzero_si512();
+    let len = dim * 4;
+    assert!(packed_codes.len() >= len);
+    assert!(lut_low8.len() >= len && lut_high8.len() >= len);
+    for i in (0..len).step_by(64) {
+        let codes = _mm512_loadu_si512(packed_codes.as_ptr().add(i).cast());
+        let lo = _mm512_and_si512(codes, nibble_mask);
+        let hi = _mm512_and_si512(_mm512_srli_epi16(codes, 4), nibble_mask);
+        let low_lut = _mm512_loadu_si512(lut_low8.as_ptr().add(i).cast());
+        let high_lut = _mm512_loadu_si512(lut_high8.as_ptr().add(i).cast());
+        let lows0 = _mm512_permutexvar_epi8(row_books, _mm512_shuffle_epi8(low_lut, lo));
+        let lows1 = _mm512_permutexvar_epi8(row_books, _mm512_shuffle_epi8(low_lut, hi));
+        let highs0 =
+            _mm512_permutexvar_epi8(row_books, _mm512_shuffle_epi8(high_lut, lo));
+        let highs1 =
+            _mm512_permutexvar_epi8(row_books, _mm512_shuffle_epi8(high_lut, hi));
+        low0 = _mm512_dpbusd_epi32(low0, lows0, ones);
+        low1 = _mm512_dpbusd_epi32(low1, lows1, ones);
+        high0 = _mm512_dpbusd_epi32(high0, highs0, ones);
+        high1 = _mm512_dpbusd_epi32(high1, highs1, ones);
+    }
+    _mm512_storeu_si512(
+        results.as_mut_ptr().cast(),
+        _mm512_add_epi32(low0, _mm512_slli_epi32(high0, 8)),
+    );
+    _mm512_storeu_si512(
+        results.as_mut_ptr().add(16).cast(),
+        _mm512_add_epi32(low1, _mm512_slli_epi32(high1, 8)),
+    );
+}
+
+/// 高精度累加的标量回退
+/// 正确实现，可处理 KPERM0 置换
 fn accumulate_batch_highacc_scalar(
     packed_codes: &[u8],
     lut_low8: &[u8],
@@ -1493,53 +1855,48 @@ fn accumulate_batch_highacc_scalar(
     dim: usize,
     results: &mut [i32; FASTSCAN_BATCH_SIZE],
 ) {
-    // Same structure as accumulate_batch_scalar but using high-accuracy LUT
-    //
-    // The packed format (from pack_codes) organizes data as follows:
-    // - For each column (8 dimensions = 2 codebooks):
-    //   - 16 bytes for high 4-bit group (dims col*8+0..col*8+3)
-    //   - 16 bytes for low 4-bit group (dims col*8+4..col*8+7)
-    // - Each byte j contains:
-    //   - Low 4 bits: code for vector KPERM0[j]
-    //   - High 4 bits: code for vector KPERM0[j] + 16
+    // 与 accumulate_batch_scalar 结构相同，但使用高精度查找表 (LUT)
+    // 打包格式（来自 pack_codes）按如下方式组织数据：
+    // - 对于每一列（8 维 = 2 个码本）：
+    // - 高 4 位组占 16 字节（维度：col*8+0..col*8+3）
+    // - 低 4 位组占 16 字节（维度：col*8+4..col*8+7）
+    // - 每个字节 j 包含：
+    // - 低 4 位：向量 KPERM0[j] 的代码
+    // - 高 4 位：向量 KPERM0[j] + 16 的代码
 
     let mut sums = [0i32; FASTSCAN_BATCH_SIZE];
-
-    // Process each column (8 dimensions = 2 codebooks at a time)
+    //每列处理 8 个维度，使用 2 个码本。
     let dim_bytes = dim / 8;
-
+    // 遍历每一列，col 从 0 到 dim_bytes-1
     for col in 0..dim_bytes {
-        let packed_offset = col * 32;
-        let lut_offset_hi = (col * 2) * 16; // Codebook for dims col*8+0..col*8+3
-        let lut_offset_lo = (col * 2 + 1) * 16; // Codebook for dims col*8+4..col*8+7
+        let packed_offset = col * 32; //当前列在 packed_codes 中的起始字节偏移。每列 32 字节。
+        let lut_offset_hi = (col * 2) * 16; //前列第一个码本（对应前 4 维）在 LUT 中的起始字节偏移。每列有 2 个码本，每个码本 16 个条目，所以 (col*2)*16。
+        let lut_offset_lo = (col * 2 + 1) * 16; //当前列第二个码本（对应后 4 维）的起始偏移
 
-        // Process high 4-bit group (first 16 packed bytes)
+        // 处理前 16 个打包字节，它们对应前 4 维（高 4-bit 组）。
         for j in 0..16 {
-            let packed_byte = packed_codes[packed_offset + j];
-            let code_lo = (packed_byte & 0x0F) as usize;
-            let code_hi = (packed_byte >> 4) as usize;
+            let packed_byte = packed_codes[packed_offset + j]; //取出当前字节
+            let code_lo = (packed_byte & 0x0F) as usize; //低 4 位，取值为 0..15，作为码本索引
+            let code_hi = (packed_byte >> 4) as usize; //高 4 位，取值为 0..15
 
-            // KPERM0 maps packed position to vector index
             let vec_idx_lo = KPERM0[j];
             let vec_idx_hi = KPERM0[j] + 16;
 
-            // Reconstruct i16 value from low and high bytes for code_lo
+            // Reconstruct the unsigned uint16 LUT entry.
             let low_lo = lut_low8[lut_offset_hi + code_lo] as u16;
             let high_lo = lut_high8[lut_offset_hi + code_lo] as u16;
             let val_u16_lo = low_lo | (high_lo << 8);
-            let val_i16_lo = (val_u16_lo as i32) - 32768;
 
-            // Reconstruct i16 value for code_hi
+            // Reconstruct the second unsigned uint16 LUT entry.
             let low_hi = lut_low8[lut_offset_hi + code_hi] as u16;
             let high_hi = lut_high8[lut_offset_hi + code_hi] as u16;
             let val_u16_hi = low_hi | (high_hi << 8);
-            let val_i16_hi = (val_u16_hi as i32) - 32768;
 
-            sums[vec_idx_lo] += val_i16_lo;
-            sums[vec_idx_hi] += val_i16_hi;
+            sums[vec_idx_lo] += val_u16_lo as i32;
+            sums[vec_idx_hi] += val_u16_hi as i32;
         }
 
-        // Process low 4-bit group (next 16 packed bytes)
+        //这段处理后 16 个打包字节，对应后 4 维（低 4-bit 组）。
         for j in 0..16 {
             let packed_byte = packed_codes[packed_offset + 16 + j];
             let code_lo = (packed_byte & 0x0F) as usize;
@@ -1548,31 +1905,23 @@ fn accumulate_batch_highacc_scalar(
             let vec_idx_lo = KPERM0[j];
             let vec_idx_hi = KPERM0[j] + 16;
 
-            // Reconstruct i16 value from low and high bytes for code_lo
+            // Reconstruct unsigned uint16 value from low and high bytes.
             let low_lo = lut_low8[lut_offset_lo + code_lo] as u16;
             let high_lo = lut_high8[lut_offset_lo + code_lo] as u16;
             let val_u16_lo = low_lo | (high_lo << 8);
-            let val_i16_lo = (val_u16_lo as i32) - 32768;
 
-            // Reconstruct i16 value for code_hi
+            // Reconstruct the second unsigned uint16 value.
             let low_hi = lut_low8[lut_offset_lo + code_hi] as u16;
             let high_hi = lut_high8[lut_offset_lo + code_hi] as u16;
             let val_u16_hi = low_hi | (high_hi << 8);
-            let val_i16_hi = (val_u16_hi as i32) - 32768;
 
-            sums[vec_idx_lo] += val_i16_lo;
-            sums[vec_idx_hi] += val_i16_hi;
+            sums[vec_idx_lo] += val_u16_lo as i32;
+            sums[vec_idx_hi] += val_u16_hi as i32;
         }
     }
-
-    // Copy results
+    //复制结果
     results.copy_from_slice(&sums);
 }
-
-/// Scalar fallback for accumulate_batch when SIMD is not available
-///
-/// Simplified implementation: unpack codes and compute directly.
-/// This is slower but guaranteed correct.
 fn accumulate_batch_scalar(
     packed_codes: &[u8],
     lut: &[i8],
@@ -1643,15 +1992,18 @@ fn accumulate_batch_scalar(
 // ============================================================================
 // These functions compute inner products directly on packed ex-code data,
 // matching C++ implementation for maximum performance.
-// Reference: C++ space.hpp:268-598 (excode_ipimpl namespace)
-
-/// Inner product between f32 query and packed 2-bit ex_code (for 3-bit total RaBitQ)
-/// Reference: C++ ip16_fxu2_avx512
+// 打包 Ex-Code 点积函数（C++ 风格，无需解包）
+// =============================================================================
+// 这些函数直接对打包的 Ex-Code 数据计算内积，
+// 匹配 C++ 实现以实现最佳性能。
+// 参考：C++ space.hpp:268-598（excode_ipimpl 命名空间）
+/// f32 查询向量与压缩后的 2 位 ex_code 的内积（总共 3 位 RaBitQ）
+/// 参考：C++ ip16_fxu2_avx512
 ///
-/// # Arguments
-/// * `query` - Query vector (f32, length must be padded_dim)
-/// * `packed_ex_code` - Packed 2-bit ex_code (padded_dim * 2 / 8 bytes)
-/// * `padded_dim` - Padded dimension (must be multiple of 16)
+/// # 参数
+/// * `query` - 查询向量（f32，长度必须为 padded_dim）
+/// * `packed_ex_code` - 压缩后的 2 位 ex_code（padded_dim * 2 / 8 字节）
+/// * `padded_dim` - 填充维度（必须是 16 的倍数）
 #[inline]
 pub fn ip_packed_ex2_f32(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
     debug_assert_eq!(query.len(), padded_dim);
@@ -1661,68 +2013,26 @@ pub fn ip_packed_ex2_f32(query: &[f32], packed_ex_code: &[u8], padded_dim: usize
         "padded_dim must be multiple of 16 for 2-bit"
     );
 
-    // Prioritize AVX512 > AVX2 > Scalar
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-    unsafe {
-        ip_packed_ex2_f32_avx512(query, packed_ex_code, padded_dim)
-    }
-
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "avx2",
-        not(target_feature = "avx512f")
-    ))]
-    unsafe {
-        ip_packed_ex2_f32_avx2(query, packed_ex_code, padded_dim)
-    }
-
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    //优先级 Prioritize AVX512 > AVX2 > Scalar
+    // 运行时检测：优先级 AVX512 > AVX2 > Scalar（与构建配置无关）
+    #[cfg(target_arch = "x86_64")]
     {
-        ip_packed_ex2_f32_scalar(query, packed_ex_code, padded_dim)
-    }
-}
-
-/// Inner product between f32 query and packed 6-bit ex_code (for 7-bit total RaBitQ)
-/// Reference: C++ ip16_fxu6_avx512
-///
-/// # Arguments
-/// * `query` - Query vector (f32, length must be padded_dim)
-/// * `packed_ex_code` - Packed 6-bit ex_code (padded_dim * 6 / 8 bytes)
-/// * `padded_dim` - Padded dimension (must be multiple of 16)
-#[inline]
-pub fn ip_packed_ex6_f32(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
-    debug_assert_eq!(query.len(), padded_dim);
-    debug_assert_eq!(packed_ex_code.len(), (padded_dim * 6).div_ceil(8));
-    debug_assert!(
-        padded_dim.is_multiple_of(16),
-        "padded_dim must be multiple of 16 for 6-bit"
-    );
-
-    // Prioritize AVX512 > AVX2 > Scalar
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-    unsafe {
-        ip_packed_ex6_f32_avx512(query, packed_ex_code, padded_dim)
+        if is_x86_feature_detected!("avx512f") {
+            return unsafe {
+                ip_packed_ex2_f32_avx512(query, packed_ex_code, padded_dim)
+            };
+        }
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            return unsafe { ip_packed_ex2_f32_avx2(query, packed_ex_code, padded_dim) };
+        }
     }
 
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "avx2",
-        not(target_feature = "avx512f")
-    ))]
-    unsafe {
-        ip_packed_ex6_f32_avx2(query, packed_ex_code, padded_dim)
-    }
-
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
-    {
-        ip_packed_ex6_f32_scalar(query, packed_ex_code, padded_dim)
-    }
+    ip_packed_ex2_f32_scalar(query, packed_ex_code, padded_dim)
 }
 
 // ----------------------------------------------------------------------------
-// Scalar implementations (portable fallback)
+// 标量实现
 // ----------------------------------------------------------------------------
-
 #[inline]
 #[allow(dead_code)]
 #[allow(clippy::needless_range_loop)]
@@ -1731,25 +2041,24 @@ fn ip_packed_ex2_f32_scalar(
     packed_ex_code: &[u8],
     padded_dim: usize,
 ) -> f32 {
-    // Unpack C++ compatible format and compute dot product
-    // Format: 16 codes packed into 4 bytes with interleaved layout
-    let mut sum = 0.0f32;
-    let mut code_idx = 0;
+    // 解包 C++ 兼容格式并计算点积
+    // 格式：16 个代码打包成 4 个字节，采用交错布局
+    let mut sum = 0.0f32; //最终点积结果保存在这里
+    let mut code_idx = 0; //逻辑索引
 
     for chunk in 0..(padded_dim / 16) {
         let base = chunk * 4;
-        // Read 4 bytes as u32 (little-endian)
+        // 读4字节作为u32 (小端存储)
         let compact = u32::from_le_bytes([
             packed_ex_code[base],
             packed_ex_code[base + 1],
             packed_ex_code[base + 2],
             packed_ex_code[base + 3],
         ]);
-
-        // Extract 16 codes using C++ format (interleaved 2-bit values)
+        // 使用 C++ 格式（交错 2 位值）提取 16 个代码
         for i in 0..4 {
             let byte_offset = i * 8;
-            // Extract 4 codes from each of the 4 shifted versions
+            // 从4个移位版本中分别提取4个代码
             let c0 = ((compact >> byte_offset) & 0x3) as f32;
             let c1 = ((compact >> (byte_offset + 2)) & 0x3) as f32;
             let c2 = ((compact >> (byte_offset + 4)) & 0x3) as f32;
@@ -1761,7 +2070,7 @@ fn ip_packed_ex2_f32_scalar(
             sum += c3 * query[code_idx + 12];
             code_idx += 1;
         }
-        code_idx += 12; // Move to next chunk
+        code_idx += 12; // 跳到下一个块
     }
     sum
 }
@@ -1774,17 +2083,16 @@ fn ip_packed_ex6_f32_scalar(
     packed_ex_code: &[u8],
     padded_dim: usize,
 ) -> f32 {
-    // Unpack C++ compatible 6-bit format and compute dot product
-    // Format: 16 codes packed into 12 bytes
-    // - First 8 bytes: lower 4 bits (interleaved: even codes in low nibble, odd in high)
-    // - Next 4 bytes: upper 2 bits (interleaved like 2-bit packing)
+    // 解包 C++ 兼容的 6 位格式并计算点积
+    // 格式：16 个代码打包成 12 个字节
+    // - 前 8 个字节：低 4 位（交错排列：偶数位在低半字节，奇数位在高半字节）
+    // - 接下来 4 个字节：高 2 位（交错排列，类似于 2 位打包）
     let mut sum = 0.0f32;
     let mut code_idx = 0;
 
     for chunk in 0..(padded_dim / 16) {
         let base = chunk * 12;
-
-        // Read lower 4 bits (8 bytes)
+        // 读低4位(8 bytes)
         let compact4 = u64::from_le_bytes([
             packed_ex_code[base],
             packed_ex_code[base + 1],
@@ -1796,7 +2104,7 @@ fn ip_packed_ex6_f32_scalar(
             packed_ex_code[base + 7],
         ]);
 
-        // Read upper 2 bits (4 bytes)
+        //读高2位（4字节）
         let compact2 = u32::from_le_bytes([
             packed_ex_code[base + 8],
             packed_ex_code[base + 9],
@@ -1804,17 +2112,16 @@ fn ip_packed_ex6_f32_scalar(
             packed_ex_code[base + 11],
         ]);
 
-        // Extract lower 4 bits for all 16 codes
+        //为所有的16个字节码提取低4位
         let mut lower_4bits = [0u16; 16];
         for i in 0..8 {
             let byte_val = ((compact4 >> (i * 8)) & 0xFF) as u8;
-            // Even code (0,2,4,...,14) in lower nibble
-            lower_4bits[i] = (byte_val & 0x0F) as u16;
-            // Odd code (1,3,5,...,15) in upper nibble
-            lower_4bits[i + 8] = ((byte_val >> 4) & 0x0F) as u16;
+            // 逻辑索引 0..7 的低 4 位来自 8 个字节的低 nibble。
+            // 逻辑索引 8..15 的低 4 位来自这 8 个字节的高 nibble。
+            lower_4bits[i] = (byte_val & 0x0F) as u16; //第 i 个字节的低 4 位
+            lower_4bits[i + 8] = ((byte_val >> 4) & 0x0F) as u16; //第 i 个字节的高 4 位
         }
-
-        // Extract upper 2 bits for all 16 codes (using 2-bit interleaved format)
+        // 提取所有 16 个代码的高 2 位（使用 2 位交错格式）
         let mut upper_2bits = [0u16; 16];
         for i in 0..4 {
             let byte_offset = i * 8;
@@ -1824,7 +2131,7 @@ fn ip_packed_ex6_f32_scalar(
             upper_2bits[i + 12] = ((compact2 >> (byte_offset + 6)) & 0x3) as u16;
         }
 
-        // Combine and compute dot product
+        //合并计算点积
         for i in 0..16 {
             let code = (lower_4bits[i] | (upper_2bits[i] << 4)) as f32;
             sum += code * query[code_idx + i];
@@ -1835,180 +2142,339 @@ fn ip_packed_ex6_f32_scalar(
 }
 
 // ----------------------------------------------------------------------------
-// AVX2 implementations (optimized)
+// AVX2 实现（优化后）
 // ----------------------------------------------------------------------------
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2,fma")]
 #[allow(dead_code)]
 unsafe fn ip_packed_ex2_f32_avx2(
     query: &[f32],
     packed_ex_code: &[u8],
     padded_dim: usize,
 ) -> f32 {
-    unsafe {
-        use std::arch::x86_64::*;
+    use std::arch::x86_64::{
+        __m128, _mm_add_ps, _mm_add_ss, _mm_cvtss_f32, _mm_movehl_ps, _mm_shuffle_ps,
+        _mm_unpackhi_epi64, _mm256_castps256_ps128, _mm256_cvtepi8_epi32,
+        _mm256_cvtepi32_ps, _mm256_extractf128_ps, _mm256_fmadd_ps, _mm256_loadu_ps,
+        _mm256_setzero_ps,
+    };
 
-        let mut sum = _mm256_setzero_ps();
-        let mask = _mm_set1_epi8(0b00000011); // Mask for extracting 2 bits
+    let groups = padded_dim / 16;
+    let code_ptr = packed_ex_code.as_ptr();
+    let query_ptr = query.as_ptr();
+    let mut sum = _mm256_setzero_ps();
 
-        // Process 16 elements at a time (16 * 2 bits = 32 bits = 4 bytes)
-        let mut query_ptr = query.as_ptr();
-        let mut code_ptr = packed_ex_code.as_ptr();
+    for g in 0..groups {
+        let word = std::ptr::read_unaligned(code_ptr.add(g * 4) as *const i32);
+        let code_masked = ex2_codes_16(word);
 
-        for _ in 0..(padded_dim / 16) {
-            // Load 4 bytes of packed 2-bit codes (16 elements in C++ compatible format)
-            let compact = std::ptr::read_unaligned(code_ptr as *const i32);
+        let code_f32_lo = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(code_masked));
+        let query_lo = _mm256_loadu_ps(query_ptr.add(g * 16));
+        sum = _mm256_fmadd_ps(code_f32_lo, query_lo, sum);
 
-            // C++ format: Extract using shifts and masks
-            // _mm_set_epi32 creates [d, c, b, a] where a is at lowest address
-            // compact >> 0: bits 0-31, compact >> 2: bits 2-33, etc.
-            let code_i32 =
-                _mm_set_epi32(compact >> 6, compact >> 4, compact >> 2, compact);
-            let code_masked = _mm_and_si128(code_i32, mask);
-
-            // code_masked now contains 16 bytes, each with 2-bit value
-            // Bytes 0-3: codes 0,1,2,3 (from compact >> 0)
-            // Bytes 4-7: codes 4,5,6,7 (from compact >> 2)
-            // Bytes 8-11: codes 8,9,10,11 (from compact >> 4)
-            // Bytes 12-15: codes 12,13,14,15 (from compact >> 6)
-
-            // Extract lower 8 bytes (codes 0-7) and convert to f32
-            let code_f32_lo = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(code_masked));
-            let query_lo = _mm256_loadu_ps(query_ptr);
-            sum = _mm256_fmadd_ps(code_f32_lo, query_lo, sum);
-
-            // Extract upper 8 bytes (codes 8-15) and convert to f32
-            let code_masked_hi = _mm_unpackhi_epi64(code_masked, code_masked); // Get high 8 bytes
-            let code_f32_hi = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(code_masked_hi));
-            let query_hi = _mm256_loadu_ps(query_ptr.add(8));
-            sum = _mm256_fmadd_ps(code_f32_hi, query_hi, sum);
-
-            query_ptr = query_ptr.add(16);
-            code_ptr = code_ptr.add(4);
-        }
-
-        // Horizontal sum
-        let sum_hi = _mm256_extractf128_ps(sum, 1);
-        let sum_lo = _mm256_castps256_ps128(sum);
-        let sum_128 = _mm_add_ps(sum_lo, sum_hi);
-        let sum_64 = _mm_add_ps(sum_128, _mm_movehl_ps(sum_128, sum_128));
-        let sum_32 = _mm_add_ss(sum_64, _mm_shuffle_ps(sum_64, sum_64, 0x55));
-        _mm_cvtss_f32(sum_32)
+        // 把高 64 位复制到低 64 位，再取码 8-15
+        let code_masked_hi = _mm_unpackhi_epi64(code_masked, code_masked);
+        let code_f32_hi = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(code_masked_hi));
+        let query_hi = _mm256_loadu_ps(query_ptr.add(g * 16 + 8));
+        sum = _mm256_fmadd_ps(code_f32_hi, query_hi, sum);
     }
+
+    let sum_128: __m128 =
+        _mm_add_ps(_mm256_castps256_ps128(sum), _mm256_extractf128_ps(sum, 1));
+    let sum_64 = _mm_add_ps(sum_128, _mm_movehl_ps(sum_128, sum_128));
+    let sum_32 = _mm_add_ss(sum_64, _mm_shuffle_ps(sum_64, sum_64, 0x55));
+    _mm_cvtss_f32(sum_32)
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2,fma")]
 #[allow(dead_code)]
 unsafe fn ip_packed_ex6_f32_avx2(
     query: &[f32],
     packed_ex_code: &[u8],
     padded_dim: usize,
 ) -> f32 {
-    unsafe {
-        use std::arch::x86_64::*;
+    use std::arch::x86_64::{
+        __m128, _mm_add_ps, _mm_add_ss, _mm_cvtss_f32, _mm_movehl_ps, _mm_shuffle_ps,
+        _mm_unpackhi_epi64, _mm256_castps256_ps128, _mm256_cvtepi8_epi32,
+        _mm256_cvtepi32_ps, _mm256_extractf128_ps, _mm256_fmadd_ps, _mm256_loadu_ps,
+        _mm256_setzero_ps,
+    };
 
-        let mut sum = _mm256_setzero_ps();
-        const MASK_4: i64 = 0x0f0f0f0f0f0f0f0f;
-        let mask_2 = _mm_set1_epi8(0b00110000);
+    let groups = padded_dim / 16;
+    let code_ptr = packed_ex_code.as_ptr();
+    let query_ptr = query.as_ptr();
+    let mut sum = _mm256_setzero_ps();
 
-        // Process 16 elements at a time (16 * 6 bits = 96 bits = 12 bytes)
-        let mut query_ptr = query.as_ptr();
-        let mut code_ptr = packed_ex_code.as_ptr();
+    for g in 0..groups {
+        let c6 = ex6_codes_16(code_ptr.add(g * 12));
 
-        for _ in 0..(padded_dim / 16) {
-            // Load 8 bytes containing lower 4 bits of each code
-            let compact4 = std::ptr::read_unaligned(code_ptr as *const i64);
-            let code4_0 = compact4 & MASK_4;
-            let code4_1 = (compact4 >> 4) & MASK_4;
-            let c4 = _mm_set_epi64x(code4_1, code4_0); // lower 4 bits
+        let code_f32_lo = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(c6));
+        let query_lo = _mm256_loadu_ps(query_ptr.add(g * 16));
+        sum = _mm256_fmadd_ps(code_f32_lo, query_lo, sum);
 
-            code_ptr = code_ptr.add(8);
-
-            // Load 4 bytes containing upper 2 bits of each code
-            let compact2 = std::ptr::read_unaligned(code_ptr as *const i32);
-            let c2 = _mm_set_epi32(compact2 >> 2, compact2, compact2 << 2, compact2 << 4);
-            let c2_masked = _mm_and_si128(c2, mask_2);
-
-            // Combine: 6-bit code = (upper 2 bits) | (lower 4 bits)
-            let c6 = _mm_or_si128(c2_masked, c4);
-
-            // Convert first 8 codes to f32
-            let code_f32_lo = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(c6));
-            let query_lo = _mm256_loadu_ps(query_ptr);
-            sum = _mm256_fmadd_ps(code_f32_lo, query_lo, sum);
-
-            // Convert next 8 codes to f32
-            let c6_hi = _mm_unpackhi_epi64(c6, c6); // Shift to get high 8 bytes
-            let code_f32_hi = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(c6_hi));
-            let query_hi = _mm256_loadu_ps(query_ptr.add(8));
-            sum = _mm256_fmadd_ps(code_f32_hi, query_hi, sum);
-
-            query_ptr = query_ptr.add(16);
-            code_ptr = code_ptr.add(4); // Total 12 bytes per 16 elements
-        }
-
-        // Horizontal sum
-        let sum_hi = _mm256_extractf128_ps(sum, 1);
-        let sum_lo = _mm256_castps256_ps128(sum);
-        let sum_128 = _mm_add_ps(sum_lo, sum_hi);
-        let sum_64 = _mm_add_ps(sum_128, _mm_movehl_ps(sum_128, sum_128));
-        let sum_32 = _mm_add_ss(sum_64, _mm_shuffle_ps(sum_64, sum_64, 0x55));
-        _mm_cvtss_f32(sum_32)
+        let c6_hi = _mm_unpackhi_epi64(c6, c6);
+        let code_f32_hi = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(c6_hi));
+        let query_hi = _mm256_loadu_ps(query_ptr.add(g * 16 + 8));
+        sum = _mm256_fmadd_ps(code_f32_hi, query_hi, sum);
     }
+
+    let sum_128: __m128 =
+        _mm_add_ps(_mm256_castps256_ps128(sum), _mm256_extractf128_ps(sum, 1));
+    let sum_64 = _mm_add_ps(sum_128, _mm_movehl_ps(sum_128, sum_128));
+    let sum_32 = _mm_add_ss(sum_64, _mm_shuffle_ps(sum_64, sum_64, 0x55));
+    _mm_cvtss_f32(sum_32)
 }
 
 // ----------------------------------------------------------------------------
-// AVX512 implementations (highest performance)
+// AVX512 实现（最高性能）
 // ----------------------------------------------------------------------------
-
-/// AVX512 implementation of 2-bit ex-code inner product
-/// Reference: C++ ip16_fxu2_avx512 in space.hpp:293-316
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+/// AVX512 实现的 2 位 excode 内积
+/// 参考：space.hpp 中的 C++ ip16_fxu2_avx512:293-316
 #[target_feature(enable = "avx512f")]
+/// 从 4 个打包字节取出 16 个 2-bit 码（C++ 交错布局），一字节一个码
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+unsafe fn ex2_codes_16(word: i32) -> std::arch::x86_64::__m128i {
+    use std::arch::x86_64::{
+        _mm_and_si128, _mm_cvtsi32_si128, _mm_set1_epi8, _mm_setr_epi32,
+        _mm_shuffle_epi32, _mm_srlv_epi32,
+    };
+
+    // 广播到 4 个 dword 后按 [0,2,4,6] 移位再掩码，替代 4 次标量移位 + set_epi32
+    let v = _mm_shuffle_epi32(_mm_cvtsi32_si128(word), 0b0000_0000);
+    _mm_and_si128(
+        _mm_srlv_epi32(v, _mm_setr_epi32(0, 2, 4, 6)),
+        _mm_set1_epi8(0b00000011),
+    )
+}
+
+/// 从 12 个打包字节取出 16 个 6-bit 码（低 4 位 8 字节 + 高 2 位 4 字节），一字节一个码
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+unsafe fn ex6_codes_16(code_ptr: *const u8) -> std::arch::x86_64::__m128i {
+    use std::arch::x86_64::{
+        _mm_and_si128, _mm_blend_epi32, _mm_cvtsi32_si128, _mm_cvtsi64_si128,
+        _mm_or_si128, _mm_set1_epi8, _mm_setr_epi32, _mm_shuffle_epi32, _mm_sllv_epi32,
+        _mm_srli_epi16, _mm_srlv_epi32, _mm_unpacklo_epi64,
+    };
+
+    // 低 4 位：字节 j 的低半字节是码 j，高半字节是码 j+8
+    let v4 = _mm_cvtsi64_si128(std::ptr::read_unaligned(code_ptr as *const i64));
+    let lo = _mm_and_si128(v4, _mm_set1_epi8(0x0F));
+    let hi = _mm_and_si128(_mm_srli_epi16(v4, 4), _mm_set1_epi8(0x0F));
+    let c4 = _mm_unpacklo_epi64(lo, hi);
+
+    // 高 2 位：字节 j 内的 4 个码（j、j+4、j+8、j+12）在 bit 对 0-1/2-3/4-5/6-7，
+    // 逐组移到每个字节的 bit 4-5。前 3 组左移 [4,2,0]，第 4 组右移 2，再混合——
+    // 这与原来的标量写法逐位等价（不能统一成 "先左移 4 再右移"，那样会丢掉 dword 高位）
+    let compact2 = std::ptr::read_unaligned(code_ptr.add(8) as *const i32);
+    let b = _mm_shuffle_epi32(_mm_cvtsi32_si128(compact2), 0b0000_0000);
+    let left = _mm_sllv_epi32(b, _mm_setr_epi32(4, 2, 0, 0));
+    let right = _mm_srlv_epi32(b, _mm_setr_epi32(0, 0, 0, 2));
+    let c2 = _mm_and_si128(
+        _mm_blend_epi32::<0b1000>(left, right),
+        _mm_set1_epi8(0b00110000),
+    );
+
+    _mm_or_si128(c2, c4)
+}
+
 unsafe fn ip_packed_ex2_f32_avx512(
     query: &[f32],
     packed_ex_code: &[u8],
     padded_dim: usize,
 ) -> f32 {
-    use std::arch::x86_64::*;
+    use std::arch::x86_64::{
+        _mm512_cvtepi8_epi32, _mm512_cvtepi32_ps, _mm512_fmadd_ps, _mm512_loadu_ps,
+        _mm512_reduce_add_ps, _mm512_setzero_ps,
+    };
 
+    let groups = padded_dim / 16;
+    let code_ptr = packed_ex_code.as_ptr();
+    let query_ptr = query.as_ptr();
     let mut sum = _mm512_setzero_ps();
-    let mask = _mm_set1_epi8(0b00000011); // Mask for extracting 2 bits
 
-    // Process 16 elements at a time (16 * 2 bits = 32 bits = 4 bytes)
-    let mut query_ptr = query.as_ptr();
-    let mut code_ptr = packed_ex_code.as_ptr();
-
-    for _ in 0..(padded_dim / 16) {
-        // Load 4 bytes of packed 2-bit codes (16 elements in C++ compatible format)
-        let compact = std::ptr::read_unaligned(code_ptr as *const i32);
-
-        // C++ format: Extract using shifts and masks
-        // _mm_set_epi32 creates [d, c, b, a] where a is at lowest address
-        // compact >> 0: bits 0-31, compact >> 2: bits 2-33, etc.
-        let code = _mm_set_epi32(compact >> 6, compact >> 4, compact >> 2, compact);
-        let code = _mm_and_si128(code, mask);
-
-        // Convert 16 bytes (each with 2-bit value) to 16 f32 values
-        let cf = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(code));
-
-        // Load 16 query values and compute FMA
-        let q = _mm512_loadu_ps(query_ptr);
+    for g in 0..groups {
+        let word = std::ptr::read_unaligned(code_ptr.add(g * 4) as *const i32);
+        let cf = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(ex2_codes_16(word)));
+        let q = _mm512_loadu_ps(query_ptr.add(g * 16));
         sum = _mm512_fmadd_ps(cf, q, sum);
-
-        query_ptr = query_ptr.add(16);
-        code_ptr = code_ptr.add(4);
     }
 
-    // Horizontal sum using AVX512 reduce
     _mm512_reduce_add_ps(sum)
 }
 
-/// AVX512 implementation of 6-bit ex-code inner product
-/// Reference: C++ ip16_fxu6_avx512 in space.hpp:456-486
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx512f,avx2")]
+unsafe fn ip_packed_ex6_f32_avx512_16(
+    query: &[f32],
+    packed_ex_code: &[u8],
+    padded_dim: usize,
+) -> f32 {
+    use std::arch::x86_64::{
+        _mm512_cvtepi8_epi32, _mm512_cvtepi32_ps, _mm512_fmadd_ps, _mm512_loadu_ps,
+        _mm512_reduce_add_ps, _mm512_setzero_ps,
+    };
+
+    let groups = padded_dim / 16;
+    let code_ptr = packed_ex_code.as_ptr();
+    let query_ptr = query.as_ptr();
+    let mut sum = _mm512_setzero_ps();
+
+    for g in 0..groups {
+        let c6 = ex6_codes_16(code_ptr.add(g * 12));
+        let cf = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(c6));
+        let q = _mm512_loadu_ps(query_ptr.add(g * 16));
+        sum = _mm512_fmadd_ps(cf, q, sum);
+    }
+
+    _mm512_reduce_add_ps(sum)
+}
+
+/// Decode two adjacent 16-code groups together, preserving the stored layout.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx2")]
+unsafe fn ex6_codes_32(code_ptr: *const u8) -> std::arch::x86_64::__m256i {
+    use std::arch::x86_64::*;
+    let words = _mm256_set_m128i(
+        _mm_cvtsi64_si128(std::ptr::read_unaligned(code_ptr.add(12).cast::<i64>())),
+        _mm_cvtsi64_si128(std::ptr::read_unaligned(code_ptr.cast::<i64>())),
+    );
+    let low = _mm256_and_si256(words, _mm256_set1_epi8(15));
+    let high = _mm256_and_si256(_mm256_srli_epi16::<4>(words), _mm256_set1_epi8(15));
+    let code4 = _mm256_unpacklo_epi64(low, high);
+    let high_words = _mm256_set_m128i(
+        _mm_shuffle_epi32::<0>(_mm_cvtsi32_si128(std::ptr::read_unaligned(
+            code_ptr.add(20).cast::<i32>(),
+        ))),
+        _mm_shuffle_epi32::<0>(_mm_cvtsi32_si128(std::ptr::read_unaligned(
+            code_ptr.add(8).cast::<i32>(),
+        ))),
+    );
+    // Shift right before moving the selected bit pairs to bits 4-5. Shifting
+    // left first would discard the most significant input pair of a dword.
+    let pairs = _mm256_srlv_epi32(high_words, _mm256_setr_epi32(0, 2, 4, 6, 0, 2, 4, 6));
+    let code2 = _mm256_and_si256(_mm256_slli_epi16::<4>(pairs), _mm256_set1_epi8(0x30));
+    _mm256_or_si256(code4, code2)
+}
+
+/// Decode four 16-coordinate groups using two byte permutations. The masked
+/// load reads exactly 48 bytes, including at the end of a persisted code slice.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
+unsafe fn ex6_codes_64_vbmi(code: *const u8) -> std::arch::x86_64::__m512i {
+    use std::arch::x86_64::*;
+    const fn indices(high: bool) -> [u8; 64] {
+        let mut result = [0; 64];
+        let mut i = 0;
+        while i < 64 {
+            result[i] = ((i / 16) * 12 + if high { 8 + i % 4 } else { i % 8 }) as u8;
+            i += 1;
+        }
+        result
+    }
+    const LOW: [u8; 64] = indices(false);
+    const HIGH: [u8; 64] = indices(true);
+    const SHIFTS: [u16; 32] = [
+        0, 0, 2, 2, 4, 4, 6, 6, 0, 0, 2, 2, 4, 4, 6, 6, 0, 0, 2, 2, 4, 4, 6, 6, 0, 0, 2,
+        2, 4, 4, 6, 6,
+    ];
+    let bytes = _mm512_maskz_loadu_epi8((1u64 << 48) - 1, code.cast());
+    let low = _mm512_permutexvar_epi8(_mm512_loadu_si512(LOW.as_ptr().cast()), bytes);
+    let high = _mm512_permutexvar_epi8(_mm512_loadu_si512(HIGH.as_ptr().cast()), bytes);
+    let nibbles =
+        _mm512_mask_blend_epi8(0xff00ff00ff00ff00, low, _mm512_srli_epi16::<4>(low));
+    let pairs = _mm512_srlv_epi16(high, _mm512_loadu_si512(SHIFTS.as_ptr().cast()));
+    _mm512_or_si512(
+        _mm512_and_si512(nibbles, _mm512_set1_epi8(15)),
+        _mm512_and_si512(_mm512_slli_epi16::<4>(pairs), _mm512_set1_epi8(0x30)),
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
+unsafe fn ip_packed_ex6_f32_vbmi(query: &[f32], packed: &[u8], dim: usize) -> f32 {
+    use std::arch::x86_64::*;
+    debug_assert_eq!(query.len(), dim);
+    debug_assert_eq!(packed.len(), dim * 6 / 8);
+    debug_assert!(dim.is_multiple_of(16));
+    let mut sum = _mm512_setzero_ps();
+    let mut offset = 0;
+    while offset + 64 <= dim {
+        let values = ex6_codes_64_vbmi(packed.as_ptr().add(offset * 6 / 8));
+        macro_rules! accumulate {
+            ($part:literal) => {{
+                let bytes = _mm512_extracti32x4_epi32::<$part>(values);
+                let codes = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(bytes));
+                sum = _mm512_fmadd_ps(
+                    codes,
+                    _mm512_loadu_ps(query.as_ptr().add(offset + $part * 16)),
+                    sum,
+                );
+            }};
+        }
+        // Preserve the original FMA chain and horizontal reduction exactly.
+        accumulate!(0);
+        accumulate!(1);
+        accumulate!(2);
+        accumulate!(3);
+        offset += 64;
+    }
+    while offset < dim {
+        let codes = ex6_codes_16(packed.as_ptr().add(offset * 6 / 8));
+        let codes = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(codes));
+        sum = _mm512_fmadd_ps(codes, _mm512_loadu_ps(query.as_ptr().add(offset)), sum);
+        offset += 16;
+    }
+    _mm512_reduce_add_ps(sum)
+}
+
+/// f32 查询向量与打包后的 6 位 ex_code 的内积（总共 7 位 RaBitQ）
+/// 参考：C++ ip16_fxu6_avx512
+///
+/// # 参数
+/// * `query` - 查询向量（f32，长度必须为 padded_dim）
+/// * `packed_ex_code` - 打包后的 6 位 ex_code（padded_dim * 6 / 8 字节）
+/// * `padded_dim` - 填充维度（必须是 16 的倍数）
+#[inline]
+pub fn ip_packed_ex6_f32(query: &[f32], packed_ex_code: &[u8], padded_dim: usize) -> f32 {
+    debug_assert_eq!(query.len(), padded_dim);
+    debug_assert_eq!(packed_ex_code.len(), (padded_dim * 6).div_ceil(8));
+    debug_assert!(
+        padded_dim.is_multiple_of(16),
+        "padded_dim must be multiple of 16 for 6-bit"
+    );
+
+    // 优先级 AVX512 > AVX2 > Scalar
+    // 运行时检测：优先级 AVX512 > AVX2 > Scalar（与构建配置无关）
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f")
+            && is_x86_feature_detected!("avx512bw")
+            && is_x86_feature_detected!("avx512vbmi")
+        {
+            return unsafe { ip_packed_ex6_f32_vbmi(query, packed_ex_code, padded_dim) };
+        }
+        if is_x86_feature_detected!("avx512f") {
+            return unsafe {
+                ip_packed_ex6_f32_avx512(query, packed_ex_code, padded_dim)
+            };
+        }
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            return unsafe { ip_packed_ex6_f32_avx2(query, packed_ex_code, padded_dim) };
+        }
+    }
+
+    ip_packed_ex6_f32_scalar(query, packed_ex_code, padded_dim)
+}
+
+/// AVX512 实现的 6 位 excode 内积
+/// 参考：space.hpp 中的 C++ ip16_fxu6_avx512:456-486
 #[target_feature(enable = "avx512f")]
 unsafe fn ip_packed_ex6_f32_avx512(
     query: &[f32],
@@ -2016,61 +2482,36 @@ unsafe fn ip_packed_ex6_f32_avx512(
     padded_dim: usize,
 ) -> f32 {
     use std::arch::x86_64::*;
-
-    let mut sum = _mm512_setzero_ps();
-    const MASK_4: i64 = 0x0f0f0f0f0f0f0f0f;
-    let mask_2 = _mm_set1_epi8(0b00110000);
-
-    // Process 16 elements at a time (16 * 6 bits = 96 bits = 12 bytes)
-    let mut query_ptr = query.as_ptr();
-    let mut code_ptr = packed_ex_code.as_ptr();
-
-    for _ in 0..(padded_dim / 16) {
-        // Load 8 bytes containing lower 4 bits of each code
-        let compact4 = std::ptr::read_unaligned(code_ptr as *const i64);
-        let code4_0 = compact4 & MASK_4;
-        let code4_1 = (compact4 >> 4) & MASK_4;
-        let c4 = _mm_set_epi64x(code4_1, code4_0); // lower 4 bits
-
-        code_ptr = code_ptr.add(8);
-
-        // Load 4 bytes containing upper 2 bits of each code
-        let compact2 = std::ptr::read_unaligned(code_ptr as *const i32);
-        let c2 = _mm_set_epi32(compact2 >> 2, compact2, compact2 << 2, compact2 << 4);
-        let c2 = _mm_and_si128(c2, mask_2);
-
-        // Combine: 6-bit code = (upper 2 bits) | (lower 4 bits)
-        let c6 = _mm_or_si128(c2, c4);
-
-        // Convert 16 bytes (each with 6-bit value) to 16 f32 values
-        let cf = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(c6));
-
-        // Load 16 query values and compute FMA
-        let q = _mm512_loadu_ps(query_ptr);
-        sum = _mm512_fmadd_ps(cf, q, sum);
-
-        query_ptr = query_ptr.add(16);
-        code_ptr = code_ptr.add(4); // Total 12 bytes per 16 elements
+    // Longer, sparse-refinement scans did not improve end-to-end. Keep their
+    // original decoder rather than enabling a microbenchmark-only speedup.
+    if padded_dim > 512 {
+        return ip_packed_ex6_f32_avx512_16(query, packed_ex_code, padded_dim);
     }
-
-    // Horizontal sum using AVX512 reduce
+    let mut sum = _mm512_setzero_ps();
+    let mut offset = 0;
+    while offset + 32 <= padded_dim {
+        let codes = ex6_codes_32(packed_ex_code.as_ptr().add(offset * 6 / 8));
+        let first =
+            _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(_mm256_castsi256_si128(codes)));
+        let second = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(
+            _mm256_extracti128_si256::<1>(codes),
+        ));
+        // Keep exactly the original one-accumulator FMA chain and reduction.
+        sum = _mm512_fmadd_ps(first, _mm512_loadu_ps(query.as_ptr().add(offset)), sum);
+        sum = _mm512_fmadd_ps(
+            second,
+            _mm512_loadu_ps(query.as_ptr().add(offset + 16)),
+            sum,
+        );
+        offset += 32;
+    }
+    if offset < padded_dim {
+        let codes = ex6_codes_16(packed_ex_code.as_ptr().add(offset * 6 / 8));
+        let values = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(codes));
+        sum = _mm512_fmadd_ps(values, _mm512_loadu_ps(query.as_ptr().add(offset)), sum);
+    }
     _mm512_reduce_add_ps(sum)
 }
-
-// ----------------------------------------------------------------------------
-// Batch Distance Computation (Vectorized)
-// ----------------------------------------------------------------------------
-
-/// Compute batch distances in vectorized fashion (matching C++ Eigen performance)
-/// This replaces scalar loops with explicit SIMD operations
-///
-/// Computes:
-/// - ip_x0_qr[i] = delta * accu[i] + sum_vl
-/// - est_distance[i] = f_add[i] + g_add + f_rescale[i] * (ip_x0_qr[i] + k1x_sum_q)
-/// - lower_bound[i] = est_distance[i] - f_error[i] * g_error
-///
-/// Reference: C++ estimator.hpp:65-70 (Eigen vectorized operations)
-#[inline]
 #[allow(clippy::too_many_arguments)]
 pub fn compute_batch_distances_u16(
     accu_res: &[u16; FASTSCAN_BATCH_SIZE],
@@ -2412,12 +2853,16 @@ mod tests {
             (result_packed - result_unpacked).abs()
         );
 
-        // Allow for floating point precision differences (especially with 6-bit packing)
+        // Different SIMD reduction orders accumulate f32 rounding differently;
+        // require a relative error appropriate for f32 rather than an absolute
+        // 0.1, which is too strict for a ~1.5e5 sum.
+        let tolerance = 1e-5 * result_unpacked.abs().max(1.0);
         assert!(
-            (result_packed - result_unpacked).abs() < 0.1,
-            "Packed and unpacked results differ: {} vs {}",
+            (result_packed - result_unpacked).abs() <= tolerance,
+            "Packed and unpacked results differ: {} vs {} (tolerance {})",
             result_packed,
-            result_unpacked
+            result_unpacked,
+            tolerance
         );
     }
 
@@ -2517,12 +2962,16 @@ mod tests {
             (result_packed - result_unpacked).abs()
         );
 
-        // Allow for floating point precision differences (especially with 6-bit packing)
+        // Different SIMD reduction orders accumulate f32 rounding differently;
+        // require a relative error appropriate for f32 rather than an absolute
+        // 0.1, which is too strict for a ~1.5e5 sum.
+        let tolerance = 1e-5 * result_unpacked.abs().max(1.0);
         assert!(
-            (result_packed - result_unpacked).abs() < 0.1,
-            "Packed and unpacked results differ: {} vs {}",
+            (result_packed - result_unpacked).abs() <= tolerance,
+            "Packed and unpacked results differ: {} vs {} (tolerance {})",
             result_packed,
-            result_unpacked
+            result_unpacked,
+            tolerance
         );
     }
 }
@@ -3283,11 +3732,16 @@ mod cpp_compat_tests {
         println!("Reference result: {}", result_ref);
         println!("Difference:       {}", (result_simd - result_ref).abs());
 
+        // Different SIMD reduction orders accumulate f32 rounding differently;
+        // require a relative error appropriate for f32 rather than an absolute
+        // 0.1, which is too strict for a ~1.5e5 sum.
+        let tolerance = 1e-5 * result_ref.abs().max(1.0);
         assert!(
-            (result_simd - result_ref).abs() < 0.1,
-            "SIMD 6-bit result differs from reference: {} vs {}",
+            (result_simd - result_ref).abs() <= tolerance,
+            "SIMD 6-bit result differs from reference: {} vs {} (tolerance {})",
             result_simd,
-            result_ref
+            result_ref,
+            tolerance
         );
     }
 }

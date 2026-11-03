@@ -3,6 +3,7 @@
 
 use crate::rabitq::simd;
 use std::cmp::Ordering;
+#[derive(Debug, Clone)]
 pub(crate) struct QueryLut {
     /// Quantized lookup table (i8 values for SIMD)
     pub(crate) lut_i8: Vec<i8>,
@@ -16,6 +17,7 @@ pub(crate) struct QueryLut {
 
 /// High-accuracy LUT with separated low8/high8 components
 /// Used for high-dimensional data (dim > 2048) to prevent overflow
+#[derive(Debug, Clone)]
 pub(crate) struct QueryLutHighAcc {
     /// Low 8 bits of LUT values (u8 for unsigned values)
     pub(crate) lut_low8: Vec<u8>,
@@ -30,56 +32,64 @@ pub(crate) struct QueryLutHighAcc {
     pub(crate) sum_vl_lut: f32,
 }
 
+/// Select the high-accuracy LUT when the u16 accumulator could overflow or
+/// when both the padded dimension and wide extended codes justify its cost.
+#[inline]
+pub(crate) fn should_use_highacc(padded_dim: usize, has_wide_codes: bool) -> bool {
+    padded_dim >= 2048 || (padded_dim > 1024 && has_wide_codes)
+}
+
 impl QueryLutHighAcc {
-    /// Build high-accuracy LUT from rotated query
-    /// Splits quantized values into low8 and high8 components
-    pub(crate) fn new(rotated_query: &[f32], padded_dim: usize) -> Self {
+    /// Build a uint16 LUT over its actual range, with separate byte planes.
+    ///
+    /// Only a 16-entry table lives on the stack. Two passes over the query
+    /// avoid retaining a full float LUT and a temporary uint16 LUT. The owned
+    /// storage is 8 * padded_dim bytes, below the ordinary LUT builder's peak.
+    #[allow(clippy::chunks_exact_to_as_chunks)]
+    pub(crate) fn new(query: &[f32], padded_dim: usize) -> Self {
+        assert_eq!(
+            query.len(),
+            padded_dim,
+            "query dimension must match padded_dim"
+        );
         assert!(
             padded_dim.is_multiple_of(4),
             "padded_dim must be multiple of 4 for LUT"
         );
-
-        // First compute float values like regular LUT
-        // pack_lut_f32 packs 4 dimensions into 16 LUT entries, repeated for each batch
-        let lut_size = (padded_dim / 4) * 16 * (padded_dim / 32);
-        let mut lut_f32 = vec![0.0f32; lut_size];
-        simd::pack_lut_f32(rotated_query, &mut lut_f32);
-
-        // Compute delta and sum_vl_lut
-        let sum: f32 = lut_f32.iter().sum();
-        let (delta, sum_vl) = if lut_f32.iter().all(|&x| x.abs() < f32::EPSILON) {
-            (1.0, 0.0)
-        } else {
-            let max_val = lut_f32.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
-            // Use larger range for high-accuracy mode (16-bit instead of 8-bit)
-            let delta = max_val / 32767.0; // i16::MAX
-            let sum_vl = sum / delta;
-            (delta, sum_vl)
-        };
-
-        // Quantize to 16-bit signed values first
-        let mut lut_i16 = vec![0i16; lut_f32.len()];
-        for (i, &val) in lut_f32.iter().enumerate() {
-            let quantized = (val / delta).round();
-            lut_i16[i] = quantized.clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        let mut table = [0.0f32; 16];
+        let mut low = 0.0f32;
+        let mut high = 0.0f32;
+        for values in query.chunks_exact(4) {
+            simd::pack_lut_f32(values, &mut table);
+            for &value in &table {
+                if value.total_cmp(&low).is_lt() {
+                    low = value;
+                }
+                if value.total_cmp(&high).is_gt() {
+                    high = value;
+                }
+            }
         }
-
-        // Split into low8 and high8 components
-        let mut lut_low8 = vec![0u8; lut_i16.len()];
-        let mut lut_high8 = vec![0u8; lut_i16.len()];
-
-        for (i, &val) in lut_i16.iter().enumerate() {
-            // Convert i16 to u16 by adding 32768 (shift to unsigned range)
-            let unsigned_val = (val as i32 + 32768) as u16;
-            lut_low8[i] = (unsigned_val & 0xFF) as u8;
-            lut_high8[i] = ((unsigned_val >> 8) & 0xFF) as u8;
+        let delta = (high - low) / u16::MAX as f32;
+        let mut lut_low8 = vec![0u8; padded_dim * 4];
+        let mut lut_high8 = vec![0u8; padded_dim * 4];
+        if delta > 0.0 {
+            for (group, values) in query.chunks_exact(4).enumerate() {
+                simd::pack_lut_f32(values, &mut table);
+                for (entry, &value) in table.iter().enumerate() {
+                    let quantized =
+                        ((value - low) / delta).round().clamp(0.0, u16::MAX as f32)
+                            as u16;
+                    lut_low8[group * 16 + entry] = quantized as u8;
+                    lut_high8[group * 16 + entry] = (quantized >> 8) as u8;
+                }
+            }
         }
-
         Self {
             lut_low8,
             lut_high8,
             delta,
-            sum_vl_lut: sum_vl,
+            sum_vl_lut: low * (padded_dim / 4) as f32,
         }
     }
 }
@@ -149,6 +159,9 @@ pub(crate) struct QueryPrecomputed {
 
     pub(crate) binary_scale: f32,
 
+    /// Number of extended-code bits, used to choose the LUT variant.
+    pub(crate) ex_bits: usize,
+
     /// Optional LUT for FastScan batch search
     pub(crate) lut: Option<QueryLut>,
 
@@ -170,6 +183,7 @@ impl QueryPrecomputed {
             k1x_sum_q: c1 * sum_query,
             kbx_sum_q: cb * sum_query,
             binary_scale,
+            ex_bits,
             lut: None,         // LUT built on demand for batch search
             lut_highacc: None, // High-accuracy LUT built on demand for high-dimensional data
         }
@@ -178,9 +192,9 @@ impl QueryPrecomputed {
     /// Build LUT for FastScan batch search
     /// Should be called once per query before searching clusters
     pub(crate) fn build_lut(&mut self, padded_dim: usize) {
-        // Decide whether to use high-accuracy mode based on dimension
-        // Use high-accuracy for dimensions > 2048 to prevent overflow
-        let use_highacc = padded_dim > 2048;
+        // Multi-bit refinement amplifies ordinary byte-LUT error; high
+        // dimensions also need 32-bit accumulation to avoid byte-sum overflow.
+        let use_highacc = should_use_highacc(padded_dim, self.ex_bits > 2);
 
         if use_highacc {
             if self.lut_highacc.is_none() {
@@ -231,5 +245,61 @@ impl PartialOrd for HeapEntry {
 impl Ord for HeapEntry {
     fn cmp(&self, other: &Self) -> Ordering {
         self.candidate.distance.total_cmp(&other.candidate.distance)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rabitq::simd::FASTSCAN_BATCH_SIZE;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    /// The uint16 LUT and the fused SIMD accumulators must agree with a
+    /// direct per-codebook sum for every lane, including the VNNI-sized and
+    /// the long-dimension kernels.
+    #[test]
+    fn highacc_lut_matches_direct_accumulation() {
+        let mut rng = StdRng::seed_from_u64(9351);
+        for dim in [960usize, 2048] {
+            let query: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0..1.0)).collect();
+            let lut = QueryLutHighAcc::new(&query, dim);
+            assert_eq!(lut.lut_low8.len(), dim * 4);
+            assert_eq!(lut.lut_high8.len(), dim * 4);
+
+            let dim_bytes = dim / 8;
+            let raw: Vec<u8> = (0..FASTSCAN_BATCH_SIZE * dim_bytes)
+                .map(|_| rng.gen_range(0u8..=255))
+                .collect();
+            let mut packed = vec![0u8; FASTSCAN_BATCH_SIZE * dim_bytes];
+            simd::pack_codes(&raw, FASTSCAN_BATCH_SIZE, dim_bytes, &mut packed);
+            let mut results = [0i32; FASTSCAN_BATCH_SIZE];
+            simd::accumulate_batch_highacc_avx2(
+                &packed,
+                &lut.lut_low8,
+                &lut.lut_high8,
+                dim,
+                &mut results,
+            );
+
+            let mut binary = vec![0u8; dim];
+            for (vector, &actual) in results.iter().enumerate() {
+                simd::unpack_single_vector(&packed, vector, dim_bytes, &mut binary);
+                let mut expected = 0i32;
+                for group in 0..dim / 4 {
+                    let mut code = 0usize;
+                    for bit in 0..4 {
+                        if binary[group * 4 + bit] != 0 {
+                            code |= 1 << (3 - bit);
+                        }
+                    }
+                    let idx = group * 16 + code;
+                    expected += (lut.lut_low8[idx] as u32
+                        | ((lut.lut_high8[idx] as u32) << 8))
+                        as i32;
+                }
+                assert_eq!(actual, expected, "dim={dim} vector={vector}");
+            }
+        }
     }
 }

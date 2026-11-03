@@ -2,10 +2,12 @@
 
 use super::IdAndVecBatch;
 use super::IvfRabitqIndex;
-use super::assign_batch_to_centroids;
-use super::cluster::ClusterData;
+use super::assign_batch_to_centroids_into;
+use super::cluster::{BuildPending, ClusterData};
 use crate::rabitq::kmeans::KMeansResult;
-use crate::rabitq::quantizer::{QuantizedVector, RabitqConfig};
+use crate::rabitq::quantizer::{
+    QuantizeScratch, RabitqConfig, quantize_with_centroid_parts_into,
+};
 use crate::rabitq::rotation::{DynamicRotator, RotatorType};
 use crate::rabitq::segment::{IndexHeader, IndexStore, SegmentEntry};
 use crate::rabitq::{Metric, RabitqError};
@@ -140,6 +142,7 @@ impl IvfRabitqBuilder {
                 pending_ids: Vec::new(),
                 pending_ids_version: Vec::new(),
                 pending_vectors: Vec::new(),
+                build_pending: BuildPending::default(),
             });
         }
         let rotator = DynamicRotator::deserialize(
@@ -321,6 +324,7 @@ impl IvfRabitqBuilder {
                         pending_ids: Vec::new(),
                         pending_ids_version: Vec::new(),
                         pending_vectors: Vec::new(),
+                        build_pending: BuildPending::default(),
                     })
                     .collect();
 
@@ -345,7 +349,16 @@ impl IvfRabitqBuilder {
                 let mut t_stream_gemm = 0.0f64;
                 let mut t_stream_quant = 0.0f64;
                 let mut t_stream_append = 0.0f64;
-                const SUB_CHUNK: usize = 20_000;
+                const SUB_CHUNK: usize = 32_000;
+                // Reused across every sub-chunk: keeps streaming peak memory
+                // bounded and avoids allocator churn for the whole scan.
+                let mut rb = Vec::with_capacity(SUB_CHUNK * padded_dim);
+                let mut bids = Vec::with_capacity(SUB_CHUNK);
+                let mut dot_products = Vec::with_capacity(SUB_CHUNK * nlist);
+                let mut norms = Vec::with_capacity(SUB_CHUNK);
+                let mut cluster_offsets = vec![0usize; nlist + 1];
+                let mut cluster_order = Vec::with_capacity(SUB_CHUNK);
+                let mut cluster_cursors = vec![0usize; nlist];
 
                 let mut stream = make_stream();
                 while let Some(batch) = stream.next().await {
@@ -357,54 +370,84 @@ impl IvfRabitqBuilder {
                         let sub_n = sub_end - sub_start;
 
                         let t0 = Instant::now();
-                        let mut rb = vec![0.0f32; sub_n * padded_dim];
+                        rb.clear();
+                        rb.resize(sub_n * padded_dim, 0.0);
                         rb.par_chunks_mut(padded_dim).enumerate().for_each(
                             |(k, chunk)| {
                                 let i = sub_start + k;
                                 let v = &batch.vectors[i * dim..(i + 1) * dim];
-                                chunk.copy_from_slice(&rotator.rotate(v));
+                                rotator.rotate_into(v, chunk);
                             },
                         );
                         t_stream_rot += t0.elapsed().as_secs_f64();
 
                         let t0 = Instant::now();
-                        let bids = assign_batch_to_centroids(
+                        bids.clear();
+                        assign_batch_to_centroids_into(
                             &rb,
                             sub_n,
                             nlist,
                             padded_dim,
                             &centroid_col,
                             &centroid_norms,
+                            Metric::L2,
+                            &mut bids,
+                            &mut dot_products,
+                            &mut norms,
                         );
                         t_stream_gemm += t0.elapsed().as_secs_f64();
 
+                        // Group the sub-chunk by cluster so each cluster can
+                        // quantise and append its rows without cross-thread
+                        // synchronisation.
                         let t0 = Instant::now();
-                        let ins: Vec<(usize, QuantizedVector)> = (0..sub_n)
-                            .into_par_iter()
-                            .map(|i| {
-                                let rv = &rb[i * padded_dim..(i + 1) * padded_dim];
-                                let cid = bids[i];
-                                (
-                                    cid,
-                                    crate::rabitq::quantizer::quantize_with_centroid(
-                                        rv,
-                                        &clusters[cid].centroid,
-                                        &config,
-                                        metric,
-                                    ),
-                                )
-                            })
-                            .collect();
-                        t_stream_quant += t0.elapsed().as_secs_f64();
-
-                        let t0 = Instant::now();
-                        for (i, (cid, q)) in ins.into_iter().enumerate() {
-                            clusters[cid]
-                                .append_vector(batch.ids[sub_start + i].clone(), q);
+                        cluster_offsets.fill(0);
+                        for &cid in &bids {
+                            cluster_offsets[cid + 1] += 1;
+                        }
+                        for cid in 1..=nlist {
+                            cluster_offsets[cid] += cluster_offsets[cid - 1];
+                        }
+                        cluster_order.clear();
+                        cluster_order.resize(sub_n, 0);
+                        cluster_cursors.copy_from_slice(&cluster_offsets[..nlist]);
+                        for (i, &cid) in bids.iter().enumerate() {
+                            let pos = cluster_cursors[cid];
+                            cluster_order[pos] = i;
+                            cluster_cursors[cid] += 1;
                         }
                         t_stream_append += t0.elapsed().as_secs_f64();
-                        drop(rb);
-                        drop(bids);
+
+                        let t0 = Instant::now();
+                        let offsets = &cluster_offsets;
+                        let order = &cluster_order;
+                        clusters
+                            .par_iter_mut()
+                            .enumerate()
+                            .map_init(
+                                || QuantizeScratch::new(padded_dim),
+                                |scratch, (cid, cluster)| {
+                                    for &i in &order[offsets[cid]..offsets[cid + 1]] {
+                                        let rv =
+                                            &rb[i * padded_dim..(i + 1) * padded_dim];
+                                        let params = quantize_with_centroid_parts_into(
+                                            rv,
+                                            &cluster.centroid,
+                                            &config,
+                                            metric,
+                                            scratch,
+                                        );
+                                        cluster.append_packed_for_build(
+                                            batch.ids[sub_start + i].clone(),
+                                            &scratch.packed_binary,
+                                            &scratch.packed_ex,
+                                            params,
+                                        );
+                                    }
+                                },
+                            )
+                            .for_each(drop);
+                        t_stream_quant += t0.elapsed().as_secs_f64();
                     }
                     total_vectors += bn;
                     if bc.is_multiple_of(10) {
@@ -414,6 +457,7 @@ impl IvfRabitqBuilder {
                 let t_flush = Instant::now();
                 for c in &mut clusters {
                     c.flush_pending();
+                    c.release_build_buffers();
                 }
                 let t_flush = t_flush.elapsed();
                 println!(

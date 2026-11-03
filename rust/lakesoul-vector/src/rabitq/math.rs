@@ -72,12 +72,23 @@ pub fn normalize(v: &mut [f32]) -> f32 {
 /// Compute `a - b` element-wise.
 #[inline]
 pub fn subtract(a: &[f32], b: &[f32]) -> Vec<f32> {
-    assert_eq!(a.len(), b.len());
-    let len = a.len();
-    let mut out = vec![0.0f32; len];
+    let mut out = vec![0.0f32; a.len()];
+    subtract_into(a, b, &mut out);
+    out
+}
 
-    if len == 0 {
-        return out;
+/// Write `a - b` into a caller-provided buffer.
+///
+/// The quantisation hot path calls this once per vector; reusing the output
+/// buffer avoids allocating a fresh `Vec<f32>` for every vector while keeping
+/// the same SIMD kernels as [`subtract`].
+#[inline]
+pub(crate) fn subtract_into(a: &[f32], b: &[f32], out: &mut [f32]) {
+    assert_eq!(a.len(), b.len());
+    assert_eq!(a.len(), out.len());
+
+    if a.is_empty() {
+        return;
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -85,32 +96,31 @@ pub fn subtract(a: &[f32], b: &[f32]) -> Vec<f32> {
         if is_x86_feature_detected!("avx2") {
             // SAFETY: We just checked that AVX2 is available on this CPU.
             unsafe {
-                x86::subtract_avx2(a, b, &mut out);
+                x86::subtract_avx2(a, b, out);
             }
-            return out;
+            return;
         }
         if is_x86_feature_detected!("sse2") {
             // SAFETY: We just checked that SSE2 is available on this CPU.
             unsafe {
-                x86::subtract_sse2(a, b, &mut out);
+                x86::subtract_sse2(a, b, out);
             }
-            return out;
+            return;
         }
     }
 
     #[cfg(target_arch = "aarch64")]
     {
         unsafe {
-            neon::subtract_neon(a, b, &mut out);
+            neon::subtract_neon(a, b, out);
         }
+        return;
     }
 
     #[cfg(not(target_arch = "aarch64"))]
     {
-        subtract_scalar_into(a, b, &mut out);
+        subtract_scalar_into(a, b, out);
     }
-
-    out
 }
 
 #[cfg(not(target_arch = "aarch64"))]
