@@ -3,17 +3,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# Generates the benchmark TPC-H tables into LakeSoul namespace `tpch_sf<N>`
-# with the repository's tpchgen UDTFs (tpchgen-rs, dbgen-identical rows) and
-# the table layout of `rust/postgres-lakesoul/test_tables.sh` (primary-key,
-# hash-bucketed MOR tables), but with the standard TPC-H table names so the
-# query files run unchanged.
+# Generates the benchmark TPC-H tables into the LakeSoul schema chosen by
+# LAYOUT/SCHEMA (`tpch_sf<N>`, `tpch_sf<N>_pkmonth` or `tpch_sf<N>_nopk` by
+# default) with the repository's tpchgen UDTFs (tpchgen-rs, dbgen-identical
+# rows) and the table layout of `rust/postgres-lakesoul/test_tables.sh`
+# (primary-key, hash-bucketed MOR tables), but with the standard TPC-H table
+# names so the query files run unchanged.
 #
 # Environment:
 #   SF          scale factor (required, e.g. 1 or 10)
 #   PARTS       tpchgen partitions per table   (default: 8 x SF, min 8)
 #   BUCKETS     hashBucketNum                   (default 16)
 #   LOCATION    table root, e.g. s3://lakesoul-k8s/bench   (required)
+#   SCHEMA      table schema                   (default: per LAYOUT, see above)
+#               Set a run-specific name to load a fresh copy beside existing
+#               data: the schema names the tables and their warehouse prefix,
+#               and only that schema's tables are dropped and recreated.
 #   CONSOLE_BIN lakesoul-console binary         (default lakesoul-console)
 #   TABLES      space-separated subset          (default: all eight)
 #   CHUNKS      upserts per table               (default 1)
@@ -59,14 +64,17 @@ SF_NAME=$(printf '%s' "$SF" | tr . _)
 # `tpch_sf<N>_nopk` (plain file scans the distributed planner can split).
 LAYOUT="${LAYOUT:-pk}"
 case "$LAYOUT" in
-pk) SCHEMA="tpch_sf$SF_NAME" ;;
-pkmonth) SCHEMA="tpch_sf${SF_NAME}_pkmonth" ;;
-nopk) SCHEMA="tpch_sf${SF_NAME}_nopk" ;;
+pk) default_schema="tpch_sf$SF_NAME" ;;
+pkmonth) default_schema="tpch_sf${SF_NAME}_pkmonth" ;;
+nopk) default_schema="tpch_sf${SF_NAME}_nopk" ;;
 *)
     echo "LAYOUT must be pk, pkmonth or nopk" >&2
     exit 2
     ;;
 esac
+# SCHEMA renames the schema (and so the warehouse directory) without changing
+# the layout; empty keeps the per-layout default.
+SCHEMA="${SCHEMA:-$default_schema}"
 if [ -z "${PARTS:-}" ]; then
     PARTS=$(awk -v sf="$SF" 'BEGIN { p = int(sf * 8); print (p < 8 ? 8 : p) }')
 fi

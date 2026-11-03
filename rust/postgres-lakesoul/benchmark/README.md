@@ -10,7 +10,7 @@ TPC-H results.
 | `driver/` | `lsbench`, a stdlib-only async PG-wire driver (see `driver/README.md`) |
 | `workloads/tpch/` | q01–q22 with `{{SF}}` placeholders, answers for sf0.1/sf1/sf10 |
 | `workloads/mixes/` | load mixes: `short`, `cpu`, `mem`, `mixed` (paths relative to the mix file) |
-| `datagen/tpch.sh` | tpchgen → `lakesoul-console` loader (`LAYOUT=pk|pkmonth|nopk`, `BUCKETS`, `CHUNKS`) |
+| `datagen/tpch.sh` | tpchgen → `lakesoul-console` loader (`LAYOUT=pk|pkmonth|nopk`, `SCHEMA`, `BUCKETS`, `CHUNKS`) |
 | `k8s/base` | patches over `../k8s` overlay: Recreate strategy, bench image |
 | `k8s/profiles/{small,medium,throttled}` | coordinator/worker requests and limits |
 | `k8s/profiles/pgwire` | 4 cores / 8 GiB Guaranteed coordinator and workers with 40Gi scratch PVCs, one per `Type=compute` node, apart from bench and observability Pods (single node vs PG-wire comparison) |
@@ -79,6 +79,13 @@ Each merge owns whole work units, and the units are packed over the
 distributed tasks. Both `pk` and `pkmonth` therefore distribute. For a
 like-for-like comparison, pass `--buckets 16` for both layouts; other runs
 can choose a different bucket count.
+
+`SCHEMA=<name> datagen/tpch.sh ...` overrides the per-layout schema name.
+Choose an unused name: tables in the selected schema are dropped and
+recreated. Set `LAKESOUL_WAREHOUSE` to a fresh object-store prefix as well;
+the console derives table locations from that warehouse and the schema,
+overriding SQL `LOCATION`. `bench.py datagen` does not forward `SCHEMA`,
+so use a run-specific Job environment for isolated loads.
 
 `pkmonth` writes a file per month × bucket × chunk, so lower `--buckets` at
 small SF. The TPC-H queries do not filter the month columns, so they measure
