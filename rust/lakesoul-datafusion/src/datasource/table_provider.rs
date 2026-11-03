@@ -492,6 +492,17 @@ impl LakeSoulTableProvider {
             (None, None)
         };
 
+        // The PostgreSQL front end passes plain option keys; the management
+        // `CREATE EXTERNAL TABLE` path uses `format.`-prefixed ones. Fill the
+        // property from whichever form is present. The PG front end has
+        // already resolved the change column against the declared schema.
+        let use_cdc = cmd.options.get("use_cdc").cloned().or(use_cdc);
+        let cdc_column = cmd
+            .options
+            .get("lakesoul_cdc_change_column")
+            .cloned()
+            .or(cdc_column);
+
         let logical_schema = Arc::new(schema_builder.finish());
 
         // The `vector_index_columns` option declares vector indexes at

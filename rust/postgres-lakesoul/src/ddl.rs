@@ -64,6 +64,11 @@ const INVALID_PARAMETER_VALUE: &str = "22023";
 const DEFAULT_HASH_BUCKET_NUM: u32 = 4;
 const MAX_HASH_BUCKET_NUM: u32 = 32768;
 
+/// The Spark/Flink default change column. The PG front end folds column names
+/// to lower case, so a declared `rowKinds` is matched case-insensitively and
+/// the property stores the schema's actual (lower-case) name.
+const DEFAULT_CDC_CHANGE_COLUMN: &str = "rowKinds";
+
 /// Answers the two data-definition statements this server supports.
 pub struct DdlStatementHook {
     client: MetaDataClientRef,
@@ -163,6 +168,8 @@ impl DdlStatementHook {
         location_options
             .entry("hash_bucket_num".to_string())
             .or_insert_with(|| DEFAULT_HASH_BUCKET_NUM.to_string());
+
+        normalize_cdc_options(&mut location_options, &schema)?;
 
         let mut constraints = Constraints::default();
         if let Some(indices) = primary_key {
@@ -918,15 +925,84 @@ fn table_options(options: &CreateTableOptions) -> PgWireResult<HashMap<String, S
                 }
                 parsed.insert(name, normalized);
             }
+            "use_cdc" => {
+                let normalized = value.to_ascii_lowercase();
+                if !matches!(normalized.as_str(), "true" | "false") {
+                    return Err(user_error(
+                        INVALID_PARAMETER_VALUE,
+                        format!(
+                            "value \"{value}\" for option \"use_cdc\" is not \
+                             valid (expects true or false)"
+                        ),
+                    ));
+                }
+                parsed.insert(name, normalized);
+            }
+            "lakesoul_cdc_change_column" => {
+                // Folded like a column name; the declared column is resolved
+                // after `build_schema`.
+                let folded = value.to_ascii_lowercase();
+                validate_name(&folded)?;
+                parsed.insert(name, folded);
+            }
             other => {
                 return Err(feature_not_supported(format!(
                     "table option \"{other}\" is not supported (expects \
-                     hash_bucket_num, file_format, append_only)"
+                     hash_bucket_num, file_format, append_only, use_cdc, \
+                     lakesoul_cdc_change_column)"
                 )));
             }
         }
     }
     Ok(parsed)
+}
+
+/// Default and validate the CDC change column once the schema is known.
+///
+/// `use_cdc = true` without an explicit change column falls back to
+/// [`DEFAULT_CDC_CHANGE_COLUMN`], which must then be declared. A change column
+/// must name a declared column: unlike the `CREATE EXTERNAL TABLE` path, the
+/// PG front end does not inject a hidden column into the schema.
+fn normalize_cdc_options(
+    options: &mut HashMap<String, String>,
+    schema: &Schema,
+) -> PgWireResult<()> {
+    let resolve = |name: &str| {
+        schema
+            .fields()
+            .iter()
+            .find(|field| field.name().eq_ignore_ascii_case(name))
+            .map(|field| field.name().clone())
+    };
+
+    if let Some(name) = options.get("lakesoul_cdc_change_column").cloned() {
+        let Some(field) = resolve(&name) else {
+            return Err(user_error(
+                UNDEFINED_COLUMN,
+                format!(
+                    "column \"{name}\" named by \"lakesoul_cdc_change_column\" \
+                     does not exist"
+                ),
+            ));
+        };
+        options.insert("lakesoul_cdc_change_column".to_string(), field);
+        return Ok(());
+    }
+
+    if options.get("use_cdc").map(String::as_str) == Some("true") {
+        let Some(field) = resolve(DEFAULT_CDC_CHANGE_COLUMN) else {
+            return Err(user_error(
+                INVALID_PARAMETER_VALUE,
+                format!(
+                    "option \"use_cdc\" = true needs a change column: declare \
+                     \"{DEFAULT_CDC_CHANGE_COLUMN}\" or pass \
+                     \"lakesoul_cdc_change_column\""
+                ),
+            ));
+        };
+        options.insert("lakesoul_cdc_change_column".to_string(), field);
+    }
+    Ok(())
 }
 
 fn literal_string(value: &Expr) -> PgWireResult<String> {

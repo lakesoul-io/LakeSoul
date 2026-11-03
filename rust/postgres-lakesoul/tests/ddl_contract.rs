@@ -30,6 +30,8 @@ struct TableRow {
     hash_bucket_num: Option<String>,
     file_format: Option<String>,
     append_only: Option<String>,
+    use_cdc: Option<String>,
+    cdc_change_column: Option<String>,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -41,6 +43,7 @@ async fn ddl_create_and_drop_tables() -> Result<()> {
             drop_table_removes_metadata(h).await?;
             drop_absent_and_if_exists(h).await?;
             options_and_column_types(h).await?;
+            cdc_options_reach_properties(h).await?;
             refusal_matrix_creates_nothing(h).await?;
             extended_protocol_creates_and_drops(h).await?;
             identifiers_are_folded_and_contained(h).await?;
@@ -411,6 +414,62 @@ async fn options_and_column_types(h: &Harness) -> Result<()> {
     Ok(())
 }
 
+/// `WITH (use_cdc, lakesoul_cdc_change_column)` reaches the table properties;
+/// `use_cdc = true` defaults the column to `rowKinds` when it is declared.
+async fn cdc_options_reach_properties(h: &Harness) -> Result<()> {
+    command(
+        h,
+        "CREATE TABLE ddl_cdc (id BIGINT PRIMARY KEY, op TEXT) \
+         WITH (use_cdc = true, lakesoul_cdc_change_column = 'op')",
+    )
+    .await?;
+    let row = metadata(h, "ddl_cdc")
+        .await?
+        .with_context(|| context("ddl_cdc", "after CREATE TABLE", "metadata row"))?;
+    ensure!(
+        row.use_cdc.as_deref() == Some("true"),
+        "{}",
+        detail(
+            "ddl_cdc",
+            "use_cdc",
+            &format!("expected true, actual {:?}", row.use_cdc)
+        )
+    );
+    ensure!(
+        row.cdc_change_column.as_deref() == Some("op"),
+        "{}",
+        detail(
+            "ddl_cdc",
+            "change column",
+            &format!("expected op, actual {:?}", row.cdc_change_column)
+        )
+    );
+    command(h, "DROP TABLE ddl_cdc").await?;
+
+    // `use_cdc = true` alone falls back to the declared `rowKinds`, folded to
+    // this front end's lower-case column names.
+    command(
+        h,
+        "CREATE TABLE ddl_cdc_default (id BIGINT PRIMARY KEY, rowKinds TEXT) \
+         WITH (use_cdc = true)",
+    )
+    .await?;
+    let row = metadata(h, "ddl_cdc_default").await?.with_context(|| {
+        context("ddl_cdc_default", "after CREATE TABLE", "metadata row")
+    })?;
+    ensure!(
+        row.cdc_change_column.as_deref() == Some("rowkinds"),
+        "{}",
+        detail(
+            "ddl_cdc_default",
+            "default change column",
+            &format!("expected rowkinds, actual {:?}", row.cdc_change_column)
+        )
+    );
+    command(h, "DROP TABLE ddl_cdc_default").await?;
+    Ok(())
+}
+
 /// Statements outside the supported subset fail with `0A000` and create
 /// nothing; names that address a missing schema fail with `3F000`.
 async fn refusal_matrix_creates_nothing(h: &Harness) -> Result<()> {
@@ -549,6 +608,22 @@ async fn refusal_matrix_creates_nothing(h: &Harness) -> Result<()> {
             "22023",
         ),
         (
+            "ddl_cdc_bad_bool",
+            "CREATE TABLE ddl_cdc_bad_bool (id INT) WITH (use_cdc = 'maybe')",
+            "22023",
+        ),
+        (
+            "ddl_cdc_unknown_column",
+            "CREATE TABLE ddl_cdc_unknown_column (id INT) \
+             WITH (lakesoul_cdc_change_column = 'nope')",
+            "42703",
+        ),
+        (
+            "ddl_cdc_missing_column",
+            "CREATE TABLE ddl_cdc_missing_column (id INT) WITH (use_cdc = true)",
+            "22023",
+        ),
+        (
             "ddl_float_zero",
             "CREATE TABLE ddl_float_zero (value FLOAT(0))",
             "0A000",
@@ -591,7 +666,8 @@ async fn extended_protocol_creates_and_drops(h: &Harness) -> Result<()> {
         .lake
         .prepare(
             "CREATE TABLE ddl_extended (id BIGINT PRIMARY KEY, note TEXT) \
-             WITH (hash_bucket_num = 16, append_only = 'true')",
+             WITH (hash_bucket_num = 16, append_only = 'true', \
+             use_cdc = true, lakesoul_cdc_change_column = 'note')",
         )
         .await
         .context("extended Parse of CREATE TABLE")?;
@@ -611,6 +687,16 @@ async fn extended_protocol_creates_and_drops(h: &Harness) -> Result<()> {
         row.append_only.as_deref() == Some("true"),
         "extended CREATE TABLE must preserve append_only, actual {:?}",
         row.append_only
+    );
+    ensure!(
+        row.use_cdc.as_deref() == Some("true"),
+        "extended CREATE TABLE must preserve use_cdc, actual {:?}",
+        row.use_cdc
+    );
+    ensure!(
+        row.cdc_change_column.as_deref() == Some("note"),
+        "extended CREATE TABLE must preserve the change column, actual {:?}",
+        row.cdc_change_column
     );
     let drop = h
         .lake
@@ -1247,7 +1333,8 @@ async fn metadata(h: &Harness, table: &str) -> Result<Option<TableRow>> {
         .query(
             "SELECT table_id, table_path, partitions, \
              properties->>'hashBucketNum', properties->>'file_format', \
-             properties->>'appendOnly' \
+             properties->>'appendOnly', properties->>'use_cdc', \
+             properties->>'lakesoul_cdc_change_column' \
              FROM public.table_info WHERE table_namespace = $1 AND table_name = $2",
             &[&h.lake_namespace, &table],
         )
@@ -1260,6 +1347,8 @@ async fn metadata(h: &Harness, table: &str) -> Result<Option<TableRow>> {
         hash_bucket_num: row.get(3),
         file_format: row.get(4),
         append_only: row.get(5),
+        use_cdc: row.get(6),
+        cdc_change_column: row.get(7),
     }))
 }
 
