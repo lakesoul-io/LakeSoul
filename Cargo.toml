@@ -58,7 +58,7 @@ strip = false
 
 [profile.profiling]
 inherits = "release"
-debug = true
+debug = "line-tables-only"
 opt-level = 2
 
 [profile.test-fast]
