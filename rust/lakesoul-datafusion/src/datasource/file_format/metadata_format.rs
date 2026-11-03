@@ -1006,7 +1006,13 @@ impl LakeSoulHashSinkExec {
                     return Err(error.into());
                 }
             }
-        } else {
+        } else if partitioned_file_path_and_row_count
+            .values()
+            .any(|(files, _)| !files.is_empty())
+        {
+            // A statement that wrote no files publishes nothing, so it must not
+            // require the table in the metadata store either: the resolved
+            // table id below only exists to publish those files.
             // One publication transaction for every range partition: a failure
             // leaves the statement invisible instead of publishing a prefix.
             // The attempted files are removed when publication fails: they are
