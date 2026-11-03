@@ -62,7 +62,8 @@ impl Drop for Charge {
 }
 
 impl MergeMemory {
-    #[cfg(test)]
+    /// An enabled ledger: fetched batches are charged to `reservation` and
+    /// keep their charge through their Arrow buffer owners.
     pub(crate) fn new(reservation: MemoryReservation) -> Self {
         Self {
             ledger: Arc::new(Mutex::new(Ledger {

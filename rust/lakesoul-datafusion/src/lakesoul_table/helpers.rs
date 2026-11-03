@@ -25,6 +25,7 @@ use lakesoul_io::config::{
     LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT,
 };
 use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::transfusion::DataFileInfo;
 use lakesoul_metadata_proto::entity::{PartitionInfo, TableInfo};
 use object_store::{ObjectMeta, ObjectStore, ObjectStoreExt, path::Path};
 use rootcause::{prelude::ResultExt, report};
@@ -303,6 +304,35 @@ pub async fn listing_partition_info(
         .try_collect()
         .await?;
     trace!(file_count = files.len(), "listed partition files");
+    Ok((partition_info, files))
+}
+
+/// List one partition's files from the metadata client without touching the
+/// object store.
+///
+/// The returned descriptors replay the exact snapshot carried by
+/// `partition_info` and keep the metadata client's version order. No `HEAD`,
+/// `GET` or `list` is issued, so the descriptors carry only metadata: a
+/// `DataFileInfo::size <= 0` means the recorded size is unknown and must not be
+/// reported as `Some(0)`.
+#[tracing::instrument(
+    name = "listing_partition_file_infos",
+    level = "trace",
+    skip_all,
+    fields(
+        partition_desc = %partition_info.partition_desc,
+        version = partition_info.version,
+    )
+)]
+pub async fn listing_partition_file_infos(
+    partition_info: PartitionInfo,
+    client: MetaDataClientRef,
+) -> Result<(PartitionInfo, Vec<DataFileInfo>)> {
+    let files = client
+        .get_data_file_infos_of_single_partition(&partition_info)
+        .await
+        .context("listing partition file infos")?;
+    trace!(file_count = files.len(), "listed partition file infos");
     Ok((partition_info, files))
 }
 

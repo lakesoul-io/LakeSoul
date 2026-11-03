@@ -134,7 +134,7 @@ use futures::StreamExt;
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_io::helpers::extract_hash_bucket_id;
-use lakesoul_io::physical_plan::MergeParquetExec;
+use lakesoul_io::physical_plan::{LakeSoulScanExec, MergeParquetExec};
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
@@ -936,11 +936,12 @@ async fn expect_query_failure_within(ctx: &SessionContext, sql: &str) -> Result<
 /// then builds a normal one, so a test can prove a query really reached a
 /// worker instead of running on the coordinator.
 ///
-/// Reduced parity, deliberate: it registers only the LakeSoul distributed
-/// codec, not the production worker's full setup (every user codec, the
-/// vector-search UDF, identity headers). That is exactly what the
-/// parquet-only tests using it need; a test that needs production parity
-/// builds its worker through `crate::distributed::lakesoul_worker` instead.
+/// Reduced parity, deliberate: it registers the full LakeSoul codec list
+/// (position-addressed, so a worker must resolve every position the
+/// coordinator can stamp) but omits the production worker's vector-search
+/// UDFs and identity-header handling. That is exactly what the parquet-only
+/// tests using it need; a test that needs production parity builds its worker
+/// through `crate::distributed::lakesoul_worker` instead.
 struct CountingSessionBuilder {
     received: Arc<AtomicUsize>,
 }
@@ -953,7 +954,12 @@ impl datafusion_distributed::WorkerSessionBuilder for CountingSessionBuilder {
     ) -> datafusion::common::Result<datafusion::execution::SessionState> {
         self.received.fetch_add(1, Ordering::SeqCst);
         let mut builder = ctx.builder;
-        builder = builder.with_distributed_user_codec(crate::distributed::LakeSoulCodec);
+        // Same codecs, in the same order, as the coordinator session: a plan
+        // payload names the position of the codec that wrote it, so the
+        // worker must resolve every position the coordinator can stamp.
+        for codec in crate::distributed::codec::user_codecs() {
+            builder = builder.with_distributed_user_codec_arc(codec);
+        }
         Ok(builder.build())
     }
 }
@@ -1369,13 +1375,13 @@ fn assert_merge_work_units_pinned(explain: &str, sql: &str) {
             {
                 current_tasks = Some(tasks);
             }
-            if line.contains("MergeParquetExec") {
+            if line.contains("MergeParquetExec") || line.contains("LakeSoulScanExec") {
                 // `None` means the plan runs entirely in the head stage on
                 // the coordinator (one task), which satisfies the contract.
                 assert!(
                     current_tasks.is_none_or(|tasks| tasks == 1),
                     "merge work unit split across distributed tasks for {sql}; \
-                     every stage containing MergeParquetExec must run in one task. \
+                     every stage containing a merge-on-read scan must run in one task. \
                      EXPLAIN:\n{explain}"
                 );
             }
@@ -1933,6 +1939,14 @@ fn split_scan_partitions(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
 /// query (`Invalid input partition count`), and one read out of order — a
 /// vortex scan reads its splits concurrently unless it declares an order —
 /// yields stale and duplicate rows.
+///
+/// A metadata-only merge-on-read scan keeps no child plans to inspect: its
+/// per-unit readers and their orderings are initialized inside the node on
+/// first poll (the constructor is I/O-free), so the leaf is checked for the
+/// contract it exposes — it is merge-on-read, it does not advertise a global
+/// primary-key order it cannot guarantee across independent buckets, and
+/// every work unit still names its version files in snapshot order. Legacy
+/// [`MergeParquetExec`] stages keep their input-stream check.
 fn assert_merge_inputs_are_sorted_streams(
     plan: &Arc<dyn ExecutionPlan>,
     primary_keys: &[&str],
@@ -1941,6 +1955,21 @@ fn assert_merge_inputs_are_sorted_streams(
     let explain = display_plan_ascii(plan.as_ref(), false);
     let mut inputs = 0;
     plan.apply(|node| {
+        if let Some(scan) = node.downcast_ref::<LakeSoulScanExec>()
+            && scan.is_merge_on_read()
+        {
+            inputs += 1;
+            assert!(
+                scan.properties().output_ordering().is_none(),
+                "{sql}: independent buckets must not advertise global PK ordering:\n{explain}"
+            );
+            for unit in scan.work_units() {
+                assert!(
+                    !unit.files.is_empty(),
+                    "{sql}: merge work unit without version files:\n{explain}"
+                );
+            }
+        }
         if node.is::<MergeParquetExec>() {
             for input in node.children() {
                 inputs += 1;
@@ -2024,6 +2053,38 @@ fn assert_merge_lane_layout(
                 input_end = unit.input_range.end;
             }
             assert_eq!(input_end, merge.children().len(), "{sql}:\n{explain}");
+            assert!(
+                populated_lanes.into_iter().all(|populated| populated),
+                "{sql}: unassigned merge lane:\n{explain}"
+            );
+            units += work_units.len();
+            lanes += partitions;
+        }
+        if let Some(scan) = node.downcast_ref::<LakeSoulScanExec>()
+            && scan.is_merge_on_read()
+        {
+            nodes += 1;
+            let work_units = scan.work_units();
+            assert!(!work_units.is_empty(), "{sql}: empty merge scan:\n{explain}");
+            let partitions = scan.properties().partitioning.partition_count();
+            assert_eq!(
+                partitions,
+                work_units.len().min(lane_budget),
+                "{sql}: unexpected local merge lane count:\n{explain}"
+            );
+            assert!(
+                scan.properties().output_ordering().is_none(),
+                "{sql}: independent buckets must not advertise global PK ordering:\n{explain}"
+            );
+            let mut populated_lanes = vec![false; partitions];
+            for unit in work_units {
+                assert!(!unit.files.is_empty(), "{sql}: empty work unit:\n{explain}");
+                assert!(
+                    unit.lane < partitions,
+                    "{sql}: work-unit lane out of bounds:\n{explain}"
+                );
+                populated_lanes[unit.lane] = true;
+            }
             assert!(
                 populated_lanes.into_iter().all(|populated| populated),
                 "{sql}: unassigned merge lane:\n{explain}"
@@ -2353,7 +2414,7 @@ async fn test_scalar_subquery_aggregates_once_over_split_scans_inner() -> Result
                 continue;
             }
             assert_scan_split_over_tasks(&plan, &label);
-            if format == PhysicalFormat::Vortex {
+            if format == PhysicalFormat::Vortex || bytes_per_partition.is_some() {
                 assert!(
                     finals[0].mode == AggregateMode::Final
                         && aggregates.iter().any(|aggregate| {
@@ -2362,7 +2423,7 @@ async fn test_scalar_subquery_aggregates_once_over_split_scans_inner() -> Result
                                 && aggregate.split_scan_partitions
                                     == Some(SPLIT_TARGET_PARTITIONS)
                         }),
-                    "{label}: DataFusion must split the subquery's scan into \
+                    "{label}: the scan must be split into \
                      {SPLIT_TARGET_PARTITIONS} partitions, aggregated partially in a \
                      stage of several tasks and finally once: {aggregates:?}\n{explain}"
                 );
@@ -2370,7 +2431,7 @@ async fn test_scalar_subquery_aggregates_once_over_split_scans_inner() -> Result
                 assert_eq!(
                     finals[0].mode,
                     AggregateMode::Single,
-                    "{label}: a Parquet scan stays one partition under a `Single` \
+                    "{label}: a scan of at most one batch stays whole under a `Single` \
                      aggregate:\n{explain}"
                 );
             }
@@ -2900,12 +2961,20 @@ fn shape_matrix_cases(tables: &ShapeTables) -> Vec<ShapeCase> {
 
 /// Counts merge nodes, not their bucket work units or lanes.
 ///
+/// Both the metadata-only scan leaf (`LakeSoulScanExec` with
+/// `is_merge_on_read`) and the legacy `MergeParquetExec` name a merge; the
+/// table provider emits one node per packed unit group either way.
+///
 /// Network boundaries expose the plan of their local stage as a child, so a
 /// single walk reaches the merge operators of distributed stages as well.
 fn count_merge_nodes(plan: &Arc<dyn ExecutionPlan>) -> usize {
     let mut count = 0;
     plan.apply(|node| {
-        if node.is::<MergeParquetExec>() {
+        if node.is::<MergeParquetExec>()
+            || node
+                .downcast_ref::<LakeSoulScanExec>()
+                .is_some_and(|scan| scan.is_merge_on_read())
+        {
             count += 1;
         }
         Ok(TreeNodeRecursion::Continue)
@@ -3000,19 +3069,24 @@ async fn test_single_worker_plans_every_shape_on_the_coordinator_inner() -> Resu
 /// Whether any distributed stage hands a worker a plan that scans a vortex
 /// file.
 ///
-/// This is the part of the plan a worker must decode: the task variants live
-/// inside a `DistributedLeafExec`, which exposes them through `variants()`
-/// rather than as children.
+/// This is the part of the plan a worker must decode. An append-only scan
+/// scales into one variant per task inside a `DistributedLeafExec`, which
+/// exposes them through `variants()` rather than as children; a merge-on-read
+/// scan keeps whole work units and is not scaled, so each task's
+/// `LakeSoulScanExec` is an ordinary child of the stage's union, reached by
+/// the plain walk below.
 fn worker_variants_scan_vortex(plan: &Arc<dyn ExecutionPlan>) -> bool {
     let mut found = false;
     plan.apply(|node| {
-        if let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() {
-            for variant in leaf.variants() {
-                if contains_vortex_scan(variant) {
-                    found = true;
-                    return Ok(TreeNodeRecursion::Stop);
-                }
-            }
+        if let Some(leaf) = node.downcast_ref::<DistributedLeafExec>()
+            && leaf.variants().iter().any(contains_vortex_scan)
+        {
+            found = true;
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        if contains_vortex_scan(node) {
+            found = true;
+            return Ok(TreeNodeRecursion::Stop);
         }
         Ok(TreeNodeRecursion::Continue)
     })
@@ -3020,13 +3094,29 @@ fn worker_variants_scan_vortex(plan: &Arc<dyn ExecutionPlan>) -> bool {
     found
 }
 
-/// Whether `plan` reads through a [`VortexSource`] anywhere.
+/// Whether `plan` reads a vortex file anywhere.
+///
+/// A metadata-only scan names its files' physical format instead of building
+/// a `VortexSource`, so both leaf shapes count.
 fn contains_vortex_scan(plan: &Arc<dyn ExecutionPlan>) -> bool {
     let mut found = false;
     plan.apply(|node| {
         if let Some(exec) = node.downcast_ref::<DataSourceExec>()
             && let Some(config) = exec.data_source().downcast_ref::<FileScanConfig>()
             && config.file_source().is::<VortexSource>()
+        {
+            found = true;
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        if let Some(scan) = node.downcast_ref::<LakeSoulScanExec>()
+            && scan.work_units().iter().any(|unit| {
+                unit.files.iter().any(|file| {
+                    matches!(
+                        file.physical_format,
+                        PhysicalFormat::Vortex | PhysicalFormat::VortexCompact
+                    )
+                })
+            })
         {
             found = true;
             return Ok(TreeNodeRecursion::Stop);
@@ -3658,7 +3748,12 @@ impl datafusion_distributed::WorkerSessionBuilder for RecordingQueryIdBuilder {
                 &ctx.headers,
             ));
         let mut builder = ctx.builder;
-        builder = builder.with_distributed_user_codec(crate::distributed::LakeSoulCodec);
+        // Same codecs, in the same order, as the coordinator session: a plan
+        // payload names the position of the codec that wrote it, so the
+        // worker must resolve every position the coordinator can stamp.
+        for codec in crate::distributed::codec::user_codecs() {
+            builder = builder.with_distributed_user_codec_arc(codec);
+        }
         Ok(builder.build())
     }
 }
@@ -4902,9 +4997,10 @@ async fn assert_merge_units_pinned(
             .unwrap()
             .to_string();
     assert!(
-        explain_analyze.contains("MergeParquetExec"),
-        "the analyzed plan must show the merge operators for the pinning check \
-         to be about them:\n{explain_analyze}"
+        explain_analyze.contains("MergeParquetExec")
+            || explain_analyze.contains("LakeSoulScanExec"),
+        "the analyzed plan must show the merge-on-read scan operators for the \
+         pinning check to be about them:\n{explain_analyze}"
     );
     assert_merge_work_units_pinned(&explain_analyze, sql);
     Ok(())

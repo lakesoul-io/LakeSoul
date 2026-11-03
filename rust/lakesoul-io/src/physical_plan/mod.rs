@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+pub mod lakesoul_scan;
 pub mod merge;
 pub mod repartition;
 pub mod self_incremental_index_column;
@@ -17,6 +18,11 @@ mod datasource {
 pub(crate) mod empty_schema;
 
 mod api {
+    pub use super::lakesoul_scan::{
+        LakeSoulScanConfig, LakeSoulScanExec, MIN_PARQUET_RANGE_BYTES,
+        PARQUET_READ_OPTION_PREFIX, ScanFile, ScanWorkUnit, capture_read_options,
+        restore_read_options,
+    };
     pub use super::merge::MergeParquetExec;
     pub use super::repartition::RepartitionByRangeAndHashExec;
     pub use super::self_incremental_index_column::SelfIncrementalIndexColumnExec;

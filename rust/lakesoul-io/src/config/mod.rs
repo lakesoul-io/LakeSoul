@@ -303,6 +303,15 @@ impl LakeSoulIOConfig {
         &self.options
     }
 
+    /// Returns the merge operators of the primary-key columns.
+    ///
+    /// The merge kernel reads them when it combines versions of one key; a
+    /// reader rebuilt from a wire format (the distributed codec) needs the
+    /// same map, not a default.
+    pub fn merge_operators(&self) -> &HashMap<String, String> {
+        &self.merge_operators
+    }
+
     /// Returns the root directory path for files
     pub fn prefix(&self) -> &String {
         &self.prefix
@@ -753,11 +762,6 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-    /// Sets the largest `pk IN (...)` candidate set the pk index resolves.
-    ///
-    /// Above this many candidates the scan falls back to the regular path.
-    /// The default ([`crate::pk_locator::MAX_PK_CANDIDATES`]) suits point
-    /// lookups; IVM refreshes raise it for their key-filtered state reads.
     /// Pass exact key tuples instead of deriving them from SQL filters.
     pub fn with_explicit_pk_keys(
         mut self,
@@ -769,6 +773,11 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
+    /// Sets the largest `pk IN (...)` candidate set the pk index resolves.
+    ///
+    /// Above this many candidates the scan falls back to the regular path.
+    /// The default ([`crate::pk_locator::MAX_PK_CANDIDATES`]) suits point
+    /// lookups; IVM refreshes raise it for their key-filtered state reads.
     pub fn with_max_pk_candidates(mut self, max_pk_candidates: usize) -> Self {
         self.config.max_pk_candidates = max_pk_candidates;
         self

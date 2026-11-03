@@ -92,25 +92,19 @@ pub use resolver::{
 /// # Generations
 ///
 /// The version identifies a *protocol generation*, not just this crate's
-/// release: bump it whenever the physical-plan encoding changes.
+/// release. Bump it for incompatible changes to a released protocol.
 ///
 /// `/1` advertised an unversioned `MergeParquetExecProto`: protobuf decoders
 /// ignore unknown fields rather than rejecting them, so a plan written by this
 /// build would have been silently accepted by a `/1` worker.
 ///
-/// `/2` is the current generation and the first one versioned on the wire: it
-/// carries the explicit [`codec::CODEC_VERSION`] field *and* registers the
-/// vortex scan codec at position 2 of [`codec::user_codecs`]. Both changes are
-/// one generation rather than two because neither format has ever been
-/// released — a `/2` worker from this tree resolves every codec position a
-/// coordinator from it can stamp. Split them the moment one of the two ships on
-/// its own: extension payloads name the *position* of the codec that wrote
-/// them, so a coordinator that can stamp position 2 needs workers that resolve
-/// it.
+/// `/2` introduced the explicit [`codec::CODEC_VERSION`] field and the Vortex
+/// codec at position 2.
 ///
-/// Advertising `/2` filters `/1` workers out at discovery and closes the other
-/// direction at decode time.
-pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2";
+/// `/3` adds [`codec::LakeSoulScanCodec`] at position 3, including its optional
+/// scan limit. Discovery must exclude `/2` workers before a coordinator can
+/// dispatch metadata-only scan descriptors that they cannot decode.
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/3";
 
 pub use worker::{
     LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker,

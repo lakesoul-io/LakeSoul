@@ -37,7 +37,7 @@ use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_execution::{TaskContext, runtime_env::RuntimeEnv};
 use datafusion_expr::execution_props::ExecutionProps;
 use datafusion_expr::physical_planning_context::PhysicalPlanningContext;
-use datafusion_expr::registry::ExtensionTypeRegistryRef;
+use datafusion_expr::registry::{ExtensionTypeRegistryRef, MemoryExtensionTypeRegistry};
 use datafusion_expr::utils::conjunction;
 use datafusion_expr::{
     AggregateUDF, Expr, HigherOrderUDF, LogicalPlan, Operator, ScalarUDF,
@@ -239,6 +239,8 @@ pub struct LakeSoulIOSession {
     io_config: LakeSoulIOConfig,
     execution_props: ExecutionProps,
     inner: Arc<IOSessionInner>,
+    /// Table-level format options of the session that created this adapter.
+    table_options: TableOptions,
 }
 
 struct ListingMetas {
@@ -253,11 +255,18 @@ struct FormatScanGroup {
     partition_files: Vec<PartitionedFile>,
 }
 
-/// Immutable part of `LakeSoulIOSession`
+/// Immutable session resources. Consumer registries are borrowed through the
+/// task context rather than copied again for each lazy execution lane.
 struct IOSessionInner {
     pub session_id: String,
     pub session_config: SessionConfig,
     pub runtime_env: Arc<RuntimeEnv>,
+    pub scalar_functions: HashMap<String, Arc<ScalarUDF>>,
+    pub higher_order_functions: HashMap<String, Arc<HigherOrderUDF>>,
+    pub aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
+    pub window_functions: HashMap<String, Arc<WindowUDF>>,
+    pub extension_type_registry: ExtensionTypeRegistryRef,
+    pub consumer_context: Option<Arc<TaskContext>>,
     pub listing_metas: OnceCell<ListingMetas>,
     pub file_format: OnceCell<Arc<LakeSoulFormatRegistry>>,
     pub file_schema: OnceCell<Arc<Schema>>,
@@ -380,10 +389,18 @@ impl LakeSoulIOSession {
         io_config.files = normalized_filenames;
         info!("NativeIO normalized file names: {:?}", io_config.files);
         info!("NativeIO final config\n{:?}", io_config);
+        let table_options =
+            TableOptions::default_from_session_config(sess_conf.options());
         let inner = IOSessionInner {
             session_id: random_str(8),
             session_config: sess_conf,
             runtime_env: Arc::new(runtime),
+            scalar_functions: HashMap::new(),
+            higher_order_functions: HashMap::new(),
+            aggregate_functions: HashMap::new(),
+            window_functions: HashMap::new(),
+            consumer_context: None,
+            extension_type_registry: Arc::new(MemoryExtensionTypeRegistry::new_empty()),
             listing_metas: OnceCell::new(),
             file_format: OnceCell::new(),
             file_schema: OnceCell::new(),
@@ -394,18 +411,34 @@ impl LakeSoulIOSession {
             io_config,
             inner: Arc::new(inner),
             execution_props: ExecutionProps::new(),
+            table_options,
         })
     }
 
     /// this api is prepared for `lakesoul-datafusion` only
+    ///
+    /// The adapter keeps the consumer's function registries: a plan or
+    /// predicate built through this session must see the same UDFs the
+    /// consumer registered, and [`TaskContext`]s derived from it must carry
+    /// them, too. The extension type registry is DataFusion's default, since a
+    /// [`TaskContext`] does not carry one.
     pub fn from_plain_config_and_context(
         io_config: LakeSoulIOConfig,
         task_ctx: Arc<TaskContext>,
     ) -> Self {
+        let table_options = TableOptions::default_from_session_config(
+            task_ctx.session_config().options(),
+        );
         let inner = Arc::new(IOSessionInner {
-            session_id: task_ctx.session_id().clone(),
+            session_id: task_ctx.session_id(),
             session_config: task_ctx.session_config().clone(),
-            runtime_env: task_ctx.runtime_env().clone(),
+            runtime_env: task_ctx.runtime_env(),
+            scalar_functions: HashMap::new(),
+            higher_order_functions: HashMap::new(),
+            aggregate_functions: HashMap::new(),
+            window_functions: HashMap::new(),
+            consumer_context: Some(task_ctx),
+            extension_type_registry: Arc::new(MemoryExtensionTypeRegistry::new_empty()),
             listing_metas: OnceCell::new(),
             file_format: OnceCell::new(),
             file_schema: OnceCell::new(),
@@ -416,6 +449,7 @@ impl LakeSoulIOSession {
             io_config,
             inner,
             execution_props: ExecutionProps::new(),
+            table_options,
         }
     }
 
@@ -1086,31 +1120,29 @@ impl LakeSoulIOSession {
         // with row-level candidate inputs (vortex only; otherwise the regular
         // scan path is kept).
         let encoded_inputs = match key_candidates {
-            Some(keys) if !keys.is_empty() => {
-                pk_locator::try_build_key_inputs_encoded(
-                    self,
-                    &self.io_config,
-                    &flatten_configs,
-                    &key_columns,
-                    expected_key_kind,
-                    keys,
-                )
-                .await
-            }
+            Some(keys) if !keys.is_empty() => pk_locator::try_build_key_inputs_encoded(
+                self,
+                &self.io_config,
+                &flatten_configs,
+                &key_columns,
+                expected_key_kind,
+                keys,
+            )
+            .await
+            .map_err(|error| report!(error))?,
             _ => None,
         };
         let candidate_inputs = match encoded_inputs {
             Some(inputs) => Some(inputs),
             None => match &key_constraint {
-                Some(constraint) => {
-                    pk_locator::try_build_key_inputs(
-                        self,
-                        &self.io_config,
-                        &flatten_configs,
-                        constraint,
-                    )
-                    .await
-                }
+                Some(constraint) => pk_locator::try_build_key_inputs(
+                    self,
+                    &self.io_config,
+                    &flatten_configs,
+                    constraint,
+                )
+                .await
+                .map_err(|error| report!(error))?,
                 None => None,
             },
         };
@@ -1227,6 +1259,7 @@ impl LakeSoulIOSession {
             io_config,
             execution_props: self.execution_props.clone(),
             inner: self.inner.clone(),
+            table_options: self.table_options.clone(),
         }
     }
 
@@ -1270,32 +1303,58 @@ impl Session for LakeSoulIOSession {
     }
     fn create_physical_expr(
         &self,
-        _expr: Expr,
-        _df_schema: &DFSchema,
+        expr: Expr,
+        df_schema: &DFSchema,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        Err(DataFusionError::NotImplemented(
-            "lakesoul session unsupported".into(),
-        ))
+        // Predicate adaptation builds physical expressions from logical ones;
+        // this session's execution properties and the default expression
+        // planners are all that is needed for the expressions a scan carries.
+        datafusion_physical_expr::create_physical_expr(
+            &expr,
+            df_schema,
+            &self.execution_props,
+            &PhysicalPlanningContext::default(),
+        )
     }
 
     fn scalar_functions(&self) -> &HashMap<String, Arc<ScalarUDF>> {
-        unimplemented!("lakesoul session unsupported")
+        self.inner
+            .consumer_context
+            .as_ref()
+            .map_or(&self.inner.scalar_functions, |context| {
+                context.scalar_functions()
+            })
     }
 
     fn aggregate_functions(&self) -> &HashMap<String, Arc<AggregateUDF>> {
-        unimplemented!("lakesoul session unsupported")
+        self.inner
+            .consumer_context
+            .as_ref()
+            .map_or(&self.inner.aggregate_functions, |context| {
+                context.aggregate_functions()
+            })
     }
 
     fn window_functions(&self) -> &HashMap<String, Arc<WindowUDF>> {
-        unimplemented!("lakesoul session unsupported")
+        self.inner
+            .consumer_context
+            .as_ref()
+            .map_or(&self.inner.window_functions, |context| {
+                context.window_functions()
+            })
     }
 
     fn higher_order_functions(&self) -> &HashMap<String, Arc<HigherOrderUDF>> {
-        unimplemented!("lakesoul session unsupported")
+        self.inner
+            .consumer_context
+            .as_ref()
+            .map_or(&self.inner.higher_order_functions, |context| {
+                context.higher_order_functions()
+            })
     }
 
     fn extension_type_registry(&self) -> &ExtensionTypeRegistryRef {
-        unimplemented!("lakesoul session unsupported")
+        &self.inner.extension_type_registry
     }
 
     fn runtime_env(&self) -> &Arc<RuntimeEnv> {
@@ -1311,11 +1370,11 @@ impl Session for LakeSoulIOSession {
     }
 
     fn table_options(&self) -> &TableOptions {
-        unimplemented!("lakesoul session unsupported")
+        &self.table_options
     }
 
     fn table_options_mut(&mut self) -> &mut TableOptions {
-        unimplemented!("lakesoul session unsupported")
+        &mut self.table_options
     }
 
     fn task_ctx(&self) -> Arc<TaskContext> {
@@ -1329,10 +1388,10 @@ impl From<&LakeSoulIOSession> for TaskContext {
             None,
             value.session_id().to_string(),
             value.config().clone(),
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
+            value.scalar_functions().clone(),
+            value.higher_order_functions().clone(),
+            value.aggregate_functions().clone(),
+            value.window_functions().clone(),
             Arc::clone(value.runtime_env()),
         )
     }

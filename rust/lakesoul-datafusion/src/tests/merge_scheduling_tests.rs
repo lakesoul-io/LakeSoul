@@ -28,7 +28,7 @@ use datafusion::prelude::SessionContext;
 use futures::StreamExt;
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::file_format::PhysicalFormat;
-use lakesoul_io::physical_plan::MergeParquetExec;
+use lakesoul_io::physical_plan::{LakeSoulScanExec, MergeParquetExec};
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 
 use crate::Result;
@@ -304,6 +304,20 @@ fn merge_layout(plan: &Arc<dyn ExecutionPlan>) -> Vec<(usize, usize)> {
                 other => panic!("merge lanes must be UnknownPartitioning, got {other:?}"),
             };
             merges.push((lanes, merge.work_units().len()));
+        } else if let Some(scan) = node.downcast_ref::<LakeSoulScanExec>() {
+            // A merge-on-read scan holds one merge per work unit, packed into
+            // `lanes` output partitions; a metadata-only scan node is the
+            // plan-side shape the merge now takes. Skip a pruned scan (no
+            // units) and append-only scans (no merge at all).
+            if scan.is_merge_on_read() && !scan.work_units().is_empty() {
+                let lanes = match scan.output_partitioning() {
+                    Partitioning::UnknownPartitioning(lanes) => *lanes,
+                    other => {
+                        panic!("scan lanes must be UnknownPartitioning, got {other:?}")
+                    }
+                };
+                merges.push((lanes, scan.work_units().len()));
+            }
         }
         Ok(TreeNodeRecursion::Continue)
     })

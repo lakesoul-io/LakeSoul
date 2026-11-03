@@ -1846,6 +1846,26 @@ impl MetaDataClient {
         Ok(active_data_files(&data_commit_info_list))
     }
 
+    /// Enumerate the active data files described by the selected snapshot of
+    /// `partition_info`.
+    ///
+    /// Only the commit ids in `partition_info.snapshot` are read, so the result
+    /// never reflects a later partition version. File operations are replayed
+    /// in commit order with the same delete-then-add semantics as
+    /// [`MetaDataClient::get_data_files_of_single_partition`], and each
+    /// surviving add keeps its recorded size, `file_exist_cols`, partition
+    /// description and commit timestamp. A recorded size `<= 0` means the
+    /// writer did not know the size; callers must not treat it as known.
+    pub async fn get_data_file_infos_of_single_partition(
+        &self,
+        partition_info: &PartitionInfo,
+    ) -> Result<Vec<DataFileInfo>> {
+        let data_commit_info_list = self
+            .get_data_commit_info_of_single_partition(partition_info)
+            .await?;
+        Ok(active_added_files(&data_commit_info_list))
+    }
+
     async fn get_data_commit_info_of_single_partition(
         &self,
         partition_info: &PartitionInfo,
@@ -2541,62 +2561,49 @@ impl MetaDataClient {
     }
 }
 
-fn active_data_files(commits: &[DataCommitInfo]) -> Vec<String> {
-    let mut deleted = HashSet::new();
+/// Replay resolved commits into active file operations, mirroring the JVM
+/// `filterFiles` behaviour: the operations are walked backwards so a `del`
+/// suppresses an earlier `add` of the same path, then the commit order is
+/// restored. Only `add` operations are projected by `map`.
+fn replay_active_files<'a, T>(
+    commits: &'a [DataCommitInfo],
+    mut map: impl FnMut(&'a DataCommitInfo, &'a entity::DataFileOp) -> T,
+) -> Vec<T> {
+    let mut deleted_paths = HashSet::new();
     let mut active = Vec::new();
-
-    for file_op in commits
-        .iter()
-        .flat_map(|commit| commit.file_ops.iter())
-        .rev()
-    {
-        match file_op.file_op() {
-            entity::FileOp::Del => {
-                deleted.insert(&file_op.path);
+    for commit in commits.iter().rev() {
+        for file_op in commit.file_ops.iter().rev() {
+            match file_op.file_op() {
+                entity::FileOp::Del => {
+                    deleted_paths.insert(file_op.path.as_str());
+                }
+                entity::FileOp::Add if !deleted_paths.contains(file_op.path.as_str()) => {
+                    active.push(map(commit, file_op));
+                }
+                entity::FileOp::Add => {}
             }
-            entity::FileOp::Add if !deleted.contains(&file_op.path) => {
-                active.push(file_op.path.clone());
-            }
-            entity::FileOp::Add => {}
         }
     }
     active.reverse();
     active
 }
 
-/// Turn resolved commits into added files, mirroring the JVM `filterFiles`
-/// behaviour: the operations are walked backwards so a `del` suppresses an
-/// earlier `add` of the same path, then the commit order is restored. Only
-/// `add` operations are returned.
-fn active_added_files(commits: &[DataCommitInfo]) -> Vec<DataFileInfo> {
-    let operations = commits
-        .iter()
-        .flat_map(|commit| commit.file_ops.iter().map(move |file_op| (commit, file_op)))
-        .collect::<Vec<_>>();
+fn active_data_files(commits: &[DataCommitInfo]) -> Vec<String> {
+    replay_active_files(commits, |_, file_op| file_op.path.clone())
+}
 
-    let mut deleted_paths = HashSet::new();
-    let mut active = Vec::new();
-    for (commit, file_op) in operations.iter().rev() {
-        match file_op.file_op() {
-            entity::FileOp::Del => {
-                deleted_paths.insert(file_op.path.as_str());
-            }
-            entity::FileOp::Add if !deleted_paths.contains(file_op.path.as_str()) => {
-                active.push(DataFileInfo {
-                    partition_desc: commit.partition_desc.clone(),
-                    path: file_op.path.clone(),
-                    file_op: "add".to_string(),
-                    size: file_op.size,
-                    bucket_id: None,
-                    modification_time: commit.timestamp,
-                    file_exist_cols: file_op.file_exist_cols.clone(),
-                });
-            }
-            entity::FileOp::Add => {}
-        }
-    }
-    active.reverse();
-    active
+/// Turn resolved commits into added files, preserving each add's recorded
+/// metadata.
+fn active_added_files(commits: &[DataCommitInfo]) -> Vec<DataFileInfo> {
+    replay_active_files(commits, |commit, file_op| DataFileInfo {
+        partition_desc: commit.partition_desc.clone(),
+        path: file_op.path.clone(),
+        file_op: "add".to_string(),
+        size: file_op.size,
+        bucket_id: None,
+        modification_time: commit.timestamp,
+        file_exist_cols: file_op.file_exist_cols.clone(),
+    })
 }
 
 /// Clamp a partition version into the `i32` range used by the metadata tables.
@@ -2915,7 +2922,7 @@ mod tests {
     }
 
     #[test]
-    fn active_data_files_apply_operations_in_snapshot_order() {
+    fn snapshot_replay_keeps_adds_not_deleted_in_version_order() {
         let file_op = |path: &str, operation: entity::FileOp| entity::DataFileOp {
             path: path.to_string(),
             file_op: operation.into(),
@@ -2946,10 +2953,135 @@ mod tests {
             },
         ];
 
+        let paths = active_added_files(&commits)
+            .into_iter()
+            .map(|file| file.path)
+            .collect::<Vec<_>>();
         assert_eq!(
-            active_data_files(&commits),
+            paths,
             vec!["active.parquet", "readded.parquet", "new.parquet"]
         );
+        assert_eq!(active_data_files(&commits), paths);
+    }
+
+    #[test]
+    fn snapshot_replay_preserves_per_file_size_and_column_metadata() {
+        let file_op =
+            |path: &str, operation: entity::FileOp, size: i64, columns: &str| {
+                entity::DataFileOp {
+                    path: path.to_string(),
+                    file_op: operation.into(),
+                    size,
+                    file_exist_cols: columns.to_string(),
+                }
+            };
+        let commit = |timestamp: i64, file_ops: Vec<entity::DataFileOp>| DataCommitInfo {
+            table_id: "table-id".to_string(),
+            partition_desc: "part=a".to_string(),
+            timestamp,
+            file_ops,
+            ..Default::default()
+        };
+        let commits = vec![
+            commit(
+                100,
+                vec![
+                    file_op("replaced.parquet", entity::FileOp::Add, 10, "id"),
+                    file_op("kept.parquet", entity::FileOp::Add, 20, "id,value"),
+                    file_op("rewritten.parquet", entity::FileOp::Add, 30, "id,value"),
+                ],
+            ),
+            commit(
+                200,
+                vec![
+                    file_op("replaced.parquet", entity::FileOp::Del, 0, ""),
+                    file_op("rewritten.parquet", entity::FileOp::Del, 0, ""),
+                ],
+            ),
+            commit(
+                300,
+                vec![
+                    file_op("rewritten.parquet", entity::FileOp::Add, 31, "id,flag"),
+                    file_op("appended.parquet", entity::FileOp::Add, 40, "id"),
+                ],
+            ),
+        ];
+
+        let files = active_added_files(&commits);
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["kept.parquet", "rewritten.parquet", "appended.parquet"]
+        );
+        assert_eq!(
+            files.iter().map(|file| file.size).collect::<Vec<_>>(),
+            vec![20, 31, 40]
+        );
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.file_exist_cols.as_str())
+                .collect::<Vec<_>>(),
+            vec!["id,value", "id,flag", "id"]
+        );
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.modification_time)
+                .collect::<Vec<_>>(),
+            vec![100, 300, 300]
+        );
+        assert!(files.iter().all(|file| file.partition_desc == "part=a"));
+        assert!(files.iter().all(|file| file.file_op == "add"));
+        assert!(files.iter().all(|file| file.bucket_id.is_none()));
+    }
+
+    #[test]
+    fn snapshot_replay_applies_operation_order_within_a_commit() {
+        let file_op =
+            |path: &str, operation: entity::FileOp, size: i64| entity::DataFileOp {
+                path: path.to_string(),
+                file_op: operation.into(),
+                size,
+                file_exist_cols: "id".to_string(),
+            };
+        let commit = |timestamp: i64, file_ops: Vec<entity::DataFileOp>| DataCommitInfo {
+            partition_desc: "part=a".to_string(),
+            timestamp,
+            file_ops,
+            ..Default::default()
+        };
+        let commits = vec![
+            // The delete follows the add in the same commit, so it removes it.
+            commit(
+                10,
+                vec![
+                    file_op("dropped.parquet", entity::FileOp::Add, 1),
+                    file_op("dropped.parquet", entity::FileOp::Del, 0),
+                ],
+            ),
+            // A later add of an earlier-deleted path is a fresh live version.
+            commit(
+                20,
+                vec![
+                    file_op("kept.parquet", entity::FileOp::Del, 0),
+                    file_op("kept.parquet", entity::FileOp::Add, 5),
+                ],
+            ),
+        ];
+
+        let files = active_added_files(&commits);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "kept.parquet");
+        assert_eq!(files[0].size, 5);
+        assert_eq!(files[0].modification_time, 20);
+    }
+
+    #[test]
+    fn snapshot_replay_of_no_commits_is_empty() {
+        assert!(active_added_files(&[]).is_empty());
     }
 
     #[test]

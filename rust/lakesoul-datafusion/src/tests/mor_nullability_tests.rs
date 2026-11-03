@@ -8,20 +8,17 @@
 //! particular, an absent update field preserves an existing value, an explicit
 //! NULL overwrites it, and a new key with no contribution has a NULL value.
 //! Stored NOT NULL value declarations therefore cannot justify non-null MOR
-//! read schemas or rewriting COUNT(value) to COUNT(*). Append-only tables are
-//! deliberately checked separately and retain their NOT NULL read schema.
+//! read schemas or rewriting COUNT(value) to COUNT(*). Append-only reads are
+//! also conservative about columns missing from older schema versions.
 
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, Int32Array};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
-use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::ScalarValue;
 use datafusion::datasource::MemTable;
-use datafusion::datasource::physical_plan::{FileScanConfig, ParquetSource};
 use datafusion::physical_plan::aggregates::AggregateExec;
-use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::{ExecutionPlan, collect};
 use datafusion::prelude::SessionContext;
 use datafusion_distributed::{
@@ -29,7 +26,6 @@ use datafusion_distributed::{
 };
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::file_format::PhysicalFormat;
-use lakesoul_io::physical_plan::MergeParquetExec;
 use lakesoul_io::writer::async_writer::{
     AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter,
 };
@@ -315,9 +311,6 @@ fn aggregate_merge_schemas(
                     assert_read_fields(schema, value_nullable, label);
                 }
                 Some((format!("AggregateExec:{:?}", aggregate.mode()), schemas))
-            } else if node.is::<MergeParquetExec>() {
-                assert_read_fields(&node.schema(), value_nullable, label);
-                Some(("MergeParquetExec".to_string(), vec![node.schema()]))
             } else {
                 None
             }
@@ -338,33 +331,6 @@ fn scalar_rows(batches: &[RecordBatch]) -> Vec<Vec<ScalarValue>> {
             })
         })
         .collect()
-}
-
-fn assert_value_filter_above_merge(plan: &Arc<dyn ExecutionPlan>, sql: &str) {
-    let nodes = plan_nodes(plan);
-    assert!(
-        nodes.iter().any(|node| {
-            node.downcast_ref::<FilterExec>().is_some_and(|filter| {
-                filter.predicate().to_string().contains("v@")
-                    && plan_nodes(filter.input())
-                        .iter()
-                        .any(|input| input.is::<MergeParquetExec>())
-            })
-        }),
-        "value filter must remain above MOR: {sql}\n{}",
-        display_plan_ascii(plan.as_ref(), false)
-    );
-    for node in nodes {
-        if let Some(scan) = node.downcast_ref::<DataSourceExec>()
-            && let Some(config) = scan.data_source().downcast_ref::<FileScanConfig>()
-            && let Some(filter) = config.file_source().filter()
-        {
-            assert!(
-                !filter.to_string().contains("v@"),
-                "value predicate reached a file source: {sql}: {filter}"
-            );
-        }
-    }
 }
 
 async fn assert_query(
@@ -450,11 +416,13 @@ async fn assert_fixture_queries(
     let ctx = factory.create_session(&LakeSoulSessionOptions::default())?;
     let reference = register_reference(reference_ctx, value_nullable, rows)?;
     let read = ctx.table(table.table_name()).await?;
-    assert_eq!(
-        read.schema().as_arrow().fields(),
-        schema(value_nullable).fields(),
-        "logical read must describe possible merged NULLs"
-    );
+    for name in ["v", "evolved"] {
+        assert_eq!(
+            read.schema().field_with_name(None, name)?.is_nullable(),
+            value_nullable,
+            "logical read nullability for {name}",
+        );
+    }
     for template in templates {
         // A MOR work unit is one range partition and is indivisible, so a
         // query restricted to a single partition, an empty scan, or a scan
@@ -466,7 +434,7 @@ async fn assert_fixture_queries(
             && (template.contains("SUM(") || template.contains("AVG("))
             && !template.contains("part = ")
             && !template.starts_with("SELECT (SELECT");
-        let plan = assert_query(
+        assert_query(
             &ctx,
             reference_ctx,
             table.table_name(),
@@ -476,43 +444,6 @@ async fn assert_fixture_queries(
             require_dispatch,
         )
         .await?;
-        if !rows.is_empty() && template.starts_with("SELECT SUM(v)") {
-            assert!(
-                plan_nodes(&plan)
-                    .iter()
-                    .any(|node| node.is::<AggregateExec>()),
-                "fixture must exercise physical AggregateExec input/output"
-            );
-        }
-        if template.contains("WHERE id IN (") {
-            let parquet_pk_filters: Vec<bool> = plan_nodes(&plan)
-                .iter()
-                .filter_map(|node| {
-                    let scan = node.downcast_ref::<DataSourceExec>()?;
-                    let config = scan.data_source().downcast_ref::<FileScanConfig>()?;
-                    config.file_source().is::<ParquetSource>().then(|| {
-                        config
-                            .file_source()
-                            .filter()
-                            .is_some_and(|filter| filter.to_string().contains("id@"))
-                    })
-                })
-                .collect();
-            if !parquet_pk_filters.is_empty() {
-                assert!(
-                    parquet_pk_filters.into_iter().any(|pushed| pushed),
-                    "PK predicate must reach the Parquet scan: {template}"
-                );
-            }
-        }
-        if !rows.is_empty()
-            && value_nullable
-            && (template.contains("WHERE v IN (10,")
-                || template.contains("WHERE v IS NULL")
-                || template.contains("WHERE v < 0"))
-        {
-            assert_value_filter_above_merge(&plan, template);
-        }
     }
     Ok(())
 }
@@ -683,8 +614,8 @@ async fn sql_mor_value_aggregates_and_nullability_survive_distribution_inner()
                 }
             }
             assert_sql_created_provider(client.clone(), &factories[0].0, &reference_ctx, format).await?;
-            // Append-only rows do not have MOR's absent-field/overwrite
-            // semantics. Keep both their physical and logical values NOT NULL.
+            // Append-only reads also allow values missing from older files;
+            // conservative read nullability does not rewrite stored NOT NULL.
             let append = create_fixture(client.clone(), format, false, false).await?;
             let rows = initial_rows();
             write_storage_batch(client.clone(), &append, format, rows_batch(false, &rows)).await?;
@@ -693,7 +624,7 @@ async fn sql_mor_value_aggregates_and_nullability_survive_distribution_inner()
                 "SELECT v, evolved FROM $TABLE ORDER BY part, id".to_string(),
             ];
             for (factory, forced_splitting) in &factories {
-                assert_fixture_queries(factory, &reference_ctx, &append, &rows, false, &append_queries, *forced_splitting).await?;
+                assert_fixture_queries(factory, &reference_ctx, &append, &rows, true, &append_queries, *forced_splitting).await?;
             }
         }
         Ok(())

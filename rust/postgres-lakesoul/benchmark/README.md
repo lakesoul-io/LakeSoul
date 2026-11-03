@@ -91,33 +91,47 @@ so use a run-specific Job environment for isolated loads.
 small SF. The TPC-H queries do not filter the month columns, so they measure
 full-scan merge throughput, not partition pruning.
 
-The coordinator prepares per-file scan plans before dispatching worker tasks.
-Scan flattening moves the input file groups out of its configuration template
-once, avoiding a full file-list copy for every file. Monthly fan-out still
-increases metadata inference and scan-plan construction, so balanced worker
-assignments do not by themselves establish good end-to-end scaling.
+For regular Parquet/Vortex scans the coordinator plans from PostgreSQL table
+metadata and the selected snapshot's ordered file descriptors; planning issues no
+data-file HEAD, GET, range or list request. It dispatches `LakeSoulScanExec`
+descriptors instead of preparing per-file readers. MOR keeps each
+partition/bucket unit atomic across format changes; append-only scans distribute
+files and legal Parquet byte ranges, while Vortex files stay whole.
 
-Per-file scan preparation shares one process-wide admission budget across file
-groups, tables and planning sessions, for both Parquet and Vortex. It is read
-from `DATAFUSION_EXECUTION_META_FETCH_CONCURRENCY` on first use (DataFusion's
-default when unset); set it before starting the process. A session can lower
-its own concurrency but cannot raise the process budget. Admission precedes
-metadata reads and per-file configuration allocation, and covers schema/statistics
-inference and configuration construction. Completed files immediately free a
-slot; returned plans retain input group/file order for merge version semantics.
-This is a planning concurrency budget, not a query memory or execution-I/O limit.
+Those work units — not whole range partitions — are packed round-robin over the
+tasks the scan stage may get, so `pkmonth`'s (month, bucket) units spread over
+every worker instead of stopping at the month count. A unit is never divided, and
+a node holds at most `target_partitions` open units at a time. Monthly fan-out
+still increases unit construction and dispatch, so balanced worker assignments do
+not by themselves establish good end-to-end scaling.
+
+Readers initialize on the first poll of an executing unit, including
+file-schema/statistics inference and primary-key candidate retrieval.
+Execution-time metadata reads share a process-wide admission budget across
+tables and sessions, for both Parquet and Vortex. The budget reads
+`DATAFUSION_EXECUTION_META_FETCH_CONCURRENCY` on first use; set it before starting
+the process. A session can lower its own concurrency but cannot raise the process
+budget. Admission precedes metadata reads and per-file configuration allocation,
+and covers schema/statistics inference and configuration construction. Completed
+files immediately free a slot; returned plans retain input group/file order for
+merge version semantics. This is a metadata concurrency budget, not a query
+memory or general execution-I/O limit.
 
 For scan-planning diagnosis, coordinator INFO logs include `scan planning table
-summary` (per-table wall time split into listing, preparation, flattening,
-locator, input scans, work units, merge executors and finishing), `scan planning
-flatten summary` (file/group counts and cumulative schema, statistics and local
+summary` (per-table `wall_ms` split into `classify_ms`, `key_constraint_ms`,
+`list_ms`, `work_units_ms`, `scan_execs_ms` and `finish_ms`, plus `unit_count`
+and `scan_node_count`), `scan initialization flatten summary` (eager flattening
+only: file/group counts and cumulative schema, statistics and local
 configuration-building time), and physical/distributed planner summaries. Match
 them by `query_id` and `table_name`; timestamps and elapsed times locate
-overlapping table scans. Per-file `schema_sum_ms` and `stats_sum_ms` include async
-waiting, not just CPU or remote I/O, and must not be added as sequential wall
-time. Waiting for admission contributes to flatten wall time, not the cumulative
-schema, statistics or configuration-building times. The summaries cover
-successful regular scans, not empty/index early returns or failed operations.
+overlapping table scans. `list_ms` is the metadata replay, not an object-store
+listing; `work_units_ms` builds the descriptors and `scan_execs_ms` packs nodes
+and constructs the scan executors. Per-file `schema_sum_ms` and `stats_sum_ms`
+include async waiting, not just CPU or remote I/O, and must not be added as
+sequential wall time. Waiting for admission contributes to flatten wall time, not
+to the cumulative schema, statistics or configuration-building times. The
+summaries cover successful regular scans, not empty/index early returns or failed
+operations.
 
 `scan planning schema summary` isolates reads issued by `infer_schema`, including
 Vortex's spawned inference and I/O tasks. A schema-only store wrapper carries the
@@ -126,7 +140,10 @@ execution continue using the original store. `files_with_reads` counts files
 that issued non-HEAD reads, not page-cache misses. `page_hits`/`page_misses`,
 `remote_bytes`, and `requested_bytes` distinguish cached bytes from remote page
 fills. The flatten summary's `physical_format` identifies the actual format;
-an `infer_stats` span by itself does not establish Parquet use.
+an `infer_stats` span by itself does not establish Parquet use. Metadata-only
+scans emit no such summary per unit: their planning performs no per-file
+preparation, and their execution-time reads are counted by
+`lakesoul_object_store_requests_total` instead.
 
 All schema timing fields are cumulative, not sequential query wall time:
 `store_read_sum_ms` covers requests through stream completion;
@@ -173,6 +190,23 @@ Keep the metadata concurrency budget fixed when comparing planning-stage
 measurements.
 Label the first query after a coordinator rollout as coordinator-cold only:
 worker and remote-store caches have not necessarily been reset.
+
+To check planning I/O on a cluster, snapshot per-pod
+`lakesoul_object_store_requests_total` and `lakesoul_object_store_bytes_total`
+around plain `EXPLAIN` on otherwise idle applications: require zero read deltas
+on coordinator and workers, then execute a distributed read as a positive
+control. Record pod UIDs and restart counts to exclude counter resets.
+`EXPLAIN ANALYZE` executes the query and is not a planning-only check; small
+queries may execute locally even with worker discovery enabled.
+
+For a native-console smoke check, use `INSERT OR REPLACE` to write a newer
+version of an existing primary key; plain `INSERT` rejects that conflict.
+Read after both commits and verify that non-key predicates cannot resurrect
+superseded rows, in both local and distributed execution.
+
+Lazy scan descriptors use distributed protocol `/3`, adding a physical codec
+beyond `/2`. Coordinators and workers must advertise the updated generation
+together; do not roll a lazy-scan coordinator out against `/2` workers.
 
 `deploy` always recreates the pods, so the first measured iteration is cold.
 It returns only after the coordinator log reports
