@@ -181,13 +181,14 @@ macro_rules! merge_helper {
             $merge_operator,
             $default_column_value,
             $is_compacted,
-            $ledger
+            $ledger,
+            $reservation
         );
     }};
 }
 
 macro_rules! create_merger {
-    ($t:ty, $streams:ident, $physical_schema:ident, $merged_schema:ident, $fields_map:ident, $batch_size:ident, $merge_operator:ident, $default_column_value:ident, $is_compacted:ident, $ledger:ident) => {{
+    ($t:ty, $streams:ident, $physical_schema:ident, $merged_schema:ident, $fields_map:ident, $batch_size:ident, $merge_operator:ident, $default_column_value:ident, $is_compacted:ident, $ledger:ident, $reservation:ident) => {{
         let streams_num = $streams.len();
         if $merge_operator.is_empty()
             || $merge_operator
@@ -229,7 +230,9 @@ macro_rules! create_merger {
                     streams_num,
                     $batch_size,
                     column_mapping,
-                )?.with_buffer_ledger($ledger.clone());
+                )?
+                .with_buffer_ledger($ledger.clone())
+                .with_merge_reservation($reservation);
                 let merge_stream = WindowSlidingMerger::build_merged_stream(combiner)?;
                 return Ok(Box::pin(
                     DefaultColumnStream::new_from_streams_with_default(
@@ -458,7 +461,8 @@ fn build_sorted_stream_merger_inner(
         merge_operator,
         default_column_value,
         is_compacted,
-        ledger
+        ledger,
+        reservation
     );
 }
 

@@ -758,6 +758,19 @@ mod tests {
         }
     }
 
+    /// Waits, bounded, until no merge consumer is registered: the v2 merger
+    /// runs on a spawned task that is aborted with its stream, so its consumer
+    /// disappears at the runtime's next scheduling point.
+    async fn await_released(pool: &Arc<MergeTrackingPool>) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while pool.active.load(Ordering::SeqCst) != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the merge's consumer must be released");
+    }
+
     fn task_context(pool: &Arc<MergeTrackingPool>) -> Arc<TaskContext> {
         let runtime = RuntimeEnvBuilder::new()
             .with_memory_pool(Arc::clone(pool) as Arc<dyn MemoryPool>)
@@ -984,7 +997,7 @@ mod tests {
                 "unexpected error: {error}"
             );
             assert_eq!(pool.peak.load(Ordering::SeqCst), 1);
-            assert_eq!(pool.active.load(Ordering::SeqCst), 0);
+            await_released(&pool).await;
             assert_eq!(pool.reserved(), 0);
         }
     }
@@ -1000,9 +1013,16 @@ mod tests {
         let pool = Arc::new(MergeTrackingPool::default());
         let mut stream = exec.execute(0, task_context(&pool)).unwrap();
         stream.next().await.unwrap().unwrap();
-        assert_eq!(pool.active.load(Ordering::SeqCst), 1);
         drop(stream);
-        assert_eq!(pool.active.load(Ordering::SeqCst), 0);
+        // The v2 merger runs on a spawned task that is aborted with its stream,
+        // so the task (and the merge's consumer) is dropped at the runtime's
+        // next scheduling point rather than synchronously.
+        await_released(&pool).await;
+        // One unit was merged, and dropping the lane kept the later units from
+        // opening: a consumer from a later unit would raise the peak. Do not
+        // assert the consumer is still open before the drop: the v2 merger
+        // reads a whole unit into its channel buffer, so a small unit can be
+        // finished and released before its first batch is read.
         assert_eq!(pool.peak.load(Ordering::SeqCst), 1);
         assert_eq!(pool.reserved(), 0);
     }
