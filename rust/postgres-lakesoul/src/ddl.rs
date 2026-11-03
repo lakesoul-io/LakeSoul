@@ -159,7 +159,7 @@ impl DdlStatementHook {
         let mut location_options = options;
         location_options
             .entry("file_format".to_string())
-            .or_insert_with(|| "parquet".to_string());
+            .or_insert_with(|| "vortex-compact".to_string());
         location_options
             .entry("hash_bucket_num".to_string())
             .or_insert_with(|| DEFAULT_HASH_BUCKET_NUM.to_string());

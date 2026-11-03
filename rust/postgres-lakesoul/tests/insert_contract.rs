@@ -46,7 +46,7 @@ async fn insert_contract() -> Result<()> {
 }
 
 /// `INSERT ... VALUES` commits rows, one `data_commit_info` row, one partition
-/// version and parquet files that exist on disk.
+/// version and data files that exist on disk.
 async fn plain_insert_writes_rows_metadata_and_files(h: &Harness) -> Result<()> {
     let rows = simple_rows(
         h,
@@ -90,10 +90,7 @@ async fn plain_insert_writes_rows_metadata_and_files(h: &Harness) -> Result<()> 
     ensure_eq("partition version", version(h, &table_id).await?, 0)?;
 
     let paths = file_paths(h, &table_id).await?;
-    ensure!(
-        !paths.is_empty(),
-        "INSERT must commit parquet file operations"
-    );
+    ensure!(!paths.is_empty(), "INSERT must commit data file operations");
     for path in paths {
         let local = path.strip_prefix("file://").unwrap_or(&path);
         ensure!(

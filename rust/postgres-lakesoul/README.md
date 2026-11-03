@@ -185,13 +185,13 @@ DDL 由 `src/ddl.rs` 的语句钩子承接，既不经过 DataFusion 自己的 D
 
 | 契约 | 已验证范围 | 具体用例 |
 | --- | --- | --- |
-| LakeSoul 建表语义 | 建表后 `table_info` 行的 namespace 为连接的 database、`table_path` 位于本次 warehouse 下的 `{namespace}/{table}`、主键列写入 `partitions`（`;id`）、`hashBucketNum` 默认 4、`file_format` 为 `parquet`；无主键表没有 `hashBucketNum`；`pg_class` 可见、`SELECT` 返回零行且列 OID 为 INT8／TEXT／NUMERIC／TIMESTAMPTZ；新连接同样可见 | `create_table_publishes_metadata` |
+| LakeSoul 建表语义 | 建表后 `table_info` 行的 namespace 为连接的 database、`table_path` 位于本次 warehouse 下的 `{namespace}/{table}`、主键列写入 `partitions`（`;id`）、`hashBucketNum` 默认 4、`file_format` 默认 `vortex-compact`（省略 `WITH (file_format = ...)` 时）；无主键表没有 `hashBucketNum`；`pg_class` 可见、`SELECT` 返回零行且列 OID 为 INT8／TEXT／NUMERIC／TIMESTAMPTZ；新连接同样可见 | `create_table_publishes_metadata` |
 | PG 冲突语义 | 同名 `CREATE TABLE` 返回 `42P07` 且不改动原表；`IF NOT EXISTS` 成功且 `table_id` 不变，元数据行数仍为 1；已有表存在时 `IF NOT EXISTS` 配不同列声明也不改动原 schema | `duplicate_and_if_not_exists`、`if_not_exists_keeps_the_existing_schema` |
 | `DROP TABLE` 级联 | 删表前按捕获的 `table_id` 计数（`1/1/1/0/0`），删表后同一 `table_id` 的 `table_info`／`table_name_id`／`table_path_id`／`partition_info`／`data_commit_info` 全为 0、`pg_class` 不再列出；再次 `DROP` 为 `42P01` | `drop_table_removes_metadata` |
 | `IF EXISTS` 幂等 | 不存在的表 `DROP TABLE IF EXISTS` 成功；一次多条名称同样成立 | `drop_absent_and_if_exists` |
 | 多名称 `DROP` 全或无 | `DROP TABLE a, missing` 为 `42P01`、`DROP TABLE a, nosuchschema.b` 为 `3F000`，两种情况下 `a` 及其元数据都保持不变；名称在第一次删除前全部校验 | `drop_table_is_all_or_nothing` |
 | 标识符 | 未加引号名称折叠为小写：`Orders(ID, Label)` 建出 `orders`，`partitions` 为 `;id`、路径以 `/orders` 结尾、`pg_class` 与 `SELECT` 列名为 `id/label`；`"Orders"`、`"../../outside"`、`"/tmp/outside"`、`"escaped?x=1"`、列名 `"a,b"` 均 `0A000` 且不发布元数据 | `identifiers_are_folded_and_contained` |
-| `WITH` 选项 | `hash_bucket_num`／`file_format` 写入表属性（实测 8／parquet）；旧拼写 `hashbucketnum`／`hashBucketNum` 在 simple 与 extended 均拒绝为 `0A000` | `options_and_column_types` |
+| `WITH` 选项 | `hash_bucket_num`／`file_format` 写入表属性（实测显式 `hash_bucket_num = 8`、`file_format = 'parquet'` 落到属性，不被 `vortex-compact` 默认覆盖）；旧拼写 `hashbucketnum`／`hashBucketNum` 在 simple 与 extended 均拒绝为 `0A000` | `options_and_column_types` |
 | 明确拒绝，无副作用 | `CREATE TABLE AS`、`TEMPORARY`、`OR REPLACE`、`INHERITS`、`PARTITION BY`、`NUMERIC` 无精度、`UUID`、数组、`DEFAULT`、`UNIQUE`、`CHECK`、`FOREIGN KEY`、`DEFERRABLE` 等约束特征、`FLOAT(0)`、`TIMESTAMP(0)`、未知 `WITH` 选项、三段限定名、`CREATE SCHEMA`、`ALTER TABLE`、`DROP VIEW` 均为 `0A000`；重复列 `42701`、主键内重复列 `42P16`、主键引用不存在列 `42703`、`NULL`/`NOT NULL` 冲突 `42601`；`hash_bucket_num = 0` 与 `-1` 为 `22023`；不存在的 schema 为 `3F000`；每次拒绝后连接仍可查询，且不发布元数据、不出现在 `pg_class` 中 | `refusal_matrix_creates_nothing` |
 | extended 协议 | `CREATE`／`DROP` 经 extended Parse／Execute 与 simple 行为一致；AST 可判定的拒绝（CTAS、`UUID`）在 Parse 阶段返回 `0A000`，`DROP` 的 schema 解析与 PG 一样留到 Execute（`3F000`） | `extended_protocol_creates_and_drops` |
 | 计划失效（本连接 DDL） | 本连接 `CREATE TABLE`／`DROP TABLE` 成功后推进连接内 `SettingsGeneration`（一条语句一次，拒绝不推进）；此前 Parse 的 prepared statement 在下一次 `Execute` 重新规划：`DROP` 后执行报 `42P01`，`DROP`+同名 `CREATE` 后绑定新表；被拒绝的 DDL 不影响已有计划 | `same_connection_ddl_replans_prepared_statements` |

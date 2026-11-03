@@ -88,12 +88,12 @@ async fn create_table_publishes_metadata(h: &Harness) -> Result<()> {
         )
     );
     ensure!(
-        row.file_format.as_deref() == Some("parquet"),
+        row.file_format.as_deref() == Some("vortex-compact"),
         "{}",
         detail(
             table,
             "file format",
-            &format!("expected parquet, actual {:?}", row.file_format)
+            &format!("expected vortex-compact, actual {:?}", row.file_format)
         )
     );
     let expected_suffix = format!("/{}/{table}", h.lake_namespace);
