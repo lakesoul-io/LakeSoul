@@ -905,10 +905,23 @@ fn table_options(options: &CreateTableOptions) -> PgWireResult<HashMap<String, S
                 }
                 parsed.insert(name, value);
             }
+            "append_only" => {
+                let normalized = value.to_ascii_lowercase();
+                if !matches!(normalized.as_str(), "true" | "false") {
+                    return Err(user_error(
+                        INVALID_PARAMETER_VALUE,
+                        format!(
+                            "value \"{value}\" for option \"append_only\" is not \
+                             valid (expects true or false)"
+                        ),
+                    ));
+                }
+                parsed.insert(name, normalized);
+            }
             other => {
                 return Err(feature_not_supported(format!(
                     "table option \"{other}\" is not supported (expects \
-                     hash_bucket_num, file_format)"
+                     hash_bucket_num, file_format, append_only)"
                 )));
             }
         }
@@ -920,8 +933,9 @@ fn literal_string(value: &Expr) -> PgWireResult<String> {
     match value {
         Expr::Value(literal) => match &literal.value {
             Value::SingleQuotedString(text) | Value::Number(text, _) => Ok(text.clone()),
+            Value::Boolean(flag) => Ok(flag.to_string()),
             other => Err(feature_not_supported(format!(
-                "table option value {other} is not a string or number literal"
+                "table option value {other} is not a string, number or boolean literal"
             ))),
         },
         // A negative number arrives as a unary minus over the literal; it is

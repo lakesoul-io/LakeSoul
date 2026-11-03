@@ -29,6 +29,7 @@ struct TableRow {
     partitions: String,
     hash_bucket_num: Option<String>,
     file_format: Option<String>,
+    append_only: Option<String>,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -346,12 +347,13 @@ async fn drop_absent_and_if_exists(h: &Harness) -> Result<()> {
     Ok(())
 }
 
-/// `WITH (hash_bucket_num, file_format)` reaches the table properties.
+/// `WITH (hash_bucket_num, file_format, append_only)` reaches the table
+/// properties.
 async fn options_and_column_types(h: &Harness) -> Result<()> {
     command(
         h,
         "CREATE TABLE ddl_buckets (id BIGINT PRIMARY KEY, tag TEXT) \
-         WITH (hash_bucket_num = 8, file_format = 'parquet')",
+         WITH (hash_bucket_num = 8, file_format = 'parquet', append_only = true)",
     )
     .await?;
     let row = metadata(h, "ddl_buckets")
@@ -375,7 +377,37 @@ async fn options_and_column_types(h: &Harness) -> Result<()> {
             &format!("expected parquet, actual {:?}", row.file_format)
         )
     );
+    ensure!(
+        row.append_only.as_deref() == Some("true"),
+        "{}",
+        detail(
+            "ddl_buckets",
+            "append only",
+            &format!("expected true, actual {:?}", row.append_only)
+        )
+    );
     command(h, "DROP TABLE ddl_buckets").await?;
+
+    // The quoted form normalises case the same way.
+    command(
+        h,
+        "CREATE TABLE ddl_append_false (id BIGINT PRIMARY KEY) \
+         WITH (append_only = 'FALSE')",
+    )
+    .await?;
+    let row = metadata(h, "ddl_append_false").await?.with_context(|| {
+        context("ddl_append_false", "after CREATE TABLE", "metadata row")
+    })?;
+    ensure!(
+        row.append_only.as_deref() == Some("false"),
+        "{}",
+        detail(
+            "ddl_append_false",
+            "append only",
+            &format!("expected false, actual {:?}", row.append_only)
+        )
+    );
+    command(h, "DROP TABLE ddl_append_false").await?;
     Ok(())
 }
 
@@ -511,6 +543,12 @@ async fn refusal_matrix_creates_nothing(h: &Harness) -> Result<()> {
             "22023",
         ),
         (
+            "ddl_append_only_invalid",
+            "CREATE TABLE ddl_append_only_invalid (id INT) \
+             WITH (append_only = 'yes')",
+            "22023",
+        ),
+        (
             "ddl_float_zero",
             "CREATE TABLE ddl_float_zero (value FLOAT(0))",
             "0A000",
@@ -553,7 +591,7 @@ async fn extended_protocol_creates_and_drops(h: &Harness) -> Result<()> {
         .lake
         .prepare(
             "CREATE TABLE ddl_extended (id BIGINT PRIMARY KEY, note TEXT) \
-             WITH (hash_bucket_num = 16)",
+             WITH (hash_bucket_num = 16, append_only = 'true')",
         )
         .await
         .context("extended Parse of CREATE TABLE")?;
@@ -568,6 +606,11 @@ async fn extended_protocol_creates_and_drops(h: &Harness) -> Result<()> {
         row.hash_bucket_num.as_deref() == Some("16"),
         "extended CREATE TABLE must preserve the requested bucket count, actual {:?}",
         row.hash_bucket_num
+    );
+    ensure!(
+        row.append_only.as_deref() == Some("true"),
+        "extended CREATE TABLE must preserve append_only, actual {:?}",
+        row.append_only
     );
     let drop = h
         .lake
@@ -1203,7 +1246,8 @@ async fn metadata(h: &Harness, table: &str) -> Result<Option<TableRow>> {
         .reference
         .query(
             "SELECT table_id, table_path, partitions, \
-             properties->>'hashBucketNum', properties->>'file_format' \
+             properties->>'hashBucketNum', properties->>'file_format', \
+             properties->>'appendOnly' \
              FROM public.table_info WHERE table_namespace = $1 AND table_name = $2",
             &[&h.lake_namespace, &table],
         )
@@ -1215,6 +1259,7 @@ async fn metadata(h: &Harness, table: &str) -> Result<Option<TableRow>> {
         partitions: row.get(2),
         hash_bucket_num: row.get(3),
         file_format: row.get(4),
+        append_only: row.get(5),
     }))
 }
 

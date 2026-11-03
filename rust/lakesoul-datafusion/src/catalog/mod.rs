@@ -84,6 +84,16 @@ pub struct LakeSoulTableProperty {
     /// Whether use cdc is enabled for the LakeSoul table.
     #[serde(rename = "use_cdc", default, skip_serializing_if = "Option::is_none")]
     pub use_cdc: Option<String>,
+    /// Whether the table only accepts appends (`appendOnly`, the Spark/Flink
+    /// table property). The PG `WITH (append_only = ...)` option persists it
+    /// here so other engines read the same property; enforcement stays with
+    /// the engine that performs deletes or updates.
+    #[serde(
+        rename = "appendOnly",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub append_only: Option<String>,
     /// Secondary index maintenance mode: `inline` (default) or `deferred`.
     /// Deferred tables commit data only; index builders run out of band.
     #[serde(

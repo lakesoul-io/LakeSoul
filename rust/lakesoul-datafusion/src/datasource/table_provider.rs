@@ -556,6 +556,15 @@ impl LakeSoulTableProvider {
                 })?;
         }
 
+        // `appendOnly` (the Spark/Flink table property). Persisted as-is so
+        // an engine that enforces append-only semantics reads the same value;
+        // the PG layer only stores it.
+        let append_only = cmd
+            .options
+            .get("format.append_only")
+            .or_else(|| cmd.options.get("append_only"))
+            .cloned();
+
         let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
             schema_to_metadata_parts(logical_schema.as_ref());
 
@@ -586,6 +595,7 @@ impl LakeSoulTableProvider {
                 },
                 cdc_change_column: cdc_column,
                 use_cdc,
+                append_only,
                 vector_index_columns,
                 text_index_columns,
                 file_format,
