@@ -346,12 +346,12 @@ async fn drop_absent_and_if_exists(h: &Harness) -> Result<()> {
     Ok(())
 }
 
-/// `WITH (hashbucketnum, file_format)` reaches the table properties.
+/// `WITH (hash_bucket_num, file_format)` reaches the table properties.
 async fn options_and_column_types(h: &Harness) -> Result<()> {
     command(
         h,
         "CREATE TABLE ddl_buckets (id BIGINT PRIMARY KEY, tag TEXT) \
-         WITH (hashbucketnum = 8, file_format = 'parquet')",
+         WITH (hash_bucket_num = 8, file_format = 'parquet')",
     )
     .await?;
     let row = metadata(h, "ddl_buckets")
@@ -431,8 +431,14 @@ async fn refusal_matrix_creates_nothing(h: &Harness) -> Result<()> {
             "0A000",
         ),
         (
+            "ddl_old_bucket_option",
+            "CREATE TABLE ddl_old_bucket_option (id BIGINT PRIMARY KEY) \
+             WITH (hashbucketnum = 8)",
+            "0A000",
+        ),
+        (
             "ddl_buckets_zero",
-            "CREATE TABLE ddl_buckets_zero (id INT) WITH (hashbucketnum = 0)",
+            "CREATE TABLE ddl_buckets_zero (id INT) WITH (hash_bucket_num = 0)",
             "22023",
         ),
         (
@@ -501,7 +507,7 @@ async fn refusal_matrix_creates_nothing(h: &Harness) -> Result<()> {
         (
             "ddl_negative_buckets",
             "CREATE TABLE ddl_negative_buckets (id INT) \
-             WITH (hashbucketnum = -1)",
+             WITH (hash_bucket_num = -1)",
             "22023",
         ),
         (
@@ -545,16 +551,23 @@ async fn refusal_matrix_creates_nothing(h: &Harness) -> Result<()> {
 async fn extended_protocol_creates_and_drops(h: &Harness) -> Result<()> {
     let create = h
         .lake
-        .prepare("CREATE TABLE ddl_extended (id BIGINT PRIMARY KEY, note TEXT)")
+        .prepare(
+            "CREATE TABLE ddl_extended (id BIGINT PRIMARY KEY, note TEXT) \
+             WITH (hash_bucket_num = 16)",
+        )
         .await
         .context("extended Parse of CREATE TABLE")?;
     h.lake
         .execute(&create, &[])
         .await
         .context("extended Execute of CREATE TABLE")?;
+    let row = metadata(h, "ddl_extended")
+        .await?
+        .context("extended CREATE TABLE must publish metadata")?;
     ensure!(
-        metadata(h, "ddl_extended").await?.is_some(),
-        "extended CREATE TABLE must publish metadata"
+        row.hash_bucket_num.as_deref() == Some("16"),
+        "extended CREATE TABLE must preserve the requested bucket count, actual {:?}",
+        row.hash_bucket_num
     );
     let drop = h
         .lake
@@ -574,6 +587,8 @@ async fn extended_protocol_creates_and_drops(h: &Harness) -> Result<()> {
     for sql in [
         "CREATE TABLE ddl_ext_ctas AS SELECT id FROM items",
         "CREATE TABLE ddl_ext_bad (id UUID)",
+        "CREATE TABLE ddl_ext_old_bucket_option (id BIGINT PRIMARY KEY) \
+         WITH (hashbucketnum = 8)",
     ] {
         let error = h
             .lake

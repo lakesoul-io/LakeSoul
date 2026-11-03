@@ -57,7 +57,7 @@ const INVALID_SCHEMA_NAME: &str = "3F000";
 const INVALID_PARAMETER_VALUE: &str = "22023";
 
 /// The hash bucket count every table starts with when `WITH
-/// (hashbucketnum = ...)` is absent; the provider uses the same default for
+/// (hash_bucket_num = ...)` is absent; the provider uses the same default for
 /// primary-key tables. Bucket counts change the physical layout of every
 /// future commit, so the value is validated here rather than defaulted
 /// silently.
@@ -161,7 +161,7 @@ impl DdlStatementHook {
             .entry("file_format".to_string())
             .or_insert_with(|| "parquet".to_string());
         location_options
-            .entry("hashbucketnum".to_string())
+            .entry("hash_bucket_num".to_string())
             .or_insert_with(|| DEFAULT_HASH_BUCKET_NUM.to_string());
 
         let mut constraints = Constraints::default();
@@ -872,12 +872,12 @@ fn table_options(options: &CreateTableOptions) -> PgWireResult<HashMap<String, S
         let name = key.value.to_lowercase();
         let value = literal_string(value)?;
         match name.as_str() {
-            "hashbucketnum" => {
+            "hash_bucket_num" => {
                 let bucket: i64 = value.parse().map_err(|_| {
                     user_error(
                         INVALID_PARAMETER_VALUE,
                         format!(
-                            "value \"{value}\" for option \"hashbucketnum\" is not \
+                            "value \"{value}\" for option \"hash_bucket_num\" is not \
                              valid (expects 1..={MAX_HASH_BUCKET_NUM})"
                         ),
                     )
@@ -886,7 +886,7 @@ fn table_options(options: &CreateTableOptions) -> PgWireResult<HashMap<String, S
                     return Err(user_error(
                         INVALID_PARAMETER_VALUE,
                         format!(
-                            "value {bucket} for option \"hashbucketnum\" is out of \
+                            "value {bucket} for option \"hash_bucket_num\" is out of \
                              range (expects 1..={MAX_HASH_BUCKET_NUM})"
                         ),
                     ));
@@ -908,7 +908,7 @@ fn table_options(options: &CreateTableOptions) -> PgWireResult<HashMap<String, S
             other => {
                 return Err(feature_not_supported(format!(
                     "table option \"{other}\" is not supported (expects \
-                     hashbucketnum, file_format)"
+                     hash_bucket_num, file_format)"
                 )));
             }
         }
