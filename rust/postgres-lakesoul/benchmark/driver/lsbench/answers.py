@@ -1,4 +1,5 @@
 """TPC-H text answer comparison, including unordered duplicate rows."""
+
 from __future__ import annotations
 
 import csv
@@ -49,7 +50,9 @@ def order_by(sql: str) -> int | None:
                     pos += 1
                 pos += 1
             previous = ""
-        elif sql[pos] == "$" and (match := re.match(r"\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$", sql[pos:])):
+        elif sql[pos] == "$" and (
+            match := re.match(r"\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$", sql[pos:])
+        ):
             delimiter = match.group()
             end = sql.find(delimiter, pos + len(delimiter))
             pos = len(sql) if end < 0 else end + len(delimiter)
@@ -81,14 +84,18 @@ def ordered(sql: str) -> bool:
     return order_by(sql) is not None
 
 
-SORT_KEY = re.compile(r"\s*([A-Za-z_][A-Za-z_0-9]*)(?:\s+(?:asc|desc))?(?:\s+nulls\s+(?:first|last))?\s*",
-                      re.IGNORECASE)
+SORT_KEY = re.compile(
+    r"\s*([A-Za-z_][A-Za-z_0-9]*)(?:\s+(?:asc|desc))?(?:\s+nulls\s+(?:first|last))?\s*",
+    re.IGNORECASE,
+)
 
 
 def sort_columns(sql: str, start: int, columns: list[str]) -> list[int] | None:
     """Result positions of the ORDER BY keys starting at `start`, or None
     unless every key is a bare name of exactly one output column."""
-    clause = re.split(r"\b(?:limit|offset|fetch)\b|;", sql[start:], maxsplit=1, flags=re.IGNORECASE)[0]
+    clause = re.split(
+        r"\b(?:limit|offset|fetch)\b|;", sql[start:], maxsplit=1, flags=re.IGNORECASE
+    )[0]
     names = [column.lower() for column in columns]
     positions = []
     for item in clause.split(","):
@@ -128,7 +135,9 @@ def cells_equal(left, right) -> bool:
 
 
 def rows_equal(left, right) -> bool:
-    return len(left) == len(right) and all(cells_equal(a, b) for a, b in zip(left, right))
+    return len(left) == len(right) and all(
+        cells_equal(a, b) for a, b in zip(left, right)
+    )
 
 
 def compare(result: Result, answer: Path, sql: str) -> tuple[bool, str | None]:
@@ -139,12 +148,17 @@ def compare(result: Result, answer: Path, sql: str) -> tuple[bool, str | None]:
             return False, "Answer CSV is empty (missing header)"
         expected = list(reader)
     if len(header) != len(result.columns):
-        return False, f"Column count: actual={len(result.columns)}, expected={len(header)}"
+        return (
+            False,
+            f"Column count: actual={len(result.columns)}, expected={len(header)}",
+        )
     if len(expected) != result.rows:
         return False, f"Row count: actual={result.rows}, expected={len(expected)}"
     if any(len(row) != len(header) for row in expected):
         return False, "Answer CSV contains a row with the wrong column count"
-    numeric = {index for index, oid in enumerate(result.type_oids) if oid in NUMERIC_OIDS}
+    numeric = {
+        index for index, oid in enumerate(result.type_oids) if oid in NUMERIC_OIDS
+    }
     actual_rows = [normalize(row, numeric) for row in result.values]
     expected_rows = [normalize(row, numeric) for row in expected]
     if (start := order_by(sql)) is not None:
@@ -158,20 +172,39 @@ def compare(result: Result, answer: Path, sql: str) -> tuple[bool, str | None]:
             end = pos + 1
             if keys is not None:
                 key = [expected_rows[pos][k] for k in keys]
-                while end < len(expected_rows) and [expected_rows[end][k] for k in keys] == key:
+                while (
+                    end < len(expected_rows)
+                    and [expected_rows[end][k] for k in keys] == key
+                ):
                     end += 1
             if end - pos == 1:
                 if not rows_equal(actual_rows[pos], expected_rows[pos]):
-                    return False, f"Ordered row {pos + 1}: actual={actual_rows[pos]!r}, expected={expected_rows[pos]!r}"[:400]
-            elif (mismatch := unmatched(actual_rows[pos:end], expected_rows[pos:end], numeric)) is not None:
-                return False, f"Ordered rows {pos + 1}-{end} with equal sort keys: {mismatch}"[:400]
+                    return (
+                        False,
+                        f"Ordered row {pos + 1}: actual={actual_rows[pos]!r}, expected={expected_rows[pos]!r}"[
+                            :400
+                        ],
+                    )
+            elif (
+                mismatch := unmatched(
+                    actual_rows[pos:end], expected_rows[pos:end], numeric
+                )
+            ) is not None:
+                return (
+                    False,
+                    f"Ordered rows {pos + 1}-{end} with equal sort keys: {mismatch}"[
+                        :400
+                    ],
+                )
             pos = end
         return True, None
     mismatch = unmatched(actual_rows, expected_rows, numeric)
     return mismatch is None, mismatch
 
 
-def unmatched(actual_rows: list[tuple], expected_rows: list[tuple], numeric: set[int]) -> str | None:
+def unmatched(
+    actual_rows: list[tuple], expected_rows: list[tuple], numeric: set[int]
+) -> str | None:
     """First row of a multiset difference under numeric tolerance, or None."""
     # Remove exact matches first; most large answer sets need no fuzzy matching.
     actual_counts, expected_counts = Counter(actual_rows), Counter(expected_rows)

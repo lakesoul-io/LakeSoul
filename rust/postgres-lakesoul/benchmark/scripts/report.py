@@ -24,7 +24,11 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from bench import PROM_MEMORY_POOL_LIMIT, PROM_MEMORY_POOL_RESERVED, PROM_MEMORY_RESERVATION_FAILURES
+from bench import (
+    PROM_MEMORY_POOL_LIMIT,
+    PROM_MEMORY_POOL_RESERVED,
+    PROM_MEMORY_RESERVATION_FAILURES,
+)
 
 
 def quantile(xs: list[float], q: float) -> float:
@@ -65,7 +69,9 @@ def latency_table(rows: list[dict]) -> list[dict]:
     for r in rows:
         groups[(r.get("scenario"), phase(r), r.get("query"))].append(r)
     table = []
-    for (scen, ph, q), rs in sorted(groups.items(), key=lambda kv: tuple(str(x) for x in kv[0])):
+    for (scen, ph, q), rs in sorted(
+        groups.items(), key=lambda kv: tuple(str(x) for x in kv[0])
+    ):
         ok = [r["latency_s"] for r in rs if r.get("status") == "ok"]
         errs: dict[str, int] = defaultdict(int)
         for r in rs:
@@ -89,9 +95,20 @@ def latency_table(rows: list[dict]) -> list[dict]:
                 "max": max(ok) if ok else math.nan,
                 "mean": mean,
                 "cv": sd / mean if ok and mean else math.nan,
-                "first_row_p50": quantile([r["first_row_s"] for r in rs if r.get("status") == "ok" and r.get("first_row_s") is not None], 0.5),
-                "rows": statistics.median([r.get("rows") or 0 for r in rs]) if rs else 0,
-                "bytes": statistics.median([r.get("bytes") or 0 for r in rs]) if rs else 0,
+                "first_row_p50": quantile(
+                    [
+                        r["first_row_s"]
+                        for r in rs
+                        if r.get("status") == "ok" and r.get("first_row_s") is not None
+                    ],
+                    0.5,
+                ),
+                "rows": statistics.median([r.get("rows") or 0 for r in rs])
+                if rs
+                else 0,
+                "bytes": statistics.median([r.get("bytes") or 0 for r in rs])
+                if rs
+                else 0,
             }
         )
     return table
@@ -166,7 +183,14 @@ def restarts(pods_path: Path) -> list[dict]:
     for p in json.loads(pods_path.read_text()):
         for c in p["containers"]:
             if c.get("restarts") or c.get("last_terminated"):
-                out.append({"pod": p["name"], "container": c["name"], "restarts": c.get("restarts"), "last": c.get("last_terminated")})
+                out.append(
+                    {
+                        "pod": p["name"],
+                        "container": c["name"],
+                        "restarts": c.get("restarts"),
+                        "last": c.get("last_terminated"),
+                    }
+                )
     return out
 
 
@@ -183,7 +207,7 @@ def summarize(run: Path, name: str) -> dict:
         "latency": latency_table(rows),
         "throughput": throughput(rows),
         "resources": {
-            p.name[len(name) + len(".sampler."):-len(".jsonl")]: sampler_summary(p)
+            p.name[len(name) + len(".sampler.") : -len(".jsonl")]: sampler_summary(p)
             for p in sorted(run.glob(f"{name}.sampler.*.jsonl"))
         },
         "restarts": restarts(run / f"{name}.pods.json"),
@@ -193,14 +217,18 @@ def summarize(run: Path, name: str) -> dict:
 
 def print_summary(s: dict) -> None:
     print(f"## {s['name']}")
-    print("| scenario | phase | query | n | ok | errors | p50 s | p95 s | p99 s | max s | CV | rows |")
+    print(
+        "| scenario | phase | query | n | ok | errors | p50 s | p95 s | p99 s | max s | CV | rows |"
+    )
     print("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in s["latency"]:
         print(
             f"| {r['scenario']} | {r['phase']} | {r['query']} | {r['n']} | {r['ok']} | {r['errors'] or ''} | {fmt(r['p50'])} | "
             f"{fmt(r['p95'])} | {fmt(r['p99'])} | {fmt(r['max'])} | {fmt(r['cv'], 2)} | {fmt(r['rows'], 0)} |"
         )
-    print(f"\nthroughput: {json.dumps({k: round(v, 4) if isinstance(v, float) else v for k, v in s['throughput'].items()})}")
+    print(
+        f"\nthroughput: {json.dumps({k: round(v, 4) if isinstance(v, float) else v for k, v in s['throughput'].items()})}"
+    )
     for k, v in s["resources"].items():
         print(f"resources {k}: {json.dumps(v)}")
     if s["restarts"]:
@@ -210,8 +238,14 @@ def print_summary(s: dict) -> None:
 
 def cmd_summary(a) -> None:
     run = Path(a.run_dir)
-    names = [a.name] if a.name else sorted(
-        p.name[: -len(".jsonl")] for p in run.glob("*.jsonl") if ".sampler." not in p.name
+    names = (
+        [a.name]
+        if a.name
+        else sorted(
+            p.name[: -len(".jsonl")]
+            for p in run.glob("*.jsonl")
+            if ".sampler." not in p.name
+        )
     )
     out = []
     for n in names:
@@ -227,7 +261,9 @@ def cmd_compare(a) -> None:
 
     base = {key(r): r for r in latency_table(samples(Path(a.base) / f"{a.name}.jsonl"))}
     cand = {key(r): r for r in latency_table(samples(Path(a.cand) / f"{a.name}.jsonl"))}
-    print("| phase | query | base p50 | cand p50 | ratio | base (p90-min)/p50 | verdict |")
+    print(
+        "| phase | query | base p50 | cand p50 | ratio | base (p90-min)/p50 | verdict |"
+    )
     print("|---|---|---|---|---|---|---|")
     for k in sorted(set(base) & set(cand), key=str):
         b, c = base[k], cand[k]
@@ -237,8 +273,16 @@ def cmd_compare(a) -> None:
         if min(b["ok"], c["ok"]) < 3:
             verdict = "n<3, no verdict"
         else:
-            verdict = "regression" if ratio > 1 + thresh else "improvement" if ratio < 1 - thresh else "within noise"
-        print(f"| {k[1]} | {k[2]} | {fmt(b['p50'])} | {fmt(c['p50'])} | {fmt(ratio, 2)} | {fmt(noise, 2)} | {verdict} |")
+            verdict = (
+                "regression"
+                if ratio > 1 + thresh
+                else "improvement"
+                if ratio < 1 - thresh
+                else "within noise"
+            )
+        print(
+            f"| {k[1]} | {k[2]} | {fmt(b['p50'])} | {fmt(c['p50'])} | {fmt(ratio, 2)} | {fmt(noise, 2)} | {verdict} |"
+        )
 
 
 def prom_max(run: Path, name: str, query: str, pods: set[str]) -> float | None:
@@ -248,8 +292,13 @@ def prom_max(run: Path, name: str, query: str, pods: set[str]) -> float | None:
     if not path.exists():
         return None
     series = json.loads(path.read_text())["series"].get(query) or {}
-    vals = [float(v[1]) for r in series.get("result", []) if r.get("metric", {}).get("pod") in pods
-            for v in r.get("values", []) if v[1] not in ("NaN", "+Inf", "-Inf")]
+    vals = [
+        float(v[1])
+        for r in series.get("result", [])
+        if r.get("metric", {}).get("pod") in pods
+        for v in r.get("values", [])
+        if v[1] not in ("NaN", "+Inf", "-Inf")
+    ]
     return max(vals) if vals else None
 
 
@@ -267,8 +316,10 @@ def coordinator_restarts(pods_path: Path) -> tuple[int, str | None]:
 
 def cmd_memory(a) -> None:
     mib = 1 << 20
-    print("| run | phase | ok/n | errors | coord restarts (reason) | peak cgroup MiB | limit MiB | "
-          "pool limit MiB | pool reserved max MiB | reservation failures (max per 1m) |")
+    print(
+        "| run | phase | ok/n | errors | coord restarts (reason) | peak cgroup MiB | limit MiB | "
+        "pool limit MiB | pool reserved max MiB | reservation failures (max per 1m) |"
+    )
     print("|---|---|---|---|---|---|---|---|---|---|")
     for run_dir in a.run_dirs:
         run = Path(run_dir)
@@ -282,13 +333,19 @@ def cmd_memory(a) -> None:
             errs: dict[str, int] = defaultdict(int)
             for r in rows:
                 if r.get("status") != "ok":
-                    msg = (r.get("error") or "")
-                    kind = "ResourcesExhausted" if "Resources exhausted" in msg or "ResourcesExhausted" in msg else (
-                        r.get("sqlstate") or r.get("status"))
+                    msg = r.get("error") or ""
+                    kind = (
+                        "ResourcesExhausted"
+                        if "Resources exhausted" in msg or "ResourcesExhausted" in msg
+                        else (r.get("sqlstate") or r.get("status"))
+                    )
                     errs[kind] += 1
             restarts_now, reason = coordinator_restarts(run / f"{name}.pods.json")
             paths = list(run.glob(f"{name}.sampler.coordinator.*.jsonl"))
-            pods = {p.name[len(f"{name}.sampler.coordinator."):-len(".jsonl")] for p in paths}
+            pods = {
+                p.name[len(f"{name}.sampler.coordinator.") : -len(".jsonl")]
+                for p in paths
+            }
             coord = [sampler_summary(p) for p in paths]
             peak = max((c.get("peak_mem_current") or 0 for c in coord), default=0)
             limit = max((c.get("mem_max") or 0 for c in coord), default=0)
@@ -297,15 +354,19 @@ def cmd_memory(a) -> None:
             failures = prom_max(run, name, PROM_MEMORY_RESERVATION_FAILURES, pods)
             delta = restarts_now - prev_restarts
             prev_restarts = restarts_now
-            print(f"| {run.name} | {name} | {ok}/{len(rows)} | {dict(errs) or ''} | "
-                  f"{delta}{f' ({reason})' if delta and reason else ''} | {peak / mib:.0f} | {limit / mib:.0f} | "
-                  f"{'' if pool_limit is None else f'{pool_limit / mib:.0f}'} | "
-                  f"{'' if reserved is None else f'{reserved / mib:.0f}'} | "
-                  f"{'' if failures is None else f'{failures:.0f}'} |")
+            print(
+                f"| {run.name} | {name} | {ok}/{len(rows)} | {dict(errs) or ''} | "
+                f"{delta}{f' ({reason})' if delta and reason else ''} | {peak / mib:.0f} | {limit / mib:.0f} | "
+                f"{'' if pool_limit is None else f'{pool_limit / mib:.0f}'} | "
+                f"{'' if reserved is None else f'{reserved / mib:.0f}'} | "
+                f"{'' if failures is None else f'{failures:.0f}'} |"
+            )
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("summary")
     s.add_argument("run_dir")

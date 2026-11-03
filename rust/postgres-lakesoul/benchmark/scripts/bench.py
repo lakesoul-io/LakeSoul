@@ -46,18 +46,30 @@ def log(msg: str) -> None:
     print(f"[bench {time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
 
 
-TRANSIENT = ("TLS handshake timeout", "connection refused", "i/o timeout", "EOF", "context deadline exceeded")
+TRANSIENT = (
+    "TLS handshake timeout",
+    "connection refused",
+    "i/o timeout",
+    "EOF",
+    "context deadline exceeded",
+)
 
 
-def kubectl(*args: str, input: str | None = None, check: bool = True, timeout: float = 120) -> str:
+def kubectl(
+    *args: str, input: str | None = None, check: bool = True, timeout: float = 120
+) -> str:
     """Runs kubectl; retries API-server transport failures (the shared cluster's
     API endpoint drops TLS handshakes under load) up to three times."""
     cmd = ["kubectl", "--request-timeout=60s", *args]
     for attempt in range(3):
-        r = subprocess.run(cmd, input=input, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(
+            cmd, input=input, capture_output=True, text=True, timeout=timeout
+        )
         if r.returncode == 0 or not any(t in r.stderr for t in TRANSIENT):
             break
-        log(f"kubectl transient failure (attempt {attempt + 1}): {r.stderr.strip()[:200]}")
+        log(
+            f"kubectl transient failure (attempt {attempt + 1}): {r.stderr.strip()[:200]}"
+        )
         time.sleep(5 * (attempt + 1))
     if check and r.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)} failed: {r.stderr.strip()}")
@@ -94,7 +106,10 @@ def pods_snapshot() -> list[dict]:
                     "restarts": c.get("restartCount"),
                     "state": next(iter(cur), None),
                     "last_terminated": last
-                    and {k: last.get(k) for k in ("reason", "exitCode", "startedAt", "finishedAt")},
+                    and {
+                        k: last.get(k)
+                        for k in ("reason", "exitCode", "startedAt", "finishedAt")
+                    },
                 }
             )
         res = {
@@ -126,7 +141,9 @@ def node_snapshot() -> list[dict]:
             continue
         name = m.group(1)
         cpu = re.search(r"^\s+cpu\s+(\S+) \((\d+)%\)\s+(\S+) \((\d+)%\)", block, re.M)
-        mem = re.search(r"^\s+memory\s+(\S+) \((\d+)%\)\s+(\S+) \((\d+)%\)", block, re.M)
+        mem = re.search(
+            r"^\s+memory\s+(\S+) \((\d+)%\)\s+(\S+) \((\d+)%\)", block, re.M
+        )
         if cpu and mem:
             alloc[name] = {
                 "cpu_requests": cpu.group(1),
@@ -142,7 +159,12 @@ def node_snapshot() -> list[dict]:
     for line in top.splitlines():
         f = line.split()
         if len(f) >= 5:
-            usage[f[0]] = {"cpu": f[1], "cpu_pct": f[2], "memory": f[3], "memory_pct": f[4]}
+            usage[f[0]] = {
+                "cpu": f[1],
+                "cpu_pct": f[2],
+                "memory": f[3],
+                "memory_pct": f[4],
+            }
     out = []
     for n in nodes:
         name = n["metadata"]["name"]
@@ -175,9 +197,17 @@ def cmd_meta(a) -> None:
     sc = kjson("get", "storageclass")["items"]
     ds = kjson("-n", "kube-system", "get", "daemonsets")["items"]
     git = subprocess.run(
-        ["jj", "log", "-r", "@|@-", "--no-graph", "-T",
-         'change_id.short() ++ " " ++ commit_id.short() ++ " " ++ description.first_line() ++ "\\n"'],
-        capture_output=True, text=True,
+        [
+            "jj",
+            "log",
+            "-r",
+            "@|@-",
+            "--no-graph",
+            "-T",
+            'change_id.short() ++ " " ++ commit_id.short() ++ " " ++ description.first_line() ++ "\\n"',
+        ],
+        capture_output=True,
+        text=True,
     ).stdout
     meta = {
         "captured_unix": time.time(),
@@ -186,8 +216,13 @@ def cmd_meta(a) -> None:
         "kubectl": ver.get("clientVersion", {}).get("gitVersion"),
         "nodes": node_snapshot(),
         "storage_classes": [
-            {"name": s["metadata"]["name"], "provisioner": s.get("provisioner"),
-             "default": s["metadata"].get("annotations", {}).get("storageclass.kubernetes.io/is-default-class")}
+            {
+                "name": s["metadata"]["name"],
+                "provisioner": s.get("provisioner"),
+                "default": s["metadata"]
+                .get("annotations", {})
+                .get("storageclass.kubernetes.io/is-default-class"),
+            }
             for s in sc
         ],
         "kube_system_daemonsets": [d["metadata"]["name"] for d in ds],
@@ -203,7 +238,10 @@ def cmd_meta(a) -> None:
 
 def env_items(env: dict[str, str]) -> str:
     """Container `env` list entries, indented for a Pod template."""
-    return "".join(f"            - name: {k}\n              value: {json.dumps(v)}\n" for k, v in env.items())
+    return "".join(
+        f"            - name: {k}\n              value: {json.dumps(v)}\n"
+        for k, v in env.items()
+    )
 
 
 def env_patch(dep: str, container: str, env: dict[str, str]) -> str:
@@ -248,12 +286,21 @@ def cmd_deploy(a) -> None:
     rendered = kubectl("kustomize", str(kdir))
     unpinned = sorted(set(re.findall(r"image: (\S+:dev)\b", rendered)))
     if unpinned:
-        raise SystemExit(f"rendered manifests still reference unpinned images: {unpinned}")
+        raise SystemExit(
+            f"rendered manifests still reference unpinned images: {unpinned}"
+        )
     (kdir / "rendered.yaml").write_text(rendered)
     log(f"applying profile={a.profile} service={a.service_tag} bench={a.bench_tag}")
     kubectl("apply", "-f", "-", input=rendered, timeout=180)
-    for d in ("lakesoul-coordinator", "lakesoul-worker", "lakesoul-prometheus", "lakesoul-tempo"):
-        kubectl("-n", NS, "rollout", "status", f"deploy/{d}", "--timeout=600s", timeout=660)
+    for d in (
+        "lakesoul-coordinator",
+        "lakesoul-worker",
+        "lakesoul-prometheus",
+        "lakesoul-tempo",
+    ):
+        kubectl(
+            "-n", NS, "rollout", "status", f"deploy/{d}", "--timeout=600s", timeout=660
+        )
     wait_terminated_pods()
     wait_worker_discovery(a.workers)
     snap = pods_snapshot()
@@ -275,7 +322,9 @@ def cmd_deploy(a) -> None:
             "effective_cgroup": limits,
         },
     )
-    log(f"deployed; cgroup: { {k: (v or {}).get('mem_max') for k, v in limits.items()} }")
+    log(
+        f"deployed; cgroup: { {k: (v or {}).get('mem_max') for k, v in limits.items()} }"
+    )
 
 
 def wait_worker_discovery(workers: int | None, timeout: float = 180) -> None:
@@ -283,28 +332,53 @@ def wait_worker_discovery(workers: int | None, timeout: float = 180) -> None:
     EndpointSlice refresh it rejects distributed plans ("found no eligible
     worker") instead of planning locally. Wait for a refresh that sees every
     worker so measurements never include that startup window."""
-    want = workers if workers is not None else int(
-        kubectl("-n", NS, "get", "deploy/lakesoul-worker", "-o", "jsonpath={.spec.replicas}") or 0)
+    want = (
+        workers
+        if workers is not None
+        else int(
+            kubectl(
+                "-n",
+                NS,
+                "get",
+                "deploy/lakesoul-worker",
+                "-o",
+                "jsonpath={.spec.replicas}",
+            )
+            or 0
+        )
+    )
     if want == 0:
         return
     pattern = re.compile(r"EndpointSlice refresh ok .*eligible=(\d+)")
     end = time.time() + timeout
     while time.time() < end:
-        logs = kubectl("-n", NS, "logs", "deploy/lakesoul-coordinator", "-c", "postgres-lakesoul",
-                       "--since=60s", check=False)
+        logs = kubectl(
+            "-n",
+            NS,
+            "logs",
+            "deploy/lakesoul-coordinator",
+            "-c",
+            "postgres-lakesoul",
+            "--since=60s",
+            check=False,
+        )
         seen = [int(m.group(1)) for m in pattern.finditer(logs)]
         if seen and seen[-1] >= want:
             log(f"coordinator discovery sees {seen[-1]} eligible workers")
             return
         time.sleep(5)
-    raise RuntimeError(f"coordinator never reported {want} eligible workers within {timeout}s")
+    raise RuntimeError(
+        f"coordinator never reported {want} eligible workers within {timeout}s"
+    )
 
 
 def wait_terminated_pods(timeout: float = 300) -> None:
     """Rollout status returns before old pods are gone; wait for them."""
     end = time.time() + timeout
     while time.time() < end:
-        pods = kjson("-n", NS, "get", "pods", "-l", "app.kubernetes.io/name=lakesoul")["items"]
+        pods = kjson("-n", NS, "get", "pods", "-l", "app.kubernetes.io/name=lakesoul")[
+            "items"
+        ]
         if all(not p["metadata"].get("deletionTimestamp") for p in pods):
             return
         time.sleep(2)
@@ -319,7 +393,17 @@ def first_sampler_line(pod: str, tries: int = 30) -> dict | None:
             except ValueError:
                 continue
             if d.get("pid"):
-                return {k: d.get(k) for k in ("cgroup", "mem_max", "cfs_quota_us", "cfs_period_us", "mem_current", "vmrss_kb")}
+                return {
+                    k: d.get(k)
+                    for k in (
+                        "cgroup",
+                        "mem_max",
+                        "cfs_quota_us",
+                        "cfs_period_us",
+                        "mem_current",
+                        "vmrss_kb",
+                    )
+                }
         time.sleep(2)
     return None
 
@@ -377,7 +461,9 @@ def cmd_datagen(a) -> None:
     log(f"datagen pod {pod}")
     logf = run / f"datagen-sf{a.sf}.log"
     with logf.open("w") as f:
-        subprocess.run(["kubectl", "-n", NS, "logs", "-f", pod], stdout=f, stderr=subprocess.STDOUT)
+        subprocess.run(
+            ["kubectl", "-n", NS, "logs", "-f", pod], stdout=f, stderr=subprocess.STDOUT
+        )
     # `logs -f` returns when the container exits, before the Job controller
     # records the outcome.
     for _ in range(60):
@@ -388,9 +474,14 @@ def cmd_datagen(a) -> None:
     pod_info = kjson("-n", NS, "get", "pod", pod)
     write_json(
         run / f"datagen-sf{a.sf}.json",
-        {"job": job, "start_unix": t0, "end_unix": time.time(), "job_status": status,
-         "node": pod_info["spec"].get("nodeName"),
-         "container": pod_info["status"].get("containerStatuses")},
+        {
+            "job": job,
+            "start_unix": t0,
+            "end_unix": time.time(),
+            "job_status": status,
+            "node": pod_info["spec"].get("nodeName"),
+            "container": pod_info["status"].get("containerStatuses"),
+        },
     )
     ok = bool(status.get("succeeded"))
     log(f"datagen {'ok' if ok else 'FAILED'} in {time.time() - t0:.0f}s -> {logf}")
@@ -407,7 +498,9 @@ def cmd_drive(a) -> None:
         args = args[1:]
     name = a.name
     job = f"lsbench-{re.sub(r'[^a-z0-9-]', '-', name.lower())[:40]}-{int(time.time()) % 100000}"
-    driver_args = " ".join(shlex_quote(x) for x in args + ["--run-id", f"{run.name}/{name}"])
+    driver_args = " ".join(
+        shlex_quote(x) for x in args + ["--run-id", f"{run.name}/{name}"]
+    )
     manifest = render(
         "driver-job.yaml",
         JOB_NAME=job,
@@ -436,19 +529,52 @@ def cmd_drive(a) -> None:
             break
         time.sleep(3)
     t1 = time.time()
-    raw = kubectl("-n", NS, "exec", pod, "-c", "driver", "--", "cat", "/results/out.jsonl", check=False, timeout=600)
-    rc = kubectl("-n", NS, "exec", pod, "-c", "driver", "--", "cat", "/results/exit", check=False).strip()
-    cpu = kubectl("-n", NS, "exec", pod, "-c", "driver", "--", "sh", "-c",
-                  "cat /sys/fs/cgroup/cpu,cpuacct/cpu.stat /sys/fs/cgroup/cpu,cpuacct/cpuacct.usage 2>/dev/null || cat /sys/fs/cgroup/cpu.stat",
-                  check=False)
+    raw = kubectl(
+        "-n",
+        NS,
+        "exec",
+        pod,
+        "-c",
+        "driver",
+        "--",
+        "cat",
+        "/results/out.jsonl",
+        check=False,
+        timeout=600,
+    )
+    rc = kubectl(
+        "-n", NS, "exec", pod, "-c", "driver", "--", "cat", "/results/exit", check=False
+    ).strip()
+    cpu = kubectl(
+        "-n",
+        NS,
+        "exec",
+        pod,
+        "-c",
+        "driver",
+        "--",
+        "sh",
+        "-c",
+        "cat /sys/fs/cgroup/cpu,cpuacct/cpu.stat /sys/fs/cgroup/cpu,cpuacct/cpuacct.usage 2>/dev/null || cat /sys/fs/cgroup/cpu.stat",
+        check=False,
+    )
     stdout = kubectl("-n", NS, "logs", pod, check=False)
     (run / f"{name}.jsonl").write_text(raw)
     (run / f"{name}.driver.log").write_text(stdout)
     node = kjson("-n", NS, "get", "pod", pod)["spec"].get("nodeName")
-    write_json(run / f"{name}.driver.json", {
-        "job": job, "pod": pod, "node": node, "args": args, "exit": rc,
-        "start_unix": t0, "end_unix": t1, "driver_cgroup_cpu": cpu,
-    })
+    write_json(
+        run / f"{name}.driver.json",
+        {
+            "job": job,
+            "pod": pod,
+            "node": node,
+            "args": args,
+            "exit": rc,
+            "start_unix": t0,
+            "end_unix": t1,
+            "driver_cgroup_cpu": cpu,
+        },
+    )
     kubectl("-n", NS, "delete", "job", job, "--wait=false", check=False)
     collect(run, name, t0 - 5, t1 + 5)
     log(f"{name}: exit={rc} samples={raw.count(chr(10))} -> {run / name}.jsonl")
@@ -457,15 +583,26 @@ def cmd_drive(a) -> None:
 def worker_urls() -> list[tuple[str, str]]:
     """Ready worker Pods as (pod, gRPC URL), from the worker Service's
     EndpointSlices; the console needs one `--worker` per Pod."""
-    slices = kjson("-n", NS, "get", "endpointslices", "-l", "kubernetes.io/service-name=lakesoul-worker")["items"]
+    slices = kjson(
+        "-n",
+        NS,
+        "get",
+        "endpointslices",
+        "-l",
+        "kubernetes.io/service-name=lakesoul-worker",
+    )["items"]
     out = []
     for s in slices:
-        port = next((p["port"] for p in s.get("ports") or [] if p.get("name") == "grpc"), None)
+        port = next(
+            (p["port"] for p in s.get("ports") or [] if p.get("name") == "grpc"), None
+        )
         for e in s.get("endpoints") or []:
             if port and e.get("conditions", {}).get("ready"):
                 addr = e["addresses"][0]
                 host = f"[{addr}]" if ":" in addr else addr
-                out.append((e.get("targetRef", {}).get("name"), f"http://{host}:{port}"))
+                out.append(
+                    (e.get("targetRef", {}).get("name"), f"http://{host}:{port}")
+                )
     return sorted(out)
 
 
@@ -486,10 +623,14 @@ def cmd_console(a) -> None:
     workers: list[tuple[str, str]] = []
     if a.distributed:
         if "--worker" in args:
-            raise SystemExit("--distributed resolves the worker URLs; do not pass --worker")
+            raise SystemExit(
+                "--distributed resolves the worker URLs; do not pass --worker"
+            )
         workers = worker_urls()
         if not workers:
-            raise SystemExit("--distributed: the lakesoul-worker Service has no ready endpoints")
+            raise SystemExit(
+                "--distributed: the lakesoul-worker Service has no ready endpoints"
+            )
         for _, url in workers:
             args += ["--worker", url]
     env = dict(kv.split("=", 1) for kv in a.env or [])
@@ -499,7 +640,9 @@ def cmd_console(a) -> None:
         JOB_NAME=job,
         RUN_ID=run.name,
         BENCH_IMAGE=f"{REGISTRY}/lakesoul-bench:{a.bench_tag}",
-        CONSOLE_ARGS=" ".join(shlex_quote(x) for x in ["console", *args, "--run-id", run_id]),
+        CONSOLE_ARGS=" ".join(
+            shlex_quote(x) for x in ["console", *args, "--run-id", run_id]
+        ),
         CONSOLE_CPU=a.cpu,
         CONSOLE_MEM=a.mem,
         NODE_SELECTOR=json.dumps({"kubernetes.io/hostname": a.node} if a.node else {}),
@@ -519,7 +662,11 @@ def cmd_console(a) -> None:
         info = kjson("-n", NS, "get", "pod", pod)
         statuses = {c["name"]: c for c in info["status"].get("containerStatuses") or []}
         terminated = (statuses.get("console") or {}).get("state", {}).get("terminated")
-        if terminated or info["status"].get("phase") in ("Succeeded", "Failed") or time.time() > deadline:
+        if (
+            terminated
+            or info["status"].get("phase") in ("Succeeded", "Failed")
+            or time.time() > deadline
+        ):
             break
         time.sleep(3)
     t1 = time.time()
@@ -541,23 +688,45 @@ def cmd_console(a) -> None:
     if not finished:
         # lsbench itself was killed (OOM, deadline): its own `aborted` record
         # is missing.
-        records.append(json.dumps({"type": "aborted", "run_id": run_id, "scenario": "console",
-                                   "reason": f"console container terminated: {terminated or info['status'].get('phase')}"}))
+        records.append(
+            json.dumps(
+                {
+                    "type": "aborted",
+                    "run_id": run_id,
+                    "scenario": "console",
+                    "reason": f"console container terminated: {terminated or info['status'].get('phase')}",
+                }
+            )
+        )
     (run / f"{name}.jsonl").write_text("".join(r + "\n" for r in records))
     sampler = kubectl("-n", NS, "logs", pod, "-c", "sampler", check=False, timeout=300)
     (run / f"{name}.sampler.console.{pod}.jsonl").write_text(
-        "".join(line + "\n" for line in sampler.splitlines() if line.startswith("{")))
+        "".join(line + "\n" for line in sampler.splitlines() if line.startswith("{"))
+    )
     console_spec = next(c for c in info["spec"]["containers"] if c["name"] == "console")
-    write_json(run / f"{name}.console.json", {
-        "job": job, "pod": pod, "node": info["spec"].get("nodeName"), "qos": info["status"].get("qosClass"),
-        "resources": console_spec.get("resources"), "cpus": cpus, "args": args, "env": env,
-        "workers": [{"pod": p, "url": u} for p, u in workers], "terminated": terminated,
-        "start_unix": t0, "end_unix": t1,
-    })
+    write_json(
+        run / f"{name}.console.json",
+        {
+            "job": job,
+            "pod": pod,
+            "node": info["spec"].get("nodeName"),
+            "qos": info["status"].get("qosClass"),
+            "resources": console_spec.get("resources"),
+            "cpus": cpus,
+            "args": args,
+            "env": env,
+            "workers": [{"pod": p, "url": u} for p, u in workers],
+            "terminated": terminated,
+            "start_unix": t0,
+            "end_unix": t1,
+        },
+    )
     kubectl("-n", NS, "delete", "job", job, "--wait=false", check=False)
     collect(run, name, t0 - 5, t1 + 5)
     ok = sum('"status": "ok"' in r for r in records)
-    log(f"{name}: exit={(terminated or {}).get('exitCode')} samples={len(records)} ok={ok} -> {run / name}.jsonl")
+    log(
+        f"{name}: exit={(terminated or {}).get('exitCode')} samples={len(records)} ok={ok} -> {run / name}.jsonl"
+    )
 
 
 def shlex_quote(s: str) -> str:
@@ -572,29 +741,33 @@ def shlex_quote(s: str) -> str:
 # prometheus.yml); a [15s] window holds at most one sample, so rate() and
 # increase() over it return nothing.
 # report.py looks series up by their exact query text: it imports these.
-PROM_MEMORY_POOL_RESERVED = 'sum by (pod) (lakesoul_memory_pool_reserved_bytes)'
-PROM_MEMORY_POOL_LIMIT = 'sum by (pod) (lakesoul_memory_pool_limit_bytes)'
-PROM_MEMORY_RESERVATION_FAILURES = 'sum by (pod) (increase(lakesoul_memory_reservation_failures_total[1m]))'
+PROM_MEMORY_POOL_RESERVED = "sum by (pod) (lakesoul_memory_pool_reserved_bytes)"
+PROM_MEMORY_POOL_LIMIT = "sum by (pod) (lakesoul_memory_pool_limit_bytes)"
+PROM_MEMORY_RESERVATION_FAILURES = (
+    "sum by (pod) (increase(lakesoul_memory_reservation_failures_total[1m]))"
+)
 PROM_SERIES = [
-    'sum by (pod, outcome) (rate(lakesoul_query_requests_total[1m]))',
-    'histogram_quantile(0.99, sum by (le) (rate(lakesoul_query_duration_seconds_bucket[1m])))',
-    'histogram_quantile(0.5, sum by (le) (rate(lakesoul_query_duration_seconds_bucket[1m])))',
+    "sum by (pod, outcome) (rate(lakesoul_query_requests_total[1m]))",
+    "histogram_quantile(0.99, sum by (le) (rate(lakesoul_query_duration_seconds_bucket[1m])))",
+    "histogram_quantile(0.5, sum by (le) (rate(lakesoul_query_duration_seconds_bucket[1m])))",
     PROM_MEMORY_POOL_RESERVED,
     PROM_MEMORY_POOL_LIMIT,
     PROM_MEMORY_RESERVATION_FAILURES,
-    'sum by (pod, operation) (rate(lakesoul_object_store_requests_total[1m]))',
-    'sum by (pod, operation) (rate(lakesoul_object_store_bytes_total[1m]))',
-    'sum by (pod) (lakesoul_metadata_pool_connections)',
-    'max by (pod) (lakesoul_worker_discovery_snapshot_age_seconds)',
-    'sum by (pod) (lakesoul_worker_discovery_eligible_workers)',
-    'sum by (pod, kind) (increase(lakesoul_worker_discovery_refresh_failures_total[1m]))',
-    'sum by (pod, span_name) (rate(traces_spanmetrics_calls_total[1m]))',
-    'up',
+    "sum by (pod, operation) (rate(lakesoul_object_store_requests_total[1m]))",
+    "sum by (pod, operation) (rate(lakesoul_object_store_bytes_total[1m]))",
+    "sum by (pod) (lakesoul_metadata_pool_connections)",
+    "max by (pod) (lakesoul_worker_discovery_snapshot_age_seconds)",
+    "sum by (pod) (lakesoul_worker_discovery_eligible_workers)",
+    "sum by (pod, kind) (increase(lakesoul_worker_discovery_refresh_failures_total[1m]))",
+    "sum by (pod, span_name) (rate(traces_spanmetrics_calls_total[1m]))",
+    "up",
 ]
 
 
 def prom_range(q: str, start: float, end: float, step: int) -> dict:
-    qs = urllib.parse.urlencode({"query": q, "start": f"{start:.0f}", "end": f"{end:.0f}", "step": str(step)})
+    qs = urllib.parse.urlencode(
+        {"query": q, "start": f"{start:.0f}", "end": f"{end:.0f}", "step": str(step)}
+    )
     raw = kubectl("get", "--raw", f"{PROM}/api/v1/query_range?{qs}", check=False)
     try:
         return json.loads(raw).get("data", {})
@@ -610,7 +783,17 @@ def collect(run: Path, name: str, since: float, until: float) -> None:
         if comp not in CONTAINERS:
             continue
         since_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since))
-        logs = kubectl("-n", NS, "logs", p["name"], "-c", "sampler", f"--since-time={since_iso}", check=False, timeout=300)
+        logs = kubectl(
+            "-n",
+            NS,
+            "logs",
+            p["name"],
+            "-c",
+            "sampler",
+            f"--since-time={since_iso}",
+            check=False,
+            timeout=300,
+        )
         lines = []
         for line in logs.splitlines():
             try:
@@ -619,13 +802,28 @@ def collect(run: Path, name: str, since: float, until: float) -> None:
                 continue
             if since <= d.get("ts", 0) <= until:
                 lines.append(line)
-        (run / f"{name}.sampler.{comp}.{p['name']}.jsonl").write_text("\n".join(lines) + "\n")
-        app = kubectl("-n", NS, "logs", p["name"], "-c", CONTAINERS[comp], f"--since-time={since_iso}", check=False, timeout=300)
+        (run / f"{name}.sampler.{comp}.{p['name']}.jsonl").write_text(
+            "\n".join(lines) + "\n"
+        )
+        app = kubectl(
+            "-n",
+            NS,
+            "logs",
+            p["name"],
+            "-c",
+            CONTAINERS[comp],
+            f"--since-time={since_iso}",
+            check=False,
+            timeout=300,
+        )
         (run / f"{name}.app.{comp}.{p['name']}.log").write_text(app)
     step = max(5, int((until - since) / 1000) + 1)
     for q in PROM_SERIES:
         out[q] = prom_range(q, since, until, step)
-    write_json(run / f"{name}.prom.json", {"since": since, "until": until, "step": step, "series": out})
+    write_json(
+        run / f"{name}.prom.json",
+        {"since": since, "until": until, "step": step, "series": out},
+    )
     write_json(run / f"{name}.pods.json", pods)
 
 
@@ -637,17 +835,25 @@ def cmd_collect(a) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
     m = sub.add_parser("meta")
     m.add_argument("--out", required=True)
     m.set_defaults(fn=cmd_meta)
     d = sub.add_parser("deploy")
     d.add_argument("--run-dir", required=True)
-    d.add_argument("--profile", required=True, choices=sorted(p.name for p in (K8S / "profiles").iterdir()))
+    d.add_argument(
+        "--profile",
+        required=True,
+        choices=sorted(p.name for p in (K8S / "profiles").iterdir()),
+    )
     d.add_argument("--service-tag", required=True)
     d.add_argument("--bench-tag", required=True)
-    d.add_argument("--env", action="append", help="ROLE:KEY=VALUE, ROLE in all|coordinator|worker")
+    d.add_argument(
+        "--env", action="append", help="ROLE:KEY=VALUE, ROLE in all|coordinator|worker"
+    )
     d.add_argument("--workers", type=int)
     d.set_defaults(fn=cmd_deploy)
     g = sub.add_parser("datagen")
@@ -658,7 +864,12 @@ def main() -> None:
     g.add_argument("--parts", default="", help="tpchgen partitions (default: tpch.sh)")
     g.add_argument("--buckets", default="", help="hashBucketNum (default: tpch.sh)")
     g.add_argument("--tables", default="", help="space-separated subset (default: all)")
-    g.add_argument("--chunks", type=int, default=1, help="upserts per table (datagen/tpch.sh CHUNKS)")
+    g.add_argument(
+        "--chunks",
+        type=int,
+        default=1,
+        help="upserts per table (datagen/tpch.sh CHUNKS)",
+    )
     g.add_argument("--layout", default="pk", choices=["pk", "pkmonth", "nopk"])
     g.add_argument("--threads", type=int, default=4)
     g.add_argument("--cpu-req", default="1")
@@ -675,19 +886,40 @@ def main() -> None:
     r.add_argument("--cpu-lim", default="2")
     r.add_argument("driver_args", nargs=argparse.REMAINDER)
     r.set_defaults(fn=cmd_drive)
-    k = sub.add_parser("console", help="run `lsbench console` (lakesoul-console) in a Guaranteed-QoS Job")
+    k = sub.add_parser(
+        "console",
+        help="run `lsbench console` (lakesoul-console) in a Guaranteed-QoS Job",
+    )
     k.add_argument("--run-dir", required=True)
     k.add_argument("--bench-tag", required=True)
     k.add_argument("--name", required=True)
-    k.add_argument("--cpu", required=True, help="console CPU request = limit, e.g. 4 or 3500m")
-    k.add_argument("--mem", required=True, help="console memory request = limit, e.g. 8Gi")
-    k.add_argument("--node", help="pin to this node (kubernetes.io/hostname); must not run the service")
-    k.add_argument("--distributed", action="store_true",
-                   help="pass every ready lakesoul-worker Pod as --worker")
-    k.add_argument("--env", action="append", metavar="K=V",
-                   help="console container env, e.g. LAKESOUL_MEMORY_LIMIT=4Gi")
-    k.add_argument("--timeout", type=float, default=3600, help="Job activeDeadlineSeconds")
-    k.add_argument("console_args", nargs=argparse.REMAINDER, help="-- <lsbench console args>")
+    k.add_argument(
+        "--cpu", required=True, help="console CPU request = limit, e.g. 4 or 3500m"
+    )
+    k.add_argument(
+        "--mem", required=True, help="console memory request = limit, e.g. 8Gi"
+    )
+    k.add_argument(
+        "--node",
+        help="pin to this node (kubernetes.io/hostname); must not run the service",
+    )
+    k.add_argument(
+        "--distributed",
+        action="store_true",
+        help="pass every ready lakesoul-worker Pod as --worker",
+    )
+    k.add_argument(
+        "--env",
+        action="append",
+        metavar="K=V",
+        help="console container env, e.g. LAKESOUL_MEMORY_LIMIT=4Gi",
+    )
+    k.add_argument(
+        "--timeout", type=float, default=3600, help="Job activeDeadlineSeconds"
+    )
+    k.add_argument(
+        "console_args", nargs=argparse.REMAINDER, help="-- <lsbench console args>"
+    )
     k.set_defaults(fn=cmd_console)
     c = sub.add_parser("collect")
     c.add_argument("--run-dir", required=True)

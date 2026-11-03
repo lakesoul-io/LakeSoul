@@ -66,6 +66,11 @@ includes = ["*.toml"]
 command = "prettier"
 options = ["--write"]
 includes = ["*.yml", "*.yaml"]
+# Rendered by `scripts/bench.py console`: `${EXTRA_ENV}` is replaced with an
+# indented env block, so the unrendered file is not valid YAML and prettier
+# rejects it. Keep the template out of the parser; every other manifest still
+# formats.
+excludes = ["rust/postgres-lakesoul/benchmark/k8s/jobs/console-job.yaml"]
 
 # JSON ─────────────────────────────────────────────────
 [formatter.json]

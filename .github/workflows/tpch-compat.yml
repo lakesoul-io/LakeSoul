@@ -35,9 +35,9 @@ jobs:
       matrix:
         merge: ["false", "true"]
         shape:
-          - {layout: pk, workers: "0"}
-          - {layout: nopk, workers: "2"}
-          - {layout: pkmonth, workers: "2"}
+          - { layout: pk, workers: "0" }
+          - { layout: nopk, workers: "2" }
+          - { layout: pkmonth, workers: "2" }
     env:
       RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
       RUST_BACKTRACE: full

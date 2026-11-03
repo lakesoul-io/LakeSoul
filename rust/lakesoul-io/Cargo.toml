@@ -124,8 +124,8 @@ tikv-jemalloc-ctl = { workspace = true, optional = true }
 [features]
 hdfs = ["dep:hdrs", "dep:hdfs-sys"]
 default = []
-dhat-heap = ["dep:dhat"] # if you are doing heap profiling
-dhat-ad-hoc = [] # if you are doing ad hoc profiling
+dhat-heap = ["dep:dhat"]            # if you are doing heap profiling
+dhat-ad-hoc = []                    # if you are doing ad hoc profiling
 # Report jemalloc resident memory in LoggedMemoryPool. Does not install
 # jemalloc: the executable owns `#[global_allocator]`.
 jemalloc = ["dep:tikv-jemalloc-ctl"]
