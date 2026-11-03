@@ -327,6 +327,9 @@ fn run_lloyd_iterations(
 ) {
     let mut centroid_col = Vec::with_capacity(dim * k);
     let mut centroid_norms = Vec::with_capacity(k);
+    // One GEMM workspace for all Lloyd iterations, released before the
+    // objective computation and final centroid/result copies.
+    let mut buffer = KMeansBuffer::new();
 
     for _iter in 0..iterations {
         rebuild_centroid_views(centroids, k, dim, &mut centroid_col, &mut centroid_norms);
@@ -340,6 +343,7 @@ fn run_lloyd_iterations(
             &centroid_col,
             &centroid_norms,
             decode_block_size,
+            &mut buffer,
         );
 
         update_centroids(centroids, k, dim, data, &summary, rng);
@@ -398,31 +402,27 @@ struct AssignmentSummary {
     candidates: Vec<(f32, usize)>,
 }
 
-/// Thread-local buffer for reusing allocations during GEMM operations
+/// Single GEMM workspace reused across Lloyd iterations and chunks.
 struct KMeansBuffer {
     dot_products: Vec<f32>,
-    sums: Vec<f32>,
 }
 
 impl KMeansBuffer {
     fn new() -> Self {
         Self {
             dot_products: Vec::new(),
-            sums: Vec::new(),
         }
     }
 
-    fn resize_for_chunk(&mut self, len: usize, k: usize, dim: usize) {
-        self.dot_products.clear();
+    fn resize_for_chunk(&mut self, len: usize, k: usize) {
+        // Accum::Replace overwrites every output cell. Keep existing storage
+        // initialized, but do not clear/re-zero it before each GEMM.
         self.dot_products.resize(len * k, 0.0);
-        self.sums.clear();
-        self.sums.resize(k * dim, 0.0);
     }
 }
 
 /// Thread-local state for fold+reduce streaming assignment
 struct ThreadLocalState {
-    buffer: KMeansBuffer,
     counts: Vec<usize>,
     sums: Vec<f32>,
     candidates: Vec<(f32, usize)>,
@@ -432,7 +432,6 @@ struct ThreadLocalState {
 impl ThreadLocalState {
     fn new(k: usize, dim: usize) -> Self {
         Self {
-            buffer: KMeansBuffer::new(),
             counts: vec![0; k],
             sums: vec![0.0; k * dim],
             candidates: Vec::new(),
@@ -470,11 +469,12 @@ fn assign_points_for_update(
     centroid_col: &[f32],
     centroid_norms: &[f32],
     decode_block_size: usize,
+    buffer: &mut KMeansBuffer,
 ) -> AssignmentSummary {
     let rows = norms.len();
     let num_chunks = rows.div_ceil(decode_block_size);
 
-    // Sequential chunks with a single shared GEMM buffer (~512 MB).
+    // Sequential chunks with a single shared GEMM buffer.
     // faer::matmul(Par::rayon(0)) uses all cores internally — no need for
     // outer rayon parallelism that would duplicate the buffer.
     let mut state = ThreadLocalState::new(k, dim);
@@ -486,12 +486,11 @@ fn assign_points_for_update(
         let norms_chunk = &norms[start..end];
 
         // GEMM via faer (multi-threaded, all cores)
-        state.buffer.resize_for_chunk(len, k, dim);
+        buffer.resize_for_chunk(len, k);
         {
             let a = MatRef::from_row_major_slice(data_chunk, len, dim);
             let b = MatRef::from_row_major_slice(centroid_col, dim, k);
-            let c =
-                MatMut::from_row_major_slice_mut(&mut state.buffer.dot_products, len, k);
+            let c = MatMut::from_row_major_slice_mut(&mut buffer.dot_products, len, k);
             matmul(c, Accum::Replace, a, b, 1.0f32, Par::rayon(0));
         }
 
@@ -499,22 +498,12 @@ fn assign_points_for_update(
         let chunk_results: Vec<(usize, f32)> = (0..len)
             .into_par_iter()
             .map(|row| {
-                let dot_row = &state.buffer.dot_products[row * k..(row + 1) * k];
-                let norm = norms_chunk[row];
-                let mut best_cluster = 0usize;
-                let mut best_distance = f32::INFINITY;
-                for cluster in 0..k {
-                    let dot = dot_row[cluster];
-                    let mut distance = norm + centroid_norms[cluster] - 2.0 * dot;
-                    if distance < 0.0 {
-                        distance = 0.0;
-                    }
-                    if distance < best_distance {
-                        best_distance = distance;
-                        best_cluster = cluster;
-                    }
-                }
-                (best_cluster, best_distance)
+                let dot_row = &buffer.dot_products[row * k..(row + 1) * k];
+                crate::rabitq::assignment::nearest_l2(
+                    dot_row,
+                    centroid_norms,
+                    norms_chunk[row],
+                )
             })
             .collect();
 
@@ -661,28 +650,18 @@ fn compute_chunk_assignments_only(
     }
 
     // Parallel argmin: read-only on dot_products after sgemm
-    let assignments: Vec<usize> = (0..len)
+    (0..len)
         .into_par_iter()
         .map(|row| {
             let dot_row = &dot_products[row * k..(row + 1) * k];
-            let norm = norms_chunk[row];
-            let mut best_cluster = 0usize;
-            let mut best_distance = f32::INFINITY;
-            for cluster in 0..k {
-                let dot = dot_row[cluster];
-                let mut distance = norm + centroid_norms[cluster] - 2.0 * dot;
-                if distance < 0.0 {
-                    distance = 0.0;
-                }
-                if distance < best_distance {
-                    best_distance = distance;
-                    best_cluster = cluster;
-                }
-            }
-            best_cluster
+            crate::rabitq::assignment::nearest_l2(
+                dot_row,
+                centroid_norms,
+                norms_chunk[row],
+            )
+            .0
         })
-        .collect();
-    assignments
+        .collect()
 }
 
 // ============================================================================
