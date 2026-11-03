@@ -3,6 +3,10 @@
 > 状态：基础能力与 IVM 运行时均已合入 upstream/main；本文件保留实施记录并维护
 > 进度总览与后续路线。设计细节见 `EPOCH.md` 与各节实施记录。
 
+> 配置说明（2026-11）：本文中的 `LAKESOUL_IVM_*` 环境变量已移除，等价的
+> 行为配置见 `IvmOptions`，资源/会话配置见 `IvmRuntimeConfig`（README
+> "Runtime configuration"）。下文保留当时的实施记录。
+
 ## 进度总览
 
 ### 已合入的 PR

@@ -14,8 +14,9 @@ derived-step table must use Vortex. Do not benchmark a mix of Parquet and
 Vortex.
 
 - Create pilot source/target tables with `PhysicalFormat::Vortex`.
-- Keep `LAKESOUL_IVM_INTERNAL_FILE_FORMAT` unset or set it to `vortex`; do not
-  set it to `parquet`.
+- Keep `PILOT_INTERNAL_FILE_FORMAT` unset or set it to `vortex`; do not set
+  it to `parquet`.  IVM no longer reads `LAKESOUL_IVM_*` environment
+  variables; the pilot builds `IvmRuntimeConfig` in `src/bin/support/mod.rs`.
 - After a run, verify every data file under the table root:
 
 ```bash
@@ -26,7 +27,31 @@ find <table-root> -type f \( -name '*.parquet' -o -name '*.vortex' \) \
 The result must contain only `vortex`. If any `parquet` file appears, fix the
 table creation options before measuring.
 
-## 2. Run pilots with jemalloc and a cgroup
+## 2. Runtime configuration belongs to the pilot
+
+IVM receives a `SessionConfig` plus a shared `RuntimeEnv` and an `IvmOptions`
+from the embedder.  It never reads `LAKESOUL_IVM_*` environment variables.
+The 10M pilot maps its own `PILOT_*` variables in `src/bin/support/mod.rs`:
+
+| Pilot variable | Meaning |
+|---|---|
+| `PILOT_MEMORY_LIMIT_MB` | DataFusion memory pool (must fit the cgroup) |
+| `PILOT_SPILL_DIR` | DataFusion spill directory |
+| `PILOT_TARGET_PARTITIONS` | DataFusion target partitions |
+| `PILOT_BATCH_SIZE` | DataFusion batch size |
+| `PILOT_WRITE_POOL_SIZE` / `PILOT_WRITE_POOL_DIR` | LakeSoul writer pool |
+| `PILOT_MAX_ACTIVE_TASKS` | Concurrent keyed state streams per lookup plan |
+| `PILOT_VIEW_PARALLELISM` | Independent views refreshed concurrently |
+| `PILOT_MAX_DERIVED_STEPS` | Planner limit on derived views |
+| `PILOT_STATE_INDEX` | `auto` / `force` / `off` |
+| `PILOT_REBUILD_RATIO` | Rebuild crossover (percent) |
+| `PILOT_TOPK_MATERIALIZE_BYTES` | Per-frame top-k budget |
+| `PILOT_INTERNAL_FILE_FORMAT` | Internal table format (`vortex`) |
+
+Do not reintroduce process-wide `LAKESOUL_IVM_*` knobs.  A datafusion-distributed
+deployment sets the same session/options from its executor configuration.
+
+## 3. Run pilots with jemalloc and a cgroup
 
 Use jemalloc and an explicit cgroup for CPU and memory. Run the pilot inside
 the scope so the limits apply to the whole process tree:
@@ -50,7 +75,7 @@ systemd-run --user --scope --collect --unit=<pilot-unit> \
   `memory.peak` is unavailable, and report the sampled peak.
 - Include `LAKESOUL_CACHE=1` and an explicit cache size/path for keyed lookups.
 
-## 3. Use the `test-fast` profile
+## 4. Use the `test-fast` profile
 
 Always run tests with:
 
@@ -61,7 +86,7 @@ cargo -q test --profile test-fast ...
 Do not use the default test profile for pilot validation. Use
 `cargo -q clippy -p <crate> --all-targets` for lint checks.
 
-## 4. Compaction must be running
+## 5. Compaction must be running
 
 Before any performance number is recorded, start `NewCompactionTask` with the
 tuned settings:
@@ -91,7 +116,7 @@ tuned settings:
   suites.  Concurrent compaction of temporary test tables can race with the
   tests; it is a pilot-only service.
 
-## 5. Validate before benchmarking
+## 6. Validate before benchmarking
 
 - Confirm no persistent lookup fallback:
 
@@ -108,7 +133,7 @@ number reflects the reader path, not the intended keyed lookup.
 - Confirm compaction is active and has committed at least once during or
   between windows.
 
-## 6. Clean state between experiments
+## 7. Clean state between experiments
 
 When reusing a table root, keep the source tables but clear stale IVM
 state/MV metadata and data directories first.  Otherwise old commits,
@@ -123,14 +148,14 @@ work.
 - Re-bootstrap only when creating a new base; reuse a base only with a new
   change window so versions do not accumulate.
 
-## 7. Report consistently
+## 8. Report consistently
 
 Report bootstrap and incremental refresh separately. Measure only the refresh
 execution time, excluding source appends, oracle comparison, and external
 compaction. Record CPU/memory limits, cache size, compaction state, file format,
 and fallback status with every comparison.
 
-## 8. Flamegraph profiling
+## 9. Flamegraph profiling
 
 Use `cargo flamegraph` with the pilot's `profiling` profile (`opt-level = 2`,
 `debug = "line-tables-only"`).  Build and run it under the same jemalloc and
@@ -180,7 +205,7 @@ systemd-run --user --scope --collect --unit=<pilot-flame> \
   --inverted` draws the opposite orientation, so do not mix orientations
   between runs.
 
-## 9. Performance builds: `profiling`, not `release`
+## 10. Performance builds: `profiling`, not `release`
 
 All pilot performance builds (Rust libraries, Spark JNI libraries and the
 pilot binary) use the `profiling` profile with line tables and without the

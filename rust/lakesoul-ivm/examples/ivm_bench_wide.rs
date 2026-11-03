@@ -12,8 +12,6 @@
 //! ```sh
 //! LAKESOUL_CACHE=1 cargo run --release -p lakesoul-ivm --example ivm_bench_wide -- \
 //!   --rows 1000000 --wide 8 --change-ratio 0.01 --rounds 3 --format vortex
-//! # baseline without the projection
-//! LAKESOUL_IVM_NO_PROJECTION=1 ... (same command)
 //! ```
 
 use std::sync::Arc;

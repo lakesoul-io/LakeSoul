@@ -17,6 +17,7 @@
 
 use std::collections::HashMap;
 use std::fmt::{self, Display};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use arrow::array::{
@@ -41,7 +42,7 @@ use datafusion::physical_expr::{
 };
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode, SortMergeJoinExec};
+use datafusion::physical_plan::joins::SortMergeJoinExec;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
@@ -54,7 +55,7 @@ use datafusion::physical_plan::{
 use datafusion::physical_plan::{RangePartitioning, SplitPoint};
 #[cfg(test)]
 use datafusion::prelude::lit;
-use datafusion::prelude::{DataFrame, SessionContext, col};
+use datafusion::prelude::{DataFrame, col};
 use futures::StreamExt;
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::helpers::transform::make_default_array;
@@ -67,7 +68,6 @@ use super::{
     IVM_EPOCH_COLUMN, IVM_GROUP_ROW_COLUMN, IVM_ROW_COUNT_COLUMN, IVM_ROW_KINDS_COLUMN,
 };
 use crate::error::Result;
-use crate::provider::IvmTableProvider;
 use crate::table::{IvmTable, PartitionFiles, file_bucket, partition_matches};
 
 /// Hidden column carrying the LakeSoul bucket id during a shuffle.
@@ -389,10 +389,9 @@ pub(crate) const IVM_STATE_COLUMN_PREFIX: &str = "__ivm_state_";
 const PK_LOOKUP_IN_LIST_LIMIT: usize = 4096;
 
 pub(crate) fn max_active_tasks() -> usize {
-    std::env::var("LAKESOUL_IVM_MAX_ACTIVE_TASKS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(4)
+    crate::config::options()
+        .max_active_tasks
+        .unwrap_or(tokio::sync::Semaphore::MAX_PERMITS)
         .max(1)
 }
 
@@ -1890,15 +1889,26 @@ pub(crate) fn partition_restriction_from_batches(
 
 /// Test/diagnostic counters for the last keyed lookup of each state table.
 static PARTITION_STATS: OnceLock<Mutex<HashMap<String, (u64, u64)>>> = OnceLock::new();
+static PARTITION_STATS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Enable the partition-pruning counters for the rest of the process.
+///
+/// This is a test/diagnostic hook, not a production configuration: enabling
+/// it costs one extra metadata listing per pruned lookup.
+#[doc(hidden)]
+pub fn enable_partition_stats() {
+    PARTITION_STATS_ENABLED.store(true, Ordering::Relaxed);
+}
+
+pub(crate) fn partition_stats_enabled() -> bool {
+    PARTITION_STATS_ENABLED.load(Ordering::Relaxed)
+}
 
 fn partition_stats() -> &'static Mutex<HashMap<String, (u64, u64)>> {
     PARTITION_STATS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub(crate) fn record_partition_stats(table_id: &str, total: usize, kept: usize) {
-    if std::env::var("LAKESOUL_IVM_PARTITION_STATS").is_err() {
-        return;
-    }
     if let Ok(mut stats) = partition_stats().lock() {
         // Several stages can narrow the same lookup.  Keep the widest total
         // seen and the narrowest kept set, so the reported pair describes the
@@ -1910,7 +1920,8 @@ pub(crate) fn record_partition_stats(table_id: &str, total: usize, kept: usize) 
 }
 
 /// The last keyed lookup's `(partition groups total, partition groups kept)`
-/// for a state table.  Enabled by `LAKESOUL_IVM_PARTITION_STATS`.
+/// for a state table.  Diagnostic only; the map retains one entry per table
+/// id for the life of the process.
 #[doc(hidden)]
 pub fn state_partition_stats(table_id: &str) -> Option<(u64, u64)> {
     partition_stats()
@@ -2204,608 +2215,6 @@ impl ExecutionPlan for BucketPartitionedExec {
         })?;
         child.execute(0, context)
     }
-}
-
-/// Execute one selected partition of a multi-partition input as a one-partition
-/// plan.  Used to pair a bucket's contribution with the same bucket's state in
-/// a per-bucket sort-merge join.
-struct PartitionSelectorExec {
-    input: Arc<dyn ExecutionPlan>,
-    partition: usize,
-    properties: Arc<PlanProperties>,
-}
-
-impl PartitionSelectorExec {
-    fn new(input: Arc<dyn ExecutionPlan>, partition: usize) -> Self {
-        let schema = input.schema();
-        Self {
-            input,
-            partition,
-            properties: Arc::new(PlanProperties::new(
-                EquivalenceProperties::new(schema),
-                Partitioning::UnknownPartitioning(1),
-                EmissionType::Incremental,
-                Boundedness::Bounded,
-            )),
-        }
-    }
-}
-
-impl std::fmt::Debug for PartitionSelectorExec {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "PartitionSelectorExec({})", self.partition)
-    }
-}
-
-impl DisplayAs for PartitionSelectorExec {
-    fn fmt_as(
-        &self,
-        _format: DisplayFormatType,
-        f: &mut std::fmt::Formatter<'_>,
-    ) -> std::fmt::Result {
-        write!(f, "PartitionSelectorExec({})", self.partition)
-    }
-}
-
-impl ExecutionPlan for PartitionSelectorExec {
-    fn name(&self) -> &str {
-        "PartitionSelectorExec"
-    }
-
-    fn schema(&self) -> SchemaRef {
-        self.input.schema()
-    }
-
-    fn properties(&self) -> &Arc<PlanProperties> {
-        &self.properties
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![&self.input]
-    }
-
-    fn apply_expressions(
-        &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
-    ) -> DataFusionResult<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let input = children.into_iter().next().ok_or_else(|| {
-            DataFusionError::Internal("partition selector child".into())
-        })?;
-        Ok(Arc::new(Self::new(input, self.partition)))
-    }
-
-    fn execute(
-        &self,
-        _partition: usize,
-        context: Arc<datafusion::execution::TaskContext>,
-    ) -> DataFusionResult<SendableRecordBatchStream> {
-        self.input.execute(self.partition, context)
-    }
-}
-
-/// A table provider that builds a fresh partitioned hash join on every scan.
-///
-/// The refresh path may plan and execute the same logical lookup more than
-/// once.  `RepartitionExec` and `HashJoinExec` keep execution state, so the
-/// physical plan must not be cached in the provider: rebuilding it per scan
-/// is what makes the join reusable.
-#[derive(Debug)]
-pub(crate) struct IvmHashJoinTable {
-    state: IvmTable,
-    client: lakesoul_metadata::MetaDataClient,
-    contribution: DataFrame,
-    input_columns: Vec<String>,
-    table_columns: Vec<String>,
-    route_columns: Option<Vec<String>>,
-    join_type: datafusion::common::JoinType,
-    null_equality: NullEquality,
-    groups_by_bucket: Vec<Vec<PartitionFiles>>,
-}
-
-impl IvmHashJoinTable {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        state: IvmTable,
-        client: lakesoul_metadata::MetaDataClient,
-        contribution: DataFrame,
-        input_columns: Vec<String>,
-        table_columns: Vec<String>,
-        route_columns: Option<Vec<String>>,
-        join_type: datafusion::common::JoinType,
-        null_equality: NullEquality,
-        groups_by_bucket: Vec<Vec<PartitionFiles>>,
-    ) -> Self {
-        Self {
-            state,
-            client,
-            contribution,
-            input_columns,
-            table_columns,
-            route_columns,
-            join_type,
-            null_equality,
-            groups_by_bucket,
-        }
-    }
-
-    async fn build_plan(
-        &self,
-        session: &dyn Session,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let bucket_count = self.groups_by_bucket.len().max(1);
-        let mut state_children = Vec::with_capacity(bucket_count);
-        for groups in &self.groups_by_bucket {
-            let provider = IvmTableProvider::groups(
-                self.state.clone(),
-                self.client.clone(),
-                groups.clone(),
-            );
-            let plan = provider.scan(session, None, &[], None).await?;
-            state_children.push(
-                Arc::new(CoalescePartitionsExec::new(plan)) as Arc<dyn ExecutionPlan>
-            );
-        }
-        let state_plan: Arc<dyn ExecutionPlan> = Arc::new(BucketPartitionedExec::new(
-            state_children,
-            self.state.schema.clone(),
-        ));
-        let (partition_mode, contribution_plan) = if bucket_count > 1 {
-            let route_columns = self.route_columns.as_ref().ok_or_else(|| {
-                DataFusionError::Internal(
-                    "bucket hash join needs contribution route columns".to_string(),
-                )
-            })?;
-            (
-                PartitionMode::Partitioned,
-                bucket_repartition_by_columns(
-                    self.contribution.create_physical_plan().await?,
-                    route_columns,
-                    bucket_count,
-                )
-                .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?,
-            )
-        } else {
-            // A one-bucket state is a single partition; collect it as the
-            // build side and let the probe keep its own partitioning.
-            (
-                PartitionMode::CollectLeft,
-                self.contribution.create_physical_plan().await?,
-            )
-        };
-        let contribution_schema = contribution_plan.schema();
-        let on = self
-            .table_columns
-            .iter()
-            .zip(&self.input_columns)
-            .map(|(table_column, input_column)| {
-                let left = Arc::new(PhysicalColumn::new(
-                    table_column,
-                    self.state.schema.index_of(table_column)?,
-                )) as Arc<dyn PhysicalExpr>;
-                let right = Arc::new(PhysicalColumn::new(
-                    input_column,
-                    contribution_schema.index_of(input_column)?,
-                )) as Arc<dyn PhysicalExpr>;
-                Ok((left, right))
-            })
-            .collect::<DataFusionResult<Vec<_>>>()?;
-        let join = HashJoinExec::try_new(
-            state_plan,
-            contribution_plan,
-            on,
-            None,
-            &self.join_type,
-            None,
-            partition_mode,
-            self.null_equality,
-            false,
-        )?;
-        let projection = self
-            .state
-            .schema
-            .fields()
-            .iter()
-            .enumerate()
-            .map(|(index, field)| {
-                (
-                    Arc::new(PhysicalColumn::new(field.name(), index))
-                        as Arc<dyn PhysicalExpr>,
-                    field.name().clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-        Ok(Arc::new(ProjectionExec::try_new(
-            projection,
-            Arc::new(join),
-        )?))
-    }
-}
-
-#[async_trait]
-impl TableProvider for IvmHashJoinTable {
-    fn schema(&self) -> SchemaRef {
-        self.state.schema.clone()
-    }
-
-    fn table_type(&self) -> TableType {
-        TableType::Temporary
-    }
-
-    async fn scan(
-        &self,
-        session: &dyn Session,
-        projection: Option<&Vec<usize>>,
-        _filters: &[datafusion::prelude::Expr],
-        _limit: Option<usize>,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let plan = self.build_plan(session).await?;
-        // Hide the join from the outer physical optimizer.  Otherwise
-        // EnforceDistribution sees the join's key-partitioned requirement and
-        // inserts another DataFusion hash repartition around it, shuffling the
-        // LakeSoul buckets and (worse) changing the join's partition layout.
-        // Coalesce only the output; the join still runs every bucket
-        // internally.
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(IvmHiddenPlanExec::new(Arc::new(
-            CoalescePartitionsExec::new(plan),
-        )));
-        let Some(projection) = projection else {
-            return Ok(plan);
-        };
-        let schema = plan.schema();
-        let exprs = projection
-            .iter()
-            .map(|index| {
-                let field = schema.field(*index);
-                (
-                    Arc::new(PhysicalColumn::new(field.name(), *index))
-                        as Arc<dyn PhysicalExpr>,
-                    field.name().clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-        Ok(Arc::new(ProjectionExec::try_new(exprs, plan)?))
-    }
-}
-
-/// A table provider that builds a fresh partitioned sort-merge join on every
-/// scan.
-///
-/// The contribution is routed to LakeSoul buckets, each bucket's contribution
-/// and state are sorted by the join key, and one `SortMergeJoinExec` runs per
-/// bucket.  Unlike the hash join this never builds a hash table; state is read
-/// as a sorted stream and the join only buffers the current key group.
-#[derive(Debug)]
-pub(crate) struct IvmSortMergeJoinTable {
-    state: IvmTable,
-    client: lakesoul_metadata::MetaDataClient,
-    contribution: DataFrame,
-    input_columns: Vec<String>,
-    table_columns: Vec<String>,
-    route_columns: Option<Vec<String>>,
-    join_type: datafusion::common::JoinType,
-    null_equality: NullEquality,
-    groups_by_bucket: Vec<Vec<PartitionFiles>>,
-}
-
-impl IvmSortMergeJoinTable {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        state: IvmTable,
-        client: lakesoul_metadata::MetaDataClient,
-        contribution: DataFrame,
-        input_columns: Vec<String>,
-        table_columns: Vec<String>,
-        route_columns: Option<Vec<String>>,
-        join_type: datafusion::common::JoinType,
-        null_equality: NullEquality,
-        groups_by_bucket: Vec<Vec<PartitionFiles>>,
-    ) -> Self {
-        Self {
-            state,
-            client,
-            contribution,
-            input_columns,
-            table_columns,
-            route_columns,
-            join_type,
-            null_equality,
-            groups_by_bucket,
-        }
-    }
-
-    async fn build_plan(
-        &self,
-        session: &dyn Session,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let bucket_count = self.groups_by_bucket.len().max(1);
-        let mut state_children = Vec::with_capacity(bucket_count);
-        for groups in &self.groups_by_bucket {
-            let provider = IvmTableProvider::groups_current(
-                self.state.clone(),
-                self.client.clone(),
-                groups.clone(),
-            );
-            let plan = provider.scan(session, None, &[], None).await?;
-            state_children.push(
-                Arc::new(CoalescePartitionsExec::new(plan)) as Arc<dyn ExecutionPlan>
-            );
-        }
-        let contribution = self
-            .contribution
-            .clone()
-            .distinct()
-            .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?;
-        let contribution_plan: Arc<dyn ExecutionPlan> = if bucket_count > 1 {
-            let route_columns = self.route_columns.as_ref().ok_or_else(|| {
-                DataFusionError::Internal(
-                    "bucket sort-merge lookup needs contribution route columns"
-                        .to_string(),
-                )
-            })?;
-            bucket_repartition_by_columns(
-                contribution.create_physical_plan().await?,
-                route_columns,
-                bucket_count,
-            )
-            .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?
-        } else {
-            Arc::new(CoalescePartitionsExec::new(
-                contribution.create_physical_plan().await?,
-            ))
-        };
-        let contribution_schema = contribution_plan.schema();
-        let sort_options = vec![SortOptions::default(); self.table_columns.len()];
-        let contribution_ordering = LexOrdering::new(
-            self.input_columns
-                .iter()
-                .map(|column| {
-                    Ok(PhysicalSortExpr {
-                        expr: Arc::new(PhysicalColumn::new(
-                            column,
-                            contribution_schema.index_of(column)?,
-                        )),
-                        options: SortOptions::default(),
-                    })
-                })
-                .collect::<DataFusionResult<Vec<_>>>()?,
-        )
-        .ok_or_else(|| {
-            DataFusionError::Internal(
-                "sort-merge contribution ordering is empty".to_string(),
-            )
-        })?;
-        let projection = self
-            .state
-            .schema
-            .fields()
-            .iter()
-            .enumerate()
-            .map(|(index, field)| {
-                (
-                    Arc::new(PhysicalColumn::new(field.name(), index))
-                        as Arc<dyn PhysicalExpr>,
-                    field.name().clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-        let mut join_children = Vec::with_capacity(state_children.len());
-        for (bucket, state_child) in state_children.into_iter().enumerate() {
-            let contribution_child = Arc::new(PartitionSelectorExec::new(
-                contribution_plan.clone(),
-                bucket,
-            ));
-            let contribution_sorted = Arc::new(SortExec::new(
-                contribution_ordering.clone(),
-                contribution_child,
-            ));
-            let on = self
-                .table_columns
-                .iter()
-                .zip(&self.input_columns)
-                .map(|(table_column, input_column)| {
-                    let left = Arc::new(PhysicalColumn::new(
-                        table_column,
-                        state_child.schema().index_of(table_column)?,
-                    )) as Arc<dyn PhysicalExpr>;
-                    let right = Arc::new(PhysicalColumn::new(
-                        input_column,
-                        contribution_sorted.schema().index_of(input_column)?,
-                    )) as Arc<dyn PhysicalExpr>;
-                    Ok((left, right))
-                })
-                .collect::<DataFusionResult<Vec<_>>>()?;
-            let join = SortMergeJoinExec::try_new(
-                state_child,
-                contribution_sorted,
-                on,
-                None,
-                self.join_type,
-                sort_options.clone(),
-                self.null_equality,
-            )?;
-            join_children.push(Arc::new(ProjectionExec::try_new(
-                projection.clone(),
-                Arc::new(join),
-            )?) as Arc<dyn ExecutionPlan>);
-        }
-        Ok(Arc::new(BucketPartitionedExec::new(
-            join_children,
-            self.state.schema.clone(),
-        )))
-    }
-}
-
-#[async_trait]
-impl TableProvider for IvmSortMergeJoinTable {
-    fn schema(&self) -> SchemaRef {
-        self.state.schema.clone()
-    }
-
-    fn table_type(&self) -> TableType {
-        TableType::Temporary
-    }
-
-    async fn scan(
-        &self,
-        session: &dyn Session,
-        projection: Option<&Vec<usize>>,
-        _filters: &[datafusion::prelude::Expr],
-        _limit: Option<usize>,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let plan = self.build_plan(session).await?;
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(IvmHiddenPlanExec::new(Arc::new(
-            CoalescePartitionsExec::new(plan),
-        )));
-        let Some(projection) = projection else {
-            return Ok(plan);
-        };
-        let schema = plan.schema();
-        let exprs = projection
-            .iter()
-            .map(|index| {
-                let field = schema.field(*index);
-                (
-                    Arc::new(PhysicalColumn::new(field.name(), *index))
-                        as Arc<dyn PhysicalExpr>,
-                    field.name().clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-        Ok(Arc::new(ProjectionExec::try_new(exprs, plan)?))
-    }
-}
-
-/// Build a partitioned DataFusion sort-merge join between one keyed source
-/// table and a contribution whose join-key columns are real table columns.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn sort_merge_source_state(
-    context: &SessionContext,
-    state: &IvmTable,
-    client: &lakesoul_metadata::MetaDataClient,
-    contribution: DataFrame,
-    input_columns: &[String],
-    table_columns: &[String],
-    route_columns: Option<Vec<String>>,
-    multi_match: bool,
-    groups_by_bucket: Vec<Vec<PartitionFiles>>,
-) -> DataFusionResult<DataFrame> {
-    let join_type = if multi_match {
-        datafusion::common::JoinType::Inner
-    } else {
-        datafusion::common::JoinType::Right
-    };
-    let table = IvmSortMergeJoinTable::new(
-        state.clone(),
-        client.clone(),
-        contribution,
-        input_columns.to_vec(),
-        table_columns.to_vec(),
-        route_columns,
-        join_type,
-        NullEquality::NullEqualsNothing,
-        groups_by_bucket,
-    );
-    context.read_table(Arc::new(table))
-}
-
-/// Build a partitioned DataFusion hash join between one state table and a
-/// binary-key contribution.  Both inputs stay streaming; only state columns
-/// are projected out.
-pub(crate) async fn hash_join_binary_state(
-    context: &SessionContext,
-    state: &IvmTable,
-    client: &lakesoul_metadata::MetaDataClient,
-    contribution: DataFrame,
-    key_column: &str,
-    groups_by_bucket: Vec<Vec<PartitionFiles>>,
-) -> DataFusionResult<DataFrame> {
-    let table = IvmHashJoinTable::new(
-        state.clone(),
-        client.clone(),
-        contribution,
-        vec![key_column.to_string()],
-        vec![key_column.to_string()],
-        Some(vec![key_column.to_string()]),
-        datafusion::common::JoinType::Inner,
-        NullEquality::NullEqualsNull,
-        groups_by_bucket,
-    );
-    context.read_table(Arc::new(table))
-}
-
-/// Build a partitioned DataFusion hash join between one keyed source table
-/// and a contribution whose join-key columns are real table columns.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn hash_join_source_state(
-    context: &SessionContext,
-    state: &IvmTable,
-    client: &lakesoul_metadata::MetaDataClient,
-    contribution: DataFrame,
-    input_columns: &[String],
-    table_columns: &[String],
-    route_columns: Option<Vec<String>>,
-    multi_match: bool,
-    groups_by_bucket: Vec<Vec<PartitionFiles>>,
-) -> DataFusionResult<DataFrame> {
-    let join_type = if multi_match {
-        datafusion::common::JoinType::Inner
-    } else {
-        datafusion::common::JoinType::Right
-    };
-    let table = IvmHashJoinTable::new(
-        state.clone(),
-        client.clone(),
-        contribution,
-        input_columns.to_vec(),
-        table_columns.to_vec(),
-        route_columns,
-        join_type,
-        NullEquality::NullEqualsNothing,
-        groups_by_bucket,
-    );
-    context.read_table(Arc::new(table))
-}
-
-/// Build the raw source hash-join plan for a benchmark.  The returned plan is
-/// not hidden from the optimizer, so its operator metrics can be inspected.
-#[doc(hidden)]
-#[allow(clippy::too_many_arguments)]
-pub async fn build_source_hash_join_plan(
-    context: &SessionContext,
-    state: &IvmTable,
-    client: &lakesoul_metadata::MetaDataClient,
-    contribution: DataFrame,
-    input_columns: &[String],
-    table_columns: &[String],
-    route_columns: Option<Vec<String>>,
-    multi_match: bool,
-    groups_by_bucket: Vec<Vec<PartitionFiles>>,
-) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-    let join_type = if multi_match {
-        datafusion::common::JoinType::Inner
-    } else {
-        datafusion::common::JoinType::Right
-    };
-    let table = IvmHashJoinTable::new(
-        state.clone(),
-        client.clone(),
-        contribution,
-        input_columns.to_vec(),
-        table_columns.to_vec(),
-        route_columns,
-        join_type,
-        NullEquality::NullEqualsNothing,
-        groups_by_bucket,
-    );
-    let session = context.state();
-    table.build_plan(&session).await
 }
 
 /// A one-partition plan that hides its inner plan from physical optimizers.

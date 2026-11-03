@@ -26,9 +26,7 @@ use datafusion::logical_expr::LogicalPlan;
 use datafusion::logical_expr::LogicalPlanBuilder;
 use datafusion::logical_expr::when;
 use datafusion::logical_expr::{ExprSchemable, Operator};
-use datafusion::prelude::{
-    DataFrame, Expr, JoinType, SessionConfig, SessionContext, col, lit,
-};
+use datafusion::prelude::{DataFrame, Expr, JoinType, SessionContext, col, lit};
 use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_metadata::transfusion::DataFileInfo;
@@ -54,7 +52,7 @@ mod fallback;
 pub(crate) mod join_state;
 mod joins;
 pub(crate) mod keyed_plan;
-pub use keyed_plan::state_partition_stats;
+pub use keyed_plan::{enable_partition_stats, state_partition_stats};
 mod lookup_chain;
 mod multi_join;
 mod recompute;
@@ -2801,63 +2799,13 @@ pub(crate) fn cast_frame_columns(
 /// The session used by full and incremental refreshes.  Keep the partition
 /// count identical on both paths so a bootstrap and its first incremental
 /// windows run with the same parallelism.
-pub(crate) fn refresh_session() -> SessionContext {
-    let target_partitions = std::env::var("LAKESOUL_IVM_TARGET_PARTITIONS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(4);
-    let batch_size = std::env::var("LAKESOUL_IVM_BATCH_SIZE")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(8192)
-        .max(1);
-    let config = SessionConfig::new()
-        .with_target_partitions(target_partitions)
-        .with_batch_size(batch_size);
-    let context = SessionContext::new_with_config_rt(config, refresh_runtime());
-    tracing::debug!(
-        target_partitions,
-        batch_size,
-        "IVM refresh session configured"
-    );
-    context
-}
-
-/// The single SQL execution pool shared by every refresh session.
 ///
-/// A refresh creates a session per view and a few more for helper plans.  A
-/// pool per session made memory scale with the number of live plans; sharing
-/// one pool keeps the configured budget process-wide and lets DataFusion spill
-/// instead of multiplying it.  This pool is intentionally the largest one:
-/// joins, windows and sorts benefit from memory much more than streaming IO
-/// readers do.
-fn refresh_runtime() -> Arc<datafusion::execution::runtime_env::RuntimeEnv> {
-    static RUNTIME: std::sync::OnceLock<
-        Arc<datafusion::execution::runtime_env::RuntimeEnv>,
-    > = std::sync::OnceLock::new();
-    RUNTIME
-        .get_or_init(|| {
-            let limit_mb = std::env::var("LAKESOUL_IVM_MEMORY_LIMIT_MB")
-                .ok()
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(8192);
-            let spill_dir = std::env::var("LAKESOUL_IVM_SPILL_DIR")
-                .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
-            let _ = std::fs::create_dir_all(&spill_dir);
-            let runtime = datafusion::execution::runtime_env::RuntimeEnvBuilder::new()
-                .with_memory_limit(limit_mb * 1024 * 1024, 0.8)
-                .with_temp_file_path(&spill_dir)
-                .with_max_temp_directory_size(100 * 1024 * 1024 * 1024)
-                .build()
-                .expect("ivm refresh runtime env");
-            tracing::debug!(
-                limit_mb,
-                %spill_dir,
-                "IVM refresh runtime configured"
-            );
-            Arc::new(runtime)
-        })
-        .clone()
+/// The config and runtime env come from the [`IvmRuntimeConfig`] installed by
+/// the embedder, so every refresh shares the caller's memory pool and spill
+/// manager instead of creating a second IVM-private runtime.
+pub(crate) fn refresh_session() -> SessionContext {
+    let (config, runtime) = crate::config::session();
+    SessionContext::new_with_config_rt(config, runtime)
 }
 
 /// Encodes the group-key columns of a batch into Arrow's canonical row
@@ -3250,9 +3198,9 @@ fn project_frame(frame: DataFrame, columns: &[String]) -> Result<DataFrame> {
 }
 
 /// Count a lazy frame's rows by draining its stream; nothing is collected.
-/// Log the process RSS at a debug checkpoint when `IVM_DEBUG_RSS` is set.
+/// Log the process RSS at a debug checkpoint when debug logging is enabled.
 pub(crate) fn trace_rss(label: &str) {
-    if std::env::var("IVM_DEBUG_RSS").is_err() {
+    if !tracing::enabled!(tracing::Level::DEBUG) {
         return;
     }
     let rss_mb = std::fs::read_to_string("/proc/self/status")
@@ -3449,14 +3397,42 @@ fn filter_where(filter: Option<&str>) -> String {
 }
 
 impl IvmRuntime {
-    /// Build the runtime from the `LAKESOUL_PG_*` configuration.
-    pub async fn from_env() -> Result<Self> {
-        Ok(Self {
-            client: MetaDataClient::from_env().await?,
-            metadata: IvmMetadata::from_env().await?,
+    /// Build a runtime with the caller's DataFusion session and IVM options.
+    ///
+    /// The config is installed process-wide for the refresh helpers; creating
+    /// a second runtime replaces it.  Build it from an existing
+    /// [`SessionContext`] with [`IvmRuntimeConfig::from_session`] so refreshes
+    /// share that session's memory pool and spill manager.
+    pub fn new(
+        client: MetaDataClient,
+        metadata: IvmMetadata,
+        config: crate::config::IvmRuntimeConfig,
+    ) -> Self {
+        crate::config::install(config);
+        Self {
+            client,
+            metadata,
             view_rows: Mutex::new(HashMap::new()),
             semi_anti_right_keys: Mutex::new(SemiAntiRightKeyCache::default()),
-        })
+        }
+    }
+
+    /// Build the runtime from the `LAKESOUL_PG_*` configuration and the
+    /// default session/options.
+    pub async fn from_env() -> Result<Self> {
+        Self::from_env_with_config(crate::config::IvmRuntimeConfig::default()).await
+    }
+
+    /// Build the runtime from the `LAKESOUL_PG_*` configuration with an
+    /// explicit session and options.
+    pub async fn from_env_with_config(
+        config: crate::config::IvmRuntimeConfig,
+    ) -> Result<Self> {
+        Ok(Self::new(
+            MetaDataClient::from_env().await?,
+            IvmMetadata::from_env().await?,
+            config,
+        ))
     }
 
     /// The underlying LakeSoul metadata client.

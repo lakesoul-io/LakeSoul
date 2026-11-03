@@ -20,7 +20,7 @@ use datafusion::logical_expr::Cast;
 // full bucket-parallel rebuild is cheaper than the incremental replay.  It is
 // per storage format because the state read dominates the replay and its
 // random-read granularity differs (Vortex blocks vs Parquet pages).
-// `LAKESOUL_IVM_REBUILD_RATIO` overrides it at runtime (a percentage).
+// `IvmOptions::rebuild_ratio` overrides it at runtime (a percentage).
 
 /// The calibrated crossover for a Parquet MV (pages cannot skip a random key
 /// set, so the state read is a full pass even at small ratios).
@@ -31,11 +31,10 @@ const PARQUET_REBUILD_RATIO_PERCENT: u64 = 4;
 const VORTEX_REBUILD_RATIO_PERCENT: u64 = 8;
 
 /// The rebuild crossover for `mv`, overridable with
-/// `LAKESOUL_IVM_REBUILD_RATIO` (percent of the estimated live rows).
+/// [`IvmOptions::rebuild_ratio`](crate::config::IvmOptions::rebuild_ratio)
+/// (percent of the estimated live rows).
 fn rebuild_ratio_percent(mv: &IvmTable) -> u64 {
-    if let Ok(value) = std::env::var("LAKESOUL_IVM_REBUILD_RATIO")
-        && let Ok(percent) = value.parse::<u64>()
-    {
+    if let Some(percent) = crate::config::options().rebuild_ratio {
         return percent;
     }
     if matches!(mv.file_format, crate::PhysicalFormat::Parquet) {

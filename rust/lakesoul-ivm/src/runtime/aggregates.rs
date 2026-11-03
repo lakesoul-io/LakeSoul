@@ -2322,9 +2322,6 @@ impl IvmRuntime {
     /// at high change ratios), so pruning its projection keeps the scan to the
     /// columns the refresh consumes instead of the whole table schema.
     fn sum_count_source_projection(view: &SumCountView) -> Result<Option<SchemaRef>> {
-        if std::env::var("LAKESOUL_IVM_NO_PROJECTION").is_ok() {
-            return Ok(None);
-        }
         let mut columns = view.source.primary_keys.clone();
         if let Some(change) = change_column(&view.source) {
             columns.push(change.to_string());

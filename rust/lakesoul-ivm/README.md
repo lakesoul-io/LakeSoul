@@ -585,6 +585,45 @@ The `kind` label is the view kind (`sum_count`, `min_max`, `window`, `join`,
 fallback view's kind is `fallback`, so its refreshes and rebuilds are also
 visible per view kind.
 
+## Runtime configuration
+
+IVM runs inside a DataFusion session owned by the embedding process.  It does
+not read any `LAKESOUL_IVM_*` environment variable.  The caller builds an
+`IvmRuntimeConfig` from its session and passes it to the runtime:
+
+```rust
+use lakesoul_ivm::{IvmOptions, IvmRuntime, IvmRuntimeConfig};
+
+// Resource configuration belongs to the caller's DataFusion context.
+let config = IvmRuntimeConfig::from_session(&session)   // SessionConfig + RuntimeEnv
+    .with_options(IvmOptions {
+        max_active_tasks: Some(4),
+        max_derived_steps: 128,
+        ..IvmOptions::default()
+    });
+let runtime = IvmRuntime::from_env_with_config(config).await?;
+```
+
+`SessionConfig` owns target partitions and batch size; `RuntimeEnv` owns the
+memory pool and spill directory.  In a datafusion-distributed deployment each
+coordinator and executor sets the same values from its own deployment config.
+`IvmRuntime::from_env()` remains as a test/example convenience and uses the
+default session, but production code should pass its own config.
+
+| `IvmOptions` field | Default | Meaning |
+|---|---|---|
+| `max_active_tasks` | `None` (unbounded) | Concurrent keyed state streams per lookup plan |
+| `view_parallelism` | `1` | Independent views refreshed concurrently |
+| `max_derived_steps` | `64` | Planner limit on materialized derived views |
+| `state_index` | `Auto` | Row-level PK index: Vortex on, Parquet off |
+| `rebuild_ratio` | per format (Vortex 8%, Parquet 4%) | Change ratio above which a refresh rebuilds |
+| `topk_materialize_bytes` | `1 GiB` | Per-frame top-k materialization budget; `0` disables |
+| `internal_file_format` | `Vortex` | Format of newly created internal tables |
+| `write_pool_size` | `500mb` | Bounded memory pool of one streaming writer |
+| `write_pool_dir` | `<tmp>/lakesoul/ivm-spill` | Writer spill directory |
+| `vortex_row_block_size` | writer default `1024` | Vortex row-block override for internal tables |
+| `vortex_data_block_bytes` | writer default `128 KiB` | Vortex data-block target override |
+
 ## Rust API
 
 ```rust
