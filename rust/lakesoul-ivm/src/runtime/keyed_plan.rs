@@ -1031,17 +1031,28 @@ async fn open_lookup_sources(
     Some(opened)
 }
 
-/// A one-partition execution plan backed by a bounded channel.
+/// A one-partition execution plan backed by a channel.
+///
+/// The persistent lookup channels are unbounded.  DataFusion's piecewise
+/// merge join buffers its left (state) side to the end of that stream before
+/// it reads the right (contribution) side, and the per-file merge consumes
+/// file streams in key order.  A bounded channel would therefore stop the
+/// producer while the consumer waits for another stream to reach the same
+/// key, or while the join is still collecting the state side.  The state and
+/// contribution rows are materialized by the join anyway, so unbounded
+/// channels do not add an asymptotic memory cost.
 struct ChannelInputExec {
     schema: SchemaRef,
-    receiver: Mutex<Option<tokio::sync::mpsc::Receiver<DataFusionResult<RecordBatch>>>>,
+    receiver: Mutex<
+        Option<tokio::sync::mpsc::UnboundedReceiver<DataFusionResult<RecordBatch>>>,
+    >,
     properties: Arc<PlanProperties>,
 }
 
 impl ChannelInputExec {
     fn new(
         schema: SchemaRef,
-        receiver: tokio::sync::mpsc::Receiver<DataFusionResult<RecordBatch>>,
+        receiver: tokio::sync::mpsc::UnboundedReceiver<DataFusionResult<RecordBatch>>,
     ) -> Self {
         let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(schema.clone()),
@@ -1136,8 +1147,6 @@ impl ExecutionPlan for ChannelInputExec {
     }
 }
 
-const PERSISTENT_LOOKUP_CHANNEL_CAPACITY: usize = 8;
-
 /// Add the state table's range-partition constants and any missing columns so
 /// every file stream has the full merge schema.
 fn state_batch_with_defaults(
@@ -1187,8 +1196,8 @@ fn state_batch_with_defaults(
 async fn persistent_lookup_producer(
     mut input: SendableRecordBatchStream,
     mut sources: Vec<GroupLookupSource>,
-    file_txs: Vec<tokio::sync::mpsc::Sender<DataFusionResult<RecordBatch>>>,
-    contribution_tx: tokio::sync::mpsc::Sender<DataFusionResult<RecordBatch>>,
+    file_txs: Vec<tokio::sync::mpsc::UnboundedSender<DataFusionResult<RecordBatch>>>,
+    contribution_tx: tokio::sync::mpsc::UnboundedSender<DataFusionResult<RecordBatch>>,
     state_schema: SchemaRef,
     key: PkLookupKey,
 ) {
@@ -1211,7 +1220,7 @@ async fn persistent_lookup_producer(
             Some(Ok(batch)) if batch.num_rows() == 0 => continue,
             Some(Ok(batch)) => batch,
         };
-        if contribution_tx.send(Ok(batch.clone())).await.is_err() {
+        if contribution_tx.send(Ok(batch.clone())).is_err() {
             return;
         }
         let contribution_keys = match key_rows(&batch, &key, &state_schema) {
@@ -1257,7 +1266,7 @@ async fn persistent_lookup_producer(
                             break 'batch;
                         }
                     };
-                    if file_txs[index].send(Ok(batch)).await.is_err() {
+                    if file_txs[index].send(Ok(batch)).is_err() {
                         return;
                     }
                 }
@@ -1266,13 +1275,9 @@ async fn persistent_lookup_producer(
     }
     if let Some(message) = error_message {
         for tx in &file_txs {
-            let _ = tx
-                .send(Err(DataFusionError::Execution(message.clone())))
-                .await;
+            let _ = tx.send(Err(DataFusionError::Execution(message.clone())));
         }
-        let _ = contribution_tx
-            .send(Err(DataFusionError::Execution(message)))
-            .await;
+        let _ = contribution_tx.send(Err(DataFusionError::Execution(message)));
     }
 }
 
@@ -1303,7 +1308,7 @@ fn build_persistent_join(
         let mut group_inputs: Vec<Arc<dyn ExecutionPlan>> = Vec::new();
         let group_files = group.merge_config.files_slice().to_vec();
         for _ in 0..group.source.file_count() {
-            let (tx, rx) = tokio::sync::mpsc::channel(PERSISTENT_LOOKUP_CHANNEL_CAPACITY);
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             file_txs.push(tx);
             group_inputs.push(Arc::new(ChannelInputExec::new(state_schema.clone(), rx))
                 as Arc<dyn ExecutionPlan>);
@@ -1354,8 +1359,7 @@ fn build_persistent_join(
     ));
     let state_stream: Arc<dyn ExecutionPlan> =
         Arc::new(SortPreservingMergeExec::new(ordering, group_partitions));
-    let (contribution_tx, contribution_rx) =
-        tokio::sync::mpsc::channel(PERSISTENT_LOOKUP_CHANNEL_CAPACITY);
+    let (contribution_tx, contribution_rx) = tokio::sync::mpsc::unbounded_channel();
     let contribution_input: Arc<dyn ExecutionPlan> = Arc::new(ChannelInputExec::new(
         contribution_schema.clone(),
         contribution_rx,
