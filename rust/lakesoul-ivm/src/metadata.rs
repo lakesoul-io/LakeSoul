@@ -163,6 +163,26 @@ do $$ begin
     );
 exception when duplicate_table or unique_violation then null;
 end $$;
+
+do $$ begin
+    create table if not exists ivm.view_commits (
+        view_id        text   not null,
+        commit_id      text   not null,
+        partition_desc text   not null,
+        created_at     bigint not null,
+        primary key (view_id, commit_id)
+    );
+exception when duplicate_table or unique_violation then null;
+end $$;
+
+do $$ begin
+    create table if not exists ivm.view_locks (
+        view_id    text   not null primary key,
+        owner      text   not null,
+        expires_at bigint not null
+    );
+exception when duplicate_table or unique_violation then null;
+end $$;
 ";
 
 /// The persisted cursor of one source partition.
@@ -454,6 +474,7 @@ const EPOCH_COLUMNS: &str = "view_id, generation, epoch, window_key, status, \
      state_versions, commit_ids, created_at, committed_at";
 
 /// The `ivm` schema access layer.
+#[derive(Clone)]
 pub struct IvmMetadata {
     client: PooledClient,
 }
@@ -468,6 +489,12 @@ impl IvmMetadata {
         )?;
         let client = create_connection(config, None).await?;
         Ok(Self { client })
+    }
+
+    /// Share a metadata client's PostgreSQL pool instead of opening a new
+    /// connection pool for the IVM metadata schema.
+    pub fn from_pool(client: PooledClient) -> Self {
+        Self { client }
     }
 
     /// Create the `ivm` schema and tables if they do not exist.
@@ -575,6 +602,77 @@ impl IvmMetadata {
                  set spec = excluded.spec,
                      refresh_interval_ms = excluded.refresh_interval_ms",
             &[&view_id, spec, &refresh_interval_ms, &crate::now_ms()],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Record the target commits a refresh wrote.  A pending refresh may have
+    /// committed files before its epoch row was marked, so this is written as
+    /// soon as the target commit returns, not with the epoch.
+    pub async fn record_view_commits(
+        &self,
+        view_id: &str,
+        commits: &[String],
+    ) -> Result<()> {
+        for commit_id in commits {
+            self.execute_rw(
+                "insert into ivm.view_commits(
+                         view_id, commit_id, partition_desc, created_at)
+                     values ($1::TEXT, $2::TEXT, $3::TEXT, $4::BIGINT)
+                     on conflict (view_id, commit_id) do nothing",
+                &[&view_id, commit_id, &String::new(), &crate::now_ms()],
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Commit ids the IVM runtime has written to the target of one view.
+    pub async fn view_commit_ids(
+        &self,
+        view_id: &str,
+    ) -> Result<std::collections::HashSet<String>> {
+        let rows = self
+            .client
+            .query(
+                "select commit_id from ivm.view_commits where view_id = $1::TEXT",
+                QueryType::RO,
+                &[&view_id],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|row| row.get(0)).collect())
+    }
+
+    /// Try to take the refresh lease of one view.  A lease left by a crashed
+    /// process expires after `ttl_ms`.
+    pub async fn try_lock_view(
+        &self,
+        view_id: &str,
+        owner: &str,
+        ttl_ms: i64,
+    ) -> Result<bool> {
+        let now = crate::now_ms();
+        let expires_at = now.saturating_add(ttl_ms);
+        let row = self
+            .query_opt_rw(
+                "insert into ivm.view_locks(view_id, owner, expires_at)
+                 values ($1::TEXT, $2::TEXT, $3::BIGINT)
+                 on conflict (view_id) do update
+                 set owner = excluded.owner, expires_at = excluded.expires_at
+                 where ivm.view_locks.expires_at < $4::BIGINT
+                 returning owner",
+                &[&view_id, &owner, &expires_at, &now],
+            )
+            .await?;
+        Ok(row.is_some_and(|row| row.get::<_, String>(0) == owner))
+    }
+
+    /// Release a refresh lease held by `owner`.
+    pub async fn unlock_view(&self, view_id: &str, owner: &str) -> Result<()> {
+        self.execute_rw(
+            "delete from ivm.view_locks where view_id = $1::TEXT and owner = $2::TEXT",
+            &[&view_id, &owner],
         )
         .await?;
         Ok(())

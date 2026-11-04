@@ -81,6 +81,7 @@ pub struct PgSession {
     pub context: Arc<SessionContext>,
     pub settings: RwLock<SessionSettings>,
     pub actor: SessionActor,
+    pub ivm: Option<Arc<crate::ivm::IvmService>>,
     distributed: bool,
     /// Metadata view this connection lists from: the factory's shared
     /// snapshot, i.e. one refresher per process rather than one per
@@ -108,6 +109,7 @@ impl PgSession {
             context,
             settings: RwLock::new(settings),
             actor,
+            ivm: None,
             distributed,
             catalog_snapshot,
         })
@@ -154,6 +156,7 @@ pub struct PgSessionFactory {
     auth_manager: Arc<AuthManager>,
     catalog_options: PgCatalogOptions,
     distributed: bool,
+    ivm: Option<Arc<crate::ivm::IvmService>>,
     /// Object-store prefix new tables are created under; `CREATE TABLE`
     /// refuses to run without one.
     warehouse: Option<String>,
@@ -190,6 +193,7 @@ impl PgSessionFactory {
             base,
             auth_manager,
             distributed: false,
+            ivm: None,
             catalog_options: PgCatalogOptions {
                 include_synthetic_postgres_database: false,
             },
@@ -207,6 +211,19 @@ impl PgSessionFactory {
         self.base = self.base.with_distributed(options);
         self.distributed = true;
         self
+    }
+
+    /// Install the process-wide IVM service used by `INSERT ... SELECT`
+    /// when the connection enables `lakesoul.ivm.enabled`.
+    pub fn with_ivm(mut self, ivm: Arc<crate::ivm::IvmService>) -> Self {
+        self.ivm = Some(ivm);
+        self
+    }
+
+    /// A session with the factory's memory pool, catalog and planner, used to
+    /// build the IVM runtime configuration at startup.
+    pub(crate) fn create_template_session(&self) -> Result<Arc<SessionContext>> {
+        self.base.create_session(&LakeSoulSessionOptions::default())
     }
 
     /// The metadata client `CREATE TABLE`/`DROP TABLE` write through.
@@ -287,6 +304,10 @@ impl PgSessionFactory {
             .options_mut()
             .extensions
             .insert(LakeSoulVectorSearchConfig::default());
+        config
+            .options_mut()
+            .extensions
+            .insert(crate::ivm::IvmSessionConfig::default());
         // How the next statement treats a key that is already present. The
         // INSERT hook sets it before every write; the sink reads it while
         // planning, so `ON CONFLICT DO NOTHING` drops rows instead of failing.
@@ -333,13 +354,15 @@ impl PgSessionFactory {
             .map_err(|error| report!("pgvector parameter planner: {error}"))?;
         datafusion_postgres::pgvector::install(&context)
             .map_err(|error| report!("pgvector install: {error}"))?;
-        let session = Arc::new(PgSession::new(
+        let mut session = PgSession::new(
             identity,
             context,
             settings.clone(),
             Arc::clone(self.base.catalog_snapshot()),
             self.distributed,
-        )?);
+        )?;
+        session.ivm = self.ivm.clone();
+        let session = Arc::new(session);
         {
             let settings = session.settings.read();
             info!(

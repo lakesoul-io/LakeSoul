@@ -151,7 +151,7 @@ impl QueryHook for InsertStatementHook {
     }
 }
 
-fn extract(statement: &Statement) -> Option<&Insert> {
+pub(crate) fn extract(statement: &Statement) -> Option<&Insert> {
     match statement {
         Statement::Insert(insert) => Some(insert),
         _ => None,
@@ -170,7 +170,7 @@ struct Target {
 }
 
 /// Connection state a hook may hold across an `await`.
-fn request_context(
+pub(crate) fn request_context(
     client: &(impl ClientInfo + ?Sized),
 ) -> PgWireResult<(TransactionStatus, String)> {
     let session = client
@@ -1017,7 +1017,7 @@ fn reject_unsupported(insert: &Insert) -> PgWireResult<()> {
     Ok(())
 }
 
-fn reject_transaction(status: TransactionStatus) -> PgWireResult<()> {
+pub(crate) fn reject_transaction(status: TransactionStatus) -> PgWireResult<()> {
     if status == TransactionStatus::Idle {
         return Ok(());
     }
@@ -1037,7 +1037,7 @@ fn table_name(insert: &Insert) -> String {
 
 /// The table reference PostgreSQL's catalog resolves, and the name a client
 /// wrote (for messages).
-fn target_reference(
+pub(crate) fn target_reference(
     insert: &Insert,
     database: &str,
 ) -> PgWireResult<(datafusion::common::TableReference, String)> {

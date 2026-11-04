@@ -512,6 +512,16 @@ after merge-on-read, so it can never resurrect an older version of a key).
   one traversal), and a `dirty` target view is rebuilt by the statement
   itself.  `IvmMetadata::list_views` lists the views with their status,
   interval and last error.
+* The user-visible target must carry the `rowKinds` change column.  A missing
+  `__ivm_epoch` column is added to the table schema and the target is rebuilt.
+  A rebuild replaces the target with one atomic `UpdateCommit`; it never
+  truncates first, so readers of the old snapshot are unaffected.  Internal
+  derived/state tables keep the truncate-and-append path so their incremental
+  consumers see a normal append.
+* A data commit written by another engine in the target scope is rejected
+  before the refresh and again before its commit; compaction commits are
+  allowed.  A per-view lease serializes concurrent IVM refreshes of the same
+  target.
 * The window identity (source, partition, from/to versions) is recorded in
   `ivm.epochs`. Re-applying the same window is a no-op; a partially written
   window is completed by the retry because the affected keys are rewritten.

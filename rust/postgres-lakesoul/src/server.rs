@@ -610,6 +610,8 @@ pub(crate) fn connection_statement_hooks(
         database.to_string(),
         factory.warehouse().map(str::to_owned),
     )));
+    hooks.push(Arc::new(crate::ivm::IvmSettingsHook));
+    hooks.push(Arc::new(crate::ivm::IvmInsertHook));
     hooks.push(Arc::new(crate::insert::InsertStatementHook));
     statement_hooks_with(hooks)
 }

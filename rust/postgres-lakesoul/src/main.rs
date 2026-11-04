@@ -12,6 +12,7 @@ use datafusion_postgres::{ServerOptions, auth::AuthManager, serve_with_handlers}
 use lakesoul_common::misc::JiffTime;
 use lakesoul_datafusion::cli::{CoreArgs, DistributedArgs};
 use lakesoul_datafusion::session::ExecutionMemoryArgs;
+use lakesoul_ivm::{IvmOptions, IvmRuntimeConfig};
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_observability::{
     LogFormat, PrometheusMetricsConfig, TracingConfig, TracingGuard, init_tracing,
@@ -20,6 +21,7 @@ use lakesoul_observability::{
 use tokio::runtime::{self};
 use tracing::{info, warn};
 
+use crate::ivm::IvmService;
 use crate::limits::{Limits, ServerLimits};
 use crate::server::LakeSoulHandlers;
 use crate::session::PgSessionFactory;
@@ -30,6 +32,7 @@ mod catalog;
 mod ddl;
 mod failed_transaction;
 mod insert;
+mod ivm;
 mod limits;
 mod pg_compat;
 mod pg_numeric;
@@ -105,6 +108,10 @@ struct Cli {
     /// Maximum encoded size a statement's result may reach, 0 for unlimited
     #[clap(long, env = "LAKESOUL_PG_MAX_RESULT_BYTES", default_value_t = 0)]
     max_result_bytes: usize,
+
+    /// Enable IVM maintenance through `INSERT ... SELECT`
+    #[clap(long, env = "LAKESOUL_PG_IVM")]
+    ivm: bool,
 }
 
 async fn main_inner(cli: Cli) -> Result<()> {
@@ -157,9 +164,27 @@ async fn main_inner(cli: Cli) -> Result<()> {
             options.fallback_to_local, options.bytes_per_partition,
         );
     }
-    let session_factory = match distributed {
+    let session_factory = match distributed.clone() {
         Some(options) => session_factory.with_distributed(options),
         None => session_factory,
+    };
+
+    let distributed_enabled = distributed.is_some();
+    let session_factory = if cli.ivm {
+        if distributed_enabled {
+            return Err(rootcause::report!(
+                "IVM v1 is single-node only; start the server without --distributed"
+            ));
+        }
+        let template = session_factory.create_template_session()?;
+        let config = IvmRuntimeConfig::from_session(&template).with_options(IvmOptions {
+            max_active_tasks: Some(4),
+            ..IvmOptions::default()
+        });
+        let service = IvmService::new(Arc::clone(&meta_client), config).await?;
+        session_factory.with_ivm(Arc::new(service))
+    } else {
+        session_factory
     };
 
     info!(

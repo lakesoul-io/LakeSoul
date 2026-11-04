@@ -36,6 +36,28 @@ cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test 
 
 不修改 workspace `default-members`。默认结果包含两个**具名、明确标记的已知缺陷严格复现**（见下文），它们不属于通过的兼容声明；其余测试不能因缺少服务而跳过。投影标量子查询多行与 `SET TIME ZONE`／连接重置已修复并转为正常门禁，不再计入缺陷。
 
+## IVM 增量入口
+
+服务以 `--ivm` 启动后，可以为同一张用户表保留普通 `INSERT` 和 IVM 增量维护两条路径：
+
+```sql
+-- Airflow 的 IVM task
+SET lakesoul.ivm.enabled = on;
+INSERT INTO target SELECT ... FROM source;
+
+-- 普通 batch/streaming 写入
+SET lakesoul.ivm.enabled = off;   -- 默认
+INSERT INTO target ...;
+```
+
+- 只有 `INSERT ... SELECT` 会进入 IVM；`INSERT ... VALUES` 始终是普通 INSERT。
+- IVM 语句要求 autocommit；显式事务和多语句 simple-query batch 会被拒绝。
+- 目标表必须已有 `rowKinds`（LakeSoul CDC 变更列）。缺少 `__ivm_epoch` 时服务会把它加入表 schema，并自动 rebuild 数据。
+- 定义变化、state 为空或 dirty 时自动 rebuild。rebuild 对用户可见 target 使用一次原子 `UpdateCommit`，不会先 truncate，因此读请求不会看到空表。
+- 外部引擎对 IVM target scope 写入数据 commit 时，IVM 在 refresh 开始和提交前检测到并报错；compaction commit 放行。v1 的 target scope 是整张表，因此无分区 target 只能由 IVM 专用；分区后可按日期范围共存。
+- v1 只支持单机；`--ivm` 与 distributed 模式互斥。
+- 目标表建议由 Spark/Flink 创建（需要精确的 `rowKinds` 列名和 range partition）；PG DDL 的分区支持在独立分支中。
+
 ## 数据路径、隔离和判定
 
 - `tests/support/mod.rs` 通过管理端 `LakeSoulSessionFactory` / `SessionContext` 建表；基础 fixture 使用 SQL 写入，存储 fixture 使用原生 writer 保留真实的缺列 schema。全部 fixture 完成后才启动 Cargo 构建的真实 `postgres-lakesoul` 子进程。

@@ -30,6 +30,7 @@ use datafusion::prelude::{DataFrame, Expr, JoinType, SessionContext, col, lit};
 use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_metadata::transfusion::DataFileInfo;
+use lakesoul_metadata_proto::entity::PartitionInfo;
 use rootcause::report;
 use serde::{Deserialize, Serialize};
 
@@ -1296,6 +1297,53 @@ impl ViewSpec {
         }
     }
 
+    /// The materialized-view table id this spec maintains.
+    pub fn mv_table_id(&self) -> &str {
+        match self {
+            ViewSpec::SumCount { mv_table_id, .. }
+            | ViewSpec::Variance { mv_table_id, .. }
+            | ViewSpec::Median { mv_table_id, .. }
+            | ViewSpec::BoolAgg { mv_table_id, .. }
+            | ViewSpec::ApproxDistinct { mv_table_id, .. }
+            | ViewSpec::ApproxPercentile { mv_table_id, .. }
+            | ViewSpec::ComputedAgg { mv_table_id, .. }
+            | ViewSpec::StringAgg { mv_table_id, .. }
+            | ViewSpec::ArrayAgg { mv_table_id, .. }
+            | ViewSpec::MultiJoin { mv_table_id, .. }
+            | ViewSpec::MultiAgg { mv_table_id, .. }
+            | ViewSpec::MultiLookupJoin { mv_table_id, .. }
+            | ViewSpec::MinMax { mv_table_id, .. }
+            | ViewSpec::DistinctAgg { mv_table_id, .. }
+            | ViewSpec::Window { mv_table_id, .. }
+            | ViewSpec::SemiAnti { mv_table_id, .. }
+            | ViewSpec::LeftAggregate { mv_table_id, .. }
+            | ViewSpec::LookupChain { mv_table_id, .. }
+            | ViewSpec::GroupingSets { mv_table_id, .. }
+            | ViewSpec::Row { mv_table_id, .. }
+            | ViewSpec::UnionAll { mv_table_id, .. }
+            | ViewSpec::UnionDistinct { mv_table_id, .. }
+            | ViewSpec::MultiWindow { mv_table_id, .. }
+            | ViewSpec::TopK { mv_table_id, .. }
+            | ViewSpec::Fallback { mv_table_id, .. }
+            | ViewSpec::Sink { mv_table_id, .. } => mv_table_id,
+            ViewSpec::Join {
+                output_table_id, ..
+            }
+            | ViewSpec::LookupJoin {
+                output_table_id, ..
+            }
+            | ViewSpec::LeftJoin {
+                output_table_id, ..
+            }
+            | ViewSpec::FullJoin {
+                output_table_id, ..
+            }
+            | ViewSpec::CrossJoin {
+                output_table_id, ..
+            } => output_table_id,
+        }
+    }
+
     /// The source table ids the view reads, for refreshing cascading views in
     /// dependency order.
     pub fn source_table_ids(&self) -> Vec<&str> {
@@ -2329,6 +2377,96 @@ impl PartitionPredicate {
             }
         }
         Some(true)
+    }
+}
+
+/// The target table one refresh is maintaining.
+///
+/// A refresh may write state tables and the target; only commits to the
+/// target are checked against other writers and, during a rebuild, published
+/// as one atomic partition replacement instead of truncate-then-append.
+pub(crate) struct TargetWrite {
+    pub(crate) view_id: String,
+    pub(crate) target_table_id: String,
+    pub(crate) atomic: bool,
+    pub(crate) committed: bool,
+    pub(crate) internal: bool,
+    pub(crate) read_partitions: Vec<PartitionInfo>,
+    pub(crate) metadata: IvmMetadata,
+}
+
+tokio::task_local! {
+    pub(crate) static TARGET_WRITE: Arc<Mutex<TargetWrite>>;
+    /// The user-visible target table whose rebuild must replace its files in
+    /// one atomic version.  Internal derived/state tables keep the historical
+    /// truncate+append path so their incremental consumers see an append
+    /// commit (a compaction/update commit is not a changelog event).
+    pub(crate) static ATOMIC_TARGET: String;
+}
+
+impl TargetWrite {
+    /// Capture the target partitions and reject data commits written by
+    /// another engine.  Compaction commits are allowed: they only rewrite
+    /// files the IVM already owns.
+    pub(crate) async fn begin(
+        client: &MetaDataClient,
+        metadata: &IvmMetadata,
+        view_id: &str,
+        target_table_id: &str,
+        atomic: bool,
+    ) -> Result<Self> {
+        let read_partitions =
+            crate::table::latest_partition_info(client, target_table_id).await?;
+        let internal = client
+            .get_table_info_by_table_id(target_table_id)
+            .await?
+            .and_then(|info| {
+                serde_json::from_str::<serde_json::Value>(&info.properties).ok()
+            })
+            .and_then(|properties| {
+                properties
+                    .get("lakesoul.ivm.internal")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.eq_ignore_ascii_case("true"))
+            })
+            .unwrap_or(false);
+        let own = metadata.view_commit_ids(view_id).await?;
+        for partition in read_partitions.iter().filter(|_| !internal) {
+            for id in &partition.snapshot {
+                let commit_id = uuid::Uuid::from_u64_pair(id.high, id.low).to_string();
+                if own.contains(&commit_id) {
+                    continue;
+                }
+                let info = client
+                    .get_single_data_commit_info(
+                        target_table_id,
+                        &partition.partition_desc,
+                        &commit_id,
+                    )
+                    .await?;
+                let compaction = info.as_ref().is_some_and(|info| {
+                    info.commit_op
+                        == lakesoul_metadata_proto::entity::CommitOp::CompactionCommit
+                            as i32
+                });
+                if !compaction {
+                    return Err(report!(
+                        "target table {target_table_id} partition {} contains commit {}                          that was not written by this IVM view; stop the other writer                          or run a batch overwrite before refreshing",
+                        partition.partition_desc,
+                        commit_id
+                    ));
+                }
+            }
+        }
+        Ok(Self {
+            view_id: view_id.to_string(),
+            target_table_id: target_table_id.to_string(),
+            atomic,
+            committed: false,
+            internal,
+            read_partitions,
+            metadata: metadata.clone(),
+        })
     }
 }
 
@@ -3435,6 +3573,31 @@ impl IvmRuntime {
         ))
     }
 
+    /// Validate the target's IVM bookkeeping schema.  A missing `rowKinds`
+    /// cannot be repaired: it is how the target represents retractions.
+    /// A missing `__ivm_epoch` is added to the schema metadata and the target
+    /// is rebuilt so its data gains the column.
+    pub(crate) async fn ensure_target_epoch_column(
+        &self,
+        table: &IvmTable,
+    ) -> Result<(IvmTable, bool)> {
+        if table
+            .schema
+            .field_with_name(crate::table::IVM_ROW_KINDS_COLUMN)
+            .is_err()
+        {
+            return Err(report!(
+                "target table {} has no {} column; an IVM target must carry                  the LakeSoul CDC change column",
+                table.table_name,
+                crate::table::IVM_ROW_KINDS_COLUMN
+            ));
+        }
+        match table.ensure_epoch_column(&self.client).await? {
+            Some(updated) => Ok((updated, true)),
+            None => Ok((table.clone(), false)),
+        }
+    }
+
     /// The underlying LakeSoul metadata client.
     pub fn client(&self) -> &MetaDataClient {
         &self.client
@@ -4400,57 +4563,79 @@ impl IvmRuntime {
         tracing::debug!(
             kind,
             view_id = %spec.view_id(),
+            mv_table_id = %spec.mv_table_id(),
+            sources = ?spec.source_table_ids(),
             "view refresh started"
         );
-        let view = self.spec_view(spec).await;
-        let (result, io) = crate::observability::scope_refresh_io(kind, async {
-            match view {
-                Ok(SpecView::SumCount(view)) => self.refresh_sum_count(&view).await,
-                Ok(SpecView::Variance(view)) => self.refresh_variance(&view).await,
-                Ok(SpecView::Median(view)) => self.refresh_median(&view).await,
-                Ok(SpecView::BoolAgg(view)) => self.refresh_bool_agg(&view).await,
-                Ok(SpecView::ApproxDistinct(view)) => {
-                    self.refresh_approx_distinct(&view).await
+        let scope = TargetWrite::begin(
+            &self.client,
+            &self.metadata,
+            spec.view_id(),
+            spec.mv_table_id(),
+            false,
+        )
+        .await?;
+        let (result, io) = crate::observability::scope_refresh_io(
+            kind,
+            TARGET_WRITE.scope(Arc::new(Mutex::new(scope)), async {
+                match self.spec_view(spec).await {
+                    Ok(SpecView::SumCount(view)) => self.refresh_sum_count(&view).await,
+                    Ok(SpecView::Variance(view)) => self.refresh_variance(&view).await,
+                    Ok(SpecView::Median(view)) => self.refresh_median(&view).await,
+                    Ok(SpecView::BoolAgg(view)) => self.refresh_bool_agg(&view).await,
+                    Ok(SpecView::ApproxDistinct(view)) => {
+                        self.refresh_approx_distinct(&view).await
+                    }
+                    Ok(SpecView::ApproxPercentile(view)) => {
+                        self.refresh_approx_percentile(&view).await
+                    }
+                    Ok(SpecView::ComputedAgg(view)) => {
+                        self.refresh_computed_agg(&view).await
+                    }
+                    Ok(SpecView::StringAgg(view)) => self.refresh_string_agg(&view).await,
+                    Ok(SpecView::ArrayAgg(view)) => self.refresh_array_agg(&view).await,
+                    Ok(SpecView::Join(view)) => self.refresh_join(&view).await,
+                    Ok(SpecView::MultiJoin(view)) => self.refresh_multi_join(&view).await,
+                    Ok(SpecView::MultiAgg(view)) => self.refresh_multi_agg(&view).await,
+                    Ok(SpecView::LookupJoin(view)) => {
+                        self.refresh_lookup_join(&view).await
+                    }
+                    Ok(SpecView::MultiLookupJoin(view)) => {
+                        self.refresh_multi_lookup_join(&view).await
+                    }
+                    Ok(SpecView::LeftJoin(view)) => self.refresh_left_join(&view).await,
+                    Ok(SpecView::FullJoin(view)) => self.refresh_full_join(&view).await,
+                    Ok(SpecView::CrossJoin(view)) => self.refresh_cross_join(&view).await,
+                    Ok(SpecView::MinMax(view)) => self.refresh_min_max(&view).await,
+                    Ok(SpecView::DistinctAgg(view)) => {
+                        self.refresh_distinct_agg(&view).await
+                    }
+                    Ok(SpecView::Window(view)) => self.refresh_window(&view).await,
+                    Ok(SpecView::SemiAnti(view)) => self.refresh_semi_anti(&view).await,
+                    Ok(SpecView::LeftAggregate(view)) => {
+                        self.refresh_left_aggregate(&view).await
+                    }
+                    Ok(SpecView::LookupChain(view)) => {
+                        self.refresh_lookup_chain(&view).await
+                    }
+                    Ok(SpecView::GroupingSets(view)) => {
+                        self.refresh_grouping_sets(&view).await
+                    }
+                    Ok(SpecView::Row(view)) => self.refresh_row(&view).await,
+                    Ok(SpecView::UnionAll(view)) => self.refresh_union_all(&view).await,
+                    Ok(SpecView::UnionDistinct(view)) => {
+                        self.refresh_union_distinct(&view).await
+                    }
+                    Ok(SpecView::TopK(view)) => self.refresh_top_k(&view).await,
+                    Ok(SpecView::MultiWindow(view)) => {
+                        self.refresh_multi_window(&view).await
+                    }
+                    Ok(SpecView::Fallback(view)) => self.refresh_fallback(&view).await,
+                    Ok(SpecView::Sink(view)) => self.refresh_sink(&view).await,
+                    Err(error) => Err(error),
                 }
-                Ok(SpecView::ApproxPercentile(view)) => {
-                    self.refresh_approx_percentile(&view).await
-                }
-                Ok(SpecView::ComputedAgg(view)) => self.refresh_computed_agg(&view).await,
-                Ok(SpecView::StringAgg(view)) => self.refresh_string_agg(&view).await,
-                Ok(SpecView::ArrayAgg(view)) => self.refresh_array_agg(&view).await,
-                Ok(SpecView::Join(view)) => self.refresh_join(&view).await,
-                Ok(SpecView::MultiJoin(view)) => self.refresh_multi_join(&view).await,
-                Ok(SpecView::MultiAgg(view)) => self.refresh_multi_agg(&view).await,
-                Ok(SpecView::LookupJoin(view)) => self.refresh_lookup_join(&view).await,
-                Ok(SpecView::MultiLookupJoin(view)) => {
-                    self.refresh_multi_lookup_join(&view).await
-                }
-                Ok(SpecView::LeftJoin(view)) => self.refresh_left_join(&view).await,
-                Ok(SpecView::FullJoin(view)) => self.refresh_full_join(&view).await,
-                Ok(SpecView::CrossJoin(view)) => self.refresh_cross_join(&view).await,
-                Ok(SpecView::MinMax(view)) => self.refresh_min_max(&view).await,
-                Ok(SpecView::DistinctAgg(view)) => self.refresh_distinct_agg(&view).await,
-                Ok(SpecView::Window(view)) => self.refresh_window(&view).await,
-                Ok(SpecView::SemiAnti(view)) => self.refresh_semi_anti(&view).await,
-                Ok(SpecView::LeftAggregate(view)) => {
-                    self.refresh_left_aggregate(&view).await
-                }
-                Ok(SpecView::LookupChain(view)) => self.refresh_lookup_chain(&view).await,
-                Ok(SpecView::GroupingSets(view)) => {
-                    self.refresh_grouping_sets(&view).await
-                }
-                Ok(SpecView::Row(view)) => self.refresh_row(&view).await,
-                Ok(SpecView::UnionAll(view)) => self.refresh_union_all(&view).await,
-                Ok(SpecView::UnionDistinct(view)) => {
-                    self.refresh_union_distinct(&view).await
-                }
-                Ok(SpecView::TopK(view)) => self.refresh_top_k(&view).await,
-                Ok(SpecView::MultiWindow(view)) => self.refresh_multi_window(&view).await,
-                Ok(SpecView::Fallback(view)) => self.refresh_fallback(&view).await,
-                Ok(SpecView::Sink(view)) => self.refresh_sink(&view).await,
-                Err(error) => Err(error),
-            }
-        })
+            }),
+        )
         .await;
         crate::observability::record_refresh(
             kind,
@@ -4484,55 +4669,75 @@ impl IvmRuntime {
         self.ensure_incremental_upstreams(spec).await?;
         let kind = spec.kind();
         let started = std::time::Instant::now();
-        let view = self.spec_view(spec).await;
-        let (result, io) = crate::observability::scope_refresh_io(kind, async {
-            match view {
-                Ok(SpecView::SumCount(view)) => self.rebuild_sum_count(&view).await,
-                Ok(SpecView::Variance(view)) => self.rebuild_variance(&view).await,
-                Ok(SpecView::Median(view)) => self.rebuild_median(&view).await,
-                Ok(SpecView::BoolAgg(view)) => self.rebuild_bool_agg(&view).await,
-                Ok(SpecView::ApproxDistinct(view)) => {
-                    self.rebuild_approx_distinct(&view).await
+        let scope = TargetWrite::begin(
+            &self.client,
+            &self.metadata,
+            spec.view_id(),
+            spec.mv_table_id(),
+            false,
+        )
+        .await?;
+        let (result, io) = crate::observability::scope_refresh_io(
+            kind,
+            TARGET_WRITE.scope(Arc::new(Mutex::new(scope)), async {
+                match self.spec_view(spec).await {
+                    Ok(SpecView::SumCount(view)) => self.rebuild_sum_count(&view).await,
+                    Ok(SpecView::Variance(view)) => self.rebuild_variance(&view).await,
+                    Ok(SpecView::Median(view)) => self.rebuild_median(&view).await,
+                    Ok(SpecView::BoolAgg(view)) => self.rebuild_bool_agg(&view).await,
+                    Ok(SpecView::ApproxDistinct(view)) => {
+                        self.rebuild_approx_distinct(&view).await
+                    }
+                    Ok(SpecView::ApproxPercentile(view)) => {
+                        self.rebuild_approx_percentile(&view).await
+                    }
+                    Ok(SpecView::ComputedAgg(view)) => {
+                        self.rebuild_computed_agg(&view).await
+                    }
+                    Ok(SpecView::StringAgg(view)) => self.rebuild_string_agg(&view).await,
+                    Ok(SpecView::ArrayAgg(view)) => self.rebuild_array_agg(&view).await,
+                    Ok(SpecView::Join(view)) => self.rebuild_join(&view).await,
+                    Ok(SpecView::MultiJoin(view)) => self.rebuild_multi_join(&view).await,
+                    Ok(SpecView::MultiAgg(view)) => self.rebuild_multi_agg(&view).await,
+                    Ok(SpecView::LookupJoin(view)) => {
+                        self.rebuild_lookup_join(&view).await
+                    }
+                    Ok(SpecView::MultiLookupJoin(view)) => {
+                        self.rebuild_multi_lookup_join(&view).await
+                    }
+                    Ok(SpecView::LeftJoin(view)) => self.rebuild_left_join(&view).await,
+                    Ok(SpecView::FullJoin(view)) => self.rebuild_full_join(&view).await,
+                    Ok(SpecView::CrossJoin(view)) => self.rebuild_cross_join(&view).await,
+                    Ok(SpecView::MinMax(view)) => self.rebuild_min_max(&view).await,
+                    Ok(SpecView::DistinctAgg(view)) => {
+                        self.rebuild_distinct_agg(&view).await
+                    }
+                    Ok(SpecView::Window(view)) => self.rebuild_window(&view).await,
+                    Ok(SpecView::SemiAnti(view)) => self.rebuild_semi_anti(&view).await,
+                    Ok(SpecView::LeftAggregate(view)) => {
+                        self.rebuild_left_aggregate(&view).await
+                    }
+                    Ok(SpecView::LookupChain(view)) => {
+                        self.rebuild_lookup_chain(&view).await
+                    }
+                    Ok(SpecView::GroupingSets(view)) => {
+                        self.rebuild_grouping_sets(&view).await
+                    }
+                    Ok(SpecView::Row(view)) => self.rebuild_row(&view).await,
+                    Ok(SpecView::UnionAll(view)) => self.rebuild_union_all(&view).await,
+                    Ok(SpecView::UnionDistinct(view)) => {
+                        self.rebuild_union_distinct(&view).await
+                    }
+                    Ok(SpecView::TopK(view)) => self.rebuild_top_k(&view).await,
+                    Ok(SpecView::MultiWindow(view)) => {
+                        self.rebuild_multi_window(&view).await
+                    }
+                    Ok(SpecView::Fallback(view)) => self.rebuild_fallback(&view).await,
+                    Ok(SpecView::Sink(view)) => self.rebuild_sink(&view).await,
+                    Err(error) => Err(error),
                 }
-                Ok(SpecView::ApproxPercentile(view)) => {
-                    self.rebuild_approx_percentile(&view).await
-                }
-                Ok(SpecView::ComputedAgg(view)) => self.rebuild_computed_agg(&view).await,
-                Ok(SpecView::StringAgg(view)) => self.rebuild_string_agg(&view).await,
-                Ok(SpecView::ArrayAgg(view)) => self.rebuild_array_agg(&view).await,
-                Ok(SpecView::Join(view)) => self.rebuild_join(&view).await,
-                Ok(SpecView::MultiJoin(view)) => self.rebuild_multi_join(&view).await,
-                Ok(SpecView::MultiAgg(view)) => self.rebuild_multi_agg(&view).await,
-                Ok(SpecView::LookupJoin(view)) => self.rebuild_lookup_join(&view).await,
-                Ok(SpecView::MultiLookupJoin(view)) => {
-                    self.rebuild_multi_lookup_join(&view).await
-                }
-                Ok(SpecView::LeftJoin(view)) => self.rebuild_left_join(&view).await,
-                Ok(SpecView::FullJoin(view)) => self.rebuild_full_join(&view).await,
-                Ok(SpecView::CrossJoin(view)) => self.rebuild_cross_join(&view).await,
-                Ok(SpecView::MinMax(view)) => self.rebuild_min_max(&view).await,
-                Ok(SpecView::DistinctAgg(view)) => self.rebuild_distinct_agg(&view).await,
-                Ok(SpecView::Window(view)) => self.rebuild_window(&view).await,
-                Ok(SpecView::SemiAnti(view)) => self.rebuild_semi_anti(&view).await,
-                Ok(SpecView::LeftAggregate(view)) => {
-                    self.rebuild_left_aggregate(&view).await
-                }
-                Ok(SpecView::LookupChain(view)) => self.rebuild_lookup_chain(&view).await,
-                Ok(SpecView::GroupingSets(view)) => {
-                    self.rebuild_grouping_sets(&view).await
-                }
-                Ok(SpecView::Row(view)) => self.rebuild_row(&view).await,
-                Ok(SpecView::UnionAll(view)) => self.rebuild_union_all(&view).await,
-                Ok(SpecView::UnionDistinct(view)) => {
-                    self.rebuild_union_distinct(&view).await
-                }
-                Ok(SpecView::TopK(view)) => self.rebuild_top_k(&view).await,
-                Ok(SpecView::MultiWindow(view)) => self.rebuild_multi_window(&view).await,
-                Ok(SpecView::Fallback(view)) => self.rebuild_fallback(&view).await,
-                Ok(SpecView::Sink(view)) => self.rebuild_sink(&view).await,
-                Err(error) => Err(error),
-            }
-        })
+            }),
+        )
         .await;
         tracing::debug!(
             kind,
@@ -4554,6 +4759,30 @@ impl IvmRuntime {
             crate::observability::record_rebuild(kind, started.elapsed());
         }
         result
+    }
+
+    /// Refresh a spec whose materialized view is the user-visible target.
+    /// The target's rebuilds publish one atomic replacement version; internal
+    /// derived/state tables keep the append-visible path.
+    pub(crate) async fn refresh_spec_target(
+        &self,
+        spec: &ViewSpec,
+        target_table_id: &str,
+    ) -> Result<Option<i64>> {
+        ATOMIC_TARGET
+            .scope(target_table_id.to_string(), self.refresh_spec(spec))
+            .await
+    }
+
+    /// Rebuild a spec whose materialized view is the user-visible target.
+    pub(crate) async fn rebuild_spec_target(
+        &self,
+        spec: &ViewSpec,
+        target_table_id: &str,
+    ) -> Result<i64> {
+        ATOMIC_TARGET
+            .scope(target_table_id.to_string(), self.rebuild_spec(spec))
+            .await
     }
 
     /// The internal tables registered for a view (see `ivm.states`).
@@ -5227,7 +5456,6 @@ impl IvmRuntime {
             .client
             .get_table_changelog(&source.table_id, &from_versions)
             .await?;
-
         let mut added_files = Vec::new();
         let mut new_cursors = Vec::new();
         let mut identity = Vec::new();
