@@ -20,8 +20,8 @@ SPDX-License-Identifier: Apache-2.0
 # LakeSoul
 
 **Postgres-native. Vector-native. Python-native.**<br>
-An open lakehouse engine — catalog, commit protocol, file IO and execution in one
-Rust codebase, over your object storage.
+An open lakehouse engine — a shared catalog, ACID upserts, SQL, incremental
+compute, vector search and a Python SDK, in Rust, over your object storage.
 
 Point the tools you already use at it — `psql`, Python, pgvector-style SQL — and
 get an incremental lakehouse underneath.
@@ -71,7 +71,6 @@ GROUP BY 1, 2;
 
 - SQL-level incremental, not just storage-level incremental read/write
 - Replay-safe: every consumed window is recorded in `ivm.epochs`
-- Single-node in v1; `--ivm` and distributed mode are mutually exclusive
 
 ## Vector-native
 

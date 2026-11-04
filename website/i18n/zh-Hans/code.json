@@ -344,5 +344,143 @@
   },
   "homepage.description1": {
     "message": "开源的云原生实时湖仓框架"
+  },
+  "homepage.meta.title": {
+    "message": "一个开放的湖仓引擎"
+  },
+  "homepage.meta.description": {
+    "message": "LakeSoul 是一个开放的湖仓引擎：Postgres 原生、向量原生、Python 原生，纯 Rust 实现，运行在你的对象存储之上。"
+  },
+  "homepage.hero.eyebrow": {
+    "message": "LF AI & Data Sandbox 项目"
+  },
+  "homepage.hero.line1": {
+    "message": "Postgres 原生。"
+  },
+  "homepage.hero.line2": {
+    "message": "向量原生。"
+  },
+  "homepage.hero.line3": {
+    "message": "Python 原生。"
+  },
+  "homepage.hero.subtitle": {
+    "message": "一个开放的湖仓引擎 —— 共享 catalog、ACID upsert、SQL 查询、增量计算、向量检索与 Python SDK，纯 Rust 实现，运行在你的对象存储之上。"
+  },
+  "homepage.hero.ctaPrimary": {
+    "message": "快速开始"
+  },
+  "homepage.pillars.title": {
+    "message": "它做四件事"
+  },
+  "homepage.pillars.subtitle": {
+    "message": "一个引擎同时承担 SQL、增量计算、检索与 AI，而不是四套系统拼在一起。"
+  },
+  "homepage.pillar1.title": {
+    "message": "Postgres 原生"
+  },
+  "homepage.pillar1.body": {
+    "message": "CREATE TABLE、INSERT ... ON CONFLICT 和查询都在引擎里执行。psql、JDBC、pg_catalog 都可用，包括 psql \\d；不是 sidecar，也不走 CDC 管道。"
+  },
+  "homepage.pillar2.title": {
+    "message": "默认就是增量"
+  },
+  "homepage.pillar2.body": {
+    "message": "开启 IVM 后，INSERT ... SELECT 基于 commit log 增量维护物化视图：只写变化的行，结果与全量重算一致。"
+  },
+  "homepage.pillar3.title": {
+    "message": "向量原生"
+  },
+  "homepage.pillar3.body": {
+    "message": "pgvector 风格的 SQL，查的是对象存储上的 IVF + RaBitQ 索引。结构化过滤与 ANN 在同一个计划里，旁边还有 BM25 全文检索。"
+  },
+  "homepage.pillar4.title": {
+    "message": "Python 原生"
+  },
+  "homepage.pillar4.body": {
+    "message": "SDK 通过 Rust IO 直接读取对象存储。Daft、Ray、PyTorch、Pandas —— 路径上没有网关，也没有第二份数据。"
+  },
+  "homepage.fit.title": {
+    "message": "它处在什么位置"
+  },
+  "homepage.fit.subtitle": {
+    "message": "表格式停在文件布局。数据库拥有你的存储。LakeSoul 是中间那层引擎。"
+  },
+  "homepage.fit.format.title": {
+    "message": "表格式"
+  },
+  "homepage.fit.format.body": {
+    "message": "描述文件怎么摆。没有引擎、没有索引、没有增量状态。"
+  },
+  "homepage.fit.database.title": {
+    "message": "数据库"
+  },
+  "homepage.fit.database.body": {
+    "message": "自带引擎，但你要采用它的存储并运维它的集群。"
+  },
+  "homepage.fit.lakesoul.body": {
+    "message": "在你的对象存储之上的一层引擎，文件保持开放，计算无状态。"
+  },
+  "homepage.arch.title": {
+    "message": "架构"
+  },
+  "homepage.arch.subtitle": {
+    "message": "上面是客户端，中间是一个引擎，底下是你的存储。"
+  },
+  "homepage.arch.clientsSql": {
+    "message": "psql · JDBC · BI 工具"
+  },
+  "homepage.arch.clientsPython": {
+    "message": "Python SDK · Daft · Ray · PyTorch"
+  },
+  "homepage.arch.engine": {
+    "message": "LakeSoul 引擎"
+  },
+  "homepage.arch.chipPostgres": {
+    "message": "PostgreSQL 前端"
+  },
+  "homepage.arch.chipIvm": {
+    "message": "增量视图"
+  },
+  "homepage.arch.chipIndex": {
+    "message": "向量 + 全文索引"
+  },
+  "homepage.arch.chipIo": {
+    "message": "Native IO · merge-on-read"
+  },
+  "homepage.arch.storage": {
+    "message": "对象存储（S3 / OSS / HDFS）"
+  },
+  "homepage.arch.metadata": {
+    "message": "PostgreSQL 元数据"
+  },
+  "homepage.quickstart.title": {
+    "message": "跑起来"
+  },
+  "homepage.quickstart.subtitle": {
+    "message": "启动 PostgreSQL 端点，或者安装 Python SDK 读取同一批表。"
+  },
+  "homepage.quickstart.pg.title": {
+    "message": "PostgreSQL 端点"
+  },
+  "homepage.quickstart.pg.note": {
+    "message": "完整步骤：元数据库与端点"
+  },
+  "homepage.quickstart.python.title": {
+    "message": "Python SDK"
+  },
+  "homepage.quickstart.python.note": {
+    "message": "Python 快速开始"
+  },
+  "homepage.community.title": {
+    "message": "一起建设"
+  },
+  "homepage.community.body": {
+    "message": "LakeSoul 是 LF AI & Data 下的开源项目。Rust 引擎、PostgreSQL 前端和 Python SDK 都在同一个仓库里。"
+  },
+  "homepage.community.issues": {
+    "message": "Good first issues"
+  },
+  "homepage.community.roadmap": {
+    "message": "路线图"
   }
 }

@@ -11,8 +11,8 @@ const variableInjector = require('./variable-inject')
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
-  title: 'LakeSoul - An Opensource Cloud Native Realtime Lakehouse Framework',
-  tagline: 'A Project under incubation at Linux Foundation AI & Data',
+  title: 'LakeSoul',
+  tagline: 'An open lakehouse engine — Postgres-native, vector-native and Python-native, in Rust.',
   favicon: 'img/favicon.ico',
 
   // Set the production url of your site here
@@ -162,6 +162,10 @@ const config = {
               {
                 label: 'GitHub',
                 href: 'https://github.com/lakesoul-io/lakesoul',
+              },
+              {
+                label: 'Roadmap',
+                href: 'https://github.com/lakesoul-io/LakeSoul/blob/main/ROADMAP.md',
               },
             ],
           },

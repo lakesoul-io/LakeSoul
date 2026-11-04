@@ -20,7 +20,7 @@ SPDX-License-Identifier: Apache-2.0
 # LakeSoul
 
 **Postgres 原生。向量原生。Python 原生。**<br>
-一个开放的湖仓引擎 —— catalog、提交协议、文件 IO 和执行都在同一套 Rust 代码里，运行在你的对象存储之上。
+一个开放的湖仓引擎 —— 共享 catalog、ACID upsert、SQL 查询、增量计算、向量检索与 Python SDK，纯 Rust 实现，运行在你的对象存储之上。
 
 把已经在用的工具接上来 —— `psql`、Python、pgvector 风格的 SQL —— 底下是一个增量湖仓。
 
@@ -61,7 +61,6 @@ GROUP BY 1, 2;
 
 - SQL 级增量，而不只是存储层的增量读写
 - 可安全重放：每个消费窗口都记录在 `ivm.epochs`
-- v1 单机；`--ivm` 与分布式模式互斥
 
 ## 向量原生
 
