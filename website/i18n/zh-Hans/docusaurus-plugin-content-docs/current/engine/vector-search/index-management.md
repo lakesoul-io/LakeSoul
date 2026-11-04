@@ -3,7 +3,7 @@ sidebar_position: 3
 sidebar_label: 索引管理
 ---
 
-# Vector index management
+# 向量索引管理
 
 <!--
 SPDX-FileCopyrightText: 2026 LakeSoul Contributors
@@ -11,11 +11,9 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-Vector indexes are declared and built through the Python SDK. The index lives
-under the table path, in the same object store as the data, and is maintained as
-rows are written.
+向量索引通过 Python SDK 声明和构建。索引存放在表路径下、与数据同一个对象存储，并随写入维护。
 
-## Declare an index
+## 声明索引
 
 ```python
 catalog.create_table(
@@ -32,25 +30,24 @@ catalog.create_table(
 )
 ```
 
-The configuration is stored on the table; `write_arrow` then builds or updates
-the index after the data commit.
+配置存在表属性上；`write_arrow` 在数据提交后构建或更新索引。
 
-| Key | Default | Meaning |
+| 键 | 默认值 | 含义 |
 | --- | --- | --- |
-| `column` | required | `Float32` column with the vector |
-| `dim` | required | Vector dimension |
-| `metric` | `L2` | `L2` or `IP` (inner product) |
-| `nlist` | `256` | IVF cluster count |
-| `total_bits` | `7` | RaBitQ bits |
-| `rotator_type` | `FhtKac` | `FhtKac` or `Matrix` |
-| `seed` | `42` | Rotation seed |
-| `use_faster_config` | `True` | Faster quantization |
+| `column` | 必填 | 存向量的 `Float32` 列 |
+| `dim` | 必填 | 向量维度 |
+| `metric` | `L2` | `L2` 或 `IP`（内积） |
+| `nlist` | `256` | IVF 聚类数 |
+| `total_bits` | `7` | RaBitQ 位数 |
+| `rotator_type` | `FhtKac` | `FhtKac` 或 `Matrix` |
+| `seed` | `42` | 旋转种子 |
+| `use_faster_config` | `True` | 更快的量化配置 |
 
-The table needs an `Int64` or `UInt64` primary key.
+表需要 `Int64` 或 `UInt64` 主键。
 
-## Build or rebuild
+## 构建或重建
 
-For an existing table, build the index directly:
+对已有表直接构建索引：
 
 ```python
 from lakesoul.vector_index import build_table_vector_index
@@ -65,7 +62,7 @@ build_table_vector_index(
 )
 ```
 
-Per partition:
+按分区：
 
 ```python
 from lakesoul.vector_index import build_partition_vector_index
@@ -80,30 +77,22 @@ build_partition_vector_index(
 )
 ```
 
-Use `rebuild=True` to retrain the IVF centroids over all active data files. This
-is the right operation after the data distribution drifts; without it, new rows
-are appended as delta segments and the existing centroids are reused.
+`rebuild=True` 会基于全部活跃数据文件重新训练 IVF 质心。数据分布漂移后应使用它；否则新行会作为 delta segment 追加，沿用已有质心。
 
-## Shards
+## Shard
 
-The index is built per (partition, hash bucket) shard. Each shard has its own
-centroids and RaBitQ codes; a query probes the shards that can contain matching
-rows and merges the candidates.
+索引按（分区，哈希 bucket）shard 构建。每个 shard 有自己的质心和 RaBitQ 编码；查询探测可能包含匹配行的 shard，再合并候选。
 
-`store_config` accepts object store credentials; when omitted, the SDK reads the
-`LAKESOUL_OBJECT_STORE_*` environment variables.
+`store_config` 接受对象存储凭证；省略时 SDK 读取 `LAKESOUL_OBJECT_STORE_*` 环境变量。
 
-## Maintenance
+## 维护
 
-- After an `INSERT` or a Python write, the index is updated. Index maintenance
-  runs after the metadata commit; a failed index build returns an error but does
-  not roll back the data.
-- A shard accumulates immutable delta segments. When the deltas make the
-  centroid stale, the shard is rebuilt from its data files.
-- `rebuild=True` forces a full rebuild of every shard.
+- `INSERT` 或 Python 写入后，索引会更新。索引维护在元数据提交之后运行；索引构建失败会返回错误，但不回滚数据。
+- shard 会累积不可变的 delta segment。delta 让质心失效时，shard 会从数据文件重建。
+- `rebuild=True` 强制重建所有 shard。
 
-## Next
+## 下一步
 
-- [Vector SQL reference](sql-reference.md)
-- [Hybrid search](hybrid-search.md)
-- [Benchmarks](benchmarks.md)
+- [向量 SQL 参考](sql-reference.md)
+- [混合检索](hybrid-search.md)
+- [Benchmark](benchmarks.md)

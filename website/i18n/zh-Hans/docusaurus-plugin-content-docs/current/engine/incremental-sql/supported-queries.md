@@ -3,7 +3,7 @@ sidebar_position: 3
 sidebar_label: 支持的查询
 ---
 
-# Supported queries
+# 支持的查询
 
 <!--
 SPDX-FileCopyrightText: 2026 LakeSoul Contributors
@@ -11,88 +11,81 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-Incremental SQL maintains a query over keyed (primary-key) sources. The shapes
-below are maintained incrementally; a shape outside the list falls back to a full
-recompute, and an append-only source is rejected for an incremental run.
+增量 SQL 在主键源表上维护查询。下面这些形状会增量维护；列表之外的形状回退到全量重算，append-only 源会被拒绝。
 
-## Projection, filter, distinct
+## 投影、过滤、去重
 
-| Shape | Notes |
+| 形状 | 说明 |
 | --- | --- |
-| `SELECT [expr AS c, ...] FROM src [WHERE p]` | The filter may compare against an uncorrelated scalar subquery |
-| `SELECT DISTINCT c, ... FROM src` | Maintains one row per distinct tuple |
-| `SELECT DISTINCT ON (g) g, v FROM src [ORDER BY ...]` | The source primary key breaks ties deterministically |
+| `SELECT [expr AS c, ...] FROM src [WHERE p]` | 过滤条件可以与不相关标量子查询比较 |
+| `SELECT DISTINCT c, ... FROM src` | 每个 distinct 元组维护一行 |
+| `SELECT DISTINCT ON (g) g, v FROM src [ORDER BY ...]` | 源表主键确定性地打破平局 |
 
-## Aggregates
+## 聚合
 
-| Shape | Notes |
+| 形状 | 说明 |
 | --- | --- |
-| `SUM`, `COUNT(*)`, `COUNT(v)`, `AVG` | With or without `GROUP BY`; `HAVING` supported |
-| `MIN`, `MAX` | With or without `GROUP BY` |
-| `COUNT(DISTINCT v)`, `SUM(DISTINCT v)` | Multi-column distinct requires a `GROUP BY` |
-| `VAR_SAMP`, `VAR_POP`, `STDDEV_SAMP`, `STDDEV_POP`, `STDDEV` | |
+| `SUM`、`COUNT(*)`、`COUNT(v)`、`AVG` | 带或不带 `GROUP BY`；支持 `HAVING` |
+| `MIN`、`MAX` | 带或不带 `GROUP BY` |
+| `COUNT(DISTINCT v)`、`SUM(DISTINCT v)` | 多列 distinct 需要 `GROUP BY` |
+| `VAR_SAMP`、`VAR_POP`、`STDDEV_SAMP`、`STDDEV_POP`、`STDDEV` | |
 | `MEDIAN` | |
-| `BOOL_AND`, `BOOL_OR` | |
-| `APPROX_DISTINCT`, `APPROX_PERCENTILE_CONT`, `APPROX_MEDIAN` | Approximate results |
-| `STRING_AGG`, `ARRAY_AGG` | `ORDER BY` inside the aggregate is supported |
-| `BIT_AND`, `BIT_OR`, `BIT_XOR` | |
-| `CORR`, `COVAR_SAMP`, `COVAR_POP`, `REGR_*` | |
+| `BOOL_AND`、`BOOL_OR` | |
+| `APPROX_DISTINCT`、`APPROX_PERCENTILE_CONT`、`APPROX_MEDIAN` | 近似结果 |
+| `STRING_AGG`、`ARRAY_AGG` | 支持聚合内的 `ORDER BY` |
+| `BIT_AND`、`BIT_OR`、`BIT_XOR` | |
+| `CORR`、`COVAR_SAMP`、`COVAR_POP`、`REGR_*` | |
 | `PERCENTILE_CONT` | |
-| Mixed aggregates in one `GROUP BY` | Any mix of the supported functions |
+| 同一个 `GROUP BY` 里混用聚合 | 支持函数可以任意组合 |
 
-`GROUPING SETS`, `ROLLUP` and `CUBE` are expanded to their member sets. `SUM`,
-`COUNT` and `AVG` keep the incremental layout; other mixes are recomputed per
-set.
+`GROUPING SETS`、`ROLLUP`、`CUBE` 会展开成成员集合。`SUM`、`COUNT`、`AVG` 保持增量布局；其他组合按集合重算。
 
-## Windows and top-k
+## 窗口与 top-k
 
-| Shape | Notes |
+| 形状 | 说明 |
 | --- | --- |
-| `ROW_NUMBER() OVER (PARTITION BY p ORDER BY o)` | Maintained by recomputing the affected partitions |
-| `SELECT ... FROM (SELECT ..., ROW_NUMBER() ... AS rn) t WHERE rn <= k` | Top-k per partition |
-| `SELECT ... FROM src ORDER BY o LIMIT k` | Global top-k; `OFFSET` shifts the window |
+| `ROW_NUMBER() OVER (PARTITION BY p ORDER BY o)` | 重算受影响的分区 |
+| `SELECT ... FROM (SELECT ..., ROW_NUMBER() ... AS rn) t WHERE rn <= k` | 每个分区的 top-k |
+| `SELECT ... FROM src ORDER BY o LIMIT k` | 全局 top-k；`OFFSET` 移动窗口 |
 
-Ties at the boundary are broken by the source primary keys.
+边界平局由源表主键打破。
 
-## Joins
+## Join
 
-| Shape | Notes |
+| 形状 | 说明 |
 | --- | --- |
-| Inner equi-join | Both sides keyed; keys may have different names; multiple payload columns |
-| `LEFT JOIN` with a right side keyed by the join keys | Lookup join |
-| Multi-way inner joins (3–32 sources) | Optional side filters and cross-source conditions |
-| Left-deep `[LEFT] JOIN` chains | Each step keyed by its join keys |
-| `CROSS JOIN` | Both sides keyed |
-| `LEFT`, `RIGHT`, `FULL` outer equi-joins | Unmatched identities are nullable |
-| `IS NOT DISTINCT FROM` join keys | Matches NULL with NULL for plain columns |
+| 内等值 join | 两侧都是主键表；键名可以不同；支持多个 payload 列 |
+| 右侧按 join 键建主键的 `LEFT JOIN` | Lookup join |
+| 3–32 个源表的多路内 join | 可选的侧过滤和跨源条件 |
+| 左深 `[LEFT] JOIN` 链 | 每一步按自己的 join 键建主键 |
+| `CROSS JOIN` | 两侧都是主键表 |
+| `LEFT`、`RIGHT`、`FULL` 外等值 join | 未匹配的身份可为 NULL |
+| `IS NOT DISTINCT FROM` join 键 | 普通列支持 NULL 匹配 NULL |
 
-## Set operations
+## 集合运算
 
-| Shape | Notes |
+| 形状 | 说明 |
 | --- | --- |
-| `UNION ALL` | Merges sources with the same schema |
-| `UNION` | Deduplicated |
-| `INTERSECT`, `EXCEPT` | Both `DISTINCT` and `ALL` variants |
-| `INTERSECT ALL`, `EXCEPT ALL` | Per-tuple match counts |
+| `UNION ALL` | 合并同 schema 的源 |
+| `UNION` | 去重 |
+| `INTERSECT`、`EXCEPT` | `DISTINCT` 和 `ALL` 变体 |
+| `INTERSECT ALL`、`EXCEPT ALL` | 按元组匹配计数 |
 
-## Semi/anti and correlated shapes
+## 半连接/反连接与相关形状
 
-| Shape | Notes |
+| 形状 | 说明 |
 | --- | --- |
-| `[NOT] EXISTS`, `IN`, `op ANY`, `op ALL` | Semi/anti joins, optional side filters |
-| Correlated scalar aggregate in the select list | `COUNT` family keeps empty-set semantics |
-| Correlated scalar filter (`WHERE v > (SELECT AVG(v) ...)`) | The subquery tables are watched alongside the source |
+| `[NOT] EXISTS`、`IN`、`op ANY`、`op ALL` | 半连接/反连接，可选侧过滤 |
+| select 列表里的相关标量聚合 | `COUNT` 家族保持空集语义 |
+| 相关标量过滤（`WHERE v > (SELECT AVG(v) ...)`） | 子查询涉及的表会与源表一起被监听 |
 
-## Unsupported
+## 不支持
 
-- Append-only sources for incremental runs. Use a keyed source, or let the shape
-  fall back to a full recompute.
-- A `SELECT` that changes the target's row identity without a primary key on the
-  target.
-- A shape outside the list above. The engine reports
-  `unsupported incremental view shape` and does not write a partial result.
+- Append-only 源用于增量运行。改用主键源，或让形状回退到全量重算。
+- 改变目标行身份、但目标表没有主键的 `SELECT`。
+- 列表之外的形状。引擎会报告 `unsupported incremental view shape`，不会写入部分结果。
 
-## Next
+## 下一步
 
-- [Consistency and limits](consistency-and-limits.md)
-- [Getting started](getting-started.md)
+- [一致性与限制](consistency-and-limits.md)
+- [上手](getting-started.md)

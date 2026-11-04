@@ -3,7 +3,7 @@ sidebar_position: 1
 sidebar_label: 概览
 ---
 
-# Full-text search
+# 全文检索
 
 <!--
 SPDX-FileCopyrightText: 2026 LakeSoul Contributors
@@ -11,20 +11,16 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-LakeSoul keeps a Tantivy full-text index next to the table data and ranks results
-with BM25. The index is maintained on write, and a top-k query is answered from
-the index instead of a full scan.
+LakeSoul 在表数据旁边维护 Tantivy 全文索引，用 BM25 排序。索引随写入维护，top-k 查询由索引回答，而不是全表扫描。
 
-## What you get
+## 能获得什么
 
-- **`text_match(column, query)`** as a filter predicate.
-- **`text_score(column, query)`** in `ORDER BY` for BM25 ranking.
-- **Top-k pushdown**: `WHERE text_match(...) ORDER BY text_score(...) DESC LIMIT k`
-  returns the global top-k from the index.
-- **Same engine**: join, filter and aggregate full-text results with vector search
-  and ordinary SQL.
+- **`text_match(column, query)`** 作为过滤谓词。
+- **`text_score(column, query)`** 放在 `ORDER BY` 里做 BM25 排序。
+- **Top-k 下推**：`WHERE text_match(...) ORDER BY text_score(...) DESC LIMIT k` 从索引返回全局 top-k。
+- **同一个引擎**：全文结果可以和向量检索、普通 SQL 的 join 和聚合组合。
 
-## Example
+## 示例
 
 ```sql
 SELECT id, title, body
@@ -34,9 +30,9 @@ ORDER BY text_score(body, 'lakehouse') DESC
 LIMIT 10;
 ```
 
-## Index creation
+## 创建索引
 
-The text index is declared through the Python SDK, next to the table:
+文本索引通过 Python SDK 在表上声明：
 
 ```python
 catalog.create_table(
@@ -48,10 +44,10 @@ catalog.create_table(
 )
 ```
 
-The PostgreSQL endpoint then queries the table with `text_match` and `text_score`.
+之后 PostgreSQL 端点用 `text_match` 和 `text_score` 查询这张表。
 
-## Next
+## 下一步
 
-- [Text SQL reference](sql-reference.md)
-- [Text index management](index-management.md)
-- [Benchmarks](benchmarks.md)
+- [文本 SQL 参考](sql-reference.md)
+- [索引管理](index-management.md)
+- [Benchmark](benchmarks.md)

@@ -3,7 +3,7 @@ sidebar_position: 2
 sidebar_label: SQL 参考
 ---
 
-# Text SQL reference
+# 文本 SQL 参考
 
 <!--
 SPDX-FileCopyrightText: 2026 LakeSoul Contributors
@@ -11,17 +11,16 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-## Functions
+## 函数
 
-| Function | Returns | Use |
+| 函数 | 返回 | 用途 |
 | --- | --- | --- |
-| `text_match(column, query)` | Boolean | A filter predicate |
-| `text_score(column, query)` | BM25 score | Only in `ORDER BY` |
+| `text_match(column, query)` | Boolean | 过滤谓词 |
+| `text_score(column, query)` | BM25 分数 | 只能放在 `ORDER BY` |
 
-`text_match` evaluates the query against the column. `text_score` supplies the
-ranking; it cannot be projected into the result set yet.
+`text_match` 对列求值查询。`text_score` 提供排序分数；目前不能投影到结果集里。
 
-## Top-k query
+## Top-k 查询
 
 ```sql
 SELECT id, title
@@ -31,10 +30,9 @@ ORDER BY text_score(body, 'lakehouse') DESC
 LIMIT 10;
 ```
 
-The planner recognises the pattern and asks the text index for the global top-k.
-The `LIMIT` is required for the index path.
+规划器识别这个模式，向文本索引请求全局 top-k。索引路径需要 `LIMIT`。
 
-## Filter without ranking
+## 只过滤、不排序
 
 ```sql
 SELECT id, title
@@ -42,33 +40,32 @@ FROM documents
 WHERE text_match(body, 'lakehouse');
 ```
 
-Without an `ORDER BY text_score(...)`, the predicate is evaluated exactly over the
-scan. This is correct but does not use the top-k path.
+没有 `ORDER BY text_score(...)` 时，谓词在扫描上精确求值。结果正确，但不走 top-k 路径。
 
-## Rules
+## 规则
 
-- `text_score` must appear in `ORDER BY ... DESC`; projecting it is not supported.
-- Without a finite `LIMIT`, the planner falls back to an exact scan.
-- The column must have a text index declared through the Python SDK.
-- The query string is a scalar expression; parameters are supported.
-- Multiple `text_match` predicates are evaluated as ordinary boolean filters.
+- `text_score` 必须出现在 `ORDER BY ... DESC` 里；不支持投影它。
+- 没有有限 `LIMIT` 时，规划器回退到精确扫描。
+- 列必须通过 Python SDK 声明了文本索引。
+- 查询串是标量表达式；支持参数。
+- 多个 `text_match` 谓词按普通布尔过滤求值。
 
-## Tokenizers
+## 分词器
 
-The index is built with one tokenizer per column:
+索引按列选择一个分词器：
 
-| Tokenizer | Behaviour |
+| 分词器 | 行为 |
 | --- | --- |
-| `jieba` | Chinese word segmentation (default) |
-| `default` | Tantivy's default tokenizer |
-| `en_stem` | English stemming |
-| `whitespace` | Whitespace splitting |
-| `raw` | One token for the whole value |
+| `jieba` | 中文分词（默认） |
+| `default` | Tantivy 默认分词器 |
+| `en_stem` | 英文词干 |
+| `whitespace` | 按空白切分 |
+| `raw` | 整个值作为一个 token |
 
-The tokenizer is fixed when the index is created.
+分词器在创建索引时固定。
 
-## Next
+## 下一步
 
-- [Text index management](index-management.md)
-- [Benchmarks](benchmarks.md)
-- [Vector search](../vector-search/overview.md)
+- [索引管理](index-management.md)
+- [Benchmark](benchmarks.md)
+- [向量检索](../vector-search/overview.md)

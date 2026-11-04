@@ -3,7 +3,7 @@ sidebar_position: 2
 sidebar_label: 数据类型
 ---
 
-# Data types
+# 数据类型
 
 <!--
 SPDX-FileCopyrightText: 2026 LakeSoul Contributors
@@ -11,65 +11,56 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-## Column types in DDL
+## DDL 列类型
 
-`CREATE TABLE` maps PostgreSQL types to LakeSoul's Arrow schema:
+`CREATE TABLE` 把 PostgreSQL 类型映射到 LakeSoul 的 Arrow schema：
 
-| PostgreSQL type | Stored as | Notes |
+| PostgreSQL 类型 | 存储为 | 说明 |
 | --- | --- | --- |
-| `smallint`, `int2` | `Int16` | |
-| `integer`, `int`, `int4` | `Int32` | |
-| `bigint`, `int8` | `Int64` | Required for primary-key columns of indexed tables |
-| `real`, `float4` | `Float32` | |
-| `double precision`, `float8` | `Float64` | |
-| `float(p)` | `Float32` for `p <= 24`, `Float64` for `p <= 53` | Precision only |
-| `boolean`, `bool` | `Boolean` | |
-| `text`, `varchar`, `char` | `Utf8` | |
+| `smallint`、`int2` | `Int16` | |
+| `integer`、`int`、`int4` | `Int32` | |
+| `bigint`、`int8` | `Int64` | 有索引的表的主键必须使用它 |
+| `real`、`float4` | `Float32` | |
+| `double precision`、`float8` | `Float64` | |
+| `float(p)` | `p <= 24` 为 `Float32`，`p <= 53` 为 `Float64` | 只接受精度 |
+| `boolean`、`bool` | `Boolean` | |
+| `text`、`varchar`、`char` | `Utf8` | |
 | `date` | `Date32` | |
-| `timestamp` | Microsecond timestamp, no time zone | `timestamp(6)` only |
-| `timestamptz` | Microsecond timestamp in UTC | |
+| `timestamp` | 微秒精度、无时区 | 只接受 `timestamp(6)` |
+| `timestamptz` | 微秒精度、UTC | |
 | `bytea` | Binary | |
-| `numeric(p, s)`, `decimal(p, s)` | `Decimal128(p, s)` | `1 <= p <= 38`, `0 <= s <= p` |
+| `numeric(p, s)`、`decimal(p, s)` | `Decimal128(p, s)` | `1 <= p <= 38`，`0 <= s <= p` |
 
-`numeric` without a precision and scale is rejected. `timestamp(p)` accepts only
-`p = 6`; other precisions are rejected rather than silently rounded.
+不带精度和小数位的 `numeric` 会被拒绝。`timestamp(p)` 只接受 `p = 6`；其他精度会被拒绝，而不是静默舍入。
 
-## Types that are not column types
+## 不能作为列类型的类型
 
-`uuid`, `json`, `jsonb`, `interval`, `time`, `inet`, `money`, enums and array
-column types are not part of the DDL mapping. A table with such a column is
-rejected with `0A000`.
+`uuid`、`json`、`jsonb`、`interval`、`time`、`inet`、`money`、枚举和数组列类型不在 DDL 映射里。包含这些列的表会以 `0A000` 拒绝。
 
-Arrays are still usable in expressions and results (`ARRAY[...]`, `INTEGER[]`,
-1-based indexing), and the wire protocol decodes them. They are not a supported
-column type.
+数组仍然可以用在表达式和结果里（`ARRAY[...]`、`INTEGER[]`、1-based 下标），wire protocol 也能解码。它们不是受支持的列类型。
 
-## Query-side behaviour
+## 查询侧行为
 
-- **NULL semantics** follow SQL three-valued logic: `NULL` is distinct from the
-  empty string, `COUNT(*)` counts rows while `COUNT(col)` skips NULLs.
-- **Decimals** are exact. The engine returns `NUMERIC` with the column's scale;
-  `DECIMAL`/`NUMERIC` values are not routed through floating point.
-- **Timestamps** are microsecond precision; `timestamptz` is normalised to UTC.
-- **Integer arithmetic** follows the column width; division and remainder follow
-  SQL semantics for the operand types.
+- **NULL 语义**遵循 SQL 三值逻辑：`NULL` 与空串不同，`COUNT(*)` 计行数，`COUNT(col)` 跳过 NULL。
+- **Decimal** 是精确值。引擎按列的 scale 返回 `NUMERIC`；`DECIMAL`/`NUMERIC` 不经过浮点。
+- **时间戳**是微秒精度；`timestamptz` 归一化为 UTC。
+- **整数运算**遵循列宽；除法和取余遵循操作数类型的 SQL 语义。
 
-## Known boundaries
+## 已知边界
 
-A few type differences are intentional and documented rather than hidden:
+少数类型差异是有意记录下来的，而不是隐藏：
 
-| Case | LakeSoul | PostgreSQL |
+| 场景 | LakeSoul | PostgreSQL |
 | --- | --- | --- |
 | `COALESCE(integer_col, -1)` | `INT8` | `INT4` |
-| `rank()` / `row_number()` without a cast | `NUMERIC` | `INT8` |
-| `numeric` precision | Up to 38 digits | Wider `NUMERIC` |
-| `timestamp` precision | Microseconds | Configurable |
+| 未 CAST 的 `rank()` / `row_number()` | `NUMERIC` | `INT8` |
+| `numeric` 精度 | 最多 38 位 | 更宽的 `NUMERIC` |
+| `timestamp` 精度 | 微秒 | 可配置 |
 
-Values match; the OIDs may differ. Cast explicitly in a query if a client depends
-on the PostgreSQL type.
+值一致，OID 可能不同。客户端依赖 PostgreSQL 类型时，在查询里显式 CAST。
 
-## Next
+## 下一步
 
 - [DDL](../engine/postgres/ddl.md)
-- [Compatibility](../engine/postgres/compatibility.md)
-- [SQL errors](sql-errors.md)
+- [兼容性](../engine/postgres/compatibility.md)
+- [SQL 错误](sql-errors.md)

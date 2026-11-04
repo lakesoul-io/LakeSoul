@@ -3,7 +3,7 @@ sidebar_position: 3
 sidebar_label: 索引管理
 ---
 
-# Text index management
+# 文本索引管理
 
 <!--
 SPDX-FileCopyrightText: 2026 LakeSoul Contributors
@@ -11,10 +11,9 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-Text indexes are declared and built through the Python SDK. The index lives under
-the table path and is maintained on write.
+文本索引通过 Python SDK 声明和构建。索引存放在表路径下，并随写入维护。
 
-## Declare an index
+## 声明索引
 
 ```python
 catalog.create_table(
@@ -30,19 +29,18 @@ catalog.create_table(
 )
 ```
 
-| Key | Default | Meaning |
+| 键 | 默认值 | 含义 |
 | --- | --- | --- |
-| `column` | required | `Utf8` / `Utf8View` column |
-| `tokenizer` | `jieba` | `jieba`, `default`, `en_stem`, `whitespace`, `raw` |
-| `with_positions` | `True` | Store positions for phrase queries |
-| `stored` | `False` | Store the original text in the index |
-| `rebuild_mode` | `auto` | `auto` or `none` |
-| `max_delta_ratio` | `1.0` | Delta-to-base ratio that triggers compaction |
+| `column` | 必填 | `Utf8` / `Utf8View` 列 |
+| `tokenizer` | `jieba` | `jieba`、`default`、`en_stem`、`whitespace`、`raw` |
+| `with_positions` | `True` | 存储位置，用于短语查询 |
+| `stored` | `False` | 在索引里存原文 |
+| `rebuild_mode` | `auto` | `auto` 或 `none` |
+| `max_delta_ratio` | `1.0` | 触发 compaction 的 delta/base 比例 |
 
-The table needs an `Int64` or `UInt64` primary key. The configuration is stored on
-the table, and `write_arrow` updates the index after the data commit.
+表需要 `Int64` 或 `UInt64` 主键。配置存在表属性上，`write_arrow` 在数据提交后更新索引。
 
-## Build or rebuild
+## 构建或重建
 
 ```python
 from lakesoul.text_index import build_table_text_index
@@ -55,7 +53,7 @@ build_table_text_index(
 )
 ```
 
-Per partition:
+按分区：
 
 ```python
 from lakesoul.text_index import build_partition_text_index
@@ -69,18 +67,15 @@ build_partition_text_index(
 )
 ```
 
-`rebuild=True` rebuilds every shard from its active data files. `store_config`
-takes object store credentials; when omitted, the SDK reads
-`LAKESOUL_OBJECT_STORE_*`.
+`rebuild=True` 会从活跃数据文件重建每个 shard。`store_config` 接受对象存储凭证；省略时 SDK 读取 `LAKESOUL_OBJECT_STORE_*`。
 
-## Shards and maintenance
+## Shard 与维护
 
-- The index is built per (partition, hash bucket) shard.
-- New rows are appended as delta segments; searches merge base and delta results.
-- When the delta-to-base ratio exceeds `max_delta_ratio`, the shard is compacted.
-  Set `rebuild_mode="none"` to disable automatic compaction and run it yourself.
+- 索引按（分区，哈希 bucket）shard 构建。
+- 新行作为 delta segment 追加；搜索会合并 base 和 delta 结果。
+- delta/base 比例超过 `max_delta_ratio` 时，shard 会被 compact。设置 `rebuild_mode="none"` 可关闭自动 compaction，改由你手动运行。
 
-## Next
+## 下一步
 
-- [Text SQL reference](sql-reference.md)
-- [Benchmarks](benchmarks.md)
+- [文本 SQL 参考](sql-reference.md)
+- [Benchmark](benchmarks.md)

@@ -3,7 +3,7 @@ sidebar_position: 3
 sidebar_label: 配置
 ---
 
-# Configuration
+# 配置
 
 <!--
 SPDX-FileCopyrightText: 2026 LakeSoul Contributors
@@ -11,71 +11,70 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-## Metadata connection
+## 元数据连接
 
-| Variable | Meaning |
+| 变量 | 含义 |
 | --- | --- |
-| `LAKESOUL_PG_URL` | JDBC-style PostgreSQL URL, e.g. `jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified` |
-| `LAKESOUL_PG_SECONDARY_URL` | Optional read-only standby for metadata queries |
-| `LAKESOUL_PG_USERNAME` | Metadata user |
-| `LAKESOUL_PG_PASSWORD` | Metadata password |
-| `LAKESOUL_PG_POOL_SIZE` | Metadata connection pool size |
-| `LAKESOUL_PG_POOL_TIMEOUT_SECS` | Pool checkout timeout |
-| `LAKESOUL_PG_POOL_IDLE_SECS` | Idle connection timeout |
+| `LAKESOUL_PG_URL` | JDBC 风格 PostgreSQL URL，例如 `jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified` |
+| `LAKESOUL_PG_SECONDARY_URL` | 可选的只读 standby，用于元数据查询 |
+| `LAKESOUL_PG_USERNAME` | 元数据用户 |
+| `LAKESOUL_PG_PASSWORD` | 元数据密码 |
+| `LAKESOUL_PG_POOL_SIZE` | 元数据连接池大小 |
+| `LAKESOUL_PG_POOL_TIMEOUT_SECS` | 连接池获取超时 |
+| `LAKESOUL_PG_POOL_IDLE_SECS` | 空闲连接超时 |
 
-The endpoint and the Python SDK read the same variables.
+端点和 Python SDK 读取同一组变量。
 
-## Object storage
+## 对象存储
 
-| Variable / flag | Meaning |
+| 变量 / 参数 | 含义 |
 | --- | --- |
-| `LAKESOUL_WAREHOUSE` / `--warehouse-prefix` | Base location for new table data |
-| `AWS_ENDPOINT` / `--endpoint` | S3-compatible endpoint |
-| `AWS_BUCKET` / `--s3-bucket` | Default bucket |
+| `LAKESOUL_WAREHOUSE` / `--warehouse-prefix` | 新表数据的基础位置 |
+| `AWS_ENDPOINT` / `--endpoint` | S3 兼容端点 |
+| `AWS_BUCKET` / `--s3-bucket` | 默认 bucket |
 | `AWS_ACCESS_KEY_ID` / `--s3-access-key` | Access key |
 | `AWS_SECRET_ACCESS_KEY` / `--s3-secret-key` | Secret key |
-| `AWS_S3_VIRTUAL_HOST_STYLE` / `--s3-virtual-host-style` | Virtual-hosted requests |
+| `AWS_S3_VIRTUAL_HOST_STYLE` / `--s3-virtual-host-style` | Virtual-hosted 请求 |
 
-The Python SDK reads `LAKESOUL_OBJECT_STORE_*` for index builds; see
-[Vector index management](../engine/vector-search/index-management.md).
+Python SDK 构建索引时读取 `LAKESOUL_OBJECT_STORE_*`；见[向量索引管理](../engine/vector-search/index-management.md)。
 
-## Endpoint
+## 端点
 
-| Variable | Meaning |
+| 变量 | 含义 |
 | --- | --- |
-| `LAKESOUL_PG_BIND` | Bind address (default `127.0.0.1`) |
-| `LAKESOUL_PG_PORT` | Listen port (default `5432`) |
-| `LAKESOUL_PG_METRICS_ADDR` | Prometheus listener (default `127.0.0.1:19090`) |
-| `LAKESOUL_PG_MAX_CONNECTIONS` | Connection limit |
-| `LAKESOUL_PG_MAX_QUERIES_PER_USER` | Concurrent statements per user |
-| `LAKESOUL_PG_MAX_RESULT_ROWS` | Row limit per statement |
-| `LAKESOUL_PG_MAX_RESULT_BYTES` | Result size limit per statement |
-| `LAKESOUL_PG_IVM` | Enable incremental SQL on `INSERT ... SELECT` |
-| `LAKESOUL_WORKER_THREADS` | Tokio worker threads |
+| `LAKESOUL_PG_BIND` | 绑定地址（默认 `127.0.0.1`） |
+| `LAKESOUL_PG_PORT` | 监听端口（默认 `5432`） |
+| `LAKESOUL_PG_METRICS_ADDR` | Prometheus 监听地址（默认 `127.0.0.1:19090`） |
+| `LAKESOUL_PG_MAX_CONNECTIONS` | 连接数上限 |
+| `LAKESOUL_PG_MAX_QUERIES_PER_USER` | 每个用户的并发语句数 |
+| `LAKESOUL_PG_MAX_RESULT_ROWS` | 每条语句的行数上限 |
+| `LAKESOUL_PG_MAX_RESULT_BYTES` | 每条语句的结果大小上限 |
+| `LAKESOUL_PG_IVM` | 为 `INSERT ... SELECT` 开启增量 SQL |
+| `LAKESOUL_WORKER_THREADS` | Tokio worker 线程数 |
 
-The full flag table is in [PostgreSQL operations](../engine/postgres/operations.md).
+完整参数表见 [PostgreSQL 运维](../engine/postgres/operations.md)。
 
-## Distributed execution
+## 分布式执行
 
-| Variable | Meaning |
+| 变量 | 含义 |
 | --- | --- |
-| `LAKESOUL_DISTRIBUTED_DISCOVERY` | `none`, `static` or `kubernetes` |
-| `LAKESOUL_DISTRIBUTED_WORKERS` | Comma-separated worker endpoints |
-| `LAKESOUL_K8S_WORKER_SERVICE` | Worker Service name for EndpointSlice discovery |
-| `LAKESOUL_K8S_NAMESPACE` | Namespace holding the Service |
-| `LAKESOUL_DISCOVERY_POLL_INTERVAL_SECONDS` | Discovery refresh interval |
-| `LAKESOUL_DISCOVERY_MAX_STALENESS_SECONDS` | Staleness limit for a discovery snapshot |
-| `LAKESOUL_DISTRIBUTED_FALLBACK_LOCAL` | Fall back to local execution when distributed planning fails |
+| `LAKESOUL_DISTRIBUTED_DISCOVERY` | `none`、`static` 或 `kubernetes` |
+| `LAKESOUL_DISTRIBUTED_WORKERS` | 逗号分隔的 worker 端点 |
+| `LAKESOUL_K8S_WORKER_SERVICE` | 用于 EndpointSlice 发现的 worker Service 名 |
+| `LAKESOUL_K8S_NAMESPACE` | Service 所在 namespace |
+| `LAKESOUL_DISCOVERY_POLL_INTERVAL_SECONDS` | 发现刷新间隔 |
+| `LAKESOUL_DISCOVERY_MAX_STALENESS_SECONDS` | 发现快照的过期上限 |
+| `LAKESOUL_DISTRIBUTED_FALLBACK_LOCAL` | 分布式计划失败时回退本地执行 |
 
-## Logging
+## 日志
 
-| Variable | Meaning |
+| 变量 | 含义 |
 | --- | --- |
-| `RUST_LOG` | Log filter, e.g. `info` or `lakesoul_io=debug` |
-| `LAKESOUL_LOG_DIR` | Directory that receives a copy of the logs |
-| `LAKESOUL_LOG_FILTER_FILE` | File read on `SIGHUP` to reload the filter |
+| `RUST_LOG` | 日志过滤器，例如 `info` 或 `lakesoul_io=debug` |
+| `LAKESOUL_LOG_DIR` | 接收日志副本的目录 |
+| `LAKESOUL_LOG_FILTER_FILE` | `SIGHUP` 时重新加载过滤器的文件 |
 
-## Example
+## 示例
 
 ```bash
 export LAKESOUL_PG_URL='jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified'
@@ -90,7 +89,7 @@ cargo run -p postgres-lakesoul -- --port 5433 \
   --s3-secret-key rustfsadmin
 ```
 
-## Next
+## 下一步
 
-- [PostgreSQL operations](../engine/postgres/operations.md)
-- [Metadata store](../operations/metadata-postgres.md)
+- [PostgreSQL 运维](../engine/postgres/operations.md)
+- [元数据存储](../operations/metadata-postgres.md)

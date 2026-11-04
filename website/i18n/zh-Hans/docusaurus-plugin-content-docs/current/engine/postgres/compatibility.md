@@ -3,7 +3,7 @@ sidebar_position: 5
 sidebar_label: 兼容性
 ---
 
-# Compatibility
+# 兼容性
 
 <!--
 SPDX-FileCopyrightText: 2026 LakeSoul Contributors
@@ -11,80 +11,73 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-LakeSoul is **PostgreSQL-native, not a drop-in PostgreSQL**. The wire protocol
-and the SQL surface are implemented natively, and this page records what is
-covered today.
+LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protocol 和 SQL 表面是原生实现的，这一页记录当前覆盖范围。
 
-## Compatibility tiers
+## 兼容层级
 
-| Tier | Meaning | Status |
+| 层级 | 含义 | 状态 |
 | --- | --- | --- |
-| **Connectivity** | A PostgreSQL client can connect and run a query | `psql`, JDBC, `pgx`, DBeaver, libpq-based tools |
-| **SQL surface** | The statements and semantics below | See the tables on this page |
-| **Ecosystem** | Tools that rely on PostgreSQL catalog behaviour | `pg_catalog`, `information_schema`, `psql \d`, BI tools that introspect |
+| **连接性** | PostgreSQL 客户端可以连接并执行查询 | `psql`、JDBC、`pgx`、DBeaver、libpq 工具 |
+| **SQL 表面** | 下面列出的语句和语义 | 见本页表格 |
+| **生态** | 依赖 PostgreSQL catalog 行为的工具 | `pg_catalog`、`information_schema`、`psql \d`、做内省的 BI 工具 |
 
-## Supported
+## 支持
 
-| Area | Statements |
+| 领域 | 语句 |
 | --- | --- |
-| Queries | `SELECT` with joins, aggregates, windows, CTEs, `UNION`/`INTERSECT`/`EXCEPT`, subqueries |
-| DDL | `CREATE TABLE`, `DROP TABLE`, primary keys, `PARTITIONED BY`, `WITH (...)` |
-| Writes | `INSERT ... VALUES`, `INSERT ... SELECT`, `ON CONFLICT DO NOTHING`, `ON CONFLICT ... DO UPDATE SET col = EXCLUDED.col` |
-| Transactions | Autocommit, `READ COMMITTED`, `BEGIN`/`COMMIT`/`ROLLBACK` for reads |
-| Catalog | `pg_catalog`, `information_schema`, `psql \d`, `current_database()` |
-| Session | `SET TIME ZONE`, `statement_timeout`, `search_path`, `ivfflat.probes`, `RESET`, `DISCARD ALL` |
-| Vector | `vector(n)`, `<->`, `<#>`, `<=>`, `ORDER BY ... LIMIT k`, exact fallback, ANN |
-| Full text | `text_score(column, query)` with `ORDER BY ... DESC LIMIT k` |
+| 查询 | 带 join、聚合、窗口、CTE、`UNION`/`INTERSECT`/`EXCEPT`、子查询的 `SELECT` |
+| DDL | `CREATE TABLE`、`DROP TABLE`、主键、`PARTITIONED BY`、`WITH (...)` |
+| 写入 | `INSERT ... VALUES`、`INSERT ... SELECT`、`ON CONFLICT DO NOTHING`、`ON CONFLICT ... DO UPDATE SET col = EXCLUDED.col` |
+| 事务 | Autocommit、`READ COMMITTED`、只读的 `BEGIN`/`COMMIT`/`ROLLBACK` |
+| 目录 | `pg_catalog`、`information_schema`、`psql \d`、`current_database()` |
+| 会话 | `SET TIME ZONE`、`statement_timeout`、`search_path`、`ivfflat.probes`、`RESET`、`DISCARD ALL` |
+| 向量 | `vector(n)`、`<->`、`<#>`、`<=>`、`ORDER BY ... LIMIT k`、精确回退、ANN |
+| 全文 | `text_score(column, query)`，配合 `ORDER BY ... DESC LIMIT k` |
 
-## Refused
+## 拒绝
 
-These return SQLSTATE `0A000` rather than being silently ignored:
+以下操作返回 SQLSTATE `0A000`，而不是被静默忽略：
 
-- `UPDATE`, `DELETE`, `TRUNCATE`, `COPY`
-- `CREATE TABLE AS`, `RETURNING`
-- Writes inside an explicit transaction block or a multi-statement batch
-- `REPEATABLE READ` and `SERIALIZABLE`
-- `CREATE TABLE ... PARTITION BY`, `LIKE`, `CLONE`, `INHERITS`
-- Column defaults, `UNIQUE`, `CHECK` and `FOREIGN KEY` constraints
-- `STORED AS` / `LOCATION` in DDL (use `WITH (file_format = ...)`)
-- PostgreSQL extensions, PL/pgSQL and `LISTEN`/`NOTIFY`
-- `ON CONFLICT DO UPDATE` with expressions over the old row
+- `UPDATE`、`DELETE`、`TRUNCATE`、`COPY`
+- `CREATE TABLE AS`、`RETURNING`
+- 显式事务块或多语句 batch 内的写入
+- `REPEATABLE READ` 和 `SERIALIZABLE`
+- `CREATE TABLE ... PARTITION BY`、`LIKE`、`CLONE`、`INHERITS`
+- 列默认值、`UNIQUE`、`CHECK`、`FOREIGN KEY` 约束
+- DDL 里的 `STORED AS` / `LOCATION`（改用 `WITH (file_format = ...)`）
+- PostgreSQL 扩展、PL/pgSQL、`LISTEN`/`NOTIFY`
+- 对旧行做表达式的 `ON CONFLICT DO UPDATE`
 
-## SQLSTATE mapping
+## SQLSTATE 映射
 
-| SQLSTATE | Meaning |
+| SQLSTATE | 含义 |
 | --- | --- |
-| `0A000` | Feature not supported |
-| `23505` | Duplicate key |
-| `25P02` | Current transaction is aborted |
-| `40001` | Serialization failure; retry |
-| `42601` | Syntax error or column-count mismatch |
-| `42703` | Undefined column |
-| `42804` | Datatype mismatch |
-| `42P01` | Undefined table |
-| `42P07` | Duplicate table |
-| `42701` | Duplicate column |
-| `42P16` | Invalid table definition |
-| `3F000` | Invalid schema name |
-| `22023` | Invalid parameter value |
-| `22007` | Invalid datetime format |
-| `57014` | Query canceled (`statement_timeout`) |
-| `XX000` | Internal error or unknown database at startup |
+| `0A000` | 功能不支持 |
+| `23505` | 重复主键 |
+| `25P02` | 当前事务已中止 |
+| `40001` | 序列化失败；重试 |
+| `42601` | 语法错误或列数不匹配 |
+| `42703` | 列不存在 |
+| `42804` | 类型不匹配 |
+| `42P01` | 表不存在 |
+| `42P07` | 表已存在 |
+| `42701` | 列重复 |
+| `42P16` | 表定义非法 |
+| `3F000` | schema 名非法 |
+| `22023` | 参数值非法 |
+| `22007` | 日期时间格式非法 |
+| `57014` | 查询被取消（`statement_timeout`） |
+| `XX000` | 内部错误，或启动时 database 不存在 |
 
-A few errors are mapped from engine errors rather than reproduced exactly. For
-example, an invalid integer conversion returns `XX000` where PostgreSQL returns
-`22P02`; the [SQL errors reference](../../reference/sql-errors.md) lists the
-known boundaries.
+少数错误是从引擎错误映射来的，而不是精确复现。例如非法整数转换返回 `XX000`，而 PostgreSQL 返回 `22P02`。已知边界见 [SQL 错误参考](../../reference/sql-errors.md)。
 
-## Version policy
+## 版本策略
 
-The SQL surface follows the engine, not a PostgreSQL release. The endpoint does
-not advertise a `server_version` that implies PostgreSQL feature parity. Treat
-the tables above as the contract.
+SQL 表面跟随引擎，而不是某个 PostgreSQL 版本。端点不会宣告一个暗示 PostgreSQL 功能对齐的 `server_version`。以上表格就是契约。
 
-## Next
+## 下一步
 
 - [DDL](ddl.md)
-- [Insert and upsert](insert-and-upsert.md)
-- [Transactions and catalog](transactions-and-catalog.md)
-- [SQL errors](../../reference/sql-errors.md)
+- [写入与 Upsert](insert-and-upsert.md)
+- [事务与目录](transactions-and-catalog.md)
+- [SQL 错误](../../reference/sql-errors.md)

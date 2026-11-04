@@ -3,7 +3,7 @@ sidebar_position: 2
 sidebar_label: 上手
 ---
 
-# Incremental SQL: getting started
+# 增量 SQL：上手
 
 <!--
 SPDX-FileCopyrightText: 2026 LakeSoul Contributors
@@ -11,19 +11,18 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-## 1. Start the endpoint with incremental SQL enabled
+## 1. 以增量 SQL 启动端点
 
 ```bash
 cargo run -p postgres-lakesoul -- --port 5433 --ivm \
   --warehouse-prefix file:///tmp/lakesoul/warehouse
 ```
 
-`--ivm` enables the `INSERT ... SELECT` maintenance path. Without it, the
-statement is a normal insert.
+`--ivm` 开启 `INSERT ... SELECT` 的维护路径。不加它时，这条语句就是普通插入。
 
-## 2. Create a target table
+## 2. 创建目标表
 
-The target needs a primary key and the CDC change column `rowKinds`:
+目标表需要主键和 CDC 变更列 `rowKinds`：
 
 ```sql
 CREATE TABLE daily_revenue (
@@ -35,16 +34,13 @@ CREATE TABLE daily_revenue (
 ) WITH (hash_bucket_num = 4);
 ```
 
-- The primary key identifies a target row; the engine writes delete markers for
-  rows that disappear.
-- `"rowKinds"` is the change column. Quote it to preserve the mixed case; the
-  front end folds unquoted identifiers to lower case.
-- The engine adds its epoch column to the target schema if it is missing.
+- 主键标识目标行；对于消失的行，引擎会写删除标记。
+- `"rowKinds"` 是变更列。加引号保留大小写；未加引号的标识符会被前端折叠成小写。
+- 如果目标 schema 缺少 epoch 列，引擎会自动加上。
 
-The target can also be range-partitioned with `PARTITIONED BY`. A run replaces
-only the partitions it owns; other partitions are left alone.
+目标表也可以用 `PARTITIONED BY` 做范围分区。一次运行只替换它拥有的分区，其他分区保持不变。
 
-## 3. Run the query
+## 3. 运行查询
 
 ```sql
 SET lakesoul.ivm.enabled = on;
@@ -57,38 +53,28 @@ FROM orders
 GROUP BY 1, 2;
 ```
 
-The first run **bootstraps** the target: it computes the query over the current
-source state and writes the full result.
+第一次运行会 **bootstrap** 目标表：对当前源表状态计算查询并写入完整结果。
 
-Later runs read only the source commits after the last cursor and write only the
-changed rows. The statement is idempotent for a given source state.
+之后的运行只读取上次游标之后的源表提交，只写入发生变化的行。对于给定的源表状态，这条语句是幂等的。
 
-## 4. Keep the session setting
+## 4. 保持会话设置
 
-`lakesoul.ivm.enabled` is session-local and defaults to off. Set it on every
-connection that runs incremental SQL. `INSERT ... VALUES` is always a normal
-insert, regardless of the setting.
+`lakesoul.ivm.enabled` 是会话本地的，默认关闭。每个执行增量 SQL 的连接都要设置它。无论该设置如何，`INSERT ... VALUES` 始终是普通插入。
 
-## 5. Re-run after source changes
+## 5. 源表变化后重跑
 
-There is no scheduler and no refresh command. Run the same `INSERT ... SELECT`
-when you want the target to catch up; the engine decides what changed.
+没有调度器，也没有 refresh 命令。需要目标表追上时，重新运行同一条 `INSERT ... SELECT`；引擎决定变化了什么。
 
-If the query definition changes, the next run rebuilds the target from the full
-source in one atomic commit. Readers do not see an empty table during the
-rebuild.
+如果查询定义变化，下一次运行会从完整源表重建目标表，并以一次原子提交发布。读者不会在重建期间看到空表。
 
-## Requirements
+## 要求
 
-- The target must be a keyed table: primary key plus `rowKinds`.
-- Sources must be keyed tables. Append-only sources are rejected for incremental
-  runs; a shape that cannot be maintained incrementally falls back to a full
-  recompute.
-- The statement must run in autocommit. Explicit transactions and multi-statement
-  batches are refused.
-- Incremental SQL and distributed execution are mutually exclusive in v1.
+- 目标表必须是主键表：主键 + `rowKinds`。
+- 源表必须是主键表。Append-only 源会被拒绝；无法增量维护的形状会回退到全量重算。
+- 语句必须在 autocommit 下运行。显式事务和多语句 batch 会被拒绝。
+- v1 中增量 SQL 与分布式执行互斥。
 
-## Next
+## 下一步
 
-- [Supported queries](supported-queries.md)
-- [Consistency and limits](consistency-and-limits.md)
+- [支持的查询](supported-queries.md)
+- [一致性与限制](consistency-and-limits.md)
