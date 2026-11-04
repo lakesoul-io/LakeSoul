@@ -312,13 +312,28 @@ pub fn case_fold_table_name(name: &str) -> String {
 }
 
 /// Case fold the column name.
+///
+/// `rowKinds` is LakeSoul's reserved CDC change column and keeps its exact
+/// spelling: Spark/Flink tables and IVM targets name it that way, and folding
+/// it would make the change column invisible to the IVM runtime.
 pub fn case_fold_column_name(name: &str) -> String {
+    if name == "rowKinds" {
+        return name.to_string();
+    }
     name.to_ascii_lowercase()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cdc_change_column_keeps_its_case() {
+        assert_eq!(case_fold_column_name("rowKinds"), "rowKinds");
+        assert_eq!(case_fold_column_name("RowKinds"), "rowkinds");
+        assert_eq!(case_fold_column_name("K"), "k");
+        assert_eq!(case_fold_table_name("MixedCase"), "mixedcase");
+    }
 
     fn ivm_table_info(properties: &str) -> Arc<TableInfo> {
         let schema = Schema::new(vec![

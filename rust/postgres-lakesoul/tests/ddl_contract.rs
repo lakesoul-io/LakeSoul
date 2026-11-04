@@ -799,6 +799,17 @@ async fn partitioned_by_creates_range_partitions(h: &Harness) -> Result<()> {
             Some("16"),
             true,
         ),
+        (
+            "ddl_part_cdc",
+            "CREATE TABLE ddl_part_cdc (part TEXT NOT NULL, \
+             id BIGINT NOT NULL, \"rowKinds\" TEXT NOT NULL, \
+             PRIMARY KEY (id)) PARTITIONED BY (part) \
+             WITH (use_cdc = true, \
+             lakesoul_cdc_change_column = 'rowKinds', hash_bucket_num = 2)",
+            "part;id",
+            Some("2"),
+            false,
+        ),
     ] {
         if extended {
             let create = h.lake.prepare(sql).await.context("partition DDL Parse")?;
@@ -826,6 +837,13 @@ async fn partitioned_by_creates_range_partitions(h: &Harness) -> Result<()> {
             "{table}: expected partition-local buckets {buckets:?}, actual {:?}",
             row.hash_bucket_num
         );
+        if table == "ddl_part_cdc" {
+            ensure!(
+                row.cdc_change_column.as_deref() == Some("rowKinds"),
+                "{table}: expected the exact CDC column rowKinds, actual {:?}",
+                row.cdc_change_column
+            );
+        }
         ensure!(
             metadata_counts(h, table).await? == [1, 1, 1, 0, 0],
             "{table}: CREATE must publish one table, not precreate child partitions"

@@ -7778,6 +7778,7 @@ dependencies = [
  "lakesoul-common",
  "lakesoul-datafusion",
  "lakesoul-io",
+ "lakesoul-ivm",
  "lakesoul-metadata",
  "lakesoul-observability",
  "lakesoul-vector",

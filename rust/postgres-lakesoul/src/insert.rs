@@ -71,7 +71,7 @@ use lakesoul_datafusion::write_mode::{
 };
 
 use crate::catalog::PUBLIC_SCHEMA;
-use crate::ddl::{feature_not_supported, normalize_ident};
+use crate::ddl::{feature_not_supported, normalize_column_ident, normalize_ident};
 use crate::server::ConnectionSession;
 
 /// SQLSTATE `undefined_table`.
@@ -151,7 +151,7 @@ impl QueryHook for InsertStatementHook {
     }
 }
 
-fn extract(statement: &Statement) -> Option<&Insert> {
+pub(crate) fn extract(statement: &Statement) -> Option<&Insert> {
     match statement {
         Statement::Insert(insert) => Some(insert),
         _ => None,
@@ -170,7 +170,7 @@ struct Target {
 }
 
 /// Connection state a hook may hold across an `await`.
-fn request_context(
+pub(crate) fn request_context(
     client: &(impl ClientInfo + ?Sized),
 ) -> PgWireResult<(TransactionStatus, String)> {
     let session = client
@@ -830,7 +830,7 @@ fn conflict_plan(
         Some(ConflictTarget::Columns(columns)) => {
             let mut target = BTreeSet::new();
             for column in columns {
-                target.insert(normalize_ident(column)?);
+                target.insert(normalize_column_ident(column)?);
             }
             if target != primary_keys {
                 return Err(feature_not_supported(format!(
@@ -875,7 +875,7 @@ fn conflict_plan(
                     )));
                 };
                 let excluded = normalize_ident(excluded)?;
-                let value = normalize_ident(value)?;
+                let value = normalize_column_ident(value)?;
                 if excluded != "excluded" || value != column {
                     return Err(do_update_unsupported(&format!(
                         "the value assigned to \"{column}\""
@@ -948,7 +948,7 @@ fn single_column(name: &ObjectName) -> PgWireResult<String> {
             "multi-part column name {name} in INSERT"
         )));
     };
-    normalize_ident(part.as_ident().ok_or_else(|| {
+    normalize_column_ident(part.as_ident().ok_or_else(|| {
         feature_not_supported(format!("object name part {part} in INSERT"))
     })?)
 }
@@ -1017,7 +1017,7 @@ fn reject_unsupported(insert: &Insert) -> PgWireResult<()> {
     Ok(())
 }
 
-fn reject_transaction(status: TransactionStatus) -> PgWireResult<()> {
+pub(crate) fn reject_transaction(status: TransactionStatus) -> PgWireResult<()> {
     if status == TransactionStatus::Idle {
         return Ok(());
     }
@@ -1037,7 +1037,7 @@ fn table_name(insert: &Insert) -> String {
 
 /// The table reference PostgreSQL's catalog resolves, and the name a client
 /// wrote (for messages).
-fn target_reference(
+pub(crate) fn target_reference(
     insert: &Insert,
     database: &str,
 ) -> PgWireResult<(datafusion::common::TableReference, String)> {

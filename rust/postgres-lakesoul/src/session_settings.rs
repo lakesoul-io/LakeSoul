@@ -382,7 +382,7 @@ fn restore_metadata_key(
 ///
 /// This mirrors `SessionContext::set_variable`, whose UDF refresh is what makes
 /// `now()`/`current_date` observe a new time zone immediately.
-fn write_config(
+pub(crate) fn write_config(
     context: &SessionContext,
     mutate: impl FnOnce(&mut SessionConfig) -> datafusion::error::Result<()>,
 ) -> PgWireResult<()> {

@@ -142,6 +142,14 @@ where
     run_fixture_suite(Fixtures::Vector, suite).await
 }
 
+/// Base fixtures with the server's IVM entry enabled.
+pub async fn run_ivm_suite<F>(suite: F) -> Result<()>
+where
+    F: for<'a> FnOnce(&'a Harness) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+{
+    run_fixture_suite(Fixtures::Ivm, suite).await
+}
+
 /// Prepare the pinned TPC-H dataset before the real PG server loads its catalog.
 pub async fn run_tpch_suite<F>(config: tpch::TpchConfig, suite: F) -> Result<()>
 where
@@ -152,6 +160,7 @@ where
 
 enum Fixtures {
     Base,
+    Ivm,
     Storage,
     Catalog,
     Vector,
@@ -223,6 +232,16 @@ where
 }
 
 impl Harness {
+    /// Management session used to create fixtures with LakeSoul-only schemas.
+    pub fn management(&self) -> &SessionContext {
+        &self.state.management
+    }
+
+    /// Metadata client used to create fixtures with exact schemas.
+    pub fn meta(&self) -> &Arc<MetaDataClient> {
+        &self.state.meta
+    }
+
     async fn shutdown(self) -> CleanupOutcome {
         let Harness {
             lake,
@@ -259,6 +278,7 @@ struct StartupState {
     lake_addr: Option<SocketAddr>,
     metrics_addr: Option<SocketAddr>,
     namespace_created: bool,
+    ivm: bool,
     created_tables: Vec<String>,
     extra_namespaces: Vec<(String, Vec<String>)>,
     connections: parking_lot::Mutex<Vec<JoinHandle<()>>>,
@@ -330,6 +350,7 @@ impl StartupState {
             lake_addr: None,
             metrics_addr: None,
             namespace_created: false,
+            ivm: false,
             created_tables: Vec::new(),
             extra_namespaces: Vec::new(),
             connections: parking_lot::Mutex::new(Vec::new()),
@@ -341,6 +362,10 @@ impl StartupState {
         self.create_lake_fixtures().await?;
         match fixtures {
             Fixtures::Base => {}
+            Fixtures::Ivm => {
+                self.ivm = true;
+                self.create_ivm_fixtures().await?;
+            }
             Fixtures::Storage => self.create_storage_fixtures().await?,
             Fixtures::Catalog => self.create_catalog_fixtures().await?,
             Fixtures::Vector => self.create_vector_fixtures().await?,
@@ -456,6 +481,62 @@ impl StartupState {
                 .await?,
             3,
         )?;
+        Ok(())
+    }
+
+    async fn create_ivm_fixtures(&mut self) -> Result<()> {
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use lakesoul_ivm::{
+            IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTableOptions, PhysicalFormat,
+            create_ivm_table,
+        };
+
+        let namespace = self.namespace.clone();
+        let create = |name: &str, epoch: bool| {
+            let mut fields = vec![
+                Field::new("k", DataType::Int64, false),
+                Field::new("v", DataType::Int64, true),
+                Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+            ];
+            if epoch {
+                fields.push(Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false));
+            }
+            let schema = Arc::new(Schema::new(fields));
+            let location = format!(
+                "{}/{namespace}/{name}",
+                self.warehouse_url.trim_end_matches('/')
+            );
+            IvmTableOptions::new(name, location, schema)
+                .with_namespace(namespace.clone())
+                .with_primary_keys(vec!["k".to_string()])
+                .with_bucket_columns(vec!["k".to_string()])
+                .with_file_format(PhysicalFormat::Vortex)
+        };
+        for (name, epoch) in [("ivm_target", true), ("ivm_target_no_epoch", false)] {
+            let table = create_ivm_table(&self.meta, create(name, epoch))
+                .await
+                .map_err(|error| anyhow!("{error:?}"))?;
+            // The IVM table helper marks the table internal; the PostgreSQL
+            // catalog hides internal tables, so remove only that marker and
+            // the bucket property it guards.  The primary key still gives the
+            // same bucket layout.
+            let info = self
+                .meta
+                .get_table_info_by_table_id(&table.table_id)
+                .await?
+                .ok_or_else(|| anyhow!("{name} disappeared after creation"))?;
+            let mut properties: serde_json::Value =
+                serde_json::from_str(&info.properties)
+                    .with_context(|| format!("parse {name} properties"))?;
+            if let Some(object) = properties.as_object_mut() {
+                object.remove("lakesoul.ivm.internal");
+                object.remove("lakesoul.ivm.bucket_columns");
+            }
+            self.meta
+                .update_table_properties(&table.table_id, &properties.to_string())
+                .await?;
+            self.created_tables.push(name.to_string());
+        }
         Ok(())
     }
 
@@ -623,6 +704,9 @@ impl StartupState {
                 ]);
         } else {
             command.args(["--discovery", "none"]);
+        }
+        if self.ivm {
+            command.arg("--ivm");
         }
         if fault == Some("startup") {
             // Controlled startup failure: clap rejects the unknown option and
@@ -1244,7 +1328,10 @@ async fn reference_row_count(client: &Client, sql: &str) -> Result<usize> {
     .with_context(|| format!("reference fixture query failed: {sql}"))
 }
 
-async fn management_execute(context: &SessionContext, sql: &str) -> Result<()> {
+pub(crate) async fn management_execute(
+    context: &SessionContext,
+    sql: &str,
+) -> Result<()> {
     bounded(OPERATION_TIMEOUT, "management SQL", async {
         let frame = context.sql(sql).await.map_err(|error| error.to_string())?;
         frame

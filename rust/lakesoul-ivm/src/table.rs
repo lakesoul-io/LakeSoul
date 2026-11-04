@@ -831,6 +831,34 @@ impl IvmTable {
         builder
     }
 
+    /// Add the nullable `__ivm_epoch` bookkeeping column to the table's
+    /// schema metadata when it is missing.  Existing data files do not carry
+    /// the column; the caller must rebuild so future rows write an epoch.
+    pub(crate) async fn ensure_epoch_column(
+        &self,
+        client: &MetaDataClient,
+    ) -> Result<Option<Self>> {
+        if self.schema.field_with_name(IVM_EPOCH_COLUMN).is_ok() {
+            return Ok(None);
+        }
+        let mut fields = self.schema.fields().to_vec();
+        fields.push(Arc::new(Field::new(
+            IVM_EPOCH_COLUMN,
+            DataType::Int64,
+            true,
+        )));
+        let schema = Arc::new(Schema::new_with_metadata(
+            fields,
+            self.schema.metadata().clone(),
+        ));
+        client
+            .update_table_schema(&self.table_id, &schema_to_metadata_str(&schema))
+            .await?;
+        let mut updated = self.clone();
+        updated.schema = schema;
+        Ok(Some(updated))
+    }
+
     /// Create one rolling writer for a refresh/compaction output.
     pub(crate) async fn writer(&self) -> Result<SendableWriter> {
         create_writer_with_io_config(self.writer_builder().build()).await
@@ -960,12 +988,167 @@ impl IvmTable {
         client: &MetaDataClient,
         files: Vec<DataFileInfo>,
     ) -> Result<Vec<String>> {
-        if files.is_empty() {
+        let context = crate::runtime::TARGET_WRITE
+            .try_with(std::sync::Arc::clone)
+            .ok();
+        let Some(context) = context else {
+            if files.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Ok(client
+                .commit_data_files(&self.table_name, &self.namespace, files)
+                .await?);
+        };
+        let (
+            view_id,
+            target_table_id,
+            atomic,
+            committed,
+            internal,
+            owned_partitions,
+            begin_partitions,
+            metadata,
+        ) = {
+            let guard = context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            (
+                guard.view_id.clone(),
+                guard.target_table_id.clone(),
+                guard.atomic,
+                guard.committed,
+                guard.internal,
+                guard.owned_partitions.clone(),
+                guard.begin_partitions.clone(),
+                guard.metadata.clone(),
+            )
+        };
+        if target_table_id != self.table_id {
+            if files.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Ok(client
+                .commit_data_files(&self.table_name, &self.namespace, files)
+                .await?);
+        }
+
+        let written = files
+            .iter()
+            .map(|file| file.partition_desc.clone())
+            .collect::<std::collections::HashSet<_>>();
+        // An incremental refresh with no output does not touch the target.
+        if !atomic && written.is_empty() {
             return Ok(Vec::new());
         }
-        let commit_ids = client
-            .commit_data_files(&self.table_name, &self.namespace, files)
+
+        // Every target partition this refresh reads or writes is in scope:
+        // owned partitions may be replaced by a rebuild, and written
+        // partitions are about to be committed.  Partitions owned by another
+        // writer are not touched.
+        let current = latest_partition_info(client, &self.table_id).await?;
+        if !internal && !partitions_unchanged(&begin_partitions, &current) {
+            return Err(rootcause::report!(
+                "target table {} changed while the IVM refresh was running: \
+                 another writer committed a partition; retry after it stops",
+                self.table_name
+            ));
+        }
+        // Internal derived/state tables keep the historical whole-table
+        // replacement; only the user-visible target tracks partition
+        // ownership.
+        let scope_partitions = if internal {
+            current
+        } else {
+            current
+                .iter()
+                .filter(|partition| {
+                    owned_partitions.contains(&partition.partition_desc)
+                        || written.contains(&partition.partition_desc)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        if !internal {
+            crate::runtime::TargetWrite::check_external_commits(
+                client,
+                &metadata,
+                &view_id,
+                &target_table_id,
+                &scope_partitions,
+            )
             .await?;
+        }
+
+        let commit_ids = if atomic && !committed {
+            let empty_partitions = scope_partitions
+                .iter()
+                .filter(|partition| {
+                    (internal || owned_partitions.contains(&partition.partition_desc))
+                        && !written.contains(&partition.partition_desc)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            client
+                .commit_update_parts(
+                    &self.table_name,
+                    &self.namespace,
+                    files,
+                    scope_partitions,
+                    empty_partitions,
+                )
+                .await?
+        } else if files.is_empty() {
+            Vec::new()
+        } else {
+            client
+                .commit_data_files(&self.table_name, &self.namespace, files)
+                .await?
+        };
+        if !commit_ids.is_empty() {
+            metadata.record_view_commits(&view_id, &commit_ids).await?;
+        }
+
+        // The first commit of a rebuild replaces the owned set (partitions
+        // that produced no rows were emptied above); later commits add to it.
+        let mut new_owned = if atomic && !committed {
+            std::collections::HashSet::new()
+        } else {
+            owned_partitions
+        };
+        new_owned.extend(written.iter().cloned());
+        if !internal {
+            if atomic && !committed {
+                metadata
+                    .replace_view_partitions(
+                        &view_id,
+                        &new_owned.iter().cloned().collect::<Vec<_>>(),
+                    )
+                    .await?;
+            } else {
+                metadata
+                    .add_view_partitions(
+                        &view_id,
+                        &written.iter().cloned().collect::<Vec<_>>(),
+                    )
+                    .await?;
+            }
+        }
+        let after = latest_partition_info(client, &self.table_id).await?;
+        {
+            let mut guard = context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.committed = true;
+            guard.owned_partitions = new_owned.clone();
+            guard.begin_partitions = if internal {
+                after
+            } else {
+                after
+                    .into_iter()
+                    .filter(|partition| new_owned.contains(&partition.partition_desc))
+                    .collect()
+            };
+        }
         Ok(commit_ids)
     }
 
@@ -2237,6 +2420,31 @@ impl IvmTable {
     /// delete commit would reject the following merge/append via the commit
     /// conflict rules, while a compaction leaves the partition writable again.
     pub async fn truncate(&self, client: &MetaDataClient) -> Result<()> {
+        let is_user_target = crate::runtime::ATOMIC_TARGET
+            .try_with(|target| target == &self.table_id)
+            .unwrap_or(false);
+        if is_user_target
+            && let Ok(context) =
+                crate::runtime::TARGET_WRITE.try_with(std::sync::Arc::clone)
+            && context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .target_table_id
+                == self.table_id
+        {
+            // A rebuild replaces the user-visible target with one atomic
+            // version; an empty version between truncate and append would be
+            // visible to readers.  The refresh path may start incrementally
+            // and fall back to a rebuild, so the truncate itself selects the
+            // atomic mode.  Internal derived/state tables keep the historical
+            // truncate+append path so their consumers see an append commit.
+            let mut guard = context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.atomic = true;
+            guard.committed = false;
+            return Ok(());
+        }
         let partitions = client.get_all_partition_info(&self.table_id).await?;
         if partitions.is_empty() {
             return Ok(());
@@ -2265,6 +2473,34 @@ impl IvmTable {
             .await?;
         Ok(())
     }
+}
+
+/// The latest version of every partition of a table.
+pub(crate) async fn latest_partition_info(
+    client: &MetaDataClient,
+    table_id: &str,
+) -> Result<Vec<PartitionInfo>> {
+    let mut latest = std::collections::HashMap::<String, PartitionInfo>::new();
+    for partition in client.get_all_partition_info(table_id).await? {
+        let replace = latest
+            .get(&partition.partition_desc)
+            .is_none_or(|current| current.version < partition.version);
+        if replace {
+            latest.insert(partition.partition_desc.clone(), partition);
+        }
+    }
+    Ok(latest.into_values().collect())
+}
+
+/// True when every partition in `before` still has its captured version.
+fn partitions_unchanged(before: &[PartitionInfo], current: &[PartitionInfo]) -> bool {
+    let current = current
+        .iter()
+        .map(|partition| (&partition.partition_desc, partition.version))
+        .collect::<std::collections::HashMap<_, _>>();
+    before.iter().all(|partition| {
+        current.get(&partition.partition_desc).copied() == Some(partition.version)
+    })
 }
 
 /// The first or last key bytes of a batch.

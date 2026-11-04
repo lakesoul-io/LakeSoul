@@ -362,7 +362,7 @@ impl MetaDataClient {
     }
 
     /// The shared connection pool backing this client.
-    pub(crate) fn pooled_client(&self) -> Arc<Mutex<PooledClient>> {
+    pub fn pooled_client(&self) -> Arc<Mutex<PooledClient>> {
         self.client.clone()
     }
 
@@ -1595,7 +1595,71 @@ impl MetaDataClient {
         files: Vec<DataFileInfo>,
         read_partitions: Vec<PartitionInfo>,
     ) -> Result<Vec<String>> {
-        if files.is_empty() {
+        self.commit_compaction_parts(
+            table_name,
+            namespace,
+            files,
+            read_partitions,
+            Vec::new(),
+        )
+        .await
+    }
+
+    /// Atomically replace partitions with new files using `UpdateCommit`.
+    ///
+    /// Unlike a compaction commit, the new snapshot is a logical update: the
+    /// incremental changelog exposes its files to downstream views.  This is
+    /// what an IVM rebuild writes, so a derived step's consumers reprocess it.
+    pub async fn commit_update_parts(
+        &self,
+        table_name: &str,
+        namespace: &str,
+        files: Vec<DataFileInfo>,
+        read_partitions: Vec<PartitionInfo>,
+        empty_partitions: Vec<PartitionInfo>,
+    ) -> Result<Vec<String>> {
+        self.commit_replace_parts(
+            table_name,
+            namespace,
+            files,
+            read_partitions,
+            empty_partitions,
+            CommitOp::UpdateCommit,
+        )
+        .await
+    }
+
+    /// Atomically replace partitions with new files using `CompactionCommit`.
+    /// Partitions in `empty_partitions` are published with an empty snapshot.
+    pub async fn commit_compaction_parts(
+        &self,
+        table_name: &str,
+        namespace: &str,
+        files: Vec<DataFileInfo>,
+        read_partitions: Vec<PartitionInfo>,
+        empty_partitions: Vec<PartitionInfo>,
+    ) -> Result<Vec<String>> {
+        self.commit_replace_parts(
+            table_name,
+            namespace,
+            files,
+            read_partitions,
+            empty_partitions,
+            CommitOp::CompactionCommit,
+        )
+        .await
+    }
+
+    async fn commit_replace_parts(
+        &self,
+        table_name: &str,
+        namespace: &str,
+        files: Vec<DataFileInfo>,
+        read_partitions: Vec<PartitionInfo>,
+        empty_partitions: Vec<PartitionInfo>,
+        commit_op: CommitOp,
+    ) -> Result<Vec<String>> {
+        if files.is_empty() && empty_partitions.is_empty() {
             return Ok(Vec::new());
         }
         let table_info = self
@@ -1611,7 +1675,6 @@ impl MetaDataClient {
             .map_err(|error| LakeSoulMetaDataError::Internal(error.to_string()))?
             .as_millis() as i64;
         let domain = self.get_table_domain(&table_info.table_id).await?.domain;
-        let commit_op = CommitOp::CompactionCommit;
         let data_commit_info_list = data_commit_info_list_from_files(
             &table_info,
             files,
@@ -1626,20 +1689,39 @@ impl MetaDataClient {
             .collect::<Vec<_>>();
         self.transaction_insert_data_commit_info(data_commit_info_list.clone())
             .await?;
+        let file_partitions = data_commit_info_list
+            .iter()
+            .map(|data_commit_info| PartitionInfo {
+                table_id: table_info.table_id.clone(),
+                partition_desc: data_commit_info.partition_desc.clone(),
+                commit_op: commit_op.into(),
+                domain: domain.clone(),
+                snapshot: data_commit_info.commit_id.into_iter().collect(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let file_descs = file_partitions
+            .iter()
+            .map(|partition| partition.partition_desc.clone())
+            .collect::<HashSet<_>>();
+        let mut list_partition = file_partitions;
+        list_partition.extend(
+            empty_partitions
+                .into_iter()
+                .filter(|partition| !file_descs.contains(&partition.partition_desc))
+                .map(|partition| PartitionInfo {
+                    table_id: table_info.table_id.clone(),
+                    partition_desc: partition.partition_desc,
+                    commit_op: commit_op.into(),
+                    domain: domain.clone(),
+                    snapshot: Vec::new(),
+                    ..Default::default()
+                }),
+        );
         self.commit_data(
             MetaInfo {
                 table_info: Some(table_info.clone()),
-                list_partition: data_commit_info_list
-                    .iter()
-                    .map(|data_commit_info| PartitionInfo {
-                        table_id: table_info.table_id.clone(),
-                        partition_desc: data_commit_info.partition_desc.clone(),
-                        commit_op: commit_op.into(),
-                        domain: domain.clone(),
-                        snapshot: data_commit_info.commit_id.into_iter().collect(),
-                        ..Default::default()
-                    })
-                    .collect(),
+                list_partition,
                 read_partition_info: read_partitions,
             },
             commit_op,
@@ -2452,6 +2534,17 @@ impl MetaDataClient {
 
     pub fn get_client_secret(&self) -> &String {
         &self.secret
+    }
+
+    /// Replace a table's schema metadata, clearing the Arrow IPC mirror so
+    /// every reader parses the new schema from `table_schema`.
+    pub async fn update_table_schema(&self, table_id: &str, schema: &str) -> Result<()> {
+        self.execute_update(
+            DaoType::UpdateTableInfoById as i32,
+            [table_id, "", "", schema].join(PARAM_DELIM),
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn update_table_properties(

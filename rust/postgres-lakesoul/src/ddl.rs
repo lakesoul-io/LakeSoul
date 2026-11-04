@@ -472,6 +472,18 @@ pub(crate) fn normalize_ident(ident: &Ident) -> PgWireResult<String> {
     Ok(folded)
 }
 
+/// Column names follow [`normalize_ident`] except for the LakeSoul CDC change
+/// column: `rowKinds` is a reserved, case-sensitive column name that Spark and
+/// Flink tables already carry, so a quoted `"rowKinds"` declares that exact
+/// spelling instead of being rejected as a mixed-case identifier.
+pub(crate) fn normalize_column_ident(ident: &Ident) -> PgWireResult<String> {
+    if ident.quote_style.is_some() && ident.value == DEFAULT_CDC_CHANGE_COLUMN {
+        validate_name(DEFAULT_CDC_CHANGE_COLUMN)?;
+        return Ok(DEFAULT_CDC_CHANGE_COLUMN.to_string());
+    }
+    normalize_ident(ident)
+}
+
 /// Reject names LakeSoul cannot store.
 ///
 /// A table name becomes a path segment under the database's warehouse
@@ -585,7 +597,7 @@ fn partition_columns(
                     .to_string(),
             ));
         }
-        let name = normalize_ident(&column.name)?;
+        let name = normalize_column_ident(&column.name)?;
         if schema.index_of(&name).is_err() {
             return Err(user_error(
                 UNDEFINED_COLUMN,
@@ -623,7 +635,7 @@ fn build_schema(
     let mut declared_not_null: Vec<Option<bool>> = Vec::with_capacity(columns.len());
     let mut primary_key: Option<Vec<usize>> = None;
     for (index, column) in columns.iter().enumerate() {
-        let name = normalize_ident(&column.name)?;
+        let name = normalize_column_ident(&column.name)?;
         if names.contains(&name) {
             return Err(user_error(
                 DUPLICATE_COLUMN,
@@ -749,7 +761,7 @@ fn primary_key_index(column: &IndexColumn, names: &[String]) -> PgWireResult<usi
             ident.value
         )));
     }
-    let name = normalize_ident(ident)?;
+    let name = normalize_column_ident(ident)?;
     names
         .iter()
         .position(|candidate| candidate == &name)

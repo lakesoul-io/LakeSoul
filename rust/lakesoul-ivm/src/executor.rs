@@ -993,19 +993,36 @@ pub struct IvmExecution {
 
 /// The dedicated `INSERT INTO`/`INSERT OVERWRITE` entry for incremental views.
 pub struct IvmSqlExecutor {
-    runtime: IvmRuntime,
+    runtime: Arc<IvmRuntime>,
     session: Option<SessionContext>,
     refresh_upstream: bool,
+    /// Namespace used for a one-part table name and for PostgreSQL's
+    /// `public` schema.  The Rust API leaves it unset (`default`).
+    default_namespace: Option<String>,
 }
 
 impl IvmSqlExecutor {
     /// Build an executor that plans SQL in an internal DataFusion session.
     pub fn new(runtime: IvmRuntime) -> Self {
+        Self::with_shared_runtime(Arc::new(runtime))
+    }
+
+    /// Build an executor over a runtime shared by the process, such as the
+    /// PostgreSQL front end's service.
+    pub fn with_shared_runtime(runtime: Arc<IvmRuntime>) -> Self {
         Self {
             runtime,
             session: None,
             refresh_upstream: false,
+            default_namespace: None,
         }
+    }
+
+    /// Resolve unqualified names and PostgreSQL's `public` schema against
+    /// `namespace` instead of the LakeSoul `default` namespace.
+    pub fn with_default_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.default_namespace = Some(namespace.into());
+        self
     }
 
     /// Refresh the views the statement reads (upstream first) before running
@@ -1031,7 +1048,7 @@ impl IvmSqlExecutor {
 
     /// The runtime behind the executor.
     pub fn runtime(&self) -> &IvmRuntime {
-        &self.runtime
+        self.runtime.as_ref()
     }
 
     /// Execute one incremental statement.
@@ -1056,9 +1073,28 @@ impl IvmSqlExecutor {
         let normalized = crate::sql::normalize_flink_sql(sql);
         let sql = normalized.as_str();
         let insert = parse_insert(sql)?;
-        let (namespace, table_name) = split_object_name(insert_target(&insert)?)?;
+        let (namespace, table_name) = split_object_name(
+            insert_target(&insert)?,
+            self.default_namespace.as_deref(),
+        )?;
         let mv = self.runtime.open_table(&table_name, &namespace).await?;
         let view_id = mv.table_id.clone();
+        let lock_owner = uuid::Uuid::new_v4().to_string();
+        if !self
+            .runtime
+            .metadata()
+            .try_lock_view(&view_id, &lock_owner, 30 * 60 * 1000)
+            .await?
+        {
+            return Err(rootcause::report!(
+                "view {view_id} is being refreshed by another statement"
+            ));
+        }
+        let _lock = ViewLockGuard {
+            metadata: self.runtime.metadata().clone(),
+            view_id: view_id.clone(),
+            owner: lock_owner,
+        };
 
         let source = insert.source.as_deref().ok_or_else(|| {
             rootcause::report!(
@@ -1074,7 +1110,8 @@ impl IvmSqlExecutor {
         let session = self.session.clone().unwrap_or_default();
         let mut tables = HashMap::new();
         for relation in relations {
-            let (namespace, name) = split_object_name(&relation)?;
+            let (namespace, name) =
+                split_object_name(&relation, self.default_namespace.as_deref())?;
             let table = self.runtime.open_table(&name, &namespace).await?;
             if self.session.is_none() {
                 let provider: Arc<dyn TableProvider> =
@@ -1162,19 +1199,26 @@ impl IvmSqlExecutor {
         // range partition columns are not part of its primary key, cannot be
         // written directly.  Materialize the maintenance state and project it
         // through a sink instead.
-        if target_needs_sink(&mv, &expected) {
-            if fallback {
-                let reason = match &probe {
-                    ViewSpec::Fallback { reason, .. } => {
-                        format!(" (the shape is not maintained incrementally: {reason})")
-                    }
-                    _ => String::new(),
-                };
-                return Err(rootcause::report!(
-                    "target table `{}` does not match the view schema of this statement{reason}",
-                    mv.table_name
-                ));
-            }
+        let needs_sink = target_needs_sink(&mv, &expected);
+        if needs_sink && fallback {
+            // Report why the shape is not maintained before a target schema
+            // problem masks it; the fallback cannot run on a mismatched target.
+            let reason = match &probe {
+                ViewSpec::Fallback { reason, .. } => {
+                    format!(" (the shape is not maintained incrementally: {reason})")
+                }
+                _ => String::new(),
+            };
+            return Err(rootcause::report!(
+                "target table `{}` does not match the view schema of this statement{reason}",
+                mv.table_name
+            ));
+        }
+        // Validate the target's IVM bookkeeping after the statement analysis:
+        // an unsupported shape must report its own reason first.  A missing
+        // `__ivm_epoch` is added to the schema and forces a rebuild below.
+        let (mv, epoch_added) = self.runtime.ensure_target_epoch_column(&mv).await?;
+        if needs_sink {
             return self
                 .execute_split_target(
                     &mv,
@@ -1306,19 +1350,21 @@ impl IvmSqlExecutor {
 
         // A view marked dirty (a failed chain refresh) has no trusted
         // incremental state: it is rebuilt like a changed definition.
-        let dirty = self
-            .runtime
-            .metadata()
-            .view_status(&view_id)
-            .await?
-            .as_deref()
-            == Some("dirty");
+        let dirty = epoch_added
+            || self
+                .runtime
+                .metadata()
+                .view_status(&view_id)
+                .await?
+                .as_deref()
+                == Some("dirty");
+        let target_id = mv.table_id.clone();
         let (action, epoch) = if fallback {
             // Every fallback refresh recomputes the statement; the action says
             // so even when the definition is unchanged.  A no-op refresh (no
             // source change) reports no epoch.
             if same_definition && !insert.overwrite && !dirty {
-                match self.runtime.refresh_spec(&spec).await {
+                match self.runtime.refresh_spec_target(&spec, &target_id).await {
                     Ok(epoch) => (IvmExecutionAction::Fallback, epoch),
                     // A dropped source partition whose value the view carries
                     // is retracted deterministically; everything else rebuilds.
@@ -1330,7 +1376,10 @@ impl IvmSqlExecutor {
                         {
                             Some(epoch) => (IvmExecutionAction::Fallback, Some(epoch)),
                             None => {
-                                let epoch = self.runtime.rebuild_spec(&spec).await?;
+                                let epoch = self
+                                    .runtime
+                                    .rebuild_spec_target(&spec, &target_id)
+                                    .await?;
                                 (IvmExecutionAction::Fallback, Some(epoch))
                             }
                         }
@@ -1338,7 +1387,7 @@ impl IvmSqlExecutor {
                     Err(error) => return Err(error),
                 }
             } else {
-                let epoch = self.runtime.rebuild_spec(&spec).await?;
+                let epoch = self.runtime.rebuild_spec_target(&spec, &target_id).await?;
                 self.runtime
                     .metadata()
                     .set_view_definition(&view_id, &definition, sql)
@@ -1347,10 +1396,10 @@ impl IvmSqlExecutor {
             }
         } else if insert.overwrite {
             if same_definition {
-                let epoch = self.runtime.rebuild_spec(&spec).await?;
+                let epoch = self.runtime.rebuild_spec_target(&spec, &target_id).await?;
                 (IvmExecutionAction::Overwrite, Some(epoch))
             } else {
-                let epoch = self.runtime.rebuild_spec(&spec).await?;
+                let epoch = self.runtime.rebuild_spec_target(&spec, &target_id).await?;
                 self.runtime
                     .metadata()
                     .set_view_definition(&view_id, &definition, sql)
@@ -1358,7 +1407,7 @@ impl IvmSqlExecutor {
                 (IvmExecutionAction::Rebuild, Some(epoch))
             }
         } else if same_definition && !dirty {
-            match self.runtime.refresh_spec(&spec).await {
+            match self.runtime.refresh_spec_target(&spec, &target_id).await {
                 Ok(epoch) => (IvmExecutionAction::Incremental, epoch),
                 // A dropped source partition (or a source window that needs a
                 // snapshot) cannot be retried through the file window: rebuild
@@ -1374,7 +1423,10 @@ impl IvmSqlExecutor {
                     {
                         Some(epoch) => (IvmExecutionAction::Incremental, Some(epoch)),
                         None => {
-                            let epoch = self.runtime.rebuild_spec(&spec).await?;
+                            let epoch = self
+                                .runtime
+                                .rebuild_spec_target(&spec, &target_id)
+                                .await?;
                             (IvmExecutionAction::Rebuild, Some(epoch))
                         }
                     }
@@ -1387,7 +1439,7 @@ impl IvmSqlExecutor {
             } else {
                 IvmExecutionAction::Bootstrap
             };
-            let epoch = self.runtime.rebuild_spec(&spec).await?;
+            let epoch = self.runtime.rebuild_spec_target(&spec, &target_id).await?;
             self.runtime
                 .metadata()
                 .set_view_definition(&view_id, &definition, sql)
@@ -1685,18 +1737,28 @@ impl IvmSqlExecutor {
             || state_rebuilt
             || sink_dirty;
         let sink_epoch = if sink_rebuilt {
-            let epoch = self.runtime.rebuild_spec(&sink_spec).await?;
+            let epoch = self
+                .runtime
+                .rebuild_spec_target(&sink_spec, &target.table_id)
+                .await?;
             self.runtime
                 .metadata()
                 .set_view_definition(view_id, &sink_definition, sql)
                 .await?;
             Some(epoch)
         } else {
-            match self.runtime.refresh_spec(&sink_spec).await {
+            match self
+                .runtime
+                .refresh_spec_target(&sink_spec, &target.table_id)
+                .await
+            {
                 Ok(epoch) => epoch,
                 Err(error) if IvmRuntime::rebuild_required(&error) => {
                     sink_rebuilt = true;
-                    let epoch = self.runtime.rebuild_spec(&sink_spec).await?;
+                    let epoch = self
+                        .runtime
+                        .rebuild_spec_target(&sink_spec, &target.table_id)
+                        .await?;
                     self.runtime
                         .metadata()
                         .set_view_definition(view_id, &sink_definition, sql)
@@ -3267,6 +3329,25 @@ impl IvmSqlExecutor {
     }
 }
 
+/// Releases the per-view refresh lease when a statement ends, including on an
+/// early error or a dropped future.
+struct ViewLockGuard {
+    metadata: crate::metadata::IvmMetadata,
+    view_id: String,
+    owner: String,
+}
+
+impl Drop for ViewLockGuard {
+    fn drop(&mut self) {
+        let metadata = self.metadata.clone();
+        let view_id = self.view_id.clone();
+        let owner = self.owner.clone();
+        tokio::spawn(async move {
+            let _ = metadata.unlock_view(&view_id, &owner).await;
+        });
+    }
+}
+
 /// The INSERT statement of the entry, validated for the supported subset.
 fn parse_insert(sql: &str) -> Result<datafusion::sql::sqlparser::ast::Insert> {
     let mut statements = DFParser::parse_sql(sql)
@@ -3326,12 +3407,26 @@ fn object_name_parts(name: &ObjectName) -> Result<Vec<String>> {
         .collect()
 }
 
-fn split_object_name(name: &ObjectName) -> Result<(String, String)> {
+fn split_object_name(
+    name: &ObjectName,
+    default_namespace: Option<&str>,
+) -> Result<(String, String)> {
     let parts = object_name_parts(name)?;
+    let default = default_namespace.unwrap_or("default");
     match parts.as_slice() {
-        [table] => Ok(("default".to_string(), table.clone())),
+        [table] => Ok((default.to_string(), table.clone())),
+        [schema, table]
+            if default_namespace.is_some() && schema.eq_ignore_ascii_case("public") =>
+        {
+            Ok((default.to_string(), table.clone()))
+        }
         [namespace, table] => Ok((namespace.clone(), table.clone())),
         // Ignore the catalog: LakeSoul lives in one PostgreSQL database.
+        [_catalog, schema, table]
+            if default_namespace.is_some() && schema.eq_ignore_ascii_case("public") =>
+        {
+            Ok((default.to_string(), table.clone()))
+        }
         [_catalog, namespace, table] => Ok((namespace.clone(), table.clone())),
         _ => Err(rootcause::report!(
             "table names with more than three parts are not supported"
