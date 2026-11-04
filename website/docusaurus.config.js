@@ -28,7 +28,11 @@ const config = {
   deploymentBranch: 'main',
 
   onBrokenLinks: 'throw',
-  onBrokenMarkdownLinks: 'throw',
+  markdown: {
+    hooks: {
+      onBrokenMarkdownLinks: 'throw',
+    },
+  },
 
   trailingSlash: false,
 
@@ -115,15 +119,15 @@ const config = {
             items: [
               {
                 label: 'Getting Started',
-                to: '/docs/Getting%20Started/setup-local-env',
+                to: '/docs/get-started/quickstart-postgres',
               },
               {
                 label: 'Docs',
-                to: '/docs/Usage%20Docs/setup-meta-env',
+                to: '/docs/engine/overview',
               },
               {
                 label: 'Tutorials',
-                to: '/docs/Tutorials/consume-cdc-via-spark-streaming',
+                to: '/docs/connectors/spark/cdc-streaming',
               },
             ],
           },
@@ -181,7 +185,10 @@ const config = {
         ],
       },
     }),
-  plugins: ['./canvas-loader.js'],
+  plugins: [
+    './canvas-loader.js',
+    ['@docusaurus/plugin-client-redirects', {redirects: require('./redirects')}],
+  ],
 };
 
 module.exports = config;

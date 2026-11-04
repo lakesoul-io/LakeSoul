@@ -12,7 +12,7 @@ import LakeSoulLogo from '@site/static/img/LakeSoul_Horizontal_White.svg';
 import styles from './index.module.css';
 
 const GITHUB_URL = 'https://github.com/lakesoul-io/LakeSoul';
-const QUICKSTART_URL = '/docs/Getting%20Started/setup-local-env';
+const QUICKSTART_URL = '/docs/get-started/quickstart-postgres';
 
 const t = (id, message) => translate({id, message});
 
@@ -38,7 +38,7 @@ function Hero() {
             )}
           </p>
           <div className={styles.actions}>
-            <Link className={styles.primaryButton} to="/docs/intro">
+            <Link className={styles.primaryButton} to="/docs/get-started/what-is-lakesoul">
               {t('homepage.hero.ctaPrimary', 'Get started')}
             </Link>
             <Link className={styles.secondaryButton} href={GITHUB_URL}>
@@ -68,7 +68,7 @@ function Hero() {
 default=> CREATE TABLE orders (
 default(>   id bigint primary key,
 default(>   region text,
-default(>   amount numeric
+default(>   amount numeric(20,4)
 default(> );
 CREATE TABLE
 

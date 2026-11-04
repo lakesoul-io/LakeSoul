@@ -103,3 +103,10 @@
   line-height: 25px;
 }
 
+
+/* The site ships a single light theme. Paint the canvas explicitly so docs
+   pages stay readable regardless of the host page background. */
+html,
+body {
+  background-color: #ffffff;
+}

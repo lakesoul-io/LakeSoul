@@ -26,7 +26,7 @@ compute, vector search and a Python SDK, in Rust, over your object storage.
 Point the tools you already use at it — `psql`, Python, pgvector-style SQL — and
 get an incremental lakehouse underneath.
 
-[Quick Start](#quick-start) · [Architecture](#architecture) · [Docs](https://lakesoul-io.github.io/docs/intro)
+[Quick Start](#quick-start) · [Architecture](#architecture) · [Docs](https://lakesoul-io.github.io/docs/engine/overview)
 
 ## Postgres-native
 
@@ -38,7 +38,7 @@ sidecar, and not through a CDC pipeline.
 CREATE TABLE orders (
   id     bigint primary key,
   region text,
-  amount numeric
+  amount numeric(20,4)
 ) WITH (hash_bucket_num = 8);
 
 INSERT INTO orders VALUES (1, 'APAC', 42.00)
@@ -148,7 +148,7 @@ catalog = LakeSoulCatalog.from_env()
 print(catalog.scan("t").to_arrow_table().num_rows)
 ```
 
-See the [documentation](https://lakesoul-io.github.io/docs/intro) for object
+See the [documentation](https://lakesoul-io.github.io/docs/get-started/quickstart-postgres) for object
 storage configuration and the full local setup.
 
 ## Architecture

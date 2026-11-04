@@ -24,7 +24,7 @@ SPDX-License-Identifier: Apache-2.0
 
 把已经在用的工具接上来 —— `psql`、Python、pgvector 风格的 SQL —— 底下是一个增量湖仓。
 
-[快速开始](#快速开始) · [架构](#架构) · [文档](https://lakesoul-io.github.io/zh-Hans/docs/intro)
+[快速开始](#快速开始) · [架构](#架构) · [文档](https://lakesoul-io.github.io/zh-Hans/docs/engine/overview)
 
 ## Postgres 原生
 
@@ -34,7 +34,7 @@ SPDX-License-Identifier: Apache-2.0
 CREATE TABLE orders (
   id     bigint primary key,
   region text,
-  amount numeric
+  amount numeric(20,4)
 ) WITH (hash_bucket_num = 8);
 
 INSERT INTO orders VALUES (1, 'APAC', 42.00)
@@ -134,7 +134,7 @@ catalog = LakeSoulCatalog.from_env()
 print(catalog.scan("t").to_arrow_table().num_rows)
 ```
 
-对象存储配置与完整的本地环境搭建见[文档](https://lakesoul-io.github.io/zh-Hans/docs/intro)。
+对象存储配置与完整的本地环境搭建见[文档](https://lakesoul-io.github.io/zh-Hans/docs/get-started/quickstart-postgres)。
 
 ## 架构
 
