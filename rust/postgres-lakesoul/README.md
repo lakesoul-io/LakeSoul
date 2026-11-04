@@ -279,6 +279,22 @@ WITH (hash_bucket_num = 4);
 - `RETURNING` 暂不支持：sink 在语句末尾提交，没有行流可回填。
 - 源分析：规划前按 PostgreSQL 的语义检查源。显式列清单的表达式数与清单数不一致、无清单 `VALUES`／`SELECT` 比表宽时为 `42601`（`more expressions than target columns`），显式列清单比源宽时为 `42601`（`more target columns than expressions`）；无清单 `VALUES` 或 `SELECT` 比表窄时按 PG 默认值语义补 NULL（当前没有 `DEFAULT`，补的是 NULL）。无类型字面量与带类型表达式分开处理：`VALUES` 行与 `INSERT ... SELECT` 投影中的裸字面量都按目标列解析，字符串字面量做转换，失败为 `22P02`（`invalid input syntax for type ...`）；数字／布尔字面量、函数与 `CAST` 表达式、`SELECT` 投影中的列引用等带类型表达式按 PG assignment cast 矩阵检查，违反为 `42804`（`column "c" is of type X but expression is of type Y`）。矩阵覆盖数值族内部与数值→字符串、布尔→布尔／字符串、文本→文本、日期／时间戳族内部与→字符串、bytea→bytea／字符串；未列的源类型一律 `42804`。字符串长度溢出（`22001`）与 varchar(n)／char(n) 长度校验不在覆盖内；`SELECT` 投影含 `*` 通配符时无法从 AST 映射列位置，该用例回退到规划类型检查，不宣称与 PG 的未类型字面量规则完全等价。该分析不改变 `SELECT` 表达式转换：`SELECT 'abc'::int` 仍是已记录的 `XX000` 映射边界（见阶段二“错误映射”行）。upsert 语句内的重复主键仍未实现 `21000`。
 
+#### 分布式 INSERT
+
+配置 worker discovery 后，`INSERT ... SELECT` 使用与查询相同的自动 stage 划分；没有 worker 或进入显式本地 planning fallback 时走单机路径。分布式不改变上述 PG 冲突语义，也不表示每条语句都会并行：`VALUES`、全局聚合／LIMIT 等仍受现有 task placement 约束。
+
+```text
+源查询 → worker LakeSoulWriteExec → Arrow 文件报告
+                                     ↓
+          coordinator LakeSoulCommitExec → 一次元数据发布 → 索引维护 → INSERT 0 n
+```
+
+- worker 仅写文件，不连接 LakeSoul 元数据服务。主键已有键扫描在 coordinator 计划期捕获一次完整快照，作为嵌套物理计划随写节点下发，由每个 worker 独立流式校验；快照版本比较和发布只在 coordinator 执行。
+- 网络 hash 负责同键同 worker；worker 再排序并用 LakeSoul 原有 hash 生成持久化 bucket。不能把 DataFusion 网络分区号当作 LakeSoul bucket。写 task 数不要求等于 `hashBucketNum`：每个 task 可写多个持久化 bucket；多 task 文件名包含 task 后缀以避免覆盖。
+- worker 用报告保留唯一键／NOT NULL 的 typed 错误，由 coordinator 恢复 `23505`／`23502`；主键发布时输掉快照竞争仍为 `40001`。`n` 为所有成功文件报告的行数之和，Skip 只计实际插入行。
+- 任一报告流失败则不发布；coordinator drain 其余报告后清理本语句文件，并按 statement id 查找尚未报告的文件。健康 worker 的提交前取消同样清理；报告通道断开时由写任务停止所有 writer 后自行清理。worker／coordinator 进程崩溃仍可能留孤儿文件，由 GC 处理。提交结果不确定（连接中断）时只在主库按 commit id 判定是否已发布；查询失败按“可能已发布”保留文件。
+- 当前未发布协议保持 codec `2`／`lakesoul-distributed/2`。coordinator 与 worker 必须使用一致构建并一起更新重启；discovery 不能区分不同开发构建的 `/2`。
+
 ## 失败验收
 
 以下命令**应非零退出**，不是正常通过命令。`expectation` 故意改错预期（merge 使用旧值、catalog 使用 peer database 身份、vector 使用错误 ID、TPC-H 使用错误 q06 数值答案），`startup` 给真实二进制传入非法启动参数；均必须打印 cleanup proof。存储、catalog、vector 与 TPC-H target 的故障发生在全部 fixture 创建后，额外验证新增表／第二个 namespace／已提交索引元数据和文件也被回收；TPC-H 的双 worker 启动故障还验证 RPC 端口与 worker tasks 回收。

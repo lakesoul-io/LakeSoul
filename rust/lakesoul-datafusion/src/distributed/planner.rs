@@ -93,6 +93,30 @@ pub(crate) fn scan_task_budget(config: &SessionConfig) -> usize {
     }
 }
 
+/// Whether this planning attempt may put writes on workers. A local fallback
+/// retains the resolver in its config, but must never create remote writes.
+pub(crate) fn distributed_writes_enabled(config: &SessionConfig) -> bool {
+    config.get_extension::<LocalFallback>().is_none()
+        && get_distributed_worker_resolver(config)
+            .is_ok_and(|resolver| resolver.get_urls().is_ok_and(|urls| !urls.is_empty()))
+}
+
+/// Build one locally packed historical-key scan. Its captured plan is sent
+/// intact to each writer, not split again by the distributed stage planner.
+pub(crate) fn local_key_scan_session(session: &dyn Session) -> DFResult<SessionState> {
+    let mut state = session
+        .as_any()
+        .downcast_ref::<SessionState>()
+        .ok_or_else(|| {
+            DataFusionError::Internal(
+                "LakeSoul distributed writes require a SessionState".into(),
+            )
+        })?
+        .clone();
+    state.config_mut().set_extension(Arc::new(LocalFallback));
+    Ok(state)
+}
+
 /// Wraps the distributed [`QueryPlanner`] installed by
 /// `SessionStateBuilderExt::with_distributed_planner` and decides per query
 /// whether distributed execution is possible.
@@ -152,15 +176,14 @@ impl LakeSoulDistributedQueryPlanner {
     }
 }
 
-/// Describes the first scan leaf of a worker stage that no worker could
-/// receive.
+/// The first scan or write node a worker stage cannot receive.
 ///
 /// Only the plan below a network boundary is sent to a worker: the
 /// coordinator's own head stage runs in place, and a plan the distributed
 /// planner decided to keep single-node has no boundary at all. The walk
 /// therefore checks the children of every network boundary rather than the
 /// whole plan, so a leaf that stays on the coordinator is not a failure.
-fn unshippable_scan_leaf(plan: &Arc<dyn ExecutionPlan>) -> Option<String> {
+fn unshippable_stage(plan: &Arc<dyn ExecutionPlan>) -> Option<DataFusionError> {
     let mut found = None;
     plan.apply(|node| {
         if node.is_network_boundary() {
@@ -168,7 +191,7 @@ fn unshippable_scan_leaf(plan: &Arc<dyn ExecutionPlan>) -> Option<String> {
             // The boundary itself is encodable: a worker consumes another
             // stage's output through it, it does not execute it.
             for stage in node.children() {
-                if let Some(leaf) = unshippable_file_scan(stage) {
+                if let Some(leaf) = unshippable_node(stage) {
                     found = Some(leaf);
                     return Ok(TreeNodeRecursion::Stop);
                 }
@@ -180,7 +203,7 @@ fn unshippable_scan_leaf(plan: &Arc<dyn ExecutionPlan>) -> Option<String> {
     found
 }
 
-/// The first file scan of `stage` whose source has no wire form, if any.
+/// Preflight the scan and write nodes of one worker stage.
 ///
 /// The scan leaf of a distributed stage is a [`DistributedLeafExec`], which
 /// holds one variant per task and exposes none of them as a child, so its
@@ -188,33 +211,62 @@ fn unshippable_scan_leaf(plan: &Arc<dyn ExecutionPlan>) -> Option<String> {
 /// to its variant before sending it - are walked explicitly.
 ///
 /// Within a stage, `DataSourceExec`s over non-file sources (memory, …) are
-/// skipped - they serialize themselves and have no files to read - and a leaf
-/// below a `MergeParquetExec` (a primary-key work unit) is reached as well.
+/// skipped - they serialize themselves and have no files to read.
+///
+/// A `MergeParquetExec` is refused: its payload only described spans into the
+/// scan children it merges, and those children are the plan, which a worker
+/// does not have. A distributed stage plans its scans as metadata-only
+/// [`LakeSoulScanExec`] leaves and builds the merge on the worker instead.
 ///
 /// A metadata-only [`LakeSoulScanExec`] is an opaque leaf: its files are
 /// descriptors carried by [`crate::distributed::codec::LakeSoulScanCodec`],
 /// not a `FileSource` the `DataSourceExec` arm would see, so it is checked
 /// explicitly instead of being waved through as a plan node with no children.
-fn unshippable_file_scan(stage: &Arc<dyn ExecutionPlan>) -> Option<String> {
+fn unshippable_node(stage: &Arc<dyn ExecutionPlan>) -> Option<DataFusionError> {
     let mut pending = vec![Arc::clone(stage)];
     while let Some(node) = pending.pop() {
         if let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() {
             pending.extend(leaf.variants().iter().cloned());
             continue;
         }
+        if node.is::<lakesoul_io::physical_plan::MergeParquetExec>() {
+            return Some(DataFusionError::Plan(
+                "MergeParquetExec has no wire form: a distributed stage ships its scans as \
+                 metadata-only LakeSoulScanExec leaves and merges on the worker"
+                    .into(),
+            ));
+        }
         if let Some(exec) = node.downcast_ref::<LakeSoulScanExec>() {
             if !lazy_scan_has_wire_form(exec) {
-                return Some(describe_lazy_scan_leaf(exec));
+                return Some(unshippable_stage_error(&describe_lazy_scan_leaf(exec)));
             }
             // The node is a leaf and carries its own descriptors; its
             // predicate/pk-locator state is part of the same payload.
             continue;
         }
+        use crate::datasource::file_format::{LakeSoulCommitExec, LakeSoulWriteExec};
+        if node.is::<LakeSoulCommitExec>() {
+            return Some(DataFusionError::Plan(
+                "LakeSoulCommitExec must stay on the coordinator".into(),
+            ));
+        }
+        if node.is::<LakeSoulWriteExec>() {
+            use datafusion_proto::physical_plan::{
+                DefaultPhysicalProtoConverter, PhysicalExtensionCodec,
+            };
+            if let Err(error) = crate::distributed::codec::LakeSoulWriteCodec.try_encode(
+                Arc::clone(&node),
+                &mut Vec::new(),
+                &DefaultPhysicalProtoConverter {},
+            ) {
+                return Some(error);
+            }
+        }
         if let Some(exec) = node.downcast_ref::<DataSourceExec>()
             && let Some(config) = exec.data_source().downcast_ref::<FileScanConfig>()
             && !source_has_wire_form(config.file_source().as_ref())
         {
-            return Some(describe_scan_leaf(config));
+            return Some(unshippable_stage_error(&describe_scan_leaf(config)));
         }
         pending.extend(node.children().into_iter().cloned());
     }
@@ -318,8 +370,7 @@ impl QueryPlanner for LakeSoulDistributedQueryPlanner {
         // A stage no worker could decode is a planning failure, not an
         // execution failure: the coordinator only fails when it sends the
         // stage, and the user then sees a worker-side timeout instead.
-        if let Some(leaf) = unshippable_scan_leaf(&plan) {
-            let error = unshippable_stage_error(&leaf);
+        if let Some(error) = unshippable_stage(&plan) {
             if !self.fallback_to_local {
                 error!("{error}");
                 return Err(error);
@@ -686,16 +737,24 @@ mod tests {
         assert!(Arc::ptr_eq(&plan, &leaf), "the gate must keep the plan");
     }
 
-    /// The check walks a whole stage: a vortex leaf below the merge node of a
-    /// primary-key work unit is found - and shipped - too.
+    /// A `MergeParquetExec` stage is refused while planning: its payload only
+    /// described spans into the children it merges, so it has no wire form the
+    /// worker could decode. The refusal has to happen here, where
+    /// `fallback_to_local` can still act on it, instead of when the stage is
+    /// sent.
     #[tokio::test]
-    async fn vortex_leaf_below_a_merge_node_passes_the_gate() {
+    async fn a_merge_stage_is_refused() {
         let leaf = scan_leaf(PhysicalFormat::VortexCompact, "s3://bucket/t/a.vortex");
         let stage = stage(merge_over(vec![leaf]));
-        let plan = plan_through_gate(Arc::new(StubPlanner(Arc::clone(&stage))), false)
+        let error = plan_through_gate(Arc::new(StubPlanner(Arc::clone(&stage))), false)
             .await
-            .expect("a vortex leaf below a merge has a wire form");
-        assert!(Arc::ptr_eq(&plan, &stage), "the gate must keep the plan");
+            .expect_err("a merge stage has no wire form");
+        assert!(
+            error
+                .to_string()
+                .contains("MergeParquetExec has no wire form"),
+            "{error}"
+        );
     }
 
     /// A distributed stage hides the plan of each task inside a

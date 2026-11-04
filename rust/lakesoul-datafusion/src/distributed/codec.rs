@@ -5,13 +5,16 @@
 //! Physical-plan codec for LakeSoul-specific execution plan nodes.
 //!
 //! The distributed planner serializes every worker stage with
-//! [`datafusion_proto::physical_plan::PhysicalPlanNode`]. Standard DataFusion
+//! [`datafusion_proto::protobuf::PhysicalPlanNode`]. Standard DataFusion
 //! nodes (including `DataSourceExec` over `FileScanConfig` with
-//! `ParquetSource`) are handled by `datafusion-proto` itself; LakeSoul's
-//! [`MergeParquetExec`] is encoded by [`LakeSoulCodec`] and the metadata-only
-//! [`LakeSoulScanExec`] by [`LakeSoulScanCodec`], both composed after the
-//! distributed codec via `with_distributed_user_codec` on the coordinator and
-//! worker sessions.
+//! `ParquetSource`) are handled by `datafusion-proto` itself. The
+//! metadata-only [`LakeSoulScanExec`] is encoded by [`LakeSoulScanCodec`]
+//! and the INSERT nodes [`LakeSoulWriteExec`]/[`LakeSoulCommitExec`] by
+//! [`LakeSoulWriteCodec`], both composed after the distributed codec via
+//! `with_distributed_user_codec` on the coordinator and worker sessions. A
+//! [`MergeParquetExec`] has no wire form: its payload used to describe spans
+//! into the scan children it merges, so a stage that would have to ship one is
+//! refused while planning instead.
 //!
 //! A file scan whose source has no `try_to_proto` hook of its own crosses the
 //! wire through an extension codec instead. Vortex scans are such a source and
@@ -23,6 +26,14 @@
 //! units, the safe pre-merge predicate, the pk-locator constraint and the
 //! resolved read options. Decoding rebuilds the node without touching an
 //! object store; the first consumed stream initializes the current unit.
+//!
+//! The write half of an INSERT crosses the wire as [`LakeSoulWriteExec`], the
+//! file-writing node, and is carried by [`LakeSoulWriteCodec`]. A keyed write
+//! also carries its insert-only state, including the complete captured
+//! existing-key scan as a nested plan, so a worker validates keys itself. Its sibling
+//! [`LakeSoulCommitExec`] publishes the statement with the metadata client,
+//! the plan-time snapshot, and the object-store credentials, so it is
+//! coordinator-only and this codec refuses to encode it.
 //!
 //! The composition order *is* the wire format: `datafusion-proto` stamps each
 //! extension payload with the position of the codec that wrote it and the
@@ -42,28 +53,36 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::Result as DFResult;
 use datafusion::common::{exec_err, internal_err};
 use datafusion::datasource::physical_plan::{FileSource, ParquetSource};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
+use datafusion::physical_expr::{LexRequirement, PhysicalSortRequirement};
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion_proto::physical_plan::{
-    ComposedPhysicalExtensionCodec, PhysicalExtensionCodec, PhysicalPlanDecodeContext,
-    PhysicalProtoConverterExtension,
+    AsExecutionPlan, ComposedPhysicalExtensionCodec, PhysicalExtensionCodec,
+    PhysicalPlanDecodeContext, PhysicalProtoConverterExtension,
 };
+use datafusion_proto::protobuf::PhysicalPlanNode;
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::file_format::{PhysicalFormat, vortex_scan_session};
-use lakesoul_io::physical_plan::merge::MergeWorkUnit;
 use lakesoul_io::physical_plan::{
-    LakeSoulScanConfig, LakeSoulScanExec, MergeParquetExec, ScanFile, ScanWorkUnit,
+    LakeSoulScanConfig, LakeSoulScanExec, ScanFile, ScanWorkUnit,
 };
 use lakesoul_io::pk_locator::{Key, KeyConstraint, KeyValue};
+use lakesoul_metadata_proto::entity::TableInfo;
 use prost::Message as _;
+use rootcause::compat::boxed_error::IntoBoxedError;
 use vortex_datafusion::{VortexScanCodec, VortexSource};
 
-/// Wire-format version of the LakeSoul extension payloads.
+use crate::datasource::file_format::{InsertOnly, LakeSoulCommitExec, LakeSoulWriteExec};
+use crate::write_mode::ConflictMode;
+
+/// Wire-format version of the LakeSoul extension payloads
+/// ([`LakeSoulScanExecProto`] and [`LakeSoulWriteExecProto`]).
 ///
 /// The encoder stamps it into every plan and the decoder refuses any other
 /// value. Bump it for incompatible changes to a released encoding, together
@@ -74,53 +93,14 @@ use vortex_datafusion::{VortexScanCodec, VortexSource};
 /// The generation also covers the *list* of codecs (see [`user_codecs`]): its
 /// order decides which codec reads an extension payload, so registering a
 /// codec a worker does not know is a protocol change even when no existing
-/// message layout moved. Generation 2 adds [`VortexScanCodec`] at position 2
-/// and [`LakeSoulScanCodec`] at position 3, including its optional scan limit.
-/// Both ride the first versioned generation because neither payload has been
-/// released on its own; split them the moment one ships alone.
+/// message layout moved. Generation 2 registers [`VortexScanCodec`] at position
+/// 1, [`LakeSoulScanCodec`] at position 2 and [`LakeSoulWriteCodec`] at
+/// position 3; all of them ride the first versioned generation because no
+/// payload has been released on its own. Split them the moment one ships alone.
+/// The merge-on-read payload that `/1` implied lost its codec, which is the same
+/// kind of list change: it kept the generation number only because `/2` was
+/// never released either.
 pub const CODEC_VERSION: u32 = 2;
-
-/// Wire format for [`MergeParquetExec`].
-///
-/// Children are re-attached by the codec driver. Work units retain their
-/// spans into those children, files, constants, and output lanes; primary keys,
-/// merge operators, and the `options` map carrying the `is_compacted` /
-/// `skip_merge_on_read` flags remain exec-wide.
-/// Object-store credentials are not part of the format; see the module docs.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MergeParquetExecProto {
-    #[prost(message, optional, tag = "1")]
-    pub schema: Option<datafusion_proto::protobuf::Schema>,
-    #[prost(string, repeated, tag = "2")]
-    pub primary_keys: Vec<String>,
-    #[prost(map = "string, string", tag = "3")]
-    pub merge_operators: HashMap<String, String>,
-    #[prost(message, repeated, tag = "4")]
-    pub work_units: Vec<MergeWorkUnitProto>,
-    #[prost(uint64, tag = "5")]
-    pub partition_count: u64,
-    #[prost(map = "string, string", tag = "6")]
-    pub options: HashMap<String, String>,
-    /// [`CODEC_VERSION`] of the encoder; appended rather than numbered first so
-    /// the layout stays additively evolvable.
-    #[prost(uint32, tag = "7")]
-    pub codec_version: u32,
-}
-
-/// A merge work unit's child span and lane-local execution state.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MergeWorkUnitProto {
-    #[prost(uint64, tag = "1")]
-    pub input_start: u64,
-    #[prost(uint64, tag = "2")]
-    pub input_end: u64,
-    #[prost(string, repeated, tag = "3")]
-    pub files: Vec<String>,
-    #[prost(map = "string, string", tag = "4")]
-    pub default_column_value: HashMap<String, String>,
-    #[prost(uint64, tag = "5")]
-    pub lane: u64,
-}
 
 /// Wire format for the metadata-only [`LakeSoulScanExec`].
 ///
@@ -268,17 +248,134 @@ pub mod key_value_proto {
     }
 }
 
-/// [`PhysicalExtensionCodec`] for LakeSoul execution plan nodes.
+/// Wire format for [`LakeSoulWriteExec`], the worker-side half of an INSERT.
+///
+/// Everything execution needs from the coordinator travels here: the table
+/// metadata, the statement id stamped into this statement's file names, the
+/// table's required input ordering, whether a worker task sorts and coalesces
+/// its share locally, and the insert-only validation state when the statement
+/// rejects or skips conflicting keys. The write's input is always input child 0
+/// and only child 0; the insert-only state embeds the complete captured
+/// existing-key scan as a nested physical plan, so every worker streams the
+/// whole history independently instead of joining a shared broadcast subtree.
+///
+/// Not encoded, by design:
+///
+/// - the metadata client, the plan-time snapshot, and the object-store
+///   credentials of [`LakeSoulCommitExec`], which stays on the coordinator:
+///   a worker validates against the embedded scan and never publishes, so the
+///   snapshot exists only in the commit node that captured it;
+/// - IO-config `object_store_options`: workers read storage credentials from
+///   their own environment, exactly like the scan codecs (see the module docs);
+/// - a statement's `attempted_files` registry: each task starts its own, and a
+///   failed distributed statement is cleaned up by the coordinator from the
+///   `write_id` prefix of the files it never committed.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LakeSoulWriteExecProto {
+    /// Prost-encoded [`TableInfo`]; the table's schema, partitions, properties,
+    /// table path and identity. It carries no credentials.
+    #[prost(bytes = "vec", tag = "1")]
+    pub table_info: Vec<u8>,
+    /// Statement id shared by every task of the statement; becomes part of
+    /// every written file name, so decoding validates it.
+    #[prost(string, tag = "2")]
+    pub write_id: String,
+    /// The table's required input ordering, empty when it has none.
+    #[prost(message, repeated, tag = "3")]
+    pub sort_order: Vec<WriteSortRequirementProto>,
+    /// [`CODEC_VERSION`] of the encoder; appended rather than numbered first so
+    /// the layout stays additively evolvable.
+    #[prost(uint32, tag = "4")]
+    pub codec_version: u32,
+    /// Whether this worker stage sorts and coalesces its share of the input
+    /// before routing rows to LakeSoul's persisted buckets.
+    #[prost(bool, tag = "5")]
+    pub task_partitioning: bool,
+    /// Existing-key validation state; present exactly when the write validates
+    /// keys. Its scan is embedded in the payload, never an input child.
+    #[prost(message, optional, tag = "6")]
+    pub insert_only: Option<WriteInsertOnlyProto>,
+}
+
+/// Wire format for the insert-only validation state of a [`LakeSoulWriteExec`].
+///
+/// The key schema travels as a protobuf [`Schema`](datafusion_proto::protobuf::Schema)
+/// because validation casts both sides of the comparison with it. The conflict
+/// mode is an enum with explicit values: an unknown value is refused at decode
+/// rather than silently falling back to reject or skip. The existing-key scan is
+/// a nested [`PhysicalPlanNode`](datafusion_proto::protobuf::PhysicalPlanNode)
+/// encoded with the same composed codec as the stage itself: the worker
+/// decodes and executes the complete captured scan locally, so it needs no
+/// second input child and no shared broadcast/replay state.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WriteInsertOnlyProto {
+    /// Range columns followed by primary-key columns, in stored types.
+    #[prost(message, optional, tag = "1")]
+    pub key_schema: Option<datafusion_proto::protobuf::Schema>,
+    /// [`WriteConflictModeProto`] of the statement.
+    #[prost(enumeration = "WriteConflictModeProto", tag = "2")]
+    pub conflict_mode: i32,
+    /// Qualified table name used by the violation message.
+    #[prost(string, tag = "3")]
+    pub table_name: String,
+    /// Complete captured existing-key scan, encoded as a
+    /// [`PhysicalPlanNode`](datafusion_proto::protobuf::PhysicalPlanNode)
+    /// with the production composed codec.
+    #[prost(bytes = "vec", tag = "4")]
+    pub existing_keys: Vec<u8>,
+}
+
+/// How an insert-only statement handles a conflicting key.
+///
+/// The wire values are explicit and stable; decoding refuses anything else.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration,
+)]
+#[repr(i32)]
+pub enum WriteConflictModeProto {
+    /// Fail the statement on the first conflicting key (`INSERT`).
+    Reject = 0,
+    /// Drop conflicting rows from the statement (`ON CONFLICT DO NOTHING`).
+    Skip = 1,
+}
+
+/// One required input ordering entry of [`LakeSoulWriteExec`].
+///
+/// A [`PhysicalSortRequirement`] may leave the sort options unspecified ("no
+/// constraint"), which `PhysicalSortExprNode` cannot express, so both options
+/// are optional here and must be present or absent together.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WriteSortRequirementProto {
+    #[prost(message, optional, tag = "1")]
+    pub expr: Option<datafusion_proto::protobuf::PhysicalExprNode>,
+    #[prost(bool, optional, tag = "2")]
+    pub ascending: Option<bool>,
+    #[prost(bool, optional, tag = "3")]
+    pub nulls_first: Option<bool>,
+}
+
+/// [`PhysicalExtensionCodec`] for [`LakeSoulWriteExec`], the worker-side write
+/// node of an INSERT.
+///
+/// Kept separate from [`LakeSoulScanCodec`] rather than folded into it: the
+/// position in [`user_codecs`] is the dispatch key, and each codec only has to
+/// recognise its own node. Encoding refuses [`LakeSoulCommitExec`]
+/// explicitly — that node holds the metadata client and the coordinator's
+/// credentials and must never reach a worker.
 #[derive(Debug, Clone, Default)]
-pub struct LakeSoulCodec;
+pub struct LakeSoulWriteCodec;
+
+/// Longest accepted statement id. The coordinator generates a 16-character
+/// alphanumeric id; the cap only keeps a tampered plan from inflating a path.
+const MAX_WRITE_ID_LEN: usize = 64;
 
 /// The user codecs a distributed session registers, in registration order.
 ///
 /// The coordinator's planner and every worker build their codec list from this
 /// one function so the positions an extension payload refers to cannot drift:
-/// position 0 is always the distributed codec itself, position 1
-/// [`LakeSoulCodec`] (merge-on-read stages), position 2 the vortex scan codec,
-/// position 3 [`LakeSoulScanCodec`] (metadata-only lazy scans). A worker that
+/// position 0 is always the distributed codec itself, position 1 the vortex
+/// scan codec, position 2 [`LakeSoulScanCodec`] (metadata-only lazy scans) and
+/// position 3 [`LakeSoulWriteCodec`] (distributed write stages). A worker that
 /// registers a different list either fails to decode a stage or would hand a
 /// payload to the wrong codec, so the list is part of the wire generation
 /// ([`CODEC_VERSION`]).
@@ -288,9 +385,9 @@ pub struct LakeSoulCodec;
 /// rebuilt worker-side scan decodes files exactly like the coordinator's.
 pub fn user_codecs() -> Vec<Arc<dyn PhysicalExtensionCodec>> {
     vec![
-        Arc::new(LakeSoulCodec),
         Arc::new(VortexScanCodec::new(vortex_scan_session())),
         Arc::new(LakeSoulScanCodec),
+        Arc::new(LakeSoulWriteCodec),
     ]
 }
 
@@ -341,139 +438,6 @@ fn physical_format_has_worker_reader(format: PhysicalFormat) -> bool {
     match format {
         PhysicalFormat::Parquet => true,
         PhysicalFormat::Vortex | PhysicalFormat::VortexCompact => true,
-    }
-}
-
-impl LakeSoulCodec {
-    fn proto_from_merge_exec(exec: &MergeParquetExec) -> MergeParquetExecProto {
-        MergeParquetExecProto {
-            codec_version: CODEC_VERSION,
-            schema: Some(
-                exec.schema()
-                    .as_ref()
-                    .try_into()
-                    .expect("encode schema to protobuf should succeed"),
-            ),
-            primary_keys: exec.primary_keys().to_vec(),
-            merge_operators: exec
-                .merge_operators()
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-            work_units: exec
-                .work_units()
-                .iter()
-                .map(|unit| MergeWorkUnitProto {
-                    input_start: unit.input_range.start as u64,
-                    input_end: unit.input_range.end as u64,
-                    files: unit.files.clone(),
-                    default_column_value: unit.default_column_value.as_ref().clone(),
-                    lane: unit.lane as u64,
-                })
-                .collect(),
-            partition_count: exec.output_partitioning().partition_count() as u64,
-            options: exec
-                .io_config()
-                .options()
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-        }
-    }
-}
-
-impl PhysicalExtensionCodec for LakeSoulCodec {
-    fn try_decode(
-        &self,
-        buf: &[u8],
-        inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
-        _proto_converter: &dyn PhysicalProtoConverterExtension,
-    ) -> DFResult<Arc<dyn ExecutionPlan>> {
-        let proto = MergeParquetExecProto::decode(buf).map_err(|err| {
-            DataFusionError::Internal(format!("decode MergeParquetExec: {err}"))
-        })?;
-        // Fail loudly instead of guessing: a plan from another build may use a
-        // different encoding for the same fields.
-        if proto.codec_version != CODEC_VERSION {
-            return Err(DataFusionError::Internal(format!(
-                "MergeParquetExec plan encoded with codec version {} but this build \
-                 speaks {CODEC_VERSION}: coordinator and workers must run compatible \
-                 LakeSoul builds",
-                proto.codec_version
-            )));
-        }
-        let schema: SchemaRef = Arc::new(
-            proto
-                .schema
-                .as_ref()
-                .ok_or_else(|| {
-                    DataFusionError::Internal(
-                        "MergeParquetExecProto is missing schema".into(),
-                    )
-                })?
-                .try_into()?,
-        );
-
-        let mut builder =
-            LakeSoulIOConfigBuilder::new().with_primary_keys(proto.primary_keys.clone());
-        for (key, value) in &proto.options {
-            builder = builder.with_option(key, value);
-        }
-        for (field, op) in &proto.merge_operators {
-            builder = builder.with_merge_op(field.clone(), op.clone());
-        }
-        let decode_index = |value: u64, field: &str| {
-            usize::try_from(value).map_err(|_| {
-                DataFusionError::Internal(format!(
-                    "MergeParquetExecProto {field} exceeds this platform's index range"
-                ))
-            })
-        };
-        let partition_count = decode_index(proto.partition_count, "partition_count")?;
-        let work_units = proto
-            .work_units
-            .into_iter()
-            .map(|unit| {
-                Ok(MergeWorkUnit {
-                    input_range: decode_index(unit.input_start, "input_start")?
-                        ..decode_index(unit.input_end, "input_end")?,
-                    files: unit.files,
-                    default_column_value: Arc::new(unit.default_column_value),
-                    lane: decode_index(unit.lane, "lane")?,
-                })
-            })
-            .collect::<DFResult<Vec<_>>>()?;
-
-        let exec = MergeParquetExec::from_parts(
-            schema,
-            Arc::new(proto.primary_keys),
-            Arc::new(proto.merge_operators),
-            inputs.to_vec(),
-            builder.build(),
-            work_units,
-            partition_count,
-        )?;
-        Ok(Arc::new(exec))
-    }
-
-    fn try_encode(
-        &self,
-        node: Arc<dyn ExecutionPlan>,
-        buf: &mut Vec<u8>,
-        _proto_converter: &dyn PhysicalProtoConverterExtension,
-    ) -> DFResult<()> {
-        // Must not succeed for foreign nodes: the composed codec picks the
-        // first encoder that returns `Ok`.
-        let Some(exec) = node.downcast_ref::<MergeParquetExec>() else {
-            return exec_err!("LakeSoulCodec cannot encode {}", node.name());
-        };
-        let proto = Self::proto_from_merge_exec(exec);
-        buf.reserve(proto.encoded_len());
-        proto.encode(buf).map_err(|err| {
-            DataFusionError::Internal(format!("encode MergeParquetExec: {err}"))
-        })?;
-        Ok(())
     }
 }
 
@@ -856,6 +820,277 @@ impl PhysicalExtensionCodec for LakeSoulScanCodec {
     }
 }
 
+impl LakeSoulWriteCodec {
+    fn proto_from_write_exec(
+        exec: &LakeSoulWriteExec,
+        codec: &dyn PhysicalExtensionCodec,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> DFResult<LakeSoulWriteExecProto> {
+        // Expressions are encoded through `codec` because the extension hook
+        // does not receive the composed codec. LakeSoul's order requirements
+        // are columns (a write's required input ordering cannot be an
+        // extension expression), and anything else fails here, at encode time,
+        // where the planner's fallback policy can still act on it.
+        let sort_order = match exec.sort_order() {
+            Some(requirements) => requirements
+                .iter()
+                .map(|requirement| -> DFResult<WriteSortRequirementProto> {
+                    let expr = proto_converter
+                        .physical_expr_to_proto(&requirement.expr, codec)?;
+                    Ok(WriteSortRequirementProto {
+                        expr: Some(expr),
+                        ascending: requirement.options.map(|options| !options.descending),
+                        nulls_first: requirement
+                            .options
+                            .map(|options| options.nulls_first),
+                    })
+                })
+                .collect::<DFResult<Vec<_>>>()?,
+            None => Vec::new(),
+        };
+        let insert_only = match exec.insert_only() {
+            Some(insert) => Some(WriteInsertOnlyProto {
+                key_schema: Some(insert.key_schema.as_ref().try_into().map_err(
+                    |err| {
+                        DataFusionError::Internal(format!(
+                            "encode LakeSoulWriteExec insert_only.key_schema: {err}"
+                        ))
+                    },
+                )?),
+                conflict_mode: conflict_mode_to_proto(insert.conflict_mode) as i32,
+                table_name: insert.table_name.clone(),
+                // The nested plan is encoded with the composed codec, the same
+                // one a worker decodes stages with, so its scans rebuild there.
+                existing_keys: PhysicalPlanNode::try_from_physical_plan(
+                    Arc::clone(&insert.existing_keys),
+                    &composed_codec(),
+                )
+                .map_err(|err| {
+                    DataFusionError::Internal(format!(
+                        "encode LakeSoulWriteExec insert_only.existing_keys: {err}"
+                    ))
+                })?
+                .encode_to_vec(),
+            }),
+            None => None,
+        };
+        Ok(LakeSoulWriteExecProto {
+            table_info: exec.table_info().encode_to_vec(),
+            write_id: exec.write_id().to_string(),
+            sort_order,
+            codec_version: CODEC_VERSION,
+            task_partitioning: exec.task_partitioning(),
+            insert_only,
+        })
+    }
+
+    /// Validate a statement id decoded from the wire.
+    ///
+    /// The id becomes part of every file name this task writes, so anything
+    /// outside ASCII alphanumerics (`/`, `.`, `\`) could move a file outside
+    /// the table directory. The coordinator only ever generates alphanumerics.
+    fn validate_write_id(write_id: &str) -> DFResult<()> {
+        if write_id.is_empty()
+            || write_id.len() > MAX_WRITE_ID_LEN
+            || !write_id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        {
+            return Err(DataFusionError::Internal(format!(
+                "LakeSoulWriteExecProto carries invalid write_id {write_id:?}: it becomes part \
+                 of the written file names, so it must be 1..={MAX_WRITE_ID_LEN} ASCII \
+                 alphanumeric characters"
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn conflict_mode_to_proto(mode: ConflictMode) -> WriteConflictModeProto {
+    match mode {
+        ConflictMode::Reject => WriteConflictModeProto::Reject,
+        ConflictMode::Skip => WriteConflictModeProto::Skip,
+    }
+}
+
+/// Refuse an unknown conflict-mode value instead of defaulting: the two modes
+/// disagree about whether a statement may succeed, so guessing could turn a
+/// rejected INSERT into a silent partial load.
+fn conflict_mode_from_proto(value: i32) -> DFResult<ConflictMode> {
+    let mode = WriteConflictModeProto::try_from(value).map_err(|_| {
+        DataFusionError::Internal(format!(
+            "LakeSoulWriteExecProto insert_only.conflict_mode {value} is not a known \
+             conflict mode (reject = 0, skip = 1): coordinator and workers must run \
+             compatible LakeSoul builds"
+        ))
+    })?;
+    Ok(match mode {
+        WriteConflictModeProto::Reject => ConflictMode::Reject,
+        WriteConflictModeProto::Skip => ConflictMode::Skip,
+    })
+}
+
+impl PhysicalExtensionCodec for LakeSoulWriteCodec {
+    fn try_decode(
+        &self,
+        buf: &[u8],
+        inputs: &[Arc<dyn ExecutionPlan>],
+        ctx: &TaskContext,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        let proto = LakeSoulWriteExecProto::decode(buf).map_err(|err| {
+            DataFusionError::Internal(format!("decode LakeSoulWriteExec: {err}"))
+        })?;
+        // Fail loudly instead of guessing: a plan from another build may use a
+        // different encoding for the same fields.
+        if proto.codec_version != CODEC_VERSION {
+            return Err(DataFusionError::Internal(format!(
+                "LakeSoulWriteExec plan encoded with codec version {} but this build \
+                 speaks {CODEC_VERSION}: coordinator and workers must run compatible \
+                 LakeSoul builds",
+                proto.codec_version
+            )));
+        }
+        // Child 0 is the write's input and the only child, insert-only or not;
+        // the historical scan travels inside the payload. A plan with any other
+        // shape would silently drop or misbind part of the source tree.
+        let [input] = inputs else {
+            return Err(DataFusionError::Internal(format!(
+                "LakeSoulWriteExecProto expects exactly one input child, got {}",
+                inputs.len()
+            )));
+        };
+        Self::validate_write_id(&proto.write_id)?;
+
+        let table_info =
+            TableInfo::decode(proto.table_info.as_slice()).map_err(|err| {
+                DataFusionError::Internal(format!(
+                    "decode LakeSoulWriteExec table_info: {err}"
+                ))
+            })?;
+        // Without a table path every written file name would be relative.
+        if table_info.table_path.is_empty() {
+            return Err(DataFusionError::Internal(
+                "LakeSoulWriteExecProto is missing table_info.table_path".into(),
+            ));
+        }
+        let table_info = Arc::new(table_info);
+
+        let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
+        let mut sort_order = Vec::with_capacity(proto.sort_order.len());
+        for requirement in proto.sort_order {
+            let expr = requirement.expr.ok_or_else(|| {
+                DataFusionError::Internal(
+                    "LakeSoulWriteExecProto sort requirement is missing its expression"
+                        .into(),
+                )
+            })?;
+            let expr = proto_converter.proto_to_physical_expr(
+                &expr,
+                input.schema().as_ref(),
+                &decode_ctx,
+            )?;
+            let options = match (requirement.ascending, requirement.nulls_first) {
+                (Some(ascending), Some(nulls_first)) => Some(SortOptions {
+                    descending: !ascending,
+                    nulls_first,
+                }),
+                // "No constraint on the sort direction" is a distinct state,
+                // so half-specified options are malformed rather than defaulted.
+                (None, None) => None,
+                _ => {
+                    return Err(DataFusionError::Internal(
+                        "LakeSoulWriteExecProto sort requirement must carry both or \
+                         neither of ascending and nulls_first"
+                            .into(),
+                    ));
+                }
+            };
+            sort_order.push(PhysicalSortRequirement { expr, options });
+        }
+
+        let insert_only = match proto.insert_only {
+            Some(insert) => {
+                let key_schema: SchemaRef = Arc::new(
+                    insert
+                        .key_schema
+                        .as_ref()
+                        .ok_or_else(|| {
+                            DataFusionError::Internal(
+                                "LakeSoulWriteExecProto insert_only is missing key_schema"
+                                    .into(),
+                            )
+                        })?
+                        .try_into()?,
+                );
+                let conflict_mode = conflict_mode_from_proto(insert.conflict_mode)?;
+                // The nested plan was encoded with the composed codec, so it
+                // rebuilds exactly like a stage: every worker streams the whole
+                // captured scan locally.
+                let existing_keys = PhysicalPlanNode::try_decode(
+                    insert.existing_keys.as_slice(),
+                )
+                .and_then(|node| node.try_into_physical_plan(ctx, &composed_codec()))
+                .map_err(|err| {
+                    DataFusionError::Internal(format!(
+                        "decode LakeSoulWriteExec insert_only.existing_keys: {err}"
+                    ))
+                })?;
+                Some(InsertOnly {
+                    existing_keys,
+                    key_schema,
+                    conflict_mode,
+                    table_name: insert.table_name,
+                })
+            }
+            None => None,
+        };
+        let exec = LakeSoulWriteExec::try_new(
+            Arc::clone(input),
+            LexRequirement::new(sort_order),
+            table_info,
+            proto.write_id,
+        )
+        .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+        let exec = match insert_only {
+            Some(insert_only) => exec.with_insert_only(insert_only),
+            None => exec,
+        };
+        let exec = if proto.task_partitioning {
+            exec.with_task_partitioning()
+        } else {
+            exec
+        };
+        Ok(Arc::new(exec))
+    }
+
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> DFResult<()> {
+        // The commit node holds the metadata client, the plan-time snapshot,
+        // and the object-store credentials. Shipping it would publish a
+        // statement from every task independently, so refuse it by name.
+        if node.downcast_ref::<LakeSoulCommitExec>().is_some() {
+            return exec_err!(
+                "LakeSoulCommitExec is coordinator-only and cannot be encoded for a \
+                 worker: only LakeSoulWriteExec crosses the wire"
+            );
+        }
+        // Must not succeed for foreign nodes: the composed codec picks the
+        // first encoder that returns `Ok`.
+        let Some(exec) = node.downcast_ref::<LakeSoulWriteExec>() else {
+            return exec_err!("LakeSoulWriteCodec cannot encode {}", node.name());
+        };
+        let proto = Self::proto_from_write_exec(exec, self, proto_converter)?;
+        buf.reserve(proto.encoded_len());
+        proto.encode(buf).map_err(|err| {
+            DataFusionError::Internal(format!("encode LakeSoulWriteExec: {err}"))
+        })?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod roundtrip {
     //! Encode/decode helper mirroring the coordinator↔worker codec list.
@@ -886,12 +1121,15 @@ mod tests {
     use super::*;
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::datatypes::SchemaRef;
+    use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::datasource::physical_plan::{
         FileGroup, FileScanConfig, FileScanConfigBuilder, ParquetSource,
     };
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::datasource::table_schema::TableSchema;
+    use datafusion::execution::SessionStateBuilder;
     use datafusion::execution::object_store::ObjectStoreUrl;
+    use datafusion::physical_expr::expressions::col;
     use datafusion::physical_expr::utils::collect_columns;
     use datafusion_datasource::PartitionedFile;
     use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
@@ -900,45 +1138,9 @@ mod tests {
     use lakesoul_io::file_format::{
         LakeSoulFormatRegistry, PhysicalFormat, append_only_scan_exec,
     };
-    fn merge_exec(inputs: Vec<Arc<dyn ExecutionPlan>>) -> MergeParquetExec {
-        let work_units = vec![MergeWorkUnit {
-            input_range: 0..inputs.len(),
-            files: vec!["s3://bucket/t/file-0.parquet".to_string()],
-            default_column_value: Arc::new(HashMap::from([(
-                "part".to_string(),
-                "p0".to_string(),
-            )])),
-            lane: 0,
-        }];
-        merge_exec_with_work_units(inputs, work_units, 1)
-    }
+    use lakesoul_io::writer::async_writer::WriteInvariants;
 
-    fn merge_exec_with_work_units(
-        inputs: Vec<Arc<dyn ExecutionPlan>>,
-        work_units: Vec<MergeWorkUnit>,
-        partition_count: usize,
-    ) -> MergeParquetExec {
-        let schema: SchemaRef = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("name", DataType::Utf8, true),
-        ]));
-        let io_config = LakeSoulIOConfigBuilder::new()
-            .with_primary_keys(vec!["id".to_string()])
-            .with_merge_op("name".to_string(), "UseLast".to_string())
-            .with_option(OPTION_KEY_IS_COMPACTED.to_string(), "true".to_string())
-            .build();
-        MergeParquetExec::from_parts(
-            schema,
-            Arc::new(vec!["id".to_string()]),
-            Arc::new(HashMap::from([("name".to_string(), "UseLast".to_string())])),
-            inputs,
-            io_config,
-            work_units,
-            partition_count,
-        )
-        .expect("valid merge work units")
-    }
-
+    use crate::write_mode::WriteViolation;
     fn parquet_input(path: &str) -> Arc<dyn ExecutionPlan> {
         let file_schema: SchemaRef =
             Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
@@ -1096,174 +1298,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn encode_requires_merge_exec() {
-        let other: Arc<dyn ExecutionPlan> = Arc::new(
-            datafusion::physical_plan::empty::EmptyExec::new(Arc::new(Schema::empty())),
-        );
+    /// The payload of a metadata-only scan, the format every generation test
+    /// mutates. Encoding it is the coordinator side; the assertions below only
+    /// touch the envelope the version lives in.
+    fn encoded_lazy_scan() -> Vec<u8> {
+        let exec = lazy_scan(PhysicalFormat::Parquet);
         let mut buf = Vec::new();
-        assert!(
-            LakeSoulCodec
-                .try_encode(other, &mut buf, &DefaultPhysicalProtoConverter {})
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn merge_exec_roundtrip() {
-        let exec = merge_exec(vec![parquet_input("s3://bucket/t/a.parquet")]);
-        let decoded = roundtrip(Arc::new(exec)).unwrap();
-        assert_eq!(decoded.name(), "MergeParquetExec");
-
-        let merge = decoded.downcast_ref::<MergeParquetExec>().unwrap();
-        assert_eq!(merge.primary_keys(), Arc::new(vec!["id".to_string()]));
-        assert_eq!(
-            merge.merge_operators().get("name").map(String::as_str),
-            Some("UseLast")
-        );
-        assert_eq!(
-            merge.work_units()[0]
-                .default_column_value
-                .get("part")
-                .map(String::as_str),
-            Some("p0")
-        );
-        assert!(merge.io_config().is_compacted());
-        assert_eq!(
-            merge.work_units()[0].files,
-            ["s3://bucket/t/file-0.parquet"]
-        );
-        assert_eq!(merge.work_units()[0].input_range, 0..1);
-        assert_eq!(merge.work_units()[0].lane, 0);
-        assert_eq!(merge.output_partitioning().partition_count(), 1);
-        assert!(merge.output_ordering().is_none());
-        assert_eq!(merge.schema(), decoded.schema());
-        assert_eq!(merge.children().len(), 1);
-        assert_eq!(merge.children()[0].name(), "DataSourceExec");
-    }
-
-    #[test]
-    fn merge_exec_multiple_children_roundtrip() {
-        let exec = merge_exec(vec![
-            parquet_input("s3://bucket/t/a.parquet"),
-            parquet_input("s3://bucket/t/b.parquet"),
-        ]);
-        let decoded = roundtrip(Arc::new(exec)).unwrap();
-        let merge = decoded.downcast_ref::<MergeParquetExec>().unwrap();
-        assert_eq!(merge.children().len(), 2);
-    }
-
-    #[test]
-    fn merge_exec_multiple_work_units_and_lanes_roundtrip() {
-        let work_units = vec![
-            MergeWorkUnit {
-                input_range: 0..2,
-                files: vec![
-                    "s3://bucket/t/first-base.parquet".to_string(),
-                    "s3://bucket/t/first-delta.parquet".to_string(),
-                ],
-                default_column_value: Arc::new(HashMap::from([(
-                    "part".to_string(),
-                    "first".to_string(),
-                )])),
-                lane: 1,
-            },
-            MergeWorkUnit {
-                input_range: 2..3,
-                files: vec!["s3://bucket/t/second.parquet".to_string()],
-                default_column_value: Arc::new(HashMap::from([(
-                    "part".to_string(),
-                    "second".to_string(),
-                )])),
-                lane: 0,
-            },
-            MergeWorkUnit {
-                input_range: 3..4,
-                files: vec!["s3://bucket/t/third.parquet".to_string()],
-                default_column_value: Arc::new(HashMap::from([(
-                    "part".to_string(),
-                    "third".to_string(),
-                )])),
-                lane: 1,
-            },
-        ];
-        let exec = merge_exec_with_work_units(
-            vec![
-                parquet_input("s3://bucket/t/first-base.parquet"),
-                parquet_input("s3://bucket/t/first-delta.parquet"),
-                parquet_input("s3://bucket/t/second.parquet"),
-                parquet_input("s3://bucket/t/third.parquet"),
-            ],
-            work_units.clone(),
-            2,
-        );
-        let schema = exec.schema();
-        let decoded = roundtrip(Arc::new(exec)).unwrap();
-        let merge = decoded.downcast_ref::<MergeParquetExec>().unwrap();
-
-        assert_eq!(merge.work_units(), work_units.as_slice());
-        assert_eq!(merge.output_partitioning().partition_count(), 2);
-        assert!(merge.output_ordering().is_none());
-        assert_eq!(merge.schema(), schema);
-        assert_eq!(merge.children().len(), 4);
-        assert!(
-            merge
-                .children()
-                .iter()
-                .all(|child| child.name() == "DataSourceExec")
-        );
-        assert!(merge.io_config().is_compacted());
-    }
-
-    #[test]
-    fn decode_rejects_malformed_work_units_and_partition_counts() {
-        let inputs = vec![
-            parquet_input("s3://bucket/t/a.parquet"),
-            parquet_input("s3://bucket/t/b.parquet"),
-        ];
-        let valid = LakeSoulCodec::proto_from_merge_exec(&merge_exec(inputs.clone()));
-        let mut cases = Vec::new();
-
-        let mut proto = valid.clone();
-        proto.work_units[0].input_start = 1;
-        cases.push(("gap before first span", proto));
-        let mut proto = valid.clone();
-        proto.work_units[0].input_start = 2;
-        proto.work_units[0].input_end = 1;
-        cases.push(("reversed span", proto));
-        let mut proto = valid.clone();
-        proto.work_units[0].input_end = 3;
-        cases.push(("span past children", proto));
-        let mut proto = valid.clone();
-        proto.work_units[0].input_end = 1;
-        cases.push(("uncovered child", proto));
-        let mut proto = valid.clone();
-        proto.work_units.push(proto.work_units[0].clone());
-        cases.push(("overlapping spans", proto));
-        let mut proto = valid.clone();
-        proto.work_units.clear();
-        cases.push(("missing work units", proto));
-        let mut proto = valid.clone();
-        proto.partition_count = 0;
-        cases.push(("zero partition count", proto));
-        let mut proto = valid;
-        proto.work_units[0].lane = proto.partition_count;
-        cases.push(("lane outside partition count", proto));
-
-        for (case, proto) in cases {
-            let result = LakeSoulCodec.try_decode(
-                &proto.encode_to_vec(),
-                &inputs,
-                &TaskContext::default(),
-                &DefaultPhysicalProtoConverter {},
-            );
-            assert!(result.is_err(), "{case} must fail decoding");
-        }
+        LakeSoulScanCodec
+            .try_encode(exec, &mut buf, &DefaultPhysicalProtoConverter {})
+            .expect("a metadata-only scan encodes");
+        buf
     }
 
     #[test]
     fn decode_rejects_garbage() {
-        let err = LakeSoulCodec
+        let err = LakeSoulScanCodec
             .try_decode(
                 &[0xff, 0xff],
                 &[],
@@ -1277,7 +1326,8 @@ mod tests {
     /// Every encoded plan carries the codec version it was written with.
     #[test]
     fn encode_stamps_the_codec_version() {
-        let proto = LakeSoulCodec::proto_from_merge_exec(&merge_exec(vec![]));
+        let proto = LakeSoulScanExecProto::decode(encoded_lazy_scan().as_slice())
+            .expect("a scan payload decodes");
         assert_eq!(proto.codec_version, CODEC_VERSION);
     }
 
@@ -1285,10 +1335,11 @@ mod tests {
     /// with the wrong field interpretation.
     #[test]
     fn decode_rejects_other_codec_versions() {
-        let mut proto = LakeSoulCodec::proto_from_merge_exec(&merge_exec(vec![]));
+        let mut proto = LakeSoulScanExecProto::decode(encoded_lazy_scan().as_slice())
+            .expect("a scan payload decodes");
         proto.codec_version = CODEC_VERSION + 1;
         let bytes = proto.encode_to_vec();
-        let err = LakeSoulCodec
+        let err = LakeSoulScanCodec
             .try_decode(
                 &bytes,
                 &[],
@@ -1314,9 +1365,11 @@ mod tests {
             "the versioned format is a new protocol generation"
         );
 
-        let mut unversioned = LakeSoulCodec::proto_from_merge_exec(&merge_exec(vec![]));
+        let mut unversioned =
+            LakeSoulScanExecProto::decode(encoded_lazy_scan().as_slice())
+                .expect("a scan payload decodes");
         unversioned.codec_version = 0;
-        let err = LakeSoulCodec
+        let err = LakeSoulScanCodec
             .try_decode(
                 &unversioned.encode_to_vec(),
                 &[],
@@ -1338,53 +1391,6 @@ mod tests {
             CODEC_VERSION,
             "bump DISTRIBUTED_PROTOCOL_VERSION together with CODEC_VERSION ({protocol})"
         );
-    }
-
-    /// Object-store credentials live in `object_store_options`, which the wire
-    /// format deliberately omits: workers read them from their own
-    /// environment, so a plan must never carry them.
-    #[test]
-    fn encoded_plan_carries_no_object_store_credentials() {
-        let io_config = LakeSoulIOConfigBuilder::new()
-            .with_files(vec!["s3://bucket/t/file-0.parquet"])
-            .with_primary_keys(vec!["id".to_string()])
-            .with_object_store_option("fs.s3a.access.key", "ACCESS-KEY-SENTINEL")
-            .with_object_store_option("fs.s3a.secret.key", "SECRET-KEY-SENTINEL")
-            .with_object_store_option("fs.s3a.endpoint", "https://s3.invalid:9000")
-            .with_option(OPTION_KEY_IS_COMPACTED.to_string(), "true".to_string())
-            .build();
-        let work_units = vec![MergeWorkUnit {
-            input_range: 0..0,
-            files: io_config.files_slice().to_vec(),
-            default_column_value: Arc::new(HashMap::new()),
-            lane: 0,
-        }];
-        let exec = MergeParquetExec::from_parts(
-            Arc::new(Schema::new(vec![
-                Field::new("id", DataType::Int32, false),
-                Field::new("name", DataType::Utf8, true),
-            ])),
-            Arc::new(vec!["id".to_string()]),
-            Arc::new(HashMap::new()),
-            vec![],
-            io_config,
-            work_units,
-            1,
-        )
-        .expect("valid credential-omission fixture");
-
-        let mut buf = Vec::new();
-        LakeSoulCodec
-            .try_encode(Arc::new(exec), &mut buf, &DefaultPhysicalProtoConverter {})
-            .expect("encode");
-        let encoded = String::from_utf8_lossy(&buf);
-
-        // Positive control: the plan does carry what execution needs, so the
-        // assertions below cannot pass vacuously.
-        assert!(encoded.contains("bucket/t/file-0.parquet"), "{encoded}");
-        for secret in ["ACCESS-KEY-SENTINEL", "SECRET-KEY-SENTINEL", "s3.invalid"] {
-            assert!(!encoded.contains(secret), "plan leaked {secret}: {encoded}");
-        }
     }
 
     /// A metadata-only scan of `format` with two work units on three lanes:
@@ -1854,6 +1860,616 @@ mod tests {
         assert!(encoded.contains("bucket/t/file-0.parquet"), "{encoded}");
         for secret in ["ACCESS-KEY-SENTINEL", "SECRET-KEY-SENTINEL", "s3.invalid"] {
             assert!(!encoded.contains(secret), "plan leaked {secret}: {encoded}");
+        }
+    }
+
+    /// A table whose stored schema is the one-field `id: Int32 NOT NULL` the
+    /// write fixtures feed, with no partitions.
+    fn write_table_info() -> Arc<TableInfo> {
+        Arc::new(TableInfo {
+            table_id: "write-codec-table".to_string(),
+            table_namespace: "default".to_string(),
+            table_name: "write_codec".to_string(),
+            table_path: "file:///tmp/write-codec/".to_string(),
+            table_schema: r#"{"fields":[{"name":"id","nullable":false,"type":{"name":"int","isSigned":true,"bitWidth":32}}]}"#.to_string(),
+            properties: "{}".to_string(),
+            partitions: ";".to_string(),
+            ..Default::default()
+        })
+    }
+
+    fn write_exec(
+        write_id: &str,
+        sort_order: Option<LexRequirement>,
+    ) -> Arc<dyn ExecutionPlan> {
+        Arc::new(
+            LakeSoulWriteExec::try_new(
+                parquet_input("s3://bucket/t/a.parquet"),
+                sort_order,
+                write_table_info(),
+                write_id.to_string(),
+            )
+            .expect("valid write fixture"),
+        )
+    }
+
+    fn write_proto(write_id: &str) -> LakeSoulWriteExecProto {
+        LakeSoulWriteExecProto {
+            table_info: write_table_info().encode_to_vec(),
+            write_id: write_id.to_string(),
+            sort_order: Vec::new(),
+            codec_version: CODEC_VERSION,
+            task_partitioning: false,
+            insert_only: None,
+        }
+    }
+
+    /// The range-column-then-PK key schema of the one-key fixtures.
+    fn key_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]))
+    }
+
+    fn key_schema_proto() -> datafusion_proto::protobuf::Schema {
+        key_schema()
+            .as_ref()
+            .try_into()
+            .expect("encode key schema to protobuf")
+    }
+
+    /// Encode a scan the way the write codec embeds the historical key scan.
+    fn nested_scan_bytes(exec: Arc<dyn ExecutionPlan>) -> Vec<u8> {
+        PhysicalPlanNode::try_from_physical_plan(exec, &composed_codec())
+            .expect("nested scan encodes")
+            .encode_to_vec()
+    }
+
+    fn insert_only_proto(
+        mode: WriteConflictModeProto,
+        key_schema: Option<datafusion_proto::protobuf::Schema>,
+        table_name: &str,
+    ) -> WriteInsertOnlyProto {
+        WriteInsertOnlyProto {
+            key_schema,
+            conflict_mode: mode as i32,
+            table_name: table_name.to_string(),
+            existing_keys: nested_scan_bytes(parquet_input(
+                "s3://bucket/t/existing.parquet",
+            )),
+        }
+    }
+
+    /// A write plan whose statement validates keys against `existing_keys`.
+    fn keyed_write(
+        existing_keys: Arc<dyn ExecutionPlan>,
+        conflict_mode: ConflictMode,
+    ) -> LakeSoulWriteExec {
+        LakeSoulWriteExec::try_new(
+            parquet_input("s3://bucket/t/input.parquet"),
+            None,
+            write_table_info(),
+            "keyedwrite000001".to_string(),
+        )
+        .expect("valid write fixture")
+        .with_insert_only(InsertOnly {
+            existing_keys,
+            key_schema: key_schema(),
+            conflict_mode,
+            table_name: "default.write_codec".to_string(),
+        })
+    }
+
+    /// A single-partition in-memory input, so a decoded write task can run its
+    /// key validation without object storage.
+    fn memory_input(batches: Vec<RecordBatch>) -> Arc<dyn ExecutionPlan> {
+        let schema = batches[0].schema();
+        datafusion_datasource::memory::MemorySourceConfig::try_new_exec(
+            &[batches],
+            schema,
+            None,
+        )
+        .expect("valid memory input")
+    }
+
+    fn id_batch(ids: &[i32]) -> RecordBatch {
+        RecordBatch::try_new(
+            key_schema(),
+            vec![Arc::new(arrow::array::Int32Array::from(ids.to_vec()))],
+        )
+        .expect("valid id batch")
+    }
+
+    fn id_sort_requirement(options: Option<SortOptions>) -> LexRequirement {
+        let schema = Schema::new(vec![Field::new("id", DataType::Int32, false)]);
+        LexRequirement::new(vec![PhysicalSortRequirement {
+            expr: col("id", &schema).expect("column expression"),
+            options,
+        }])
+        .expect("non-empty ordering")
+    }
+
+    /// The statement id is what the coordinator uses to name and, on failure,
+    /// to clean up a distributed statement's files, so it must survive the
+    /// wire unchanged together with the table it writes into.
+    #[test]
+    fn write_exec_roundtrips_with_its_statement_id() {
+        let decoded = roundtrip(write_exec("statement0000001", None)).unwrap();
+
+        assert_eq!(decoded.name(), "LakeSoulWriteExec");
+        let write = decoded
+            .downcast_ref::<LakeSoulWriteExec>()
+            .expect("a write stage decodes as LakeSoulWriteExec");
+        assert_eq!(write.write_id(), "statement0000001");
+        assert_eq!(write.table_info().table_id, "write-codec-table");
+        assert_eq!(write.table_info().table_path, "file:///tmp/write-codec/");
+        assert!(write.sort_order().is_none());
+        assert_eq!(decoded.children().len(), 1);
+    }
+
+    /// A required input ordering decides `required_input_ordering` of the
+    /// rebuilt node; losing it would let the optimizer reorder a PK writer's
+    /// input on the worker.
+    #[test]
+    fn write_exec_sort_order_roundtrips() {
+        let sort_order = id_sort_requirement(Some(SortOptions {
+            descending: true,
+            nulls_first: false,
+        }));
+        let decoded =
+            roundtrip(write_exec("sortedstatement01", Some(sort_order))).unwrap();
+        let write = decoded.downcast_ref::<LakeSoulWriteExec>().unwrap();
+
+        let order = write.sort_order().as_ref().expect("ordering preserved");
+        assert_eq!(order.len(), 1);
+        assert_eq!(
+            order[0].options,
+            Some(SortOptions {
+                descending: true,
+                nulls_first: false,
+            })
+        );
+        let column = order[0]
+            .expr
+            .downcast_ref::<datafusion::physical_expr::expressions::Column>()
+            .expect("the requirement is a column");
+        assert_eq!((column.name(), column.index()), ("id", 0));
+        assert!(decoded.required_input_ordering()[0].is_some());
+    }
+
+    /// "No constraint on the sort direction" is not the same as ascending
+    /// nulls-first, so it needs its own wire representation.
+    #[test]
+    fn write_exec_unconstrained_sort_options_stay_unconstrained() {
+        let decoded = roundtrip(write_exec(
+            "unconstrained001",
+            Some(id_sort_requirement(None)),
+        ))
+        .unwrap();
+        let write = decoded.downcast_ref::<LakeSoulWriteExec>().unwrap();
+        let order = write.sort_order().as_ref().expect("ordering preserved");
+        assert_eq!(order.len(), 1);
+        assert_eq!(order[0].options, None);
+    }
+
+    #[test]
+    fn write_codec_encode_requires_write_exec() {
+        let other: Arc<dyn ExecutionPlan> = Arc::new(
+            datafusion::physical_plan::empty::EmptyExec::new(Arc::new(Schema::empty())),
+        );
+        let mut buf = Vec::new();
+        assert!(
+            LakeSoulWriteCodec
+                .try_encode(other, &mut buf, &DefaultPhysicalProtoConverter {})
+                .is_err()
+        );
+    }
+
+    /// A write stage's input is a LakeSoul merge/scan tree, so the two
+    /// LakeSoul codecs have to compose on one wire payload: the write codec
+    /// carries the write, position 1 carries the child it re-attaches.
+    #[test]
+    fn write_exec_roundtrips_over_a_scan_child() {
+        let table_info = Arc::new(TableInfo {
+            table_path: "file:///tmp/write-codec/".to_string(),
+            table_schema: r#"{"fields":[{"name":"id","nullable":false,"type":{"name":"int","isSigned":true,"bitWidth":32}},{"name":"name","nullable":true,"type":{"name":"utf8"}}]}"#.to_string(),
+            partitions: ";".to_string(),
+            ..Default::default()
+        });
+        // The production shape: a write over the metadata-only scan the
+        // coordinator ships, so the child is carried by its own codec.
+        let input_schema: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let config = LakeSoulScanConfig {
+            table_schema: Arc::clone(&input_schema),
+            output_schema: Arc::clone(&input_schema),
+            partition_schema: Arc::new(Schema::empty()),
+            io_config: LakeSoulIOConfigBuilder::new()
+                .with_primary_keys(vec!["id".to_string()])
+                .build(),
+            predicate: None,
+            key_constraint: None,
+            parquet_force_view_types: false,
+            read_options: HashMap::new(),
+            limit: None,
+            min_index_rows: lakesoul_io::pk_locator::MIN_INDEX_ROWS,
+        };
+        let units = vec![ScanWorkUnit {
+            files: vec![ScanFile {
+                path: "s3://bucket/t/input.parquet".to_string(),
+                size: Some(1024),
+                physical_format: PhysicalFormat::Parquet,
+                range: None,
+            }],
+            default_column_value: HashMap::new(),
+            lane: 0,
+        }];
+        let child: Arc<dyn ExecutionPlan> = Arc::new(
+            LakeSoulScanExec::try_new(config, units, 1)
+                .expect("a valid metadata-only scan"),
+        );
+        let write = LakeSoulWriteExec::try_new(
+            child,
+            None,
+            table_info,
+            "nestedwrite00001".to_string(),
+        )
+        .expect("valid nested write fixture");
+
+        let decoded = roundtrip(Arc::new(write)).unwrap();
+        let write = decoded.downcast_ref::<LakeSoulWriteExec>().unwrap();
+        assert_eq!(write.write_id(), "nestedwrite00001");
+        assert_eq!(decoded.children().len(), 1);
+        let scan = decoded.children()[0]
+            .downcast_ref::<LakeSoulScanExec>()
+            .expect("the scan child survives the wire");
+        assert_eq!(scan.work_units().len(), 1, "the child's unit survives");
+    }
+
+    /// A keyed write is encodable end to end: the decoded worker task keeps the
+    /// statement's conflict transition and the flag that makes it sort its own
+    /// share, instead of falling back to a coordinator-only plan.
+    #[test]
+    fn write_exec_insert_only_roundtrips_as_a_worker_stage() {
+        for mode in [ConflictMode::Reject, ConflictMode::Skip] {
+            let write =
+                keyed_write(parquet_input("s3://bucket/t/existing.parquet"), mode)
+                    .with_task_partitioning();
+
+            let decoded = roundtrip(Arc::new(write)).unwrap();
+            let write = decoded.downcast_ref::<LakeSoulWriteExec>().unwrap();
+            assert!(write.task_partitioning());
+            assert_eq!(
+                write
+                    .insert_only()
+                    .expect("validation state preserved")
+                    .conflict_mode,
+                mode
+            );
+        }
+    }
+
+    /// The embedded historical scan is a physical plan; a malformed payload
+    /// must fail at decode instead of producing a worker task that cannot
+    /// validate keys.
+    #[test]
+    fn write_exec_decode_rejects_a_malformed_existing_key_scan() {
+        let inputs = vec![parquet_input("s3://bucket/t/a.parquet")];
+        for existing_keys in [Vec::new(), vec![0xff, 0xff]] {
+            let mut insert = insert_only_proto(
+                WriteConflictModeProto::Reject,
+                Some(key_schema_proto()),
+                "default.write_codec",
+            );
+            insert.existing_keys = existing_keys;
+            let mut proto = write_proto("keyedwrite000001");
+            proto.insert_only = Some(insert);
+            let err = LakeSoulWriteCodec
+                .try_decode(
+                    &proto.encode_to_vec(),
+                    &inputs,
+                    &TaskContext::default(),
+                    &DefaultPhysicalProtoConverter {},
+                )
+                .unwrap_err();
+            assert!(err.to_string().contains("existing_keys"), "{err}");
+        }
+    }
+
+    /// An unknown conflict-mode value must fail loudly: defaulting to reject
+    /// or skip would change whether the statement may succeed.
+    #[test]
+    fn write_exec_decode_rejects_unknown_conflict_modes() {
+        let inputs = vec![parquet_input("s3://bucket/t/a.parquet")];
+        for value in [-1, 2, 7] {
+            let mut insert = insert_only_proto(
+                WriteConflictModeProto::Reject,
+                Some(key_schema_proto()),
+                "default.write_codec",
+            );
+            insert.conflict_mode = value;
+            let mut proto = write_proto("keyedwrite000001");
+            proto.insert_only = Some(insert);
+            let err = LakeSoulWriteCodec
+                .try_decode(
+                    &proto.encode_to_vec(),
+                    &inputs,
+                    &TaskContext::default(),
+                    &DefaultPhysicalProtoConverter {},
+                )
+                .unwrap_err();
+            let message = err.to_string();
+            assert!(matches!(err, DataFusionError::Internal(_)), "{message}");
+            assert!(message.contains("conflict mode"), "{message}");
+        }
+    }
+
+    /// The key schema types the key comparison; a missing one cannot be
+    /// defaulted from the input because a write may project a subset.
+    #[test]
+    fn write_exec_decode_rejects_missing_key_schema() {
+        let inputs = vec![parquet_input("s3://bucket/t/a.parquet")];
+        let mut proto = write_proto("keyedwrite000001");
+        proto.insert_only = Some(insert_only_proto(
+            WriteConflictModeProto::Reject,
+            None,
+            "default.write_codec",
+        ));
+        let err = LakeSoulWriteCodec
+            .try_decode(
+                &proto.encode_to_vec(),
+                &inputs,
+                &TaskContext::default(),
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("key_schema"), "{err}");
+    }
+
+    fn decoded_keyed_write(
+        mode: WriteConflictModeProto,
+        input: Vec<RecordBatch>,
+        existing: Vec<RecordBatch>,
+    ) -> Arc<dyn ExecutionPlan> {
+        let input = memory_input(input);
+        let mut proto = write_proto("keyedwrite000001");
+        proto.insert_only = Some(insert_only_proto(
+            mode,
+            Some(key_schema_proto()),
+            "default.write_codec",
+        ));
+        proto
+            .insert_only
+            .as_mut()
+            .expect("insert-only state")
+            .existing_keys = nested_scan_bytes(memory_input(existing));
+        LakeSoulWriteCodec
+            .try_decode(
+                &proto.encode_to_vec(),
+                &[input],
+                &SessionStateBuilder::new_with_default_features()
+                    .build()
+                    .task_ctx(),
+                &DefaultPhysicalProtoConverter {},
+            )
+            .expect("a keyed write payload decodes")
+    }
+
+    fn write_invariants() -> WriteInvariants {
+        WriteInvariants::try_new(key_schema().as_ref(), key_schema().as_ref())
+            .expect("matching schemas")
+    }
+
+    /// Reject mode fails a worker task on a duplicate key inside the statement
+    /// and on a key already present in the historical scan embedded in the
+    /// payload, with the statement's qualified table name.
+    #[tokio::test]
+    async fn insert_only_reject_mode_fails_a_conflicting_key_on_a_worker() {
+        let table = "default.write_codec".to_string();
+        for (input, existing, expected) in [
+            (
+                vec![id_batch(&[1, 1])],
+                vec![id_batch(&[])],
+                WriteViolation::DuplicateKey {
+                    table: table.clone(),
+                },
+            ),
+            (
+                vec![id_batch(&[1])],
+                vec![id_batch(&[1])],
+                WriteViolation::ExistingKey {
+                    table: table.clone(),
+                },
+            ),
+        ] {
+            let decoded =
+                decoded_keyed_write(WriteConflictModeProto::Reject, input, existing);
+            let write = decoded
+                .downcast_ref::<LakeSoulWriteExec>()
+                .expect("decodes as LakeSoulWriteExec");
+            let insert = write.insert_only().expect("validation state decoded");
+            let err = insert
+                .validate(
+                    Arc::clone(write.input()),
+                    SessionStateBuilder::new_with_default_features()
+                        .build()
+                        .task_ctx(),
+                    &write_invariants(),
+                )
+                .await
+                .err()
+                .expect("a conflicting key fails validation");
+            let DataFusionError::External(inner) = err.find_root() else {
+                panic!("expected a typed write violation, got {err}");
+            };
+            assert_eq!(
+                inner.as_ref().downcast_ref::<WriteViolation>(),
+                Some(&expected)
+            );
+        }
+    }
+
+    /// Skip mode drops both a duplicate row inside the statement and a row
+    /// whose key is already committed, leaving only the rows to insert.
+    #[tokio::test]
+    async fn insert_only_skip_mode_drops_conflicting_rows_on_a_worker() {
+        let decoded = decoded_keyed_write(
+            WriteConflictModeProto::Skip,
+            vec![id_batch(&[1, 2, 2, 3])],
+            vec![id_batch(&[3])],
+        );
+        let write = decoded
+            .downcast_ref::<LakeSoulWriteExec>()
+            .expect("decodes as LakeSoulWriteExec");
+        let insert = write.insert_only().expect("validation state decoded");
+        let streams = insert
+            .validate(
+                Arc::clone(write.input()),
+                SessionStateBuilder::new_with_default_features()
+                    .build()
+                    .task_ctx(),
+                &write_invariants(),
+            )
+            .await
+            .expect("skip mode filters instead of failing");
+        let mut rows = 0;
+        for stream in streams {
+            let batches = datafusion::physical_plan::common::collect(stream)
+                .await
+                .expect("stream collects");
+            rows += batches.iter().map(|batch| batch.num_rows()).sum::<usize>();
+        }
+        assert_eq!(rows, 2, "only keys 1 and 2 (first occurrence) remain");
+    }
+
+    /// The write node is defined against exactly one input, insert-only or not;
+    /// a payload with a different child count would drop or misbind part of
+    /// the source tree.
+    #[test]
+    fn write_exec_decode_requires_exactly_one_child() {
+        let mut keyed = write_proto("keyedwrite000001");
+        keyed.insert_only = Some(insert_only_proto(
+            WriteConflictModeProto::Reject,
+            Some(key_schema_proto()),
+            "default.write_codec",
+        ));
+        for bytes in [
+            write_proto("statement0000001").encode_to_vec(),
+            keyed.encode_to_vec(),
+        ] {
+            for inputs in [
+                vec![],
+                vec![
+                    parquet_input("s3://bucket/t/a.parquet"),
+                    parquet_input("s3://bucket/t/b.parquet"),
+                ],
+            ] {
+                let err = LakeSoulWriteCodec
+                    .try_decode(
+                        &bytes,
+                        &inputs,
+                        &TaskContext::default(),
+                        &DefaultPhysicalProtoConverter {},
+                    )
+                    .unwrap_err();
+                assert!(err.to_string().contains("input child"), "{err}");
+            }
+        }
+    }
+
+    /// The statement id becomes part of every file name, so a tampered plan
+    /// must not be able to steer writes outside the table directory.
+    #[test]
+    fn write_exec_decode_rejects_unsafe_statement_ids() {
+        let inputs = vec![parquet_input("s3://bucket/t/a.parquet")];
+        let too_long = "a".repeat(MAX_WRITE_ID_LEN + 1);
+        for write_id in ["", "..", "a/b", "a b", "a.b", "a_b", too_long.as_str()] {
+            let bytes = write_proto(write_id).encode_to_vec();
+            let err = LakeSoulWriteCodec
+                .try_decode(
+                    &bytes,
+                    &inputs,
+                    &TaskContext::default(),
+                    &DefaultPhysicalProtoConverter {},
+                )
+                .unwrap_err();
+            assert!(err.to_string().contains("write_id"), "{write_id:?}: {err}");
+        }
+    }
+
+    /// Without a table path the writer would build relative file names.
+    #[test]
+    fn write_exec_decode_rejects_a_table_without_path() {
+        let inputs = vec![parquet_input("s3://bucket/t/a.parquet")];
+        let mut table_info = (*write_table_info()).clone();
+        table_info.table_path.clear();
+        let mut proto = write_proto("statement0000001");
+        proto.table_info = table_info.encode_to_vec();
+
+        let err = LakeSoulWriteCodec
+            .try_decode(
+                &proto.encode_to_vec(),
+                &inputs,
+                &TaskContext::default(),
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("table_path"), "{err}");
+    }
+
+    /// A plan from an incompatible build is refused instead of being decoded
+    /// with the wrong field interpretation.
+    #[test]
+    fn write_exec_decode_rejects_other_codec_versions() {
+        let inputs = vec![parquet_input("s3://bucket/t/a.parquet")];
+        for version in [0, CODEC_VERSION + 1] {
+            let mut proto = write_proto("statement0000001");
+            proto.codec_version = version;
+            let err = LakeSoulWriteCodec
+                .try_decode(
+                    &proto.encode_to_vec(),
+                    &inputs,
+                    &TaskContext::default(),
+                    &DefaultPhysicalProtoConverter {},
+                )
+                .unwrap_err();
+            let message = err.to_string();
+            assert!(matches!(err, DataFusionError::Internal(_)), "{message}");
+            assert!(message.contains("codec version"), "{message}");
+        }
+    }
+
+    #[test]
+    fn write_exec_decode_rejects_garbage() {
+        let err = LakeSoulWriteCodec
+            .try_decode(
+                &[0xff, 0xff],
+                &[],
+                &TaskContext::default(),
+                &DefaultPhysicalProtoConverter {},
+            )
+            .unwrap_err();
+        assert!(matches!(err, DataFusionError::Internal(_)));
+    }
+
+    /// The write plan has no IO-config field: object-store credentials stay in
+    /// the workers' environment, and the table metadata that does cross the
+    /// wire must not carry the commit node's options either.
+    #[test]
+    fn write_plan_carries_only_its_own_configuration() {
+        let exec = write_exec("statement0000001", None);
+        let mut buf = Vec::new();
+        LakeSoulWriteCodec
+            .try_encode(exec, &mut buf, &DefaultPhysicalProtoConverter {})
+            .expect("encode");
+        let encoded = String::from_utf8_lossy(&buf);
+
+        // Positive control: the table path and statement id are what execution
+        // needs, so the assertions below cannot pass vacuously.
+        assert!(encoded.contains("file:///tmp/write-codec/"), "{encoded}");
+        assert!(encoded.contains("statement0000001"), "{encoded}");
+        for absent in ["ACCESS-KEY-SENTINEL", "SECRET-KEY-SENTINEL", "s3.invalid"] {
+            assert!(!encoded.contains(absent), "plan leaked {absent}: {encoded}");
         }
     }
 }

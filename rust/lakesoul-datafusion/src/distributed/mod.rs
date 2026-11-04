@@ -78,7 +78,6 @@ pub mod resolver;
 mod trace_context;
 pub mod worker;
 
-pub use codec::LakeSoulCodec;
 pub use planner::LakeSoulDistributedQueryPlanner;
 pub use resolver::{
     KubernetesDiscovery, StaticWorkerResolver, WorkerDiscovery, WorkerSnapshot,
@@ -100,13 +99,15 @@ pub use resolver::{
 ///
 /// `/2` is the current generation and the first one versioned on the wire: it
 /// carries the explicit [`codec::CODEC_VERSION`] field and registers the vortex
-/// scan codec at position 2 and the metadata-only scan codec at position 3 of
-/// [`codec::user_codecs`]. All of it is one generation because none of those
-/// formats has ever been released — a `/2` worker from this tree resolves every
-/// codec position a coordinator from it can stamp. Split them the moment one of
-/// them ships on its own: extension payloads name the *position* of the codec
-/// that wrote them, so a coordinator that can stamp position 3 needs workers
-/// that resolve it.
+/// scan codec at position 1, the metadata-only scan codec at position 2 and the
+/// write codec at position 3 of [`codec::user_codecs`]. All of it is one
+/// generation because none of those formats has ever been released — a `/2`
+/// worker from this tree resolves every codec position a coordinator from it can
+/// stamp. Split them the moment one of them ships on its own: extension payloads
+/// name the *position* of the codec that wrote them, so a coordinator that can
+/// stamp position 3 needs workers that resolve it. The merge-on-read payload
+/// `/1` implied no longer has a codec at all: a `MergeParquetExec` stage is
+/// refused while planning instead of being shipped.
 ///
 /// Advertising `/2` filters `/1` workers out at discovery and closes the other
 /// direction at decode time.

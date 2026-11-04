@@ -975,6 +975,52 @@ async fn piece_capacity_counts_the_reachable_halvings() {
     }
 }
 
+/// A descriptor whose size the metadata did not record cannot be range-split,
+/// so it contributes exactly one piece. That is why the desired-task-count
+/// handler asks for one task per file in that case: it is the finest split the
+/// splitter can honour, and it never asks for a task that would read nothing.
+#[test]
+fn an_unknown_size_file_contributes_exactly_one_piece() {
+    let schema = id_schema();
+    for files in [1usize, 4] {
+        let units: Vec<ScanWorkUnit> = (0..files)
+            .map(|index| {
+                unit(
+                    vec![scan_file(
+                        &format!(
+                            "file:///lakesoul-split-tests/unknown/part-{index}.parquet"
+                        ),
+                        None,
+                        None,
+                    )],
+                    index,
+                )
+            })
+            .collect();
+        let node = LakeSoulScanExec::try_new(
+            append_only_config(Arc::clone(&schema), Arc::new(Schema::empty())),
+            units,
+            files,
+        )
+        .expect("an unknown size is a legal descriptor");
+        assert_eq!(
+            node.splittable_task_limit(),
+            Some(files),
+            "each size-less file is one piece"
+        );
+        let tasks = node
+            .split_into_tasks(files)
+            .expect("split into the estimated count");
+        assert_eq!(tasks.len(), files);
+        let pieces: usize = tasks
+            .iter()
+            .flat_map(|task| task.work_units().iter())
+            .flat_map(|unit| unit.files.iter())
+            .count();
+        assert_eq!(pieces, files, "the estimate has to be reachable");
+    }
+}
+
 #[tokio::test]
 async fn a_huge_file_stops_at_the_piece_cap() {
     let schema = id_schema();

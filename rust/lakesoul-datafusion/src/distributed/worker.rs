@@ -12,16 +12,15 @@
 //!
 //! - the [`RuntimeEnv`] with the S3/HDFS/local warehouse object store
 //!   registered (same URL prefix and options as the coordinator);
-//! - the same user codecs as the coordinator ([`user_codecs`]): LakeSoul's own
-//!   node codec for [`MergeParquetExec`] stages and the vortex scan codec, so
-//!   both parquet and vortex stages decode;
+//! - the same user codecs as the coordinator ([`user_codecs`]): the node codecs
+//!   for metadata-only scans and distributed writes, plus the vortex scan codec,
+//!   so every payload the coordinator can stamp has a decoder here;
 //! - the LakeSoul UDFs, so pushed-down physical expressions resolve.
 //!
 //! The advertised protocol version pins coordinator↔worker compatibility:
 //! see [`crate::distributed::DISTRIBUTED_PROTOCOL_VERSION`].
 //!
 //! [`user_codecs`]: crate::distributed::codec::user_codecs
-//! [`MergeParquetExec`]: lakesoul_io::physical_plan::MergeParquetExec
 
 use std::sync::Arc;
 

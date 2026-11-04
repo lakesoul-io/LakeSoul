@@ -292,8 +292,9 @@ type CatalogDecorator =
 /// `Maximum(1)` wins over the scans' `Desired(N)` during task-count
 /// reconciliation, for both the union and the no-union (single node) plan
 /// shape; parallelism across merge nodes and across local bucket lanes is
-/// preserved. Legacy [`MergeParquetExec`] stages from independent callers are
-/// pinned the same way.
+/// preserved. A [`MergeParquetExec`] built by an independent caller has no wire
+/// form any more, so it can only run where the coordinator executes it; it is
+/// still pinned the same way.
 fn merge_work_unit_single_task(
     ev: DesiredTaskCountEvent<'_>,
 ) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
@@ -303,6 +304,27 @@ fn merge_work_unit_single_task(
             .downcast_ref::<LakeSoulScanExec>()
             .is_some_and(|scan| scan.is_merge_on_read());
     merge_on_read.then(|| Ok(DesiredTaskCountEventResponse::maximum(1)))
+}
+
+/// Metadata publication is coordinator-only. The write stage itself may use
+/// any number of network tasks: each task writes every persisted bucket of its
+/// share, so task count is not tied to `hashBucketNum`.
+fn write_task_budget(
+    ev: DesiredTaskCountEvent<'_>,
+) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
+    use crate::datasource::file_format::{LakeSoulCommitExec, LakeSoulWriteExec};
+    if ev.plan.is::<LakeSoulCommitExec>() {
+        return Some(Ok(DesiredTaskCountEventResponse::maximum(1)));
+    }
+    let write = ev.plan.downcast_ref::<LakeSoulWriteExec>()?;
+    // A keyed write must run below a stage boundary: its input is a hash
+    // shuffle, and a one-task stage would otherwise absorb the write into the
+    // coordinator's head stage.
+    (!write.primary_keys().is_empty()).then(|| {
+        Ok(DesiredTaskCountEventResponse::desired(
+            crate::distributed::planner::scan_task_budget(ev.session_config),
+        ))
+    })
 }
 
 /// Caps a stage at one task when splitting its scans would break the input
@@ -685,6 +707,7 @@ impl LakeSoulSessionFactory {
                 .with_distributed_metrics_collection(true)?
                 .with_distributed_desired_task_count_handler(merge_work_unit_single_task)
                 .with_distributed_desired_task_count_handler(lazy_scan_desired_task_count)
+                .with_distributed_desired_task_count_handler(write_task_budget)
                 .with_distributed_desired_task_count_handler(
                     input_distribution_single_task,
                 )

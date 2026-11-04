@@ -15,6 +15,14 @@
 //! table, then the conflict and refusal matrix, which must not change state,
 //! and finally the PostgreSQL `INSERT` analysis matrix (`42601`/`42804`/`22P02`
 //! plus NULL completion of unlisted columns).
+//!
+//! [`insert_scenarios`] is the matrix both contracts run:
+//! [`insert_contract`] executes it on the coordinator, and
+//! [`distributed_insert_contract`] executes the same statements with two real
+//! Flight workers and local fallback disabled, then pins the distributed-write
+//! contract itself — a remote `INSERT ... SELECT`, task-stamped file names, one
+//! commit, and the SQLSTATE of a worker-side duplicate key or NOT NULL
+//! violation.
 
 pub mod support;
 
@@ -31,27 +39,146 @@ use support::Harness;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn insert_contract() -> Result<()> {
-    support::run_suite(|h| {
+    support::run_suite(|h| Box::pin(async move { insert_scenarios(h).await })).await
+}
+
+/// The same statements, planned and executed by two real Flight workers.
+///
+/// Local fallback is disabled for this harness, so a statement the distributed
+/// planner cannot ship fails instead of silently reverting to the coordinator:
+/// a passing run holds for writes that run on workers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn distributed_insert_contract() -> Result<()> {
+    support::run_distributed_insert_suite(|h| {
         Box::pin(async move {
-            plain_insert_writes_rows_metadata_and_files(h).await?;
-            parameterized_insert_executes_twice(h).await?;
-            cdc_delete_marker_hides_the_key(h).await?;
-            duplicate_key_leaves_no_state(h).await?;
-            not_null_violation_is_23502(h).await?;
-            on_conflict_do_nothing_skips_conflicts(h).await?;
-            on_conflict_do_update_replaces_the_row(h).await?;
-            upsert_source_duplicate_keys_are_21000(h).await?;
-            multi_partition_insert_publishes_atomically(h).await?;
-            partitioned_table_created_by_pg_writes_and_merges(h).await?;
-            extended_partitioned_table_writes_parquet(h).await?;
-            multi_column_partition_order_is_preserved(h).await?;
-            refusal_matrix_changes_nothing(h).await?;
-            prepared_insert_into_dropped_table_leaves_no_state(h).await?;
-            insert_analysis_matches_postgres(h).await?;
-            Ok(())
+            insert_scenarios(h).await?;
+            distributed_insert_select_writes_on_workers(h).await
         })
     })
     .await
+}
+
+/// The scenario matrix shared by the coordinator-only and the distributed
+/// contract.
+async fn insert_scenarios(h: &Harness) -> Result<()> {
+    plain_insert_writes_rows_metadata_and_files(h).await?;
+    parameterized_insert_executes_twice(h).await?;
+    cdc_delete_marker_hides_the_key(h).await?;
+    duplicate_key_leaves_no_state(h).await?;
+    not_null_violation_is_23502(h).await?;
+    on_conflict_do_nothing_skips_conflicts(h).await?;
+    on_conflict_do_update_replaces_the_row(h).await?;
+    upsert_source_duplicate_keys_are_21000(h).await?;
+    multi_partition_insert_publishes_atomically(h).await?;
+    partitioned_table_created_by_pg_writes_and_merges(h).await?;
+    extended_partitioned_table_writes_parquet(h).await?;
+    multi_column_partition_order_is_preserved(h).await?;
+    refusal_matrix_changes_nothing(h).await?;
+    prepared_insert_into_dropped_table_leaves_no_state(h).await?;
+    insert_analysis_matches_postgres(h).await?;
+    Ok(())
+}
+
+/// The same append-only `INSERT ... SELECT` under a session with real workers
+/// and the local fallback disabled.
+///
+/// This test owns the PostgreSQL-level contract: the statement reports its
+/// rows, publishes one commit, and commits files that exist inside the suite
+/// warehouse. Whether the distributed planner places the write on workers is
+/// pinned by the datafusion integration suite (`distributed_write_tests`),
+/// which inspects the plan and the task-stamped file names; the wire protocol
+/// must not claim more than the SQL result shows here.
+async fn distributed_insert_select_writes_on_workers(h: &Harness) -> Result<()> {
+    let table_id = table_id(h, "empty_items").await?;
+    let rows_before = lake_i64(h, "SELECT count(*) FROM empty_items").await?;
+    let committed_before = count(
+        h,
+        "SELECT count(*) FROM public.data_commit_info WHERE table_id = $1 AND committed",
+        &table_id,
+    )
+    .await?;
+    let files_before: std::collections::BTreeSet<String> =
+        file_paths(h, &table_id).await?.into_iter().collect();
+
+    let sql = "INSERT INTO empty_items (id, val, label) SELECT id, val, label FROM items";
+    let rows = simple_rows(h, sql).await?;
+    ensure_eq("distributed INSERT rows", rows, 4)?;
+
+    let rows_after = lake_i64(h, "SELECT count(*) FROM empty_items").await?;
+    ensure!(
+        rows_after == rows_before + 4,
+        "empty_items must gain the 4 source rows: before {rows_before}, \
+         after {rows_after}"
+    );
+    ensure_eq(
+        "copied row",
+        lake_i64(
+            h,
+            "SELECT count(*) FROM empty_items \
+             WHERE id = 2 AND val = 20 AND label = ' β '",
+        )
+        .await?,
+        1,
+    )?;
+
+    let files_after = file_paths(h, &table_id).await?;
+    let new_files: Vec<&String> = files_after
+        .iter()
+        .filter(|path| !files_before.contains(*path))
+        .collect();
+    ensure!(
+        !new_files.is_empty(),
+        "the distributed INSERT ... SELECT committed no data file"
+    );
+    for path in new_files {
+        let local = path.strip_prefix("file://").unwrap_or(path);
+        ensure!(
+            std::path::Path::new(local).is_file(),
+            "committed file {path} does not exist on disk"
+        );
+        ensure!(
+            path.contains(&h.lake_namespace),
+            "committed file {path} is outside the suite warehouse"
+        );
+    }
+    ensure_eq(
+        "commits added by the statement",
+        count(
+            h,
+            "SELECT count(*) FROM public.data_commit_info WHERE table_id = $1 AND committed",
+            &table_id,
+        )
+        .await?,
+        committed_before + 1,
+    )?;
+
+    // A key that is already committed is rejected on a worker; the SQLSTATE
+    // must survive the hop and the statement must publish nothing.
+    let duplicate =
+        "INSERT INTO pk_items (id, val, label) SELECT id, val, label FROM pk_items";
+    let before = h.authoritative_snapshot().await?;
+    let error = h
+        .lake
+        .execute(duplicate, &[])
+        .await
+        .expect_err("a duplicate key on a worker must fail the statement");
+    ensure_sqlstate(&error, "23505", "distributed duplicate primary key")?;
+    let after = h.authoritative_snapshot().await?;
+    ensure_snapshot_unchanged(&before, &after, "distributed duplicate primary key")?;
+
+    // The same for a NOT NULL column.
+    let null_key = "INSERT INTO pk_items (id, val, label) \
+                    SELECT CAST(NULL AS BIGINT) AS id, val, label FROM pk_items";
+    let before = h.authoritative_snapshot().await?;
+    let error = h
+        .lake
+        .execute(null_key, &[])
+        .await
+        .expect_err("a NOT NULL violation on a worker must fail the statement");
+    ensure_sqlstate(&error, "23502", "distributed NOT NULL violation")?;
+    let after = h.authoritative_snapshot().await?;
+    ensure_snapshot_unchanged(&before, &after, "distributed NOT NULL violation")?;
+    Ok(())
 }
 
 /// `INSERT ... VALUES` commits rows, one `data_commit_info` row, one partition

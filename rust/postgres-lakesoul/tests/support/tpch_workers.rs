@@ -2,7 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Two real Flight workers for the scheduled/manual workload combinations.
+//! Two real Flight workers for the distributed suites.
+//!
+//! [`Workers::configured`] honours the TPC-H workload switch; the `INSERT`
+//! suite builds the same pair with [`Workers::new`], because a distributed
+//! write must be exercised without turning on the TPC-H fixtures.
 
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 
@@ -21,13 +25,18 @@ pub(super) struct Workers {
 }
 
 impl Workers {
+    /// A worker pair that a suite starts explicitly.
+    pub(super) fn new() -> Self {
+        Self {
+            addresses: Vec::new(),
+            tasks: JoinSet::new(),
+        }
+    }
+
     pub(super) fn configured() -> Result<Option<Self>> {
         match std::env::var("LAKESOUL_TPCH_WORKERS").as_deref() {
             Err(std::env::VarError::NotPresent) | Ok("0") => Ok(None),
-            Ok("2") => Ok(Some(Self {
-                addresses: Vec::new(),
-                tasks: JoinSet::new(),
-            })),
+            Ok("2") => Ok(Some(Self::new())),
             _ => bail!(
                 "LAKESOUL_TPCH_WORKERS must be 0 (standalone) or 2 (real Flight workers)"
             ),
@@ -56,7 +65,7 @@ impl Workers {
                     .map_err(|error| error.to_string())
             });
         }
-        eprintln!("TPC-H Flight listeners bound: {}", self.urls());
+        eprintln!("Flight listeners bound: {}", self.urls());
         Ok(())
     }
 
