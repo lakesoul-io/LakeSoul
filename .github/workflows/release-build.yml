@@ -206,13 +206,13 @@ jobs:
         env:
           RUST_BACKTRACE: full
           RUST_LOG: info
-        run: cargo -q test --profile test-fast --lib --bins --tests --jobs 2
+        run: cargo test --profile test-fast --lib --bins --tests --jobs 2
       - name: Run Rust tests with v2 merge
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
           RUST_BACKTRACE: full
           RUST_LOG: info
-        run: cargo -q test --profile test-fast --lib --bins --tests --jobs 2
+        run: cargo test --profile test-fast --lib --bins --tests --jobs 2
 
   build-native-linux-x86-64:
     name: Build Linux x86_64 native libraries
