@@ -1684,6 +1684,80 @@ async fn test_append_only_scan_fans_out_over_tasks_inner() -> Result<()> {
     Ok(())
 }
 
+/// A split variant spreads the units it owns over the lanes of its scan.
+///
+/// A task executes every partition of its variant, so the row count must not
+/// depend on the spreading: three range-partitioned work units split over two
+/// tasks put lanes 0 and 1 of one task into service, and a task that executed
+/// lane 0 alone would return only part of its rows.
+#[test]
+fn test_split_variant_uses_every_lane() {
+    run_distributed_test(test_split_variant_uses_every_lane_inner());
+}
+
+async fn test_split_variant_uses_every_lane_inner() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let (t1, _t2) = seed_tables(client.clone()).await?;
+    let (worker_urls, mut workers) = spawn_workers(SPLIT_WORKERS).await;
+    let single_node = single_node_factory(client.clone())?;
+    // One byte per partition splits every scan over the two workers.
+    let distributed = distributed_factory_sized(
+        client.clone(),
+        worker_urls,
+        SPLIT_TARGET_PARTITIONS,
+        Some(1),
+        false,
+    )?;
+
+    let queries = vec![
+        (
+            format!("SELECT count(*) AS cnt FROM {t1}"),
+            vec!["+-----+", "| cnt |", "+-----+", "| 9   |", "+-----+"],
+        ),
+        (
+            format!("SELECT part, sum(b) AS total FROM {t1} GROUP BY part ORDER BY part"),
+            vec![
+                "+------+-------+",
+                "| part | total |",
+                "+------+-------+",
+                "| 0    | 6     |",
+                "| 1    | 36    |",
+                "| 2    | 66    |",
+                "+------+-------+",
+            ],
+        ),
+    ];
+    assert_matches_single_node(&distributed, &single_node, &queries).await?;
+
+    // The case only means something if the scan really was split: a single
+    // task executes the whole node and cannot lose a lane.
+    let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+    let plan = ctx
+        .sql(&format!(
+            "EXPLAIN ANALYZE SELECT part, count(*) FROM {t1} GROUP BY part"
+        ))
+        .await?
+        .collect()
+        .await?;
+    let explain = datafusion::arrow::util::pretty::pretty_format_batches(&plan)
+        .unwrap()
+        .to_string();
+    let stage_tasks = explain
+        .lines()
+        .find(|line| line.contains("Stage 1 ──"))
+        .and_then(|line| line.split("tasks=").nth(1))
+        .and_then(|rest| rest.split(',').next())
+        .and_then(|tasks| tasks.trim().parse::<usize>().ok())
+        .unwrap_or_else(|| panic!("no scan stage in plan:\n{explain}"));
+    assert!(
+        stage_tasks > 1,
+        "the scan ran in {stage_tasks} task(s); the case needs a split scan:\n{explain}"
+    );
+
+    workers.abort_all();
+    Ok(())
+}
+
 /// Workers and stage tasks of the tests that split every append-only scan:
 /// with `bytes_per_partition = 1`, a scan of four files wants more tasks than
 /// the two workers offer, so each stage of such a scan runs in two tasks.

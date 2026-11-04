@@ -628,6 +628,51 @@ fn find_file(root: &Path, extension: &str) -> Option<PathBuf> {
 }
 
 /// The row cap the plan's lazy leaf carries, if any.
+/// Every node of one scan applies the *query's* key-lookup threshold, not the
+/// unit count its own node happens to carry.
+#[test]
+fn pk_scan_splits_the_lookup_threshold_over_its_units() {
+    run(async {
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        let table_name = unique_table("locator_threshold");
+        seed_pk(client.clone(), &table_name, PhysicalFormat::Parquet).await?;
+        let gate = Arc::new(IoGate::default());
+        gate.allow();
+        let ctx = session_with_gate(client, gate.clone()).await?;
+
+        let scan_plan = plan(&ctx, &format!("SELECT * FROM {table_name}")).await;
+        let mut unit_count = 0;
+        let mut thresholds = Vec::new();
+        scan_plan
+            .apply(|node| {
+                if let Some(scan) = node.downcast_ref::<LakeSoulScanExec>() {
+                    unit_count += scan.work_units().len();
+                    thresholds.push(scan.scan_config().min_index_rows);
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .expect("walking a physical plan cannot fail");
+
+        assert!(!thresholds.is_empty(), "the plan has no metadata-only scan");
+        assert!(
+            unit_count > 1,
+            "the fixture has to scan more than one work unit"
+        );
+        let expected = lakesoul_io::pk_locator::min_index_rows_per_unit(unit_count);
+        assert!(
+            expected < lakesoul_io::pk_locator::MIN_INDEX_ROWS,
+            "a multi-unit scan splits the query-wide threshold"
+        );
+        assert_eq!(
+            thresholds,
+            vec![expected; thresholds.len()],
+            "each node applies the query's share, not its own unit count"
+        );
+        gate.assert_untouched();
+        Ok(())
+    });
+}
+
 fn leaf_limit(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
     let mut limit = None;
     plan.apply(|node| {

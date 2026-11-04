@@ -111,11 +111,33 @@ pub const MAX_PK_CANDIDATES: usize = 10_000;
 const BULK_LOOKUP_MIN_KEYS: usize = 64;
 
 /// When the candidate files of a query hold fewer rows than this in total, a
-/// plain scan is cheaper than building local indexes.  The decision spans all
-/// files of the query: a table of many small files (IVM writes several files
-/// per append, one per writer partition) is still indexed, while a handful of
-/// tiny upsert files is scanned.
-const MIN_INDEX_ROWS: u64 = 4_096;
+/// plain scan is cheaper than building local indexes.  The decision is the
+/// query's, not one work unit's: a table of many small files (IVM writes
+/// several files per append, one per writer partition) is still indexed, while
+/// a handful of tiny upsert files is scanned.
+///
+/// A scan that executes unit by unit cannot compare against this constant
+/// directly — it only ever sees the files of the unit it is reading.  See
+/// [`min_index_rows_per_unit`], which keeps the decision query-wide.
+pub const MIN_INDEX_ROWS: u64 = 4_096;
+
+/// The row threshold a single work unit applies to keep the decision
+/// query-wide.
+///
+/// The locator runs at execution time, once per work unit, so it sees one
+/// unit's files rather than every file of the query.  Comparing a unit against
+/// [`MIN_INDEX_ROWS`] directly would turn a query-wide threshold into a
+/// per-bucket one: a bucketed table whose buckets are each smaller than 4096
+/// rows would scan every bucket whole, although the query's files together
+/// cross the threshold and point lookups are exactly what the locator is for.
+/// Dividing by the scan's unit count keeps the comparison equivalent for
+/// evenly filled units — `rows_unit * unit_count` is the query's row count —
+/// and stays conservative for skewed ones, where only the filled units take
+/// the indexed path.
+pub fn min_index_rows_per_unit(unit_count: usize) -> u64 {
+    let units = u64::try_from(unit_count).unwrap_or(u64::MAX).max(1);
+    MIN_INDEX_ROWS.div_ceil(units)
+}
 
 /// A single index may take at most `1 / MAX_INDEX_CACHE_RATIO` of the shared
 /// local cache capacity, so one huge file cannot evict everything else.
@@ -2251,11 +2273,17 @@ fn single_data_file(config: &FileScanConfig) -> Option<(StorePath, PhysicalForma
 /// reservation for those batches lives on the Apache Arrow buffers: a batch
 /// (or column slice) kept after the plan and stream are dropped keeps its
 /// bytes reserved until its last buffer owner goes away.
+///
+/// `min_index_rows` is the row count `configs` must reach before the indexed
+/// path is taken.  A caller that sees every file of the query passes
+/// [`MIN_INDEX_ROWS`]; a caller that sees one work unit of a lazy scan passes
+/// [`min_index_rows_per_unit`], so the decision stays the query's.
 pub async fn try_build_key_inputs(
     state: &dyn Session,
     io_config: &LakeSoulIOConfig,
     configs: &[FileScanConfig],
     constraint: &KeyConstraint,
+    min_index_rows: u64,
 ) -> DFResult<Option<Vec<Arc<dyn ExecutionPlan>>>> {
     let Some(_cache) = index_disk_cache() else {
         return Ok(None);
@@ -2316,6 +2344,7 @@ pub async fn try_build_key_inputs(
         int_candidates.as_deref(),
         encoded.len(),
         io_config.bulk_pk_lookup(),
+        min_index_rows,
     )
     .await
 }
@@ -2381,6 +2410,9 @@ pub async fn try_build_key_inputs_encoded(
         None,
         keys.len(),
         io_config.bulk_pk_lookup(),
+        // The index path flattens every file of the query before it looks
+        // anything up, so its threshold stays query-wide.
+        MIN_INDEX_ROWS,
     )
     .await
 }
@@ -2402,6 +2434,7 @@ async fn build_key_inputs(
     int_candidates: Option<&[i64]>,
     key_count: usize,
     bulk: bool,
+    min_index_rows: u64,
 ) -> DFResult<Option<Vec<Arc<dyn ExecutionPlan>>>> {
     // Built lazily: only files that actually need a vortex scan create one,
     // and creating a session costs far more than this check.
@@ -2428,8 +2461,10 @@ async fn build_key_inputs(
 
     // Indexing costs one key-column read plus a small local file per data
     // file; when the candidate set as a whole is tiny, a plain scan is
-    // cheaper.  The decision spans all files, so neither a single small upsert
-    // file nor the many small files IVM writes per append disable the index.
+    // cheaper.  `min_index_rows` carries the query-wide decision here: a
+    // caller whose `configs` cover only one work unit passes the share that
+    // unit has to hold, so neither a single small upsert file nor the many
+    // small files IVM writes per append disable the index.
     let mut total_rows: u64 = 0;
     for config in configs {
         let Some((location, format)) = single_data_file(config) else {
@@ -2454,11 +2489,11 @@ async fn build_key_inputs(
             _ => return Ok(None),
         };
         total_rows = total_rows.saturating_add(rows);
-        if total_rows >= MIN_INDEX_ROWS {
+        if total_rows >= min_index_rows {
             break;
         }
     }
-    if total_rows < MIN_INDEX_ROWS {
+    if total_rows < min_index_rows {
         return Ok(None);
     }
     let memory_pool = state.runtime_env().memory_pool.clone();
@@ -3538,9 +3573,14 @@ mod tests {
             .with_primary_keys(vec!["id".to_string()])
             .build();
 
-        let result =
-            super::try_build_key_inputs(&state, &io, &[config], &id_constraint([1]))
-                .await;
+        let result = super::try_build_key_inputs(
+            &state,
+            &io,
+            &[config],
+            &id_constraint([1]),
+            super::MIN_INDEX_ROWS,
+        )
+        .await;
         assert!(
             result.is_err(),
             "a corrupt data file must propagate, not fall back: {result:?}"
@@ -3564,10 +3604,16 @@ mod tests {
         // Below MIN_INDEX_ROWS the locator declines the optimization.
         let tiny = locator_config(store_url.clone(), Arc::clone(&schema), meta);
         assert!(
-            super::try_build_key_inputs(&state, &io, &[tiny], &id_constraint([1]))
-                .await
-                .unwrap()
-                .is_none()
+            super::try_build_key_inputs(
+                &state,
+                &io,
+                &[tiny],
+                &id_constraint([1]),
+                super::MIN_INDEX_ROWS,
+            )
+            .await
+            .unwrap()
+            .is_none()
         );
 
         // An unsupported format is declined before any file read.
@@ -3582,10 +3628,16 @@ mod tests {
         };
         let csv = locator_config(store_url.clone(), Arc::clone(&schema), csv);
         assert!(
-            super::try_build_key_inputs(&state, &io, &[csv], &id_constraint([1]))
-                .await
-                .unwrap()
-                .is_none()
+            super::try_build_key_inputs(
+                &state,
+                &io,
+                &[csv],
+                &id_constraint([1]),
+                super::MIN_INDEX_ROWS,
+            )
+            .await
+            .unwrap()
+            .is_none()
         );
 
         // No candidates or no files means no lookup at all.
@@ -3603,16 +3655,28 @@ mod tests {
             },
         );
         assert!(
-            super::try_build_key_inputs(&state, &io, &[empty_file], &id_constraint([]),)
-                .await
-                .unwrap()
-                .is_none()
+            super::try_build_key_inputs(
+                &state,
+                &io,
+                &[empty_file],
+                &id_constraint([]),
+                super::MIN_INDEX_ROWS,
+            )
+            .await
+            .unwrap()
+            .is_none()
         );
         assert!(
-            super::try_build_key_inputs(&state, &io, &[], &id_constraint([1]))
-                .await
-                .unwrap()
-                .is_none()
+            super::try_build_key_inputs(
+                &state,
+                &io,
+                &[],
+                &id_constraint([1]),
+                super::MIN_INDEX_ROWS,
+            )
+            .await
+            .unwrap()
+            .is_none()
         );
         assert_eq!(pool.reserved(), 0);
     }
@@ -3637,6 +3701,7 @@ mod tests {
             &io,
             &[config],
             &id_constraint([1, 2, 3]),
+            super::MIN_INDEX_ROWS,
         )
         .await
         .unwrap()
@@ -3671,6 +3736,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_query_wide_threshold_is_split_over_its_units() {
+        // The lookup runs per work unit, so the query's row budget is handed
+        // to it as a share: sixteen units of a 4,096-row query are worth
+        // looking up at 256 rows each.
+        assert_eq!(super::min_index_rows_per_unit(1), super::MIN_INDEX_ROWS);
+        assert_eq!(super::min_index_rows_per_unit(16), 256);
+        assert_eq!(super::min_index_rows_per_unit(4_096), 1);
+        assert_eq!(
+            super::min_index_rows_per_unit(0),
+            super::MIN_INDEX_ROWS,
+            "a scan always has at least one unit"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_unit_smaller_than_the_query_threshold_still_takes_the_lookup() {
+        enable_locator_cache();
+        let dir = tempfile::tempdir().unwrap();
+        // One unit of a sixteen-unit query: too small for the query-wide
+        // threshold, large enough for its own share of it.
+        let ids: Vec<i64> = (0..300).collect();
+        let meta = write_ids_parquet(dir.path(), "unit.parquet", &ids);
+        let pool =
+            Arc::new(GreedyMemoryPool::new(64 * 1024 * 1024)) as Arc<dyn MemoryPool>;
+        let (state, store_url) = locator_session(dir.path(), Arc::clone(&pool));
+        let schema = locator_schema();
+        let io = LakeSoulIOConfig::builder()
+            .with_primary_keys(vec!["id".to_string()])
+            .build();
+
+        let query_wide = super::try_build_key_inputs(
+            &state,
+            &io,
+            &[locator_config(
+                store_url.clone(),
+                Arc::clone(&schema),
+                meta.clone(),
+            )],
+            &id_constraint([7]),
+            super::MIN_INDEX_ROWS,
+        )
+        .await
+        .unwrap();
+        assert!(
+            query_wide.is_none(),
+            "300 rows are below the query-wide threshold"
+        );
+
+        let inputs = super::try_build_key_inputs(
+            &state,
+            &io,
+            &[locator_config(store_url, schema, meta)],
+            &id_constraint([7]),
+            super::min_index_rows_per_unit(16),
+        )
+        .await
+        .unwrap()
+        .expect("300 rows are worth indexing as one unit of sixteen");
+        assert_eq!(inputs.len(), 1);
+        let mut stream = inputs[0].execute(0, state.task_ctx()).unwrap();
+        let rows = stream.next().await.unwrap().unwrap().num_rows();
+        assert_eq!(rows, 1, "the lookup returns the candidate row");
+    }
+
     #[tokio::test]
     async fn exhausted_candidate_memory_is_an_error_and_releases_reservations() {
         enable_locator_cache();
@@ -3686,9 +3816,14 @@ mod tests {
             .with_primary_keys(vec!["id".to_string()])
             .build();
 
-        let result =
-            super::try_build_key_inputs(&state, &io, &[config], &id_constraint(ids))
-                .await;
+        let result = super::try_build_key_inputs(
+            &state,
+            &io,
+            &[config],
+            &id_constraint(ids),
+            super::MIN_INDEX_ROWS,
+        )
+        .await;
         assert!(
             result.is_err(),
             "memory exhaustion must propagate, not fall back: {result:?}"

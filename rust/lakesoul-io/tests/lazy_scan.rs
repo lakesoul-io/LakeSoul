@@ -281,6 +281,7 @@ fn append_only_config(
         parquet_force_view_types: false,
         read_options: HashMap::new(),
         limit: None,
+        min_index_rows: lakesoul_io::pk_locator::MIN_INDEX_ROWS,
     }
 }
 
@@ -304,6 +305,7 @@ fn merge_config(table_schema: SchemaRef) -> LakeSoulScanConfig {
         parquet_force_view_types: false,
         read_options: HashMap::new(),
         limit: None,
+        min_index_rows: lakesoul_io::pk_locator::MIN_INDEX_ROWS,
     }
 }
 
@@ -863,6 +865,60 @@ async fn splitting_covers_every_file_exactly_once() {
 }
 
 #[tokio::test]
+async fn split_variants_use_every_lane_of_the_scan() {
+    // A task executes all partitions of its variant. If the split left the
+    // units on lane 0, each task would read its files one at a time and the
+    // other lanes would idle - correct rows, one lane's worth of parallelism.
+    let dir = TempDir::new().expect("temp dir");
+    let schema = id_schema();
+    let store = Arc::new(CountingStore::new());
+    let mut units = Vec::new();
+    for index in 0..8i64 {
+        let (url, size) = write_parquet(
+            dir.path(),
+            &format!("part-{index}.parquet"),
+            &int_batch(&schema, &[index]),
+            1024,
+        );
+        units.push(unit(vec![scan_file(&url, Some(size), None)], 0));
+    }
+    let node = LakeSoulScanExec::try_new(
+        append_only_config(Arc::clone(&schema), Arc::new(Schema::empty())),
+        units,
+        4,
+    )
+    .expect("valid descriptor");
+
+    let tasks = node.split_into_tasks(2).expect("split into two tasks");
+    assert_eq!(tasks.len(), 2);
+    let mut rows = Vec::new();
+    for task in &tasks {
+        assert_eq!(
+            task.output_partitioning().partition_count(),
+            4,
+            "a variant keeps the scan's lanes"
+        );
+        let mut lanes: Vec<usize> =
+            task.work_units().iter().map(|unit| unit.lane).collect();
+        lanes.sort_unstable();
+        assert_eq!(
+            lanes,
+            vec![0, 1, 2, 3],
+            "every lane of the variant carries one unit, not lane 0 alone"
+        );
+        for lane in 0..4 {
+            rows.extend(int64_rows(&collect(task, lane, &store).await, 0));
+        }
+    }
+    rows.sort_unstable();
+    assert_eq!(
+        rows,
+        (0..8i64).map(Some).collect::<Vec<_>>(),
+        "spreading the units over the lanes keeps every row exactly once"
+    );
+}
+
+#[tokio::test]
 async fn only_parquet_files_are_cut_into_ranges() {
     let schema = id_schema();
     let parquet = fake_parquet("table", "big.parquet", 12 * MIN_PARQUET_RANGE_BYTES);
@@ -1143,6 +1199,7 @@ async fn conservative_nullability_is_frozen_on_every_unit() {
         parquet_force_view_types: false,
         read_options: HashMap::new(),
         limit: None,
+        min_index_rows: lakesoul_io::pk_locator::MIN_INDEX_ROWS,
     };
     let empty = LakeSoulScanExec::try_new(config.clone(), Vec::new(), 1)
         .expect("a scan without units still describes its schema");

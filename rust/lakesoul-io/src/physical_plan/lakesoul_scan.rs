@@ -137,6 +137,16 @@ pub struct LakeSoulScanConfig {
     /// above the scan. Merge-on-read never sets it either — a merge has to see
     /// every version of a key.
     pub limit: Option<usize>,
+    /// The row count one work unit must hold before the key lookup builds
+    /// local indexes for it.
+    ///
+    /// [`crate::pk_locator::MIN_INDEX_ROWS`] is a decision about the whole
+    /// query, but the lookup runs per work unit and only sees that unit's
+    /// files. The planner divides the constant by the number of units the
+    /// query has (see [`crate::pk_locator::min_index_rows_per_unit`]), so a
+    /// bucketed table whose buckets are each smaller than the constant still
+    /// takes the indexed path when the query's files together cross it.
+    pub min_index_rows: u64,
 }
 
 /// Reads the scan's work units until its input is exhausted.
@@ -253,11 +263,27 @@ impl LakeSoulScanExec {
     }
 
     /// A variant of this scan executing exactly `units` in their own lanes.
+    ///
+    /// A task executes every partition of its variant, so the units are spread
+    /// round-robin over the node's lanes exactly as the builtin file-scan split
+    /// fills every partition of every variant. Leaving them all on lane 0
+    /// would read the task's files one after another while the other lanes
+    /// idled: the row count would still be right, but a stage split over N
+    /// tasks would use one lane per task instead of N.
     fn with_units(&self, units: Vec<ScanWorkUnit>) -> DFResult<Arc<Self>> {
+        let lanes = self.lane_count();
+        let units = units
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut unit)| {
+                unit.lane = index % lanes;
+                unit
+            })
+            .collect();
         Ok(Arc::new(Self::try_new(
             (*self.config).clone(),
             units,
-            self.lane_count(),
+            lanes,
         )?))
     }
 
@@ -759,6 +785,7 @@ async fn initialize_unit(
             &unit_io_config,
             &per_file_configs,
             constraint,
+            config.min_index_rows,
         )
         .await?
         {
@@ -887,6 +914,14 @@ fn unit_partition_values(
 
 /// Rejects a descriptor whose parts disagree with each other.
 fn validate_config(config: &LakeSoulScanConfig) -> DFResult<()> {
+    // A zero row threshold would build an index for every key lookup, which
+    // is a decision the planner has to make explicitly rather than by
+    // accident: it always hands over at least one row.
+    if config.min_index_rows == 0 {
+        return Err(exec_datafusion_err!(
+            "scan declares a zero-row key-lookup threshold"
+        ));
+    }
     for field in config.output_schema.fields() {
         match config.table_schema.field_with_name(field.name()) {
             Ok(table_field) if table_field.data_type() == field.data_type() => {}

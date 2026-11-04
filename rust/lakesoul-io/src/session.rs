@@ -1140,6 +1140,9 @@ impl LakeSoulIOSession {
                     &self.io_config,
                     &flatten_configs,
                     constraint,
+                    // This path flattens every file of the query, so the
+                    // query-wide row threshold applies as it is.
+                    pk_locator::MIN_INDEX_ROWS,
                 )
                 .await
                 .map_err(|error| report!(error))?,

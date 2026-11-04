@@ -183,6 +183,11 @@ pub struct LakeSoulScanExecProto {
     /// has to read everything; a merge-on-read scan never carries one.
     #[prost(uint64, optional, tag = "19")]
     pub limit: Option<u64>,
+    /// Row count one work unit must hold before the key lookup builds local
+    /// indexes for it. Absent means the query-wide constant: the planner that
+    /// wrote the payload did not split the threshold over its units.
+    #[prost(uint64, optional, tag = "20")]
+    pub min_index_rows: Option<u64>,
 }
 
 /// One lazy-scan work unit: an atomic unit for merge-on-read, or a
@@ -561,6 +566,7 @@ impl LakeSoulScanCodec {
             max_pk_candidates: io_config.max_pk_candidates() as u64,
             bulk_pk_lookup: io_config.bulk_pk_lookup(),
             limit: config.limit.map(|limit| limit as u64),
+            min_index_rows: Some(config.min_index_rows),
         })
     }
 
@@ -706,6 +712,11 @@ impl LakeSoulScanCodec {
                 .limit
                 .map(|limit| decode_index(limit, "limit"))
                 .transpose()?,
+            // A payload written before the threshold was split per unit keeps
+            // the query-wide constant it was planned with.
+            min_index_rows: proto
+                .min_index_rows
+                .unwrap_or(lakesoul_io::pk_locator::MIN_INDEX_ROWS),
         };
         let exec = LakeSoulScanExec::try_new(config, work_units, partition_count)?;
         Ok(Arc::new(exec) as Arc<dyn ExecutionPlan>)
@@ -1462,6 +1473,9 @@ mod tests {
                 "true".to_string(),
             )]),
             limit: Some(3),
+            // Not the default: the roundtrip has to show the planner's
+            // per-unit share travels, not that the decoder falls back.
+            min_index_rows: 256,
         };
         Arc::new(
             LakeSoulScanExec::try_new(config, units, 3)
@@ -1511,6 +1525,10 @@ mod tests {
             );
             assert_eq!(after_config.read_options, before_config.read_options);
             assert_eq!(after_config.limit, before_config.limit, "{format}");
+            assert_eq!(
+                after_config.min_index_rows, before_config.min_index_rows,
+                "{format}"
+            );
             assert_eq!(
                 after_config.predicate.as_ref().map(ToString::to_string),
                 before_config.predicate.as_ref().map(ToString::to_string)
@@ -1813,6 +1831,7 @@ mod tests {
             parquet_force_view_types: false,
             read_options: HashMap::new(),
             limit: None,
+            min_index_rows: lakesoul_io::pk_locator::MIN_INDEX_ROWS,
         };
         let units = vec![ScanWorkUnit {
             files: vec![ScanFile {

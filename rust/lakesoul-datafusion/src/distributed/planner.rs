@@ -520,6 +520,7 @@ mod tests {
             parquet_force_view_types: false,
             read_options: HashMap::new(),
             limit: None,
+            min_index_rows: lakesoul_io::pk_locator::MIN_INDEX_ROWS,
         };
         let units = vec![ScanWorkUnit {
             files: vec![ScanFile {

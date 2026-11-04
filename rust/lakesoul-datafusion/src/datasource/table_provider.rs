@@ -464,6 +464,7 @@ impl LakeSoulTableProvider {
         parquet_force_view_types: bool,
         read_options: &HashMap<String, String>,
         limit: Option<usize>,
+        min_index_rows: u64,
     ) -> LakeSoulScanConfig {
         let mut io_config = self.io_config.clone();
         // Files belong to the descriptor units, not to a shared config.
@@ -478,6 +479,7 @@ impl LakeSoulTableProvider {
             parquet_force_view_types,
             read_options: read_options.clone(),
             limit,
+            min_index_rows,
         }
     }
 
@@ -1739,6 +1741,10 @@ impl TableProvider for LakeSoulTableProvider {
         }
         let unit_count: usize = partition_units.iter().map(Vec::len).sum();
         debug_assert!(unit_count > 0);
+        // The key lookup runs per work unit but the decision it makes is the
+        // query's, so the planner splits `MIN_INDEX_ROWS` over the scan's
+        // units here, where the whole query is still visible.
+        let min_index_rows = lakesoul_io::pk_locator::min_index_rows_per_unit(unit_count);
         let target_lanes = session_state.config().target_partitions().max(1);
         let parquet_force_view_types = session_state
             .config_options()
@@ -1784,6 +1790,7 @@ impl TableProvider for LakeSoulTableProvider {
                 parquet_force_view_types,
                 &read_options,
                 pushdown_limit,
+                min_index_rows,
             );
             partitioned_execs.push(Arc::new(LakeSoulScanExec::try_new(
                 config, scan_units, lanes,
@@ -1813,6 +1820,7 @@ impl TableProvider for LakeSoulTableProvider {
                     // A merge has to see every version of a key, so its inputs
                     // can never stop early.
                     None,
+                    min_index_rows,
                 );
                 partitioned_execs
                     .push(Arc::new(LakeSoulScanExec::try_new(config, units, lanes)?));
