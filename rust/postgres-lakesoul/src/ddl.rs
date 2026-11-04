@@ -28,9 +28,9 @@ use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::{
     ColumnDef, ColumnOption, ConstraintCharacteristics, CreateTable, CreateTableOptions,
-    DataType as SqlDataType, ExactNumberInfo, Expr, Ident, IndexColumn, IndexOption,
-    IndexType, ObjectName, ObjectType, SqlOption, Statement, TableConstraint,
-    TimezoneInfo, UnaryOperator, Value,
+    DataType as SqlDataType, ExactNumberInfo, Expr, HiveDistributionStyle, Ident,
+    IndexColumn, IndexOption, IndexType, ObjectName, ObjectType, SqlOption, Statement,
+    TableConstraint, TimezoneInfo, UnaryOperator, Value,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
@@ -159,6 +159,7 @@ impl DdlStatementHook {
         })?;
         let table = self.target(&create.name)?;
         let (schema, primary_key) = build_schema(&create.columns, &create.constraints)?;
+        let partition_cols = partition_columns(&create.hive_distribution, &schema)?;
         let options = table_options(&create.table_options)?;
 
         let mut location_options = options;
@@ -188,7 +189,7 @@ impl DdlStatementHook {
             name: TableReference::partial(self.database.clone(), table.clone()),
             locations: vec![self.table_location(warehouse, &table)?],
             file_type: "LAKESOUL".to_string(),
-            table_partition_cols: Vec::new(),
+            table_partition_cols: partition_cols,
             if_not_exists: create.if_not_exists,
             or_replace: false,
             temporary: false,
@@ -324,7 +325,8 @@ impl DdlStatementHook {
         };
         reject_unsupported_create(create)?;
         self.target(&create.name)?;
-        build_schema(&create.columns, &create.constraints)?;
+        let (schema, _) = build_schema(&create.columns, &create.constraints)?;
+        partition_columns(&create.hive_distribution, &schema)?;
         table_options(&create.table_options)?;
         if self.warehouse.is_none() {
             return Err(feature_not_supported(
@@ -542,11 +544,6 @@ fn reject_unsupported_create(create: &CreateTable) -> PgWireResult<()> {
         ),
         (create.version.is_some(), "CREATE TABLE ... VERSION"),
         (create.comment.is_some(), "CREATE TABLE ... COMMENT"),
-        (
-            create.hive_distribution
-                != datafusion::sql::sqlparser::ast::HiveDistributionStyle::NONE,
-            "CREATE TABLE ... DISTRIBUTE BY",
-        ),
         (create.hive_formats.is_some(), "CREATE TABLE ... ROW FORMAT"),
         (create.copy_grants, "CREATE TABLE ... COPY GRANTS"),
     ] {
@@ -562,6 +559,48 @@ fn reject_unsupported_create(create: &CreateTable) -> PgWireResult<()> {
         ));
     }
     Ok(())
+}
+
+/// LakeSoul's `PARTITIONED BY` references existing columns; unlike Hive, it
+/// does not declare additional typed columns or column constraints.
+fn partition_columns(
+    distribution: &HiveDistributionStyle,
+    schema: &Schema,
+) -> PgWireResult<Vec<String>> {
+    let columns = match distribution {
+        HiveDistributionStyle::NONE => return Ok(Vec::new()),
+        HiveDistributionStyle::PARTITIONED { columns } => columns,
+        _ => {
+            return Err(feature_not_supported(
+                "only PARTITIONED BY (column, ...) is supported".to_string(),
+            ));
+        }
+    };
+    let mut names = Vec::with_capacity(columns.len());
+    for column in columns {
+        if column.data_type != SqlDataType::Unspecified || !column.options.is_empty() {
+            return Err(feature_not_supported(
+                "PARTITIONED BY accepts existing column names only, without \
+                 types, expressions or column options"
+                    .to_string(),
+            ));
+        }
+        let name = normalize_ident(&column.name)?;
+        if schema.index_of(&name).is_err() {
+            return Err(user_error(
+                UNDEFINED_COLUMN,
+                format!("column \"{name}\" named in PARTITIONED BY does not exist"),
+            ));
+        }
+        if names.contains(&name) {
+            return Err(user_error(
+                DUPLICATE_COLUMN,
+                format!("column \"{name}\" specified more than once in PARTITIONED BY"),
+            ));
+        }
+        names.push(name);
+    }
+    Ok(names)
 }
 
 /// PG columns → Arrow schema, plus the primary-key column indices.
