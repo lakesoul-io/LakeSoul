@@ -6,7 +6,7 @@
 
 mod support;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ivm_insert_select_bootstraps_and_refreshes() -> Result<()> {
@@ -168,6 +168,170 @@ async fn ivm_adds_missing_epoch_column() -> Result<()> {
         })
     })
     .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ivm_partitioned_target_coexists_with_batch_partitions() -> Result<()> {
+    support::run_ivm_suite(|h| {
+        Box::pin(async move {
+            // The source only produces d1; d2 is written by a normal batch
+            // insert and must survive IVM refreshes and rebuilds.
+            h.lake
+                .batch_execute(
+                    "CREATE TABLE ivm_part_source (\
+                       day TEXT NOT NULL, id BIGINT NOT NULL PRIMARY KEY, \
+                       val BIGINT)",
+                )
+                .await?;
+            h.lake
+                .batch_execute(
+                    "INSERT INTO ivm_part_source (day, id, val) \
+                     VALUES ('d1', 1, 10), ('d1', 2, 20), ('d3', 3, 30)",
+                )
+                .await?;
+            h.lake
+                .batch_execute(
+                    "CREATE TABLE ivm_part_target (\
+                       day TEXT NOT NULL, k BIGINT NOT NULL, v BIGINT, \
+                       \"rowKinds\" TEXT NOT NULL, PRIMARY KEY (k)) \
+                     PARTITIONED BY (day) WITH (use_cdc = true, \
+                       lakesoul_cdc_change_column = 'rowKinds', \
+                       hash_bucket_num = 1)",
+                )
+                .await?;
+            // A batch writer owns d2 before IVM ever touches the table.
+            h.lake
+                .batch_execute(
+                    "INSERT INTO ivm_part_target (day, k, v, \"rowKinds\") \
+                     VALUES ('d2', 20, 200, 'insert')",
+                )
+                .await?;
+            let d2_before = partition_version(h, "ivm_part_target", "day=d2").await?;
+
+            h.lake
+                .batch_execute("SET lakesoul.ivm.enabled = on")
+                .await?;
+            h.lake
+                .execute(
+                    "INSERT INTO ivm_part_target \
+                     SELECT day, id, val FROM ivm_part_source",
+                    &[],
+                )
+                .await?;
+            let rows = h
+                .lake
+                .query("SELECT day, k, v FROM ivm_part_target ORDER BY day, k", &[])
+                .await?;
+            ensure_eq(
+                "partitioned bootstrap rows",
+                rows.iter()
+                    .map(|row| {
+                        (
+                            row.get::<_, String>(0),
+                            row.get::<_, i64>(1),
+                            row.get::<_, Option<i64>>(2),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("d1".to_string(), 1, Some(10)),
+                    ("d1".to_string(), 2, Some(20)),
+                    ("d2".to_string(), 20, Some(200)),
+                    ("d3".to_string(), 3, Some(30)),
+                ],
+            )?;
+            ensure_eq(
+                "d2 batch partition is untouched by the first refresh",
+                partition_version(h, "ivm_part_target", "day=d2").await?,
+                d2_before,
+            )?;
+
+            // A changed definition rebuilds only the IVM-owned d1 partition.
+            h.lake
+                .execute(
+                    "INSERT INTO ivm_part_target \
+                     SELECT day, id, val + 1 AS val FROM ivm_part_source",
+                    &[],
+                )
+                .await?;
+            let rows = h
+                .lake
+                .query("SELECT day, k, v FROM ivm_part_target ORDER BY day, k", &[])
+                .await?;
+            ensure_eq(
+                "partitioned rebuild rows",
+                rows.iter()
+                    .map(|row| {
+                        (
+                            row.get::<_, String>(0),
+                            row.get::<_, i64>(1),
+                            row.get::<_, Option<i64>>(2),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("d1".to_string(), 1, Some(11)),
+                    ("d1".to_string(), 2, Some(21)),
+                    ("d2".to_string(), 20, Some(200)),
+                    ("d3".to_string(), 3, Some(31)),
+                ],
+            )?;
+            ensure_eq(
+                "d2 batch partition is untouched by the rebuild",
+                partition_version(h, "ivm_part_target", "day=d2").await?,
+                d2_before,
+            )?;
+
+            // A batch commit in the IVM-owned d1 partition is an overlap and
+            // must be rejected before the next refresh.
+            h.lake
+                .batch_execute(
+                    "INSERT INTO ivm_part_target (day, k, v, \"rowKinds\") \
+                     VALUES ('d1', 4, 40, 'insert')",
+                )
+                .await?;
+            let error = h
+                .lake
+                .execute(
+                    "INSERT INTO ivm_part_target \
+                     SELECT day, id, val + 1 AS val FROM ivm_part_source",
+                    &[],
+                )
+                .await
+                .expect_err("IVM must reject an external commit in its partition");
+            let message = format!("{error:?}");
+            ensure!(
+                message.contains("not written by this IVM view"),
+                "unexpected partition conflict error: {message}"
+            );
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// The latest metadata version of one target partition.
+async fn partition_version(
+    h: &support::Harness,
+    table: &str,
+    partition_desc: &str,
+) -> Result<i64> {
+    let info = h
+        .meta()
+        .get_table_info_by_table_name(table, &h.lake_namespace)
+        .await?
+        .with_context(|| format!("{table} metadata"))?;
+    let mut latest = None;
+    for partition in h.meta().get_all_partition_info(&info.table_id).await? {
+        if partition.partition_desc == partition_desc {
+            latest = Some(
+                latest
+                    .map(|version: i64| version.max(i64::from(partition.version)))
+                    .unwrap_or(i64::from(partition.version)),
+            );
+        }
+    }
+    latest.with_context(|| format!("{table} has no partition {partition_desc}"))
 }
 
 fn ensure_eq<T: std::fmt::Debug + PartialEq>(

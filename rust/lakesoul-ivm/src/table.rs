@@ -1005,7 +1005,8 @@ impl IvmTable {
             atomic,
             committed,
             internal,
-            read_partitions,
+            owned_partitions,
+            begin_partitions,
             metadata,
         ) = {
             let guard = context
@@ -1017,7 +1018,8 @@ impl IvmTable {
                 guard.atomic,
                 guard.committed,
                 guard.internal,
-                guard.read_partitions.clone(),
+                guard.owned_partitions.clone(),
+                guard.begin_partitions.clone(),
                 guard.metadata.clone(),
             )
         };
@@ -1030,24 +1032,60 @@ impl IvmTable {
                 .await?);
         }
 
-        if !internal {
-            let current = latest_partition_info(client, &self.table_id).await?;
-            if !same_partition_versions(&read_partitions, &current) {
-                return Err(rootcause::report!(
-                    "target table {} changed while the IVM refresh was running: \
-                     another writer committed a partition; retry after it stops",
-                    self.table_name
-                ));
-            }
-        }
-        let file_descs = files
+        let written = files
             .iter()
             .map(|file| file.partition_desc.clone())
             .collect::<std::collections::HashSet<_>>();
-        let commit_ids = if atomic && !committed {
-            let empty_partitions = read_partitions
+        // An incremental refresh with no output does not touch the target.
+        if !atomic && written.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Every target partition this refresh reads or writes is in scope:
+        // owned partitions may be replaced by a rebuild, and written
+        // partitions are about to be committed.  Partitions owned by another
+        // writer are not touched.
+        let current = latest_partition_info(client, &self.table_id).await?;
+        if !internal && !partitions_unchanged(&begin_partitions, &current) {
+            return Err(rootcause::report!(
+                "target table {} changed while the IVM refresh was running: \
+                 another writer committed a partition; retry after it stops",
+                self.table_name
+            ));
+        }
+        // Internal derived/state tables keep the historical whole-table
+        // replacement; only the user-visible target tracks partition
+        // ownership.
+        let scope_partitions = if internal {
+            current
+        } else {
+            current
                 .iter()
-                .filter(|partition| !file_descs.contains(&partition.partition_desc))
+                .filter(|partition| {
+                    owned_partitions.contains(&partition.partition_desc)
+                        || written.contains(&partition.partition_desc)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        if !internal {
+            crate::runtime::TargetWrite::check_external_commits(
+                client,
+                &metadata,
+                &view_id,
+                &target_table_id,
+                &scope_partitions,
+            )
+            .await?;
+        }
+
+        let commit_ids = if atomic && !committed {
+            let empty_partitions = scope_partitions
+                .iter()
+                .filter(|partition| {
+                    (internal || owned_partitions.contains(&partition.partition_desc))
+                        && !written.contains(&partition.partition_desc)
+                })
                 .cloned()
                 .collect::<Vec<_>>();
             client
@@ -1055,29 +1093,61 @@ impl IvmTable {
                     &self.table_name,
                     &self.namespace,
                     files,
-                    read_partitions.clone(),
+                    scope_partitions,
                     empty_partitions,
                 )
                 .await?
+        } else if files.is_empty() {
+            Vec::new()
         } else {
-            if files.is_empty() {
-                Vec::new()
-            } else {
-                client
-                    .commit_data_files(&self.table_name, &self.namespace, files)
-                    .await?
-            }
+            client
+                .commit_data_files(&self.table_name, &self.namespace, files)
+                .await?
         };
         if !commit_ids.is_empty() {
             metadata.record_view_commits(&view_id, &commit_ids).await?;
         }
-        let current = latest_partition_info(client, &self.table_id).await?;
+
+        // The first commit of a rebuild replaces the owned set (partitions
+        // that produced no rows were emptied above); later commits add to it.
+        let mut new_owned = if atomic && !committed {
+            std::collections::HashSet::new()
+        } else {
+            owned_partitions
+        };
+        new_owned.extend(written.iter().cloned());
+        if !internal {
+            if atomic && !committed {
+                metadata
+                    .replace_view_partitions(
+                        &view_id,
+                        &new_owned.iter().cloned().collect::<Vec<_>>(),
+                    )
+                    .await?;
+            } else {
+                metadata
+                    .add_view_partitions(
+                        &view_id,
+                        &written.iter().cloned().collect::<Vec<_>>(),
+                    )
+                    .await?;
+            }
+        }
+        let after = latest_partition_info(client, &self.table_id).await?;
         {
             let mut guard = context
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.committed = true;
-            guard.read_partitions = current;
+            guard.owned_partitions = new_owned.clone();
+            guard.begin_partitions = if internal {
+                after
+            } else {
+                after
+                    .into_iter()
+                    .filter(|partition| new_owned.contains(&partition.partition_desc))
+                    .collect()
+            };
         }
         Ok(commit_ids)
     }
@@ -2422,15 +2492,15 @@ pub(crate) async fn latest_partition_info(
     Ok(latest.into_values().collect())
 }
 
-/// True when both partition lists have the same descriptions and versions.
-fn same_partition_versions(before: &[PartitionInfo], current: &[PartitionInfo]) -> bool {
-    let before = before
+/// True when every partition in `before` still has its captured version.
+fn partitions_unchanged(before: &[PartitionInfo], current: &[PartitionInfo]) -> bool {
+    let current = current
         .iter()
         .map(|partition| (&partition.partition_desc, partition.version))
         .collect::<std::collections::HashMap<_, _>>();
-    current.iter().all(|partition| {
-        before.get(&partition.partition_desc).copied() == Some(partition.version)
-    }) && before.len() == current.len()
+    before.iter().all(|partition| {
+        current.get(&partition.partition_desc).copied() == Some(partition.version)
+    })
 }
 
 /// The first or last key bytes of a batch.

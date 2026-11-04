@@ -2391,7 +2391,13 @@ pub(crate) struct TargetWrite {
     pub(crate) atomic: bool,
     pub(crate) committed: bool,
     pub(crate) internal: bool,
-    pub(crate) read_partitions: Vec<PartitionInfo>,
+    /// The target partitions this view has published.  A rebuild replaces
+    /// these partitions only; partitions owned by another writer are left
+    /// untouched.
+    pub(crate) owned_partitions: std::collections::HashSet<String>,
+    /// The target partition versions captured when the refresh began, used
+    /// to reject a concurrent commit in the same partition before publishing.
+    pub(crate) begin_partitions: Vec<PartitionInfo>,
     pub(crate) metadata: IvmMetadata,
 }
 
@@ -2405,9 +2411,9 @@ tokio::task_local! {
 }
 
 impl TargetWrite {
-    /// Capture the target partitions and reject data commits written by
-    /// another engine.  Compaction commits are allowed: they only rewrite
-    /// files the IVM already owns.
+    /// Capture the target partitions this view owns and reject data commits
+    /// written by another engine in them.  Compaction commits are allowed:
+    /// they only rewrite files the IVM already owns.
     pub(crate) async fn begin(
         client: &MetaDataClient,
         metadata: &IvmMetadata,
@@ -2415,8 +2421,6 @@ impl TargetWrite {
         target_table_id: &str,
         atomic: bool,
     ) -> Result<Self> {
-        let read_partitions =
-            crate::table::latest_partition_info(client, target_table_id).await?;
         let internal = client
             .get_table_info_by_table_id(target_table_id)
             .await?
@@ -2430,8 +2434,54 @@ impl TargetWrite {
                     .map(|value| value.eq_ignore_ascii_case("true"))
             })
             .unwrap_or(false);
+        let owned_partitions = if internal {
+            std::collections::HashSet::new()
+        } else {
+            metadata.view_partitions(view_id).await?
+        };
+        let current =
+            crate::table::latest_partition_info(client, target_table_id).await?;
+        let begin_partitions = if internal {
+            current
+        } else {
+            current
+                .into_iter()
+                .filter(|partition| owned_partitions.contains(&partition.partition_desc))
+                .collect::<Vec<_>>()
+        };
+        if !internal && !begin_partitions.is_empty() {
+            Self::check_external_commits(
+                client,
+                metadata,
+                view_id,
+                target_table_id,
+                &begin_partitions,
+            )
+            .await?;
+        }
+        Ok(Self {
+            view_id: view_id.to_string(),
+            target_table_id: target_table_id.to_string(),
+            atomic,
+            committed: false,
+            internal,
+            owned_partitions,
+            begin_partitions,
+            metadata: metadata.clone(),
+        })
+    }
+
+    /// Reject a data commit in `partitions` that this view did not write.
+    /// Compaction commits are allowed: they only rewrite files the IVM owns.
+    pub(crate) async fn check_external_commits(
+        client: &MetaDataClient,
+        metadata: &IvmMetadata,
+        view_id: &str,
+        target_table_id: &str,
+        partitions: &[PartitionInfo],
+    ) -> Result<()> {
         let own = metadata.view_commit_ids(view_id).await?;
-        for partition in read_partitions.iter().filter(|_| !internal) {
+        for partition in partitions {
             for id in &partition.snapshot {
                 let commit_id = uuid::Uuid::from_u64_pair(id.high, id.low).to_string();
                 if own.contains(&commit_id) {
@@ -2451,22 +2501,16 @@ impl TargetWrite {
                 });
                 if !compaction {
                     return Err(report!(
-                        "target table {target_table_id} partition {} contains commit {}                          that was not written by this IVM view; stop the other writer                          or run a batch overwrite before refreshing",
-                        partition.partition_desc,
-                        commit_id
+                        "target table {target_table_id} partition {} contains \
+                         commit {commit_id} that was not written by this IVM view; \
+                         stop the other writer or run a batch overwrite before \
+                         refreshing",
+                        partition.partition_desc
                     ));
                 }
             }
         }
-        Ok(Self {
-            view_id: view_id.to_string(),
-            target_table_id: target_table_id.to_string(),
-            atomic,
-            committed: false,
-            internal,
-            read_partitions,
-            metadata: metadata.clone(),
-        })
+        Ok(())
     }
 }
 

@@ -52,11 +52,11 @@ INSERT INTO target ...;
 
 - 只有 `INSERT ... SELECT` 会进入 IVM；`INSERT ... VALUES` 始终是普通 INSERT。
 - IVM 语句要求 autocommit；显式事务和多语句 simple-query batch 会被拒绝。
-- 目标表必须已有 `rowKinds`（LakeSoul CDC 变更列）。缺少 `__ivm_epoch` 时服务会把它加入表 schema，并自动 rebuild 数据。
+- 目标表必须已有 `rowKinds`（LakeSoul CDC 变更列）；PG DDL 允许用带引号的 `"rowKinds"` 声明这一精确列名。缺少 `__ivm_epoch` 时服务会把它加入表 schema，并自动 rebuild 数据。
 - 定义变化、state 为空或 dirty 时自动 rebuild。rebuild 对用户可见 target 使用一次原子 `UpdateCommit`，不会先 truncate，因此读请求不会看到空表。
-- 外部引擎对 IVM target scope 写入数据 commit 时，IVM 在 refresh 开始和提交前检测到并报错；compaction commit 放行。v1 的 target scope 是整张表，因此无分区 target 只能由 IVM 专用；分区后可按日期范围共存。
+- 目标表可以 `PARTITIONED BY`。IVM 记录自己发布过的分区；rebuild 只替换这些分区，其他分区保持原样。
+- 外部引擎在 IVM 拥有或本次写入的分区产生数据 commit 时，IVM 在 refresh 开始和提交前检测到并报错；compaction commit 放行。不同分区上的普通 batch/streaming 写入可以与 IVM 共存。
 - v1 只支持单机；`--ivm` 与 distributed 模式互斥。
-- 目标表建议由 Spark/Flink 创建（需要精确的 `rowKinds` 列名和 range partition）；PG DDL 的分区支持在独立分支中。
 
 ## 数据路径、隔离和判定
 

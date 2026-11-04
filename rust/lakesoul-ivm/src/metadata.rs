@@ -183,6 +183,16 @@ do $$ begin
     );
 exception when duplicate_table or unique_violation then null;
 end $$;
+
+do $$ begin
+    create table if not exists ivm.view_partitions (
+        view_id        text   not null,
+        partition_desc text   not null,
+        updated_at     bigint not null,
+        primary key (view_id, partition_desc)
+    );
+exception when duplicate_table or unique_violation then null;
+end $$;
 ";
 
 /// The persisted cursor of one source partition.
@@ -642,6 +652,68 @@ impl IvmMetadata {
             )
             .await?;
         Ok(rows.into_iter().map(|row| row.get(0)).collect())
+    }
+
+    /// The target partitions this view has published.  Only these partitions
+    /// are replaced by a rebuild; partitions written by another engine stay
+    /// untouched.
+    pub async fn view_partitions(
+        &self,
+        view_id: &str,
+    ) -> Result<std::collections::HashSet<String>> {
+        let rows = self
+            .client
+            .query(
+                "select partition_desc from ivm.view_partitions where view_id = $1::TEXT",
+                QueryType::RO,
+                &[&view_id],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|row| row.get(0)).collect())
+    }
+
+    /// Replace the set of target partitions a view owns, in one statement.
+    pub async fn replace_view_partitions(
+        &self,
+        view_id: &str,
+        partitions: &[String],
+    ) -> Result<()> {
+        let partitions = partitions.to_vec();
+        self.execute_rw(
+            "with removed as (
+                 delete from ivm.view_partitions where view_id = $1::TEXT returning 1
+             )
+             insert into ivm.view_partitions(view_id, partition_desc, updated_at)
+             select $1::TEXT, partition_desc, $3::BIGINT
+             from unnest($2::TEXT[]) as partition_desc
+             on conflict (view_id, partition_desc) do update
+             set updated_at = excluded.updated_at",
+            &[&view_id, &partitions, &crate::now_ms()],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Add target partitions to the view's ownership set.
+    pub async fn add_view_partitions(
+        &self,
+        view_id: &str,
+        partitions: &[String],
+    ) -> Result<()> {
+        if partitions.is_empty() {
+            return Ok(());
+        }
+        let partitions = partitions.to_vec();
+        self.execute_rw(
+            "insert into ivm.view_partitions(view_id, partition_desc, updated_at)
+             select $1::TEXT, partition_desc, $3::BIGINT
+             from unnest($2::TEXT[]) as partition_desc
+             on conflict (view_id, partition_desc) do update
+             set updated_at = excluded.updated_at",
+            &[&view_id, &partitions, &crate::now_ms()],
+        )
+        .await?;
+        Ok(())
     }
 
     /// Try to take the refresh lease of one view.  A lease left by a crashed

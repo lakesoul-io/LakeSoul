@@ -518,10 +518,15 @@ after merge-on-read, so it can never resurrect an older version of a key).
   truncates first, so readers of the old snapshot are unaffected.  Internal
   derived/state tables keep the truncate-and-append path so their incremental
   consumers see a normal append.
-* A data commit written by another engine in the target scope is rejected
-  before the refresh and again before its commit; compaction commits are
-  allowed.  A per-view lease serializes concurrent IVM refreshes of the same
-  target.
+* A range-partitioned target is maintained per partition: `ivm.view_partitions`
+  records the partitions a view has published, and a rebuild replaces only
+  those partitions (plus the partitions this refresh wrote).  Partitions owned
+  by another writer are left untouched, so batch/streaming may write other
+  partitions of the same target.
+* A data commit written by another engine in the target scope (owned or
+  written partitions) is rejected before the refresh and again before its
+  commit; compaction commits are allowed.  A per-view lease serializes
+  concurrent IVM refreshes of the same target.
 * The window identity (source, partition, from/to versions) is recorded in
   `ivm.epochs`. Re-applying the same window is a no-op; a partially written
   window is completed by the retry because the affected keys are rewritten.
