@@ -385,7 +385,7 @@
     "message": "默认就是增量"
   },
   "homepage.pillar2.body": {
-    "message": "开启 IVM 后，INSERT ... SELECT 基于 commit log 增量维护物化视图：只写变化的行，结果与全量重算一致。"
+    "message": "开启增量 SQL 后，INSERT ... SELECT 基于 commit log 增量更新目标表：只写变化的行，结果与全量重算一致。"
   },
   "homepage.pillar3.title": {
     "message": "向量原生"
@@ -438,9 +438,6 @@
   "homepage.arch.chipPostgres": {
     "message": "PostgreSQL 前端"
   },
-  "homepage.arch.chipIvm": {
-    "message": "增量视图"
-  },
   "homepage.arch.chipIndex": {
     "message": "向量 + 全文索引"
   },
@@ -482,5 +479,11 @@
   },
   "homepage.community.roadmap": {
     "message": "路线图"
+  },
+  "homepage.pillar2.tag": {
+    "message": "增量"
+  },
+  "homepage.arch.chipIncremental": {
+    "message": "增量 SQL"
   }
 }

@@ -110,11 +110,11 @@ export default function Home() {
       ),
     },
     {
-      tag: 'IVM',
+      tag: t('homepage.pillar2.tag', 'Incremental'),
       title: t('homepage.pillar2.title', 'Incremental by default'),
       body: t(
         'homepage.pillar2.body',
-        'With IVM enabled, INSERT ... SELECT maintains materialized views from the commit log: only changed rows are written, and the result matches a full recompute.'
+        'With incremental SQL enabled, INSERT ... SELECT updates its target from the commit log: only changed rows are written, and the result matches a full recompute.'
       ),
     },
     {
@@ -229,7 +229,7 @@ export default function Home() {
             <strong>{t('homepage.arch.engine', 'LakeSoul engine')}</strong>
             <div className={styles.archChips}>
               <span>{t('homepage.arch.chipPostgres', 'PostgreSQL front end')}</span>
-              <span>{t('homepage.arch.chipIvm', 'Incremental views')}</span>
+              <span>{t('homepage.arch.chipIncremental', 'Incremental SQL')}</span>
               <span>{t('homepage.arch.chipIndex', 'Vector + full-text indexes')}</span>
               <span>{t('homepage.arch.chipIo', 'Native IO · merge-on-read')}</span>
             </div>
@@ -260,7 +260,7 @@ export default function Home() {
             <h3 className={styles.quickTitle}>
               {t('homepage.quickstart.pg.title', 'PostgreSQL endpoint')}
             </h3>
-            <CodeBlock language="bash">{`cargo run -p postgres-lakesoul -- --port 5433 --ivm \\
+            <CodeBlock language="bash">{`cargo run -p postgres-lakesoul -- --port 5433 \\
   --warehouse-prefix file:///tmp/lakesoul/warehouse
 
 psql -h 127.0.0.1 -p 5433 -U lakesoul_test -d default`}</CodeBlock>

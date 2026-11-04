@@ -54,13 +54,14 @@ autocommit.
 
 ## Incremental by default
 
-With IVM enabled for the session, an `INSERT ... SELECT` issued from `psql`
-maintains its target incrementally: the refresh reads only the commits since its
+With incremental SQL enabled for the session, an `INSERT ... SELECT` issued from
+`psql` updates its target incrementally: each run reads only the commits since its
 cursor and writes only the changed rows. The result is identical to a full
 recompute.
 
 ```sql
 -- The target is a keyed table carrying the CDC change column "rowKinds".
+-- This switch enables incremental SQL for the session.
 SET lakesoul.ivm.enabled = on;
 
 INSERT INTO daily_revenue
@@ -70,7 +71,7 @@ GROUP BY 1, 2;
 ```
 
 - SQL-level incremental, not just storage-level incremental read/write
-- Replay-safe: every consumed window is recorded in `ivm.epochs`
+- Replay-safe: every consumed window is recorded, so a retry skips data that is already written
 
 ## Vector-native
 
@@ -121,7 +122,7 @@ docker exec -i lakesoul-pg sh -c \
   "PGPASSWORD=lakesoul_test psql -U lakesoul_test -f meta_init.sql"
 
 # 2. The PostgreSQL endpoint: database "default" is the LakeSoul namespace
-cargo run -p postgres-lakesoul -- --port 5433 --ivm \
+cargo run -p postgres-lakesoul -- --port 5433 \
   --warehouse-prefix file:///tmp/lakesoul/warehouse
 
 # 3. Connect with any PostgreSQL client
@@ -159,7 +160,7 @@ storage configuration and the full local setup.
                 │ PG wire                  │ native IO / Arrow
 ┌───────────────▼──────────────────────────▼───────────────────┐
 │                        LakeSoul engine                       │
-│  PostgreSQL front end   ·   incremental views (IVM)          │
+│  PostgreSQL front end   ·   incremental SQL                  │
 │  vector + full-text indexes   ·   vectorized execution       │
 └───────────────────────────────┬──────────────────────────────┘
                                 │
@@ -170,7 +171,8 @@ storage configuration and the full local setup.
 
 - **PostgreSQL front end** — wire protocol, `pg_catalog`, DDL and `INSERT`,
   executed by the engine rather than by a Postgres extension
-- **Incremental views** — refresh from the table's own commit log, replay-safe
+- **Incremental SQL** — each run consumes the table's own commit log and writes
+  only changed rows, replay-safe
 - **Vector and full-text indexes** — IVF + RaBitQ and Tantivy BM25, maintained on
   write
 - **Native IO** — Parquet, Vortex and Vortex Compact over object storage, with
@@ -187,7 +189,7 @@ with a stateless compute layer on top.
 | **Data lives in** | your Postgres tables, or Iceberg through an FDW | Postgres WAL plus a columnar copy | the provider's storage | **your object storage, in open files** |
 | **Executes in** | the Postgres process | Postgres and the mirror | the provider's service | **the lakehouse engine** |
 | **Write model** | Postgres MVCC | logical decoding into the mirror | Postgres MVCC | **primary-key upsert + merge-on-read** |
-| **Incremental compute** | — | — | — | **IVM over the commit log** |
+| **Incremental compute** | — | — | — | **incremental SQL over the commit log** |
 | **Vector index** | pgvector on heap | — | pgvector | **lake-resident, maintained on write** |
 | **Self-hosted** | yes | yes | no | **yes, Apache 2.0** |
 

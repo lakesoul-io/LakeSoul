@@ -26,15 +26,16 @@ design sketch; anything in *Later* is a direction we want feedback on.
   a transaction block.
 - **pgvector coverage.** Complete the operator, cast and index-option surface, and
   document exactly what is covered.
-- **Incremental views GA.** More query shapes, a `CREATE MATERIALIZED VIEW` /
-  `REFRESH` surface, and cursor-aware garbage collection for sources with a TTL.
+- **Incremental SQL GA.** More query shapes, a stable way to declare a target and
+  its query, and cursor-aware garbage collection for sources with a TTL.
 - **Python direct read GA.** Sharding, prefetch and snapshot semantics documented
   and benchmarked for Daft, Ray and PyTorch.
 
 ## Next
 
-- **Distributed incremental maintenance.** Push IVM refresh and compaction to the
-  distributed executor; today `--ivm` and distributed mode are mutually exclusive.
+- **Distributed incremental SQL.** Push incremental SQL and compaction to the
+  distributed executor; today incremental SQL and distributed mode are mutually
+  exclusive.
 - **Secondary indexes in Spark and Flink.** The index framework and the vector and
   full-text kinds exist; the JVM connectors do not use them yet.
 - **External catalog interoperability.** Let engines that do not link the native
@@ -56,12 +57,12 @@ design sketch; anything in *Later* is a direction we want feedback on.
   TABLE`, `DROP TABLE` and partitioned DDL; `INSERT` with `ON CONFLICT DO NOTHING`
   and `ON CONFLICT ... DO UPDATE SET col = EXCLUDED.col`; `pg_catalog`, `psql \d`,
   namespace-to-database mapping.
-- **Incremental views through PostgreSQL.** `SET lakesoul.ivm.enabled = on` makes
-  `INSERT ... SELECT` maintain the target from the source changelog, with atomic
-  rebuilds and per-view leases.
-- **Incremental materialized views.** Replay-safe refresh covering aggregates,
-  distinct aggregates, windows, top-k, joins, set operations and correlated
-  aggregates, with `ivm.epochs` bookkeeping.
+- **Incremental SQL through PostgreSQL.** `SET lakesoul.ivm.enabled = on` makes
+  `INSERT ... SELECT` update the target from the source changelog, with atomic
+  rebuilds and a per-target lease.
+- **Incremental SQL.** Replay-safe runs covering aggregates, distinct aggregates,
+  windows, top-k, joins, set operations and correlated aggregates, with epoch
+  bookkeeping.
 - **Multimodality.** [Vortex](https://github.com/vortex-data/vortex) and
   `vortex-compact` as the default layout, [Daft](https://github.com/Eventual-Inc/Daft)
   integration, blob references, ANN search with upserts, BM25 full-text search
