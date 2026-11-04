@@ -16,6 +16,7 @@ import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
 import org.apache.spark.sql._
+import org.apache.spark.sql.arrow.{CompactBucketIO, CompressDataFileInfo}
 import org.apache.spark.sql.functions.lit
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.SnapshotManagement
@@ -30,6 +31,7 @@ import org.apache.spark.sql.test.{SharedSparkSession, TestSparkSession}
 import org.junit.runner.RunWith
 import org.scalatest.BeforeAndAfterEach
 import org.scalatestplus.junit.JUnitRunner
+import scala.collection.JavaConverters._
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
 
@@ -41,13 +43,13 @@ class NewCompactionSuite
     with LakeSoulSQLCommandTest {
 
   override def sparkConf: SparkConf = {
-    // Keep legacy layout/count assertions independent of the new L1 default.
+    // Keep legacy layout/count assertions independent of the L0/L1 rolling default.
     // CompactBucketIO reads Hadoop Configuration on the executors.
     super.sparkConf
       .set("spark.network.timeout", "10000000")
-      .set(LakeSoulSQLConf.COMPACTION_L1_ROLLING_ENABLED.key, "false")
+      .set(LakeSoulSQLConf.COMPACTION_LOWLEVEL_ROLLING_ENABLED.key, "false")
       .set(
-        "spark.hadoop." + LakeSoulSQLConf.COMPACTION_L1_ROLLING_ENABLED.key,
+        "spark.hadoop." + LakeSoulSQLConf.COMPACTION_LOWLEVEL_ROLLING_ENABLED.key,
         "false"
       )
       .set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
@@ -1513,6 +1515,74 @@ class NewCompactionSuite
           ).toDF("date", "id", "name", "op")
         )
       })
+    }
+  }
+
+  test("size-triggered singletons and unfinished tails never enter discard") {
+    withSQLConf(LakeSoulSQLConf.NATIVE_IO_PHYSICAL_FORMAT.key -> "parquet") {
+      withTempDir { tempDir =>
+        val tablePath = tempDir.getCanonicalPath
+        (0 until 6).foreach { version =>
+          val rows = Seq((1, version, s"latest-$version"),
+            (100 + version, version, s"unique-$version"))
+            .toDF("id", "version", "value").coalesce(1)
+          if (version == 0) rows.write.format("lakesoul")
+            .option("hashPartitions", "id").option("hashBucketNum", "1").save(tablePath)
+          else LakeSoulTable.forPath(tablePath).upsert(rows)
+        }
+        val original = getFileList(tablePath)
+        assert(original.length == 6)
+        val info = getTableInfo(tablePath)
+        val conf = spark.sessionState.newHadoopConf()
+        conf.setBoolean(LakeSoulSQLConf.COMPACTION_LOWLEVEL_ROLLING_ENABLED.key, false)
+        conf.setInt(LakeSoulSQLConf.MAX_NUM_LEVELS_LIMIT.key, 2)
+        conf.setInt(LakeSoulSQLConf.COMPACTION_MAX_LEVEL_FILE_NUM_LIMIT.key, 3)
+        conf.setInt(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_NUM_LIMIT.key, 2)
+        conf.set(LakeSoulSQLConf.COMPACTION_LEVEL_FILE_MERGE_SIZE_LIMIT.key, "16KB")
+        conf.set(LakeSoulSQLConf.COMPACTION_LEVEL_MAX_FILE_SIZE.key, "1MB")
+        conf.unset("max_file_size")
+        val directory = new Path(info.table_path.toString, "compactdir2")
+        val fs = directory.getFileSystem(conf)
+        assert(fs.mkdirs(directory) || fs.exists(directory))
+        // Real files with controlled planning sizes force batches [A,B], [C],
+        // [D,E], then an unfinished [F]. L2 is the last level, so C cannot move.
+        val sizes = Seq(8L, 8L, 32L, 8L, 8L, 8L).map(_ * 1024)
+        val input = original.zip(sizes).map { case (file, size) =>
+          val source = new Path(file.path)
+          val destination = new Path(directory, source.getName)
+          assert(org.apache.hadoop.fs.FileUtil.copy(
+            source.getFileSystem(conf), source, fs, destination, false, false, conf))
+          new CompressDataFileInfo(destination.toString, size, file.file_exist_cols,
+            fs.getFileStatus(destination).getModificationTime)
+        }.toList.asJava
+        val io = new CompactBucketIO(conf, input, info, info.table_path.toString,
+          "-5", 1, Int.MaxValue, Long.MaxValue, false, 0L, "parquet")
+        val result = try io.startCompactTask() finally io.close()
+        val outputs = result.get("-5").asScala.toSeq
+        val discarded = result.get(CompactBucketIO.DISCARD_FILE_LIST_KEY).asScala.toSeq
+        val activePaths = outputs.map(_.getFilePath).toSet
+        val discardPaths = discarded.map(_.getFilePath).toSet
+        assert(outputs.size == 4)
+        assert(outputs(1).getFilePath == input.get(2).getFilePath)
+        assert(outputs(3).getFilePath == input.get(5).getFilePath)
+        assert(discarded.size == 4)
+        assert(discardPaths == Set(0, 1, 3, 4).map(index => input.get(index).getFilePath))
+        assert(activePaths.intersect(discardPaths).isEmpty,
+          "Files retained in the final snapshot must never be marked discarded")
+        (outputs ++ discarded).foreach { file =>
+          val path = new Path(file.getFilePath)
+          assert(path.getFileSystem(conf).getFileStatus(path).isFile)
+        }
+        Seq(0 until 2, 2 until 3, 3 until 5, 5 until 6)
+          .zip(outputs).foreach { case (versions, file) =>
+            checkAnswer(spark.read.parquet(file.getFilePath).select("id", "version", "value"),
+              versions.map(v => Row(100 + v, v, s"unique-$v")) :+
+                Row(1, versions.last, s"latest-${versions.last}"))
+          }
+        LakeSoulTable.uncached(tablePath)
+        checkAnswer(LakeSoulTable.forPath(tablePath).toDF.select("id", "version", "value"),
+          (0 until 6).map(v => Row(100 + v, v, s"unique-$v")) :+ Row(1, 5, "latest-5"))
+      }
     }
   }
 

@@ -178,18 +178,18 @@ object LakeSoulSQLConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMPACTION_L1_ROLLING_ENABLED =
-    buildConf("compaction.l1.rolling.enabled")
+  val COMPACTION_LOWLEVEL_ROLLING_ENABLED =
+    buildConf("compaction.lowlevel.rolling.enabled")
       .doc(
-        "Enable sequential L1 small-file merging; disabled preserves legacy behavior."
+        "Enable lowlevel (L0-L1) rolling compaction; disabled uses legacy L0 batching and L1 merging."
       )
       .booleanConf
       .createWithDefault(true)
 
-  val COMPACTION_L1_ROLLING_TABLES =
-    buildConf("compaction.l1.rolling.tables")
+  val COMPACTION_LOWLEVEL_ROLLING_TABLES =
+    buildConf("compaction.lowlevel.rolling.tables")
       .doc(
-        "Comma-separated exact namespace.table names eligible for L1 rolling compaction. " +
+        "Comma-separated exact namespace.table names eligible for lowlevel (L0-L1) rolling compaction. " +
           "Empty allows all tables; rolling.enabled must also be true."
       )
       .stringConf
