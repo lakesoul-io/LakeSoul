@@ -98,13 +98,19 @@ pub use resolver::{
 /// ignore unknown fields rather than rejecting them, so a plan written by this
 /// build would have been silently accepted by a `/1` worker.
 ///
-/// `/2` introduced the explicit [`codec::CODEC_VERSION`] field and the Vortex
-/// codec at position 2.
+/// `/2` is the current generation and the first one versioned on the wire: it
+/// carries the explicit [`codec::CODEC_VERSION`] field and registers the vortex
+/// scan codec at position 2 and the metadata-only scan codec at position 3 of
+/// [`codec::user_codecs`]. All of it is one generation because none of those
+/// formats has ever been released — a `/2` worker from this tree resolves every
+/// codec position a coordinator from it can stamp. Split them the moment one of
+/// them ships on its own: extension payloads name the *position* of the codec
+/// that wrote them, so a coordinator that can stamp position 3 needs workers
+/// that resolve it.
 ///
-/// `/3` adds [`codec::LakeSoulScanCodec`] at position 3, including its optional
-/// scan limit. Discovery must exclude `/2` workers before a coordinator can
-/// dispatch metadata-only scan descriptors that they cannot decode.
-pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/3";
+/// Advertising `/2` filters `/1` workers out at discovery and closes the other
+/// direction at decode time.
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2";
 
 pub use worker::{
     LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker,

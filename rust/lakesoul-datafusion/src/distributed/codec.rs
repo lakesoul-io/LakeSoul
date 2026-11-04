@@ -74,10 +74,11 @@ use vortex_datafusion::{VortexScanCodec, VortexSource};
 /// The generation also covers the *list* of codecs (see [`user_codecs`]): its
 /// order decides which codec reads an extension payload, so registering a
 /// codec a worker does not know is a protocol change even when no existing
-/// message layout moved. Version 2 added [`VortexScanCodec`] at position 2.
-/// Version 3 adds [`LakeSoulScanCodec`] at position 3, including its scan limit;
-/// version-2 workers cannot decode these metadata-only scan descriptors.
-pub const CODEC_VERSION: u32 = 3;
+/// message layout moved. Generation 2 adds [`VortexScanCodec`] at position 2
+/// and [`LakeSoulScanCodec`] at position 3, including its optional scan limit.
+/// Both ride the first versioned generation because neither payload has been
+/// released on its own; split them the moment one ships alone.
+pub const CODEC_VERSION: u32 = 2;
 
 /// Wire format for [`MergeParquetExec`].
 ///
