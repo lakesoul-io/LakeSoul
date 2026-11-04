@@ -312,14 +312,30 @@ class ConsoleTests(unittest.TestCase):
 
     def test_memory_windows_follow_a_growing_sample_file(self):
         def line(ts: float, anon: int, allocated: int | None, pool: int) -> str:
-            return json.dumps(dict(ts=ts, rss_bytes=anon + 10, rss_anon_bytes=anon,
-                                   jemalloc_allocated_bytes=allocated, jemalloc_active_bytes=allocated,
-                                   jemalloc_resident_bytes=allocated, pool_reserved_bytes=pool)) + "\n"
+            return (
+                json.dumps(
+                    dict(
+                        ts=ts,
+                        rss_bytes=anon + 10,
+                        rss_anon_bytes=anon,
+                        jemalloc_allocated_bytes=allocated,
+                        jemalloc_active_bytes=allocated,
+                        jemalloc_resident_bytes=allocated,
+                        pool_reserved_bytes=pool,
+                    )
+                )
+                + "\n"
+            )
+
         with tempfile.TemporaryDirectory() as directory:
             timeline = MemoryTimeline(str(Path(directory) / "memory.jsonl"))
             self.assertIsNone(timeline.window(0.0, 1.0))  # not created yet
             with open(timeline.path, "w", encoding="utf-8") as f:
-                f.write(line(1.0, 100, 50, 0) + line(2.0, 300, 90, 40) + line(3.0, 200, None, 80))
+                f.write(
+                    line(1.0, 100, 50, 0)
+                    + line(2.0, 300, 90, 40)
+                    + line(3.0, 200, None, 80)
+                )
                 f.write(line(4.0, 999, 999, 999)[:20])  # the sampler is mid-write
                 f.flush()
                 window = timeline.window(1.5, 3.0)
@@ -331,7 +347,9 @@ class ConsoleTests(unittest.TestCase):
                 self.assertEqual(window["at_rss_anon_peak"]["pool_reserved_bytes"], 40)
                 f.write(line(4.0, 999, 999, 999)[20:])
                 f.flush()
-                self.assertEqual(timeline.window(3.5, 4.5)["peak"]["rss_anon_bytes"], 999)
+                self.assertEqual(
+                    timeline.window(3.5, 4.5)["peak"]["rss_anon_bytes"], 999
+                )
                 self.assertIsNone(timeline.window(5.0, 6.0))
 
 

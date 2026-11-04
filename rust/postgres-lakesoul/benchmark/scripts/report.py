@@ -140,13 +140,21 @@ def memory_table(rows: list[dict]) -> list[dict]:
             groups[(phase(r), r["query"])].append(r["memory"])
     table = []
     for (ph, q), mems in sorted(groups.items()):
+
         def p50(key: str) -> float | None:
             vals = [m["peak"][key] for m in mems if m["peak"].get(key) is not None]
             return statistics.median(vals) if vals else None
+
         worst = max(mems, key=lambda m: m["peak"].get("rss_anon_bytes") or 0)
-        table.append({"phase": ph, "query": q, "n": len(mems),
-                      "peak_p50": {k: p50(k) for k in MEMORY_VIEWS},
-                      "at_max_rss_anon": worst["at_rss_anon_peak"]})
+        table.append(
+            {
+                "phase": ph,
+                "query": q,
+                "n": len(mems),
+                "peak_p50": {k: p50(k) for k in MEMORY_VIEWS},
+                "at_max_rss_anon": worst["at_rss_anon_peak"],
+            }
+        )
     return table
 
 
@@ -275,11 +283,21 @@ def print_summary(s: dict) -> None:
     if s["restarts"]:
         print(f"restarts: {json.dumps(s['restarts'])}")
     if s["memory"]:
-        views = ["RssAnon", "jemalloc resident", "jemalloc active", "jemalloc allocated", "pool reserved"]
-        print("\nmemory MiB from in-process samples: p50 over iterations of each view's peak; then the "
-              "iteration with the highest RssAnon, all views at its RssAnon peak")
-        print(f"| phase | query | n | {' | '.join(f'p50 peak {v}' for v in views)} | "
-              f"{' | '.join(f'@max {v}' for v in views)} |")
+        views = [
+            "RssAnon",
+            "jemalloc resident",
+            "jemalloc active",
+            "jemalloc allocated",
+            "pool reserved",
+        ]
+        print(
+            "\nmemory MiB from in-process samples: p50 over iterations of each view's peak; then the "
+            "iteration with the highest RssAnon, all views at its RssAnon peak"
+        )
+        print(
+            f"| phase | query | n | {' | '.join(f'p50 peak {v}' for v in views)} | "
+            f"{' | '.join(f'@max {v}' for v in views)} |"
+        )
         print("|---" * (3 + 2 * len(views)) + "|")
         for r in s["memory"]:
             peaks = " | ".join(mib(r["peak_p50"][k]) for k in MEMORY_VIEWS)
@@ -337,7 +355,9 @@ def cmd_compare(a) -> None:
         )
 
 
-def prom_points(run: Path, name: str, query: str, pods: set[str]) -> dict[tuple[str, float], float]:
+def prom_points(
+    run: Path, name: str, query: str, pods: set[str]
+) -> dict[tuple[str, float], float]:
     """A `sum by (pod)` range series as {(pod, timestamp): value}, over this
     run's pods only (the query window can include the previous deployment's
     pods). Series of one collect share start and step, so timestamps align."""
@@ -424,9 +444,18 @@ def cmd_memory(a) -> None:
             # peaked. The sampler sets them each interval, but a scrape may
             # straddle two samples, and the pool gauge is live: aligned to
             # within one sample interval, not one instant.
-            at_peak = prom_at_peak(run, name, PROM_PROCESS_RSS_ANON, [
-                PROM_JEMALLOC_RESIDENT, PROM_JEMALLOC_ACTIVE, PROM_JEMALLOC_ALLOCATED,
-                PROM_MEMORY_POOL_RESERVED], pods)
+            at_peak = prom_at_peak(
+                run,
+                name,
+                PROM_PROCESS_RSS_ANON,
+                [
+                    PROM_JEMALLOC_RESIDENT,
+                    PROM_JEMALLOC_ACTIVE,
+                    PROM_JEMALLOC_ALLOCATED,
+                    PROM_MEMORY_POOL_RESERVED,
+                ],
+                pods,
+            )
             delta = restarts_now - prev_restarts
             prev_restarts = restarts_now
             print(

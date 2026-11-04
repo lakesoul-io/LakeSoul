@@ -105,8 +105,13 @@ def pvc_index() -> dict[str, dict]:
 def ephemeral_pvcs(pod: dict, pvcs: dict[str, dict]) -> list[dict]:
     """The generic ephemeral volumes' PVCs of a pod (named `<pod>-<volume>`)."""
     name = pod["metadata"]["name"]
-    return [pvcs.get(f"{name}-{v['name']}", {"name": f"{name}-{v['name']}", "phase": "missing"})
-            for v in pod["spec"].get("volumes") or [] if "ephemeral" in v]
+    return [
+        pvcs.get(
+            f"{name}-{v['name']}", {"name": f"{name}-{v['name']}", "phase": "missing"}
+        )
+        for v in pod["spec"].get("volumes") or []
+        if "ephemeral" in v
+    ]
 
 
 def pods_snapshot() -> list[dict]:
@@ -340,11 +345,18 @@ def cmd_deploy(a) -> None:
     # process that exits at startup (bad configuration) passes rollout status.
     time.sleep(15)
     snap = pods_snapshot()
-    broken = [f"{p['name']}:{c['name']} ready={c['ready']} restarts={c['restarts']}"
-              for p in snap if p["labels"].get("app.kubernetes.io/component") in CONTAINERS
-              for c in p["containers"] if not c["ready"] or c["restarts"]]
+    broken = [
+        f"{p['name']}:{c['name']} ready={c['ready']} restarts={c['restarts']}"
+        for p in snap
+        if p["labels"].get("app.kubernetes.io/component") in CONTAINERS
+        for c in p["containers"]
+        if not c["ready"] or c["restarts"]
+    ]
     if broken:
-        write_json(run / "deploy.json", {"profile": a.profile, "env": envs, "workers": a.workers, "pods": snap})
+        write_json(
+            run / "deploy.json",
+            {"profile": a.profile, "env": envs, "workers": a.workers, "pods": snap},
+        )
         raise SystemExit(f"service pods not healthy after rollout: {broken}")
     limits = {}
     for p in snap:
@@ -679,7 +691,10 @@ def cmd_console(a) -> None:
             args += ["--worker", url]
     # The console Job does not read lakesoul-config; mirror its allocator
     # default (`--env MALLOC_CONF=...` overrides it).
-    env = {"MALLOC_CONF": "background_thread:true", **dict(kv.split("=", 1) for kv in a.env or [])}
+    env = {
+        "MALLOC_CONF": "background_thread:true",
+        **dict(kv.split("=", 1) for kv in a.env or []),
+    }
     job = f"lsbench-console-{re.sub(r'[^a-z0-9-]', '-', name.lower())[:30]}-{int(time.time()) % 100000}"
     manifest = render(
         "console-job.yaml",
@@ -936,7 +951,12 @@ def main() -> None:
     g.add_argument("--cpu-lim", default="4")
     g.add_argument("--mem-req", default="1Gi")
     g.add_argument("--mem-lim", default="6Gi")
-    g.add_argument("--node-selector", action="append", metavar="K=V", help="Pod nodeSelector label, repeatable")
+    g.add_argument(
+        "--node-selector",
+        action="append",
+        metavar="K=V",
+        help="Pod nodeSelector label, repeatable",
+    )
     g.set_defaults(fn=cmd_datagen)
     r = sub.add_parser("drive")
     r.add_argument("--run-dir", required=True)
@@ -945,7 +965,12 @@ def main() -> None:
     r.add_argument("--timeout", type=float, default=3600)
     r.add_argument("--cpu-req", default="250m")
     r.add_argument("--cpu-lim", default="2")
-    r.add_argument("--node-selector", action="append", metavar="K=V", help="Pod nodeSelector label, repeatable")
+    r.add_argument(
+        "--node-selector",
+        action="append",
+        metavar="K=V",
+        help="Pod nodeSelector label, repeatable",
+    )
     r.add_argument("driver_args", nargs=argparse.REMAINDER)
     r.set_defaults(fn=cmd_drive)
     k = sub.add_parser(

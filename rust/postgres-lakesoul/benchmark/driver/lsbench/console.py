@@ -181,8 +181,14 @@ class Parser:
         )
 
 
-MEMORY_KEYS = ("rss_bytes", "rss_anon_bytes", "jemalloc_allocated_bytes",
-               "jemalloc_active_bytes", "jemalloc_resident_bytes", "pool_reserved_bytes")
+MEMORY_KEYS = (
+    "rss_bytes",
+    "rss_anon_bytes",
+    "jemalloc_allocated_bytes",
+    "jemalloc_active_bytes",
+    "jemalloc_resident_bytes",
+    "pool_reserved_bytes",
+)
 
 
 class MemoryTimeline:
@@ -229,8 +235,11 @@ class MemoryTimeline:
             return max(values) if values else None
 
         at_peak = max(inside, key=lambda s: s.get("rss_anon_bytes") or 0)
-        return dict(samples=len(inside), peak={k: peak(k) for k in MEMORY_KEYS},
-                    at_rss_anon_peak={k: at_peak.get(k) for k in ("ts", *MEMORY_KEYS)})
+        return dict(
+            samples=len(inside),
+            peak={k: peak(k) for k in MEMORY_KEYS},
+            at_rss_anon_peak={k: at_peak.get(k) for k in ("ts", *MEMORY_KEYS)},
+        )
 
 
 def check(outcome: dict, answer: Path, sql: str) -> tuple[bool, str | None]:
