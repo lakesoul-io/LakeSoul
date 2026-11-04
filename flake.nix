@@ -254,7 +254,7 @@
       # `.cargo/config.toml` points target-dir at rust/target; crane's
       # artifact hooks expect the default.
       CARGO_TARGET_DIR = "target";
-      cargoExtraArgs = "--locked -p lakesoul-datafusion --bin lakesoul-worker -p postgres-lakesoul --bin postgres-lakesoul";
+      cargoExtraArgs = "--locked -p lakesoul-worker --bin lakesoul-worker -p postgres-lakesoul --bin postgres-lakesoul";
       nativeBuildInputs = with pkgs; [
         protobuf
         # vortex's build script generates FlatBuffers bindings with flatc.

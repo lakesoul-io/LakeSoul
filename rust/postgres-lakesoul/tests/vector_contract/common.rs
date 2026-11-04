@@ -103,7 +103,11 @@ pub async fn assert_index_path(
             "case={id}: expected exact fallback, actual physical plan:\n{plan}"
         );
         ensure!(
-            plan.contains("DataSourceExec") || plan.contains("MergeParquetExec"),
+            // A metadata-only scan leaf reads the same files; it builds the
+            // per-file plans on its first poll instead of during planning.
+            plan.contains("DataSourceExec")
+                || plan.contains("MergeParquetExec")
+                || plan.contains("LakeSoulScanExec"),
             "case={id}: exact fallback must read persisted data, actual physical plan:\n{plan}"
         );
     }

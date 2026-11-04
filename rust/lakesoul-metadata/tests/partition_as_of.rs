@@ -12,7 +12,9 @@ use std::time::Duration;
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_metadata::error::Result;
 use lakesoul_metadata::transfusion::DataFileInfo;
-use lakesoul_metadata_proto::entity::{PartitionInfo, TableInfo};
+use lakesoul_metadata_proto::entity::{
+    CommitOp, DataCommitInfo, FileOp, PartitionInfo, TableInfo,
+};
 
 const NAMESPACE: &str = "default";
 const COMMIT_GAP: Duration = Duration::from_millis(20);
@@ -234,6 +236,79 @@ async fn as_of_covers_partitions_created_at_different_times() -> Result<()> {
         .await?
         .expect("partition a at t_a1");
     assert_eq!(a_at_t_a1.version, 1);
+
+    client.drop_table(&name, NAMESPACE).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn data_file_infos_replay_the_selected_snapshot_without_the_latest() -> Result<()> {
+    let client = MetaDataClient::from_env().await?;
+    let name = unique_name("descriptors");
+    let table_id = create_test_table(&client, &name).await?;
+
+    let mut first = file("p1", "f1");
+    first.size = 10;
+    first.file_exist_cols = "id,value".to_string();
+    client
+        .commit_data_files(&name, NAMESPACE, vec![first])
+        .await?;
+    let v0 = latest_partition_info(&client, &table_id, "p1").await?;
+    assert_eq!(v0.version, 0);
+    let first_timestamp =
+        client.get_data_file_infos_of_single_partition(&v0).await?[0].modification_time;
+
+    // A later version deletes f1 and adds f2 in one commit. The v0 snapshot is
+    // kept alive so descriptors must be derived from it, not from the latest
+    // partition version.
+    let (high, low) = uuid::Uuid::new_v4().as_u64_pair();
+    client
+        .commit_data_commit_info(DataCommitInfo {
+            table_id: table_id.clone(),
+            partition_desc: "p1".to_string(),
+            commit_id: Some(lakesoul_metadata_proto::entity::Uuid { high, low }),
+            file_ops: vec![
+                lakesoul_metadata_proto::entity::DataFileOp {
+                    path: "/tmp/p1/f2.parquet".to_string(),
+                    file_op: FileOp::Add.into(),
+                    size: 20,
+                    file_exist_cols: "id".to_string(),
+                },
+                lakesoul_metadata_proto::entity::DataFileOp {
+                    path: "/tmp/p1/f1.parquet".to_string(),
+                    file_op: FileOp::Del.into(),
+                    size: 0,
+                    file_exist_cols: String::new(),
+                },
+            ],
+            commit_op: CommitOp::AppendCommit.into(),
+            timestamp: first_timestamp + 1,
+            domain: "public".to_string(),
+            ..Default::default()
+        })
+        .await?;
+    let v1 = latest_partition_info(&client, &table_id, "p1").await?;
+    assert_eq!(v1.version, 1);
+
+    let v0_files = client.get_data_file_infos_of_single_partition(&v0).await?;
+    assert_eq!(v0_files.len(), 1);
+    assert_eq!(v0_files[0].path, "/tmp/p1/f1.parquet");
+    assert_eq!(v0_files[0].size, 10);
+    assert_eq!(v0_files[0].file_exist_cols, "id,value");
+    assert_eq!(v0_files[0].file_op, "add");
+    assert_eq!(v0_files[0].partition_desc, "p1");
+
+    let v1_files = client.get_data_file_infos_of_single_partition(&v1).await?;
+    assert_eq!(v1_files.len(), 1);
+    assert_eq!(v1_files[0].path, "/tmp/p1/f2.parquet");
+    assert_eq!(v1_files[0].size, 20);
+    assert_eq!(v1_files[0].file_exist_cols, "id");
+
+    // The path-only API keeps returning the same snapshot membership.
+    assert_eq!(
+        client.get_data_files_of_single_partition(&v0).await?,
+        vec!["/tmp/p1/f1.parquet".to_string()]
+    );
 
     client.drop_table(&name, NAMESPACE).await?;
     Ok(())

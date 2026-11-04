@@ -23,9 +23,12 @@
 //! [`user_codecs`]: crate::distributed::codec::user_codecs
 //! [`MergeParquetExec`]: lakesoul_io::physical_plan::MergeParquetExec
 
+use std::sync::Arc;
+
 use datafusion::common::Result as DFResult;
 use datafusion::execution::FunctionRegistry;
 use datafusion::execution::SessionState;
+use datafusion::execution::memory_pool::MemoryPool;
 use datafusion_distributed::{
     DistributedExt, Worker, WorkerQueryContext, WorkerSessionBuilder,
 };
@@ -76,22 +79,24 @@ impl WorkerSessionBuilder for LakeSoulWorkerSessionBuilder {
 }
 
 /// Options for building a LakeSoul worker.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LakeSoulWorkerOptions {
     /// Object-store / warehouse configuration. Must match the coordinator's
     /// (`CoreArgs` is shared exactly for this reason).
     pub core_args: CoreArgs,
-    /// One execution memory budget shared by all tasks in this worker.
-    pub memory: crate::session::ExecutionMemoryArgs,
+    /// One execution memory budget shared by all tasks in this worker; see
+    /// [`ExecutionMemoryArgs::create_pool`](crate::session::ExecutionMemoryArgs::create_pool).
+    pub memory_pool: Arc<dyn MemoryPool>,
 }
 
 /// Builds a LakeSoul [`Worker`]: RuntimeEnv with warehouse object stores, the
 /// LakeSoul codec, and the UDF registry, advertising
 /// [`DISTRIBUTED_PROTOCOL_VERSION`].
 pub fn lakesoul_worker(options: &LakeSoulWorkerOptions) -> crate::Result<Worker> {
-    options.memory.install_vortex_decode_budget()?;
-    let runtime =
-        crate::session::build_worker_runtime_env(&options.core_args, &options.memory)?;
+    let runtime = crate::session::build_worker_runtime_env(
+        &options.core_args,
+        Arc::clone(&options.memory_pool),
+    )?;
     Ok(Worker::from_session_builder(LakeSoulWorkerSessionBuilder)
         .with_runtime_env(runtime)
         .with_version(DISTRIBUTED_PROTOCOL_VERSION))

@@ -136,6 +136,14 @@ to one partition. A failed query is recorded with `status: "error"` and the
 run continues. If the console dies, the running query is `disconnected` and a
 `type: "aborted"` record follows.
 
+The console writes a memory sample (process RSS and RssAnon, jemalloc
+allocated/active/resident bytes, execution pool reservation) to a temporary
+file every `--memory-sample-interval-ms` (default 100). Each query record
+gets `memory`: `samples`, per-view `peak`, and `at_rss_anon_peak` (all views
+of the sample with the highest RssAnon) over the samples taken between its
+`start_unix` and `end_unix`, or `null` when none were. Raw samples are not
+written to `--out`.
+
 ## Closed-loop and open-loop load
 
 Create a mix JSON file, for example:

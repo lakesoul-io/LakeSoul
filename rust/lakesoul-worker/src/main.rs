@@ -27,10 +27,12 @@ use lakesoul_datafusion::distributed::{
 };
 use lakesoul_datafusion::session::ExecutionMemoryArgs;
 use lakesoul_observability::{
-    LogFormat, PrometheusMetricsConfig, TracingConfig, init_tracing,
+    LogFormat, MemorySamplingArgs, PrometheusMetricsConfig, TracingConfig, init_tracing,
     install_prometheus_metrics, spawn_reload_on_sighup,
 };
 use tracing::info;
+
+mod allocator;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -60,6 +62,9 @@ struct Args {
 
     #[command(flatten)]
     memory: ExecutionMemoryArgs,
+
+    #[command(flatten)]
+    memory_sampling: MemorySamplingArgs,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -69,14 +74,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         metrics_addr,
         core,
         memory,
+        memory_sampling,
     } = Args::parse();
-    let options = LakeSoulWorkerOptions {
-        core_args: core,
-        memory,
-    };
 
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(options.core_args.worker_threads.max(2))
+        .worker_threads(core.worker_threads.max(2))
         .enable_all()
         .build()?
         .block_on(async move {
@@ -97,6 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // Dynamic log level: edit LAKESOUL_LOG_FILTER_FILE (or RUST_LOG)
             // and `kill -HUP <pid>`.
             spawn_reload_on_sighup(tracing_guard.filter_handle());
+            allocator::log_active();
             install_prometheus_metrics(PrometheusMetricsConfig::new(
                 "lakesoul-worker",
                 metrics_addr,
@@ -113,6 +116,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "starting LakeSoul worker (protocol {DISTRIBUTED_PROTOCOL_VERSION}) on {bind}:{port}"
             );
 
+            // Created after the metrics recorder: the pool and the sampler
+            // bind their gauges to it.
+            memory.install_vortex_decode_budget()?;
+            let memory_pool = memory.create_pool();
+            {
+                let pool = Arc::clone(&memory_pool);
+                memory_sampling.spawn(allocator::stats_reader(), move || pool.reserved())?;
+            }
+            let options = LakeSoulWorkerOptions {
+                core_args: core,
+                memory_pool,
+            };
             let addr: SocketAddr = format!("{bind}:{port}").parse()?;
             let listener = tokio::net::TcpListener::bind(addr).await?;
             spawn_lakesoul_worker(&options, listener).await?;

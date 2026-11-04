@@ -52,9 +52,11 @@ use datafusion_distributed::{
     get_distributed_worker_resolver,
 };
 use lakesoul_io::file_format::PhysicalFormat;
+use lakesoul_io::physical_plan::LakeSoulScanExec;
 
-use crate::distributed::codec::source_has_wire_form;
+use crate::distributed::codec::{lazy_scan_has_wire_form, source_has_wire_form};
 use crate::planner::LakeSoulQueryPlanner;
+use crate::planner::query_planner::end_current_otel_span;
 
 /// Session extension marking a query the coordinator plans locally after the
 /// distributed planner gave up on it ([`LakeSoulDistributedQueryPlanner`]
@@ -71,11 +73,11 @@ struct LocalFallback;
 /// worker or fails (the distributed planner fails such a query, and a
 /// fallback plans it locally), and the local fallback itself.
 ///
-/// A merge-on-read scan packs its range partitions into at most this many
-/// merges, one per task; see `LakeSoulTableProvider::scan`. The value only
-/// shapes the plan: a resolver whose answer changes before the distributed
-/// planner asks again yields more or fewer merges per task, never a merge
-/// split across tasks.
+/// A merge-on-read scan packs whole (range partition, bucket) units into at
+/// most this many merges, one per task; see `LakeSoulTableProvider::scan`. It
+/// only shapes the plan: a resolver whose answer changes before the
+/// distributed planner asks again yields more or fewer merges per task, never
+/// a merge split across tasks.
 pub(crate) fn scan_task_budget(config: &SessionConfig) -> usize {
     if config.get_extension::<LocalFallback>().is_some() {
         return 1;
@@ -188,11 +190,24 @@ fn unshippable_scan_leaf(plan: &Arc<dyn ExecutionPlan>) -> Option<String> {
 /// Within a stage, `DataSourceExec`s over non-file sources (memory, …) are
 /// skipped - they serialize themselves and have no files to read - and a leaf
 /// below a `MergeParquetExec` (a primary-key work unit) is reached as well.
+///
+/// A metadata-only [`LakeSoulScanExec`] is an opaque leaf: its files are
+/// descriptors carried by [`crate::distributed::codec::LakeSoulScanCodec`],
+/// not a `FileSource` the `DataSourceExec` arm would see, so it is checked
+/// explicitly instead of being waved through as a plan node with no children.
 fn unshippable_file_scan(stage: &Arc<dyn ExecutionPlan>) -> Option<String> {
     let mut pending = vec![Arc::clone(stage)];
     while let Some(node) = pending.pop() {
         if let Some(leaf) = node.downcast_ref::<DistributedLeafExec>() {
             pending.extend(leaf.variants().iter().cloned());
+            continue;
+        }
+        if let Some(exec) = node.downcast_ref::<LakeSoulScanExec>() {
+            if !lazy_scan_has_wire_form(exec) {
+                return Some(describe_lazy_scan_leaf(exec));
+            }
+            // The node is a leaf and carries its own descriptors; its
+            // predicate/pk-locator state is part of the same payload.
             continue;
         }
         if let Some(exec) = node.downcast_ref::<DataSourceExec>()
@@ -204,6 +219,16 @@ fn unshippable_file_scan(stage: &Arc<dyn ExecutionPlan>) -> Option<String> {
         pending.extend(node.children().into_iter().cloned());
     }
     None
+}
+
+/// Names the first file of a metadata-only scan the gate refuses.
+fn describe_lazy_scan_leaf(exec: &LakeSoulScanExec) -> String {
+    exec.work_units()
+        .iter()
+        .flat_map(|unit| unit.files.iter())
+        .next()
+        .map(|file| format!("'{}' ({})", file.path, file.physical_format))
+        .unwrap_or_else(|| "a metadata-only scan without a readable format".to_string())
 }
 
 /// Names a scan leaf for the error: the first file it reads, plus the physical
@@ -235,13 +260,32 @@ fn unshippable_stage_error(leaf: &str) -> DataFusionError {
     ))
 }
 
+/// Records the plan root and outcome on the current `distributed_plan` span,
+/// so a distributed plan and a local fallback are told apart in the trace.
+fn record_distributed_plan(plan: &Arc<dyn ExecutionPlan>, outcome: &'static str) {
+    tracing::Span::current().record("physical_plan_root", plan.name());
+    tracing::Span::current().record("outcome", outcome);
+}
+
 #[async_trait::async_trait]
 impl QueryPlanner for LakeSoulDistributedQueryPlanner {
+    #[tracing::instrument(
+        name = "distributed_plan",
+        level = "info",
+        skip_all,
+        fields(
+            output_field_count = logical_plan.schema().fields().len(),
+            physical_plan_root = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+        ),
+        err
+    )]
     async fn create_physical_plan(
         &self,
         logical_plan: &LogicalPlan,
         session: &dyn Session,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        let started = std::time::Instant::now();
         if let Some(resolver) = &self.resolver {
             let available_workers = resolver.get_urls()?;
             info!(
@@ -261,9 +305,16 @@ impl QueryPlanner for LakeSoulDistributedQueryPlanner {
                 if !self.fallback_to_local {
                     return Err(e);
                 }
-                return self.plan_locally(logical_plan, session).await;
+                let plan = self.plan_locally(logical_plan, session).await?;
+                record_distributed_plan(&plan, "local_fallback");
+                end_current_otel_span();
+                return Ok(plan);
             }
         };
+        info!(
+            wall_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "scan planning distributed conversion complete"
+        );
         // A stage no worker could decode is a planning failure, not an
         // execution failure: the coordinator only fails when it sends the
         // stage, and the user then sees a worker-side timeout instead.
@@ -274,8 +325,17 @@ impl QueryPlanner for LakeSoulDistributedQueryPlanner {
                 return Err(error);
             }
             warn!("{error}; planning the query locally instead");
-            return self.plan_locally(logical_plan, session).await;
+            let plan = self.plan_locally(logical_plan, session).await?;
+            record_distributed_plan(&plan, "local_fallback");
+            end_current_otel_span();
+            return Ok(plan);
         }
+        record_distributed_plan(&plan, "distributed");
+        info!(
+            wall_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "scan planning distributed planner summary"
+        );
+        end_current_otel_span();
         Ok(plan)
     }
 }
@@ -301,8 +361,10 @@ mod tests {
     use datafusion_distributed::NetworkShuffleExec;
     use lakesoul_io::config::LakeSoulIOConfigBuilder;
     use lakesoul_io::file_format::LakeSoulFormatRegistry;
-    use lakesoul_io::physical_plan::MergeParquetExec;
     use lakesoul_io::physical_plan::merge::MergeWorkUnit;
+    use lakesoul_io::physical_plan::{
+        LakeSoulScanConfig, MergeParquetExec, ScanFile, ScanWorkUnit,
+    };
 
     use super::*;
 
@@ -443,8 +505,87 @@ mod tests {
         DataSourceExec::from_data_source(config)
     }
 
+    /// A metadata-only scan leaf of `format` reading `file`, the leaf the
+    /// table provider now plans: it has no children and carries its files as
+    /// descriptors, so the gate cannot see it as a `DataSourceExec`.
+    fn lazy_leaf(format: PhysicalFormat, file: &str) -> Arc<dyn ExecutionPlan> {
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+        let config = LakeSoulScanConfig {
+            table_schema: Arc::clone(&schema),
+            output_schema: Arc::clone(&schema),
+            partition_schema: Arc::new(Schema::empty()),
+            io_config: LakeSoulIOConfigBuilder::new().build(),
+            predicate: None,
+            key_constraint: None,
+            parquet_force_view_types: false,
+            read_options: HashMap::new(),
+            limit: None,
+            min_index_rows: lakesoul_io::pk_locator::MIN_INDEX_ROWS,
+        };
+        let units = vec![ScanWorkUnit {
+            files: vec![ScanFile {
+                path: file.to_string(),
+                size: Some(1024),
+                physical_format: format,
+                range: None,
+            }],
+            default_column_value: HashMap::new(),
+            lane: 0,
+        }];
+        Arc::new(
+            LakeSoulScanExec::try_new(config, units, 1)
+                .expect("a valid metadata-only scan leaf"),
+        )
+    }
+
+    /// Every physical format the metadata-only leaf reads has a worker
+    /// reader, and the leaf carries its own codec, so a lazy scan stage is
+    /// shippable. This is also the failure the opaque leaf would otherwise
+    /// hide: it has no children, so only the explicit
+    /// `lazy_scan_has_wire_form` arm of the gate sees it.
+    #[tokio::test]
+    async fn lazy_scan_stages_pass_the_gate() {
+        for format in [
+            PhysicalFormat::Parquet,
+            PhysicalFormat::Vortex,
+            PhysicalFormat::VortexCompact,
+        ] {
+            let leaf = stage(lazy_leaf(
+                format,
+                &format!("s3://bucket/t/a.{}", format.extension()),
+            ));
+            let plan = plan_through_gate(Arc::new(StubPlanner(Arc::clone(&leaf))), false)
+                .await
+                .unwrap_or_else(|err| panic!("{format}: {err}"));
+            assert!(
+                Arc::ptr_eq(&plan, &leaf),
+                "{format}: the gate must keep the plan"
+            );
+        }
+    }
+
+    /// The per-task variants of a lazy scan are the plans a worker decodes, so
+    /// the gate must inspect them as well.
+    #[tokio::test]
+    async fn lazy_scan_task_variants_pass_the_gate() {
+        let variants = vec![
+            lazy_leaf(PhysicalFormat::Parquet, "s3://bucket/t/a.parquet"),
+            lazy_leaf(PhysicalFormat::Vortex, "s3://bucket/t/b.vortex"),
+        ];
+        let original = Arc::clone(&variants[0]);
+        let variants = Arc::new(
+            DistributedLeafExec::try_new(original, variants)
+                .expect("the variants agree on schema and partitioning"),
+        );
+        let stage = stage(variants);
+        let plan = plan_through_gate(Arc::new(StubPlanner(Arc::clone(&stage))), false)
+            .await
+            .expect("lazy task variants have a wire form");
+        assert!(Arc::ptr_eq(&plan, &stage), "the gate must keep the plan");
+    }
+
     /// A `MergeParquetExec` over `inputs`, the shape a primary-key work unit
-    /// has: the merge node itself is encodable, its scan children may not be.
+    /// has: the merge node itself is encodable, its scan children may not.
     fn merge_over(inputs: Vec<Arc<dyn ExecutionPlan>>) -> Arc<dyn ExecutionPlan> {
         let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
         let io_config = LakeSoulIOConfigBuilder::new()

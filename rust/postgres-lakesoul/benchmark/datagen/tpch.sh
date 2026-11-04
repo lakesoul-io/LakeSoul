@@ -3,17 +3,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# Generates the benchmark TPC-H tables into LakeSoul namespace `tpch_sf<N>`
-# with the repository's tpchgen UDTFs (tpchgen-rs, dbgen-identical rows) and
-# the table layout of `rust/postgres-lakesoul/test_tables.sh` (primary-key,
-# hash-bucketed MOR tables), but with the standard TPC-H table names so the
-# query files run unchanged.
+# Generates the benchmark TPC-H tables into the LakeSoul schema chosen by
+# LAYOUT/SCHEMA (`tpch_sf<N>`, `tpch_sf<N>_pkmonth` or `tpch_sf<N>_nopk` by
+# default) with the repository's tpchgen UDTFs (tpchgen-rs, dbgen-identical
+# rows) and the table layout of `rust/postgres-lakesoul/test_tables.sh`
+# (primary-key, hash-bucketed MOR tables), but with the standard TPC-H table
+# names so the query files run unchanged.
 #
 # Environment:
 #   SF          scale factor (required, e.g. 1 or 10)
 #   PARTS       tpchgen partitions per table   (default: 8 x SF, min 8)
 #   BUCKETS     hashBucketNum                   (default 16)
 #   LOCATION    table root, e.g. s3://lakesoul-k8s/bench   (required)
+#   SCHEMA      table schema                   (default: per LAYOUT, see above)
+#               Set a run-specific name to load a fresh copy beside existing
+#               data: the schema names the tables and their warehouse prefix,
+#               and only that schema's tables are dropped and recreated.
 #   CONSOLE_BIN lakesoul-console binary         (default lakesoul-console)
 #   TABLES      space-separated subset          (default: all eight)
 #   CHUNKS      upserts per table               (default 1)
@@ -42,27 +47,34 @@ case "$SF" in
 esac
 SF_NAME=$(printf '%s' "$SF" | tr . _)
 # LAYOUT=pk (default): primary-key MOR tables, `hashBucketNum` buckets.
+# PK scans distribute by work unit, a (range partition, hash bucket) pair
+# read from the committed file names; each merge owns whole units. A table
+# without range columns is one implicit partition and still yields one unit
+# per populated bucket, so it distributes too.
 # LAYOUT=pkmonth: the pk layout with orders and lineitem range-partitioned
-# by month (schema `tpch_sf<N>_pkmonth`): an extra trailing 'YYYY-MM' column,
-# `o_ordermonth` from o_orderdate and `l_shipmonth` from l_shipdate (80 and 84
-# partitions). Each month is its own merge, so the distributed planner can
-# spread a scan over up to one task per month; the other six tables have no
-# date and stay unpartitioned pk tables. The query files never reference the
-# month columns, so they run unchanged but do not prune partitions. Every
-# month gets a file per bucket and chunk: lower BUCKETS at small SF to avoid
-# tiny files.
-# LAYOUT=nopk: append-only tables without key or buckets, schema
+# by month (default schema `tpch_sf<N>_pkmonth`): an extra trailing
+# 'YYYY-MM' column, `o_ordermonth` from o_orderdate and `l_shipmonth` from
+# l_shipdate (80 and 84 partitions). Each (month, bucket) pair is its own
+# work unit; the other six tables have no date and stay unpartitioned pk
+# tables, still split by bucket. The query files never reference the month
+# columns, so they run unchanged but do not prune partitions. Every month
+# gets a file per bucket and chunk: lower BUCKETS at small SF to avoid tiny
+# files.
+# LAYOUT=nopk: append-only tables without key or buckets, default schema
 # `tpch_sf<N>_nopk` (plain file scans the distributed planner can split).
 LAYOUT="${LAYOUT:-pk}"
 case "$LAYOUT" in
-pk) SCHEMA="tpch_sf$SF_NAME" ;;
-pkmonth) SCHEMA="tpch_sf${SF_NAME}_pkmonth" ;;
-nopk) SCHEMA="tpch_sf${SF_NAME}_nopk" ;;
+pk) default_schema="tpch_sf$SF_NAME" ;;
+pkmonth) default_schema="tpch_sf${SF_NAME}_pkmonth" ;;
+nopk) default_schema="tpch_sf${SF_NAME}_nopk" ;;
 *)
     echo "LAYOUT must be pk, pkmonth or nopk" >&2
     exit 2
     ;;
 esac
+# SCHEMA renames the schema (and so the warehouse directory) without changing
+# the layout; empty keeps the per-layout default.
+SCHEMA="${SCHEMA:-$default_schema}"
 if [ -z "${PARTS:-}" ]; then
     PARTS=$(awk -v sf="$SF" 'BEGIN { p = int(sf * 8); print (p < 8 ? 8 : p) }')
 fi

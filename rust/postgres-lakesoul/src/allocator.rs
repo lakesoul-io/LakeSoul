@@ -37,14 +37,40 @@ pub(crate) fn log_active() {
     }
 }
 
+/// Reader of jemalloc's allocated/active/resident bytes for the memory
+/// sampler. MIBs are resolved once; each call refreshes jemalloc's
+/// statistics epoch first.
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+pub(crate) fn stats_reader()
+-> impl FnMut() -> Option<lakesoul_observability::AllocatorStats> + Send + 'static {
+    let mibs = jemalloc::StatsMibs::new()
+        .inspect_err(|e| tracing::warn!(error = %e, "jemalloc statistics unavailable"))
+        .ok();
+    move || {
+        mibs.as_ref()?
+            .read()
+            .inspect_err(
+                |e| tracing::debug!(error = %e, "jemalloc statistics read failed"),
+            )
+            .ok()
+    }
+}
+
 #[cfg(not(all(feature = "jemalloc", not(target_env = "msvc"))))]
 pub(crate) fn log_active() {
     tracing::info!(allocator = "system", "memory allocator");
 }
 
+/// The system allocator reports no statistics.
+#[cfg(not(all(feature = "jemalloc", not(target_env = "msvc"))))]
+pub(crate) fn stats_reader()
+-> impl FnMut() -> Option<lakesoul_observability::AllocatorStats> + Send + 'static {
+    || None
+}
+
 #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
 mod jemalloc {
-    use tikv_jemalloc_ctl::{Result, epoch, opt, raw, stats, version};
+    use tikv_jemalloc_ctl::{Result, epoch, epoch_mib, opt, raw, stats, version};
 
     pub(super) struct Identity {
         pub version: &'static str,
@@ -79,6 +105,33 @@ mod jemalloc {
             muzzy_decay_ms,
             allocated: stats::allocated::read()?,
         })
+    }
+
+    pub(super) struct StatsMibs {
+        epoch: epoch_mib,
+        allocated: stats::allocated_mib,
+        active: stats::active_mib,
+        resident: stats::resident_mib,
+    }
+
+    impl StatsMibs {
+        pub(super) fn new() -> Result<Self> {
+            Ok(Self {
+                epoch: epoch::mib()?,
+                allocated: stats::allocated::mib()?,
+                active: stats::active::mib()?,
+                resident: stats::resident::mib()?,
+            })
+        }
+
+        pub(super) fn read(&self) -> Result<lakesoul_observability::AllocatorStats> {
+            self.epoch.advance()?;
+            Ok(lakesoul_observability::AllocatorStats {
+                allocated: self.allocated.read()? as u64,
+                active: self.active.read()? as u64,
+                resident: self.resident.read()? as u64,
+            })
+        }
     }
 }
 

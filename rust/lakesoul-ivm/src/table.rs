@@ -1576,7 +1576,7 @@ impl IvmTable {
             &self.schema,
             &defaults,
         )
-        .await;
+        .await?;
         Ok(source.map(|source| (source, session.io_config().clone())))
     }
 

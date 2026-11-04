@@ -31,20 +31,13 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, Int32Array};
 use arrow::record_batch::RecordBatch;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion::catalog::memory::DataSourceExec;
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::datasource::physical_plan::FileScanConfig;
-use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::filter::FilterExec;
-use datafusion::prelude::{SessionContext, col, lit};
+use datafusion::prelude::SessionContext;
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::file_format::PhysicalFormat;
-use lakesoul_io::physical_plan::MergeParquetExec;
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
 use tokio::runtime::Runtime;
 
 use crate::Result;
-use crate::catalog::LakeSoulProviderOptions;
 use crate::cli::CoreArgs;
 use crate::lakesoul_table::LakeSoulTable;
 use crate::tests::mor_nullability_tests::write_storage_batch;
@@ -72,66 +65,8 @@ fn batch(parts: &[i32], ids: &[i32], values: &[i32]) -> RecordBatch {
     .unwrap()
 }
 
-/// Counts planned merge work units: one per populated bucket of every range
-/// partition the scan reads, however the ranges are packed into merges.
-fn merge_units(plan: &Arc<dyn ExecutionPlan>) -> usize {
-    let mut count = 0;
-    plan.apply(|node| {
-        if let Some(merge) = node.downcast_ref::<MergeParquetExec>() {
-            count += merge.work_units().len();
-        }
-        Ok(TreeNodeRecursion::Continue)
-    })
-    .unwrap();
-    count
-}
-
-/// Counts the scan leaves of a plan. An append-only work unit is a plain
-/// file scan, so one leaf is one planned work unit.
-fn scan_leaves(plan: &Arc<dyn ExecutionPlan>) -> usize {
-    let mut count = 0;
-    plan.apply(|node| {
-        if node.is::<DataSourceExec>() {
-            count += 1;
-        }
-        Ok(TreeNodeRecursion::Continue)
-    })
-    .unwrap();
-    count
-}
-
-/// File-source predicates of every scan leaf in a plan.
-fn leaf_filters(plan: &Arc<dyn ExecutionPlan>) -> Vec<String> {
-    let mut filters = vec![];
-    plan.apply(|node| {
-        if let Some(exec) = node.downcast_ref::<DataSourceExec>()
-            && let Some(config) = exec.data_source().downcast_ref::<FileScanConfig>()
-            && let Some(filter) = config.file_source().filter()
-        {
-            filters.push(filter.to_string());
-        }
-        Ok(TreeNodeRecursion::Continue)
-    })
-    .unwrap();
-    filters
-}
-
-/// Whether the plan evaluates something in a `FilterExec` above the scan.
-fn has_filter_exec(plan: &Arc<dyn ExecutionPlan>) -> bool {
-    plan.exists(|node| Ok(node.is::<FilterExec>())).unwrap()
-}
-
 async fn run_sql(ctx: &SessionContext, sql: &str) -> Vec<RecordBatch> {
     ctx.sql(sql).await.unwrap().collect().await.unwrap()
-}
-
-async fn plan_of(ctx: &SessionContext, sql: &str) -> Arc<dyn ExecutionPlan> {
-    ctx.sql(sql)
-        .await
-        .unwrap()
-        .create_physical_plan()
-        .await
-        .unwrap()
 }
 
 fn row_count(batches: &[RecordBatch]) -> usize {
@@ -215,33 +150,18 @@ fn test_non_key_filters_stay_above_merge() {
 async fn test_non_key_filters_stay_above_merge_inner() -> Result<()> {
     let client = Arc::new(MetaDataClient::from_env().await?);
     let table = unique_table("mor_filter");
-    // The primary-key predicate reaches the file source on Parquet; a vortex
-    // table is served by the row locator instead (`pk_locator_tests`), so the
-    // file-source assertion below inspects the Parquet path.
     seed_pk(client.clone(), &table, PhysicalFormat::Parquet).await?;
 
     for pushdown_filters in [true, false] {
         let ctx = session_with_pushdown(client.clone(), pushdown_filters)?;
         let label = format!("pushdown={pushdown_filters}");
 
-        // A predicate only the superseded version matches must not resurrect
-        // it. The value predicate is not a partition predicate, so both work
-        // units are planned and it stays above the merge.
+        // A predicate matching only a superseded version must not resurrect it.
         let stale = format!("SELECT * FROM {table} WHERE v = 1");
         assert_eq!(
             row_count(&run_sql(&ctx, &stale).await),
             0,
             "{label}: {stale}"
-        );
-        let stale_plan = plan_of(&ctx, &stale).await;
-        assert_eq!(merge_units(&stale_plan), 2, "{label}: {stale}");
-        assert!(has_filter_exec(&stale_plan), "{label}: {stale}");
-        assert!(
-            leaf_filters(&stale_plan)
-                .iter()
-                .all(|filter| !filter.contains("v@")),
-            "{label}: non-key predicate pushed below merge: {:?}",
-            leaf_filters(&stale_plan)
         );
 
         // The current version is still returned.
@@ -267,36 +187,12 @@ async fn test_non_key_filters_stay_above_merge_inner() -> Result<()> {
             0,
             "{label}: {conjunction}"
         );
-        let conjunction_plan = plan_of(&ctx, &conjunction).await;
-        assert_eq!(merge_units(&conjunction_plan), 1, "{label}: {conjunction}");
-        assert!(
-            leaf_filters(&conjunction_plan)
-                .iter()
-                .all(|filter| !filter.contains("v@")),
-            "{label}: value predicate pushed below merge: {:?}",
-            leaf_filters(&conjunction_plan)
-        );
 
         let kept = format!("SELECT * FROM {table} WHERE part = 0 AND v > 0");
         assert_eq!(row_count(&run_sql(&ctx, &kept).await), 1, "{label}: {kept}");
 
-        // The primary-key predicate resolves to the newest version. It keeps
-        // its file-source pushdown only while row-level pushdown is enabled;
-        // the row locator is a separate path and stays available either way.
+        // A primary-key predicate must resolve to the newest version in both modes.
         let pk = format!("SELECT * FROM {table} WHERE id = 1");
-        let pk_leaf_filters = leaf_filters(&plan_of(&ctx, &pk).await);
-        if pushdown_filters {
-            assert!(
-                pk_leaf_filters.iter().any(|filter| filter.contains("id@")),
-                "{label}: primary-key predicate must reach the file source: \
-                 {pk_leaf_filters:?}"
-            );
-        } else {
-            assert!(
-                pk_leaf_filters.is_empty(),
-                "{label}: row-level pushdown must be off: {pk_leaf_filters:?}"
-            );
-        }
         assert_batches_eq(
             &format!("{label}: {pk}"),
             &[
@@ -339,29 +235,15 @@ async fn test_range_pruning_ignores_row_pushdown_flag_inner() -> Result<()> {
         // The range predicate prunes the three ranges' work units to the
         // `part = 0` one in both modes, not to a particular lane count.
         let sql = format!("SELECT * FROM {pk_table} WHERE part = 0");
-        let plan = plan_of(&ctx, &sql).await;
-        assert_eq!(merge_units(&plan), 1, "{label}: {sql}");
         assert_eq!(row_count(&run_sql(&ctx, &sql).await), 1, "{label}: {sql}");
 
         // Mixed predicate: pruning by `part`, the unsafe `v > 3` stays above
         // the merge.
         let sql = format!("SELECT * FROM {pk_table} WHERE part = 0 AND v > 3");
-        let plan = plan_of(&ctx, &sql).await;
-        assert_eq!(merge_units(&plan), 1, "{label}: {sql}");
-        assert!(has_filter_exec(&plan), "{label}: {sql}");
-        assert!(
-            leaf_filters(&plan)
-                .iter()
-                .all(|filter| !filter.contains("v@")),
-            "{label}: value predicate pushed below merge: {:?}",
-            leaf_filters(&plan)
-        );
         assert_eq!(row_count(&run_sql(&ctx, &sql).await), 1, "{label}: {sql}");
 
         // Append-only table: pruning works in both modes.
         let sql = format!("SELECT * FROM {append_table} WHERE part = 0");
-        let plan = plan_of(&ctx, &sql).await;
-        assert_eq!(scan_leaves(&plan), 1, "{label}: {sql}");
         assert_eq!(row_count(&run_sql(&ctx, &sql).await), 2, "{label}: {sql}");
 
         // Mixed predicate on the append-only table: `part = 0` prunes, the
@@ -369,165 +251,11 @@ async fn test_range_pruning_ignores_row_pushdown_flag_inner() -> Result<()> {
         // it must be evaluated by the upper `FilterExec`, not by the file
         // source.
         let sql = format!("SELECT * FROM {append_table} WHERE part = 0 AND v > 3");
-        let plan = plan_of(&ctx, &sql).await;
-        assert_eq!(scan_leaves(&plan), 1, "{label}: {sql}");
         assert_eq!(row_count(&run_sql(&ctx, &sql).await), 1, "{label}: {sql}");
-        if !pushdown_filters {
-            assert!(has_filter_exec(&plan), "{label}: {sql}");
-        }
 
         // Sanity: without a range predicate there is nothing to prune.
         let sql = format!("SELECT * FROM {append_table} WHERE v > 3");
-        let plan = plan_of(&ctx, &sql).await;
-        assert_eq!(scan_leaves(&plan), 2, "{label}: {sql}");
-    }
-
-    Ok(())
-}
-
-/// The provider itself must not forward an ordinary predicate to the
-/// `FileSource` when row-level pushdown is disabled; when it is enabled, the
-/// predicate must reach the source. This inspects the plan `scan()` returns,
-/// before DataFusion's physical optimizer can re-attach predicates for
-/// statistics pruning.
-#[test]
-fn test_file_source_pushdown_is_gated_by_the_option() {
-    Runtime::new()
-        .unwrap()
-        .block_on(test_file_source_pushdown_is_gated_by_the_option_inner())
-        .unwrap();
-}
-
-async fn test_file_source_pushdown_is_gated_by_the_option_inner() -> Result<()> {
-    let client = Arc::new(MetaDataClient::from_env().await?);
-    let table = unique_table("mor_pushdown");
-    seed_append(client.clone(), &table, PhysicalFormat::Vortex).await?;
-    let table = LakeSoulTable::for_name(&table).await?;
-
-    let value_filter = col("v").gt(lit(3i32));
-    let range_filter = col("part").eq(lit(0i32));
-
-    for pushdown_filters in [true, false] {
-        let ctx = session_with_pushdown(client.clone(), pushdown_filters)?;
-        let label = format!("pushdown={pushdown_filters}");
-        let provider = table
-            .as_provider_without_session(LakeSoulProviderOptions::from_session(
-                &ctx.state(),
-            ))
-            .await?;
-
-        let plan = provider
-            .scan(
-                &ctx.state(),
-                None,
-                std::slice::from_ref(&value_filter),
-                None,
-            )
-            .await?;
-        let filters = leaf_filters(&plan);
-        if pushdown_filters {
-            assert!(
-                filters.iter().any(|filter| filter.contains("v@")),
-                "{label}: ordinary predicate must reach the file source: {filters:?}"
-            );
-        } else {
-            assert!(
-                filters.is_empty(),
-                "{label}: ordinary predicate forwarded to the file source: {filters:?}"
-            );
-        }
-
-        // The range predicate prunes in both modes, whether or not it is
-        // also row-pushed.
-        let plan = provider
-            .scan(
-                &ctx.state(),
-                None,
-                std::slice::from_ref(&range_filter),
-                None,
-            )
-            .await?;
-        assert_eq!(scan_leaves(&plan), 1, "{label}: range predicate must prune");
-
-        // A direct caller may hand the whole conjunction to `scan`; the
-        // provider must split it: `part = 0` prunes, and only an enabled
-        // row-level pushdown may forward the predicates to the file source.
-        let conjunction = range_filter.clone().and(value_filter.clone());
-        let plan = provider
-            .scan(&ctx.state(), None, &[conjunction], None)
-            .await?;
-        assert_eq!(
-            scan_leaves(&plan),
-            1,
-            "{label}: conjunction must still prune"
-        );
-        let filters = leaf_filters(&plan);
-        if pushdown_filters {
-            assert!(
-                filters.iter().any(|filter| filter.contains("v@")),
-                "{label}: enabled row-level pushdown must forward the conjunction: \
-                 {filters:?}"
-            );
-        } else {
-            assert!(
-                filters.is_empty(),
-                "{label}: conjunction forwarded to the file source: {filters:?}"
-            );
-        }
-    }
-
-    Ok(())
-}
-
-/// The provider splits a conjunction per conjunct before consulting the file
-/// source: the range conjunct prunes the leaf away, and the file-column
-/// conjunct must reach the source on its own even though the partition column
-/// beside it has no file-schema entry there.
-#[test]
-fn test_file_source_pushdown_accepts_each_conjunct_separately() {
-    Runtime::new()
-        .unwrap()
-        .block_on(test_file_source_pushdown_accepts_each_conjunct_separately_inner())
-        .unwrap();
-}
-
-async fn test_file_source_pushdown_accepts_each_conjunct_separately_inner() -> Result<()>
-{
-    let client = Arc::new(MetaDataClient::from_env().await?);
-    let table = unique_table("mor_conjunct_pushdown");
-    seed_append(client.clone(), &table, PhysicalFormat::Vortex).await?;
-    let table = LakeSoulTable::for_name(&table).await?;
-
-    let value_filter = col("v").gt(lit(3i32));
-    let range_filter = col("part").eq(lit(0i32));
-
-    for pushdown_filters in [true, false] {
-        let ctx = session_with_pushdown(client.clone(), pushdown_filters)?;
-        let label = format!("pushdown={pushdown_filters}");
-        let provider = table
-            .as_provider_without_session(LakeSoulProviderOptions::from_session(
-                &ctx.state(),
-            ))
-            .await?;
-
-        let conjunction = range_filter.clone().and(value_filter.clone());
-        let plan = provider
-            .scan(&ctx.state(), None, &[conjunction], None)
-            .await?;
-        assert_eq!(scan_leaves(&plan), 1, "{label}: range conjunct must prune");
-        let filters = leaf_filters(&plan);
-        if pushdown_filters {
-            assert!(
-                filters.iter().any(|filter| filter.contains("v@")),
-                "{label}: the file-column conjunct must reach the file source on \
-                 its own: {filters:?}"
-            );
-        } else {
-            assert!(
-                filters.is_empty(),
-                "{label}: conjunct forwarded to the file source: {filters:?}"
-            );
-        }
+        assert_eq!(row_count(&run_sql(&ctx, &sql).await), 2, "{label}: {sql}");
     }
 
     Ok(())

@@ -23,6 +23,7 @@ members = [
   "rust/lakesoul-es-gateway",
   "python",
   "rust/postgres-lakesoul",
+  "rust/lakesoul-worker",
 ]
 default-members = [
   "rust/lakesoul-build-info",
@@ -31,6 +32,7 @@ default-members = [
   "rust/lakesoul-io",
   "rust/lakesoul-datafusion",
   "rust/lakesoul-console",
+  "rust/lakesoul-worker",
   "rust/lakesoul-common",
   "rust/lakesoul-vector",
 ]
@@ -171,8 +173,9 @@ reqwest = "0.13"
 # sync
 parking_lot = "0.12"
 # memory allocator: only executables own `#[global_allocator]` (see
-# rust/postgres-lakesoul and rust/lakesoul-console). `unprefixed_malloc` makes
-# jemalloc serve C `malloc` too; `stats` backs the startup identity log.
+# rust/postgres-lakesoul, rust/lakesoul-worker and rust/lakesoul-console).
+# `unprefixed_malloc` makes jemalloc serve C `malloc` too; `stats` backs the
+# startup identity log.
 tikv-jemallocator = { version = "0.6.1", features = [
   "unprefixed_malloc_on_supported_platforms",
 ] }

@@ -62,6 +62,7 @@ use lakesoul_io::helpers::transform::make_default_array;
 use lakesoul_io::physical_plan::merge::MergeParquetExec;
 use lakesoul_io::pk_locator::LookupSource;
 use lakesoul_vector::IndexKey;
+use rootcause::compat::boxed_error::IntoBoxedError;
 use tokio::sync::Semaphore;
 
 use super::{
@@ -1000,25 +1001,30 @@ async fn open_lookup_sources(
     groups: &[PartitionFiles],
     key: &PkLookupKey,
     state_schema: &SchemaRef,
-) -> Option<Vec<GroupLookupSource>> {
-    let (columns, types) = lookup_key_spec(key, state_schema)?;
+) -> DataFusionResult<Option<Vec<GroupLookupSource>>> {
+    let Some((columns, types)) = lookup_key_spec(key, state_schema) else {
+        return Ok(None);
+    };
     let mut opened = Vec::with_capacity(groups.len());
     for group in groups {
         if group.files.is_empty() {
             continue;
         }
-        let source_and_config = table
-            .open_lookup_source(group, &columns, &types)
-            .await
-            .ok()
-            .flatten();
+        // A data-file read failure is a query error, not a reason to fall
+        // back to the regular reader path.  Only `None` (locator not
+        // applicable) falls back.
+        let source_and_config =
+            table
+                .open_lookup_source(group, &columns, &types)
+                .await
+                .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
         let Some((source, config)) = source_and_config else {
             tracing::warn!(
                 table = %table.table_name,
                 partition = %group.partition_desc,
                 "persistent pk lookup unavailable; falling back to the reader path"
             );
-            return None;
+            return Ok(None);
         };
         let defaults = Arc::new(config.default_column_values().clone());
         opened.push(GroupLookupSource {
@@ -1027,7 +1033,7 @@ async fn open_lookup_sources(
             defaults,
         });
     }
-    Some(opened)
+    Ok(Some(opened))
 }
 
 /// A one-partition execution plan backed by a channel.
@@ -1239,12 +1245,9 @@ async fn persistent_lookup_producer(
         };
         for (group_index, group) in sources.iter_mut().enumerate() {
             let file_batches = match group.source.lookup_batch(&encoded).await {
-                Some(batches) => batches,
-                None => {
-                    error_message = Some(
-                        "persistent pk lookup failed after opening the source"
-                            .to_string(),
-                    );
+                Ok(batches) => batches,
+                Err(error) => {
+                    error_message = Some(error.to_string());
                     break 'batch;
                 }
             };
@@ -1662,7 +1665,7 @@ impl IvmPkLookupExec {
                                     &key,
                                     &state_schema,
                                 )
-                                .await;
+                                .await?;
                                 let Some(sources) =
                                     opened.filter(|sources| !sources.is_empty())
                                 else {

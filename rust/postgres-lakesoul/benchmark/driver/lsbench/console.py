@@ -9,6 +9,11 @@ strings per row, then `N row(s) fetched.` and `Elapsed S seconds.`; errors go
 to stderr without a summary. A marker `SELECT` before every query names the
 query that the following output belongs to; stdout and stderr share one pipe,
 so the order of lines is preserved.
+
+The console also samples its own memory (`--memory-sample-file`): process
+RSS, jemalloc's allocated/active/resident bytes and the execution pool's
+reservation, taken together at each sample. Every query record carries the
+samples taken while it ran as `memory` (see `MemoryTimeline`).
 """
 
 from __future__ import annotations
@@ -176,6 +181,67 @@ class Parser:
         )
 
 
+MEMORY_KEYS = (
+    "rss_bytes",
+    "rss_anon_bytes",
+    "jemalloc_allocated_bytes",
+    "jemalloc_active_bytes",
+    "jemalloc_resident_bytes",
+    "pool_reserved_bytes",
+)
+
+
+class MemoryTimeline:
+    """Follows the console's memory sample file (one JSON object per line,
+    `ts` in Unix seconds) and summarizes the samples of a time window."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self.offset = 0
+        self.partial = ""
+        self.samples: list[dict] = []
+
+    def poll(self) -> None:
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                f.seek(self.offset)
+                chunk = f.read()
+                self.offset = f.tell()
+        except FileNotFoundError:
+            return
+        lines = (self.partial + chunk).split("\n")
+        self.partial = lines.pop()  # unterminated: the sampler is mid-write
+        for line in lines:
+            try:
+                sample = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(sample, dict) and isinstance(sample.get("ts"), (int, float)):
+                self.samples.append(sample)
+
+    def window(self, start: float, end: float) -> dict | None:
+        """Per-view peaks over the samples in [start, end], and the whole
+        sample at the RssAnon peak, where the views are comparable; None
+        without samples. Samples before `start` are dropped: queries run in
+        order, so no later window needs them."""
+        self.poll()
+        self.samples = [s for s in self.samples if s["ts"] >= start]
+        inside = [s for s in self.samples if s["ts"] <= end]
+        if not inside:
+            return None
+
+        def peak(key: str) -> int | None:
+            values = [s[key] for s in inside if isinstance(s.get(key), int)]
+            return max(values) if values else None
+
+        at_peak = max(inside, key=lambda s: s.get("rss_anon_bytes") or 0)
+        return dict(
+            samples=len(inside),
+            peak={k: peak(k) for k in MEMORY_KEYS},
+            at_rss_anon_peak={k: at_peak.get(k) for k in ("ts", *MEMORY_KEYS)},
+        )
+
+
 def check(outcome: dict, answer: Path, sql: str) -> tuple[bool, str | None]:
     """`answers.compare` with the rules of the `tpch` scenario; numeric
     tolerance applies to integer, float and decimal columns."""
@@ -189,7 +255,7 @@ def check(outcome: dict, answer: Path, sql: str) -> tuple[bool, str | None]:
     return compare(result, answer, sql)
 
 
-def command(args, script_path: str) -> list[str]:
+def command(args, script_path: str, memory_path: str) -> list[str]:
     cmd = [
         args.console_bin,
         "--format",
@@ -198,6 +264,10 @@ def command(args, script_path: str) -> list[str]:
         str(args.worker_threads),
         "--log-dir",
         args.log_dir,
+        "--memory-sample-file",
+        memory_path,
+        "--memory-sample-interval-ms",
+        str(args.memory_sample_interval_ms),
     ]
     for url in args.worker:
         cmd += ["--worker", url]
@@ -222,12 +292,16 @@ async def console(args, output) -> None:
         None if args.worker else args.target_partitions,
     )
     planned = (args.warmup + args.iterations) * len(queries)
-    with tempfile.NamedTemporaryFile(
-        "w", suffix=".sql", prefix="lsbench-console-", encoding="utf-8"
-    ) as file:
+    with (
+        tempfile.NamedTemporaryFile(
+            "w", suffix=".sql", prefix="lsbench-console-", encoding="utf-8"
+        ) as file,
+        tempfile.TemporaryDirectory(prefix="lsbench-console-") as scratch,
+    ):
         file.write(text)
         file.flush()
-        cmd = command(args, file.name)
+        memory = MemoryTimeline(str(Path(scratch) / "memory.jsonl"))
+        cmd = command(args, file.name, memory.path)
         print(f"lsbench: {' '.join(cmd)}", file=sys.stderr, flush=True)
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -253,6 +327,7 @@ async def console(args, output) -> None:
                 target_partitions=args.target_partitions,
                 correct=None,
                 mismatch=None,
+                memory=memory.window(outcome["start_unix"], outcome["end_unix"]),
             )
             if args.answers and record["status"] == "ok":
                 record["correct"], record["mismatch"] = check(

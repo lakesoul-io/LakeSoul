@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# Profile `pgwire`: the PG-wire service shaped like the single-node console it
+# is compared with (`results/*-single-vs-pgwire-*`). Coordinator and every
+# worker get 4 cores / 8 GiB, Guaranteed (sampler sidecars included), and a
+# 40 GiB scratch PVC. Each runs alone on a `Type=compute` node (8 cores /
+# 16 GiB), away from benchmark Pods and the observability Pods, which share
+# one compute node of their own.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - path: resources.yaml
+  - path: placement.yaml

@@ -39,20 +39,31 @@
 //! file are stored in primary-key order, which is re-checked while building.
 //! Rows are fetched by row index in ascending order, which therefore yields
 //! batches sorted by primary key as the merge-on-read path requires.
+//!
+//! The builders return `Ok(None)` when the optimization does not apply and
+//! `Err` when it does but a data file cannot be read or the candidate rows do
+//! not fit the task memory pool.  Candidate row ids are reserved while they
+//! are produced, and fetched batches are charged through their Arrow buffers:
+//! a retained batch keeps its bytes reserved even after the plan and stream
+//! are dropped.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, LazyLock};
 
+use crate::stream::merge_memory::MergeMemory;
 use arrow::array::{Array, ArrayRef, AsArray};
 use arrow::compute::{SortColumn, cast, lexsort_to_indices, take};
 use arrow::datatypes::{DataType, Schema, SchemaRef, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
 use datafusion::catalog::Session;
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryPool, MemoryReservation};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_common::{ScalarValue, stats::Precision};
+use datafusion_common::{
+    DataFusionError, Result as DFResult, ScalarValue, stats::Precision,
+};
 use datafusion_datasource::file_scan_config::FileScanConfig;
 use datafusion_datasource::memory::MemorySourceConfig;
 use datafusion_expr::{Expr, Operator};
@@ -65,7 +76,7 @@ use object_store::ObjectStoreExt;
 use object_store::path::Path as StorePath;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::ProjectionMask;
-use parquet::arrow::arrow_reader::{ArrowReaderOptions, RowSelection};
+use parquet::arrow::arrow_reader::{ArrowReaderOptions, RowSelection, RowSelector};
 use parquet::arrow::async_reader::ParquetObjectReader;
 use parquet::file::metadata::PageIndexPolicy;
 use smallvec::SmallVec;
@@ -84,7 +95,9 @@ use vortex::session::VortexSession;
 
 use crate::cache::get_lakesoul_cache;
 use crate::config::LakeSoulIOConfig;
-use crate::file_format::{PhysicalFormat, vortex_scan_session};
+use crate::file_format::{
+    PhysicalFormat, acquire_metadata_fetch_permit, vortex_scan_session,
+};
 use crate::helpers::transform::make_default_array;
 
 /// Above this many candidate keys the locator is not worth it: the caller
@@ -98,15 +111,47 @@ pub const MAX_PK_CANDIDATES: usize = 10_000;
 const BULK_LOOKUP_MIN_KEYS: usize = 64;
 
 /// When the candidate files of a query hold fewer rows than this in total, a
-/// plain scan is cheaper than building local indexes.  The decision spans all
-/// files of the query: a table of many small files (IVM writes several files
-/// per append, one per writer partition) is still indexed, while a handful of
-/// tiny upsert files is scanned.
-const MIN_INDEX_ROWS: u64 = 4_096;
+/// plain scan is cheaper than building local indexes.  The decision is the
+/// query's, not one work unit's: a table of many small files (IVM writes
+/// several files per append, one per writer partition) is still indexed, while
+/// a handful of tiny upsert files is scanned.
+///
+/// A scan that executes unit by unit cannot compare against this constant
+/// directly — it only ever sees the files of the unit it is reading.  See
+/// [`min_index_rows_per_unit`], which keeps the decision query-wide.
+pub const MIN_INDEX_ROWS: u64 = 4_096;
+
+/// The row threshold a single work unit applies to keep the decision
+/// query-wide.
+///
+/// The locator runs at execution time, once per work unit, so it sees one
+/// unit's files rather than every file of the query.  Comparing a unit against
+/// [`MIN_INDEX_ROWS`] directly would turn a query-wide threshold into a
+/// per-bucket one: a bucketed table whose buckets are each smaller than 4096
+/// rows would scan every bucket whole, although the query's files together
+/// cross the threshold and point lookups are exactly what the locator is for.
+/// Dividing by the scan's unit count keeps the comparison equivalent for
+/// evenly filled units — `rows_unit * unit_count` is the query's row count —
+/// and stays conservative for skewed ones, where only the filled units take
+/// the indexed path.
+pub fn min_index_rows_per_unit(unit_count: usize) -> u64 {
+    let units = u64::try_from(unit_count).unwrap_or(u64::MAX).max(1);
+    MIN_INDEX_ROWS.div_ceil(units)
+}
 
 /// A single index may take at most `1 / MAX_INDEX_CACHE_RATIO` of the shared
 /// local cache capacity, so one huge file cannot evict everything else.
 const MAX_INDEX_CACHE_RATIO: u64 = 8;
+
+/// Bytes one retained candidate row id occupies (the row ids are `u64` so the
+/// same vector can be reused for every format's take path).
+const CANDIDATE_ROW_BYTES: usize = std::mem::size_of::<u64>();
+
+/// Minimum number of row ids added when the candidate vector has to grow.
+/// The whole resulting capacity is reserved before the allocation, so an
+/// unexpectedly large match set fails on the memory pool instead of growing
+/// unaccounted.
+const ROW_ID_RESERVE_CHUNK: usize = 4_096;
 
 /// Environment variable that switches on the shared local disk cache.  The pk
 /// index has no switch of its own: it shares the cache instance, directory and
@@ -317,8 +362,8 @@ impl MmapIndex {
         low
     }
 
-    /// The rows whose key starts with `prefix`, in key order.
-    fn rows_with_prefix(&self, prefix: &[u8]) -> Vec<u32> {
+    /// The index entries whose keys start with `prefix`, in key order.
+    fn entries_with_prefix(&self, prefix: &[u8]) -> std::ops::Range<usize> {
         let start = self.lower_bound(prefix);
         let (mut low, mut high) = (start, self.rows);
         while low < high {
@@ -329,7 +374,14 @@ impl MmapIndex {
                 high = mid;
             }
         }
-        (start..low).map(|index| self.row_id(index)).collect()
+        start..low
+    }
+
+    #[cfg(test)]
+    fn rows_with_prefix(&self, prefix: &[u8]) -> Vec<u32> {
+        self.entries_with_prefix(prefix)
+            .map(|entry| self.row_id(entry))
+            .collect()
     }
 
     /// The rows whose key starts with any of `prefixes`, in row order.
@@ -343,6 +395,7 @@ impl MmapIndex {
     /// `rows_with_prefix` per key costs `log(rows)` per key; for the candidate
     /// sets of an incremental refresh (many keys over many files) that is
     /// `keys * files * log(rows)`.  This pass is `rows + keys` per file.
+    #[cfg(test)]
     fn rows_with_prefixes(&self, prefixes: &[&[u8]]) -> Vec<u32> {
         let mut rows = Vec::new();
         let mut cursor = 0usize;
@@ -370,9 +423,10 @@ impl MmapIndex {
         &self,
         prefixes: &[&[u8]],
         cursor: &mut IndexCursor,
-    ) -> Vec<u32> {
+        reservation: &MemoryReservation,
+    ) -> DFResult<Vec<u64>> {
         if prefixes.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let mut position = if !cursor.initialized {
             self.lower_bound(prefixes[0])
@@ -406,7 +460,7 @@ impl MmapIndex {
             }
             let start = position;
             while position < self.rows && self.row(position).starts_with(prefix) {
-                rows.push(self.row_id(position));
+                push_row(&mut rows, self.row_id(position) as u64, reservation)?;
                 position += 1;
             }
             cursor.last_key = Some(prefix.to_vec());
@@ -414,7 +468,7 @@ impl MmapIndex {
             cursor.row = position;
             index += 1;
         }
-        rows
+        Ok(rows)
     }
 }
 
@@ -621,6 +675,7 @@ pub struct LookupFileBatch {
 pub struct LookupSource {
     files: Vec<LookupFile>,
     key_columns: Vec<String>,
+    memory_pool: Arc<dyn MemoryPool>,
 }
 
 struct LookupFile {
@@ -634,9 +689,11 @@ struct LookupFile {
 impl LookupSource {
     /// Open all files of one partition group and build/load their PK indexes.
     ///
-    /// Returns `None` when the locator is unavailable (no local cache, an
+    /// `Ok(None)` means the locator is unavailable (no local cache, an
     /// unsupported format or column type, or a file whose index cannot be
-    /// built).  The caller then falls back to the regular reader path.
+    /// built) and the caller falls back to the regular reader path.  `Err`
+    /// means a data file could not be read; that is a real query error and
+    /// must not be disguised as a fallback.
     pub async fn open(
         state: &dyn Session,
         configs: &[FileScanConfig],
@@ -644,25 +701,34 @@ impl LookupSource {
         types: &[DataType],
         table_schema: &SchemaRef,
         defaults: &HashMap<String, String>,
-    ) -> Option<Self> {
-        index_disk_cache()?;
+    ) -> crate::Result<Option<Self>> {
+        let memory_pool = state.runtime_env().memory_pool.clone();
+        if index_disk_cache().is_none() {
+            return Ok(None);
+        }
         if configs.is_empty() {
-            return Some(Self {
+            return Ok(Some(Self {
                 files: Vec::new(),
                 key_columns: columns.to_vec(),
-            });
+                memory_pool,
+            }));
         }
         let mut session: Option<VortexSession> = None;
         let mut files = Vec::with_capacity(configs.len());
         for config in configs {
-            let (location, format) = single_data_file(config)?;
-            let (file_schema, projection_names) = projected_file_schema(config)?;
+            let Some((location, format)) = single_data_file(config) else {
+                return Ok(None);
+            };
+            let Some((file_schema, projection_names)) = projected_file_schema(config)
+            else {
+                return Ok(None);
+            };
             let projected_schema = lookup_projected_schema(&file_schema, table_schema);
-            let store = state
-                .runtime_env()
-                .object_store(&config.object_store_url)
-                .ok()?;
-            let entry = get_or_load_file(
+            let Ok(store) = state.runtime_env().object_store(&config.object_store_url)
+            else {
+                return Ok(None);
+            };
+            let Some(entry) = get_or_load_file(
                 store,
                 location.clone(),
                 format,
@@ -671,7 +737,10 @@ impl LookupSource {
                 defaults,
                 &mut session,
             )
-            .await?;
+            .await?
+            else {
+                return Ok(None);
+            };
             files.push(LookupFile {
                 entry,
                 location,
@@ -681,10 +750,11 @@ impl LookupSource {
             });
         }
         debug!(files = files.len(), "opened persistent pk lookup source");
-        Some(Self {
+        Ok(Some(Self {
             files,
             key_columns: columns.to_vec(),
-        })
+            memory_pool,
+        }))
     }
 
     /// Number of files held by this source (one per state data file).
@@ -698,10 +768,14 @@ impl LookupSource {
     /// built for.  Every file gets one result entry, in file order, even when
     /// it has no matching rows, so merge inputs stay aligned with
     /// [`LakeSoulIOConfig::files_slice`](crate::config::LakeSoulIOConfig::files_slice).
+    ///
+    /// `Err` means a state file could not be read or the fetched rows did not
+    /// fit the task memory pool.  That is a query error, not a reason to fall
+    /// back to the reader path.
     pub async fn lookup_batch(
         &mut self,
         keys: &[IndexKey],
-    ) -> Option<Vec<LookupFileBatch>> {
+    ) -> DFResult<Vec<LookupFileBatch>> {
         // Consecutive duplicate contribution keys produce the same state
         // rows; the exact join still matches every contribution row.
         let mut encoded: Vec<&[u8]> = Vec::with_capacity(keys.len());
@@ -714,10 +788,15 @@ impl LookupSource {
         let key_columns = self.key_columns.clone();
         let mut output = Vec::with_capacity(self.files.len());
         for (file_index, file) in self.files.iter_mut().enumerate() {
-            let indices = file
-                .entry
-                .index
-                .rows_with_prefixes_from(&encoded, &mut file.cursor);
+            let row_scratch =
+                MemoryConsumer::new(format!("LakeSoulPkLookupRows[{}]", file.location))
+                    .with_can_spill(false)
+                    .register(&self.memory_pool);
+            let mut indices = file.entry.index.rows_with_prefixes_from(
+                &encoded,
+                &mut file.cursor,
+                &row_scratch,
+            )?;
             if indices.is_empty() {
                 output.push(LookupFileBatch {
                     file_index,
@@ -726,7 +805,21 @@ impl LookupSource {
                 });
                 continue;
             }
-            let indices: Vec<u64> = indices.into_iter().map(u64::from).collect();
+            // A row-id index returns data rows in key order, which is not
+            // ascending across sorted runs.  Both take paths require strictly
+            // increasing row ids; key order is restored after the fetch.
+            indices.sort_unstable();
+            indices.dedup();
+            // The fetched batches are charged through their Arrow buffers, so
+            // a batch retained by the caller keeps its bytes reserved.  The
+            // row-copy scratch is released when the take returns.
+            let batch_reservation = MemoryConsumer::new(format!(
+                "LakeSoulPkLookupBatches[{}]",
+                file.location
+            ))
+            .with_can_spill(false)
+            .register(&self.memory_pool);
+            let ledger = MergeMemory::new(batch_reservation);
             let batches = match &file.entry.source {
                 FileSource::Vortex {
                     file: vortex,
@@ -739,6 +832,8 @@ impl LookupSource {
                         &indices,
                         &file.projected_schema,
                         &file.projection_names,
+                        &ledger,
+                        &row_scratch,
                     )
                     .await
                 }
@@ -754,13 +849,22 @@ impl LookupSource {
                         &indices,
                         &file.projected_schema,
                         &file.projection_names,
+                        &ledger,
+                        &row_scratch,
                     )
                     .await
                 }
             }
-            .ok()?;
+            .map_err(locator_error)?;
             let batches = if file.entry.index.has_row_ids() {
-                sort_batches_by_key(batches, &key_columns, &file.projected_schema).ok()?
+                sort_batches_by_key(
+                    batches,
+                    &key_columns,
+                    &file.projected_schema,
+                    &ledger,
+                    &row_scratch,
+                )
+                .map_err(locator_error)?
             } else {
                 batches
             };
@@ -770,7 +874,7 @@ impl LookupSource {
                 batches,
             });
         }
-        Some(output)
+        Ok(output)
     }
 }
 
@@ -783,10 +887,26 @@ fn sort_batches_by_key(
     batches: Vec<RecordBatch>,
     key_columns: &[String],
     schema: &SchemaRef,
+    ledger: &MergeMemory,
+    scratch: &MemoryReservation,
 ) -> crate::Result<Vec<RecordBatch>> {
     if batches.is_empty() {
         return Ok(batches);
     }
+    // Concatenation and lexsort allocate temporary buffers before the retained
+    // result is charged through its Arrow owners.
+    let sort_scratch = scratch.new_empty();
+    let input_bytes = batches
+        .iter()
+        .map(RecordBatch::get_array_memory_size)
+        .sum::<usize>();
+    let rows = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
+    sort_scratch
+        .try_grow(
+            input_bytes
+                .saturating_add(rows.saturating_mul(2 * std::mem::size_of::<usize>())),
+        )
+        .map_err(|error| rootcause::report!(error))?;
     let batch = arrow::compute::concat_batches(schema, &batches)
         .map_err(|error| rootcause::report!("concat lookup rows: {error}"))?;
     let keys = key_columns
@@ -806,9 +926,13 @@ fn sort_batches_by_key(
     let columns = batch
         .columns()
         .iter()
-        .map(|column| {
-            take(column.as_ref(), &indices, None)
-                .map_err(|error| rootcause::report!("take sorted lookup rows: {error}"))
+        .map(|column| -> crate::Result<_> {
+            let sorted = take(column.as_ref(), &indices, None).map_err(|error| {
+                rootcause::report!("take sorted lookup rows: {error}")
+            })?;
+            Ok(ledger
+                .track_array(&sorted)
+                .map_err(|error| rootcause::report!(error))?)
         })
         .collect::<crate::Result<Vec<_>>>()?;
     Ok(vec![
@@ -1344,19 +1468,26 @@ fn pk_min_max(config: &FileScanConfig, pk_column: &str) -> Option<(i64, i64)> {
 }
 
 /// The vortex handle of one file, opened once per process.
+///
+/// An open error is a real data-file read failure: the caller propagates it
+/// instead of treating the locator as not applicable, so a missing or corrupt
+/// file never silently turns into a full scan.
 async fn get_vortex_file(
     store: Arc<dyn ObjectStore>,
     location: &StorePath,
     session: &VortexSession,
-) -> Option<Arc<VortexFile>> {
-    let key = location.as_ref().to_string();
-    let location = location.clone();
+) -> crate::Result<Arc<VortexFile>> {
+    let path = location.clone();
+    let key = path.as_ref().to_string();
     let session = session.clone();
     VORTEX_FILES
         .try_get_with(key, async move {
+            let _permit = acquire_metadata_fetch_permit()
+                .await
+                .map_err(|error| error.to_string())?;
             let read_at = Arc::new(ObjectStoreReadAt::new_with_allocator(
                 store,
-                location.clone(),
+                path.clone(),
                 session.handle(),
                 session.allocator(),
             ));
@@ -1368,7 +1499,9 @@ async fn get_vortex_file(
                 .map_err(|error| error.to_string())
         })
         .await
-        .ok()
+        .map_err(|error| {
+            rootcause::report!("failed to open vortex data file {location}: {error}")
+        })
 }
 
 /// Identifier of one key layout: the pinned columns, their types and the row
@@ -1427,7 +1560,26 @@ fn index_source_hash(location: &StorePath) -> u64 {
     hasher.finish()
 }
 
+/// A failure while building one file's key index.
+///
+/// The locator is an optimization, so a file that cannot be indexed still has
+/// to fall back to the regular scan.  A file that cannot be *read* is a real
+/// query error, however, and must not be disguised as such a fallback.
+#[derive(Debug)]
+enum BuildError {
+    /// The data file was read, but its keys/layout cannot be indexed.
+    NotApplicable(rootcause::Report),
+    /// Reading the data file failed: missing, corrupt or I/O error.
+    Read(rootcause::Report),
+}
+
+type BuildResult<T> = std::result::Result<T, BuildError>;
+
 /// Load (or build once) the mmapped key index and vortex handle of one file.
+///
+/// `Ok(None)` means the file cannot be indexed (unsorted keys, unsupported
+/// types, over the cache budget, ...) and the caller scans it normally.  `Err`
+/// means the data file itself could not be read.
 async fn get_or_load_file(
     store: Arc<dyn ObjectStore>,
     location: StorePath,
@@ -1436,8 +1588,10 @@ async fn get_or_load_file(
     types: &[DataType],
     defaults: &HashMap<String, String>,
     session: &mut Option<VortexSession>,
-) -> Option<Arc<CachedFile>> {
-    let cache = index_disk_cache()?;
+) -> crate::Result<Option<Arc<CachedFile>>> {
+    let Some(cache) = index_disk_cache() else {
+        return Ok(None);
+    };
     // The handle the take path needs.  Vortex has to open the file; parquet
     // only needs its size for the reader's metadata fetch.
     let source = match format {
@@ -1447,30 +1601,41 @@ async fn get_or_load_file(
             FileSource::Vortex { file, session }
         }
         PhysicalFormat::Parquet => {
-            let size = store.head(&location).await.ok()?.size;
+            let _permit = acquire_metadata_fetch_permit()
+                .await
+                .map_err(|error| rootcause::report!(error))?;
+            let size = store
+                .head(&location)
+                .await
+                .map_err(|error| {
+                    rootcause::report!(
+                        "failed to read metadata of parquet data file {location}: {error}"
+                    )
+                })?
+                .size;
             FileSource::Parquet {
                 store: Arc::clone(&store),
                 location: location.clone(),
                 size,
             }
         }
-        _ => return None,
+        _ => return Ok(None),
     };
     let kind = lookup_index_kind(columns, types, defaults);
     let kind_hash = index_kind_hash(&kind);
     let source_hash = index_source_hash(&location);
     let rejected_key = format!("{location}#{kind}");
     if REJECTED.get(&rejected_key).await.is_some() {
-        return None;
+        return Ok(None);
     }
 
     if let Some((entry, size)) = cache.get_file_entry(&location, &kind).await {
         if let Some(index) = MmapIndex::open(entry, size, kind_hash, source_hash) {
             HITS.fetch_add(1, AtomicOrdering::Relaxed);
-            return Some(Arc::new(CachedFile {
+            return Ok(Some(Arc::new(CachedFile {
                 index: Arc::new(index),
                 source,
-            }));
+            })));
         }
         warn!("corrupt pk index for {location}; rebuilding");
     }
@@ -1514,11 +1679,15 @@ async fn get_or_load_file(
     };
     let size = match built {
         Ok(size) => size,
-        Err(error) => {
+        Err(BuildError::NotApplicable(error)) => {
             let _ = std::fs::remove_file(&temp);
-            warn!("failed to build pk index for {location}: {error}");
+            warn!("cannot index {location}: {error}");
             REJECTED.insert(rejected_key, ()).await;
-            return None;
+            return Ok(None);
+        }
+        Err(BuildError::Read(error)) => {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error);
         }
     };
     let (entry, size, built) = match cache
@@ -1529,7 +1698,7 @@ async fn get_or_load_file(
         Err(error) => {
             let _ = std::fs::remove_file(&temp);
             warn!("failed to store pk index for {location}: {error}");
-            return None;
+            return Ok(None);
         }
     };
     let index = match MmapIndex::open(entry, size, kind_hash, source_hash) {
@@ -1537,7 +1706,7 @@ async fn get_or_load_file(
         None => {
             warn!("stored pk index for {location} is unreadable");
             REJECTED.insert(rejected_key, ()).await;
-            return None;
+            return Ok(None);
         }
     };
     if built {
@@ -1545,10 +1714,10 @@ async fn get_or_load_file(
     } else {
         HITS.fetch_add(1, AtomicOrdering::Relaxed);
     }
-    Some(Arc::new(CachedFile {
+    Ok(Some(Arc::new(CachedFile {
         index: Arc::new(index),
         source,
-    }))
+    })))
 }
 
 /// The shared vortex session, created on first use (opening one costs far
@@ -1558,15 +1727,37 @@ fn vortex_session(session: &mut Option<VortexSession>) -> VortexSession {
 }
 
 /// Row count of one parquet file, from its footer.
+///
+/// A footer that cannot be read is a real data-file error, not a reason to
+/// treat the locator as not applicable.
 async fn parquet_row_count(
     store: &Arc<dyn ObjectStore>,
     location: &StorePath,
-) -> Option<u64> {
-    let size = store.head(location).await.ok()?.size;
-    let reader = ParquetObjectReader::new(Arc::clone(store), location.clone())
-        .with_file_size(size);
-    let builder = ParquetRecordBatchStreamBuilder::new(reader).await.ok()?;
-    Some(builder.metadata().file_metadata().num_rows() as u64)
+) -> crate::Result<u64> {
+    let builder = {
+        let _permit = acquire_metadata_fetch_permit()
+            .await
+            .map_err(|error| rootcause::report!(error))?;
+        let size = store
+            .head(location)
+            .await
+            .map_err(|error| {
+                rootcause::report!(
+                    "failed to read metadata of parquet data file {location}: {error}"
+                )
+            })?
+            .size;
+        let reader = ParquetObjectReader::new(Arc::clone(store), location.clone())
+            .with_file_size(size);
+        ParquetRecordBatchStreamBuilder::new(reader)
+            .await
+            .map_err(|error| {
+                rootcause::report!(
+                    "failed to read parquet footer of data file {location}: {error}"
+                )
+            })?
+    };
+    Ok(builder.metadata().file_metadata().num_rows() as u64)
 }
 
 /// Read the key columns of one parquet file and write them, arrow-Row
@@ -1581,7 +1772,7 @@ async fn build_parquet_index_file(
     kind_hash: u64,
     source_hash: u64,
     max_bytes: u64,
-) -> crate::Result<u64> {
+) -> BuildResult<u64> {
     let converter = RowConverter::new(
         types
             .iter()
@@ -1589,17 +1780,24 @@ async fn build_parquet_index_file(
             .map(SortField::new)
             .collect::<Vec<_>>(),
     )
-    .map_err(|error| open_error(location, error))?;
-    let size = store
-        .head(location)
-        .await
-        .map_err(|error| open_error(location, error))?
-        .size;
-    let reader = ParquetObjectReader::new(Arc::clone(store), location.clone())
-        .with_file_size(size);
-    let builder = ParquetRecordBatchStreamBuilder::new(reader)
-        .await
-        .map_err(|error| open_error(location, error))?;
+    .map_err(|error| BuildError::NotApplicable(open_error(location, error)))?;
+    let builder = {
+        let _permit = acquire_metadata_fetch_permit().await.map_err(|error| {
+            BuildError::Read(rootcause::report!(
+                "failed to acquire metadata permit for {location}: {error}"
+            ))
+        })?;
+        let size = store
+            .head(location)
+            .await
+            .map_err(|error| BuildError::Read(open_error(location, error)))?
+            .size;
+        let reader = ParquetObjectReader::new(Arc::clone(store), location.clone())
+            .with_file_size(size);
+        ParquetRecordBatchStreamBuilder::new(reader)
+            .await
+            .map_err(|error| BuildError::Read(open_error(location, error)))?
+    };
 
     // Range-partition columns are not stored in the file.  When every key
     // column is a partition constant, the index is a run of identical rows
@@ -1607,7 +1805,8 @@ async fn build_parquet_index_file(
     let physical = physical_key_columns(columns, defaults);
     if physical.is_empty() {
         let rows = builder.metadata().file_metadata().num_rows().max(0) as usize;
-        let mut writer = IndexWriter::create(temp, kind_hash, source_hash, max_bytes)?;
+        let mut writer = IndexWriter::create(temp, kind_hash, source_hash, max_bytes)
+            .map_err(BuildError::NotApplicable)?;
         index_constant_rows(
             &mut writer,
             &converter,
@@ -1617,7 +1816,7 @@ async fn build_parquet_index_file(
             rows,
             location,
         )?;
-        let size = writer.finish()?;
+        let size = writer.finish().map_err(BuildError::NotApplicable)?;
         debug!("built pk index for {location} on {columns:?}: {size} bytes");
         return Ok(size);
     }
@@ -1626,11 +1825,12 @@ async fn build_parquet_index_file(
     let mut stream = builder
         .with_projection(mask)
         .build()
-        .map_err(|error| open_error(location, error))?;
+        .map_err(|error| BuildError::NotApplicable(open_error(location, error)))?;
     let mut entries = Vec::new();
     let mut row_start = 0u32;
     while let Some(batch) = stream.next().await {
-        let batch = batch.map_err(|error| open_error(location, error))?;
+        let batch =
+            batch.map_err(|error| BuildError::Read(open_error(location, error)))?;
         if batch.num_rows() == 0 {
             continue;
         }
@@ -1639,7 +1839,11 @@ async fn build_parquet_index_file(
         )?);
         row_start = row_start
             .checked_add(batch.num_rows() as u32)
-            .ok_or_else(|| rootcause::report!("file is too large for a pk index"))?;
+            .ok_or_else(|| {
+                BuildError::NotApplicable(rootcause::report!(
+                    "file is too large for a pk index"
+                ))
+            })?;
     }
     let size = write_index_entries(temp, kind_hash, source_hash, max_bytes, entries)?;
     debug!("built pk index for {location} on {columns:?}: {size} bytes");
@@ -1660,6 +1864,10 @@ fn physical_key_columns<'a>(
 
 /// Encode one batch's key columns and pair each encoded key with its
 /// data-file row id.
+///
+/// Every failure here means the file cannot be indexed (missing/incompatible
+/// key column, unsorted or oversized keys, local index write failure), not
+/// that reading it failed: the caller falls back to the regular scan.
 fn encode_index_entries(
     converter: &RowConverter,
     batch: &RecordBatch,
@@ -1668,22 +1876,25 @@ fn encode_index_entries(
     defaults: &HashMap<String, String>,
     location: &StorePath,
     row_start: u32,
-) -> crate::Result<Vec<(Vec<u8>, u32)>> {
+) -> BuildResult<Vec<(Vec<u8>, u32)>> {
     let mut arrays = Vec::with_capacity(columns.len());
     for (column, data_type) in columns.iter().zip(types) {
         if let Some(value) = defaults.get(column) {
-            let array = make_default_array(data_type, value, batch.num_rows())
-                .map_err(|error| open_error(location, error))?;
+            let array = make_default_array(data_type, value, batch.num_rows()).map_err(
+                |error| BuildError::NotApplicable(open_error(location, error)),
+            )?;
             if array.data_type() != data_type {
-                return Err(rootcause::report!(
+                return Err(BuildError::NotApplicable(rootcause::report!(
                     "partition column {column} of {location} cannot be encoded as {data_type}"
-                ));
+                )));
             }
             arrays.push(array);
             continue;
         }
         let index = batch.schema().index_of(column).map_err(|_| {
-            rootcause::report!("column {column} missing from file {location}")
+            BuildError::NotApplicable(rootcause::report!(
+                "column {column} missing from file {location}"
+            ))
         })?;
         let mut array = Arc::clone(batch.column(index));
         let found = array.data_type();
@@ -1693,16 +1904,16 @@ fn encode_index_entries(
             // encoding must use the table's type, so cast when Arrow can; a
             // genuinely incompatible type still falls back to the reader.
             array = cast(array.as_ref(), data_type).map_err(|error| {
-                rootcause::report!(
+                BuildError::NotApplicable(rootcause::report!(
                     "column {column} of {location} has type {found}, expected {data_type}: {error}"
-                )
+                ))
             })?;
         }
         arrays.push(array);
     }
     let encoded = converter
         .convert_columns(&arrays)
-        .map_err(|error| open_error(location, error))?;
+        .map_err(|error| BuildError::NotApplicable(open_error(location, error)))?;
     Ok((0..encoded.num_rows())
         .map(|row| (encoded.row(row).data().to_vec(), row_start + row as u32))
         .collect())
@@ -1719,11 +1930,11 @@ fn index_batch(
     types: &[DataType],
     defaults: &HashMap<String, String>,
     location: &StorePath,
-) -> crate::Result<()> {
+) -> BuildResult<()> {
     let entries =
         encode_index_entries(converter, batch, columns, types, defaults, location, 0)?;
     for (key, _) in entries {
-        writer.push(&key)?;
+        writer.push(&key).map_err(BuildError::NotApplicable)?;
     }
     Ok(())
 }
@@ -1737,23 +1948,27 @@ fn write_index_entries(
     source_hash: u64,
     max_bytes: u64,
     mut entries: Vec<(Vec<u8>, u32)>,
-) -> crate::Result<u64> {
+) -> BuildResult<u64> {
     let sorted = entries.windows(2).all(|pair| pair[0].0 <= pair[1].0);
     if sorted {
-        let mut writer = IndexWriter::create(temp, kind_hash, source_hash, max_bytes)?;
+        let mut writer = IndexWriter::create(temp, kind_hash, source_hash, max_bytes)
+            .map_err(BuildError::NotApplicable)?;
         for (key, _) in entries {
-            writer.push(&key)?;
+            writer.push(&key).map_err(BuildError::NotApplicable)?;
         }
-        return writer.finish();
+        return writer.finish().map_err(BuildError::NotApplicable);
     }
     // Stable sorting keeps the original row order for duplicate keys.
     entries.sort_by(|left, right| left.0.cmp(&right.0));
     let mut writer =
-        IndexWriter::create_with_row_ids(temp, kind_hash, source_hash, max_bytes)?;
+        IndexWriter::create_with_row_ids(temp, kind_hash, source_hash, max_bytes)
+            .map_err(BuildError::NotApplicable)?;
     for (key, row_id) in entries {
-        writer.push_with_row(&key, row_id)?;
+        writer
+            .push_with_row(&key, row_id)
+            .map_err(BuildError::NotApplicable)?;
     }
-    writer.finish()
+    writer.finish().map_err(BuildError::NotApplicable)
 }
 
 /// Encode a constant key run (all key columns are range-partition values).
@@ -1765,29 +1980,34 @@ fn index_constant_rows(
     defaults: &HashMap<String, String>,
     rows: usize,
     location: &StorePath,
-) -> crate::Result<()> {
+) -> BuildResult<()> {
     let mut remaining = rows;
     while remaining > 0 {
         let chunk = remaining.min(8192);
         let mut arrays = Vec::with_capacity(columns.len());
         for (column, data_type) in columns.iter().zip(types) {
             let value = defaults.get(column).ok_or_else(|| {
-                rootcause::report!("key column {column} has no constant value")
+                BuildError::NotApplicable(rootcause::report!(
+                    "key column {column} has no constant value"
+                ))
             })?;
-            let array = make_default_array(data_type, value, chunk)
-                .map_err(|error| open_error(location, error))?;
+            let array = make_default_array(data_type, value, chunk).map_err(|error| {
+                BuildError::NotApplicable(open_error(location, error))
+            })?;
             if array.data_type() != data_type {
-                return Err(rootcause::report!(
+                return Err(BuildError::NotApplicable(rootcause::report!(
                     "partition column {column} of {location} cannot be encoded as {data_type}"
-                ));
+                )));
             }
             arrays.push(array);
         }
         let encoded = converter
             .convert_columns(&arrays)
-            .map_err(|error| open_error(location, error))?;
+            .map_err(|error| BuildError::NotApplicable(open_error(location, error)))?;
         for row in 0..encoded.num_rows() {
-            writer.push(encoded.row(row).data())?;
+            writer
+                .push(encoded.row(row).data())
+                .map_err(BuildError::NotApplicable)?;
         }
         remaining -= chunk;
     }
@@ -1796,30 +2016,74 @@ fn index_constant_rows(
 
 /// A row selection covering `indices` (sorted and deduplicated) in a file of
 /// `rows` rows.
-fn row_selection(indices: &[u64], rows: usize) -> RowSelection {
-    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut start: Option<u64> = None;
-    let mut previous = 0u64;
-    for index in indices {
-        if *index >= rows as u64 {
+///
+/// The temporary run ranges and the retained selectors are charged to
+/// `reservation`: the ranges are released once the selection owns its
+/// selectors, whose conservative bound stays reserved for the caller.
+fn row_selection(
+    indices: &[u64],
+    rows: usize,
+    reservation: &MemoryReservation,
+) -> DFResult<RowSelection> {
+    // One `select` selector per run of consecutive kept rows, one `skip`
+    // selector per gap before a run, and a closing `skip` when the last run
+    // ends before the file's end: at most `2 * runs + 1` selectors.
+    let mut runs = 0usize;
+    let mut last: Option<u64> = None;
+    for &raw in indices {
+        if raw >= rows as u64 {
             continue;
         }
-        match start {
-            Some(current) if *index == previous + 1 => {
-                let _ = current;
-            }
-            Some(current) => {
-                ranges.push(current as usize..previous as usize + 1);
-                start = Some(*index);
-            }
-            None => start = Some(*index),
+        if last.is_none_or(|previous| raw != previous + 1) {
+            runs += 1;
         }
-        previous = *index;
+        last = Some(raw);
     }
-    if let Some(current) = start {
-        ranges.push(current as usize..previous as usize + 1);
+    let selector_count = 2usize.saturating_mul(runs).saturating_add(1);
+    let selector_bytes =
+        selector_count.saturating_mul(std::mem::size_of::<RowSelector>());
+    reservation.try_grow(selector_bytes)?;
+
+    // Exact capacity: the builder never reallocates, so every selector byte
+    // is accounted before it is written and no scratch range vector exists.
+    let mut selectors: Vec<RowSelector> = Vec::with_capacity(selector_count);
+    let mut last_end = 0usize;
+    let mut run_start: Option<usize> = None;
+    for &raw in indices {
+        if raw >= rows as u64 {
+            continue;
+        }
+        let index = raw as usize;
+        match run_start {
+            None => {
+                if index > last_end {
+                    selectors.push(RowSelector::skip(index - last_end));
+                }
+                run_start = Some(index);
+                last_end = index + 1;
+            }
+            Some(_) if index == last_end => {
+                last_end = index + 1;
+            }
+            Some(start) => {
+                selectors.push(RowSelector::select(last_end - start));
+                selectors.push(RowSelector::skip(index - last_end));
+                run_start = Some(index);
+                last_end = index + 1;
+            }
+        }
     }
-    RowSelection::from_consecutive_ranges(ranges.into_iter(), rows)
+    if let Some(start) = run_start {
+        selectors.push(RowSelector::select(last_end - start));
+        if last_end < rows {
+            selectors.push(RowSelector::skip(rows - last_end));
+        }
+    } else if rows > 0 {
+        // No candidate falls inside this file. An empty `RowSelection` selects
+        // every row, so the file has to be skipped explicitly.
+        selectors.push(RowSelector::skip(rows));
+    }
+    Ok(RowSelection::from(selectors))
 }
 
 /// Fetch exactly `indices` from one parquet file.
@@ -1834,28 +2098,38 @@ async fn take_rows_parquet(
     indices: &[u64],
     projected_schema: &SchemaRef,
     projection_names: &[String],
+    ledger: &MergeMemory,
+    scratch: &MemoryReservation,
 ) -> crate::Result<Vec<RecordBatch>> {
     let reader = ParquetObjectReader::new(Arc::clone(store), location.clone())
         .with_file_size(size);
     // The row selection only needs the offset index to skip pages; the column
     // index (page statistics) would add bytes to every candidate read and is
     // never consulted here.
-    let builder = ParquetRecordBatchStreamBuilder::new_with_options(
-        reader,
-        ArrowReaderOptions::new()
-            .with_offset_index_policy(PageIndexPolicy::Optional)
-            .with_column_index_policy(PageIndexPolicy::Skip),
-    )
-    .await
-    .map_err(|error| open_error(location, error))?;
+    let builder = {
+        let _permit = acquire_metadata_fetch_permit()
+            .await
+            .map_err(|error| rootcause::report!(error))?;
+        ParquetRecordBatchStreamBuilder::new_with_options(
+            reader,
+            ArrowReaderOptions::new()
+                .with_offset_index_policy(PageIndexPolicy::Optional)
+                .with_column_index_policy(PageIndexPolicy::Skip),
+        )
+        .await
+        .map_err(|error| open_error(location, error))?
+    };
     let rows = builder.metadata().file_metadata().num_rows() as usize;
     let mask = ProjectionMask::columns(
         builder.parquet_schema(),
         projection_names.iter().map(String::as_str),
     );
+    let selection_reservation = scratch.new_empty();
+    let selection = row_selection(indices, rows, &selection_reservation)
+        .map_err(|e| rootcause::report!(e))?;
     let mut stream = builder
         .with_projection(mask)
-        .with_row_selection(row_selection(indices, rows))
+        .with_row_selection(selection)
         .build()
         .map_err(|error| open_error(location, error))?;
     let mut batches = Vec::new();
@@ -1871,18 +2145,21 @@ async fn take_rows_parquet(
             })?;
             columns.push(Arc::clone(batch.column(index)));
         }
+        let projected = RecordBatch::try_new(Arc::clone(projected_schema), columns)
+            .map_err(|e| rootcause::report!("project candidate rows: {e}"))?;
         batches.push(
-            RecordBatch::try_new(Arc::clone(projected_schema), columns)
-                .map_err(|e| rootcause::report!("project candidate rows: {e}"))?,
+            ledger
+                .track_batch(projected)
+                .map_err(|e| rootcause::report!(e))?,
         );
     }
     Ok(batches)
 }
 
 /// Read the key columns of one file and write them, arrow-Row encoded and
-/// sorted, to `temp`.  Returns the file size, or an error (unsorted keys,
-/// unsupported types, over the cache budget, ...) so the caller falls back to
-/// a regular scan.
+/// sorted, to `temp`.  `BuildError::NotApplicable` (unsorted keys, unsupported
+/// types, over the cache budget, ...) falls back to a regular scan;
+/// `BuildError::Read` propagates because the data file could not be read.
 async fn build_index_file(
     file: &VortexFile,
     location: &StorePath,
@@ -1894,7 +2171,7 @@ async fn build_index_file(
     kind_hash: u64,
     source_hash: u64,
     max_bytes: u64,
-) -> crate::Result<u64> {
+) -> BuildResult<u64> {
     let converter = RowConverter::new(
         types
             .iter()
@@ -1902,11 +2179,12 @@ async fn build_index_file(
             .map(SortField::new)
             .collect::<Vec<_>>(),
     )
-    .map_err(|error| open_error(location, error))?;
+    .map_err(|error| BuildError::NotApplicable(open_error(location, error)))?;
     let physical = physical_key_columns(columns, defaults);
     if physical.is_empty() {
         let rows = file.row_count() as usize;
-        let mut writer = IndexWriter::create(temp, kind_hash, source_hash, max_bytes)?;
+        let mut writer = IndexWriter::create(temp, kind_hash, source_hash, max_bytes)
+            .map_err(BuildError::NotApplicable)?;
         index_constant_rows(
             &mut writer,
             &converter,
@@ -1916,29 +2194,30 @@ async fn build_index_file(
             rows,
             location,
         )?;
-        let size = writer.finish()?;
+        let size = writer.finish().map_err(BuildError::NotApplicable)?;
         debug!("built pk index for {location} on {columns:?}: {size} bytes");
         return Ok(size);
     }
 
     let projection = select(FieldNames::from_iter(physical.iter().copied()), root())
         .bind(file.dtype())
-        .map_err(|error| open_error(location, error))?;
+        .map_err(|error| BuildError::NotApplicable(open_error(location, error)))?;
     let mut stream = file
         .scan()
-        .map_err(|error| open_error(location, error))?
+        .map_err(|error| BuildError::Read(open_error(location, error)))?
         .with_projection(projection)
         .into_array_stream()
-        .map_err(|error| open_error(location, error))?;
+        .map_err(|error| BuildError::Read(open_error(location, error)))?;
     let mut ctx = session.create_execution_ctx();
     let mut entries = Vec::new();
     let mut row_start = 0u32;
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| open_error(location, error))?;
+        let chunk =
+            chunk.map_err(|error| BuildError::Read(open_error(location, error)))?;
         let arrow = session
             .arrow()
             .execute_arrow(chunk, None, &mut ctx)
-            .map_err(|error| open_error(location, error))?;
+            .map_err(|error| BuildError::Read(open_error(location, error)))?;
         let batch = RecordBatch::from(arrow.as_struct().clone());
         if batch.num_rows() == 0 {
             continue;
@@ -1948,7 +2227,11 @@ async fn build_index_file(
         )?);
         row_start = row_start
             .checked_add(batch.num_rows() as u32)
-            .ok_or_else(|| rootcause::report!("file is too large for a pk index"))?;
+            .ok_or_else(|| {
+                BuildError::NotApplicable(rootcause::report!(
+                    "file is too large for a pk index"
+                ))
+            })?;
     }
     let size = write_index_entries(temp, kind_hash, source_hash, max_bytes, entries)?;
     debug!("built pk index for {location} on {columns:?}: {size} bytes");
@@ -1959,8 +2242,8 @@ fn open_error(location: &StorePath, error: impl std::fmt::Display) -> rootcause:
     rootcause::report!("failed to read key columns of {location}: {error}")
 }
 
-/// The location of the single vortex file of one flattened config, or `None`
-/// when the config is not a single supported file.
+/// The location and format of the single supported data file of one flattened
+/// config, or `None` when the config is not a single vortex/parquet file.
 fn single_data_file(config: &FileScanConfig) -> Option<(StorePath, PhysicalFormat)> {
     // The flatten step creates one single-file config per file.
     let file_group = config.file_groups.first()?;
@@ -1975,58 +2258,81 @@ fn single_data_file(config: &FileScanConfig) -> Option<(StorePath, PhysicalForma
 }
 
 /// Build row-level inputs for a key-prefix filter, one input per flattened
-/// file config.  Returns `None` (caller falls back to a regular scan) when the
-/// locator is disabled or any file/column is unsupported.
+/// file config.
 ///
-/// Files whose statistics prove the candidate set absent are returned as an
-/// empty input, so the resulting plan reads nothing for them.
+/// `Ok(None)` means the locator is not applicable (disabled, too many
+/// candidates, unsupported file/column/layout) and the caller must scan
+/// normally.  `Err` means the optimization was applicable but failed: a data
+/// file could not be read or is corrupt, or the candidate rows could not be
+/// materialized within the task memory pool.  Those errors must not be turned
+/// into an ordinary scan.  A file whose statistics prove the candidate set
+/// absent is returned as an empty input, so the resulting plan reads nothing
+/// for it.
+///
+/// The returned inputs retain their candidate batches, and the memory-pool
+/// reservation for those batches lives on the Apache Arrow buffers: a batch
+/// (or column slice) kept after the plan and stream are dropped keeps its
+/// bytes reserved until its last buffer owner goes away.
+///
+/// `min_index_rows` is the row count `configs` must reach before the indexed
+/// path is taken.  A caller that sees every file of the query passes
+/// [`MIN_INDEX_ROWS`]; a caller that sees one work unit of a lazy scan passes
+/// [`min_index_rows_per_unit`], so the decision stays the query's.
 pub async fn try_build_key_inputs(
     state: &dyn Session,
     io_config: &LakeSoulIOConfig,
     configs: &[FileScanConfig],
     constraint: &KeyConstraint,
-) -> Option<Vec<Arc<dyn ExecutionPlan>>> {
-    index_disk_cache()?;
+    min_index_rows: u64,
+) -> DFResult<Option<Vec<Arc<dyn ExecutionPlan>>>> {
+    let Some(_cache) = index_disk_cache() else {
+        return Ok(None);
+    };
     if constraint.values.is_empty()
         || constraint.values.len() > io_config.max_pk_candidates()
     {
-        return None;
+        return Ok(None);
     }
     if configs.is_empty() {
-        return None;
+        return Ok(None);
     }
     let primary_keys = io_config.primary_keys_slice();
     if primary_keys.len() < constraint.columns.len()
         || primary_keys[..constraint.columns.len()] != constraint.columns[..]
     {
-        return None;
+        return Ok(None);
     }
     // All configs come from one table, so the key layout is taken from the
     // first one and the candidates are encoded once for every file.
     let file_schema = configs[0].file_schema();
     let mut types = Vec::with_capacity(constraint.columns.len());
     for column in &constraint.columns {
-        let field = file_schema.field_with_name(column).ok()?;
+        let Ok(field) = file_schema.field_with_name(column) else {
+            return Ok(None);
+        };
         if !key_type_supported(field.data_type()) {
-            return None;
+            return Ok(None);
         }
         types.push(field.data_type().clone());
     }
-    let arrays = key_values_to_arrays(&constraint.values, &types)?;
-    let converter = RowConverter::new(
+    let Some(arrays) = key_values_to_arrays(&constraint.values, &types) else {
+        return Ok(None);
+    };
+    let Ok(converter) = RowConverter::new(
         types
             .iter()
             .cloned()
             .map(SortField::new)
             .collect::<Vec<_>>(),
-    )
-    .ok()?;
-    let encoded = {
-        let rows = converter.convert_columns(&arrays).ok()?;
-        (0..rows.num_rows())
-            .map(|row| rows.row(row).data().to_vec())
-            .collect::<Vec<_>>()
+    ) else {
+        return Ok(None);
     };
+    let Ok(rows) = converter.convert_columns(&arrays) else {
+        return Ok(None);
+    };
+    let encoded = (0..rows.num_rows())
+        .map(|row| rows.row(row).data().to_vec())
+        .collect::<Vec<_>>();
     let int_candidates = constraint.single_column_ints();
     let encoded_refs: Vec<&[u8]> = encoded.iter().map(Vec::as_slice).collect();
     build_key_inputs(
@@ -2038,6 +2344,7 @@ pub async fn try_build_key_inputs(
         int_candidates.as_deref(),
         encoded.len(),
         io_config.bulk_pk_lookup(),
+        min_index_rows,
     )
     .await
 }
@@ -2051,8 +2358,9 @@ pub async fn try_build_key_inputs(
 ///
 /// `expected_kind` is the key-layout fingerprint stored in the index header
 /// (see [`crate::index::key::KeyLayout::kind_hash`]); when it does not match
-/// the data files' layout the encoded keys cannot be looked up and `None` is
-/// returned, so the caller scans normally instead of returning no rows.
+/// the data files' layout the encoded keys cannot be looked up and `Ok(None)`
+/// is returned, so the caller scans normally instead of returning no rows.
+/// Real data-file read failures are returned as `Err`.
 pub async fn try_build_key_inputs_encoded(
     state: &dyn Session,
     io_config: &LakeSoulIOConfig,
@@ -2060,23 +2368,27 @@ pub async fn try_build_key_inputs_encoded(
     columns: &[String],
     expected_kind: u64,
     keys: &[IndexKey],
-) -> Option<Vec<Arc<dyn ExecutionPlan>>> {
-    index_disk_cache()?;
-    if keys.is_empty() || keys.len() > io_config.max_pk_candidates() || configs.is_empty()
+) -> DFResult<Option<Vec<Arc<dyn ExecutionPlan>>>> {
+    if index_disk_cache().is_none()
+        || keys.is_empty()
+        || keys.len() > io_config.max_pk_candidates()
+        || configs.is_empty()
     {
-        return None;
+        return Ok(None);
     }
     let primary_keys = io_config.primary_keys_slice();
     if primary_keys.len() < columns.len() || primary_keys[..columns.len()] != columns[..]
     {
-        return None;
+        return Ok(None);
     }
     let file_schema = configs[0].file_schema();
     let mut types = Vec::with_capacity(columns.len());
     for column in columns {
-        let field = file_schema.field_with_name(column).ok()?;
+        let Ok(field) = file_schema.field_with_name(column) else {
+            return Ok(None);
+        };
         if !key_type_supported(field.data_type()) {
-            return None;
+            return Ok(None);
         }
         types.push(field.data_type().clone());
     }
@@ -2086,7 +2398,7 @@ pub async fn try_build_key_inputs_encoded(
             "index key layout changed (index kind {expected_kind:#x}, data kind \
              {kind_hash:#x}); scanning without the key lookup"
         );
-        return None;
+        return Ok(None);
     }
     let encoded_refs: Vec<&[u8]> = keys.iter().map(|key| key.as_bytes()).collect();
     build_key_inputs(
@@ -2098,12 +2410,20 @@ pub async fn try_build_key_inputs_encoded(
         None,
         keys.len(),
         io_config.bulk_pk_lookup(),
+        // The index path flattens every file of the query before it looks
+        // anything up, so its threshold stays query-wide.
+        MIN_INDEX_ROWS,
     )
     .await
 }
 
 /// Shared tail of both key-input builders: opens each file's mmapped key
 /// index, looks the encoded keys up and fetches the matching rows.
+///
+/// Candidate row ids are reserved from the task memory pool while they are
+/// produced; fetched batches are charged through their Arrow buffer owners.
+/// A memory-limit error propagates; the regular scan is not a legitimate
+/// fallback for it.
 #[allow(clippy::too_many_arguments)]
 async fn build_key_inputs(
     state: &dyn Session,
@@ -2114,7 +2434,8 @@ async fn build_key_inputs(
     int_candidates: Option<&[i64]>,
     key_count: usize,
     bulk: bool,
-) -> Option<Vec<Arc<dyn ExecutionPlan>>> {
+    min_index_rows: u64,
+) -> DFResult<Option<Vec<Arc<dyn ExecutionPlan>>>> {
     // Built lazily: only files that actually need a vortex scan create one,
     // and creating a session costs far more than this check.
     let mut session: Option<VortexSession> = None;
@@ -2140,41 +2461,55 @@ async fn build_key_inputs(
 
     // Indexing costs one key-column read plus a small local file per data
     // file; when the candidate set as a whole is tiny, a plain scan is
-    // cheaper.  The decision spans all files, so neither a single small upsert
-    // file nor the many small files IVM writes per append disable the index.
+    // cheaper.  `min_index_rows` carries the query-wide decision here: a
+    // caller whose `configs` cover only one work unit passes the share that
+    // unit has to hold, so neither a single small upsert file nor the many
+    // small files IVM writes per append disable the index.
     let mut total_rows: u64 = 0;
     for config in configs {
-        let (location, format) = single_data_file(config)?;
-        let store = state
-            .runtime_env()
-            .object_store(&config.object_store_url)
-            .ok()?;
+        let Some((location, format)) = single_data_file(config) else {
+            return Ok(None);
+        };
+        let Ok(store) = state.runtime_env().object_store(&config.object_store_url) else {
+            // An unregistered store is not a data-file failure: the regular
+            // scan path reports the configuration error with its own context.
+            return Ok(None);
+        };
         let rows = match format {
             PhysicalFormat::Vortex => {
                 let session = vortex_session(&mut session);
                 get_vortex_file(store, &location, &session)
-                    .await?
+                    .await
+                    .map_err(locator_error)?
                     .row_count()
             }
-            PhysicalFormat::Parquet => parquet_row_count(&store, &location).await?,
-            _ => return None,
+            PhysicalFormat::Parquet => parquet_row_count(&store, &location)
+                .await
+                .map_err(locator_error)?,
+            _ => return Ok(None),
         };
         total_rows = total_rows.saturating_add(rows);
-        if total_rows >= MIN_INDEX_ROWS {
+        if total_rows >= min_index_rows {
             break;
         }
     }
-    if total_rows < MIN_INDEX_ROWS {
-        return None;
+    if total_rows < min_index_rows {
+        return Ok(None);
     }
+    let memory_pool = state.runtime_env().memory_pool.clone();
 
     let mut inputs = Vec::with_capacity(configs.len());
     // This path has no partition constants: a key column that is not stored
     // in the file is left to the regular reader (and its partition defaults).
     let no_defaults = HashMap::new();
     for config in configs {
-        let (location, format) = single_data_file(config)?;
-        let (projected_schema, projection_names) = projected_file_schema(config)?;
+        let Some((location, format)) = single_data_file(config) else {
+            return Ok(None);
+        };
+        let Some((projected_schema, projection_names)) = projected_file_schema(config)
+        else {
+            return Ok(None);
+        };
 
         if let Some(ints) = &int_candidates
             && let Some((min, max)) = pk_min_max(config, &columns[0])
@@ -2186,12 +2521,11 @@ async fn build_key_inputs(
         }
         n_files += 1;
 
-        let store = state
-            .runtime_env()
-            .object_store(&config.object_store_url)
-            .ok()?;
+        let Ok(store) = state.runtime_env().object_store(&config.object_store_url) else {
+            return Ok(None);
+        };
         let t = std::time::Instant::now();
-        let entry = get_or_load_file(
+        let Some(entry) = get_or_load_file(
             Arc::clone(&store),
             location.clone(),
             format,
@@ -2200,31 +2534,46 @@ async fn build_key_inputs(
             &no_defaults,
             &mut session,
         )
-        .await?;
+        .await
+        .map_err(locator_error)?
+        else {
+            // The file cannot be indexed; scan it normally.  Batches already
+            // materialized for earlier files are dropped with `inputs`.
+            return Ok(None);
+        };
         t_cache += t.elapsed();
 
-        let mut indices: Vec<u64> = if bulk {
-            entry
-                .index
-                .rows_with_prefixes(&sorted)
-                .into_iter()
-                .map(u64::from)
-                .collect()
-        } else {
-            let mut indices = Vec::new();
-            for key in encoded {
-                indices
-                    .extend(entry.index.rows_with_prefix(key).into_iter().map(u64::from));
-            }
-            indices
-        };
+        // The row ids are a temporary allocation: reserve them as the lookup
+        // produces them, then release the reservation once the batches hold
+        // the candidate data.
+        let row_reservation = MemoryConsumer::new(format!(
+            "LakeSoulPkLocatorRows[{}]",
+            config.object_store_url
+        ))
+        .with_can_spill(false)
+        .register(&memory_pool);
+        let mut indices = collect_candidate_rows(
+            &entry.index,
+            encoded,
+            &sorted,
+            bulk,
+            &row_reservation,
+        )?;
         if indices.is_empty() {
             inputs.push(empty_input(&projected_schema)?);
             continue;
         }
         indices.sort_unstable();
         indices.dedup();
+        row_reservation.try_resize(indices.capacity() * CANDIDATE_ROW_BYTES)?;
 
+        let batch_reservation = MemoryConsumer::new(format!(
+            "LakeSoulPkLocatorBatches[{}]",
+            config.object_store_url
+        ))
+        .with_can_spill(false)
+        .register(&memory_pool);
+        let ledger = MergeMemory::new(batch_reservation);
         let t = std::time::Instant::now();
         let batches = match &entry.source {
             FileSource::Vortex { file, session } => {
@@ -2235,6 +2584,8 @@ async fn build_key_inputs(
                     &indices,
                     &projected_schema,
                     &projection_names,
+                    &ledger,
+                    &row_reservation,
                 )
                 .await
             }
@@ -2250,17 +2601,22 @@ async fn build_key_inputs(
                     &indices,
                     &projected_schema,
                     &projection_names,
+                    &ledger,
+                    &row_reservation,
                 )
                 .await
             }
         }
-        .inspect_err(|e| warn!("failed to fetch key candidate rows: {e}"))
-        .ok()?;
+        .map_err(locator_error)?;
         t_take += t.elapsed();
         n_rows += indices.len();
-        let exec =
-            MemorySourceConfig::try_new_exec(&[batches], projected_schema, None).ok()?;
-        inputs.push(exec as Arc<dyn ExecutionPlan>);
+        drop(indices);
+        drop(row_reservation);
+        let exec: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[batches], projected_schema, None)?;
+        // Batch charges are owned by the Arrow buffers, so the plan and any
+        // clone of a batch keep accounting alive without a wrapper plan.
+        inputs.push(exec);
     }
     if profile {
         eprintln!(
@@ -2274,13 +2630,81 @@ async fn build_key_inputs(
             t_total.elapsed()
         );
     }
-    Some(inputs)
+    Ok(Some(inputs))
 }
 
-fn empty_input(schema: &SchemaRef) -> Option<Arc<dyn ExecutionPlan>> {
-    MemorySourceConfig::try_new_exec(&[Vec::new()], Arc::clone(schema), None)
-        .ok()
-        .map(|exec| exec as Arc<dyn ExecutionPlan>)
+/// Wrap a root-cause error for the DataFusion-facing locator entrypoints.
+///
+/// A memory-pool rejection keeps its `ResourcesExhausted` variant so callers
+/// (and tests) can distinguish it from an ordinary data-file failure.
+fn locator_error(error: rootcause::Report) -> DataFusionError {
+    crate::stream::merge_memory::merge_error(error)
+}
+
+/// Candidate row ids for one file, reserving memory as they are produced.
+///
+/// `bulk` uses the sorted-prefix merge (rows come out in key order; a
+/// row-id index returns the stored data row ids); otherwise every encoded key
+/// is looked up with a binary search.  Either way the reservation grows in
+/// chunks before the vector does, so an unexpectedly large match set fails
+/// with a memory-limit error instead of allocating unaccounted memory.
+fn collect_candidate_rows(
+    index: &MmapIndex,
+    encoded: &[&[u8]],
+    sorted: &[&[u8]],
+    bulk: bool,
+    reservation: &MemoryReservation,
+) -> DFResult<Vec<u64>> {
+    let mut rows: Vec<u64> = Vec::new();
+    if bulk {
+        let mut cursor = 0usize;
+        for prefix in sorted {
+            while cursor < index.rows && index.row(cursor) < *prefix {
+                cursor += 1;
+            }
+            while cursor < index.rows && index.row(cursor).starts_with(prefix) {
+                push_row(&mut rows, index.row_id(cursor) as u64, reservation)?;
+                cursor += 1;
+            }
+        }
+    } else {
+        for key in encoded {
+            for entry in index.entries_with_prefix(key) {
+                push_row(&mut rows, index.row_id(entry) as u64, reservation)?;
+            }
+        }
+    }
+    reservation.try_resize(rows.capacity() * CANDIDATE_ROW_BYTES)?;
+    Ok(rows)
+}
+
+/// Push one row id, reserving the new vector capacity before the allocation
+/// that grows it.  The capacity is charged as a whole, so geometric growth
+/// (`len` 2049 in a 4096-element vector) is never under-accounted.
+fn push_row(
+    rows: &mut Vec<u64>,
+    row: u64,
+    reservation: &MemoryReservation,
+) -> DFResult<()> {
+    if rows.len() == rows.capacity() {
+        let additional = rows.capacity().max(ROW_ID_RESERVE_CHUNK);
+        reservation.try_grow(additional * CANDIDATE_ROW_BYTES)?;
+        rows.try_reserve_exact(additional).map_err(|error| {
+            DataFusionError::ResourcesExhausted(format!(
+                "cannot grow candidate row ids: {error}"
+            ))
+        })?;
+        // `reserve_exact` may round up; keep the whole capacity charged.
+        reservation.try_resize(rows.capacity() * CANDIDATE_ROW_BYTES)?;
+    }
+    rows.push(row);
+    Ok(())
+}
+
+fn empty_input(schema: &SchemaRef) -> DFResult<Arc<dyn ExecutionPlan>> {
+    let exec: Arc<dyn ExecutionPlan> =
+        MemorySourceConfig::try_new_exec(&[Vec::new()], Arc::clone(schema), None)?;
+    Ok(exec)
 }
 
 /// Projected schema of one file config plus the field names to select.
@@ -2312,10 +2736,18 @@ async fn take_rows(
     indices: &[u64],
     projected_schema: &SchemaRef,
     projection_names: &[String],
+    ledger: &MergeMemory,
+    scratch: &MemoryReservation,
 ) -> crate::Result<Vec<RecordBatch>> {
     let projection = root()
         .bind(file.dtype())
         .map_err(|e| open_error(location, e))?;
+    // `StrictSortedBuffer` needs its own `Buffer`; reserve the copy before
+    // copying the candidate row ids.
+    let row_copy_reservation = scratch.new_empty();
+    row_copy_reservation
+        .try_grow(indices.len().saturating_mul(CANDIDATE_ROW_BYTES))
+        .map_err(|e| rootcause::report!(e))?;
     let row_indices =
         StrictSortedBuffer::try_new(Buffer::from_iter(indices.iter().copied()))
             .map_err(|e| open_error(location, e))?;
@@ -2342,9 +2774,12 @@ async fn take_rows(
             })?;
             columns.push(Arc::clone(batch.column(index)));
         }
+        let projected = RecordBatch::try_new(Arc::clone(projected_schema), columns)
+            .map_err(|e| rootcause::report!("project candidate rows: {e}"))?;
         batches.push(
-            RecordBatch::try_new(Arc::clone(projected_schema), columns)
-                .map_err(|e| rootcause::report!("project candidate rows: {e}"))?,
+            ledger
+                .track_batch(projected)
+                .map_err(|e| rootcause::report!(e))?,
         );
     }
     Ok(batches)
@@ -2358,24 +2793,46 @@ mod tests {
     use smallvec::smallvec;
     use std::collections::HashMap;
 
-    use arrow::array::{ArrayRef, StringArray};
+    use arrow::array::{ArrayRef, Int64Array, StringArray};
     use arrow::record_batch::RecordBatch;
     use arrow::row::{RowConverter, SortField};
-    use std::sync::Arc;
-
+    use datafusion::datasource::file_format::FileFormat;
+    use datafusion::datasource::file_format::parquet::ParquetFormat;
+    use datafusion::datasource::listing::PartitionedFile;
+    use datafusion::datasource::physical_plan::{
+        FileGroup, FileScanConfig, FileScanConfigBuilder,
+    };
+    use datafusion::datasource::table_schema::TableSchema;
+    use datafusion::execution::SessionState;
+    use datafusion::execution::memory_pool::{
+        GreedyMemoryPool, MemoryConsumer, MemoryPool,
+    };
+    use datafusion::execution::object_store::ObjectStoreUrl;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+    use datafusion::prelude::{SessionConfig, SessionContext};
+    use futures::StreamExt;
+    use object_store::ObjectMeta;
+    use object_store::local::LocalFileSystem;
+    use object_store::path::Path as ObjectPath;
+    use parquet::arrow::ArrowWriter;
     use parquet::arrow::arrow_reader::RowSelector;
+    use std::sync::Arc;
+    use url::Url;
 
     use super::{
-        IndexCursor, IndexWriter, Key, KeyConstraint, KeyValue, MmapIndex,
-        extract_key_constraints, extract_key_constraints_with_cap, extract_pk_candidates,
-        key_values_to_arrays, row_selection,
+        IndexCursor, IndexWriter, Key, KeyConstraint, KeyValue, LakeSoulIOConfig,
+        MmapIndex, collect_candidate_rows, extract_key_constraints,
+        extract_key_constraints_with_cap, extract_pk_candidates, key_values_to_arrays,
+        row_selection,
     };
 
     #[test]
     fn row_selection_covers_exactly_the_indices() {
+        let pool = Arc::new(GreedyMemoryPool::new(1 << 20)) as Arc<dyn MemoryPool>;
+        let reservation = MemoryConsumer::new("row_selection_test").register(&pool);
         // Rows 1, 2 and 5 of a 7-row file: skip 1, take 2, skip 2, take 1,
         // skip the trailing row.
-        let selection = row_selection(&[1, 2, 5], 7);
+        let selection = row_selection(&[1, 2, 5], 7, &reservation).unwrap();
         let selectors: Vec<RowSelector> = selection.clone().into();
         assert_eq!(
             selectors,
@@ -2392,11 +2849,11 @@ mod tests {
         // An empty candidate set selects nothing, and an index past the end
         // is ignored (it cannot come from this file).
         assert_eq!(
-            Vec::<RowSelector>::from(row_selection(&[], 7)),
+            Vec::<RowSelector>::from(row_selection(&[], 7, &reservation).unwrap()),
             vec![RowSelector::skip(7)]
         );
         assert_eq!(
-            Vec::<RowSelector>::from(row_selection(&[0, 9], 7)),
+            Vec::<RowSelector>::from(row_selection(&[0, 9], 7, &reservation).unwrap()),
             vec![RowSelector::select(1), RowSelector::skip(6)]
         );
     }
@@ -2669,11 +3126,15 @@ mod tests {
     fn cursor_merge_answers_sorted_keys_across_batches() {
         let (_dir, index) = build_test_index(&["a", "a", "ab", "b", "c", "c", "d"]);
         let mut cursor = IndexCursor::default();
+        let pool = Arc::new(GreedyMemoryPool::new(1 << 20)) as Arc<dyn MemoryPool>;
+        let reservation = MemoryConsumer::new("cursor_rows").register(&pool);
 
         let first = ["a", "b", "c"].map(encode_utf8);
         let refs: Vec<&[u8]> = first.iter().map(Vec::as_slice).collect();
         assert_eq!(
-            index.rows_with_prefixes_from(&refs, &mut cursor),
+            index
+                .rows_with_prefixes_from(&refs, &mut cursor, &reservation)
+                .unwrap(),
             vec![0, 1, 3, 4, 5]
         );
 
@@ -2681,21 +3142,30 @@ mod tests {
         let second = ["c", "c", "d"].map(encode_utf8);
         let refs: Vec<&[u8]> = second.iter().map(Vec::as_slice).collect();
         assert_eq!(
-            index.rows_with_prefixes_from(&refs, &mut cursor),
+            index
+                .rows_with_prefixes_from(&refs, &mut cursor, &reservation)
+                .unwrap(),
             vec![4, 5, 6]
         );
 
         // A key repeated across batches re-emits its whole range.
         let third = ["d"].map(encode_utf8);
         let refs: Vec<&[u8]> = third.iter().map(Vec::as_slice).collect();
-        assert_eq!(index.rows_with_prefixes_from(&refs, &mut cursor), vec![6]);
+        assert_eq!(
+            index
+                .rows_with_prefixes_from(&refs, &mut cursor, &reservation)
+                .unwrap(),
+            vec![6]
+        );
 
         // A miss advances the cursor without losing later keys.
         let fourth = ["e", "z"].map(encode_utf8);
         let refs: Vec<&[u8]> = fourth.iter().map(Vec::as_slice).collect();
         assert_eq!(
-            index.rows_with_prefixes_from(&refs, &mut cursor),
-            Vec::<u32>::new()
+            index
+                .rows_with_prefixes_from(&refs, &mut cursor, &reservation)
+                .unwrap(),
+            Vec::<u64>::new()
         );
     }
 
@@ -2775,6 +3245,71 @@ mod tests {
     }
 
     #[test]
+    fn sorted_lookup_rows_keep_their_memory_charge_until_last_owner_drops() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("value", DataType::Int64, false),
+        ]));
+        let input = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int64Array::from(vec![3, 1, 2])),
+                Arc::new(Int64Array::from(vec![30, 10, 20])),
+            ],
+        )
+        .unwrap();
+        let pool = Arc::new(GreedyMemoryPool::new(1 << 20)) as Arc<dyn MemoryPool>;
+        let ledger = super::MergeMemory::new(
+            MemoryConsumer::new("sorted_lookup_batches").register(&pool),
+        );
+        let scratch = MemoryConsumer::new("sorted_lookup_scratch").register(&pool);
+        let charged = ledger.track_batch(input.clone()).unwrap();
+        let sorted = super::sort_batches_by_key(
+            vec![charged],
+            &["id".to_string()],
+            &schema,
+            &ledger,
+            &scratch,
+        )
+        .unwrap();
+        let values = sorted[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(values.values().as_ref(), &[10, 20, 30]);
+        let retained_bytes = pool.reserved();
+        assert!(
+            retained_bytes >= 6 * std::mem::size_of::<i64>(),
+            "the sorted primitive buffers must remain charged"
+        );
+        let retained = sorted[0].clone();
+        drop(sorted);
+        assert_eq!(pool.reserved(), retained_bytes);
+        drop(retained);
+        assert_eq!(pool.reserved(), 0);
+
+        let small_pool = Arc::new(GreedyMemoryPool::new(1)) as Arc<dyn MemoryPool>;
+        let ledger = super::MergeMemory::new(
+            MemoryConsumer::new("limited_sorted_lookup").register(&small_pool),
+        );
+        let scratch = MemoryConsumer::new("limited_sort_scratch").register(&small_pool);
+        let error = super::sort_batches_by_key(
+            vec![input],
+            &["id".to_string()],
+            &schema,
+            &ledger,
+            &scratch,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            super::locator_error(error),
+            datafusion_common::DataFusionError::ResourcesExhausted(_)
+        ));
+        assert_eq!(small_pool.reserved(), 0);
+    }
+
+    #[test]
     fn index_rejects_unsorted_keys() {
         let converter = RowConverter::new(vec![SortField::new(DataType::Utf8)]).unwrap();
         let array = Arc::new(StringArray::from_iter_values(["b", "a"])) as ArrayRef;
@@ -2827,5 +3362,476 @@ mod tests {
         assert!(rows.row(0).data().starts_with(&prefix));
         assert!(rows.row(1).data().starts_with(&prefix));
         assert_ne!(rows.row(0).data(), rows.row(1).data());
+    }
+
+    // ------------------------------------------------------------------
+    // Locator consumption contract: errors vs non-applicability, candidate
+    // memory accounting and release.  These go through the public entrypoint
+    // with a real parquet file, cache and session.
+    // ------------------------------------------------------------------
+
+    /// The pk index shares the process-wide disk cache, switched on with
+    /// `LAKESOUL_CACHE`.  Set it once before any locator lookup; the cache
+    /// directory is private to this test process.
+    fn enable_locator_cache() {
+        static ENABLE: std::sync::Once = std::sync::Once::new();
+        ENABLE.call_once(|| {
+            let cache_dir = std::env::temp_dir().join(format!(
+                "lakesoul-pk-locator-test-cache-{}",
+                std::process::id()
+            ));
+            // SAFETY: the test process sets these before any locator use.
+            unsafe {
+                std::env::set_var("LAKESOUL_CACHE", "1");
+                std::env::set_var("LAKESOUL_CACHE_PATH", &cache_dir);
+            }
+        });
+    }
+
+    fn locator_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("value", DataType::Int64, false),
+        ]))
+    }
+
+    fn write_ids_parquet(dir: &std::path::Path, name: &str, ids: &[i64]) -> ObjectMeta {
+        let schema = locator_schema();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int64Array::from(ids.to_vec())) as ArrayRef,
+                Arc::new(Int64Array::from(ids.to_vec())) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        let path = dir.join(name);
+        let file = std::fs::File::create(&path).unwrap();
+        let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        ObjectMeta {
+            location: ObjectPath::from(name),
+            last_modified: chrono::DateTime::<chrono::Utc>::from(
+                std::time::SystemTime::UNIX_EPOCH,
+            ),
+            size: std::fs::metadata(&path).unwrap().len(),
+            e_tag: None,
+            version: None,
+        }
+    }
+
+    fn locator_session(
+        dir: &std::path::Path,
+        pool: Arc<dyn MemoryPool>,
+    ) -> (SessionState, ObjectStoreUrl) {
+        let runtime = Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_memory_pool(pool)
+                .build()
+                .unwrap(),
+        );
+        runtime.register_object_store(
+            &Url::parse("file://").unwrap(),
+            Arc::new(LocalFileSystem::new_with_prefix(dir).unwrap()),
+        );
+        let state =
+            SessionContext::new_with_config_rt(SessionConfig::new(), runtime).state();
+        (state, ObjectStoreUrl::local_filesystem())
+    }
+
+    fn locator_config(
+        store_url: ObjectStoreUrl,
+        schema: Arc<Schema>,
+        meta: ObjectMeta,
+    ) -> FileScanConfig {
+        FileScanConfigBuilder::new(
+            store_url,
+            ParquetFormat::default().file_source(TableSchema::new(schema, Vec::new())),
+        )
+        .with_file_groups(vec![FileGroup::new(vec![PartitionedFile::new_from_meta(
+            meta,
+        )])])
+        .build()
+    }
+
+    fn id_constraint(ids: impl IntoIterator<Item = i64>) -> KeyConstraint {
+        KeyConstraint {
+            columns: vec!["id".to_string()],
+            values: ids
+                .into_iter()
+                .map(|id| smallvec![KeyValue::Int(id)])
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn accounted_candidate_rows_keep_file_order_and_free_row_ids() {
+        let (_dir, index) = build_test_index(&["a", "a", "ab", "b", "c"]);
+        let prefixes = ["a", "b", "c"].map(encode_utf8);
+        let refs: Vec<&[u8]> = prefixes.iter().map(Vec::as_slice).collect();
+        let pool = Arc::new(GreedyMemoryPool::new(1024 * 1024)) as Arc<dyn MemoryPool>;
+        let reservation = MemoryConsumer::new("rows").register(&pool);
+
+        let rows =
+            collect_candidate_rows(&index, &refs, &refs, true, &reservation).unwrap();
+        assert_eq!(rows, vec![0, 1, 3, 4], "ascending file row ids");
+        assert!(pool.reserved() >= rows.capacity() * super::CANDIDATE_ROW_BYTES);
+        drop(reservation);
+        assert_eq!(pool.reserved(), 0, "temporary row ids are released");
+    }
+
+    #[test]
+    fn candidate_row_growth_reserves_geometric_capacity() {
+        let keys = vec!["a"; super::ROW_ID_RESERVE_CHUNK + 1];
+        let (_dir, index) = build_test_index(&keys);
+        let prefix = encode_utf8("a");
+        let refs = [prefix.as_slice()];
+        let pool = Arc::new(GreedyMemoryPool::new(1024 * 1024)) as Arc<dyn MemoryPool>;
+        let reservation = MemoryConsumer::new("rows").register(&pool);
+
+        let rows =
+            collect_candidate_rows(&index, &refs, &refs, true, &reservation).unwrap();
+        assert_eq!(rows.len(), keys.len());
+        assert!(rows.capacity() > super::ROW_ID_RESERVE_CHUNK);
+        assert!(
+            pool.reserved() >= rows.capacity() * super::CANDIDATE_ROW_BYTES,
+            "the whole geometric capacity is reserved, not only the served rows"
+        );
+        drop(rows);
+        drop(reservation);
+        assert_eq!(pool.reserved(), 0);
+    }
+
+    #[test]
+    fn candidate_row_growth_exhaustion_releases_reservations() {
+        let keys = vec!["a"; super::ROW_ID_RESERVE_CHUNK + 1];
+        let (_dir, index) = build_test_index(&keys);
+        let prefix = encode_utf8("a");
+        let refs = [prefix.as_slice()];
+        // Enough for the first 4096-row allocation, not for the doubling.
+        let pool = Arc::new(GreedyMemoryPool::new(40_000)) as Arc<dyn MemoryPool>;
+        let reservation = MemoryConsumer::new("rows").register(&pool);
+
+        assert!(
+            collect_candidate_rows(&index, &refs, &refs, true, &reservation).is_err()
+        );
+        drop(reservation);
+        assert_eq!(pool.reserved(), 0);
+    }
+
+    #[test]
+    fn row_selection_scratch_is_accounted_and_released() {
+        let pool = Arc::new(GreedyMemoryPool::new(1 << 20)) as Arc<dyn MemoryPool>;
+        let reservation = MemoryConsumer::new("selection").register(&pool);
+        let indices = (0..2049u64).collect::<Vec<_>>();
+
+        let selection = row_selection(&indices, 4096, &reservation).unwrap();
+        assert!(
+            pool.reserved() > 0,
+            "run ranges and retained selectors are charged"
+        );
+        drop(selection);
+        drop(reservation);
+        assert_eq!(pool.reserved(), 0);
+    }
+
+    #[test]
+    fn row_selection_scratch_exhaustion_is_an_error() {
+        let pool = Arc::new(GreedyMemoryPool::new(1024)) as Arc<dyn MemoryPool>;
+        let reservation = MemoryConsumer::new("selection").register(&pool);
+        // Every even row is an isolated run, so the selector stream needs one
+        // skip and one select per gap, far more than the pool can hold.
+        let indices = (0..2048u64).map(|index| index * 2).collect::<Vec<_>>();
+
+        assert!(row_selection(&indices, 4096, &reservation).is_err());
+        drop(reservation);
+        assert_eq!(pool.reserved(), 0);
+    }
+
+    #[tokio::test]
+    async fn unreadable_parquet_data_file_is_an_error_not_a_fallback() {
+        enable_locator_cache();
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("corrupt.parquet");
+        std::fs::write(&bad, b"not a parquet file").unwrap();
+        let meta = ObjectMeta {
+            location: ObjectPath::from("corrupt.parquet"),
+            last_modified: chrono::DateTime::<chrono::Utc>::from(
+                std::time::SystemTime::UNIX_EPOCH,
+            ),
+            size: std::fs::metadata(&bad).unwrap().len(),
+            e_tag: None,
+            version: None,
+        };
+        let pool =
+            Arc::new(GreedyMemoryPool::new(16 * 1024 * 1024)) as Arc<dyn MemoryPool>;
+        let (state, store_url) = locator_session(dir.path(), Arc::clone(&pool));
+        let schema = locator_schema();
+        let config = locator_config(store_url, Arc::clone(&schema), meta);
+        let io = LakeSoulIOConfig::builder()
+            .with_primary_keys(vec!["id".to_string()])
+            .build();
+
+        let result = super::try_build_key_inputs(
+            &state,
+            &io,
+            &[config],
+            &id_constraint([1]),
+            super::MIN_INDEX_ROWS,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a corrupt data file must propagate, not fall back: {result:?}"
+        );
+        assert_eq!(pool.reserved(), 0, "failed initialization releases memory");
+    }
+
+    #[tokio::test]
+    async fn locator_non_applicability_is_not_an_error() {
+        enable_locator_cache();
+        let dir = tempfile::tempdir().unwrap();
+        let meta = write_ids_parquet(dir.path(), "tiny.parquet", &[1, 2, 3]);
+        let pool =
+            Arc::new(GreedyMemoryPool::new(16 * 1024 * 1024)) as Arc<dyn MemoryPool>;
+        let (state, store_url) = locator_session(dir.path(), Arc::clone(&pool));
+        let schema = locator_schema();
+        let io = LakeSoulIOConfig::builder()
+            .with_primary_keys(vec!["id".to_string()])
+            .build();
+
+        // Below MIN_INDEX_ROWS the locator declines the optimization.
+        let tiny = locator_config(store_url.clone(), Arc::clone(&schema), meta);
+        assert!(
+            super::try_build_key_inputs(
+                &state,
+                &io,
+                &[tiny],
+                &id_constraint([1]),
+                super::MIN_INDEX_ROWS,
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+
+        // An unsupported format is declined before any file read.
+        let csv = ObjectMeta {
+            location: ObjectPath::from("data.csv"),
+            last_modified: chrono::DateTime::<chrono::Utc>::from(
+                std::time::SystemTime::UNIX_EPOCH,
+            ),
+            size: 0,
+            e_tag: None,
+            version: None,
+        };
+        let csv = locator_config(store_url.clone(), Arc::clone(&schema), csv);
+        assert!(
+            super::try_build_key_inputs(
+                &state,
+                &io,
+                &[csv],
+                &id_constraint([1]),
+                super::MIN_INDEX_ROWS,
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+
+        // No candidates or no files means no lookup at all.
+        let empty_file = locator_config(
+            store_url,
+            Arc::clone(&schema),
+            ObjectMeta {
+                location: ObjectPath::from("empty.parquet"),
+                last_modified: chrono::DateTime::<chrono::Utc>::from(
+                    std::time::SystemTime::UNIX_EPOCH,
+                ),
+                size: 0,
+                e_tag: None,
+                version: None,
+            },
+        );
+        assert!(
+            super::try_build_key_inputs(
+                &state,
+                &io,
+                &[empty_file],
+                &id_constraint([]),
+                super::MIN_INDEX_ROWS,
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            super::try_build_key_inputs(
+                &state,
+                &io,
+                &[],
+                &id_constraint([1]),
+                super::MIN_INDEX_ROWS,
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(pool.reserved(), 0);
+    }
+
+    #[tokio::test]
+    async fn candidate_buffer_reservation_follows_retained_batches() {
+        enable_locator_cache();
+        let dir = tempfile::tempdir().unwrap();
+        let ids: Vec<i64> = (0..5_000).collect();
+        let meta = write_ids_parquet(dir.path(), "rows.parquet", &ids);
+        let pool =
+            Arc::new(GreedyMemoryPool::new(64 * 1024 * 1024)) as Arc<dyn MemoryPool>;
+        let (state, store_url) = locator_session(dir.path(), Arc::clone(&pool));
+        let schema = locator_schema();
+        let config = locator_config(store_url, Arc::clone(&schema), meta);
+        let io = LakeSoulIOConfig::builder()
+            .with_primary_keys(vec!["id".to_string()])
+            .build();
+
+        let inputs = super::try_build_key_inputs(
+            &state,
+            &io,
+            &[config],
+            &id_constraint([1, 2, 3]),
+            super::MIN_INDEX_ROWS,
+        )
+        .await
+        .unwrap()
+        .expect("locator applies");
+        assert_eq!(inputs.len(), 1);
+        assert!(pool.reserved() > 0, "candidate buffers are reserved");
+
+        let mut stream = inputs[0].execute(0, state.task_ctx()).unwrap();
+        let batch = stream.next().await.unwrap().unwrap();
+        assert_eq!(batch.num_rows(), 3);
+        let column = Arc::clone(batch.column(0));
+        drop(stream);
+        assert!(
+            pool.reserved() > 0,
+            "dropping the stream must not release a retained batch"
+        );
+        drop(inputs);
+        assert!(
+            pool.reserved() > 0,
+            "dropping the plan must not release a retained batch"
+        );
+        drop(batch);
+        assert!(
+            pool.reserved() > 0,
+            "a retained column slice keeps the shared buffer charged"
+        );
+        drop(column);
+        assert_eq!(
+            pool.reserved(),
+            0,
+            "the last buffer reference releases the reservation"
+        );
+    }
+
+    #[test]
+    fn a_query_wide_threshold_is_split_over_its_units() {
+        // The lookup runs per work unit, so the query's row budget is handed
+        // to it as a share: sixteen units of a 4,096-row query are worth
+        // looking up at 256 rows each.
+        assert_eq!(super::min_index_rows_per_unit(1), super::MIN_INDEX_ROWS);
+        assert_eq!(super::min_index_rows_per_unit(16), 256);
+        assert_eq!(super::min_index_rows_per_unit(4_096), 1);
+        assert_eq!(
+            super::min_index_rows_per_unit(0),
+            super::MIN_INDEX_ROWS,
+            "a scan always has at least one unit"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_unit_smaller_than_the_query_threshold_still_takes_the_lookup() {
+        enable_locator_cache();
+        let dir = tempfile::tempdir().unwrap();
+        // One unit of a sixteen-unit query: too small for the query-wide
+        // threshold, large enough for its own share of it.
+        let ids: Vec<i64> = (0..300).collect();
+        let meta = write_ids_parquet(dir.path(), "unit.parquet", &ids);
+        let pool =
+            Arc::new(GreedyMemoryPool::new(64 * 1024 * 1024)) as Arc<dyn MemoryPool>;
+        let (state, store_url) = locator_session(dir.path(), Arc::clone(&pool));
+        let schema = locator_schema();
+        let io = LakeSoulIOConfig::builder()
+            .with_primary_keys(vec!["id".to_string()])
+            .build();
+
+        let query_wide = super::try_build_key_inputs(
+            &state,
+            &io,
+            &[locator_config(
+                store_url.clone(),
+                Arc::clone(&schema),
+                meta.clone(),
+            )],
+            &id_constraint([7]),
+            super::MIN_INDEX_ROWS,
+        )
+        .await
+        .unwrap();
+        assert!(
+            query_wide.is_none(),
+            "300 rows are below the query-wide threshold"
+        );
+
+        let inputs = super::try_build_key_inputs(
+            &state,
+            &io,
+            &[locator_config(store_url, schema, meta)],
+            &id_constraint([7]),
+            super::min_index_rows_per_unit(16),
+        )
+        .await
+        .unwrap()
+        .expect("300 rows are worth indexing as one unit of sixteen");
+        assert_eq!(inputs.len(), 1);
+        let mut stream = inputs[0].execute(0, state.task_ctx()).unwrap();
+        let rows = stream.next().await.unwrap().unwrap().num_rows();
+        assert_eq!(rows, 1, "the lookup returns the candidate row");
+    }
+
+    #[tokio::test]
+    async fn exhausted_candidate_memory_is_an_error_and_releases_reservations() {
+        enable_locator_cache();
+        let dir = tempfile::tempdir().unwrap();
+        let ids: Vec<i64> = (0..5_000).collect();
+        let meta = write_ids_parquet(dir.path(), "rows.parquet", &ids);
+        // One chunk of row ids alone exceeds this pool.
+        let pool = Arc::new(GreedyMemoryPool::new(1024)) as Arc<dyn MemoryPool>;
+        let (state, store_url) = locator_session(dir.path(), Arc::clone(&pool));
+        let schema = locator_schema();
+        let config = locator_config(store_url, Arc::clone(&schema), meta);
+        let io = LakeSoulIOConfig::builder()
+            .with_primary_keys(vec!["id".to_string()])
+            .build();
+
+        let result = super::try_build_key_inputs(
+            &state,
+            &io,
+            &[config],
+            &id_constraint(ids),
+            super::MIN_INDEX_ROWS,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "memory exhaustion must propagate, not fall back: {result:?}"
+        );
+        assert_eq!(
+            pool.reserved(),
+            0,
+            "failed candidate materialization releases every reservation"
+        );
     }
 }

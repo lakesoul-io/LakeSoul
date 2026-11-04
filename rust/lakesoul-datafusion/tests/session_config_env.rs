@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Where a LakeSoul session's batch size comes from.
+//! Where a LakeSoul session's batch size and target partitions come from.
 //!
 //! The process environment is global, so this lives in its own test binary
 //! with a single test: nothing else here reads the environment while the test
@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use lakesoul_datafusion::MetaDataClient;
 use lakesoul_datafusion::cli::CoreArgs;
-use lakesoul_datafusion::create_lakesoul_session_config;
 use lakesoul_datafusion::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
+use lakesoul_datafusion::{TARGET_PARTITIONS_ENV, create_lakesoul_session_config};
 
 const BATCH_SIZE: &str = "DATAFUSION_EXECUTION_BATCH_SIZE";
 const PREFER_HASH_JOIN: &str = "DATAFUSION_OPTIMIZER_PREFER_HASH_JOIN";
@@ -29,11 +29,11 @@ fn set_env(key: &str, value: Option<&str>) {
     }
 }
 
-/// Batch size of the session template, and of a session from the factory the
-/// console and the PG coordinator build their sessions with, after running
-/// `statement` on it.
-fn batch_sizes(statement: Option<&str>) -> (usize, usize) {
-    let template = create_lakesoul_session_config().unwrap().batch_size();
+/// `(batch_size, target_partitions)` of the session template, and of a
+/// single-node session from the factory the console and the PG coordinator
+/// build their sessions with, after running `statement` on it.
+fn settings(statement: Option<&str>) -> ((usize, usize), (usize, usize)) {
+    let template = create_lakesoul_session_config().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -47,22 +47,45 @@ fn batch_sizes(statement: Option<&str>) -> (usize, usize) {
         if let Some(statement) = statement {
             ctx.sql(statement).await.unwrap().collect().await.unwrap();
         }
-        ctx.state().config().batch_size()
+        let config = ctx.state().config().clone();
+        (config.batch_size(), config.target_partitions())
     });
-    (template, session)
+    (
+        (template.batch_size(), template.target_partitions()),
+        session,
+    )
 }
 
 #[test]
-fn batch_size_follows_datafusion_default_environment_and_set() {
+fn session_settings_follow_defaults_environment_and_set() {
     set_env(BATCH_SIZE, None);
     set_env(PREFER_HASH_JOIN, None);
-    assert_eq!(batch_sizes(None), (8192, 8192), "DataFusion's default");
+    set_env(TARGET_PARTITIONS_ENV, None);
+    assert_eq!(
+        settings(None),
+        ((8192, 1), (8192, 1)),
+        "DataFusion's batch size, LakeSoul's single partition"
+    );
 
     set_env(BATCH_SIZE, Some("2048"));
-    assert_eq!(batch_sizes(None), (2048, 2048), "environment override");
+    set_env(TARGET_PARTITIONS_ENV, Some("4"));
     assert_eq!(
-        batch_sizes(Some("SET datafusion.execution.batch_size = 1024")).1,
+        settings(None),
+        ((2048, 4), (2048, 4)),
+        "environment override"
+    );
+    assert_eq!(
+        settings(Some("SET datafusion.execution.batch_size = 1024"))
+            .1
+            .0,
         1024,
+        "a session SET wins over the environment"
+    );
+    assert_eq!(
+        settings(Some("SET datafusion.execution.target_partitions = 2"))
+            .1
+            .1,
+        2,
         "a session SET wins over the environment"
     );
 
@@ -74,4 +97,5 @@ fn batch_size_follows_datafusion_default_environment_and_set() {
 
     set_env(BATCH_SIZE, None);
     set_env(PREFER_HASH_JOIN, None);
+    set_env(TARGET_PARTITIONS_ENV, None);
 }

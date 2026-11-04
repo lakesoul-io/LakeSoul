@@ -12,6 +12,7 @@ use lakesoul_datafusion::{
     session::{ExecutionMemoryArgs, LakeSoulSessionFactory, LakeSoulSessionOptions},
     tpch::register_tpch_udtfs,
 };
+use lakesoul_observability::MemorySamplingArgs;
 use rand::Rng;
 use rand::distr::Alphanumeric;
 use rootcause::Report;
@@ -28,7 +29,10 @@ mod exec;
 mod logo;
 mod print;
 
+// An explicit `about`: without one clap shows the doc comment of the first
+// flattened argument struct as the console's description.
 #[derive(Parser)]
+#[command(about = "LakeSoul interactive SQL console")]
 struct Cli {
     #[clap(
         short,
@@ -55,6 +59,11 @@ struct Cli {
 
     #[command(flatten)]
     memory: ExecutionMemoryArgs,
+
+    // The console exports no metrics: samples are useful only with
+    // `--memory-sample-file`, and are taken only then.
+    #[command(flatten)]
+    memory_sampling: MemorySamplingArgs,
 
     /// Worker gRPC URL. Supplying one or more workers enables distributed execution.
     #[arg(long = "worker", value_name = "URL")]
@@ -147,10 +156,16 @@ async fn main_inner(cli: Cli) -> Result<()> {
     allocator::log_active();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
     cli.memory.install_vortex_decode_budget()?;
+    let memory_pool = cli.memory.create_pool();
+    if cli.memory_sampling.memory_sample_file.is_some() {
+        let pool = Arc::clone(&memory_pool);
+        cli.memory_sampling
+            .spawn(allocator::stats_reader(), move || pool.reserved())?;
+    }
     let mut session_factory = LakeSoulSessionFactory::new_with_memory_pool(
         meta_client,
         &cli.core,
-        cli.memory.create_pool(),
+        memory_pool,
     )?;
     if !cli.workers.is_empty() {
         session_factory = session_factory.with_distributed(DistributedOptions {

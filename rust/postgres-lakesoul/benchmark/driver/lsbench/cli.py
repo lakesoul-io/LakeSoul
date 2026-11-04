@@ -833,6 +833,12 @@ def parser() -> argparse.ArgumentParser:
     console.add_argument(
         "--log-dir", default=tempfile.gettempdir(), help="console tracing log directory"
     )
+    console.add_argument(
+        "--memory-sample-interval-ms",
+        type=positive_int,
+        default=100,
+        help="interval of the console's memory samples summarized into each record",
+    )
     return result
 
 

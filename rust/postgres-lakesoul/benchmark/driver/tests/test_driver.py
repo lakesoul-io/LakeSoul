@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from lsbench.answers import compare, ordered
 from lsbench.cli import int32, parser, read_mix, substitute_sf
-from lsbench.console import Parser, check, script
+from lsbench.console import MemoryTimeline, Parser, check, script
 from lsbench.wire import ReadPolicy, Result
 
 
@@ -308,6 +309,48 @@ class ConsoleTests(unittest.TestCase):
         self.assertNotIn("SET", script("d", [("q01", "select 1")], 0, 1, None))
         with self.assertRaises(ValueError):
             script("tpch; drop", [("q01", "select 1")], 0, 1, None)
+
+    def test_memory_windows_follow_a_growing_sample_file(self):
+        def line(ts: float, anon: int, allocated: int | None, pool: int) -> str:
+            return (
+                json.dumps(
+                    dict(
+                        ts=ts,
+                        rss_bytes=anon + 10,
+                        rss_anon_bytes=anon,
+                        jemalloc_allocated_bytes=allocated,
+                        jemalloc_active_bytes=allocated,
+                        jemalloc_resident_bytes=allocated,
+                        pool_reserved_bytes=pool,
+                    )
+                )
+                + "\n"
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            timeline = MemoryTimeline(str(Path(directory) / "memory.jsonl"))
+            self.assertIsNone(timeline.window(0.0, 1.0))  # not created yet
+            with open(timeline.path, "w", encoding="utf-8") as f:
+                f.write(
+                    line(1.0, 100, 50, 0)
+                    + line(2.0, 300, 90, 40)
+                    + line(3.0, 200, None, 80)
+                )
+                f.write(line(4.0, 999, 999, 999)[:20])  # the sampler is mid-write
+                f.flush()
+                window = timeline.window(1.5, 3.0)
+                self.assertEqual(window["samples"], 2)
+                self.assertEqual(window["peak"]["rss_anon_bytes"], 300)
+                self.assertEqual(window["peak"]["jemalloc_allocated_bytes"], 90)
+                self.assertEqual(window["peak"]["pool_reserved_bytes"], 80)
+                self.assertEqual(window["at_rss_anon_peak"]["ts"], 2.0)
+                self.assertEqual(window["at_rss_anon_peak"]["pool_reserved_bytes"], 40)
+                f.write(line(4.0, 999, 999, 999)[20:])
+                f.flush()
+                self.assertEqual(
+                    timeline.window(3.5, 4.5)["peak"]["rss_anon_bytes"], 999
+                )
+                self.assertIsNone(timeline.window(5.0, 6.0))
 
 
 class PolicyTests(unittest.IsolatedAsyncioTestCase):

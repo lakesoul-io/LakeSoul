@@ -88,8 +88,35 @@ def write_json(path: Path, obj) -> None:
 # ---------------------------------------------------------------- metadata
 
 
+def pvc_index() -> dict[str, dict]:
+    """PVCs in the namespace by name: class, bound volume, capacity."""
+    return {
+        c["metadata"]["name"]: {
+            "name": c["metadata"]["name"],
+            "storage_class": c["spec"].get("storageClassName"),
+            "volume": c["spec"].get("volumeName"),
+            "capacity": (c.get("status", {}).get("capacity") or {}).get("storage"),
+            "phase": c.get("status", {}).get("phase"),
+        }
+        for c in kjson("-n", NS, "get", "pvc")["items"]
+    }
+
+
+def ephemeral_pvcs(pod: dict, pvcs: dict[str, dict]) -> list[dict]:
+    """The generic ephemeral volumes' PVCs of a pod (named `<pod>-<volume>`)."""
+    name = pod["metadata"]["name"]
+    return [
+        pvcs.get(
+            f"{name}-{v['name']}", {"name": f"{name}-{v['name']}", "phase": "missing"}
+        )
+        for v in pod["spec"].get("volumes") or []
+        if "ephemeral" in v
+    ]
+
+
 def pods_snapshot() -> list[dict]:
     pods = kjson("-n", NS, "get", "pods")["items"]
+    pvcs = pvc_index()
     out = []
     for p in pods:
         st = p.get("status", {})
@@ -125,6 +152,7 @@ def pods_snapshot() -> list[dict]:
                 "pod_ip": st.get("podIP"),
                 "start": st.get("startTime"),
                 "resources": res,
+                "scratch_pvcs": ephemeral_pvcs(p, pvcs),
                 "containers": cs,
             }
         )
@@ -244,6 +272,15 @@ def env_items(env: dict[str, str]) -> str:
     )
 
 
+def node_selector(a) -> str:
+    """Pod `nodeSelector` from repeated `--node-selector K=V` and, for the
+    console, `--node` (kubernetes.io/hostname)."""
+    sel = dict(kv.split("=", 1) for kv in a.node_selector or [])
+    if getattr(a, "node", None):
+        sel["kubernetes.io/hostname"] = a.node
+    return json.dumps(sel)
+
+
 def env_patch(dep: str, container: str, env: dict[str, str]) -> str:
     items = env_items(env)
     return (
@@ -297,13 +334,30 @@ def cmd_deploy(a) -> None:
         "lakesoul-worker",
         "lakesoul-prometheus",
         "lakesoul-tempo",
+        "lakesoul-grafana",
     ):
         kubectl(
             "-n", NS, "rollout", "status", f"deploy/{d}", "--timeout=600s", timeout=660
         )
     wait_terminated_pods()
     wait_worker_discovery(a.workers)
+    # Without probes, a Pod counts as available as soon as it runs once, so a
+    # process that exits at startup (bad configuration) passes rollout status.
+    time.sleep(15)
     snap = pods_snapshot()
+    broken = [
+        f"{p['name']}:{c['name']} ready={c['ready']} restarts={c['restarts']}"
+        for p in snap
+        if p["labels"].get("app.kubernetes.io/component") in CONTAINERS
+        for c in p["containers"]
+        if not c["ready"] or c["restarts"]
+    ]
+    if broken:
+        write_json(
+            run / "deploy.json",
+            {"profile": a.profile, "env": envs, "workers": a.workers, "pods": snap},
+        )
+        raise SystemExit(f"service pods not healthy after rollout: {broken}")
     limits = {}
     for p in snap:
         comp = p["labels"].get("app.kubernetes.io/component")
@@ -452,6 +506,7 @@ def cmd_datagen(a) -> None:
         DATAGEN_CPU_LIM=a.cpu_lim,
         DATAGEN_MEM_REQ=a.mem_req,
         DATAGEN_MEM_LIM=a.mem_lim,
+        NODE_SELECTOR=node_selector(a),
     )
     (run / "jobs").mkdir(parents=True, exist_ok=True)
     (run / "jobs" / f"{job}.yaml").write_text(manifest)
@@ -509,6 +564,7 @@ def cmd_drive(a) -> None:
         DRIVER_ARGS=driver_args,
         DRIVER_CPU_REQ=a.cpu_req,
         DRIVER_CPU_LIM=a.cpu_lim,
+        NODE_SELECTOR=node_selector(a),
     )
     (run / "jobs").mkdir(parents=True, exist_ok=True)
     (run / "jobs" / f"{job}.yaml").write_text(manifest)
@@ -633,7 +689,12 @@ def cmd_console(a) -> None:
             )
         for _, url in workers:
             args += ["--worker", url]
-    env = dict(kv.split("=", 1) for kv in a.env or [])
+    # The console Job does not read lakesoul-config; mirror its allocator
+    # default (`--env MALLOC_CONF=...` overrides it).
+    env = {
+        "MALLOC_CONF": "background_thread:true",
+        **dict(kv.split("=", 1) for kv in a.env or []),
+    }
     job = f"lsbench-console-{re.sub(r'[^a-z0-9-]', '-', name.lower())[:30]}-{int(time.time()) % 100000}"
     manifest = render(
         "console-job.yaml",
@@ -645,7 +706,7 @@ def cmd_console(a) -> None:
         ),
         CONSOLE_CPU=a.cpu,
         CONSOLE_MEM=a.mem,
-        NODE_SELECTOR=json.dumps({"kubernetes.io/hostname": a.node} if a.node else {}),
+        NODE_SELECTOR=node_selector(a),
         DEADLINE_S=str(int(a.timeout)),
         EXTRA_ENV=env_items(env),
     )
@@ -717,6 +778,7 @@ def cmd_console(a) -> None:
             "env": env,
             "workers": [{"pod": p, "url": u} for p, u in workers],
             "terminated": terminated,
+            "scratch_pvcs": ephemeral_pvcs(info, pvc_index()),
             "start_unix": t0,
             "end_unix": t1,
         },
@@ -746,6 +808,14 @@ PROM_MEMORY_POOL_LIMIT = "sum by (pod) (lakesoul_memory_pool_limit_bytes)"
 PROM_MEMORY_RESERVATION_FAILURES = (
     "sum by (pod) (increase(lakesoul_memory_reservation_failures_total[1m]))"
 )
+# Set together by every server binary's in-process memory sampler, once per
+# --memory-sample-interval-ms (1 s by default), so a scrape sees them at most
+# one interval old; the pool series above is live.
+PROM_PROCESS_RSS = "sum by (pod) (lakesoul_process_resident_memory_bytes)"
+PROM_PROCESS_RSS_ANON = "sum by (pod) (lakesoul_process_resident_anon_memory_bytes)"
+PROM_JEMALLOC_ALLOCATED = "sum by (pod) (lakesoul_jemalloc_allocated_bytes)"
+PROM_JEMALLOC_ACTIVE = "sum by (pod) (lakesoul_jemalloc_active_bytes)"
+PROM_JEMALLOC_RESIDENT = "sum by (pod) (lakesoul_jemalloc_resident_bytes)"
 PROM_SERIES = [
     "sum by (pod, outcome) (rate(lakesoul_query_requests_total[1m]))",
     "histogram_quantile(0.99, sum by (le) (rate(lakesoul_query_duration_seconds_bucket[1m])))",
@@ -753,6 +823,11 @@ PROM_SERIES = [
     PROM_MEMORY_POOL_RESERVED,
     PROM_MEMORY_POOL_LIMIT,
     PROM_MEMORY_RESERVATION_FAILURES,
+    PROM_PROCESS_RSS,
+    PROM_PROCESS_RSS_ANON,
+    PROM_JEMALLOC_ALLOCATED,
+    PROM_JEMALLOC_ACTIVE,
+    PROM_JEMALLOC_RESIDENT,
     "sum by (pod, operation) (rate(lakesoul_object_store_requests_total[1m]))",
     "sum by (pod, operation) (rate(lakesoul_object_store_bytes_total[1m]))",
     "sum by (pod) (lakesoul_metadata_pool_connections)",
@@ -876,6 +951,12 @@ def main() -> None:
     g.add_argument("--cpu-lim", default="4")
     g.add_argument("--mem-req", default="1Gi")
     g.add_argument("--mem-lim", default="6Gi")
+    g.add_argument(
+        "--node-selector",
+        action="append",
+        metavar="K=V",
+        help="Pod nodeSelector label, repeatable",
+    )
     g.set_defaults(fn=cmd_datagen)
     r = sub.add_parser("drive")
     r.add_argument("--run-dir", required=True)
@@ -884,6 +965,12 @@ def main() -> None:
     r.add_argument("--timeout", type=float, default=3600)
     r.add_argument("--cpu-req", default="250m")
     r.add_argument("--cpu-lim", default="2")
+    r.add_argument(
+        "--node-selector",
+        action="append",
+        metavar="K=V",
+        help="Pod nodeSelector label, repeatable",
+    )
     r.add_argument("driver_args", nargs=argparse.REMAINDER)
     r.set_defaults(fn=cmd_drive)
     k = sub.add_parser(
@@ -902,6 +989,12 @@ def main() -> None:
     k.add_argument(
         "--node",
         help="pin to this node (kubernetes.io/hostname); must not run the service",
+    )
+    k.add_argument(
+        "--node-selector",
+        action="append",
+        metavar="K=V",
+        help="Pod nodeSelector label, repeatable",
     )
     k.add_argument(
         "--distributed",

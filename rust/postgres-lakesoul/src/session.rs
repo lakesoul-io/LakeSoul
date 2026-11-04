@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::prelude::SessionContext;
 use lakesoul_datafusion::distributed::DistributedOptions;
 use parking_lot::RwLock;
@@ -24,9 +25,7 @@ use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::distributed::headers::{
     SessionActor, StatementIdGuard, set_identity_headers,
 };
-use lakesoul_datafusion::session::{
-    ExecutionMemoryArgs, LakeSoulSessionFactory, LakeSoulSessionOptions,
-};
+use lakesoul_datafusion::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
 use lakesoul_datafusion::udf::vector_search_marker::LakeSoulVectorSearchConfig;
 use lakesoul_metadata::MetaDataClientRef;
 use rootcause::Report;
@@ -169,24 +168,26 @@ impl PgSessionFactory {
         args: &CoreArgs,
         auth_manager: Arc<AuthManager>,
     ) -> Result<Self> {
-        Self::new_with_memory(
+        Self::new_with_memory_pool(
             meta_client,
             args,
             auth_manager,
-            &ExecutionMemoryArgs::default(),
+            lakesoul_datafusion::session::ExecutionMemoryArgs::default().create_pool(),
         )
     }
 
-    pub fn new_with_memory(
+    /// Build a factory whose sessions share `memory_pool`, created once by the
+    /// server process.
+    pub fn new_with_memory_pool(
         meta_client: MetaDataClientRef,
         args: &CoreArgs,
         auth_manager: Arc<AuthManager>,
-        memory: &ExecutionMemoryArgs,
+        memory_pool: Arc<dyn MemoryPool>,
     ) -> Result<Self> {
         let base = LakeSoulSessionFactory::new_with_memory_pool(
             Arc::clone(&meta_client),
             args,
-            memory.create_pool(),
+            memory_pool,
         )?;
         Ok(Self {
             meta_client,

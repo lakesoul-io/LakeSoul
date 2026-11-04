@@ -15,8 +15,8 @@ use lakesoul_datafusion::session::ExecutionMemoryArgs;
 use lakesoul_ivm::{IvmOptions, IvmRuntimeConfig};
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_observability::{
-    LogFormat, PrometheusMetricsConfig, TracingConfig, TracingGuard, init_tracing,
-    install_prometheus_metrics, spawn_reload_on_sighup,
+    LogFormat, MemorySamplingArgs, PrometheusMetricsConfig, TracingConfig, TracingGuard,
+    init_tracing, install_prometheus_metrics, spawn_reload_on_sighup,
 };
 use tokio::runtime::{self};
 use tracing::{info, warn};
@@ -76,6 +76,9 @@ struct Cli {
     #[command(flatten)]
     pub memory: ExecutionMemoryArgs,
 
+    #[command(flatten)]
+    pub memory_sampling: MemorySamplingArgs,
+
     /// Bind address, defaults to the loopback interface; container/cluster
     /// deployments set `LAKESOUL_PG_BIND=0.0.0.0` explicitly.
     #[clap(long, env = "LAKESOUL_PG_BIND", default_value = "127.0.0.1")]
@@ -131,11 +134,17 @@ async fn main_inner(cli: Cli) -> Result<()> {
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
     let auth_manager = Arc::new(AuthManager::new());
     cli.memory.install_vortex_decode_budget()?;
-    let session_factory = PgSessionFactory::new_with_memory(
+    let memory_pool = cli.memory.create_pool();
+    {
+        let pool = Arc::clone(&memory_pool);
+        cli.memory_sampling
+            .spawn(allocator::stats_reader(), move || pool.reserved())?;
+    }
+    let session_factory = PgSessionFactory::new_with_memory_pool(
         Arc::clone(&meta_client),
         &cli.core,
         Arc::clone(&auth_manager),
-        &cli.memory,
+        memory_pool,
     )?;
     info!(
         version = lakesoul_build_info::VERSION,
