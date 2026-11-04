@@ -33,7 +33,8 @@ public class PinnedCleanupTest {
     private static final String URL =
             System.getenv()
                     .getOrDefault(
-                            "LAKESOUL_PG_URL", "jdbc:postgresql://127.0.0.1:5432/lakesoul_test");
+                            "LAKESOUL_PG_URL",
+                            "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified");
     private static final String PARTITION = "-5";
 
     private final String tableId =
