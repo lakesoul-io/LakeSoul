@@ -57,9 +57,11 @@ use lakesoul_io::helpers::{
 use lakesoul_io::session::LakeSoulIOSession;
 use lakesoul_io::writer::async_writer::{AsyncBatchWriter, WriteInvariants};
 use lakesoul_io::writer::create_writer;
-use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata::transfusion::DataFileInfo;
-use lakesoul_metadata_proto::entity::{PartitionInfo, TableInfo};
+use lakesoul_metadata::{LakeSoulMetaDataError, MetaDataClientRef};
+use lakesoul_metadata_proto::entity::{
+    CommitOp, DataCommitInfo, DataFileOp, FileOp, PartitionInfo, TableInfo, Uuid,
+};
 use object_store::{ObjectMeta, ObjectStore};
 use rand::distr::SampleString;
 use rootcause::compat::boxed_error::IntoBoxedError;
@@ -70,9 +72,39 @@ use tracing::instrument::WithSubscriber;
 
 use super::insert_only::{InsertOnly, remove_files};
 use crate::Result;
-use crate::catalog::{commit_data, parse_table_info_partitions};
+use crate::catalog::parse_table_info_partitions;
 use crate::datasource::table_provider::LakeSoulTableProvider;
 use crate::lakesoul_table::helpers::create_io_config_builder_from_table_info;
+
+/// Convert a report into the `DataFusionError` the execution layer expects.
+///
+/// The writer and the metadata client return `rootcause::Report`; converting
+/// it back into a `DataFusionError` normally boxes the report and loses the
+/// concrete error type. When the report was built from a `DataFusionError`,
+/// recover that error instead, so a typed write violation still reaches the
+/// SQL front end's SQLSTATE mapping.
+fn into_datafusion_error(report: rootcause::Report) -> DataFusionError {
+    match report.downcast_report::<DataFusionError>() {
+        Ok(report) => report.into_current_context(),
+        Err(report) => match report.downcast_report::<LakeSoulMetaDataError>() {
+            Ok(report) => metadata_error(report.into_current_context()),
+            Err(report) => DataFusionError::External(report.into_boxed_error()),
+        },
+    }
+}
+
+/// Keep a lost write race a typed, retryable error instead of an internal one.
+fn metadata_error(error: LakeSoulMetaDataError) -> DataFusionError {
+    match error {
+        error @ (LakeSoulMetaDataError::InsertConflict { .. }
+        | LakeSoulMetaDataError::CommitConflict(_)) => {
+            DataFusionError::External(Box::new(crate::write_mode::WriteConflict {
+                detail: error.to_string(),
+            }))
+        }
+        error => DataFusionError::External(Box::new(error)),
+    }
+}
 
 type PartitionedFile = HashMap<String, (Vec<String>, u64)>;
 
@@ -211,7 +243,7 @@ fn record_index_build(
 /// Records *metadata* commit latency and partitions, marking the commit
 /// failed when it is dropped without [`WriteCommitMetrics::success`].
 ///
-/// Only the `commit_data` calls belong inside: writing files before and
+/// Only the publication calls belong inside: writing files before and
 /// building indexes after are separate phases with their own metrics, and
 /// their failures must not be reported as metadata-commit failures.
 struct WriteCommitMetrics {
@@ -496,6 +528,11 @@ impl FileFormat for LakeSoulMetaDataFormat {
                 existing_keys,
                 snapshot,
                 key_schema,
+                conflict_mode: crate::write_mode::LakeSoulWriteMode::from_session(state),
+                table_name: format!(
+                    "{}.{}",
+                    self.table_info.table_namespace, self.table_info.table_name
+                ),
             });
         }
         Ok(Arc::new(sink))
@@ -786,6 +823,10 @@ impl LakeSoulHashSinkExec {
         let object_store_options = self.object_store_options.clone();
         let schema = self.sink_schema.clone();
         let writer_dispatch = dispatch.clone();
+        // Set when the result stream is dropped before the write finished: the
+        // statement was cancelled, so the detached write must not publish.
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let commit_cancelled = Arc::clone(&cancelled);
         let future = async move {
             let attempted_files = Arc::new(Mutex::new(Vec::new()));
             let keep_files = Arc::new(AtomicBool::new(false));
@@ -829,6 +870,7 @@ impl LakeSoulHashSinkExec {
                     primary_keys,
                     object_store_options,
                     files,
+                    Some(commit_cancelled),
                     Some(CommitGuard::InsertOnly {
                         table_info,
                         snapshot: insert.snapshot,
@@ -857,15 +899,17 @@ impl LakeSoulHashSinkExec {
         let stream = futures::stream::once(async move {
             match join.await {
                 Ok(Ok(count)) => Ok(make_sink_batch(count, String::new())),
-                Ok(Err(error)) => {
-                    Err(DataFusionError::External(error.into_boxed_error()))
-                }
+                Ok(Err(error)) => Err(into_datafusion_error(error)),
                 Err(error) => Err(DataFusionError::Execution(error.to_string())),
             }
         });
-        Box::pin(RecordBatchStreamAdapter::new(schema, stream))
+        Box::pin(CancelOnDropStream::new(
+            Box::pin(RecordBatchStreamAdapter::new(schema, stream)),
+            cancelled,
+        )) as SendableRecordBatchStream
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn wait_for_commit(
         join_handles: Vec<JoinHandle<Result<u64>>>,
         client: MetaDataClientRef,
@@ -873,15 +917,18 @@ impl LakeSoulHashSinkExec {
         primary_keys: Vec<String>,
         object_store_options: SecretMap,
         partitioned_file_path_and_row_count: Arc<Mutex<PartitionedFile>>,
+        cancelled: Option<Arc<AtomicBool>>,
         commit_guard: Option<CommitGuard>,
     ) -> Result<u64> {
-        let count = futures::future::join_all(join_handles)
+        // Recover the `DataFusionError` a task carried instead of boxing its
+        // report, so a typed write violation survives to the SQL front end.
+        let count: DFResult<u64> = futures::future::join_all(join_handles)
             .await
-            .iter()
-            .try_fold(0u64, |counter, result| match &result {
+            .into_iter()
+            .try_fold(0u64, |counter, result| match result {
                 Ok(Ok(count)) => Ok(counter + count),
-                Ok(Err(e)) => Err(DataFusionError::Execution(format!("{}", e))),
-                Err(e) => Err(DataFusionError::Execution(format!("{}", e))),
+                Ok(Err(report)) => Err(into_datafusion_error(report)),
+                Err(error) => Err(DataFusionError::Execution(error.to_string())),
             });
         if let Err(error) = &count
             && let Some(CommitGuard::Streamed {
@@ -898,10 +945,30 @@ impl LakeSoulHashSinkExec {
             }
         }
         let count = count?;
+        // A cancelled statement must not publish: the client already received
+        // `57014` and a commit here would make the cancellation a lie. Once the
+        // metadata commit below has started, it runs to completion instead.
+        if cancelled
+            .as_ref()
+            .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
+        {
+            if let Some(CommitGuard::Streamed {
+                context,
+                attempted_files,
+            }) = &commit_guard
+            {
+                let files = attempted_files.lock().await;
+                remove_files(context, &files).await?;
+            }
+            return Err(DataFusionError::Execution(format!(
+                "INSERT into {table_name} was cancelled before its metadata commit"
+            ))
+            .into());
+        }
         let partitioned_file_path_and_row_count =
             partitioned_file_path_and_row_count.lock().await;
 
-        // Timed and finalized around the `commit_data` loop alone: the file
+        // Timed and finalized around the publication alone: the file
         // writers above and the index maintenance below are not part of the
         // metadata commit, and index outcomes have their own metrics.
         let mut commit_metrics = WriteCommitMetrics::start();
@@ -913,7 +980,7 @@ impl LakeSoulHashSinkExec {
             table_info,
             snapshot,
             keep_files,
-        }) = commit_guard
+        }) = &commit_guard
         {
             let mut data_files = Vec::new();
             for (partition_desc, (files, _)) in partitioned_file_path_and_row_count.iter()
@@ -928,7 +995,7 @@ impl LakeSoulHashSinkExec {
                 }
             }
             match client
-                .commit_insert_only(&table_info, &snapshot, data_files)
+                .commit_insert_only(table_info, snapshot, data_files)
                 .await
             {
                 Ok(_) => keep_files.store(true, Ordering::Release),
@@ -939,16 +1006,131 @@ impl LakeSoulHashSinkExec {
                     return Err(error.into());
                 }
             }
-        } else {
-            for (partition_desc, (files, _)) in partitioned_file_path_and_row_count.iter()
-            {
-                commit_data(client.clone(), &table_name, partition_desc.clone(), files)
-                    .await?;
-                debug!(
-                    "table: {} insert success at {:?}",
-                    &table_name,
-                    std::time::SystemTime::now()
-                )
+        } else if partitioned_file_path_and_row_count
+            .values()
+            .any(|(files, _)| !files.is_empty())
+        {
+            // A statement that wrote no files publishes nothing, so it must not
+            // require the table in the metadata store either: the resolved
+            // table id below only exists to publish those files.
+            // One publication transaction for every range partition: a failure
+            // leaves the statement invisible instead of publishing a prefix.
+            // The attempted files are removed when publication fails: they are
+            // not referenced by any committed version.
+            // Publication may fail ambiguously (a dropped connection during
+            // COMMIT). These ids let the failure path ask the metadata store
+            // whether this statement did become visible before deleting files.
+            let mut publication_table: Option<String> = None;
+            let mut publication_ids: Vec<(String, String)> = Vec::new();
+            let publication: DFResult<()> = async {
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|error| DataFusionError::Execution(error.to_string()))?
+                    .as_millis() as i64;
+                let table_ref = TableReference::from(table_name.as_str());
+                let table_id = client
+                    .get_table_info_by_table_name(
+                        table_ref.table(),
+                        table_ref.schema().unwrap_or("default"),
+                    )
+                    .await
+                    .map_err(metadata_error)?
+                    .ok_or_else(|| {
+                        DataFusionError::Execution(format!(
+                            "table {table_name} not found"
+                        ))
+                    })?
+                    .table_id;
+                publication_table = Some(table_id.clone());
+                let mut commits =
+                    Vec::with_capacity(partitioned_file_path_and_row_count.len());
+                for (partition_desc, (files, _)) in
+                    partitioned_file_path_and_row_count.iter()
+                {
+                    if files.is_empty() {
+                        continue;
+                    }
+                    let (high, low) = uuid::Uuid::new_v4().as_u64_pair();
+                    publication_ids.push((
+                        partition_desc.clone(),
+                        uuid::Uuid::from_u64_pair(high, low).to_string(),
+                    ));
+                    commits.push(DataCommitInfo {
+                        table_id: table_id.clone(),
+                        partition_desc: partition_desc.clone(),
+                        file_ops: files
+                            .iter()
+                            .map(|file| DataFileOp {
+                                file_op: FileOp::Add as i32,
+                                path: file.clone(),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        commit_op: CommitOp::AppendCommit as i32,
+                        timestamp,
+                        commit_id: Some(Uuid { high, low }),
+                        committed: false,
+                        ..Default::default()
+                    });
+                }
+                if !commits.is_empty() {
+                    client
+                        .commit_data_commit_infos(commits)
+                        .await
+                        .map_err(metadata_error)?;
+                    debug!(
+                        "table: {} insert success at {:?}",
+                        &table_name,
+                        std::time::SystemTime::now()
+                    )
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(error) = publication {
+                if let Some(CommitGuard::Streamed {
+                    context,
+                    attempted_files,
+                }) = &commit_guard
+                {
+                    // Delete only when the metadata store confirms this
+                    // statement is not visible. A failed lookup is treated as
+                    // "may be visible": orphan files are recoverable, a
+                    // deleted committed file is not.
+                    let mut may_be_visible = false;
+                    if let Some(table_id) = &publication_table {
+                        for (partition_desc, commit_id) in &publication_ids {
+                            match client
+                                .get_single_data_commit_info(
+                                    table_id,
+                                    partition_desc,
+                                    commit_id,
+                                )
+                                .await
+                            {
+                                Ok(Some(info)) if info.committed => {
+                                    may_be_visible = true;
+                                    break;
+                                }
+                                Ok(_) => {}
+                                Err(_) => {
+                                    may_be_visible = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if !may_be_visible {
+                        let files = attempted_files.lock().await;
+                        if let Err(cleanup) = remove_files(context, &files).await {
+                            return Err(rootcause::report!(DataFusionError::Execution(
+                                format!("{error}; {cleanup}")
+                            ))
+                            .into());
+                        }
+                    }
+                }
+                return Err(error.into());
             }
         }
         debug!(
@@ -1264,6 +1446,8 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
                     .unwrap_or_else(|| insert.existing_keys.clone()),
                 snapshot: insert.snapshot.clone(),
                 key_schema: insert.key_schema.clone(),
+                conflict_mode: insert.conflict_mode,
+                table_name: insert.table_name.clone(),
             }),
             object_store_options: self.object_store_options.clone(),
             properties: self.properties.clone(),
@@ -1322,6 +1506,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         let partitioned_file_path_and_row_count =
             Arc::new(Mutex::new(HashMap::<String, (Vec<String>, u64)>::new()));
         let attempted_files = Arc::new(Mutex::new(Vec::new()));
+        let cancelled = Arc::new(AtomicBool::new(false));
         for i in 0..num_input_partitions {
             // `#[instrument]` creates its span on the first poll. Carry both
             // the parent span and its dispatcher into the spawned task so the
@@ -1372,6 +1557,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             self.primary_keys.clone(),
             self.object_store_options.clone(),
             partitioned_file_path_and_row_count,
+            Some(Arc::clone(&cancelled)),
             Some(CommitGuard::Streamed {
                 context,
                 attempted_files,
@@ -1408,7 +1594,7 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
                 Ok(Ok(count)) => Ok(make_sink_batch(count, String::from(""))),
                 Ok(Err(report)) => {
                     debug!("{report}");
-                    Err(DataFusionError::External(report.into_boxed_error()))
+                    Err(into_datafusion_error(report))
                 }
                 Err(e) => {
                     debug!("{e}");
@@ -1421,7 +1607,50 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         let stream = Box::pin(RecordBatchStreamAdapter::new(sink_schema, stream))
             as SendableRecordBatchStream;
         drop(entered);
-        Ok(instrument_record_batch_stream(stream, span, "hash_sink"))
+        Ok(Box::pin(CancelOnDropStream::new(
+            instrument_record_batch_stream(stream, span, "hash_sink"),
+            cancelled,
+        )) as SendableRecordBatchStream)
+    }
+}
+
+/// Marks a statement's write as cancelled when its result stream is dropped.
+///
+/// DataFusion stops a query by dropping its stream; the sink's write itself
+/// runs in a detached task (dropping a `JoinHandle` does not stop it). The
+/// detached task holds the same flag and checks it before publishing, so a
+/// cancellation that arrives while the files are written leaves no commit.
+struct CancelOnDropStream {
+    inner: SendableRecordBatchStream,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl CancelOnDropStream {
+    fn new(inner: SendableRecordBatchStream, cancelled: Arc<AtomicBool>) -> Self {
+        Self { inner, cancelled }
+    }
+}
+
+impl datafusion::execution::RecordBatchStream for CancelOnDropStream {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+}
+
+impl futures::Stream for CancelOnDropStream {
+    type Item = DFResult<RecordBatch>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::pin::Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
+impl Drop for CancelOnDropStream {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
     }
 }
 
@@ -1712,6 +1941,7 @@ mod commit_metrics_tests {
                     SecretMap::new(),
                     Arc::new(Mutex::new(PartitionedFile::new())),
                     None,
+                    None,
                 )
                 .await
             })
@@ -1800,6 +2030,7 @@ mod commit_metrics_tests {
                     vec!["pk".to_string()],
                     SecretMap::new(),
                     Arc::new(Mutex::new(partitions)),
+                    None,
                     None,
                 )
                 .await

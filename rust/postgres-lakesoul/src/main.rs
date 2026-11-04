@@ -24,14 +24,20 @@ use crate::limits::{Limits, ServerLimits};
 use crate::server::LakeSoulHandlers;
 use crate::session::PgSessionFactory;
 
+mod allocator;
 mod cancel;
 mod catalog;
+mod ddl;
+mod failed_transaction;
+mod insert;
 mod limits;
 mod pg_compat;
+mod pg_numeric;
 mod pg_vector;
 mod read_only;
 mod server;
 mod session;
+mod session_settings;
 use rootcause::Report;
 
 pub(crate) type Result<T, E = Report> = std::result::Result<T, E>;
@@ -109,10 +115,12 @@ async fn main_inner(cli: Cli) -> Result<()> {
     // Dynamic log level: edit LAKESOUL_LOG_FILTER_FILE (or RUST_LOG) and
     // `kill -HUP <pid>`.
     spawn_reload_on_sighup(tracing.filter_handle());
+    allocator::log_active();
     install_prometheus_metrics(PrometheusMetricsConfig::new(
         "postgres-lakesoul",
         cli.metrics_addr,
     ))?;
+    cancel::register_query_metrics();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
     let auth_manager = Arc::new(AuthManager::new());
     cli.memory.install_vortex_decode_budget()?;

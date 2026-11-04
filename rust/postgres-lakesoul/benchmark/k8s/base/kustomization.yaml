@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# Benchmark deployment: the observability overlay (coordinator, workers,
+# Prometheus, Tempo, Grafana) plus the resource sampler sidecars. Profiles
+# set resources; `scripts/bench.py deploy` renders a per-run kustomization on
+# top of a profile with the image tags and env knobs of that run.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../k8s/observability
+components:
+  - ../components/sampler
+images:
+  - name: lakesoul-bench
+    newName: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/lakesoul-bench
+patches:
+  - path: strategy-patch.yaml

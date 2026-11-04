@@ -294,6 +294,17 @@ pub enum StatementOutcome {
 }
 
 impl StatementOutcome {
+    /// Every outcome, so each `outcome` label can be exported before its
+    /// first statement.
+    pub const ALL: [Self; 6] = [
+        Self::Completed,
+        Self::Canceled,
+        Self::TimedOut,
+        Self::ResultLimit,
+        Self::Failed,
+        Self::Abandoned,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Completed => "completed",

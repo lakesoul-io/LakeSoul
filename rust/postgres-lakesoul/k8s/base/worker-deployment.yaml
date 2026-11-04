@@ -62,6 +62,12 @@ spec:
                   name: lakesoul-secrets
                   key: aws-secret-access-key
                   optional: false
+            - name: AWS_S3_VIRTUAL_HOST_STYLE
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-s3-virtual-host-style
+                  optional: true
           ports:
             - name: grpc
               containerPort: 50051

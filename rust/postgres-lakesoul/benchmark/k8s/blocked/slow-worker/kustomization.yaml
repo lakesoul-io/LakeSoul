@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# BLOCKED (not authorized on the shared cluster): slow worker. Delays the
+# worker -> coordinator Flight stream on every worker (patch a single worker
+# by running it as a second Deployment if one slow worker is wanted).
+# Same prerequisites as slow-storage.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - path: netem-patch.yaml

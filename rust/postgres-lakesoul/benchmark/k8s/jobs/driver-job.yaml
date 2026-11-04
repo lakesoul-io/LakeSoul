@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# Benchmark driver Job (rendered by scripts/bench.py; ${...} are template
+# variables). The driver writes /results/out.jsonl, prints LSBENCH_DONE and
+# idles so the harness can copy the file; the harness deletes the Job.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+  namespace: lakesoul
+  labels:
+    app.kubernetes.io/name: lakesoul-bench
+    lsbench/run: "${RUN_ID}"
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lakesoul-bench
+        lsbench/run: "${RUN_ID}"
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: lakesoul-registry
+      # Keep the load generator off the nodes running the service.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: lakesoul
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: driver
+          image: ${BENCH_IMAGE}
+          imagePullPolicy: Always
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              python3 -m lsbench ${DRIVER_ARGS} --out /results/out.jsonl
+              echo $? > /results/exit
+              echo LSBENCH_DONE
+              exec sleep 3600
+          resources:
+            requests:
+              cpu: "${DRIVER_CPU_REQ}"
+              memory: 256Mi
+            limits:
+              cpu: "${DRIVER_CPU_LIM}"
+              memory: 1Gi
+          volumeMounts:
+            - name: results
+              mountPath: /results
+      volumes:
+        - name: results
+          emptyDir: {}

@@ -51,6 +51,8 @@ mod catalog_tests;
 #[cfg(test)]
 mod distributed_tests;
 #[cfg(test)]
+mod merge_scheduling_tests;
+#[cfg(test)]
 mod mor_filter_tests;
 #[cfg(test)]
 mod mor_nullability_tests;

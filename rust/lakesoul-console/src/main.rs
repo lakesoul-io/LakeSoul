@@ -9,7 +9,7 @@ use lakesoul_datafusion::{
     MetaDataClient,
     cli::CoreArgs,
     distributed::{DistributedOptions, WorkerDiscovery},
-    session::{LakeSoulSessionFactory, LakeSoulSessionOptions},
+    session::{ExecutionMemoryArgs, LakeSoulSessionFactory, LakeSoulSessionOptions},
     tpch::register_tpch_udtfs,
 };
 use rand::Rng;
@@ -19,10 +19,11 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
 use crate::exec::{exec_command, exec_from_files, exec_from_repl};
-use crate::print::Printer;
+use crate::print::{OutputFormat, Printer};
 
 type Result<T, E = Report> = std::result::Result<T, E>;
 
+mod allocator;
 mod exec;
 mod logo;
 mod print;
@@ -45,8 +46,15 @@ struct Cli {
     )]
     log_dir: String,
 
+    /// Result output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+
     #[command(flatten)]
     pub core: CoreArgs,
+
+    #[command(flatten)]
+    memory: ExecutionMemoryArgs,
 
     /// Worker gRPC URL. Supplying one or more workers enables distributed execution.
     #[arg(long = "worker", value_name = "URL")]
@@ -136,8 +144,14 @@ fn print_banner() {
 async fn main_inner(cli: Cli) -> Result<()> {
     print_banner();
     let _log_guard = init_log(&cli.log_dir);
+    allocator::log_active();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
-    let mut session_factory = LakeSoulSessionFactory::new(meta_client, &cli.core)?;
+    cli.memory.install_vortex_decode_budget()?;
+    let mut session_factory = LakeSoulSessionFactory::new_with_memory_pool(
+        meta_client,
+        &cli.core,
+        cli.memory.create_pool(),
+    )?;
     if !cli.workers.is_empty() {
         session_factory = session_factory.with_distributed(DistributedOptions {
             discovery: WorkerDiscovery::Static(cli.workers.clone()),
@@ -150,7 +164,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
     register_tpch_udtfs(&ctx)?;
     let files = cli.file;
 
-    let printer = Printer::default();
+    let printer = Printer::new(cli.format);
 
     if let Some(cmd) = cli.command {
         return exec_command(cmd, &printer, &ctx).await;

@@ -1,0 +1,207 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Generates the benchmark TPC-H tables into LakeSoul namespace `tpch_sf<N>`
+# with the repository's tpchgen UDTFs (tpchgen-rs, dbgen-identical rows) and
+# the table layout of `rust/postgres-lakesoul/test_tables.sh` (primary-key,
+# hash-bucketed MOR tables), but with the standard TPC-H table names so the
+# query files run unchanged.
+#
+# Environment:
+#   SF          scale factor (required, e.g. 1 or 10)
+#   PARTS       tpchgen partitions per table   (default: 8 x SF, min 8)
+#   BUCKETS     hashBucketNum                   (default 16)
+#   LOCATION    table root, e.g. s3://lakesoul-k8s/bench   (required)
+#   CONSOLE_BIN lakesoul-console binary         (default lakesoul-console)
+#   TABLES      space-separated subset          (default: all eight)
+#   CHUNKS      upserts per table               (default 1)
+#               N > 1 splits each table into N statements, bounding writer
+#               memory to ~1/N of the table (the writer buffers whole
+#               buckets: SF10 lineitem in one statement peaks at ~17 GiB RSS).
+#               pk layouts write rows with `<first key> % N = k` per
+#               statement, adding one file per bucket per chunk. nopk writes
+#               one file per tpchgen part, so its chunks are key ranges of
+#               whole parts (PARTS must be a multiple of N) and the files
+#               match a single statement's.
+# The console reads LAKESOUL_PG_*, LAKESOUL_WAREHOUSE and AWS_* like the
+# coordinator. Extra arguments are forwarded to the console. The console
+# keeps going after a failed statement, so its output is scanned for errors.
+set -eu
+
+: "${SF:?SF is required}"
+: "${LOCATION:?LOCATION is required}"
+BUCKETS="${BUCKETS:-16}"
+CONSOLE_BIN="${CONSOLE_BIN:-lakesoul-console}"
+TABLES="${TABLES:-nation region supplier customer part partsupp orders lineitem}"
+CHUNKS="${CHUNKS:-1}"
+case "$SF" in
+*.*) SF_FMT="$SF" ;;
+*) SF_FMT="$SF.0" ;;
+esac
+SF_NAME=$(printf '%s' "$SF" | tr . _)
+# LAYOUT=pk (default): primary-key MOR tables, `hashBucketNum` buckets.
+# LAYOUT=pkmonth: the pk layout with orders and lineitem range-partitioned
+# by month (schema `tpch_sf<N>_pkmonth`): an extra trailing 'YYYY-MM' column,
+# `o_ordermonth` from o_orderdate and `l_shipmonth` from l_shipdate (80 and 84
+# partitions). Each month is its own merge, so the distributed planner can
+# spread a scan over up to one task per month; the other six tables have no
+# date and stay unpartitioned pk tables. The query files never reference the
+# month columns, so they run unchanged but do not prune partitions. Every
+# month gets a file per bucket and chunk: lower BUCKETS at small SF to avoid
+# tiny files.
+# LAYOUT=nopk: append-only tables without key or buckets, schema
+# `tpch_sf<N>_nopk` (plain file scans the distributed planner can split).
+LAYOUT="${LAYOUT:-pk}"
+case "$LAYOUT" in
+pk) SCHEMA="tpch_sf$SF_NAME" ;;
+pkmonth) SCHEMA="tpch_sf${SF_NAME}_pkmonth" ;;
+nopk) SCHEMA="tpch_sf${SF_NAME}_nopk" ;;
+*)
+    echo "LAYOUT must be pk, pkmonth or nopk" >&2
+    exit 2
+    ;;
+esac
+if [ -z "${PARTS:-}" ]; then
+    PARTS=$(awk -v sf="$SF" 'BEGIN { p = int(sf * 8); print (p < 8 ? 8 : p) }')
+fi
+if [ "$LAYOUT" = nopk ] && [ $((PARTS % CHUNKS)) -ne 0 ]; then
+    echo "LAYOUT=nopk needs PARTS ($PARTS) to be a multiple of CHUNKS ($CHUNKS)" >&2
+    exit 2
+fi
+LOC="${LOCATION%/}/$SCHEMA"
+SQL_FILE="${TMPDIR:-/tmp}/tpch_$SCHEMA.sql"
+
+ddl() {
+    case "$1" in
+    nation) echo "n_nationkey BIGINT NOT NULL, n_name STRING NOT NULL, n_regionkey BIGINT NOT NULL, n_comment STRING NOT NULL, PRIMARY KEY (n_nationkey)" ;;
+    region) echo "r_regionkey BIGINT NOT NULL, r_name STRING NOT NULL, r_comment STRING NOT NULL, PRIMARY KEY (r_regionkey)" ;;
+    customer) echo "c_custkey BIGINT NOT NULL, c_name STRING NOT NULL, c_address STRING NOT NULL, c_nationkey BIGINT NOT NULL, c_phone STRING NOT NULL, c_acctbal DECIMAL(15,2) NOT NULL, c_mktsegment STRING NOT NULL, c_comment STRING NOT NULL, PRIMARY KEY (c_custkey)" ;;
+    supplier) echo "s_suppkey BIGINT NOT NULL, s_name STRING NOT NULL, s_address STRING NOT NULL, s_nationkey BIGINT NOT NULL, s_phone STRING NOT NULL, s_acctbal DECIMAL(15,2) NOT NULL, s_comment STRING NOT NULL, PRIMARY KEY (s_suppkey)" ;;
+    part) echo "p_partkey BIGINT NOT NULL, p_name STRING NOT NULL, p_mfgr STRING NOT NULL, p_brand STRING NOT NULL, p_type STRING NOT NULL, p_size INT NOT NULL, p_container STRING NOT NULL, p_retailprice DECIMAL(15,2) NOT NULL, p_comment STRING NOT NULL, PRIMARY KEY (p_partkey)" ;;
+    partsupp) echo "ps_partkey BIGINT NOT NULL, ps_suppkey BIGINT NOT NULL, ps_availqty INT NOT NULL, ps_supplycost DECIMAL(15,2) NOT NULL, ps_comment STRING NOT NULL, PRIMARY KEY (ps_partkey, ps_suppkey)" ;;
+    orders) echo "o_orderkey BIGINT NOT NULL, o_custkey BIGINT NOT NULL, o_orderstatus STRING NOT NULL, o_totalprice DECIMAL(15,2) NOT NULL, o_orderdate DATE NOT NULL, o_orderpriority STRING NOT NULL, o_clerk STRING NOT NULL, o_shippriority INT NOT NULL, o_comment STRING NOT NULL, PRIMARY KEY (o_orderkey)" ;;
+    lineitem) echo "l_orderkey BIGINT NOT NULL, l_partkey BIGINT NOT NULL, l_suppkey BIGINT NOT NULL, l_linenumber INT NOT NULL, l_quantity DECIMAL(15,2) NOT NULL, l_extendedprice DECIMAL(15,2) NOT NULL, l_discount DECIMAL(15,2) NOT NULL, l_tax DECIMAL(15,2) NOT NULL, l_returnflag STRING NOT NULL, l_linestatus STRING NOT NULL, l_shipdate DATE NOT NULL, l_commitdate DATE NOT NULL, l_receiptdate DATE NOT NULL, l_shipinstruct STRING NOT NULL, l_shipmode STRING NOT NULL, l_comment STRING NOT NULL, PRIMARY KEY (l_orderkey, l_linenumber)" ;;
+    *)
+        echo "unknown table $1" >&2
+        exit 2
+        ;;
+    esac
+}
+
+# Month partition of a table in the pkmonth layout: "<column> <source date>".
+month_partition() {
+    case "$1" in
+    orders) echo "o_ordermonth o_orderdate" ;;
+    lineitem) echo "l_shipmonth l_shipdate" ;;
+    esac
+}
+
+# tpchgen rows of table $1 at SF 1; partsupp is generated per part.
+part_base() {
+    case "$1" in
+    supplier) echo 10000 ;;
+    customer) echo 150000 ;;
+    part | partsupp) echo 200000 ;;
+    orders | lineitem) echo 1500000 ;;
+    esac
+}
+
+# First key column value of the last row in the first $2 of $PARTS tpchgen
+# parts of table $1. tpchgen gives part p the rows after index
+# int(rows / PARTS) * (p - 1); keys are the 1-based row index, except
+# orders/lineitem: OrderGenerator::make_order_key keeps the low 3 bits and
+# shifts the rest left by 2.
+part_end_key() {
+    awk -v base="$(part_base "$1")" -v sf="$SF" -v parts="$PARTS" -v n="$2" -v t="$1" 'BEGIN {
+        i = int(int(base * sf) / parts) * n
+        if (t == "orders" || t == "lineitem") i = int(i / 8) * 32 + i % 8
+        printf "%.0f\n", i
+    }'
+}
+
+# WHERE clause of chunk $3 (0-based) of table $1 keyed by $2 in the nopk
+# layout: whole tpchgen parts, so each part is still one file.
+part_range() {
+    per=$((PARTS / CHUNKS))
+    cond=""
+    if [ "$3" -gt 0 ]; then
+        cond="$2 > $(part_end_key "$1" $(($3 * per)))"
+    fi
+    if [ "$3" -lt $((CHUNKS - 1)) ]; then
+        cond="${cond:+$cond AND }$2 <= $(part_end_key "$1" $((($3 + 1) * per)))"
+    fi
+    echo "$cond"
+}
+
+{
+    echo "-- generated by benchmark/datagen/tpch.sh SF=$SF PARTS=$PARTS BUCKETS=$BUCKETS LAYOUT=$LAYOUT LOC=$LOC"
+    echo "CREATE SCHEMA IF NOT EXISTS $SCHEMA;"
+    for t in $TABLES; do
+        month=""
+        if [ "$LAYOUT" = pkmonth ]; then
+            month=$(month_partition "$t")
+        fi
+        select="*"
+        if [ "$LAYOUT" = nopk ]; then
+            cols=$(ddl "$t" | sed -E 's/, PRIMARY KEY \([^)]*\)//')
+            opts=""
+            insert="INSERT INTO"
+        elif [ -n "$month" ]; then
+            mcol=${month%% *}
+            msrc=${month#* }
+            # The month column goes last so `SELECT *, <month>` lines up with it.
+            cols=$(ddl "$t" | sed -E "s/, PRIMARY KEY/, $mcol STRING NOT NULL, PRIMARY KEY/")
+            opts="PARTITIONED BY ($mcol) OPTIONS ('hashBucketNum' '$BUCKETS')"
+            insert="INSERT OR REPLACE INTO"
+            select="*, to_char($msrc, '%Y-%m') AS $mcol"
+        else
+            cols=$(ddl "$t")
+            opts="OPTIONS ('hashBucketNum' '$BUCKETS')"
+            insert="INSERT OR REPLACE INTO"
+        fi
+        cat <<SQL
+DROP TABLE IF EXISTS $SCHEMA.$t;
+CREATE EXTERNAL TABLE $SCHEMA.$t ($cols)
+STORED AS LAKESOUL $opts
+LOCATION '$LOC/$t';
+SQL
+        key=$(ddl "$t" | sed -E 's/.*PRIMARY KEY \(([a-z_]+).*/\1/')
+        # tpchgen emits all of nation/region in every part; the pk layout
+        # dedups them by key, plain INSERT would not.
+        case "$t" in
+        nation | region) parts=1 ;;
+        *) parts=$PARTS ;;
+        esac
+        chunks=$CHUNKS
+        # nopk chunks split whole parts; nation/region are a single part.
+        if [ "$LAYOUT" = nopk ] && [ "$parts" -eq 1 ]; then
+            chunks=1
+        fi
+        k=0
+        while [ "$k" -lt "$chunks" ]; do
+            if [ "$chunks" -eq 1 ]; then
+                echo "$insert $SCHEMA.$t SELECT $select FROM tpch_$t($SF_FMT, $parts);"
+            elif [ "$LAYOUT" = nopk ]; then
+                echo "$insert $SCHEMA.$t SELECT $select FROM tpch_$t($SF_FMT, $parts) WHERE $(part_range "$t" "$key" "$k");"
+            else
+                echo "$insert $SCHEMA.$t SELECT $select FROM tpch_$t($SF_FMT, $parts) WHERE $key % $CHUNKS = $k;"
+            fi
+            k=$((k + 1))
+        done
+        cat <<SQL
+SELECT '$t' AS table_name, COUNT(*) AS row_count FROM $SCHEMA.$t;
+SQL
+    done
+} >"$SQL_FILE"
+
+echo "==> $SQL_FILE (schema=$SCHEMA layout=$LAYOUT sf=$SF parts=$PARTS buckets=$BUCKETS chunks=$CHUNKS loc=$LOC)"
+OUT="${TMPDIR:-/tmp}/tpch_$SCHEMA.out"
+rc=0
+"$CONSOLE_BIN" "$@" --file "$SQL_FILE" >"$OUT" 2>&1 || rc=$?
+cat "$OUT"
+if [ "$rc" -ne 0 ] || grep -q 'External error\|Execution error' "$OUT"; then
+    echo "==> FAILED (console exit $rc)" >&2
+    exit 1
+fi

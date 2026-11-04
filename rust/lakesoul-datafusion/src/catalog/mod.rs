@@ -7,12 +7,15 @@
 use lakesoul_common::misc::SecretMap;
 use std::fmt::Debug;
 use std::sync::Arc;
+#[cfg(test)]
 use std::time::SystemTime;
 
+#[cfg(test)]
 use datafusion_common::TableReference;
 use lakesoul_io::config::LakeSoulIOConfigBuilder;
 use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_metadata::MetaDataClientRef;
+#[cfg(test)]
 use lakesoul_metadata_proto::entity::{
     CommitOp, DataCommitInfo, DataFileOp, FileOp, Uuid,
 };
@@ -81,6 +84,16 @@ pub struct LakeSoulTableProperty {
     /// Whether use cdc is enabled for the LakeSoul table.
     #[serde(rename = "use_cdc", default, skip_serializing_if = "Option::is_none")]
     pub use_cdc: Option<String>,
+    /// Whether the table only accepts appends (`appendOnly`, the Spark/Flink
+    /// table property). The PG `WITH (append_only = ...)` option persists it
+    /// here so other engines read the same property; enforcement stays with
+    /// the engine that performs deletes or updates.
+    #[serde(
+        rename = "appendOnly",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub append_only: Option<String>,
     /// Secondary index maintenance mode: `inline` (default) or `deferred`.
     /// Deferred tables commit data only; index builders run out of band.
     #[serde(
@@ -253,6 +266,7 @@ pub(crate) fn format_table_info_partitions(
 ///
 /// The timestamp is milliseconds since the epoch, like `partition_info`,
 /// `commit_data_files` and the JVM writers (`System.currentTimeMillis`).
+#[cfg(test)]
 pub(crate) async fn commit_data(
     client: MetaDataClientRef,
     table_name: &str,

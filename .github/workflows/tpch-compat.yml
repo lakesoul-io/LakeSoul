@@ -1,0 +1,90 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: TPC-H SQL regression
+
+on:
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: "Checked-in tpchgen-rs answer set"
+        type: choice
+        options: ["0.1", "1", "10"]
+        default: "1"
+  schedule:
+    - cron: "41 2 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  workload:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        merge: ["false", "true"]
+        shape:
+          - { layout: pk, workers: "0" }
+          - { layout: nopk, workers: "2" }
+          - { layout: pkmonth, workers: "2" }
+    env:
+      RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
+      RUST_BACKTRACE: full
+      LAKESOUL_PG_URL: "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
+      LAKESOUL_PG_USERNAME: lakesoul_test
+      LAKESOUL_PG_PASSWORD: lakesoul_test
+      LAKESOUL_IO_USE_V2_MERGE: ${{ matrix.merge }}
+      LAKESOUL_TPCH_SCALE: ${{ inputs.scale || '1' }}
+      LAKESOUL_TPCH_LAYOUT: ${{ matrix.shape.layout }}
+      LAKESOUL_TPCH_WORKERS: ${{ matrix.shape.workers }}
+      TZ: UTC
+      PYTHONDONTWRITEBYTECODE: "1"
+    services:
+      postgres:
+        image: postgres:14.5
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: ./.github/actions/setup-flatc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> rust/target"
+          shared-key: rust-test-fast
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install native requirements
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lld postgresql-client-16
+          command -v ld.lld
+      - uses: arduino/setup-protoc@v2
+        with:
+          version: "23.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Initialize metadata
+        run: ./script/meta_init_for_local_test.sh -j 1
+      - name: Strict q01-q22 over both wire protocols
+        run: cargo -q test --profile test-fast -p postgres-lakesoul --test tpch_contract --jobs 4 -- --nocapture

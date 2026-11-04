@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# BLOCKED (not authorized on the shared cluster): node memory pressure next
+# to a LakeSoul worker. Allocates memory in a Burstable Pod co-located with
+# the worker until the kubelet evicts by QoS. Set NODE to the worker's node.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lsbench-node-pressure
+  namespace: lakesoul
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      nodeName: ${NODE}
+      imagePullSecrets:
+        - name: lakesoul-registry
+      containers:
+        - name: stress
+          image: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/lakesoul-bench:${BENCH_TAG}
+          command: ["python3", "-c"]
+          args:
+            - |
+              import time
+              blocks = []
+              while True:
+                  blocks.append(bytearray(256 << 20))
+                  for i in range(0, len(blocks[-1]), 4096):
+                      blocks[-1][i] = 1
+                  print(f"allocated {len(blocks) * 256} MiB", flush=True)
+                  time.sleep(5)
+          resources:
+            requests:
+              memory: 64Mi

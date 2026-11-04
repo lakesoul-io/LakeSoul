@@ -149,11 +149,21 @@ pub fn register_s3_object_store_with_cache(
 /// If no region is provided, default to us-east-1.
 /// Bucket name would be retrieved from file names.
 /// Currently only one s3 object store with one bucket is supported.
+/// With `LAKESOUL_CACHE` set, reads go through the process-wide local disk
+/// cache (`LAKESOUL_CACHE_SIZE`, `LAKESOUL_CACHE_PATH`).
 pub fn register_s3_object_store(
     url: &Url,
     config: &LakeSoulIOConfig,
     runtime: &RuntimeEnv,
 ) -> Result<()> {
+    if std::env::var("LAKESOUL_CACHE").is_ok() {
+        return register_s3_object_store_with_cache(
+            url,
+            config,
+            runtime,
+            get_lakesoul_cache(),
+        );
+    }
     let s3_store = Arc::new(create_s3_store(config)?);
     let s3_store = Arc::new(MonitoredObjectStore::new(s3_store, "s3"));
     runtime.register_object_store(url, s3_store);
@@ -223,19 +233,7 @@ pub fn register_object_store(
                         url.host_str().ok_or(report!("host str missing"))?.into(),
                     );
                 }
-                // add cache if env LAKESOUL_CACHE is set
-                // set LAKESOUL_CACHE
-                // LAKESOUL_CACHE_SIZE set lakesoul cache size,
-                if std::env::var("LAKESOUL_CACHE").is_ok() {
-                    register_s3_object_store_with_cache(
-                        &url,
-                        config,
-                        runtime,
-                        get_lakesoul_cache(),
-                    )?;
-                } else {
-                    register_s3_object_store(&url, config, runtime)?;
-                }
+                register_s3_object_store(&url, config, runtime)?;
                 Ok(path.to_owned())
             }
             "hdfs" => {

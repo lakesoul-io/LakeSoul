@@ -42,14 +42,54 @@ use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::error::{DataFusionError, Result as DFResult};
+use datafusion::execution::SessionState;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_distributed::{DistributedLeafExec, NetworkBoundaryExt, WorkerResolver};
+use datafusion::prelude::SessionConfig;
+use datafusion_distributed::{
+    DistributedConfig, DistributedLeafExec, NetworkBoundaryExt, WorkerResolver,
+    get_distributed_worker_resolver,
+};
 use lakesoul_io::file_format::PhysicalFormat;
 
 use crate::distributed::codec::source_has_wire_form;
 use crate::planner::LakeSoulQueryPlanner;
+
+/// Session extension marking a query the coordinator plans locally after the
+/// distributed planner gave up on it ([`LakeSoulDistributedQueryPlanner`]
+/// with `fallback_to_local`), although the session has workers.
+#[derive(Debug)]
+struct LocalFallback;
+
+/// How many distributed tasks the stage that runs a table scan may get.
+///
+/// Mirrors the cap the distributed planner puts on every stage:
+/// `distributed.max_tasks_per_stage`, or, when that is 0, the number of
+/// workers the session's resolver currently lists. 1 for a session planned
+/// on one node: one without a worker resolver, one whose resolver lists no
+/// worker or fails (the distributed planner fails such a query, and a
+/// fallback plans it locally), and the local fallback itself.
+///
+/// A merge-on-read scan packs its range partitions into at most this many
+/// merges, one per task; see `LakeSoulTableProvider::scan`. The value only
+/// shapes the plan: a resolver whose answer changes before the distributed
+/// planner asks again yields more or fewer merges per task, never a merge
+/// split across tasks.
+pub(crate) fn scan_task_budget(config: &SessionConfig) -> usize {
+    if config.get_extension::<LocalFallback>().is_some() {
+        return 1;
+    }
+    let Ok(resolver) = get_distributed_worker_resolver(config) else {
+        return 1;
+    };
+    match DistributedConfig::from_config_options(config.options()) {
+        Ok(distributed) if distributed.max_tasks_per_stage > 0 => {
+            distributed.max_tasks_per_stage
+        }
+        _ => resolver.get_urls().map_or(1, |urls| urls.len().max(1)),
+    }
+}
 
 /// Wraps the distributed [`QueryPlanner`] installed by
 /// `SessionStateBuilderExt::with_distributed_planner` and decides per query
@@ -91,13 +131,22 @@ impl LakeSoulDistributedQueryPlanner {
 
     /// Plans the query with the plain LakeSoul planner, so it runs on the
     /// coordinator.
+    ///
+    /// The session still lists the workers, so it is marked with
+    /// [`LocalFallback`]: scans then plan for the one node that runs them
+    /// ([`scan_task_budget`]).
     async fn plan_locally(
         &self,
         logical_plan: &LogicalPlan,
         session: &dyn Session,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
         info!("fallback to local planner");
-        self.local.create_physical_plan(logical_plan, session).await
+        let Some(state) = session.as_any().downcast_ref::<SessionState>() else {
+            return self.local.create_physical_plan(logical_plan, session).await;
+        };
+        let mut state = state.clone();
+        state.config_mut().set_extension(Arc::new(LocalFallback));
+        self.local.create_physical_plan(logical_plan, &state).await
     }
 }
 
@@ -560,5 +609,40 @@ mod tests {
             .await
             .expect("the fallback must plan the query");
         assert_eq!(plan.schema().field(0).name(), "one");
+    }
+
+    /// Lists `.0` workers, or fails when it is `None`.
+    struct Workers(Option<usize>);
+
+    impl WorkerResolver for Workers {
+        fn get_urls(&self) -> DFResult<Vec<url::Url>> {
+            let Some(count) = self.0 else {
+                return Err(DataFusionError::Execution("discovery failed".into()));
+            };
+            Ok((0..count)
+                .map(|i| url::Url::parse(&format!("http://worker-{i}:50051")).unwrap())
+                .collect())
+        }
+    }
+
+    /// A scan packs its ranges for as many tasks as the distributed planner
+    /// gives a stage: the configured per-stage cap, else the listed workers;
+    /// one wherever the query is planned for one node.
+    #[test]
+    fn scan_task_budget_follows_the_stage_task_cap() {
+        use datafusion_distributed::DistributedExt;
+
+        assert_eq!(scan_task_budget(&SessionConfig::new()), 1, "no resolver");
+        let workers =
+            |count| SessionConfig::new().with_distributed_worker_resolver(Workers(count));
+        assert_eq!(scan_task_budget(&workers(Some(3))), 3);
+        assert_eq!(scan_task_budget(&workers(Some(0))), 1, "no worker listed");
+        assert_eq!(scan_task_budget(&workers(None)), 1, "discovery failed");
+        let capped = workers(Some(3))
+            .with_distributed_max_tasks_per_stage(2)
+            .unwrap();
+        assert_eq!(scan_task_budget(&capped), 2, "max_tasks_per_stage");
+        let fallback = workers(Some(3)).with_extension(Arc::new(LocalFallback));
+        assert_eq!(scan_task_budget(&fallback), 1, "local fallback");
     }
 }

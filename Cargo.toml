@@ -170,8 +170,36 @@ rootcause = "0.13"
 reqwest = "0.13"
 # sync
 parking_lot = "0.12"
+# memory allocator: only executables own `#[global_allocator]` (see
+# rust/postgres-lakesoul and rust/lakesoul-console). `unprefixed_malloc` makes
+# jemalloc serve C `malloc` too; `stats` backs the startup identity log.
+tikv-jemallocator = { version = "0.6.1", features = [
+  "unprefixed_malloc_on_supported_platforms",
+] }
+tikv-jemalloc-ctl = { version = "0.6.1", features = ["stats"] }
 
 [workspace.lints.clippy]
 
 [workspace.lints.rust]
 deprecated = "allow"
+
+# datafusion-physical-plan 55.2.0 plus apache/datafusion#24891 (merge commit
+# 09a2aff7), which fixes the RepartitionExec spill-pool deadlock
+# (apache/datafusion#24883): under a memory limit, a query whose hash
+# repartition spills can hang forever. src/spill/spill_pool.rs is the upstream
+# fix; src/scalar_subquery.rs additionally returns a typed
+# `ScalarSubqueryCardinalityError` so the PostgreSQL wire layer can map
+# multi-row scalar subqueries to SQLSTATE 21000. Remove the spill-pool patch
+# when upgrading to DataFusion 56; retain the typed error until an equivalent
+# upstream error classification is available and the wire mapper is migrated.
+[patch.crates-io]
+datafusion-physical-plan = { git = "https://github.com/mag1c1an1/datafusion.git", rev = "e668c7ab1ca6f4e563060d3d1013a03a7e7e2296" }
+
+# datafusion-pg-catalog comes from the pinned datafusion-postgres fork. The
+# fork's lakesoul-shared-static-tables branch drops the obsolete
+# RemoveSubqueryFromProjection rewrite rule, which injected `LIMIT 1` into
+# uncorrelated projection scalar subqueries (silently truncating multi-row
+# results) and replaced correlated/parameterized ones with NULL. DataFusion 55
+# plans both forms, and ScalarSubqueryExec enforces the PostgreSQL
+# zero-or-one-row contract. Bump the `rev` in rust/postgres-lakesoul to pick up
+# further changes; no local copy of the crate is needed.

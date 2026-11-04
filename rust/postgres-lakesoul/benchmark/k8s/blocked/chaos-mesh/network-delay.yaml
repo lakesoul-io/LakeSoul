@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# BLOCKED (Chaos Mesh is not installed and not authorized): equivalent of
+# slow-worker as a Chaos Mesh NetworkChaos, for clusters that have it.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: lsbench-slow-worker
+  namespace: lakesoul
+spec:
+  action: delay
+  mode: one
+  selector:
+    namespaces: [lakesoul]
+    labelSelectors:
+      app.kubernetes.io/component: worker
+  delay:
+    latency: 50ms
+    jitter: 10ms
+  direction: to
+  target:
+    mode: all
+    selector:
+      namespaces: [lakesoul]
+      labelSelectors:
+        app.kubernetes.io/component: coordinator
+  duration: 10m

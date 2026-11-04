@@ -109,3 +109,5 @@ agent_export/
 /rust/lakesoul-datafusion/lakesoul_cache_dir/
 
 **/result
+
+
