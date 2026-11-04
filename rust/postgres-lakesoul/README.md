@@ -190,9 +190,25 @@ LAKESOUL_TPCH_SCALE=1 LAKESOUL_TPCH_LAYOUT=nopk LAKESOUL_TPCH_WORKERS=2 \
 
 DDL 由 `src/ddl.rs` 的语句钩子承接，既不经过 DataFusion 自己的 DDL 规划，也不经过管理端 SQL。`CREATE TABLE` 用与服务内部相同的 `LakeSoulTableProvider::new_from_create_external_table` 构造 provider，再由 `SchemaProvider::register_table` 发布元数据；`DROP TABLE` 走 `SchemaProvider::deregister_table` 的级联删除。表路径固定为 `{warehouse}/{namespace}/{table}`，客户端不提供 `LOCATION`，因此不同 PG database 的表不会落到同一目录。表名与列名按 PG 规则折叠为小写（未加引号），带引号且折叠会变化的名称直接拒绝：provider 会自行折叠 schema、列名和 `table_info.table_name`，接受这类名称等于静默改名，而 `table_info` 的 `partitions`、`table_path` 与后续读写都依赖这一个身份。
 
+`PARTITIONED BY` 是本服务的 LakeSoul SQL 扩展，按已有列的值分区，不是 PostgreSQL 声明式分区：
+
+```sql
+CREATE TABLE partition_items (
+    part INTEGER NOT NULL,
+    id BIGINT PRIMARY KEY,
+    val TEXT
+)
+PARTITIONED BY (part)
+WITH (hash_bucket_num = 4);
+```
+
+支持多个分区列，顺序按声明保存；分区列与主键分别声明，`hash_bucket_num` 控制每个分区内的哈希分桶，不承诺跨分区的主键全局唯一。省略 `file_format` 仍使用 `vortex-compact`。不创建 PG 子表或分区边界，不开放客户端 `LOCATION`／`STORED AS`。
+
 | 契约 | 已验证范围 | 具体用例 |
 | --- | --- | --- |
 | LakeSoul 建表语义 | 建表后 `table_info` 行的 namespace 为连接的 database、`table_path` 位于本次 warehouse 下的 `{namespace}/{table}`、主键列写入 `partitions`（`;id`）、`hashBucketNum` 默认 4、`file_format` 默认 `vortex-compact`（省略 `WITH (file_format = ...)` 时）；无主键表没有 `hashBucketNum`；`pg_class` 可见、`SELECT` 返回零行且列 OID 为 INT8／TEXT／NUMERIC／TIMESTAMPTZ；新连接同样可见 | `create_table_publishes_metadata` |
+| LakeSoul 分区 DDL | simple 与 extended `PARTITIONED BY (col, ...)` 引用已有列，支持无主键表、主键表、多列及标识符折叠；`table_info.partitions` 保存声明顺序（如 `region,part;id`）；Parse 不发布表，CREATE 不预建子分区，DROP 删除表元数据 | `partitioned_by_creates_range_partitions` |
+| 分区声明拒绝 | 未声明分区列 `42703`、折叠后重复分区列 `42701`、分区项带类型／混合大小写引用名 `0A000`；表达式和空列表由上游 parser 拒绝（当前错误映射不保证 PG `42601`）；PG `PARTITION BY RANGE/LIST/HASH`、`PARTITION OF ... FOR VALUES` 仍为 `0A000`；simple 与 extended Parse 均拒绝且权威元数据、文件字节不变 | `partition_ddl_rejections_leave_no_trace` |
 | PG 冲突语义 | 同名 `CREATE TABLE` 返回 `42P07` 且不改动原表；`IF NOT EXISTS` 成功且 `table_id` 不变，元数据行数仍为 1；已有表存在时 `IF NOT EXISTS` 配不同列声明也不改动原 schema | `duplicate_and_if_not_exists`、`if_not_exists_keeps_the_existing_schema` |
 | `DROP TABLE` 级联 | 删表前按捕获的 `table_id` 计数（`1/1/1/0/0`），删表后同一 `table_id` 的 `table_info`／`table_name_id`／`table_path_id`／`partition_info`／`data_commit_info` 全为 0、`pg_class` 不再列出；再次 `DROP` 为 `42P01` | `drop_table_removes_metadata` |
 | `IF EXISTS` 幂等 | 不存在的表 `DROP TABLE IF EXISTS` 成功；一次多条名称同样成立 | `drop_absent_and_if_exists` |
@@ -222,12 +238,14 @@ DDL 由 `src/ddl.rs` 的语句钩子承接，既不经过 DataFusion 自己的 D
 | `ON CONFLICT DO NOTHING` | 冲突行被丢弃、非冲突行写入，标签只计实际插入行；已有键的值不变 | `insert_contract::on_conflict_do_nothing_skips_conflicts` |
 | `ON CONFLICT DO UPDATE` | 仅接受 `SET col = EXCLUDED.col` 覆盖全部非键列，并映射为 LakeSoul 整行 replace；结果行被完整重写 | `insert_contract::on_conflict_do_update_replaces_the_row` |
 | 多分区原子发布 | 一条 `INSERT` 写 3 个 range 分区时全部行一次可见；每个分区一条已提交 `data_commit_info`，`partition_info` 3 行且版本均为 0；committed 文件均存在 | `insert_contract::multi_partition_insert_publishes_atomically` |
+| PG 分区建表后的真实 IO | simple PG DDL 默认 `vortex-compact` 与 extended PG DDL 显式 Parquet；PG INSERT 跨分区写入并验证权威分区版本、commit 描述和实际文件目录；过滤、聚合与同键跨分区独立；后端第二次 `INSERT OR REPLACE` 提交后 PG 读取同分区合并后的精确行；多列分区顺序不同于 schema 顺序时 MOR／append 扫描仍正确 | `partitioned_table_created_by_pg_writes_and_merges`、`extended_partitioned_table_writes_parquet`、`multi_column_partition_order_is_preserved` |
 | 明确拒绝，无副作用 | `RETURNING`、非主键冲突目标、部分列 `DO UPDATE`、非 `EXCLUDED` 赋值、不存在表 `42P01`、跨 database `3D000`、跨 schema `3F000`、事务块内 `0A000`、simple-query 多语句批次 `0A000`；每次拒绝后权威快照不变 | `insert_contract::refusal_matrix_changes_nothing` |
 | 源分析与 PG SQLSTATE | 规划前按 PG 语义分析源：列数不匹配 `42601`、赋值类型不匹配 `42804`、字符串字面量无法转换为目标类型 `22P02`，simple 与 extended 两条路径的 SQLSTATE 都与参考 PostgreSQL 相同；无清单 `VALUES` 与 `SELECT` 少于表列数时按默认值语义补 NULL 并成功写入；`VALUES ('42')`、`SELECT '42'` 与混合投影 `SELECT id, '7'` 写入 `INTEGER` 分别得到 42／42／7；每次拒绝前后权威快照不变 | `insert_contract::insert_analysis_matches_postgres` |
 
 语义边界（LakeSoul 特有，不宣称 PG 等价）：
 
 - 主键表是 merge-on-read。plain `INSERT` 走 insert-only，重复键报错而不是 PG 的“先删后插”；`ON CONFLICT DO NOTHING` 在 sink 侧过滤冲突行；`ON CONFLICT DO UPDATE` 只映射“全列 + 每列 `= EXCLUDED.col`”的整行重写，任意表达式需要读旧行，直接 `0A000`。
+- range 分区表的主键仅在分区内唯一；PG plain `INSERT` 允许同键位于不同分区，但同分区重复键仍为 `23505`。当前 PG `ON CONFLICT` 在分区表上仍为 `0A000`；上述跨提交 merge 验证通过后端 `INSERT OR REPLACE` 写入，不能当作 PG 分区表 upsert 已支持的证据。
 - 非主键 range 分区表的一条语句可能写多个 partition。提交把所有 `DataCommitInfo` 放进一个 PostgreSQL 事务，并一次发布全部分区版本；读者只会看到整条语句。Parquet 文件先于元数据写入对象存储，语句失败或取消（包括元数据发布失败）会删除本次 attempted files，进程崩溃留下的孤儿文件由 GC 处理——文件层不是原子的。
 - 取消：结果流在提交开始前被 drop 时不发布并清理文件；进入元数据提交后不可中断（单事务、毫秒级）。
 - 并发写冲突：快照校验发现分区版本已被其他写者推进时返回 `40001`（可重试），而不是 `23505`——LakeSoul 在这一步无法区分“同键冲突”与“任意并发提交”，客户端重试后才会得到 `23505`。提交结果不确定（`InsertCommitOutcomeUnknown`）仍是服务端 `XX000`，文件保留。

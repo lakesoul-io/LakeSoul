@@ -46,6 +46,8 @@ async fn ddl_create_and_drop_tables() -> Result<()> {
             cdc_options_reach_properties(h).await?;
             refusal_matrix_creates_nothing(h).await?;
             extended_protocol_creates_and_drops(h).await?;
+            partitioned_by_creates_range_partitions(h).await?;
+            partition_ddl_rejections_leave_no_trace(h).await?;
             identifiers_are_folded_and_contained(h).await?;
             drop_table_is_all_or_nothing(h).await?;
             simple_query_batch_with_ddl_is_refused(h).await?;
@@ -758,6 +760,213 @@ async fn extended_protocol_creates_and_drops(h: &Harness) -> Result<()> {
     Ok(())
 }
 
+/// Partition order is independent of schema order and hash bucketing;
+/// references follow the same identifier rules in both wire protocols.
+async fn partitioned_by_creates_range_partitions(h: &Harness) -> Result<()> {
+    for (table, sql, partitions, buckets, extended) in [
+        (
+            "ddl_part_pk",
+            "CREATE TABLE ddl_part_pk (Part INTEGER NOT NULL, id BIGINT \
+             PRIMARY KEY, val TEXT) PARTITIONED BY (\"part\") \
+             WITH (hash_bucket_num = 4)",
+            "part;id",
+            Some("4"),
+            false,
+        ),
+        (
+            "ddl_part_multi",
+            "CREATE TABLE ddl_part_multi (part INTEGER NOT NULL, \
+             region TEXT NOT NULL, id BIGINT PRIMARY KEY, val TEXT) \
+             PARTITIONED BY (\"region\", PART) WITH (hash_bucket_num = 8)",
+            "region,part;id",
+            Some("8"),
+            false,
+        ),
+        (
+            "ddl_part_nopk",
+            "CREATE TABLE ddl_part_nopk (part INTEGER NOT NULL, body TEXT) \
+             PARTITIONED BY (part)",
+            "part;",
+            None,
+            false,
+        ),
+        (
+            "ddl_part_extended",
+            "CREATE TABLE ddl_part_extended (part INTEGER NOT NULL, \
+             id BIGINT PRIMARY KEY, val TEXT) PARTITIONED BY (part) \
+             WITH (hash_bucket_num = 16)",
+            "part;id",
+            Some("16"),
+            true,
+        ),
+    ] {
+        if extended {
+            let create = h.lake.prepare(sql).await.context("partition DDL Parse")?;
+            ensure!(
+                metadata(h, table).await?.is_none(),
+                "{table}: Parse must not publish a table"
+            );
+            h.lake
+                .execute(&create, &[])
+                .await
+                .context("partition DDL Execute")?;
+        } else {
+            command(h, sql).await?;
+        }
+        let row = metadata(h, table)
+            .await?
+            .with_context(|| format!("{table}: partition DDL must publish metadata"))?;
+        ensure!(
+            row.partitions == partitions,
+            "{table}: expected partitions {partitions:?}, actual {:?}",
+            row.partitions
+        );
+        ensure!(
+            row.hash_bucket_num.as_deref() == buckets,
+            "{table}: expected partition-local buckets {buckets:?}, actual {:?}",
+            row.hash_bucket_num
+        );
+        ensure!(
+            metadata_counts(h, table).await? == [1, 1, 1, 0, 0],
+            "{table}: CREATE must publish one table, not precreate child partitions"
+        );
+        let drop_sql = format!("DROP TABLE {table}");
+        if extended {
+            let drop = h.lake.prepare(&drop_sql).await?;
+            h.lake.execute(&drop, &[]).await?;
+        } else {
+            command(h, &drop_sql).await?;
+        }
+        ensure!(
+            metadata(h, table).await?.is_none(),
+            "{table}: DROP must remove the partitioned table"
+        );
+    }
+    Ok(())
+}
+
+/// Partition references resolve against the declared columns, and the
+/// PostgreSQL declarative-partition syntax stays refused: both the simple and
+/// the extended Parse paths reject before anything is published, leaving the
+/// authoritative metadata and warehouse files byte-for-byte unchanged.
+async fn partition_ddl_rejections_leave_no_trace(h: &Harness) -> Result<()> {
+    let before = h
+        .authoritative_snapshot()
+        .await
+        .context("partition rejection matrix: snapshot before")?;
+    // Malformed column lists are refused by the upstream parser; its generic
+    // error SQLSTATE is outside the DDL hook's semantic error contract.
+    let cases: &[(&str, &str, Option<&str>)] = &[
+        (
+            "ddl_part_unknown",
+            "CREATE TABLE ddl_part_unknown (part INTEGER NOT NULL, \
+             id BIGINT NOT NULL, PRIMARY KEY (id)) PARTITIONED BY (nope)",
+            Some("42703"),
+        ),
+        (
+            "ddl_part_duplicate",
+            "CREATE TABLE ddl_part_duplicate (part INTEGER NOT NULL) \
+             PARTITIONED BY (part, PART)",
+            Some("42701"),
+        ),
+        (
+            "ddl_part_expression",
+            "CREATE TABLE ddl_part_expression (part INTEGER NOT NULL) \
+             PARTITIONED BY (part + 1)",
+            None,
+        ),
+        (
+            "ddl_part_empty",
+            "CREATE TABLE ddl_part_empty (part INTEGER) PARTITIONED BY ()",
+            None,
+        ),
+        (
+            "ddl_part_typed",
+            "CREATE TABLE ddl_part_typed (part INTEGER NOT NULL) \
+             PARTITIONED BY (part INTEGER)",
+            Some("0A000"),
+        ),
+        (
+            "ddl_part_quoted_upper",
+            "CREATE TABLE ddl_part_quoted_upper (part INTEGER NOT NULL) \
+             PARTITIONED BY (\"Part\")",
+            Some("0A000"),
+        ),
+        (
+            "ddl_pg_range",
+            "CREATE TABLE ddl_pg_range (id INT) PARTITION BY RANGE (id)",
+            Some("0A000"),
+        ),
+        (
+            "ddl_pg_list",
+            "CREATE TABLE ddl_pg_list (id INT) PARTITION BY LIST (id)",
+            Some("0A000"),
+        ),
+        (
+            "ddl_pg_hash",
+            "CREATE TABLE ddl_pg_hash (id INT) PARTITION BY HASH (id)",
+            Some("0A000"),
+        ),
+        (
+            "ddl_pg_child",
+            "CREATE TABLE ddl_pg_child PARTITION OF ddl_pg_parent \
+             FOR VALUES FROM (1) TO (10)",
+            Some("0A000"),
+        ),
+    ];
+    for (table, sql, expected) in cases {
+        let (code, message) = error_detail(h, sql)
+            .await
+            .with_context(|| format!("case={table} simple SQL={sql}"))?;
+        if let Some(expected) = expected {
+            ensure!(
+                code == *expected,
+                "case={table} simple SQL={sql}: expected {expected}, actual \
+                 {code} ({message})"
+            );
+        }
+        // The extended Parse must refuse the statement before Execute, not
+        // bind a plan that could publish on a later message.
+        let error = h.lake.prepare(sql).await.err().with_context(|| {
+            format!("case={table} extended Parse SQL={sql}: expected rejection")
+        })?;
+        let db = error.as_db_error().with_context(|| {
+            format!("case={table}: extended Parse must return a server error")
+        })?;
+        if let Some(expected) = expected {
+            ensure!(
+                db.code().code() == *expected,
+                "case={table}: expected {expected}, actual {}",
+                db.code().code()
+            );
+        }
+        ensure!(
+            metadata(h, table).await?.is_none(),
+            "case={table} SQL={sql}: a refused statement must not publish metadata"
+        );
+        ensure!(
+            pg_class_count(h, table).await? == 0,
+            "case={table} SQL={sql}: a refused statement must not appear in pg_class"
+        );
+        // A rejected extended Parse leaves the session usable.
+        let count = scalar(&h.lake, "SELECT count(*) FROM ddl_orders").await?;
+        ensure!(
+            count == 0,
+            "case={table} SQL={sql}: the fixture table must stay readable"
+        );
+    }
+    let after = h
+        .authoritative_snapshot()
+        .await
+        .context("partition rejection matrix: snapshot after")?;
+    ensure!(
+        before == after,
+        "the partition rejection matrix must not change authoritative \
+         metadata, rows, or warehouse file bytes"
+    );
+    Ok(())
+}
+
 /// Unquoted names fold to lower case, and a name that would change the data
 /// path or the partition description is refused before anything is created.
 async fn identifiers_are_folded_and_contained(h: &Harness) -> Result<()> {
@@ -920,6 +1129,10 @@ async fn simple_query_batch_with_ddl_is_refused(h: &Harness) -> Result<()> {
         "CREATE TABLE ddl_batch (id INT); SELECT 1 / 0",
         "SELECT 1; CREATE TABLE ddl_batch (id INT)",
         "CREATE TABLE ddl_batch (id INT); DROP TABLE ddl_batch",
+        "CREATE TABLE ddl_batch (part INT NOT NULL) PARTITIONED BY (part); \
+         SELECT 1",
+        "SELECT 1; CREATE TABLE ddl_batch (part INT NOT NULL) \
+         PARTITIONED BY (part)",
     ] {
         let (code, message) = error_detail(h, sql)
             .await
@@ -1001,6 +1214,23 @@ async fn ddl_is_refused_inside_a_transaction(h: &Harness) -> Result<()> {
         code == "XX000" && message.contains("ddl_tx"),
         "SELECT after refused transactional CREATE: expected XX000 naming the \
          table (see tests/catalog_contract/isolation.rs), actual {code} ({message})"
+    );
+
+    // A partition declaration does not change the commit boundary.
+    h.lake.simple_query("BEGIN").await?;
+    let code = error_code(
+        h,
+        "CREATE TABLE ddl_tx_part (part INTEGER NOT NULL) PARTITIONED BY (part)",
+    )
+    .await?;
+    ensure!(
+        code == "0A000",
+        "partitioned CREATE TABLE inside BEGIN: expected 0A000, actual {code}"
+    );
+    h.lake.simple_query("ROLLBACK").await?;
+    ensure!(
+        metadata(h, "ddl_tx_part").await?.is_none(),
+        "partitioned CREATE TABLE inside BEGIN must not publish metadata"
     );
     Ok(())
 }

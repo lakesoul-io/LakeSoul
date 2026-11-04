@@ -238,22 +238,19 @@ impl LakeSoulTableProvider {
         logical_schema: SchemaRef,
         range_partitions: &[String],
     ) -> Result<(SchemaRef, SchemaRef)> {
-        let mut range_partition_projection = Vec::with_capacity(range_partitions.len());
-        let mut file_schema_projection =
-            Vec::with_capacity(logical_schema.fields().len() - range_partitions.len());
-        // O(nm), n = number of table fields, m = number of range partitions
+        let mut projection = Vec::with_capacity(logical_schema.fields().len());
         for (idx, field) in logical_schema.fields().iter().enumerate() {
-            match range_partitions.contains(field.name()) {
-                true => range_partition_projection.push(idx),
-                false => file_schema_projection.push(idx),
-            };
+            if !range_partitions.contains(field.name()) {
+                projection.push(idx);
+            }
         }
-
-        let file_schema = Arc::new(logical_schema.project(&file_schema_projection)?);
-        let scan_schema =
-            Arc::new(logical_schema.project(
-                &[file_schema_projection, range_partition_projection].concat(),
-            )?);
+        let file_schema = Arc::new(logical_schema.project(&projection)?);
+        // File scans append injected partition constants in metadata order,
+        // which need not match their order in the logical table schema.
+        for partition in range_partitions {
+            projection.push(logical_schema.index_of(partition)?);
+        }
+        let scan_schema = Arc::new(logical_schema.project(&projection)?);
         Ok((file_schema, scan_schema))
     }
 

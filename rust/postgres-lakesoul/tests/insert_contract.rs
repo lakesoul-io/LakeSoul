@@ -18,7 +18,12 @@
 
 pub mod support;
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result, bail, ensure};
+use lakesoul_datafusion::cli::CoreArgs;
+use lakesoul_datafusion::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
+use lakesoul_metadata::MetaDataClient;
 use tokio_postgres::SimpleQueryMessage;
 use tokio_postgres::types::Type;
 
@@ -36,6 +41,9 @@ async fn insert_contract() -> Result<()> {
             on_conflict_do_update_replaces_the_row(h).await?;
             upsert_source_duplicate_keys_are_21000(h).await?;
             multi_partition_insert_publishes_atomically(h).await?;
+            partitioned_table_created_by_pg_writes_and_merges(h).await?;
+            extended_partitioned_table_writes_parquet(h).await?;
+            multi_column_partition_order_is_preserved(h).await?;
             refusal_matrix_changes_nothing(h).await?;
             prepared_insert_into_dropped_table_leaves_no_state(h).await?;
             insert_analysis_matches_postgres(h).await?;
@@ -387,6 +395,441 @@ async fn multi_partition_insert_publishes_atomically(h: &Harness) -> Result<()> 
         .await?
         .get::<_, i64>(0);
     ensure_eq("multi-partition second connection rows", count, 3)?;
+    Ok(())
+}
+
+/// A table created by the PostgreSQL front end with the LakeSoul
+/// `PARTITIONED BY (part)` extension writes real per-partition files, and the
+/// same key has one row per partition while a later commit for one key in one
+/// partition replaces only that partition's row.
+///
+/// The DDL and both reads are PostgreSQL. The second commit is issued by the
+/// backend merge path (`INSERT OR REPLACE`) because the PostgreSQL front end
+/// still refuses `ON CONFLICT` on a range-partitioned table: a PostgreSQL
+/// conflict target cannot name a partition-local key. The refusal itself is
+/// part of this contract.
+async fn partitioned_table_created_by_pg_writes_and_merges(h: &Harness) -> Result<()> {
+    let table = "pg_partition_items";
+    h.lake
+        .simple_query(&format!(
+            "CREATE TABLE {table} (\
+               part INTEGER NOT NULL, id BIGINT NOT NULL, val TEXT, \
+               PRIMARY KEY (id)\
+             ) PARTITIONED BY (part) WITH (hash_bucket_num = 4)"
+        ))
+        .await
+        .context("PG CREATE TABLE ... PARTITIONED BY (part)")?;
+
+    let table_id = table_id(h, table).await?;
+    let (partitions, file_format, buckets) = partition_table_info(h, table).await?;
+    ensure_eq("partition declaration", partitions, "part;id".to_string())?;
+    ensure_eq(
+        "default file format",
+        file_format.as_deref(),
+        Some("vortex-compact"),
+    )?;
+    ensure_eq("hash bucket count", buckets.as_deref(), Some("4"))?;
+    ensure_eq(
+        "partition_info before the first write",
+        partition_versions(h, &table_id).await?,
+        Vec::new(),
+    )?;
+    ensure_eq(
+        "data_commit_info before the first write",
+        commit_rows(h, &table_id).await?,
+        Vec::new(),
+    )?;
+
+    // One plain PostgreSQL INSERT spans partitions 0 and 1. Key id = 1
+    // appears in both partitions: LakeSoul keys are partition-local, so both
+    // rows stay visible instead of colliding.
+    let rows = simple_rows(
+        h,
+        &format!(
+            "INSERT INTO {table} (part, id, val) VALUES \
+             (0, 1, 'zero-a'), (0, 2, 'zero-b'), (1, 1, 'one-a')"
+        ),
+    )
+    .await?;
+    ensure_eq("first partition commit rows", rows, 3)?;
+
+    ensure_eq(
+        "first partition_info",
+        partition_versions(h, &table_id).await?,
+        vec![("part=0".to_string(), 0), ("part=1".to_string(), 0)],
+    )?;
+    ensure_eq(
+        "first commit data_commit_info",
+        commit_rows(h, &table_id).await?,
+        vec![("part=0".to_string(), true), ("part=1".to_string(), true)],
+    )?;
+    ensure_partition_files(
+        "first partition commit",
+        &commit_file_paths(h, &table_id).await?,
+        &["part=0", "part=1"],
+        ".vortex",
+        h,
+    )?;
+
+    ensure_eq(
+        "first commit rows via PG",
+        partition_rows(h, table).await?,
+        vec![
+            (0, 1, Some("zero-a".to_string())),
+            (0, 2, Some("zero-b".to_string())),
+            (1, 1, Some("one-a".to_string())),
+        ],
+    )?;
+    ensure_eq(
+        "first commit partition filter",
+        lake_i64(h, &format!("SELECT count(*) FROM {table} WHERE part = 1")).await?,
+        1,
+    )?;
+    ensure_eq(
+        "first commit partition aggregate",
+        partition_groups(h, table).await?,
+        vec![(0, 2), (1, 1)],
+    )?;
+    ensure_eq(
+        "same key across partitions",
+        partition_ids(h, table, 1).await?,
+        vec![0, 1],
+    )?;
+
+    // A range-partitioned table has one unique key per partition, which a
+    // PostgreSQL conflict target cannot express; the front end still refuses
+    // ON CONFLICT before any file or metadata row is produced.
+    let error = h
+        .lake
+        .execute(
+            &format!(
+                "INSERT INTO {table} (part, id, val) VALUES (0, 1, 'conflict') \
+                 ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val"
+            ),
+            &[],
+        )
+        .await
+        .expect_err("ON CONFLICT on a range-partitioned table must be refused");
+    ensure_sqlstate(&error, "0A000", "ON CONFLICT on a range-partitioned table")?;
+    ensure_eq(
+        "ON CONFLICT refusal leaves partition_info",
+        partition_versions(h, &table_id).await?,
+        vec![("part=0".to_string(), 0), ("part=1".to_string(), 0)],
+    )?;
+
+    // The second commit updates id = 1 inside partition 0, inserts id = 2 into
+    // partition 1, and inserts id = 1 into the new partition 2. The backend
+    // merge publishes one version per affected partition.
+    management_replace_rows(
+        h,
+        table,
+        "(0, 1, 'zero-updated'), (1, 2, 'one-b'), (2, 1, 'two-a')",
+    )
+    .await?;
+
+    ensure_eq(
+        "merge commit partition_info",
+        partition_versions(h, &table_id).await?,
+        vec![
+            ("part=0".to_string(), 1),
+            ("part=1".to_string(), 1),
+            ("part=2".to_string(), 0),
+        ],
+    )?;
+    ensure_eq(
+        "merge commit data_commit_info",
+        commit_rows(h, &table_id).await?,
+        vec![
+            ("part=0".to_string(), true),
+            ("part=0".to_string(), true),
+            ("part=1".to_string(), true),
+            ("part=1".to_string(), true),
+            ("part=2".to_string(), true),
+        ],
+    )?;
+    ensure_partition_files(
+        "merged commits",
+        &commit_file_paths(h, &table_id).await?,
+        &["part=0", "part=1", "part=2"],
+        ".vortex",
+        h,
+    )?;
+
+    // PostgreSQL reads the exact merge result: partition 0's row was replaced,
+    // partition 1 kept its old row and gained another key, and the same key in
+    // partition 2 is a distinct row.
+    ensure_eq(
+        "merged rows via PG",
+        partition_rows(h, table).await?,
+        vec![
+            (0, 1, Some("zero-updated".to_string())),
+            (0, 2, Some("zero-b".to_string())),
+            (1, 1, Some("one-a".to_string())),
+            (1, 2, Some("one-b".to_string())),
+            (2, 1, Some("two-a".to_string())),
+        ],
+    )?;
+    ensure_eq(
+        "merged partition aggregate",
+        partition_groups(h, table).await?,
+        vec![(0, 2), (1, 2), (2, 1)],
+    )?;
+    ensure_eq(
+        "same key in three partitions",
+        partition_ids(h, table, 1).await?,
+        vec![0, 1, 2],
+    )?;
+    ensure_eq(
+        "same key same partition merge",
+        lake_i64(
+            h,
+            &format!(
+                "SELECT count(*) FROM {table} \
+                 WHERE part = 0 AND id = 1 AND val = 'zero-updated'"
+            ),
+        )
+        .await?,
+        1,
+    )?;
+
+    // A plain PostgreSQL INSERT is insert-only: the same key in the same
+    // partition is a duplicate, and the rejected statement leaves no state.
+    let before = h.authoritative_snapshot().await?;
+    let error = h
+        .lake
+        .execute(
+            &format!("INSERT INTO {table} (part, id, val) VALUES (0, 2, 'collision')"),
+            &[],
+        )
+        .await
+        .expect_err("a duplicate key inside one partition must fail");
+    ensure_sqlstate(&error, "23505", "duplicate key inside one partition")?;
+    let after = h.authoritative_snapshot().await?;
+    ensure_snapshot_unchanged(&before, &after, "partition-local duplicate key")?;
+
+    let other = h.connect_lake().await?;
+    let count = other
+        .query_one(&format!("SELECT count(*) FROM {table}"), &[])
+        .await?
+        .get::<_, i64>(0);
+    ensure_eq("partitioned rows on a new connection", count, 5)?;
+
+    eprintln!(
+        "PASS case=pg-partitioned-create partitions=3 pg-insert-across-partitions=1 \
+         backend-merge-commit=1 on-conflict-refused=0A000 duplicate=23505 \
+         format=vortex-compact"
+    );
+    Ok(())
+}
+
+/// The extended protocol creates a partitioned table with an explicit
+/// `file_format`, and a prepared parameterized `INSERT` spans two partitions.
+/// Committed files carry the `.parquet` extension under their partition
+/// directories.
+async fn extended_partitioned_table_writes_parquet(h: &Harness) -> Result<()> {
+    let table = "pg_partition_parquet_items";
+    let create = h
+        .lake
+        .prepare(&format!(
+            "CREATE TABLE {table} (\
+               part INTEGER NOT NULL, id BIGINT NOT NULL, val TEXT, \
+               PRIMARY KEY (id)\
+             ) PARTITIONED BY (part) \
+             WITH (hash_bucket_num = 4, file_format = 'parquet')"
+        ))
+        .await
+        .context("extended Parse of partitioned CREATE TABLE")?;
+    ensure_eq(
+        "extended partitioned CREATE rows",
+        h.lake.execute(&create, &[]).await?,
+        0,
+    )?;
+
+    let table_id = table_id(h, table).await?;
+    let (partitions, file_format, buckets) = partition_table_info(h, table).await?;
+    ensure_eq(
+        "extended partition declaration",
+        partitions,
+        "part;id".to_string(),
+    )?;
+    ensure_eq(
+        "explicit parquet format",
+        file_format.as_deref(),
+        Some("parquet"),
+    )?;
+    ensure_eq("extended hash bucket count", buckets.as_deref(), Some("4"))?;
+
+    let parameter_types = [
+        Type::INT4,
+        Type::INT8,
+        Type::TEXT,
+        Type::INT4,
+        Type::INT8,
+        Type::TEXT,
+    ];
+    let insert = h
+        .lake
+        .prepare_typed(
+            &format!(
+                "INSERT INTO {table} (part, id, val) VALUES \
+                 ($1, $2, $3), ($4, $5, $6)"
+            ),
+            &parameter_types,
+        )
+        .await
+        .context("extended Parse of partitioned INSERT")?;
+    ensure_eq(
+        "extended partition parameter types",
+        insert.params().to_vec(),
+        parameter_types.to_vec(),
+    )?;
+    let rows = h
+        .lake
+        .execute(&insert, &[&0i32, &10i64, &"p0", &1i32, &10i64, &"p1"])
+        .await
+        .context("extended Execute of partitioned INSERT")?;
+    ensure_eq("extended partition insert rows", rows, 2)?;
+
+    ensure_eq(
+        "extended partition_info",
+        partition_versions(h, &table_id).await?,
+        vec![("part=0".to_string(), 0), ("part=1".to_string(), 0)],
+    )?;
+    ensure_eq(
+        "extended data_commit_info",
+        commit_rows(h, &table_id).await?,
+        vec![("part=0".to_string(), true), ("part=1".to_string(), true)],
+    )?;
+    ensure_partition_files(
+        "extended parquet commit",
+        &commit_file_paths(h, &table_id).await?,
+        &["part=0", "part=1"],
+        ".parquet",
+        h,
+    )?;
+    ensure_eq(
+        "extended partition rows via PG",
+        partition_rows(h, table).await?,
+        vec![
+            (0, 10, Some("p0".to_string())),
+            (1, 10, Some("p1".to_string())),
+        ],
+    )?;
+    ensure_eq(
+        "extended partition aggregate",
+        partition_groups(h, table).await?,
+        vec![(0, 1), (1, 1)],
+    )?;
+    eprintln!(
+        "PASS case=extended-partitioned-parquet PG-DDL=true prepared-insert=true \
+         partitions=2 format=parquet"
+    );
+    Ok(())
+}
+
+/// Partition constants follow declaration order, not schema order. Exercise
+/// both MOR and append scans with different-typed, reversed partition columns.
+async fn multi_column_partition_order_is_preserved(h: &Harness) -> Result<()> {
+    for (table, format, key, extension) in [
+        (
+            "pg_multi_vortex",
+            "vortex-compact",
+            ", PRIMARY KEY (id)",
+            ".vortex",
+        ),
+        ("pg_multi_parquet", "parquet", "", ".parquet"),
+    ] {
+        h.lake
+            .simple_query(&format!(
+                "CREATE TABLE {table} (region TEXT NOT NULL, part INTEGER NOT NULL, \
+                 id BIGINT NOT NULL, val TEXT{key}) PARTITIONED BY (part, region) \
+                 WITH (file_format = '{format}')"
+            ))
+            .await?;
+        h.lake
+            .simple_query(&format!(
+                "INSERT INTO {table} VALUES ('east', 1, 1, 'a'), \
+                 ('west', 1, 1, 'b'), ('east', 2, 2, 'c')"
+            ))
+            .await?;
+        let rows: Vec<(String, i32, i64, String)> = h
+            .lake
+            .query(
+                &format!(
+                    "SELECT region, part, id, val FROM {table} ORDER BY part, region"
+                ),
+                &[],
+            )
+            .await?
+            .into_iter()
+            .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3)))
+            .collect();
+        ensure_eq(
+            "multi-column partition projection",
+            rows,
+            vec![
+                ("east".to_string(), 1, 1, "a".to_string()),
+                ("west".to_string(), 1, 1, "b".to_string()),
+                ("east".to_string(), 2, 2, "c".to_string()),
+            ],
+        )?;
+        let groups: Vec<(i32, String, i64, i64)> = h
+            .lake
+            .query(
+                &format!(
+                    "SELECT part, region, count(*), sum(id) FROM {table} \
+                     GROUP BY part, region ORDER BY part, region"
+                ),
+                &[],
+            )
+            .await?
+            .into_iter()
+            .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3)))
+            .collect();
+        ensure_eq(
+            "multi-column partition aggregate",
+            groups,
+            vec![
+                (1, "east".to_string(), 1, 1),
+                (1, "west".to_string(), 1, 1),
+                (2, "east".to_string(), 1, 2),
+            ],
+        )?;
+        let value: String = h
+            .lake
+            .query_one(
+                &format!("SELECT val FROM {table} WHERE part = 1 AND region = 'west'"),
+                &[],
+            )
+            .await?
+            .get(0);
+        ensure_eq("multi-column partition filter", value, "b".to_string())?;
+        let id = table_id(h, table).await?;
+        ensure_eq(
+            "multi-column partition descriptions",
+            partition_versions(h, &id).await?,
+            vec![
+                ("part=1,region=east".to_string(), 0),
+                ("part=1,region=west".to_string(), 0),
+                ("part=2,region=east".to_string(), 0),
+            ],
+        )?;
+        ensure_partition_files(
+            "multi-column partition files",
+            &commit_file_paths(h, &id).await?,
+            &[
+                "part=1,region=east",
+                "part=1,region=west",
+                "part=2,region=east",
+            ],
+            extension,
+            h,
+        )?;
+        eprintln!(
+            "PASS case=multi-column-partition-order format={format} pk={}",
+            !key.is_empty()
+        );
+    }
     Ok(())
 }
 
@@ -978,6 +1421,206 @@ async fn file_paths(h: &Harness, table_id: &str) -> Result<Vec<String>> {
         .into_iter()
         .map(|row| row.get::<_, String>(0))
         .collect())
+}
+
+/// `(partitions, file_format, hash_bucket_num)` from the table's metadata.
+async fn partition_table_info(
+    h: &Harness,
+    table: &str,
+) -> Result<(String, Option<String>, Option<String>)> {
+    let row = h
+        .reference
+        .query_one(
+            "SELECT partitions, properties->>'file_format', \
+             properties->>'hashBucketNum' FROM public.table_info \
+             WHERE table_namespace = $1 AND table_name = $2",
+            &[&h.lake_namespace, &table],
+        )
+        .await
+        .with_context(|| format!("metadata read for {table}"))?;
+    Ok((
+        row.get::<_, String>(0),
+        row.get::<_, Option<String>>(1),
+        row.get::<_, Option<String>>(2),
+    ))
+}
+
+/// `(partition_desc, latest version)` of every published partition.
+///
+/// `partition_info` keeps one row per published version, so the latest row per
+/// partition is selected explicitly.
+async fn partition_versions(h: &Harness, table_id: &str) -> Result<Vec<(String, i32)>> {
+    Ok(h.reference
+        .query(
+            "SELECT DISTINCT ON (partition_desc) partition_desc, version \
+             FROM public.partition_info WHERE table_id = $1 \
+             ORDER BY partition_desc, version DESC",
+            &[&table_id],
+        )
+        .await?
+        .into_iter()
+        .map(|row| (row.get::<_, String>(0), row.get::<_, i32>(1)))
+        .collect())
+}
+
+/// `(partition_desc, committed)` of every `data_commit_info` row.
+async fn commit_rows(h: &Harness, table_id: &str) -> Result<Vec<(String, bool)>> {
+    Ok(h.reference
+        .query(
+            "SELECT partition_desc, committed FROM public.data_commit_info \
+             WHERE table_id = $1 ORDER BY partition_desc, commit_id",
+            &[&table_id],
+        )
+        .await?
+        .into_iter()
+        .map(|row| (row.get::<_, String>(0), row.get::<_, bool>(1)))
+        .collect())
+}
+
+/// `(partition_desc, path)` of every file operation of a committed commit.
+async fn commit_file_paths(h: &Harness, table_id: &str) -> Result<Vec<(String, String)>> {
+    Ok(h.reference
+        .query(
+            "SELECT d.partition_desc, (operation).path FROM public.data_commit_info d \
+             CROSS JOIN LATERAL unnest(d.file_ops) AS operation \
+             WHERE d.table_id = $1 AND d.committed \
+             ORDER BY d.partition_desc, (operation).path",
+            &[&table_id],
+        )
+        .await?
+        .into_iter()
+        .map(|row| (row.get::<_, String>(0), row.get::<_, String>(1)))
+        .collect())
+}
+
+/// Rows of a partition fixture in partition/key order.
+async fn partition_rows(
+    h: &Harness,
+    table: &str,
+) -> Result<Vec<(i32, i64, Option<String>)>> {
+    Ok(h.lake
+        .query(
+            &format!("SELECT part, id, val FROM {table} ORDER BY part, id"),
+            &[],
+        )
+        .await?
+        .into_iter()
+        .map(|row| {
+            (
+                row.get::<_, i32>(0),
+                row.get::<_, i64>(1),
+                row.get::<_, Option<String>>(2),
+            )
+        })
+        .collect())
+}
+
+/// `(part, count(*))` for a partition fixture, ordered by partition.
+async fn partition_groups(h: &Harness, table: &str) -> Result<Vec<(i32, i64)>> {
+    Ok(h.lake
+        .query(
+            &format!("SELECT part, count(*) FROM {table} GROUP BY part ORDER BY part"),
+            &[],
+        )
+        .await?
+        .into_iter()
+        .map(|row| (row.get::<_, i32>(0), row.get::<_, i64>(1)))
+        .collect())
+}
+
+/// Partitions holding `id`, ordered, to show one key can live in several.
+async fn partition_ids(h: &Harness, table: &str, id: i64) -> Result<Vec<i32>> {
+    Ok(h.lake
+        .query(
+            &format!("SELECT part FROM {table} WHERE id = $1 ORDER BY part"),
+            &[&id],
+        )
+        .await?
+        .into_iter()
+        .map(|row| row.get::<_, i32>(0))
+        .collect())
+}
+
+/// Every committed file exists, sits under the directory of its partition,
+/// and uses the expected physical format extension. Each expected partition
+/// has at least one committed file.
+fn ensure_partition_files(
+    context: &str,
+    files: &[(String, String)],
+    expected_partitions: &[&str],
+    extension: &str,
+    h: &Harness,
+) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for (partition, path) in files {
+        ensure!(
+            path.contains(&format!("/{}/", partition.replace(',', "/"))),
+            "{context}: committed file {path} is not under partition {partition}"
+        );
+        ensure!(
+            path.ends_with(extension),
+            "{context}: committed file {path} does not use {extension}"
+        );
+        let local = std::path::Path::new(path.strip_prefix("file://").unwrap_or(path));
+        ensure!(
+            local.is_file(),
+            "{context}: committed file {path} does not exist on disk"
+        );
+        ensure!(
+            local.starts_with(&h.warehouse_dir),
+            "{context}: committed file {path} is outside the suite warehouse"
+        );
+        seen.insert(partition.as_str());
+    }
+    for partition in expected_partitions {
+        ensure!(
+            seen.contains(partition),
+            "{context}: no committed file for partition {partition}"
+        );
+    }
+    Ok(())
+}
+
+/// A backend merge commit into a PostgreSQL-created table.
+///
+/// The PostgreSQL front end still refuses `ON CONFLICT` on range-partitioned
+/// tables because a PostgreSQL conflict target cannot name a partition-local
+/// key. The existing `INSERT OR REPLACE` write path is the backend merge, so
+/// the test uses it for the same-key update and the cross-partition key; the
+/// table itself and every read stay on the PostgreSQL surface.
+async fn management_replace_rows(h: &Harness, table: &str, values: &str) -> Result<()> {
+    let meta = Arc::new(MetaDataClient::from_env().await.map_err(|error| {
+        anyhow::anyhow!("partition merge metadata client: {error:?}")
+    })?);
+    let warehouse = format!("file://{}", h.warehouse_dir.to_string_lossy());
+    let factory = LakeSoulSessionFactory::new(
+        meta,
+        &CoreArgs {
+            warehouse_prefix: Some(warehouse),
+            ..CoreArgs::default()
+        },
+    )
+    .map_err(|error| anyhow::anyhow!("partition merge session factory: {error:?}"))?;
+    let session = factory
+        .create_session(&LakeSoulSessionOptions {
+            default_schema: h.lake_namespace.clone(),
+            time_zone: Some("UTC".to_string()),
+        })
+        .map_err(|error| {
+            anyhow::anyhow!("partition merge management session: {error:?}")
+        })?;
+    let sql = format!(
+        "INSERT OR REPLACE INTO lakesoul.{}.{table} (part, id, val) VALUES {values}",
+        h.lake_namespace
+    );
+    session
+        .sql(&sql)
+        .await
+        .with_context(|| format!("management commit for {table}"))?
+        .collect()
+        .await
+        .with_context(|| format!("collect management commit for {table}"))?;
+    Ok(())
 }
 
 /// Assert that `error` is a server `ErrorResponse` with exactly `code`.
