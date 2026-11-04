@@ -221,19 +221,21 @@ impl LakeSoulScanExec {
     ///
     /// `None` when the scan merges on read and therefore cannot be split at
     /// all. Otherwise the number of files plus the parquet ranges their sizes
-    /// allow.
+    /// allow, with one file's share — however many descriptors it already has,
+    /// a repartitioned scan may hold several ranges of it — capped at
+    /// [`MAX_PIECES_PER_FILE`] like the splitter does.
     pub fn splittable_task_limit(&self) -> Option<usize> {
         if self.is_merge_on_read() {
             return None;
         }
-        Some(
-            self.units
-                .iter()
-                .flat_map(|unit| unit.files.iter())
-                .map(file_piece_capacity)
-                .sum::<usize>()
-                .max(1),
-        )
+        let mut per_file: HashMap<&str, usize> = HashMap::new();
+        for file in self.units.iter().flat_map(|unit| unit.files.iter()) {
+            let capacity = per_file.entry(file.path.as_str()).or_insert(0);
+            *capacity = capacity
+                .saturating_add(file_piece_capacity(file))
+                .min(MAX_PIECES_PER_FILE);
+        }
+        Some(per_file.values().sum::<usize>().max(1))
     }
 
     /// Splits the scan into exactly `task_count` tasks of disjoint work.
@@ -323,14 +325,24 @@ impl LakeSoulScanExec {
         let mut pieces: Vec<Vec<ScanFile>> =
             active.iter().map(|unit| unit.files.clone()).collect();
         let mut total: usize = pieces.iter().map(Vec::len).sum();
+        // A file already spread over several descriptors keeps counting them:
+        // the cap is about how many footer reads one file costs the scan, not
+        // how many this call adds.
+        let mut pieces_per_file: HashMap<String, usize> = HashMap::new();
+        for piece in pieces.iter().flatten() {
+            *pieces_per_file.entry(piece.path.clone()).or_insert(0) += 1;
+        }
         while total < buckets {
-            let Some((unit, index)) = largest_splittable_piece(&pieces) else {
+            let Some((unit, index)) = largest_splittable_piece(&pieces, &pieces_per_file)
+            else {
                 break;
             };
+            let path = pieces[unit][index].path.clone();
             let (left, right) = split_parquet_piece(&pieces[unit][index])
                 .expect("a splittable piece splits");
             pieces[unit][index] = left;
             pieces[unit].insert(index + 1, right);
+            *pieces_per_file.entry(path).or_insert(0) += 1;
             total += 1;
         }
         let mut groups: Vec<usize> = vec![1; pieces.len()];
@@ -1195,16 +1207,38 @@ fn piece_weight(pieces: &[ScanFile]) -> u64 {
 }
 
 /// The most pieces one file can contribute to a split.
+///
+/// A piece is split only while it holds at least two minimum ranges, and a
+/// split halves it, so a `length`-byte file ends up with `2^k` leaves of at
+/// most `2M - 1` bytes, where `2^k` is the largest power of two that fits in
+/// `length / M` — plus one more piece for every spare byte that lets a leaf
+/// reach exactly `2M` and split once more. `length / M` alone would overstate
+/// it: a `12M` file halves into `6M`, then `3M`, then `1.5M` leaves, which is
+/// eight pieces, not twelve, and the four extra tasks the planner would ask
+/// for could never read anything.
+///
+/// A `4M - 1` file is the other side of the same rule: its halves are `2M - 1`
+/// and `2M`, and only the second one splits again, so it yields three pieces
+/// although `(4M - 1) / M` rounds to three only by accident.
 fn file_piece_capacity(file: &ScanFile) -> usize {
     if file.physical_format != PhysicalFormat::Parquet {
         // A vortex file is read as a whole: ranges only apply to parquet.
         return 1;
     }
     let bytes = piece_bytes(file);
-    if bytes == 0 {
+    let ranges = bytes / MIN_PARQUET_RANGE_BYTES;
+    if ranges == 0 {
         return 1;
     }
-    ((bytes / MIN_PARQUET_RANGE_BYTES) as usize).clamp(1, MAX_PIECES_PER_FILE)
+    // Largest power of two that fits in the available ranges.
+    let leaves = 1u64 << (63 - ranges.leading_zeros());
+    // Leaves are at least `2M - 1` bytes here; each byte above that lets one
+    // of them split into two.
+    let spare =
+        bytes.saturating_sub(leaves.saturating_mul(2 * MIN_PARQUET_RANGE_BYTES - 1));
+    usize::try_from(leaves.saturating_add(spare))
+        .unwrap_or(MAX_PIECES_PER_FILE)
+        .clamp(1, MAX_PIECES_PER_FILE)
 }
 
 /// The length of a piece that may still be split, without building anything.
@@ -1236,12 +1270,22 @@ fn split_parquet_piece(piece: &ScanFile) -> Option<(ScanFile, ScanFile)> {
 /// The largest piece that can still be split, as (unit index, piece index).
 ///
 /// Eligibility is decided without cloning: this runs once per split step over
-/// every candidate of every unit.
-fn largest_splittable_piece(pieces: &[Vec<ScanFile>]) -> Option<(usize, usize)> {
+/// every candidate of every unit. A file that already contributes
+/// [`MAX_PIECES_PER_FILE`] pieces is skipped, so one huge file cannot absorb
+/// the whole budget while other files wait to be split.
+fn largest_splittable_piece(
+    pieces: &[Vec<ScanFile>],
+    pieces_per_file: &HashMap<String, usize>,
+) -> Option<(usize, usize)> {
     let mut best: Option<(usize, usize, u64)> = None;
     for (unit, unit_pieces) in pieces.iter().enumerate() {
         for (index, piece) in unit_pieces.iter().enumerate() {
             if splittable_length(piece).is_none() {
+                continue;
+            }
+            if pieces_per_file.get(&piece.path).copied().unwrap_or(0)
+                >= MAX_PIECES_PER_FILE
+            {
                 continue;
             }
             let bytes = piece_bytes(piece);

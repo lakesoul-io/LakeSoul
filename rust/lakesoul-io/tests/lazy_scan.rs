@@ -919,6 +919,163 @@ async fn split_variants_use_every_lane_of_the_scan() {
 }
 
 #[tokio::test]
+async fn piece_capacity_counts_the_reachable_halvings() {
+    let schema = id_schema();
+    let files = [
+        // Half of 4M-1 is 2M-1 and 2M; only the second half splits again.
+        (4 * MIN_PARQUET_RANGE_BYTES - 1, 3),
+        // Seven minimum ranges halve into four leaves, one of which reaches
+        // exactly 2M and splits once more.
+        (8 * MIN_PARQUET_RANGE_BYTES - 1, 7),
+        (12 * MIN_PARQUET_RANGE_BYTES, 8),
+        (2 * MIN_PARQUET_RANGE_BYTES, 2),
+        // Below two minimum ranges a file is read whole.
+        (MIN_PARQUET_RANGE_BYTES, 1),
+        (MIN_PARQUET_RANGE_BYTES - 1, 1),
+    ];
+    for (index, (size, expected)) in files.into_iter().enumerate() {
+        let node = LakeSoulScanExec::try_new(
+            append_only_config(Arc::clone(&schema), Arc::new(Schema::empty())),
+            vec![unit(
+                vec![fake_parquet(
+                    "table",
+                    &format!("part-{index}.parquet"),
+                    size,
+                )],
+                0,
+            )],
+            1,
+        )
+        .expect("valid descriptor");
+        assert_eq!(
+            node.splittable_task_limit(),
+            Some(expected),
+            "a {size}-byte file cannot yield that many pieces"
+        );
+        // Whatever the estimate, splitting must stay within it.
+        let tasks = node
+            .split_into_tasks(expected)
+            .expect("split into the estimated count");
+        assert_eq!(tasks.len(), expected);
+        let pieces = tasks
+            .iter()
+            .flat_map(|task| task.work_units().iter())
+            .flat_map(|unit| unit.files.iter())
+            .filter(|file| {
+                !file
+                    .range
+                    .as_ref()
+                    .is_some_and(|range| range.start == range.end)
+            })
+            .count();
+        assert_eq!(
+            pieces, expected,
+            "the estimate has to be reachable, not just an upper bound"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_huge_file_stops_at_the_piece_cap() {
+    let schema = id_schema();
+    // Far more ranges than the cap allows, and a small file that still has
+    // room to split.
+    let huge = fake_parquet("table", "huge.parquet", 4096 * MIN_PARQUET_RANGE_BYTES);
+    let small = fake_parquet("table", "small.parquet", 2 * MIN_PARQUET_RANGE_BYTES);
+    let node = LakeSoulScanExec::try_new(
+        append_only_config(Arc::clone(&schema), Arc::new(Schema::empty())),
+        vec![unit(vec![huge, small], 0)],
+        1,
+    )
+    .expect("valid descriptor");
+    assert_eq!(
+        node.splittable_task_limit(),
+        Some(1026),
+        "the huge file is capped at 1024 pieces, the small one split once"
+    );
+
+    let tasks = node.split_into_tasks(1026).expect("split into the limit");
+    let mut huge_pieces = 0;
+    let mut small_pieces = 0;
+    for task in &tasks {
+        for unit in task.work_units() {
+            for file in &unit.files {
+                if file.path.ends_with("huge.parquet") {
+                    huge_pieces += 1;
+                } else {
+                    small_pieces += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(huge_pieces, 1024, "the huge file stops at the cap");
+    assert_eq!(small_pieces, 2);
+
+    // Capping a file must not drop bytes: the pieces of each file still tile
+    // it exactly.
+    let mut spans: HashMap<&str, Vec<(i64, i64)>> = HashMap::new();
+    for task in &tasks {
+        for unit in task.work_units() {
+            for file in &unit.files {
+                let (start, end) = match &file.range {
+                    Some(range) => (range.start, range.end),
+                    None => (0, file.size.expect("the fixture knows its sizes") as i64),
+                };
+                spans
+                    .entry(file.path.as_str())
+                    .or_default()
+                    .push((start, end));
+            }
+        }
+    }
+    for (path, mut file_spans) in spans {
+        file_spans.sort_unstable();
+        let mut cursor = 0;
+        for (start, end) in file_spans {
+            assert_eq!(
+                start, cursor,
+                "{path}: pieces must not overlap or leave gaps"
+            );
+            cursor = end;
+        }
+        let expected = if path.ends_with("huge.parquet") {
+            4096 * MIN_PARQUET_RANGE_BYTES
+        } else {
+            2 * MIN_PARQUET_RANGE_BYTES
+        };
+        assert_eq!(
+            cursor, expected as i64,
+            "{path}: every byte is assigned once"
+        );
+    }
+}
+
+#[tokio::test]
+async fn ranged_descriptors_of_one_file_share_its_piece_cap() {
+    // A repartitioned scan holds two range descriptors of the same file; the
+    // cap is the file's, so the two halves must not each advertise 1024.
+    let schema = id_schema();
+    let url = "file:///lakesoul-split-tests/table/huge.parquet";
+    let size = 4096 * MIN_PARQUET_RANGE_BYTES;
+    let middle = (size / 2) as i64;
+    let mut lower = scan_file(url, Some(size), Some(0..middle));
+    let mut upper = scan_file(url, Some(size), Some(middle..size as i64));
+    lower.physical_format = PhysicalFormat::Parquet;
+    upper.physical_format = PhysicalFormat::Parquet;
+    let node = LakeSoulScanExec::try_new(
+        append_only_config(Arc::clone(&schema), Arc::new(Schema::empty())),
+        vec![unit(vec![lower], 0), unit(vec![upper], 1)],
+        2,
+    )
+    .expect("valid descriptor");
+    assert_eq!(
+        node.splittable_task_limit(),
+        Some(1024),
+        "both halves belong to one file"
+    );
+}
+
+#[tokio::test]
 async fn only_parquet_files_are_cut_into_ranges() {
     let schema = id_schema();
     let parquet = fake_parquet("table", "big.parquet", 12 * MIN_PARQUET_RANGE_BYTES);
@@ -934,7 +1091,11 @@ async fn only_parquet_files_are_cut_into_ranges() {
         1,
     )
     .expect("valid descriptor");
-    assert_eq!(node.splittable_task_limit(), Some(13));
+    assert_eq!(
+        node.splittable_task_limit(),
+        Some(9),
+        "12 minimum ranges halve into eight pieces, plus the vortex file"
+    );
 
     let tasks = node.split_into_tasks(4).expect("split");
     let mut parquet_ranges = Vec::new();
