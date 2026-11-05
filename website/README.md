@@ -6,42 +6,52 @@ SPDX-License-Identifier: Apache-2.0
 
 # Website
 
-This website is built using [Docusaurus 2](https://docusaurus.io/), a modern static website generator.
+The LakeSoul website is built with [Docusaurus 3](https://docusaurus.io/) and
+deployed to GitHub Pages.
 
-### Installation
+## Install
 
-```
-$ yarn
-```
-
-### Local Development
-
-```
-$ yarn start
+```bash
+npm install
 ```
 
-This command starts a local development server and opens up a browser window. Most changes are reflected live without having to restart the server.
+## Local development
 
-### Build
-
-```
-$ yarn build
+```bash
+npm run start
 ```
 
-This command generates static content into the `build` directory and can be served using any static contents hosting service.
+The dev server serves **one locale at a time**. The locale dropdown in the
+navbar only works in a production build: in dev, switching to the other locale
+returns 404.
 
-### Deployment
+- English: `npm run start`
+- Chinese: `npm run start:zh`, then open `http://localhost:3000/zh-Hans/`
 
-Using SSH:
+To preview both locales and use the switcher:
 
-```
-$ USE_SSH=true yarn deploy
-```
-
-Not using SSH:
-
-```
-$ GIT_USER=<Your GitHub username> yarn deploy
+```bash
+npm run build
+npm run serve
 ```
 
-If you are using GitHub pages for hosting, this command is a convenient way to build the website and push to the `gh-pages` branch.
+## Build
+
+```bash
+npm run build
+```
+
+The static site is written to `build/` (`build/` for English and `build/zh-Hans/`
+for Chinese). Serve it locally with:
+
+```bash
+npm run serve
+```
+
+## Docs
+
+- Content: `docs/` (English), `i18n/zh-Hans/docusaurus-plugin-content-docs/current/`
+  (Chinese). Keep the relative paths in sync when moving a page.
+- Redirects for old URLs: `redirects.js`.
+- Sidebar categories: `_category_.json` in each directory; page order:
+  `sidebar_position` front matter.
