@@ -6,83 +6,193 @@ SPDX-License-Identifier: Apache-2.0
 
 <img src='https://github.com/lakesoul-io/artwork/blob/main/horizontal/color/LakeSoul_Horizontal_Color.svg' alt="LakeSoul" height='200'>
 
-<img src='https://github.com/lfai/artwork/blob/main/lfaidata-assets/lfaidata-project-badge/sandbox/color/lfaidata-project-badge-sandbox-color.svg' alt="LF AI & Data Sandbox Project" height='180'>
+<img src='https://github.com/lfai/artwork/blob/main/other/lfaidata-project-badge/sandbox/color/lfaidata-project-badge-sandbox-color.svg' alt="LF AI & Data Sandbox Project" height='180'>
 
-# 超越表格式 —— 完整的湖仓解决方案
-Apache Iceberg 提供了事实上的开放表格式标准，而 LakeSoul 的目标是交付一个开箱即用、生产就绪的湖仓平台。在表格式之上，LakeSoul 内置了自动化存算分离多级 Compaction、细粒度 RBAC 权限管控（含 S3 Proxy 访问鉴权）、高性能 OLAP 查询、向量检索、全文检索，以及基于 Ray 和 Daft 的原生多模态数据处理能力。不必再自行组装和维护独立的 Catalog、Compaction 服务和鉴权层 —— LakeSoul 提供了一个生产可用的湖仓解决方案。
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![PG wire](https://img.shields.io/badge/PG%20wire-DDL%20%2B%20INSERT%20%2B%20query-green.svg)](#postgres-%E5%8E%9F%E7%94%9F)
+[![pgvector](https://img.shields.io/badge/pgvector-compatible%20SQL-purple.svg)](#%E5%90%91%E9%87%8F%E5%8E%9F%E7%94%9F)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-yellow.svg)](#python-%E5%8E%9F%E7%94%9F)
+[![Daft](https://img.shields.io/badge/Daft-multimodal-orange.svg)](#python-%E5%8E%9F%E7%94%9F)
+[![Release](https://img.shields.io/github/v/release/lakesoul-io/LakeSoul?include_prereleases&sort=semver)](https://github.com/lakesoul-io/LakeSoul/releases)
 
-# Rust 原生内核，跨语言一致体验
-LakeSoul 的元数据管理和文件格式 IO 全部采用 Rust 实现——以单一高性能内核驱动，并封装为 Java、Python、C++ 的 idiomatic 接口。无论你用 Spark 查数据、用 Flink 跑流、还是用 PyTorch / Ray / Daft 训模型，每种引擎、每种语言共享同一套 ACID 保障、同一种 Upsert 语义、同一份读取性能。不存在按语言/引擎各自重新实现的表格式，不存在不同 Binding 之间细微的行为差异，也不存在需要费心追踪的碎片化兼容性矩阵。
+[English](README.md)
 
-计算引擎支持矩阵：
-| 引擎    | 版本         | 读取     | 写入     | 接口                        |
-| ------- | ------------ | -------- | -------- | --------------------------- |
-| Spark   | 3.5          | ✓ 批量   | ✓ 批量   | Java / Python / Scala / SQL |
-| Flink   | 1.20         | ✓ 流式   | ✓ 流式   | Java / SQL                  |
-| Presto  | 0.296(velox) | ✓ 批式   | -        | SQL                         |
-| Ray     | 2.55         | ✓ 分布式 | ✓ 分布式 | Python                      |
-| Daft    | 0.7+         | ✓ 分布式 | ✓ 分布式 | Python                      |
-| DuckDB  | 最新         | ✓ 单机   | —        | Python                      |
-| PyArrow | 16+          | ✓ 单机   | ✓ 单机   | Python                      |
-| Pandas  | 2.0+         | ✓ 单机   | ✓ 单机   | Python                      |
+# LakeSoul
 
-# 特性介绍
-LakeSoul 是一款开源云原生湖仓一体框架，具备高可扩展的元数据管理、ACID 事务、高效灵活的 upsert 操作、Schema 演进和批流一体化处理等特性。LakeSoul 支持多种计算引擎读写湖仓表数据，包括 Spark、Flink、Presto、PyTorch，支持批、流、MPP、AI 多种计算模式。LakeSoul 支持 HDFS、S3 等存储系统。
-![LakeSoul 架构](website/static/img/lakeSoulModel.png)
+**Postgres 原生。Vector 原生。Python 原生。**<br>
+一个开放的湖仓引擎 —— 共享 catalog、ACID upsert、SQL 查询、增量计算、向量检索与 Python SDK，纯 Rust 实现，运行在你的对象存储之上。
 
-LakeSoul 由数元灵科技研发并于 2023 年 5 月正式捐赠给 Linux Foundation AI & Data 基金会，成为基金会旗下 Sandbox 孵化项目。
+把已经在用的工具接上来 —— `psql`、Python、兼容 pgvector 的 SQL —— 底下是一个增量湖仓。
 
-LakeSoul 专门为数据湖云存储之上的数据进行行、列级别增量更新、高并发入库、批量扫描读取做了大量优化。云原生计算存储分离的架构使得部署非常简单，同时可以以很低的成本支撑极大的数据量。
+[快速开始](#快速开始) · [架构](#架构) · [文档](https://lakesoul-io.github.io/zh-Hans/docs/engine/overview)
 
-LakeSoul 通过类似 LSM-Tree 的方式在哈希分区主键 upsert 场景支持了高性能的写吞吐能力。同时高度优化的 Merge on Read 实现也保证了读性能（参考 [性能对比](https://lakesoul-io.github.io/zh-Hans/blog/2023/04/21/lakesoul-2.2.0-release)）。LakeSoul 通过 PostgreSQL 来管理元数据，实现元数据的高可扩展性和高并发事物能力。
+## Postgres 原生
 
-LakeSoul 使用 Rust 实现了 native 的元数据层和 IO 层，并封装了 C/Java/Python 接口，从而能够支持大数据和 AI 等多种计算框架对接。
+把任意 PostgreSQL 客户端接到 LakeSoul。`CREATE TABLE`、`INSERT ... ON CONFLICT` 和查询都在湖仓引擎里执行，直接落在对象存储上 —— 不是 sidecar，也不走 CDC 管道。
 
-LakeSoul 支持流、批并发读写，读写全面兼容 CDC 语义，通过自动 Schema 演进和严格一次语义等功能，能够轻松构建全链路流式数仓。
+```sql
+CREATE TABLE orders (
+  id     bigint primary key,
+  region text,
+  amount numeric(20,4)
+) WITH (hash_bucket_num = 8);
 
-LakeSoul 支持多工作空间和用户权限隔离。LakeSoul 使用 Postgres 的 RBAC 和行级别安全策略，实现了元数据的权限隔离。配合 Hadoop 用户和组，可以实现物理数据隔离。LakeSoul 的权限隔离对 SQL/Java/Python 的作业都是有效的。
+INSERT INTO orders VALUES (1, 'APAC', 42.00)
+ON CONFLICT (id) DO UPDATE
+SET region = EXCLUDED.region,
+    amount = EXCLUDED.amount;
 
-LakeSoul 支持自动分离式多层 Compaction 、自动表生命周期清理、自动冗余数据清理、自动资产统计、数据血缘等，降低维护成本，提升易用性。
+SELECT region, sum(amount) FROM orders GROUP BY 1;
+```
 
-更多特性和其他产品对比请参考：[特性介绍](https://lakesoul-io.github.io/zh-Hans/docs/intro)
+wire protocol、扩展查询协议、`pg_catalog` 和 `psql \d` 都可用。但这不是 drop-in 的 PostgreSQL：`UPDATE`、`DELETE`、`COPY`、`RETURNING` 以及非 `READ COMMITTED` 隔离级别会返回 `0A000`，写入必须在 autocommit 下执行。
 
-# 使用教程
-* [湖仓对接 AI：使用 Python 进行数据预处理和模型训练](https://github.com/lakesoul-io/LakeSoul/tree/main/python/examples)：LakeSoul 将湖仓和 AI 无缝衔接，打造 Data+AI 的现代数据架构。
-* [CDC 整库入湖教程](https://lakesoul-io.github.io/zh-Hans/docs/Tutorials/flink-cdc-sink): LakeSoul 通过 Flink CDC 实现 MySQL 等多种数据库的整库同步，支持自动建表、自动 DDL 变更、严格一次（exactly once）保证。
-* [Flink SQL 教程](https://lakesoul-io.github.io/zh-Hans/docs/Usage%20Docs/flink-lakesoul-connector)：LakeSoul 支持 Flink 流、批读写。流式读写完整支持 Flink Changelog 语义，支持行级别流式增删改。
-* [多流合并构建宽表教程](https://lakesoul-io.github.io/zh-Hans/docs/Tutorials/mutil-stream-merge)：LakeSoul 原生支持多个具有相同主键的流（其余列可以不同）自动合并到同一张表，消除 Join.
-* [数据更新 (Upsert) 和 Merge UDF 使用教程](https://lakesoul-io.github.io/zh-Hans/docs/Tutorials/upsert-and-merge-udf)：LakeSoul 使用 Merge UDF 自定义 Merge 逻辑的用法示例。
-* [快照相关功能用法教程](https://lakesoul-io.github.io/zh-Hans/docs/Tutorials/snapshot-manage): LakeSoul 快照读、回滚、清理等功能用法。
-* [增量查询教程](https://lakesoul-io.github.io/zh-Hans/docs/Tutorials/incremental-query): Spark 中增量查询（支持流、批两种模式）用法。
+## 高效的 SQL 增量计算
 
-# 使用文档
+开启增量 SQL 后，从 `psql` 发出的一条 `INSERT ... SELECT` 会以增量方式更新目标表：每次执行只读取游标之后的提交，只写入发生变化的行，结果与全量重算一致。
 
-[快速开始](https://lakesoul-io.github.io/zh-Hans/docs/Getting%20Started/setup-local-env)
+```sql
+-- 目标表是带 CDC 变更列 "rowKinds" 的主键表
+-- 这个开关为当前会话开启增量 SQL
+SET lakesoul.ivm.enabled = on;
 
-[教程](https://lakesoul-io.github.io/zh-Hans/docs/Tutorials/flink-cdc-sink)
+INSERT INTO daily_revenue
+SELECT date_trunc('day', ts) AS day, region, sum(amount)
+FROM orders
+GROUP BY 1, 2;
+```
 
-[使用文档](https://lakesoul-io.github.io/zh-Hans/docs/Usage%20Docs/setup-meta-env)
+- SQL 级增量，而不只是存储层的增量读写
+- 可安全重放：每个消费窗口都有记录，重试会跳过已写入的数据
 
-# 特性路线
-[Feature Roadmap](https://github.com/lakesoul-io/LakeSoul#feature-roadmap)
+## 向量原生
 
-# 社区准则
-[社区准则](docs/community/community-guideline-cn.md)
+兼容 pgvector 的 SQL，查的是和数据放在一起的 ANN 索引。新行写入会更新索引，不重建，也不需要再运维一套系统。
 
-# 问题反馈
+```sql
+-- documents.embedding 是 vector(768)
+SELECT id, body, embedding <-> '[0.12, 0.98, ...]' AS distance
+FROM documents
+WHERE tenant_id = 'acme' AND category = 'contract'
+ORDER BY embedding <-> '[0.12, 0.98, ...]'
+LIMIT 10;
+```
 
-欢迎提 issue、discussion 反馈问题。
+- 对象存储上的 IVF + RaBitQ 索引，写入时自动维护
+- 结构化过滤与 ANN 在同一个执行计划里
+- 同一个引擎里还提供 BM25 全文检索（`text_score`）
 
-### 微信公众号
-欢迎关注 <u>**元灵数智**</u> 公众号，我们会定期推送关于 LakeSoul 的架构代码解读、端到端算法业务落地案例分享等干货文章：
+## Python 原生
 
-### LakeSoul 开发者社区微信群
-欢迎加入 LakeSoul 开发者社区微信群，随时交流 LakeSoul 开发相关的各类问题：请关注公众号后点击下方 "了解我们-用户交流" 获取最新微信群二维码。或扫描以下二维码添加小助手微信后加群：
+Python SDK 通过 Rust IO 层直接读取对象存储。没有网关，没有 JDBC 跳转 —— Daft 和 Ray 把读取分片到多个 worker，PyTorch 拿到数据集，Pandas 和 DuckDB 消费 Arrow。
 
-![微信交流群](website/static/img/wechat.png)
+```python
+from lakesoul import LakeSoulCatalog
 
-# 联系我们
-发送邮件至 [lakesoul-technical-discuss@lists.lfaidata.foundation](mailto:lakesoul-technical-discuss@lists.lfaidata.foundation).
+catalog = LakeSoulCatalog.from_env()
+scan = catalog.scan("documents").select("id", "body")
+table = scan.to_arrow_table()   # 或 .to_daft()、.to_ray()、.to_torch()
+```
 
-# 开源协议
-LakeSoul 采用 Apache License v2.0 开源协议。
+BI 看板查询的那张表，就是训练任务读取的那张表。视频帧、机器人 episode 和 tensor 以 blob 形式与元数据同置。
+
+## 快速开始
+
+### 方式 A —— PostgreSQL 端点
+
+```bash
+# 1. 元数据库
+docker run -d --name lakesoul-pg -p 5432:5432 \
+  -e POSTGRES_USER=lakesoul_test -e POSTGRES_PASSWORD=lakesoul_test \
+  -e POSTGRES_DB=lakesoul_test postgres:14.5
+docker cp script/meta_init.sql lakesoul-pg:/
+docker exec -i lakesoul-pg sh -c \
+  "PGPASSWORD=lakesoul_test psql -U lakesoul_test -f meta_init.sql"
+
+# 2. PostgreSQL 端点：database "default" 即 LakeSoul namespace
+cargo run -p postgres-lakesoul -- --port 5433 \
+  --warehouse-prefix file:///tmp/lakesoul/warehouse
+
+# 3. 用任意 PostgreSQL 客户端连接
+psql "postgresql://lakesoul_test:lakesoul_test@127.0.0.1:5433/default"
+```
+
+```sql
+CREATE TABLE t (id bigint primary key, v text);
+INSERT INTO t VALUES (1, 'hello');
+SELECT * FROM t;
+```
+
+### 方式 B —— Python
+
+```bash
+pip install lakesoul
+```
+
+```python
+from lakesoul import LakeSoulCatalog
+
+catalog = LakeSoulCatalog.from_env()
+print(catalog.scan("t").to_arrow_table().num_rows)
+```
+
+对象存储配置与完整的本地环境搭建见[文档](https://lakesoul-io.github.io/zh-Hans/docs/get-started/quickstart-postgres)。
+
+## 架构
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  psql · JDBC · BI 工具       Python SDK · Daft · Ray · Torch │
+└───────────────┬──────────────────────────┬───────────────────┘
+                │ PG wire                  │ native IO / Arrow
+┌───────────────▼──────────────────────────▼───────────────────┐
+│                        LakeSoul 引擎                         │
+│  PostgreSQL 前端   ·   增量 SQL                              │
+│  向量 + 全文索引   ·   向量化执行                            │
+└───────────────────────────────┬──────────────────────────────┘
+                                │
+┌───────────────────────────────▼──────────────────────────────┐
+│  对象存储（S3 / OSS / HDFS）  +  PostgreSQL 元数据           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+- **PostgreSQL 前端** —— wire protocol、`pg_catalog`、DDL 与 `INSERT`，由引擎执行，而不是由 Postgres 扩展执行
+- **增量 SQL** —— 每次执行消费表自己的 commit log，只写变化的行，可安全重放
+- **向量与全文索引** —— IVF + RaBitQ 与 Tantivy BM25，写入时自动维护
+- **Native IO** —— 对象存储上的 Parquet、Vortex、Vortex Compact，主键表走 merge-on-read
+
+## 与其他方案对比
+
+表格式只描述文件怎么摆；数据库自带引擎，但存储也归它。LakeSoul 两者都不是：catalog、存储格式、执行引擎和索引都在同一套代码里，而数据仍然留在你的对象存储，文件保持开放。
+
+| | Postgres 扩展 | Postgres + 列存镜像 | 托管 Postgres | LakeSoul |
+| --- | --- | --- | --- | --- |
+| **数据在哪** | 你的 Postgres 表，或经 FDW 访问 Iceberg | Postgres WAL 加一份列存副本 | 厂商的存储 | **你的对象存储，开放文件** |
+| **在哪执行** | Postgres 进程内 | Postgres 与镜像 | 厂商的服务 | **湖仓引擎** |
+| **写入模型** | Postgres MVCC | 逻辑解码写入镜像 | Postgres MVCC | **主键 upsert + merge-on-read** |
+| **增量计算** | — | — | — | **基于 commit log 的增量 SQL** |
+| **向量索引** | 堆表上的 pgvector | — | pgvector | **湖上索引，写入时维护** |
+| **可自托管** | 是 | 是 | 否 | **是，Apache 2.0** |
+
+这里比的是架构类别，不是厂商评分：对应的例子是 pg_duckdb 与 pg_lake、pg_mooncake、Lakebase。带日期和来源的详细对比放在文档里。
+
+## 接入你的技术栈
+
+- **PostgreSQL 客户端** —— `psql`、pgAdmin、DBeaver、JDBC、libpq
+- **Python** —— Pandas、PyArrow、DuckDB、Daft、Ray、PyTorch、Hugging Face Datasets
+- **引擎** —— Spark 3.5、Flink 1.20、Presto 0.296
+- **BI** —— Superset、Metabase，以及任何支持 PostgreSQL 的工具
+
+## 社区
+
+- [Discord](https://discord.gg/WJrHKq4BPf)：提问与设计讨论
+- [GitHub Issues](https://github.com/lakesoul-io/LakeSoul/issues)：缺陷与需求；想开始贡献可以找 `good first issue`
+- [社区准则](docs/community/guideline-cn.md)
+- 邮件列表：[lakesoul-technical-discuss@lists.lfaidata.foundation](mailto:lakesoul-technical-discuss@lists.lfaidata.foundation)
+- 路线图：[ROADMAP.md](ROADMAP.md)
+
+LakeSoul 是 [LF AI & Data](https://lfaidata.foundation/) 的 sandbox 项目。
+
+## 开源协议
+
+Apache License 2.0，见 [LICENSE](LICENSE)。
