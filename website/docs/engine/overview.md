@@ -38,6 +38,7 @@ no replication step between SQL, search and Python.
 
 ## Next
 
+- [Architecture and table format](architecture.md)
 - [PostgreSQL front end](postgres/overview.md)
 - [Incremental SQL](incremental-sql/overview.md)
 - [Vector search](vector-search/overview.md)

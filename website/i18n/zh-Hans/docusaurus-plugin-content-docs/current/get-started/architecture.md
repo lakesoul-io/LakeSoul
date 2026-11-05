@@ -58,6 +58,7 @@ LakeSoul 分三层：上面是客户端，中间是一个引擎，底下是你�
 ## 下一步
 
 - [引擎概览](../engine/overview.md)
+- [深入阅读：引擎架构与表格式](../engine/architecture.md)
 - [PostgreSQL 前端](../engine/postgres/overview.md)
 - [增量 SQL](../engine/incremental-sql/overview.md)
 - [向量检索](../engine/vector-search/overview.md)

@@ -70,7 +70,9 @@ stateless compute layer on top.
 - It is not a drop-in PostgreSQL. The wire protocol and the SQL surface are
   implemented natively, and the [compatibility matrix](../engine/postgres/compatibility.md)
   tracks what is covered.
-- It is not a table format. There is an engine to run.
+- It is not a table format. There is an engine to run; the
+  [architecture and table format](../engine/architecture.md) page explains the
+  catalog, commit protocol and storage layout.
 - It does not own your storage. The files stay in your bucket, in open formats.
 
 ## Next

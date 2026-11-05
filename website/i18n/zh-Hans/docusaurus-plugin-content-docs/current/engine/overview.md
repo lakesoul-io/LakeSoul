@@ -33,6 +33,7 @@ PostgreSQL 端点、Python SDK 和连接器读取同一个已提交快照。一�
 
 ## 下一步
 
+- [架构与表格式](architecture.md)
 - [PostgreSQL 前端](postgres/overview.md)
 - [增量 SQL](incremental-sql/overview.md)
 - [向量检索](vector-search/overview.md)
