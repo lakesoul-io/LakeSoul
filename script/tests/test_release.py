@@ -25,12 +25,12 @@ SPEC.loader.exec_module(release)
 FIXTURE_FILES = [
     "pom.xml",
     "Cargo.toml",
-    "lakesoul-common/pom.xml",
-    "native-io/lakesoul-io-java/pom.xml",
-    "lakesoul-spark/pom.xml",
-    "lakesoul-flink/pom.xml",
-    "lakesoul-presto/pom.xml",
-    "lakesoul-spark-gluten/pom.xml",
+    "integrations/lakesoul-common/pom.xml",
+    "integrations/native-io/lakesoul-io-java/pom.xml",
+    "integrations/lakesoul-spark/pom.xml",
+    "integrations/lakesoul-flink/pom.xml",
+    "integrations/lakesoul-presto/pom.xml",
+    "integrations/lakesoul-spark-gluten/pom.xml",
     "python/pyproject.toml",
     "python/Cargo.toml",
     "python/uv.lock",
@@ -131,7 +131,7 @@ class ReleaseToolTest(unittest.TestCase):
         self.assertIn("release workflows must not run cargo publish", stderr)
 
     def test_check_reports_runtime_artifact_id_mismatch(self) -> None:
-        pom = self.root / "lakesoul-spark/pom.xml"
+        pom = self.root / "integrations/lakesoul-spark/pom.xml"
         pom.write_text(
             pom.read_text(encoding="utf-8").replace(
                 "lakesoul-spark-3.5_2.12", "lakesoul-spark", 1

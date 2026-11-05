@@ -130,7 +130,7 @@ impl DataFileOp {
 ///
 /// The discriminants are the wire codes used by the JNI clients and must stay
 /// in sync with the Java `CodedDaoType` enum in
-/// `lakesoul-common/src/main/java/com/dmetasoul/lakesoul/meta/jnr/NativeUtils.java`.
+/// `integrations/lakesoul-common/src/main/java/com/dmetasoul/lakesoul/meta/jnr/NativeUtils.java`.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, num_enum::TryFromPrimitive,
 )]

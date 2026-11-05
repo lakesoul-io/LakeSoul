@@ -4,29 +4,27 @@
 
 package org.apache.spark.sql.lakesoul.benchmark.io
 
-import com.dmetasoul.lakesoul.tables.LakeSoulTable
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 
 /** Run with following commands with local minio env:
   *
-  * mvn package -Prelease-linux-x86-64 -pl lakesoul-spark -am -DskipTests docker
-  * run --cpus=1 --rm -ti --net host -v
-  * /opt/spark/work-dir/data:/opt/spark/work-dir/data -v
-  * $PWD/lakesoul-spark/target:/opt/spark/work-dir/jars
+  * mvn package -Prelease-linux-x86-64 -pl integrations/lakesoul-spark -am -DskipTests docker
+  * run --rm -ti --net host -v /opt/spark/work-dir/data:/opt/spark/work-dir/data
+  * -v $PWD/lakesoul-spark/target:/opt/spark/work-dir/jars
   * swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334
   * spark-submit --driver-memory 4g --jars
   * /opt/spark/work-dir/jars/lakesoul-spark-3.5_2.12-4.0.0-SNAPSHOT.jar --class
-  * org.apache.spark.sql.lakesoul.benchmark.io.ParquetScanBenchmark
+  * org.apache.spark.sql.lakesoul.benchmark.io.ParquetWriteBenchmark
   * /opt/spark/work-dir/jars/lakesoul-spark-3.5_2.12-4.0.0-SNAPSHOT-tests.jar
   * --localtest
   */
-object ParquetScanBenchmark {
+object ParquetWriteBenchmark {
   def main(args: Array[String]): Unit = {
     val builder = SparkSession
       .builder()
-      .appName("ParquetScanBenchmark")
+      .appName("ParquetWriteBenchmark")
       .master("local[1]")
       .config(
         "spark.hadoop.fs.s3.impl",
@@ -48,7 +46,9 @@ object ParquetScanBenchmark {
       .config("spark.hadoop.fs.s3a.fast.upload.buffer", "disk")
       .config("spark.hadoop.fs.s3a.fast.upload", value = true)
       .config("spark.hadoop.fs.s3a.threads.max", value = 2)
+      .config("spark.hadoop.fs.s3a.connection.maximum", value = 4)
       .config("spark.hadoop.fs.s3a.multipart.size", 33554432)
+      .config("spark.hadoop.fs.s3a.fast.upload.active.blocks", 8)
       .config("spark.sql.shuffle.partitions", 1)
       .config("spark.sql.files.maxPartitionBytes", "2g")
       .config("spark.default.parallelism", 1)
@@ -88,48 +88,24 @@ object ParquetScanBenchmark {
     spark.sparkContext.setLogLevel("ERROR")
 
     val dataPath0 = "/opt/spark/work-dir/data/base-0.parquet"
-    val tablePath = s"s3://$bucketName/data/benchmark/parquet-scan"
+    val tablePath = s"s3://$bucketName/data/benchmark/parquet-write"
     println(s"tablePath: $tablePath")
 
-    var tableExist = true
-    try {
-      val _ = LakeSoulTable.forPath(tablePath)
-      tableExist = true
-    } catch {
-      case _: Throwable => tableExist = false
-    }
+    println(s"Caching dataframe")
+    val df = spark.read.format("parquet").load(dataPath0).repartition(1).cache()
+    // trigger cache
+    df.write.format("noop").mode("Overwrite").save()
 
-    if (!tableExist) {
-      println(s"LakeSoul table not exist, upload from local file")
-      val df = spark.read.format("parquet").load(dataPath0).repartition(1)
-      df.write
-        .format("lakesoul")
-        .mode("Overwrite")
-        .save(tablePath)
-    }
-
-    println(s"Reading with parquet-mr")
+    println(s"Writing with parquet-mr")
     // spark parquet-mr read
     SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "false")
     spark.time({
-      spark.read
-        .format("lakesoul")
-        .load(tablePath)
-        .write
-        .format("noop")
-        .mode("Overwrite")
-        .save()
+      df.write.format("lakesoul").mode("Overwrite").save(tablePath)
     })
-    println(s"Reading with native io")
+    println(s"Writing with native io")
     SQLConf.get.setConfString(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, "true")
     spark.time({
-      spark.read
-        .format("lakesoul")
-        .load(tablePath)
-        .write
-        .format("noop")
-        .mode("Overwrite")
-        .save()
+      df.write.format("lakesoul").mode("Overwrite").save(tablePath)
     })
   }
 }

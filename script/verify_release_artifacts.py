@@ -20,11 +20,11 @@ except ImportError:
 ROOT = Path(__file__).resolve().parents[1]
 NS = {"m": "http://maven.apache.org/POM/4.0.0"}
 ARTIFACT_MODULES = {
-    "lakesoul-common/pom.xml": "lakesoul-common",
-    "native-io/lakesoul-io-java/pom.xml": "lakesoul-io-java",
-    "lakesoul-spark/pom.xml": "lakesoul-spark",
-    "lakesoul-flink/pom.xml": "lakesoul-flink",
-    "lakesoul-presto/pom.xml": "lakesoul-presto",
+    "integrations/lakesoul-common/pom.xml": "lakesoul-common",
+    "integrations/native-io/lakesoul-io-java/pom.xml": "lakesoul-io-java",
+    "integrations/lakesoul-spark/pom.xml": "lakesoul-spark",
+    "integrations/lakesoul-flink/pom.xml": "lakesoul-flink",
+    "integrations/lakesoul-presto/pom.xml": "lakesoul-presto",
 }
 
 

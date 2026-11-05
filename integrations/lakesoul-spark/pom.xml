@@ -13,6 +13,7 @@ SPDX-License-Identifier: Apache-2.0
         <artifactId>lakesoul-parent</artifactId>
         <groupId>com.dmetasoul</groupId>
         <version>${revision}</version>
+        <relativePath>../../pom.xml</relativePath>
     </parent>
     <modelVersion>4.0.0</modelVersion>
     <name>LakeSoul Spark</name>

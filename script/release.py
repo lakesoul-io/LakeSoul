@@ -23,12 +23,12 @@ FINAL_PATTERN = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\Z")
 
 MAVEN_MODULES = {
     "pom.xml": "lakesoul-parent",
-    "lakesoul-common/pom.xml": "lakesoul-common",
-    "native-io/lakesoul-io-java/pom.xml": "lakesoul-io-java",
-    "lakesoul-spark/pom.xml": None,
-    "lakesoul-flink/pom.xml": None,
-    "lakesoul-presto/pom.xml": None,
-    "lakesoul-spark-gluten/pom.xml": None,
+    "integrations/lakesoul-common/pom.xml": "lakesoul-common",
+    "integrations/native-io/lakesoul-io-java/pom.xml": "lakesoul-io-java",
+    "integrations/lakesoul-spark/pom.xml": None,
+    "integrations/lakesoul-flink/pom.xml": None,
+    "integrations/lakesoul-presto/pom.xml": None,
+    "integrations/lakesoul-spark-gluten/pom.xml": None,
 }
 
 
@@ -201,24 +201,24 @@ def expected_artifact_ids(root: Path) -> dict[str, str]:
     root_pom = parse_pom(root, "pom.xml")
     scala = xml_text(root_pom, "m:properties/m:scala.binary.version", "pom.xml")
     spark = xml_text(root_pom, "m:properties/m:spark.version", "pom.xml")
-    flink_pom = parse_pom(root, "lakesoul-flink/pom.xml")
+    flink_pom = parse_pom(root, "integrations/lakesoul-flink/pom.xml")
     flink = xml_text(
-        flink_pom, "m:properties/m:flink.version", "lakesoul-flink/pom.xml"
+        flink_pom, "m:properties/m:flink.version", "integrations/lakesoul-flink/pom.xml"
     )
-    presto_pom = parse_pom(root, "lakesoul-presto/pom.xml")
+    presto_pom = parse_pom(root, "integrations/lakesoul-presto/pom.xml")
     presto = xml_text(
-        presto_pom, "m:properties/m:presto.version", "lakesoul-presto/pom.xml"
+        presto_pom, "m:properties/m:presto.version", "integrations/lakesoul-presto/pom.xml"
     )
     return {
         **{path: artifact for path, artifact in MAVEN_MODULES.items() if artifact},
-        "lakesoul-spark/pom.xml": (
+        "integrations/lakesoul-spark/pom.xml": (
             f"lakesoul-spark-{compatibility_series(spark)}_{scala}"
         ),
-        "lakesoul-flink/pom.xml": (
+        "integrations/lakesoul-flink/pom.xml": (
             f"lakesoul-flink-{compatibility_series(flink)}_{scala}"
         ),
-        "lakesoul-presto/pom.xml": f"lakesoul-presto-{presto}",
-        "lakesoul-spark-gluten/pom.xml": (
+        "integrations/lakesoul-presto/pom.xml": f"lakesoul-presto-{presto}",
+        "integrations/lakesoul-spark-gluten/pom.xml": (
             f"lakesoul-spark-gluten-{compatibility_series(spark)}_{scala}"
         ),
     }

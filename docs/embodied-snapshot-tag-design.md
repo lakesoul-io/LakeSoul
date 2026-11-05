@@ -99,7 +99,7 @@ pin 维护：创建 snapshot/tag 后对涉及的 commit/version `SET pinned = tr
 
 ## 4. Flink Clean Job 集成（只此一处清理）
 
-现状（`lakesoul-flink/src/main/java/org/apache/flink/lakesoul/entry/clean/`）：
+现状（`integrations/lakesoul-flink/src/main/java/org/apache/flink/lakesoul/entry/clean/`）：
 
 | 路径 | 行为 | 改动 |
 |---|---|---|

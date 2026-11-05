@@ -7,7 +7,7 @@ name: CI with flink cdc Test on HDFS
 on:
   push:
     paths-ignore:
-      - "javadoc/**"
+      - "integrations/javadoc/**"
       - "website/**"
       - "cpp/**"
       - "python/**"
@@ -26,7 +26,7 @@ on:
       - "main"
   pull_request:
     paths-ignore:
-      - "javadoc/**"
+      - "integrations/javadoc/**"
       - "website/**"
       - "cpp/**"
       - "python/**"
@@ -140,17 +140,17 @@ jobs:
       - name: Get jar names
         run: |
           {
-              echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)"
-              echo "FLINK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink | sed -e 's/.jar/-tests.jar/g')"
-              echo "SPARK_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark)"
-              echo "SPARK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark | sed -e 's/.jar/-tests.jar/g')"
+              echo "FLINK_JAR_NAME=$(python script/get_jar_name.py integrations/lakesoul-flink)"
+              echo "FLINK_TEST_JAR_NAME=$(python script/get_jar_name.py integrations/lakesoul-flink | sed -e 's/.jar/-tests.jar/g')"
+              echo "SPARK_JAR_NAME=$(python script/get_jar_name.py integrations/lakesoul-spark)"
+              echo "SPARK_TEST_JAR_NAME=$(python script/get_jar_name.py integrations/lakesoul-spark | sed -e 's/.jar/-tests.jar/g')"
           } >> "$GITHUB_ENV"
       - name: Copy built jar to work-dir
         run: |
-          cp "./lakesoul-flink/target/$FLINK_JAR_NAME" ./script/benchmark/work-dir
-          cp "./lakesoul-flink/target/$FLINK_TEST_JAR_NAME" ./script/benchmark/work-dir
-          cp "./lakesoul-spark/target/$SPARK_JAR_NAME" ./script/benchmark/work-dir
-          cp "./lakesoul-spark/target/$SPARK_TEST_JAR_NAME" ./script/benchmark/work-dir
+          cp "./integrations/lakesoul-flink/target/$FLINK_JAR_NAME" ./script/benchmark/work-dir
+          cp "./integrations/lakesoul-flink/target/$FLINK_TEST_JAR_NAME" ./script/benchmark/work-dir
+          cp "./integrations/lakesoul-spark/target/$SPARK_JAR_NAME" ./script/benchmark/work-dir
+          cp "./integrations/lakesoul-spark/target/$SPARK_TEST_JAR_NAME" ./script/benchmark/work-dir
       - uses: beyondstorage/setup-hdfs@master
         with:
           hdfs-version: "3.3.6"

@@ -81,7 +81,7 @@ def spark_and_file(tmp_path):
     assert lakesoul_source_dir
     jar_pattern = os.path.join(
         lakesoul_source_dir,
-        "lakesoul-spark",
+        "integrations/lakesoul-spark",
         "target",
         "lakesoul-spark-3.5_2.12-*.jar",
     )

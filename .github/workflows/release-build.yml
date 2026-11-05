@@ -382,10 +382,10 @@ jobs:
       - name: Verify packaged native libraries
         run: |
           python script/verify_native_jars.py \
-            "lakesoul-spark/target/$(python script/get_jar_name.py lakesoul-spark)" \
-            "lakesoul-flink/target/$(python script/get_jar_name.py lakesoul-flink)" \
-            "lakesoul-presto/target/$(python script/get_jar_name.py lakesoul-presto)" \
-            "lakesoul-spark-gluten/target/$(python script/get_jar_name.py lakesoul-spark-gluten)"
+            "integrations/lakesoul-spark/target/$(python script/get_jar_name.py integrations/lakesoul-spark)" \
+            "integrations/lakesoul-flink/target/$(python script/get_jar_name.py integrations/lakesoul-flink)" \
+            "integrations/lakesoul-presto/target/$(python script/get_jar_name.py integrations/lakesoul-presto)" \
+            "integrations/lakesoul-spark-gluten/target/$(python script/get_jar_name.py integrations/lakesoul-spark-gluten)"
       - name: Verify JARs, sources, Javadoc, and detached signatures
         run: python script/verify_release_artifacts.py artifacts --signatures
       - name: Upload dry-run release JARs
@@ -393,11 +393,11 @@ jobs:
         with:
           name: core-release-jars
           path: |
-            lakesoul-common/target/lakesoul-common-*.jar
-            native-io/lakesoul-io-java/target/lakesoul-io-java-*.jar
-            lakesoul-spark/target/lakesoul-spark-3.5_2.12-*.jar
-            lakesoul-flink/target/lakesoul-flink-1.20_2.12-*.jar
-            lakesoul-presto/target/lakesoul-presto-0.296-*.jar
+            integrations/lakesoul-common/target/lakesoul-common-*.jar
+            integrations/native-io/lakesoul-io-java/target/lakesoul-io-java-*.jar
+            integrations/lakesoul-spark/target/lakesoul-spark-3.5_2.12-*.jar
+            integrations/lakesoul-flink/target/lakesoul-flink-1.20_2.12-*.jar
+            integrations/lakesoul-presto/target/lakesoul-presto-0.296-*.jar
           if-no-files-found: error
       - name: Upload GitHub Release asset inputs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -982,8 +982,8 @@ mod tests {
         let project_dir = std::env::current_dir()?;
         let reader_io_config = LakeSoulIOConfigBuilder::new()
             .with_files(vec![
-                project_dir.join("../../native-io/lakesoul-io-java/src/test/resources/sample-data-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap(),
-                project_dir.join("../../native-io/lakesoul-io-java/src/test/resources/sample-data-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.vortex").into_os_string().into_string().unwrap()
+                project_dir.join("../../integrations/native-io/lakesoul-io-java/src/test/resources/sample-data-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap(),
+                project_dir.join("../../integrations/native-io/lakesoul-io-java/src/test/resources/sample-data-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.vortex").into_os_string().into_string().unwrap()
             ])
             .with_thread_num(2)
             .with_batch_size(11)
@@ -1029,8 +1029,8 @@ mod tests {
         let project_dir = std::env::current_dir()?;
         let reader_io_config = LakeSoulIOConfigBuilder::new()
             .with_files(vec![
-                project_dir.join("../../native-io/lakesoul-io-java/src/test/resources/sample-data-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap(),
-                    project_dir.join("../../native-io/lakesoul-io-java/src/test/resources/sample-data-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.vortex").into_os_string().into_string().unwrap()
+                project_dir.join("../../integrations/native-io/lakesoul-io-java/src/test/resources/sample-data-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.parquet").into_os_string().into_string().unwrap(),
+                    project_dir.join("../../integrations/native-io/lakesoul-io-java/src/test/resources/sample-data-files/part-00000-a9e77425-5fb4-456f-ba52-f821123bd193-c000.snappy.vortex").into_os_string().into_string().unwrap()
             ])
             .with_thread_num(1)
             .with_batch_size(8192)

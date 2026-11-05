@@ -44,10 +44,10 @@ log() { printf '\n=== %s ===\n' "$*"; }
 flink_jar_name="${FLINK_JAR_NAME:-}"
 spark_jar_name="${SPARK_JAR_NAME:-}"
 if [[ -z "$flink_jar_name" ]]; then
-  flink_jar_name="$(basename "$(ls "$ROOT"/lakesoul-flink/target/lakesoul-flink-*.jar 2>/dev/null | grep -v tests | head -1)")"
+  flink_jar_name="$(basename "$(ls "$ROOT"/integrations/lakesoul-flink/target/lakesoul-flink-*.jar 2>/dev/null | grep -v tests | head -1)")"
 fi
 if [[ -z "$spark_jar_name" ]]; then
-  spark_jar_name="$(basename "$(ls "$ROOT"/lakesoul-spark/target/lakesoul-spark-*.jar 2>/dev/null | grep -v tests | head -1)")"
+  spark_jar_name="$(basename "$(ls "$ROOT"/integrations/lakesoul-spark/target/lakesoul-spark-*.jar 2>/dev/null | grep -v tests | head -1)")"
 fi
 [[ -n "$flink_jar_name" && -f "$WORK_DIR/$flink_jar_name" ]] ||
   { echo "flink jar missing in $WORK_DIR (set FLINK_JAR_NAME)"; exit 1; }
