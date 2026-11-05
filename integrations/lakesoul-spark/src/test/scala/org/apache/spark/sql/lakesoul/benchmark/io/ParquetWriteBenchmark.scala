@@ -10,9 +10,10 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf
 
 /** Run with following commands with local minio env:
   *
-  * mvn package -Prelease-linux-x86-64 -pl integrations/lakesoul-spark -am -DskipTests docker
-  * run --rm -ti --net host -v /opt/spark/work-dir/data:/opt/spark/work-dir/data
-  * -v $PWD/lakesoul-spark/target:/opt/spark/work-dir/jars
+  * mvn package -Prelease-linux-x86-64 -pl integrations/lakesoul-spark -am
+  * -DskipTests docker run --rm -ti --net host -v
+  * /opt/spark/work-dir/data:/opt/spark/work-dir/data -v
+  * $PWD/integrations/lakesoul-spark/target:/opt/spark/work-dir/jars
   * swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/spark:3.5.8-py310-hadoop334
   * spark-submit --driver-memory 4g --jars
   * /opt/spark/work-dir/jars/lakesoul-spark-3.5_2.12-4.0.0-SNAPSHOT.jar --class

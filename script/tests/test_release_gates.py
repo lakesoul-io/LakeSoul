@@ -46,7 +46,9 @@ class ReleaseArtifactGateTest(unittest.TestCase):
                 patch.object(
                     verify_release_artifacts.release,
                     "expected_artifact_ids",
-                    return_value={"integrations/lakesoul-common/pom.xml": "lakesoul-common"},
+                    return_value={
+                        "integrations/lakesoul-common/pom.xml": "lakesoul-common"
+                    },
                 ),
             ):
                 with self.assertRaisesRegex(

@@ -207,7 +207,9 @@ def expected_artifact_ids(root: Path) -> dict[str, str]:
     )
     presto_pom = parse_pom(root, "integrations/lakesoul-presto/pom.xml")
     presto = xml_text(
-        presto_pom, "m:properties/m:presto.version", "integrations/lakesoul-presto/pom.xml"
+        presto_pom,
+        "m:properties/m:presto.version",
+        "integrations/lakesoul-presto/pom.xml",
     )
     return {
         **{path: artifact for path, artifact in MAVEN_MODULES.items() if artifact},
