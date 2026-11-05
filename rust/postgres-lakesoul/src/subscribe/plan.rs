@@ -98,7 +98,7 @@ impl TablePlan {
         source: SourceTable,
         target_namespace: &str,
         target_table: &str,
-        primary_key: &[String],
+        primary_key: Option<&[String]>,
         meta: MetaDataClientRef,
     ) -> Result<Self> {
         let table = LakeSoulTable::for_namespace_and_name(
@@ -166,15 +166,18 @@ impl TablePlan {
                 source.primary_key
             );
         }
-        let configured_pk: BTreeSet<String> = primary_key
-            .iter()
-            .map(|name| name.to_ascii_lowercase())
-            .collect();
-        if configured_pk != source_pk {
-            bail!(
-                "--primary-key {primary_key:?} does not match source primary key {:?}",
-                source.primary_key
-            );
+        if let Some(primary_key) = primary_key {
+            let configured_pk: BTreeSet<String> = primary_key
+                .iter()
+                .map(|name| name.to_ascii_lowercase())
+                .collect();
+            if configured_pk != source_pk {
+                bail!(
+                    "configured primary key {primary_key:?} does not match source \
+                     primary key {:?}",
+                    source.primary_key
+                );
+            }
         }
 
         let mut mappings = Vec::with_capacity(source.columns.len());

@@ -42,6 +42,7 @@ arrow-schema.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
+libc = "0.2"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }

@@ -159,6 +159,9 @@ pub struct PgSessionFactory {
     /// Object-store prefix new tables are created under; `CREATE TABLE`
     /// refuses to run without one.
     warehouse: Option<String>,
+    /// Supervises SQL-created subscription processes. `None` in tests and in
+    /// embeddings that do not enable subscriptions.
+    subscriptions: Option<Arc<crate::subscribe::supervisor::SubscriptionSupervisor>>,
 }
 
 impl PgSessionFactory {
@@ -199,7 +202,22 @@ impl PgSessionFactory {
                 include_synthetic_postgres_database: false,
             },
             warehouse: args.warehouse_prefix.clone(),
+            subscriptions: None,
         })
+    }
+
+    pub fn with_subscriptions(
+        mut self,
+        subscriptions: Arc<crate::subscribe::supervisor::SubscriptionSupervisor>,
+    ) -> Self {
+        self.subscriptions = Some(subscriptions);
+        self
+    }
+
+    pub fn subscriptions(
+        &self,
+    ) -> Option<&Arc<crate::subscribe::supervisor::SubscriptionSupervisor>> {
+        self.subscriptions.as_ref()
     }
 
     /// Plans every session against distributed workers.

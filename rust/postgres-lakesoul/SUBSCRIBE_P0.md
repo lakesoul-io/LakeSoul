@@ -25,7 +25,7 @@ PostgreSQL subscription implementation.
 | Initial load | Managed snapshot; target stays empty until one atomic final commit |
 | pg_dump | Next phase; schema fields are reserved, implementation is not present |
 | TRUNCATE | Rejected at startup and at runtime |
-| SQL surface | CLI only; no `CREATE SUBSCRIPTION` |
+| SQL surface | CLI plus `CREATE/DROP/ALTER SUBSCRIPTION` on the PG wire server |
 | Publishing | Not supported |
 | Transactions | One LakeSoul commit per table per batch; no cross-table atomicity |
 | Concurrency | One writer assumed; no lease |
@@ -123,6 +123,65 @@ stops after N new source transactions (useful for tests). When running next to
 the wire server, pass a distinct `--metrics-addr`; both processes otherwise
 default to `127.0.0.1:19090`.
 
+## SQL-managed subscriptions
+
+The wire server can own the subscriber process. The target namespace is the
+database the client connected to; the target table must already exist and be
+empty.
+
+```sql
+CREATE SUBSCRIPTION sub_users
+CONNECTION 'postgresql://user:pass@source:5432/app'
+PUBLICATION app_pub
+WITH (
+  source_table        = 'public.users',
+  target_table        = 'users',
+  snapshot            = 'managed',   -- auto | managed | none
+  slot_name           = 'sub_users', -- optional, defaults to the subscription name
+  primary_key         = 'id',        -- optional, inferred from the target table
+  commit_rows         = 50000,
+  commit_interval_ms  = 1000,
+  snapshot_batch_rows = 50000,
+  snapshot_batch_bytes = 67108864
+);
+
+ALTER SUBSCRIPTION sub_users DISABLE;
+ALTER SUBSCRIPTION sub_users ENABLE;
+DROP SUBSCRIPTION [IF EXISTS] sub_users;
+```
+
+`source_table`, `target_table`, `publication` and `CONNECTION` are required.
+`snapshot` defaults to `auto`; a SQL-created subscription requires an empty
+target for every snapshot mode. The server validates the source, target,
+primary key, publication and source slot before writing metadata. It then
+starts a child process:
+
+```text
+postgres-lakesoul --subscribe --subscription-id <name> --no-metrics
+```
+
+The child loads the definition from the metadata PostgreSQL and runs the same
+snapshot/streaming state machine as the CLI. `ALTER DISABLE` stops the child but
+keeps its slot (long pauses therefore retain WAL), `ENABLE` starts it again from
+the persisted watermark, and `DROP` stops the child, drops the source
+replication slot, and removes the metadata rows. The server resumes enabled
+SQL-created subscriptions at startup (CLI-created rows are not auto-started,
+so a manually launched subscriber is never duplicated) and stops its children
+on SIGINT/SIGTERM; on Linux a parent-death signal prevents orphans if the
+server is killed abruptly. A child that crashes is recorded as `error`; it is
+not retried in a loop, so `ENABLE` or a server restart starts it again.
+
+Subscription DDL is accepted through both the simple and extended query
+protocols. It cannot be combined with other statements in one simple-query
+batch and cannot run inside an explicit transaction. `ALTER`/`DROP` only
+operate on SQL-created subscriptions; rows created by the CLI remain managed
+manually.
+
+The source connection string is stored in
+`subscription.subscriptions.source_url` so a later server restart can start the
+child without repeating the command line. It contains source credentials;
+protect the metadata database accordingly.
+
 ## Initial snapshot
 
 `--snapshot` selects the initial-load strategy:
@@ -164,11 +223,14 @@ copy. Source session settings `statement_timeout=0`, `DateStyle=ISO`,
 The definition and progress live in the metadata PostgreSQL under the
 `subscription` schema. Production deployments apply
 `script/metadata-migrations/V4000002__subscription.sql`; the worker also runs
-the same idempotent DDL at startup for local development and tests.
+the same idempotent DDL at startup for local development and tests. This is a
+pre-release schema: a database created before the SQL-supervisor columns were
+added must drop and recreate the `subscription` schema; no migration
+compatibility is provided.
 
 | Table | Purpose |
 | --- | --- |
-| `subscription.subscriptions` | slot, publication, state (`init`/`streaming`/`stopped`/`error`), last error |
+| `subscription.subscriptions` | slot, publication, source URL, state (`starting`/`snapshotting`/`streaming`/`stopped`/`disabled`/`error`), `enabled`, batch settings, supervisor pid/log, last error |
 | `subscription.tables` | source table + relation OID, target namespace/table + table id, primary key, `data_lsn`, `snapshot_state`, `snapshot_mode`, `snapshot_lsn`, snapshot timestamps |
 | `subscription.progress` | subscription-level `processed_lsn`, including transactions that touched no mapped table |
 
@@ -181,8 +243,10 @@ than the target, the target commit watermark wins. If the target is restored
 older than `tables.data_lsn`, startup fails instead of silently skipping data.
 
 A different `--source-table`, recreated source table (relation OID), or
-recreated target table (LakeSoul table id) is rejected. The source URL and its
-password are not stored in the metadata; they remain CLI/environment input.
+recreated target table (LakeSoul table id) is rejected. Both CLI and
+SQL-created subscriptions store the source URL in
+`subscription.subscriptions.source_url`; the supervisor uses it to restart a
+child without repeating the command line.
 
 ## Batch, commit and replay
 
@@ -196,8 +260,10 @@ password are not stored in the metadata; they remain CLI/environment input.
   no-op for already-applied data.
 - `subscription.progress.processed_lsn` additionally records progress through
   transactions that touch no subscribed table.
-- The initial slot is created with `snapshot = nothing`; the subscriber starts
-  from the slot's current position.
+- When no managed snapshot runs (for example `--snapshot none`), the initial
+  slot is created with `snapshot = nothing`; the subscriber starts from the
+  slot's current position. The managed snapshot uses `EXPORT_SNAPSHOT` as
+  described above.
 
 ## Verified P0 behaviour
 
@@ -221,6 +287,14 @@ The local PostgreSQL 14 smoke test covered:
   existing subscription from `managed` to `none` was rejected;
 - `--snapshot none` started from the slot's current position and captured only
   subsequent changes;
+- `CREATE SUBSCRIPTION` through psql (simple query) and psycopg (extended
+  query), including the managed snapshot, metadata row and child process;
+- `ALTER SUBSCRIPTION DISABLE/ENABLE` stopped and restarted the child without
+  losing the watermark, and a server SIGTERM stopped the child cleanly;
+- `DROP SUBSCRIPTION` stopped the child, dropped the slot and removed the
+  metadata;
+- duplicate subscription, transaction-block, mixed-batch and non-empty-target
+  requests were rejected with their PostgreSQL SQLSTATEs;
 - TOAST guard: a 9,600-byte incompressible `payload` followed by an update to a
   different column stops the worker with the `u` error instead of writing NULL;
 - startup rejection of a publication that publishes truncate and of a source
@@ -236,6 +310,9 @@ The local PostgreSQL 14 smoke test covered:
   whose events are ignored.
 - pgdump mode is reserved but not implemented; the managed snapshot is
   single-threaded and holds the exported snapshot (xmin and ACCESS SHARE locks).
+- SQL-created subscriptions are one source table per child and assume one
+  server instance; there is no cross-node lease. The source URL is plaintext in
+  the metadata database.
 - No DDL/schema evolution, no truncate, no range partitioning, no multi-table
   coordination, no HA lease.
 - Binary pgoutput, arrays/enums/domains/intervals, and PG 15+ column lists/row

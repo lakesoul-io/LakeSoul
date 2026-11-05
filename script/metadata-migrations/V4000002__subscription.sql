@@ -14,13 +14,27 @@ create schema if not exists subscription;
 
 create table if not exists subscription.subscriptions
 (
-    subscription_id text primary key,
-    slot_name       text not null unique,
-    publication     text not null,
-    state           text not null default 'init',
-    last_error      text,
-    created_at      bigint not null,
-    updated_at      bigint not null
+    subscription_id       text primary key,
+    slot_name             text not null unique,
+    publication           text not null,
+    -- The source connection string is stored so a supervised child process can
+    -- be restarted without repeating it on a command line. It contains the
+    -- source credentials; protect access to this metadata database.
+    source_url            text not null,
+    state                 text not null default 'init',
+    enabled               boolean not null default true,
+    -- Only SQL-created subscriptions are restarted by the server supervisor;
+    -- a manually started CLI subscriber must not be duplicated.
+    supervised            boolean not null default false,
+    commit_rows           bigint not null default 50000,
+    commit_interval_ms    bigint not null default 1000,
+    snapshot_batch_rows   bigint not null default 50000,
+    snapshot_batch_bytes  bigint not null default 67108864,
+    supervisor_pid        integer,
+    log_path              text,
+    last_error            text,
+    created_at            bigint not null,
+    updated_at            bigint not null
 );
 
 create table if not exists subscription.tables
@@ -45,7 +59,9 @@ create table if not exists subscription.tables
     created_at          bigint not null,
     updated_at          bigint not null,
     primary key (subscription_id, source_schema, source_table),
-    unique (subscription_id, target_namespace, target_table)
+    unique (subscription_id, target_namespace, target_table),
+    -- Two subscriber processes must not write the same target table.
+    unique (target_namespace, target_table)
 );
 
 create table if not exists subscription.progress

@@ -7828,6 +7828,7 @@ dependencies = [
  "lakesoul-metadata-proto",
  "lakesoul-observability",
  "lakesoul-vector",
+ "libc",
  "metrics",
  "metrics-exporter-prometheus",
  "parking_lot 0.12.5",

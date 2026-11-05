@@ -20,7 +20,9 @@ mod runner;
 mod sink;
 mod snapshot;
 mod source;
+pub(crate) mod sql;
 mod state;
+pub(crate) mod supervisor;
 
 use std::time::Duration;
 
@@ -103,12 +105,19 @@ pub struct SubscribeArgs {
     #[clap(long, default_value_t = 64 * 1024 * 1024)]
     pub snapshot_batch_bytes: usize,
 
+    /// Run a subscription stored in the metadata PostgreSQL. This is used by
+    /// the server's subscription supervisor; all other definition flags are
+    /// ignored.
+    #[clap(long, env = "LAKESOUL_PG_SUBSCRIPTION_ID")]
+    pub subscription_id: Option<String>,
+
     /// Validate source/target and print the plan, then exit.
     #[clap(long)]
     pub dry_run: bool,
 }
 
 pub struct SubscribeConfig {
+    pub subscription_id: String,
     pub source_url: String,
     pub publication: String,
     pub slot: String,
@@ -124,6 +133,9 @@ pub struct SubscribeConfig {
     pub snapshot_batch_rows: usize,
     pub snapshot_batch_bytes: usize,
     pub dry_run: bool,
+    /// A supervised child must find its metadata row; it must never recreate
+    /// a row concurrently removed by DROP.
+    pub require_existing: bool,
 }
 
 impl SubscribeConfig {
@@ -156,25 +168,10 @@ impl SubscribeConfig {
             bail!("--snapshot-batch-bytes must be greater than zero");
         }
 
-        let (source_schema, source_table) = match source_table.split_once('.') {
-            Some((schema, table)) => {
-                if table.contains('.') {
-                    bail!(
-                        "source table {source_table:?} has more than one dot; P0 only \
-                         supports schema.table"
-                    );
-                }
-                (schema.to_string(), table.to_string())
-            }
-            None => ("public".to_string(), source_table),
-        };
-        if source_schema != "public" {
-            bail!(
-                "P0 only supports the public schema, got {source_schema}.{source_table}"
-            );
-        }
+        let (source_schema, source_table) = parse_source_table(&source_table)?;
 
         Ok(Self {
+            subscription_id: slot.clone(),
             source_url,
             publication,
             slot,
@@ -190,6 +187,7 @@ impl SubscribeConfig {
             snapshot_batch_rows: args.snapshot_batch_rows,
             snapshot_batch_bytes: args.snapshot_batch_bytes,
             dry_run: args.dry_run,
+            require_existing: false,
         })
     }
 
@@ -200,6 +198,25 @@ impl SubscribeConfig {
 
 fn required(value: Option<String>, flag: &str) -> Result<String> {
     value.ok_or_else(|| report!("{flag} is required with --subscribe"))
+}
+
+pub(crate) fn parse_source_table(source_table: &str) -> Result<(String, String)> {
+    let (source_schema, source_table) = match source_table.split_once('.') {
+        Some((schema, table)) => {
+            if table.contains('.') {
+                bail!(
+                    "source table {source_table:?} has more than one dot; P0 only \
+                     supports schema.table"
+                );
+            }
+            (schema.to_string(), table.to_string())
+        }
+        None => ("public".to_string(), source_table.to_string()),
+    };
+    if source_schema != "public" {
+        bail!("P0 only supports the public schema, got {source_schema}.{source_table}");
+    }
+    Ok((source_schema, source_table))
 }
 
 /// The validation connection must be an ordinary SQL connection. Strip a
@@ -240,7 +257,81 @@ pub fn replication_url(url: &str) -> String {
 }
 
 pub async fn run(args: SubscribeArgs, meta: MetaDataClientRef) -> Result<()> {
+    if let Some(subscription_id) = args.subscription_id.clone() {
+        if args.dry_run {
+            bail!("--dry-run cannot be combined with --subscription-id");
+        }
+        return run_from_metadata(&subscription_id, meta).await;
+    }
     let config = SubscribeConfig::from_args(args)?;
+    run_config(config, meta).await
+}
+
+async fn run_from_metadata(subscription_id: &str, meta: MetaDataClientRef) -> Result<()> {
+    let pool = meta.pooled_client();
+    let pool = pool.lock().await.clone();
+    let metadata = SubscriptionMetadata::from_pool(pool);
+    metadata.init_schema().await?;
+    let record = metadata
+        .load_by_id(subscription_id)
+        .await?
+        .ok_or_else(|| report!("subscription {subscription_id} does not exist"))?;
+    if !record.enabled {
+        bail!("subscription {subscription_id} is disabled");
+    }
+    tracing::debug!(
+        subscription = %subscription_id,
+        supervisor_pid = ?record.supervisor_pid,
+        log_path = ?record.log_path,
+        state = %record.state,
+        "loaded supervised subscription definition"
+    );
+    let table = record
+        .tables
+        .first()
+        .ok_or_else(|| report!("subscription {subscription_id} has no table mapping"))?;
+    let snapshot = match table.snapshot_mode.as_str() {
+        "none" => SnapshotMode::None,
+        "managed" => SnapshotMode::Managed,
+        other => bail!("subscription has unknown snapshot mode {other:?}"),
+    };
+    let config = SubscribeConfig {
+        subscription_id: record.subscription_id.clone(),
+        source_url: record.source_url.clone(),
+        publication: record.publication.clone(),
+        slot: record.slot.clone(),
+        source_schema: table.source_schema.clone(),
+        source_table: table.source_table.clone(),
+        target_namespace: table.target_namespace.clone(),
+        target_table: table.target_table.clone(),
+        primary_key: table.primary_key.clone(),
+        commit_rows: record.commit_rows,
+        commit_interval: Duration::from_millis(record.commit_interval_ms),
+        max_transactions: 0,
+        snapshot,
+        snapshot_batch_rows: record.snapshot_batch_rows,
+        snapshot_batch_bytes: record.snapshot_batch_bytes,
+        dry_run: false,
+        require_existing: true,
+    };
+    if config.commit_rows == 0
+        || config.commit_interval.is_zero()
+        || config.snapshot_batch_rows == 0
+        || config.snapshot_batch_bytes == 0
+    {
+        bail!("subscription {subscription_id} has invalid batch settings");
+    }
+    let source_url = config.source_url.clone();
+    let result = run_config(config, meta).await;
+    if let Err(error) = &result {
+        // `run_config` already records most failures; this also covers the
+        // early source/target validation, before it loaded the metadata row.
+        record_state_error(&metadata, subscription_id, &source_url, error).await;
+    }
+    result
+}
+
+async fn run_config(config: SubscribeConfig, meta: MetaDataClientRef) -> Result<()> {
     let source = source::inspect_source(
         &ordinary_url(&config.source_url),
         &config.publication,
@@ -252,7 +343,7 @@ pub async fn run(args: SubscribeArgs, meta: MetaDataClientRef) -> Result<()> {
         source,
         &config.target_namespace,
         &config.target_table,
-        &config.primary_key,
+        Some(&config.primary_key),
         meta.clone(),
     )
     .await?;
@@ -271,7 +362,13 @@ pub async fn run(args: SubscribeArgs, meta: MetaDataClientRef) -> Result<()> {
     let record = match register_or_validate(&config, &plan, &metadata).await {
         Ok(record) => record,
         Err(error) => {
-            record_state_error(&metadata, &config.slot, &config.source_url, &error).await;
+            record_state_error(
+                &metadata,
+                &config.subscription_id,
+                &config.source_url,
+                &error,
+            )
+            .await;
             return Err(error);
         }
     };
@@ -385,6 +482,9 @@ pub async fn run(args: SubscribeArgs, meta: MetaDataClientRef) -> Result<()> {
                 .await;
             return Err(error);
         }
+        metadata
+            .set_state(&subscription_id, "snapshotting", None)
+            .await?;
         tracing::info!(
             source = %config.source_qualified_name(),
             target = %format!("{}.{}", config.target_namespace, config.target_table),
@@ -585,9 +685,10 @@ async fn register_or_validate(
         SnapshotMode::Auto | SnapshotMode::Managed => "managed",
     };
     let definition = SubscriptionDefinition {
-        subscription_id: config.slot.clone(),
+        subscription_id: config.subscription_id.clone(),
         slot: config.slot.clone(),
         publication: config.publication.clone(),
+        source_url: config.source_url.clone(),
         source_schema: config.source_schema.clone(),
         source_table: config.source_table.clone(),
         source_relation_oid: plan.source.relation_oid,
@@ -596,17 +697,31 @@ async fn register_or_validate(
         target_table_id: plan.table.table_info().table_id.clone(),
         primary_key: config.primary_key.clone(),
         snapshot_mode: snapshot_mode.to_string(),
+        supervised: config.require_existing,
+        commit_rows: config.commit_rows,
+        commit_interval_ms: config.commit_interval.as_millis() as u64,
+        snapshot_batch_rows: config.snapshot_batch_rows,
+        snapshot_batch_bytes: config.snapshot_batch_bytes,
     };
-    match metadata.load(&config.slot).await? {
+    match metadata.load_by_id(&config.subscription_id).await? {
         Some(record) => {
             record.validate(&definition)?;
             Ok(record)
         }
         None => {
+            if config.require_existing {
+                bail!(
+                    "subscription {} disappeared before the child process started",
+                    config.subscription_id
+                );
+            }
             metadata.register(&definition).await?;
-            let record = metadata.load(&config.slot).await?.ok_or_else(|| {
-                report!("subscription {} was not persisted", config.slot)
-            })?;
+            let record = metadata
+                .load_by_id(&config.subscription_id)
+                .await?
+                .ok_or_else(|| {
+                    report!("subscription {} was not persisted", config.subscription_id)
+                })?;
             record.validate(&definition)?;
             Ok(record)
         }
@@ -628,13 +743,13 @@ async fn record_state_error(
     }
 }
 
-fn sanitized_error(error: &rootcause::Report, source_url: &str) -> String {
+pub(crate) fn sanitized_error(error: &rootcause::Report, source_url: &str) -> String {
     let mut text = error.to_string();
     if !source_url.is_empty() {
+        let ordinary = ordinary_url(source_url);
         let replication = replication_url(source_url);
-        if replication != source_url {
-            text = text.replace(&replication, "<source-url>");
-        }
+        text = text.replace(&replication, "<source-url>");
+        text = text.replace(&ordinary, "<source-url>");
         text = text.replace(source_url, "<source-url>");
     }
     const MAX: usize = 2_000;
@@ -738,10 +853,11 @@ async fn check_slot_inner(
         .transpose()?
         .unwrap_or(0);
 
-    if restart > data_watermark {
+    if restart > processed_watermark {
         bail!(
-            "slot {slot} restart_lsn {restart} is ahead of the target data watermark \
-             {data_watermark}; the WAL needed by the target has been removed. Resnapshot"
+            "slot {slot} restart_lsn {restart} is ahead of the subscription processed \
+             watermark {processed_watermark}; the WAL needed by the target has been \
+             removed. Resnapshot"
         );
     }
     if confirmed > processed_watermark {

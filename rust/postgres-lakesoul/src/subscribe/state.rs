@@ -28,13 +28,25 @@ end $$;
 
 do $$ begin
     create table if not exists subscription.subscriptions (
-        subscription_id text primary key,
-        slot_name       text not null unique,
-        publication     text not null,
-        state           text not null default 'init',
-        last_error      text,
-        created_at      bigint not null,
-        updated_at      bigint not null
+        subscription_id       text primary key,
+        slot_name             text not null unique,
+        publication           text not null,
+        source_url            text not null,
+        state                 text not null default 'init',
+        enabled               boolean not null default true,
+        -- Only SQL-created subscriptions are restarted by the server
+        -- supervisor; a manually started CLI subscriber must not be
+        -- duplicated.
+        supervised            boolean not null default false,
+        commit_rows           bigint not null default 50000,
+        commit_interval_ms    bigint not null default 1000,
+        snapshot_batch_rows   bigint not null default 50000,
+        snapshot_batch_bytes  bigint not null default 67108864,
+        supervisor_pid        integer,
+        log_path              text,
+        last_error            text,
+        created_at            bigint not null,
+        updated_at            bigint not null
     );
 exception when duplicate_table or unique_violation then null;
 end $$;
@@ -61,7 +73,9 @@ do $$ begin
         created_at          bigint not null,
         updated_at          bigint not null,
         primary key (subscription_id, source_schema, source_table),
-        unique (subscription_id, target_namespace, target_table)
+        unique (subscription_id, target_namespace, target_table),
+        -- Two subscriber processes must not write the same target table.
+        unique (target_namespace, target_table)
     );
 exception when duplicate_table or unique_violation then null;
 end $$;
@@ -83,6 +97,7 @@ pub struct SubscriptionDefinition {
     pub subscription_id: String,
     pub slot: String,
     pub publication: String,
+    pub source_url: String,
     pub source_schema: String,
     pub source_table: String,
     pub source_relation_oid: u32,
@@ -91,6 +106,11 @@ pub struct SubscriptionDefinition {
     pub target_table_id: String,
     pub primary_key: Vec<String>,
     pub snapshot_mode: String,
+    pub supervised: bool,
+    pub commit_rows: usize,
+    pub commit_interval_ms: u64,
+    pub snapshot_batch_rows: usize,
+    pub snapshot_batch_bytes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -117,7 +137,16 @@ pub struct SubscriptionRecord {
     pub subscription_id: String,
     pub slot: String,
     pub publication: String,
+    pub source_url: String,
     pub state: String,
+    pub enabled: bool,
+    pub supervised: bool,
+    pub commit_rows: usize,
+    pub commit_interval_ms: u64,
+    pub snapshot_batch_rows: usize,
+    pub snapshot_batch_bytes: usize,
+    pub supervisor_pid: Option<i32>,
+    pub log_path: Option<String>,
     pub last_error: Option<String>,
     pub tables: Vec<TableRecord>,
     pub processed_lsn: u64,
@@ -215,25 +244,52 @@ impl SubscriptionMetadata {
             .map_err(|error| report!("create subscription metadata schema: {error}"))
     }
 
-    pub async fn load(&self, slot: &str) -> Result<Option<SubscriptionRecord>> {
+    pub async fn load_by_id(
+        &self,
+        subscription_id: &str,
+    ) -> Result<Option<SubscriptionRecord>> {
+        self.load_where("subscription_id = $1", subscription_id)
+            .await
+    }
+
+    pub async fn load_by_slot(&self, slot: &str) -> Result<Option<SubscriptionRecord>> {
+        self.load_where("slot_name = $1", slot).await
+    }
+
+    async fn load_where(
+        &self,
+        predicate: &str,
+        value: &str,
+    ) -> Result<Option<SubscriptionRecord>> {
+        let query = format!(
+            "select subscription_id, slot_name, publication, source_url, state, \
+                    enabled, supervised, commit_rows, commit_interval_ms, \
+                    snapshot_batch_rows, snapshot_batch_bytes, supervisor_pid, \
+                    log_path, last_error \
+             from subscription.subscriptions where {predicate}"
+        );
         let subscription = self
             .client
-            .query_opt(
-                "select subscription_id, slot_name, publication, state, last_error \
-                 from subscription.subscriptions where slot_name = $1",
-                QueryType::RW,
-                &[&slot],
-            )
+            .query_opt(&query, QueryType::RW, &[&value])
             .await
-            .map_err(|error| report!("read subscription {slot}: {error}"))?;
+            .map_err(|error| report!("read subscription {value}: {error}"))?;
         let Some(subscription) = subscription else {
             return Ok(None);
         };
         let subscription_id: String = subscription.get(0);
         let slot: String = subscription.get(1);
         let publication: String = subscription.get(2);
-        let state: String = subscription.get(3);
-        let last_error: Option<String> = subscription.get(4);
+        let source_url: String = subscription.get(3);
+        let state: String = subscription.get(4);
+        let enabled: bool = subscription.get(5);
+        let supervised: bool = subscription.get(6);
+        let commit_rows: i64 = subscription.get(7);
+        let commit_interval_ms: i64 = subscription.get(8);
+        let snapshot_batch_rows: i64 = subscription.get(9);
+        let snapshot_batch_bytes: i64 = subscription.get(10);
+        let supervisor_pid: Option<i32> = subscription.get(11);
+        let log_path: Option<String> = subscription.get(12);
+        let last_error: Option<String> = subscription.get(13);
 
         let table_rows = self
             .client
@@ -301,7 +357,23 @@ impl SubscriptionMetadata {
             subscription_id,
             slot,
             publication,
+            source_url,
             state,
+            enabled,
+            supervised,
+            commit_rows: usize::try_from(commit_rows)
+                .map_err(|_| report!("invalid commit_rows {commit_rows}"))?,
+            commit_interval_ms: u64::try_from(commit_interval_ms).map_err(|_| {
+                report!("invalid commit_interval_ms {commit_interval_ms}")
+            })?,
+            snapshot_batch_rows: usize::try_from(snapshot_batch_rows).map_err(|_| {
+                report!("invalid snapshot_batch_rows {snapshot_batch_rows}")
+            })?,
+            snapshot_batch_bytes: usize::try_from(snapshot_batch_bytes).map_err(
+                |_| report!("invalid snapshot_batch_bytes {snapshot_batch_bytes}"),
+            )?,
+            supervisor_pid,
+            log_path,
             last_error,
             tables,
             processed_lsn,
@@ -310,7 +382,8 @@ impl SubscriptionMetadata {
 
     /// Insert the definition and zero progress if this slot has no state yet.
     /// A concurrent initializer can win; the caller reloads and validates.
-    pub async fn register(&self, definition: &SubscriptionDefinition) -> Result<()> {
+    /// Returns whether the subscription row itself was inserted.
+    pub async fn register(&self, definition: &SubscriptionDefinition) -> Result<bool> {
         let now = now_ms();
         let primary_key = definition.primary_key.join(",");
         let snapshot_state = if definition.snapshot_mode == "none" {
@@ -327,22 +400,47 @@ impl SubscriptionMetadata {
             .transaction()
             .await
             .map_err(|error| report!("begin subscription registration: {error}"))?;
-        transaction
+        let commit_rows = i64::try_from(definition.commit_rows)
+            .map_err(|_| report!("commit_rows is too large"))?;
+        let commit_interval_ms = i64::try_from(definition.commit_interval_ms)
+            .map_err(|_| report!("commit_interval_ms is too large"))?;
+        let snapshot_batch_rows = i64::try_from(definition.snapshot_batch_rows)
+            .map_err(|_| report!("snapshot_batch_rows is too large"))?;
+        let snapshot_batch_bytes = i64::try_from(definition.snapshot_batch_bytes)
+            .map_err(|_| report!("snapshot_batch_bytes is too large"))?;
+        let inserted = transaction
             .execute(
                 "insert into subscription.subscriptions \
-                     (subscription_id, slot_name, publication, state, last_error, \
-                      created_at, updated_at) \
-                 values ($1, $2, $3, 'init', null, $4, $4) \
+                     (subscription_id, slot_name, publication, source_url, state, \
+                      enabled, supervised, commit_rows, commit_interval_ms, \
+                      snapshot_batch_rows, snapshot_batch_bytes, \
+                      supervisor_pid, log_path, last_error, created_at, updated_at) \
+                 values ($1, $2, $3, $4, 'starting', true, $5, $6, $7, $8, $9, \
+                         null, null, null, $10, $10) \
                  on conflict (subscription_id) do nothing",
                 &[
                     &definition.subscription_id,
                     &definition.slot,
                     &definition.publication,
+                    &definition.source_url,
+                    &definition.supervised,
+                    &commit_rows,
+                    &commit_interval_ms,
+                    &snapshot_batch_rows,
+                    &snapshot_batch_bytes,
                     &now,
                 ],
             )
             .await
             .map_err(|error| report!("insert subscription definition: {error}"))?;
+        if inserted == 0 {
+            // The subscription already existed; leave its rows untouched.
+            transaction
+                .rollback()
+                .await
+                .map_err(|error| report!("rollback duplicate subscription: {error}"))?;
+            return Ok(false);
+        }
         transaction
             .execute(
                 "insert into subscription.tables \
@@ -384,6 +482,163 @@ impl SubscriptionMetadata {
             .commit()
             .await
             .map_err(|error| report!("commit subscription registration: {error}"))?;
+        Ok(true)
+    }
+
+    pub async fn exists(&self, subscription_id: &str) -> Result<bool> {
+        let row = self
+            .client
+            .query_opt(
+                "select 1 from subscription.subscriptions \
+                 where subscription_id = $1",
+                QueryType::RW,
+                &[&subscription_id],
+            )
+            .await
+            .map_err(|error| report!("check subscription {subscription_id}: {error}"))?;
+        Ok(row.is_some())
+    }
+
+    pub async fn target_in_use(
+        &self,
+        target_namespace: &str,
+        target_table: &str,
+    ) -> Result<bool> {
+        let row = self
+            .client
+            .query_opt(
+                "select 1 from subscription.tables \
+                 where target_namespace = $1 and target_table = $2",
+                QueryType::RW,
+                &[&target_namespace, &target_table],
+            )
+            .await
+            .map_err(|error| {
+                report!("check target table {target_namespace}.{target_table}: {error}")
+            })?;
+        Ok(row.is_some())
+    }
+
+    pub async fn list_enabled_ids(&self) -> Result<Vec<String>> {
+        let rows = self
+            .client
+            .query(
+                "select subscription_id from subscription.subscriptions \
+                 where enabled and supervised order by subscription_id",
+                QueryType::RW,
+                &[],
+            )
+            .await
+            .map_err(|error| report!("list enabled subscriptions: {error}"))?;
+        Ok(rows.iter().map(|row| row.get(0)).collect())
+    }
+
+    pub async fn set_process(
+        &self,
+        subscription_id: &str,
+        pid: u32,
+        log_path: &str,
+    ) -> Result<()> {
+        let pid =
+            i32::try_from(pid).map_err(|_| report!("child pid {pid} is too large"))?;
+        let now = now_ms();
+        let updated = self
+            .client
+            .execute(
+                "update subscription.subscriptions \
+                 set supervisor_pid = $2, log_path = $3, updated_at = $4 \
+                 where subscription_id = $1",
+                QueryType::RW,
+                &[&subscription_id, &pid, &log_path, &now],
+            )
+            .await
+            .map_err(|error| report!("record subscription process: {error}"))?;
+        if updated == 0 {
+            bail!("subscription {subscription_id} disappeared");
+        }
+        Ok(())
+    }
+
+    pub async fn clear_process(&self, subscription_id: &str) -> Result<()> {
+        let now = now_ms();
+        self.client
+            .execute(
+                "update subscription.subscriptions \
+                 set supervisor_pid = null, updated_at = $2 \
+                 where subscription_id = $1",
+                QueryType::RW,
+                &[&subscription_id, &now],
+            )
+            .await
+            .map_err(|error| report!("clear subscription process: {error}"))?;
+        Ok(())
+    }
+
+    pub async fn set_enabled(&self, subscription_id: &str, enabled: bool) -> Result<()> {
+        let now = now_ms();
+        let updated = self
+            .client
+            .execute(
+                "update subscription.subscriptions \
+                 set enabled = $2, updated_at = $3 \
+                 where subscription_id = $1",
+                QueryType::RW,
+                &[&subscription_id, &enabled, &now],
+            )
+            .await
+            .map_err(|error| report!("set subscription enabled: {error}"))?;
+        if updated == 0 {
+            bail!("subscription {subscription_id} disappeared");
+        }
+        Ok(())
+    }
+
+    pub async fn unregister(&self, subscription_id: &str) -> Result<bool> {
+        let deleted = self
+            .client
+            .execute(
+                "delete from subscription.subscriptions where subscription_id = $1",
+                QueryType::RW,
+                &[&subscription_id],
+            )
+            .await
+            .map_err(|error| report!("delete subscription {subscription_id}: {error}"))?;
+        Ok(deleted > 0)
+    }
+
+    /// Record a child process that exited without the subscriber marking
+    /// itself stopped (for example a crash or SIGKILL).
+    pub async fn record_unexpected_exit(
+        &self,
+        subscription_id: &str,
+        message: &str,
+    ) -> Result<()> {
+        let now = now_ms();
+        let updated = self
+            .client
+            .execute(
+                "update subscription.subscriptions \
+                 set state = 'error', last_error = $2, supervisor_pid = null, \
+                     updated_at = $3 \
+                 where subscription_id = $1 \
+                   and state not in ('stopped', 'disabled', 'error')",
+                QueryType::RW,
+                &[&subscription_id, &message, &now],
+            )
+            .await
+            .map_err(|error| report!("record subscription exit: {error}"))?;
+        if updated > 0 {
+            self.client
+                .execute(
+                    "update subscription.tables \
+                     set state = 'error', last_error = $2, updated_at = $3 \
+                     where subscription_id = $1",
+                    QueryType::RW,
+                    &[&subscription_id, &message, &now],
+                )
+                .await
+                .map_err(|error| report!("record subscription table exit: {error}"))?;
+        }
         Ok(())
     }
 
@@ -615,6 +870,7 @@ mod tests {
             subscription_id: "slot".to_string(),
             slot: "slot".to_string(),
             publication: "pub".to_string(),
+            source_url: "postgresql://source/db".to_string(),
             source_schema: "public".to_string(),
             source_table: "users".to_string(),
             source_relation_oid: 42,
@@ -623,6 +879,11 @@ mod tests {
             target_table_id: "table-1".to_string(),
             primary_key: vec!["id".to_string()],
             snapshot_mode: "managed".to_string(),
+            supervised: true,
+            commit_rows: 50_000,
+            commit_interval_ms: 1_000,
+            snapshot_batch_rows: 50_000,
+            snapshot_batch_bytes: 64 * 1024 * 1024,
         }
     }
 
@@ -631,7 +892,16 @@ mod tests {
             subscription_id: "slot".to_string(),
             slot: "slot".to_string(),
             publication: "pub".to_string(),
+            source_url: "postgresql://source/db".to_string(),
             state: "streaming".to_string(),
+            enabled: true,
+            supervised: true,
+            commit_rows: 50_000,
+            commit_interval_ms: 1_000,
+            snapshot_batch_rows: 50_000,
+            snapshot_batch_bytes: 64 * 1024 * 1024,
+            supervisor_pid: None,
+            log_path: None,
             last_error: None,
             tables: vec![TableRecord {
                 source_schema: "public".to_string(),
