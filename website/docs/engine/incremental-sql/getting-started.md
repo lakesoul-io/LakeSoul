@@ -22,7 +22,8 @@ statement is a normal insert.
 
 ## 2. Create a target table
 
-The target needs a primary key and the CDC change column `rowKinds`:
+The target needs a primary key, the CDC change column `rowKinds`, and
+`use_cdc = true`:
 
 ```sql
 CREATE TABLE daily_revenue (
@@ -31,13 +32,15 @@ CREATE TABLE daily_revenue (
   revenue numeric(20,4),
   "rowKinds" text,
   PRIMARY KEY (day, region)
-) WITH (hash_bucket_num = 4);
+) WITH (hash_bucket_num = 4, use_cdc = true);
 ```
 
 - The primary key identifies a target row; the engine writes delete markers for
   rows that disappear.
 - `"rowKinds"` is the change column. Quote it to preserve the mixed case; the
   front end folds unquoted identifiers to lower case.
+- `use_cdc = true` enables the change stream the target writes retractions to.
+  Without it, a run cannot remove rows that disappear from the source.
 - The engine adds its epoch column to the target schema if it is missing.
 
 The target can also be range-partitioned with `PARTITIONED BY`. A run replaces
@@ -79,10 +82,12 @@ rebuild.
 
 ## Requirements
 
-- The target must be a keyed table: primary key plus `rowKinds`.
-- Sources must be keyed tables. Append-only sources are rejected for incremental
-  runs; a shape that cannot be maintained incrementally falls back to a full
-  recompute.
+- The target must be a keyed, CDC-enabled table: primary key, `rowKinds`, and
+  `use_cdc = true`.
+- Sources must be keyed tables. A source whose deletes must be visible also
+  needs `use_cdc = true` and a change column. Append-only sources are rejected
+  for incremental runs; a shape that cannot be maintained incrementally falls
+  back to a full recompute.
 - The statement must run in autocommit. Explicit transactions and multi-statement
   batches are refused.
 - Incremental SQL and distributed execution are mutually exclusive in v1.

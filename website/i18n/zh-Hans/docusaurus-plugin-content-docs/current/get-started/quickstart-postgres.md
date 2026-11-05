@@ -75,7 +75,9 @@ CREATE TABLE orders (
 ) WITH (hash_bucket_num = 8);
 
 INSERT INTO orders VALUES (1, 'APAC', 42.00)
-ON CONFLICT (id) DO UPDATE SET amount = EXCLUDED.amount;
+ON CONFLICT (id) DO UPDATE
+SET region = EXCLUDED.region,
+    amount = EXCLUDED.amount;
 
 SELECT region, sum(amount) FROM orders GROUP BY 1;
 ```

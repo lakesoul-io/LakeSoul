@@ -58,7 +58,7 @@ source state.
 | **Autocommit only** | Explicit transactions and multi-statement batches are refused |
 | **`INSERT ... SELECT` only** | `INSERT ... VALUES` is always a normal insert |
 | **Keyed sources** | A source without a primary key is rejected |
-| **Keyed target** | The target needs a primary key and `rowKinds` |
+| **Keyed target** | The target needs a primary key, `rowKinds`, and `use_cdc = true` |
 | **Single node (v1)** | `--ivm` and distributed execution are mutually exclusive |
 | **Supported shapes** | A shape outside the list reports `unsupported incremental view shape` and writes nothing |
 

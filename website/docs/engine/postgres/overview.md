@@ -35,7 +35,7 @@ for the metadata database and the first table.
 | --- | --- |
 | **Connectivity** | PostgreSQL wire protocol, simple and extended query protocol, `pg_catalog`, `psql \d` |
 | **DDL** | `CREATE TABLE`, `DROP TABLE`, primary keys, `PARTITIONED BY`, `WITH (...)` options |
-| **Writes** | `INSERT ... VALUES`, `INSERT ... SELECT`, `ON CONFLICT DO NOTHING`, `ON CONFLICT ... DO UPDATE SET col = EXCLUDED.col` |
+| **Writes** | `INSERT ... VALUES`, `INSERT ... SELECT`, `ON CONFLICT DO NOTHING`, `ON CONFLICT ... DO UPDATE SET col = EXCLUDED.col` (every non-key column) |
 | **Queries** | The DataFusion SQL surface, including joins, aggregates, windows, CTEs and set operations |
 | **Search** | pgvector-style vector operators, `text_score` for BM25 |
 | **Incremental SQL** | `INSERT ... SELECT` maintains its target when the session enables it |

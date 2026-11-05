@@ -276,15 +276,15 @@
 .fitGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
-  margin-top: 38px;
+  gap: 14px;
+  margin-top: 30px;
 }
 
 .fitCard {
-  padding: 24px;
-  background: #fff;
-  border: 1px solid #e1edf9;
-  border-radius: 14px;
+  padding: 16px 18px;
+  background: #f8fbfe;
+  border: 1px solid #e6f0fa;
+  border-radius: 12px;
 }
 
 .fitCallout {
@@ -340,17 +340,17 @@
 }
 
 .fitTitle {
-  margin: 0 0 10px;
-  font-size: 1.08rem;
-  font-weight: 700;
-  color: #0b1f3a;
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #5a708a;
 }
 
 .fitBody {
   margin: 0;
-  font-size: 0.96rem;
-  line-height: 1.65;
-  color: #41556b;
+  font-size: 0.86rem;
+  line-height: 1.55;
+  color: #6b7f95;
 }
 
 /* ---------- Architecture ---------- */

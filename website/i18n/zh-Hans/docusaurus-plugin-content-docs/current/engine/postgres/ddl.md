@@ -38,10 +38,12 @@ CREATE TABLE orders (
 | `hash_bucket_num` | `1..=32768` | 主键表的哈希桶数；默认 `4` |
 | `file_format` | `parquet`、`vortex`、`vortex-compact` | 物理文件格式；默认 `vortex-compact` |
 | `append_only` | `true`、`false` | Append-only 表，不做主键合并 |
-| `use_cdc` | `true`、`false` | CDC 表，带变更列 |
+| `use_cdc` | `true`、`false` | CDC 表，带变更列；删除和增量 SQL 目标需要它 |
 | `lakesoul_cdc_change_column` | 列名 | CDC 变更列；默认 `rowKinds` |
 
 未知选项会以 `0A000` 拒绝，而不是被忽略。
+
+`use_cdc = true` 需要一个变更列。声明 `rowKinds`，或用 `lakesoul_cdc_change_column` 指定其他列。没有它，删除无法表示，增量 SQL 目标也无法撤回行。
 
 ## 类型
 

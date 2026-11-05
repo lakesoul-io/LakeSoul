@@ -46,7 +46,7 @@ SPDX-License-Identifier: Apache-2.0
 | **只支持 autocommit** | 显式事务和多语句 batch 会被拒绝 |
 | **只支持 `INSERT ... SELECT`** | `INSERT ... VALUES` 始终是普通插入 |
 | **源表必须有主键** | 没有主键的源会被拒绝 |
-| **目标表必须有主键** | 目标需要主键和 `rowKinds` |
+| **目标表必须有主键** | 目标需要主键、`rowKinds` 和 `use_cdc = true` |
 | **v1 单机** | `--ivm` 与分布式执行互斥 |
 | **支持的形状** | 列表之外的形状报告 `unsupported incremental view shape`，不写入任何内容 |
 

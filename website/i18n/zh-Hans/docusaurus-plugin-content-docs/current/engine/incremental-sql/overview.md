@@ -19,6 +19,7 @@ SPDX-License-Identifier: Apache-2.0
 
 - 一个**语句**，不是一个对象。你运行 `INSERT INTO target SELECT ...`；没有单独的定义要创建，没有调度任务，也没有 refresh 命令。
 - **变更驱动。** 引擎读取源表的提交，把它折叠进查询，再把 delta 写到目标表。
+- **CDC 目标表。** 目标表是带 `use_cdc = true` 和 `rowKinds` 变更列的主键表，这样运行才能为消失的行写入撤回记录。
 - **SQL 级。** 它维护 join、聚合、窗口和集合运算，而不只是存储层的 delta。
 
 ## 一次运行怎么发生

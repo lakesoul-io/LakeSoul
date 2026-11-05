@@ -29,7 +29,10 @@ VALUES (1, DATE '2026-01-01', 'APAC', 42.00);
 ```sql
 INSERT INTO orders (id, day, region, amount)
 VALUES (1, DATE '2026-01-01', 'APAC', 45.00)
-ON CONFLICT (id) DO UPDATE SET amount = EXCLUDED.amount;
+ON CONFLICT (id) DO UPDATE
+SET day = EXCLUDED.day,
+    region = EXCLUDED.region,
+    amount = EXCLUDED.amount;
 ```
 
 支持两种冲突动作：
@@ -37,9 +40,11 @@ ON CONFLICT (id) DO UPDATE SET amount = EXCLUDED.amount;
 | 子句 | 行为 |
 | --- | --- |
 | `ON CONFLICT (key) DO NOTHING` | 丢弃与已有主键冲突的行 |
-| `ON CONFLICT (key) DO UPDATE SET col = EXCLUDED.col` | 用传入行替换整行 |
+| `ON CONFLICT (key) DO UPDATE SET col = EXCLUDED.col` | 替换该行；必须给每个非主键列赋值 |
 
-`DO UPDATE` 只接受 `column = EXCLUDED.column` 形式。对旧行做表达式（`SET amount = orders.amount + EXCLUDED.amount`）需要读改写，会被拒绝。
+`DO UPDATE` 只接受 `column = EXCLUDED.column` 形式，而且赋值列表必须覆盖**每一个非主键列**。`INSERT` 必须列出所有表列，或省略列清单。对旧行做表达式（`SET amount = orders.amount + EXCLUDED.amount`）需要读改写，会被拒绝。
+
+范围分区表不支持 `ON CONFLICT`：LakeSoul 的唯一键是分区本地的。
 
 ## 从查询插入
 
@@ -48,6 +53,18 @@ INSERT INTO daily_orders (day, region, amount)
 SELECT day, region, sum(amount)
 FROM orders
 GROUP BY 1, 2;
+```
+
+`INSERT ... SELECT` 也可以 upsert，列规则相同：
+
+```sql
+INSERT INTO orders (id, day, region, amount)
+SELECT id, day, region, amount
+FROM staging_orders
+ON CONFLICT (id) DO UPDATE
+SET day = EXCLUDED.day,
+    region = EXCLUDED.region,
+    amount = EXCLUDED.amount;
 ```
 
 没有开启增量 SQL 时，这是一次普通插入。开启后，同一条语句会基于源表 changelog 维护目标表。见[增量 SQL](../incremental-sql/overview.md)。
@@ -67,7 +84,7 @@ GROUP BY 1, 2;
 | `42601` | 源列与目标列对不上 |
 | `42804` | 表达式无法赋值转换到目标列 |
 | `22P02` | 字符串字面量无法转换为目标类型 |
-| `0A000` | `RETURNING`、`ON CONFLICT` 表达式赋值，或事务块内写入 |
+| `0A000` | `RETURNING`、`ON CONFLICT` 表达式赋值、赋值列表缺少非主键列，或事务块内写入 |
 
 不支持 `RETURNING`：sink 在行写完后提交，没有可返回的行流。
 

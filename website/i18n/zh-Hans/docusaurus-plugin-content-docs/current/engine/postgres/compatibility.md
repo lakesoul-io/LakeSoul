@@ -27,7 +27,7 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 | --- | --- |
 | 查询 | 带 join、聚合、窗口、CTE、`UNION`/`INTERSECT`/`EXCEPT`、子查询的 `SELECT` |
 | DDL | `CREATE TABLE`、`DROP TABLE`、主键、`PARTITIONED BY`、`WITH (...)` |
-| 写入 | `INSERT ... VALUES`、`INSERT ... SELECT`、`ON CONFLICT DO NOTHING`、`ON CONFLICT ... DO UPDATE SET col = EXCLUDED.col` |
+| 写入 | `INSERT ... VALUES`、`INSERT ... SELECT`、`ON CONFLICT DO NOTHING`、`ON CONFLICT ... DO UPDATE SET col = EXCLUDED.col`（覆盖每个非主键列） |
 | 事务 | Autocommit、`READ COMMITTED`、只读的 `BEGIN`/`COMMIT`/`ROLLBACK` |
 | 目录 | `pg_catalog`、`information_schema`、`psql \d`、`current_database()` |
 | 会话 | `SET TIME ZONE`、`statement_timeout`、`search_path`、`ivfflat.probes`、`RESET`、`DISCARD ALL` |

@@ -1,6 +1,6 @@
 {
   "name": "lakesoul-website",
-  "version": "2.5.2",
+  "version": "4.0.0",
   "private": true,
   "scripts": {
     "docusaurus": "docusaurus",

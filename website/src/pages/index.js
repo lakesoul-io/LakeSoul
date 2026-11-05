@@ -73,7 +73,8 @@ default(> );
 CREATE TABLE
 
 default=> INSERT INTO orders VALUES (1, 'APAC', 42.00)
-default->   ON CONFLICT (id) DO UPDATE SET amount = EXCLUDED.amount;
+default->   ON CONFLICT (id) DO UPDATE
+default->   SET region = EXCLUDED.region, amount = EXCLUDED.amount;
 INSERT 0 1
 
 default=> SELECT region, sum(amount) FROM orders GROUP BY 1;

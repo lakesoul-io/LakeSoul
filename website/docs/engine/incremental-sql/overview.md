@@ -24,6 +24,9 @@ is the work: a run over 10 new rows touches 10 rows, not the whole table.
   is no separate definition to create, no scheduled job, and no refresh command.
 - **Change-driven.** The engine reads the source table's commits, folds them into
   the query, and writes the delta to the target.
+- **CDC-enabled target.** The target is a keyed table with `use_cdc = true` and
+  the `rowKinds` change column, so a run can write retractions for rows that
+  disappear.
 - **SQL-level.** It maintains joins, aggregates, windows and set operations, not
   just a storage-level delta.
 

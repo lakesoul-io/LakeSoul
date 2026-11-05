@@ -31,7 +31,10 @@ list every column whose value should be preserved.
 ```sql
 INSERT INTO orders (id, day, region, amount)
 VALUES (1, DATE '2026-01-01', 'APAC', 45.00)
-ON CONFLICT (id) DO UPDATE SET amount = EXCLUDED.amount;
+ON CONFLICT (id) DO UPDATE
+SET day = EXCLUDED.day,
+    region = EXCLUDED.region,
+    amount = EXCLUDED.amount;
 ```
 
 Two conflict actions are supported:
@@ -39,11 +42,16 @@ Two conflict actions are supported:
 | Clause | Behaviour |
 | --- | --- |
 | `ON CONFLICT (key) DO NOTHING` | Drops rows that conflict with an existing key |
-| `ON CONFLICT (key) DO UPDATE SET col = EXCLUDED.col` | Replaces the whole row with the incoming row |
+| `ON CONFLICT (key) DO UPDATE SET col = EXCLUDED.col` | Replaces the row; every non-key column must be assigned |
 
-`DO UPDATE` only accepts assignments of the form `column = EXCLUDED.column`.
-An expression over the old row (`SET amount = orders.amount + EXCLUDED.amount`)
-would require read-modify-write and is refused.
+`DO UPDATE` only accepts assignments of the form `column = EXCLUDED.column`,
+and the assignment list must cover **every non-key column**. The `INSERT` must
+name every table column, or omit the column list. An expression over the old row
+(`SET amount = orders.amount + EXCLUDED.amount`) would require read-modify-write
+and is refused.
+
+`ON CONFLICT` is not supported on a range-partitioned table: LakeSoul unique keys
+are partition-local.
 
 ## Insert from a query
 
@@ -52,6 +60,18 @@ INSERT INTO daily_orders (day, region, amount)
 SELECT day, region, sum(amount)
 FROM orders
 GROUP BY 1, 2;
+```
+
+An `INSERT ... SELECT` can upsert as well, with the same column rules:
+
+```sql
+INSERT INTO orders (id, day, region, amount)
+SELECT id, day, region, amount
+FROM staging_orders
+ON CONFLICT (id) DO UPDATE
+SET day = EXCLUDED.day,
+    region = EXCLUDED.region,
+    amount = EXCLUDED.amount;
 ```
 
 Without incremental SQL this is a normal insert. With it enabled for the session,
@@ -76,7 +96,7 @@ statements.
 | `42601` | Source and target columns do not line up |
 | `42804` | An expression is not assignment-castable to the target column |
 | `22P02` | A string literal does not convert to the target type |
-| `0A000` | `RETURNING`, `ON CONFLICT` expression assignments, or a write in a transaction block |
+| `0A000` | `RETURNING`, `ON CONFLICT` expression assignments, an assignment list that misses a non-key column, or a write in a transaction block |
 
 `RETURNING` is not supported: the sink commits after the rows are written and
 there is no row stream to return.

@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 <img src='https://github.com/lakesoul-io/artwork/blob/main/horizontal/color/LakeSoul_Horizontal_Color.svg' alt="LakeSoul" height='200'>
 
-<img src='https://github.com/lfai/artwork/blob/main/lfaidata-assets/lfaidata-project-badge/sandbox/color/lfaidata-project-badge-sandbox-color.svg' alt="LF AI & Data Sandbox Project" height='180'>
+<img src='https://github.com/lfai/artwork/blob/main/other/lfaidata-project-badge/sandbox/color/lfaidata-project-badge-sandbox-color.svg' alt="LF AI & Data Sandbox Project" height='180'>
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![PG wire](https://img.shields.io/badge/PG%20wire-DDL%20%2B%20INSERT%20%2B%20query-green.svg)](#postgres-%E5%8E%9F%E7%94%9F)
@@ -19,7 +19,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # LakeSoul
 
-**Postgres 原生 Vector 原生 Python 原生**<br>
+**Postgres 原生。Vector 原生。Python 原生。**<br>
 一个开放的湖仓引擎 —— 共享 catalog、ACID upsert、SQL 查询、增量计算、向量检索与 Python SDK，纯 Rust 实现，运行在你的对象存储之上。
 
 把已经在用的工具接上来 —— `psql`、Python、pgvector 风格的 SQL —— 底下是一个增量湖仓。
@@ -38,7 +38,9 @@ CREATE TABLE orders (
 ) WITH (hash_bucket_num = 8);
 
 INSERT INTO orders VALUES (1, 'APAC', 42.00)
-ON CONFLICT (id) DO UPDATE SET amount = EXCLUDED.amount;
+ON CONFLICT (id) DO UPDATE
+SET region = EXCLUDED.region,
+    amount = EXCLUDED.amount;
 
 SELECT region, sum(amount) FROM orders GROUP BY 1;
 ```

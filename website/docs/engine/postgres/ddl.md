@@ -43,10 +43,12 @@ CREATE TABLE orders (
 | `hash_bucket_num` | `1..=32768` | Hash buckets for a primary-key table; default `4` |
 | `file_format` | `parquet`, `vortex`, `vortex-compact` | Physical file format; default `vortex-compact` |
 | `append_only` | `true`, `false` | Append-only table; no primary-key merge |
-| `use_cdc` | `true`, `false` | CDC table with a change column |
+| `use_cdc` | `true`, `false` | CDC table with a change column; required for deletes and incremental SQL targets |
 | `lakesoul_cdc_change_column` | column name | Change column for CDC; defaults to `rowKinds` |
 
 An unknown option is rejected with `0A000` rather than ignored.
+
+`use_cdc = true` requires a change column. Declare `rowKinds`, or name another column with `lakesoul_cdc_change_column`. Without it, deletes cannot be represented, and an incremental SQL target cannot retract rows.
 
 ## Types
 
