@@ -29,18 +29,18 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[1]
 GA_CONNECTOR_POMS = (
-    "lakesoul-spark/pom.xml",
-    "lakesoul-flink/pom.xml",
-    "lakesoul-presto/pom.xml",
+    "integrations/lakesoul-spark/pom.xml",
+    "integrations/lakesoul-flink/pom.xml",
+    "integrations/lakesoul-presto/pom.xml",
 )
-CONNECTOR_POMS = (*GA_CONNECTOR_POMS, "lakesoul-spark-gluten/pom.xml")
+CONNECTOR_POMS = (*GA_CONNECTOR_POMS, "integrations/lakesoul-spark-gluten/pom.xml")
 CENTRAL_POMS = (
     "pom.xml",
-    "lakesoul-common/pom.xml",
-    "native-io/lakesoul-io-java/pom.xml",
-    "lakesoul-spark/pom.xml",
-    "lakesoul-flink/pom.xml",
-    "lakesoul-presto/pom.xml",
+    "integrations/lakesoul-common/pom.xml",
+    "integrations/native-io/lakesoul-io-java/pom.xml",
+    "integrations/lakesoul-spark/pom.xml",
+    "integrations/lakesoul-flink/pom.xml",
+    "integrations/lakesoul-presto/pom.xml",
 )
 DEFAULT_CENTRAL = "https://repo1.maven.org/maven2"
 

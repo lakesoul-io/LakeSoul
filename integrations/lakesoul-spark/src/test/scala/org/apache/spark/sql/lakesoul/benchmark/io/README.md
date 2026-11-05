@@ -8,7 +8,7 @@
 
 ### Settings
 
-Code: lakesoul-spark/src/test/scala/org/apache/spark/sql/lakesoul/benchmark/io/ParquetScanBenchmark.scala
+Code: integrations/lakesoul-spark/src/test/scala/org/apache/spark/sql/lakesoul/benchmark/io/ParquetScanBenchmark.scala
 
 Tested on Spark 3.3.1 with Parquet-mr 1.12.2, Arrow-rs(parquet) 31.0.0.
 Parquet file size: 894.3MB, compressed with snappy. Metadata:
@@ -42,7 +42,7 @@ File is read with only one parallelism in Spark.
 
 ### Settings
 
-Code: lakesoul-spark/src/test/scala/org/apache/spark/sql/lakesoul/benchmark/io/ParquetScanBenchmark.scala
+Code: integrations/lakesoul-spark/src/test/scala/org/apache/spark/sql/lakesoul/benchmark/io/ParquetScanBenchmark.scala
 
 Tested on Spark 3.3.1 with Parquet-mr 1.12.2, Arrow-rs(parquet) 31.0.0.
 Original parquet file size: 894.3MB, cached in memory in advance before write.

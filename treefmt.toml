@@ -21,7 +21,7 @@ excludes = [
   "**/uv.lock",
   "website/package-lock.json",
   # Generated code
-  "lakesoul-flink/src/main/java/org/apache/flink/fnexecution/v1/FlinkFnApi.java",
+  "integrations/lakesoul-flink/src/main/java/org/apache/flink/fnexecution/v1/FlinkFnApi.java",
   "python/src/lakesoul/metadata/generated/**",
   # Vendored upstream crates
   "rust/third_party/**",

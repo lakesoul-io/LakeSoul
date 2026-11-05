@@ -13,7 +13,7 @@ SPDX-License-Identifier: Apache-2.0
         <artifactId>lakesoul-parent</artifactId>
         <groupId>com.dmetasoul</groupId>
         <version>${revision}</version>
-        <relativePath>../../pom.xml</relativePath>
+        <relativePath>../../../pom.xml</relativePath>
     </parent>
 
     <modelVersion>4.0.0</modelVersion>
@@ -376,7 +376,7 @@ SPDX-License-Identifier: Apache-2.0
             <build>
                 <resources>
                     <resource>
-                        <directory>${basedir}/../../rust/target/release/</directory>
+                        <directory>${basedir}/../../../rust/target/release/</directory>
                         <targetPath>META-INF/native/${native.platform}</targetPath>
                         <includes>
                             <include>liblakesoul_io_c.so</include>
@@ -408,7 +408,7 @@ SPDX-License-Identifier: Apache-2.0
                                     <executable>cargo</executable>
                                     <commandlineArgs>build --release --features lakesoul-io-c/hdfs --package lakesoul-io-c
                                     </commandlineArgs>
-                                    <workingDirectory>${basedir}/../../rust</workingDirectory>
+                                    <workingDirectory>${basedir}/../../../rust</workingDirectory>
                                 </configuration>
                             </execution>
                             <execution>
@@ -422,7 +422,7 @@ SPDX-License-Identifier: Apache-2.0
                                     <commandlineArgs>
                                         clean
                                     </commandlineArgs>
-                                    <workingDirectory>${basedir}/../../rust</workingDirectory>
+                                    <workingDirectory>${basedir}/../../../rust</workingDirectory>
                                 </configuration>
                             </execution>
                         </executions>
@@ -477,7 +477,7 @@ SPDX-License-Identifier: Apache-2.0
             <build>
                 <resources>
                     <resource>
-                        <directory>${basedir}/../../rust/target/x86_64-unknown-linux-gnu/release/</directory>
+                        <directory>${basedir}/../../../rust/target/x86_64-unknown-linux-gnu/release/</directory>
                         <targetPath>META-INF/native/linux-x86_64</targetPath>
                         <includes>
                             <include>liblakesoul_io_c.so</include>
@@ -508,7 +508,7 @@ SPDX-License-Identifier: Apache-2.0
                                     <commandlineArgs>build --target x86_64-unknown-linux-gnu --release --all-features
                                         --package lakesoul-io-c
                                     </commandlineArgs>
-                                    <workingDirectory>${basedir}/../../rust</workingDirectory>
+                                    <workingDirectory>${basedir}/../../../rust</workingDirectory>
                                 </configuration>
                             </execution>
                             <execution>
@@ -522,7 +522,7 @@ SPDX-License-Identifier: Apache-2.0
                                     <commandlineArgs>
                                         clean
                                     </commandlineArgs>
-                                    <workingDirectory>${basedir}/../../rust</workingDirectory>
+                                    <workingDirectory>${basedir}/../../../rust</workingDirectory>
                                 </configuration>
                             </execution>
                         </executions>
@@ -539,7 +539,7 @@ SPDX-License-Identifier: Apache-2.0
             <build>
                 <resources>
                     <resource>
-                        <directory>${basedir}/../../rust/target/release/</directory>
+                        <directory>${basedir}/../../../rust/target/release/</directory>
                         <targetPath>META-INF/native/linux-x86_64</targetPath>
                         <includes>
                             <include>liblakesoul_io_c.so</include>

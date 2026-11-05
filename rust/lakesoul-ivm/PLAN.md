@@ -255,7 +255,7 @@ hash 桶列 == 合并键 == `TableInfo.partitions` 的 hash 段
 `metadata_client.rs:594-641` 冲突分支为空：read_version != cur_version 时保留当前
 （别人的）snapshot、version+1 提交，**新文件永不发布**（静默丢更新）；
 `transaction_insert_partition_info` 只返回行数，PK 冲突时重试同 payload 最终报
-PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com/dmetasoul/lakesoul/meta/DBManager.java:559-711`）。
+PG 唯一键错误。JVM 侧有完整实现（`integrations/lakesoul-common/src/main/java/com/dmetasoul/lakesoul/meta/DBManager.java:559-711`）。
 
 **改动（镜像 JVM）**
 

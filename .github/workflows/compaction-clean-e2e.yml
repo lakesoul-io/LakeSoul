@@ -7,7 +7,7 @@ name: CI with compaction clean e2e Test
 on:
   push:
     paths-ignore:
-      - "javadoc/**"
+      - "integrations/javadoc/**"
       - "website/**"
       - "cpp/**"
       - "python/**"
@@ -17,7 +17,7 @@ on:
       - "main"
   pull_request:
     paths-ignore:
-      - "javadoc/**"
+      - "integrations/javadoc/**"
       - "website/**"
       - "cpp/**"
       - "python/**"
@@ -120,10 +120,10 @@ jobs:
           uv sync --no-install-project --python 3.10 --group dev
       - name: Copy jars to work-dir
         run: |
-          FLINK_JAR_NAME="$(python script/get_jar_name.py lakesoul-flink)"
-          SPARK_JAR_NAME="$(python script/get_jar_name.py lakesoul-spark)"
-          cp "./lakesoul-flink/target/$FLINK_JAR_NAME" ./script/benchmark/work-dir
-          cp "./lakesoul-spark/target/$SPARK_JAR_NAME" ./script/benchmark/work-dir
+          FLINK_JAR_NAME="$(python script/get_jar_name.py integrations/lakesoul-flink)"
+          SPARK_JAR_NAME="$(python script/get_jar_name.py integrations/lakesoul-spark)"
+          cp "./integrations/lakesoul-flink/target/$FLINK_JAR_NAME" ./script/benchmark/work-dir
+          cp "./integrations/lakesoul-spark/target/$SPARK_JAR_NAME" ./script/benchmark/work-dir
           echo "FLINK_JAR_NAME=$FLINK_JAR_NAME" >> "$GITHUB_ENV"
           echo "SPARK_JAR_NAME=$SPARK_JAR_NAME" >> "$GITHUB_ENV"
       - name: Run compaction clean e2e

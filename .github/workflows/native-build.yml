@@ -7,14 +7,14 @@ name: Linux x64 build
 on:
   push:
     paths-ignore:
-      - "javadoc/**"
+      - "integrations/javadoc/**"
       - "website/**"
       - "**.md"
     branches:
       - "main"
   pull_request:
     paths-ignore:
-      - "javadoc/**"
+      - "integrations/javadoc/**"
       - "website/**"
       - "**.md"
     branches:
@@ -127,16 +127,16 @@ jobs:
       - name: Verify packaged native libraries
         run: |
           python script/verify_native_jars.py \
-            "lakesoul-spark/target/$(python script/get_jar_name.py lakesoul-spark)" \
-            "lakesoul-flink/target/$(python script/get_jar_name.py lakesoul-flink)" \
-            "lakesoul-presto/target/$(python script/get_jar_name.py lakesoul-presto)"
+            "integrations/lakesoul-spark/target/$(python script/get_jar_name.py integrations/lakesoul-spark)" \
+            "integrations/lakesoul-flink/target/$(python script/get_jar_name.py integrations/lakesoul-flink)" \
+            "integrations/lakesoul-presto/target/$(python script/get_jar_name.py integrations/lakesoul-presto)"
       - name: Upload Package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: maven-package-upload
           path: |
-            lakesoul-spark/target/lakesoul-spark-*.jar
-            lakesoul-flink/target/lakesoul-flink-*.jar
-            lakesoul-presto/target/lakesoul-presto-*.jar
+            integrations/lakesoul-spark/target/lakesoul-spark-*.jar
+            integrations/lakesoul-flink/target/lakesoul-flink-*.jar
+            integrations/lakesoul-presto/target/lakesoul-presto-*.jar
           retention-days: 3
           if-no-files-found: error

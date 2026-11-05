@@ -150,8 +150,8 @@ Same-trace conformance is executable:
 - `rust/lakesoul-metadata/tests/commit_occ.rs` — direct Rust client: concurrent
   appends, compaction merging, update merging, stale update/compaction
   conflicts, idempotent replay, multi-partition publication.
-- `lakesoul-common/src/test/java/.../CommitConformanceTest.java` — the same
+- `integrations/lakesoul-common/src/test/java/.../CommitConformanceTest.java` — the same
   traces through the JVM coordinator with JDBC DAOs.
-- `lakesoul-common/src/test/java/.../CommitNativeConformanceTest.java` — the
+- `integrations/lakesoul-common/src/test/java/.../CommitNativeConformanceTest.java` — the
   same traces through the JVM adapter into the native coordinator, verified
   against JDBC-read state.

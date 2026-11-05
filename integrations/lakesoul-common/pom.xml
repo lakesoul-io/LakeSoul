@@ -13,6 +13,7 @@ SPDX-License-Identifier: Apache-2.0
         <artifactId>lakesoul-parent</artifactId>
         <groupId>com.dmetasoul</groupId>
         <version>${revision}</version>
+        <relativePath>../../pom.xml</relativePath>
     </parent>
     <modelVersion>4.0.0</modelVersion>
     <name>LakeSoul Common</name>
@@ -28,7 +29,7 @@ SPDX-License-Identifier: Apache-2.0
                 <configuration>
                     <attachProtoSources>false</attachProtoSources>
                     <clearOutputDirectory>false</clearOutputDirectory>
-                    <protoSourceRoot>${basedir}/../rust/lakesoul-metadata-proto/src</protoSourceRoot>
+                    <protoSourceRoot>${basedir}/../../rust/lakesoul-metadata-proto/src</protoSourceRoot>
                     <outputDirectory>${basedir}/target/generated-sources</outputDirectory>
                 </configuration>
                 <executions>
@@ -215,7 +216,7 @@ SPDX-License-Identifier: Apache-2.0
             <build>
                 <resources>
                     <resource>
-                        <directory>${basedir}/../rust/target/release/</directory>
+                        <directory>${basedir}/../../rust/target/release/</directory>
                         <targetPath>META-INF/native/${native.platform}</targetPath>
                         <includes>
                             <include>liblakesoul_metadata_c.so</include>
@@ -247,7 +248,7 @@ SPDX-License-Identifier: Apache-2.0
                                     <executable>cargo</executable>
                                     <commandlineArgs>build --release --all-features --package lakesoul-metadata-c
                                     </commandlineArgs>
-                                    <workingDirectory>${basedir}/../rust/</workingDirectory>
+                                    <workingDirectory>${basedir}/../../rust/</workingDirectory>
                                 </configuration>
                             </execution>
                             <execution>
@@ -261,7 +262,7 @@ SPDX-License-Identifier: Apache-2.0
                                     <commandlineArgs>
                                         clean
                                     </commandlineArgs>
-                                    <workingDirectory>${basedir}/../rust/</workingDirectory>
+                                    <workingDirectory>${basedir}/../../rust/</workingDirectory>
                                 </configuration>
                             </execution>
                         </executions>
@@ -278,7 +279,7 @@ SPDX-License-Identifier: Apache-2.0
             <build>
                 <resources>
                     <resource>
-                        <directory>${basedir}/../rust/target/x86_64-unknown-linux-gnu/release/</directory>
+                        <directory>${basedir}/../../rust/target/x86_64-unknown-linux-gnu/release/</directory>
                         <targetPath>META-INF/native/linux-x86_64</targetPath>
                         <includes>
                             <include>liblakesoul_metadata_c.so</include>
@@ -309,7 +310,7 @@ SPDX-License-Identifier: Apache-2.0
                                     <commandlineArgs>build --target x86_64-unknown-linux-gnu --release --all-features
                                         --package lakesoul-metadata-c
                                     </commandlineArgs>
-                                    <workingDirectory>${basedir}/../rust/</workingDirectory>
+                                    <workingDirectory>${basedir}/../../rust/</workingDirectory>
                                 </configuration>
                             </execution>
                             <execution>
@@ -323,7 +324,7 @@ SPDX-License-Identifier: Apache-2.0
                                     <commandlineArgs>
                                         clean
                                     </commandlineArgs>
-                                    <workingDirectory>${basedir}/../rust/</workingDirectory>
+                                    <workingDirectory>${basedir}/../../rust/</workingDirectory>
                                 </configuration>
                             </execution>
                         </executions>
@@ -340,7 +341,7 @@ SPDX-License-Identifier: Apache-2.0
             <build>
                 <resources>
                     <resource>
-                        <directory>${basedir}/../rust/target/release/</directory>
+                        <directory>${basedir}/../../rust/target/release/</directory>
                         <targetPath>META-INF/native/${native.platform}</targetPath>
                         <includes>
                             <include>liblakesoul_metadata_c.so</include>
