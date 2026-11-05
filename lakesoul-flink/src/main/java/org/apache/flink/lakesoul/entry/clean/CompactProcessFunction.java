@@ -73,6 +73,13 @@ public class CompactProcessFunction
         String commitOp = value.commitOp;
         List<String> snapshot = value.snapshot;
         CleanUtils cleanUtils = new CleanUtils();
+        if (timestamp == -5L) {
+            // A partition_info row was deleted.  Forward a deletion sentinel
+            // so CompactionBroadcastProcessFunction can remove exactly this
+            // table/partition entry from its broadcast state.
+            out.collect(new CompactionOut(tableId, partitionDesc, version, timestamp, false, -1L));
+            return;
+        }
         if (snapshot.size() == 1) {
             try (Connection pgConnection = dataSource.getConnection()) { // ✅ 自动关闭连接
                 // UpdateCommit and old-format compaction replace the partition snapshot, so older
