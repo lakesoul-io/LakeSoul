@@ -98,6 +98,23 @@ public class CompactionBroadcastProcessFunction
                 ctx.getBroadcastState(broadcastStateDesc);
 
         String key = value.getTableId() + "/" + value.getPartitionDesc();
+
+        // A deleted partition_info row arrives as a -5 sentinel from
+        // CompactProcessFunction.  Remove only that table/partition entry:
+        // clearing the whole broadcast map here used to wipe the state of
+        // every other table, which sent their later records to the hourly
+        // timer instead of cleaning them.
+        if (value.getTimestamp() == -5L) {
+            CompactProcessFunction.CompactionOut current = state.get(key);
+            // An old partition version may be deleted while a newer version
+            // is still live; only drop state that the deleted row covered.
+            if (current == null || value.getVersion() >= current.getVersion()) {
+                state.remove(key);
+                log.info("Removed compaction state for deleted partition {}", key);
+            }
+            return;
+        }
+
         CompactProcessFunction.CompactionOut current = state.get(key);
 
         if (current == null) {
@@ -153,19 +170,14 @@ public class CompactionBroadcastProcessFunction
         if (valueTimestamp == -5L) {
             if (elementState.value() != null) {
                 log.info("检测到[{}] 在其他地方被清理，清理相关状态", ctx.getCurrentKey());
-                // System.out.println("检测到" + ctx.getCurrentKey() + " 在其他地方被清理，清理相关状态");
                 elementState.clear();
                 if (timerTsState.value() != null) {
                     ctx.timerService().deleteProcessingTimeTimer(timerTsState.value());
-                    // 如果识别出大于最新compaction记录的数据被删除，识为为该分区被删除，清理相关状态
-                    if (compaction != null) {
-                        if (value.version >= state.get(key).version) {
-                            log.info("清除" + state.get(key) + "压缩状态");
-                            state.clear();
-                        }
-                    }
+                    timerTsState.clear();
                 }
             }
+            // The broadcast state is read-only here; the deletion sentinel
+            // from CompactProcessFunction removes the table/partition entry.
         } else {
             elementState.update(value);
             if (compaction != null) {
