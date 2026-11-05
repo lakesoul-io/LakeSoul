@@ -55,7 +55,7 @@ LakeSoul 是中间那层引擎：存储还是你的对象存储，文件仍是�
 ## 它不是什么
 
 - 不是 drop-in 的 PostgreSQL。协议和 SQL 表面是原生实现的，覆盖范围见[兼容性矩阵](../engine/postgres/compatibility.md)。
-- 不是表格式。这里有一个能跑、能改的引擎。
+- 不是表格式。这里有一个能跑、能改的引擎；catalog、提交协议和存储布局见[架构与表格式](../engine/architecture.md)。
 - 不拥有你的存储。文件留在你的 bucket 里，保持开放格式。
 
 ## 下一步

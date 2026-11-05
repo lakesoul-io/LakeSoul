@@ -67,6 +67,7 @@ metadata and `5433` for the endpoint.
 ## Next
 
 - [Engine overview](../engine/overview.md)
+- [Deep dive: engine architecture and table format](../engine/architecture.md)
 - [PostgreSQL front end](../engine/postgres/overview.md)
 - [Incremental SQL](../engine/incremental-sql/overview.md)
 - [Vector search](../engine/vector-search/overview.md)
