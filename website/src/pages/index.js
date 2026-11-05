@@ -111,7 +111,7 @@ export default function Home() {
     },
     {
       tag: t('homepage.pillar2.tag', 'Incremental'),
-      title: t('homepage.pillar2.title', 'Incremental by default'),
+      title: t('homepage.pillar2.title', 'Efficient incremental SQL'),
       body: t(
         'homepage.pillar2.body',
         'With incremental SQL enabled, INSERT ... SELECT updates its target from the commit log: only changed rows are written, and the result matches a full recompute.'
@@ -135,28 +135,20 @@ export default function Home() {
     },
   ];
 
-  const positions = [
+  const contrasts = [
     {
       title: t('homepage.fit.format.title', 'A table format'),
       body: t(
         'homepage.fit.format.body',
-        'Describes how files are laid out. No engine, no indexes, no incremental state.'
+        'Only file layout. No catalog, no execution engine, no indexes, no incremental state.'
       ),
     },
     {
       title: t('homepage.fit.database.title', 'A database'),
       body: t(
         'homepage.fit.database.body',
-        'Ships an engine, but you adopt its storage and operate its cluster.'
+        'Ships an engine, but the storage is its own. You move data in and operate its cluster.'
       ),
-    },
-    {
-      title: 'LakeSoul',
-      body: t(
-        'homepage.fit.lakesoul.body',
-        'An engine over your object storage, in open files, with a stateless compute layer on top.'
-      ),
-      active: true,
     },
   ];
 
@@ -188,22 +180,40 @@ export default function Home() {
 
       <Section
         tinted
-        title={t('homepage.fit.title', 'Where it fits')}
+        title={t('homepage.fit.title', 'How it differs')}
         subtitle={t(
           'homepage.fit.subtitle',
-          'A table format stops at file layout. A database owns your storage. LakeSoul is the engine in between.'
+          'A table format only describes file layout. A database ships an engine but owns your storage. LakeSoul is neither: it is the whole engine, and your data stays in your object storage.'
         )}>
         <div className={styles.fitGrid}>
-          {positions.map((position) => (
-            <article
-              className={
-                position.active ? `${styles.fitCard} ${styles.fitCardActive}` : styles.fitCard
-              }
-              key={position.title}>
-              <h3 className={styles.fitTitle}>{position.title}</h3>
-              <p className={styles.fitBody}>{position.body}</p>
+          {contrasts.map((contrast) => (
+            <article className={styles.fitCard} key={contrast.title}>
+              <h3 className={styles.fitTitle}>{contrast.title}</h3>
+              <p className={styles.fitBody}>{contrast.body}</p>
             </article>
           ))}
+        </div>
+
+        <div className={styles.fitCallout}>
+          <span className={styles.fitCalloutBadge}>LakeSoul</span>
+          <h3 className={styles.fitCalloutTitle}>
+            {t(
+              'homepage.fit.lakesoul.title',
+              'The catalog, the format, the engine and the indexes — storage stays yours.'
+            )}
+          </h3>
+          <p className={styles.fitCalloutBody}>
+            {t(
+              'homepage.fit.lakesoul.body',
+              'Your data stays in your object storage, in open files. What you run on top is the whole engine, not just a compute layer.'
+            )}
+          </p>
+          <div className={styles.fitChips}>
+            <span>{t('homepage.fit.chipCatalog', 'catalog')}</span>
+            <span>{t('homepage.fit.chipEngine', 'execution engine')}</span>
+            <span>{t('homepage.fit.chipIndex', 'vector + full-text indexes')}</span>
+            <span>{t('homepage.fit.chipStorage', 'your object storage')}</span>
+          </div>
         </div>
       </Section>
 

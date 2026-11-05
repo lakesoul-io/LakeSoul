@@ -1,5 +1,6 @@
 {
   "label": "参考",
   "position": 7,
-  "collapsible": false
+  "collapsible": true,
+  "collapsed": true
 }

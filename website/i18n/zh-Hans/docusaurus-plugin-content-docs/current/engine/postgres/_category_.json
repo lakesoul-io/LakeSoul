@@ -1,5 +1,6 @@
 {
   "label": "PostgreSQL",
   "position": 1,
-  "collapsible": false
+  "collapsible": true,
+  "collapsed": true
 }

@@ -1,5 +1,6 @@
 {
   "label": "连接器",
   "position": 4,
-  "collapsible": false
+  "collapsible": true,
+  "collapsed": true
 }

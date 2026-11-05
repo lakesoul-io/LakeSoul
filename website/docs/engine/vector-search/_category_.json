@@ -1,5 +1,6 @@
 {
   "label": "Vector Search",
   "position": 3,
-  "collapsible": false
+  "collapsible": true,
+  "collapsed": true
 }

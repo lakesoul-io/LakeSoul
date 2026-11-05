@@ -1,5 +1,6 @@
 {
   "label": "Multimodal",
   "position": 9,
-  "collapsible": false
+  "collapsible": true,
+  "collapsed": true
 }

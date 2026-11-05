@@ -1,5 +1,6 @@
 {
   "label": "全文检索",
   "position": 4,
-  "collapsible": false
+  "collapsible": true,
+  "collapsed": true
 }

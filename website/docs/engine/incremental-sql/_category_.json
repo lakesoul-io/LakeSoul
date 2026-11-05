@@ -1,5 +1,6 @@
 {
   "label": "Incremental SQL",
   "position": 2,
-  "collapsible": false
+  "collapsible": true,
+  "collapsed": true
 }

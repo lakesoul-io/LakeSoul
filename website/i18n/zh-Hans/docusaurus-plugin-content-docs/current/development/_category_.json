@@ -1,5 +1,6 @@
 {
   "label": "开发者指南",
   "position": 6,
-  "collapsible": false
+  "collapsible": true,
+  "collapsed": true
 }

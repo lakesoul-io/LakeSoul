@@ -1,5 +1,6 @@
 {
   "label": "运维",
   "position": 5,
-  "collapsible": false
+  "collapsible": true,
+  "collapsed": true
 }

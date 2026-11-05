@@ -52,7 +52,7 @@ work. This is not a drop-in PostgreSQL: `UPDATE`, `DELETE`, `COPY`, `RETURNING`
 and non-`READ COMMITTED` isolation are refused with `0A000`, and writes must be
 autocommit.
 
-## Incremental by default
+## Incremental SQL
 
 With incremental SQL enabled for the session, an `INSERT ... SELECT` issued from
 `psql` updates its target incrementally: each run reads only the commits since its
@@ -180,9 +180,10 @@ storage configuration and the full local setup.
 
 ## How it compares
 
-A table format stops at file layout. A database gives you an engine, but you adopt
-its storage. LakeSoul is the engine in between: your object storage, in open files,
-with a stateless compute layer on top.
+A table format only describes file layout: no engine, no indexes, no incremental
+state. A database ships an engine, but owns the storage. LakeSoul is neither: the
+catalog, the storage format, the execution engine and the indexes are one
+codebase, while the data stays in your object storage, in open files.
 
 | | Postgres extension | Postgres + columnar mirror | Managed Postgres | LakeSoul |
 | --- | --- | --- | --- | --- |

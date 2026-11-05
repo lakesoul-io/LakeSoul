@@ -355,13 +355,13 @@
     "message": "LF AI & Data Sandbox 项目"
   },
   "homepage.hero.line1": {
-    "message": "Postgres 原生。"
+    "message": "Postgres 原生"
   },
   "homepage.hero.line2": {
-    "message": "向量原生。"
+    "message": "Vector 原生"
   },
   "homepage.hero.line3": {
-    "message": "Python 原生。"
+    "message": "Python 原生"
   },
   "homepage.hero.subtitle": {
     "message": "一个开放的湖仓引擎 —— 共享 catalog、ACID upsert、SQL 查询、增量计算、向量检索与 Python SDK，纯 Rust 实现，运行在你的对象存储之上。"
@@ -382,13 +382,13 @@
     "message": "CREATE TABLE、INSERT ... ON CONFLICT 和查询都在引擎里执行。psql、JDBC、pg_catalog 都可用，包括 psql \\d；不是 sidecar，也不走 CDC 管道。"
   },
   "homepage.pillar2.title": {
-    "message": "默认就是增量"
+    "message": "高效的 SQL 增量计算"
   },
   "homepage.pillar2.body": {
-    "message": "开启增量 SQL 后，INSERT ... SELECT 基于 commit log 增量更新目标表：只写变化的行，结果与全量重算一致。"
+    "message": "开启增量 SQL 后，INSERT ... SELECT 基于 commit log 更新目标表：只写变化的行，结果与全量重算一致。"
   },
   "homepage.pillar3.title": {
-    "message": "向量原生"
+    "message": "Vector 原生"
   },
   "homepage.pillar3.body": {
     "message": "pgvector 风格的 SQL，查的是对象存储上的 IVF + RaBitQ 索引。结构化过滤与 ANN 在同一个计划里，旁边还有 BM25 全文检索。"
@@ -400,25 +400,25 @@
     "message": "SDK 通过 Rust IO 直接读取对象存储。Daft、Ray、PyTorch、Pandas —— 路径上没有网关，也没有第二份数据。"
   },
   "homepage.fit.title": {
-    "message": "它处在什么位置"
+    "message": "它和表格式、数据库有什么不同"
   },
   "homepage.fit.subtitle": {
-    "message": "表格式停在文件布局。数据库拥有你的存储。LakeSoul 是中间那层引擎。"
+    "message": "表格式只描述文件布局；数据库自带引擎，但存储也归它。LakeSoul 两者都不是：它是一整套引擎，而数据仍然留在你的对象存储。"
   },
   "homepage.fit.format.title": {
     "message": "表格式"
   },
   "homepage.fit.format.body": {
-    "message": "描述文件怎么摆。没有引擎、没有索引、没有增量状态。"
+    "message": "只有文件布局。没有 catalog、没有执行引擎、没有索引，也没有增量状态。"
   },
   "homepage.fit.database.title": {
     "message": "数据库"
   },
   "homepage.fit.database.body": {
-    "message": "自带引擎，但你要采用它的存储并运维它的集群。"
+    "message": "自带引擎，但存储也是它的。你要把数据搬进去，并运维它的集群。"
   },
   "homepage.fit.lakesoul.body": {
-    "message": "在你的对象存储之上的一层引擎，文件保持开放，计算无状态。"
+    "message": "数据留在你的对象存储、保持开放文件。你在上面运行的是整套引擎，而不只是计算层。"
   },
   "homepage.arch.title": {
     "message": "架构"
@@ -485,5 +485,20 @@
   },
   "homepage.arch.chipIncremental": {
     "message": "增量 SQL"
+  },
+  "homepage.fit.lakesoul.title": {
+    "message": "catalog、格式、引擎和索引都在这里，存储仍然是你的"
+  },
+  "homepage.fit.chipCatalog": {
+    "message": "catalog"
+  },
+  "homepage.fit.chipEngine": {
+    "message": "执行引擎"
+  },
+  "homepage.fit.chipIndex": {
+    "message": "向量 + 全文索引"
+  },
+  "homepage.fit.chipStorage": {
+    "message": "你的对象存储"
   }
 }

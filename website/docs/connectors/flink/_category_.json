@@ -1,5 +1,6 @@
 {
   "label": "Flink",
   "position": 2,
-  "collapsible": false
+  "collapsible": true,
+  "collapsed": true
 }

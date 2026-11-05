@@ -1,5 +1,6 @@
 {
   "label": "Full-Text Search",
   "position": 4,
-  "collapsible": false
+  "collapsible": true,
+  "collapsed": true
 }

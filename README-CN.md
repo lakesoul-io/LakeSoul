@@ -19,7 +19,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # LakeSoul
 
-**Postgres 原生。向量原生。Python 原生。**<br>
+**Postgres 原生 Vector 原生 Python 原生**<br>
 一个开放的湖仓引擎 —— 共享 catalog、ACID upsert、SQL 查询、增量计算、向量检索与 Python SDK，纯 Rust 实现，运行在你的对象存储之上。
 
 把已经在用的工具接上来 —— `psql`、Python、pgvector 风格的 SQL —— 底下是一个增量湖仓。
@@ -45,7 +45,7 @@ SELECT region, sum(amount) FROM orders GROUP BY 1;
 
 wire protocol、扩展查询协议、`pg_catalog` 和 `psql \d` 都可用。但这不是 drop-in 的 PostgreSQL：`UPDATE`、`DELETE`、`COPY`、`RETURNING` 以及非 `READ COMMITTED` 隔离级别会返回 `0A000`，写入必须在 autocommit 下执行。
 
-## 默认就是增量
+## 高效的 SQL 增量计算
 
 开启增量 SQL 后，从 `psql` 发出的一条 `INSERT ... SELECT` 会以增量方式更新目标表：每次执行只读取游标之后的提交，只写入发生变化的行，结果与全量重算一致。
 
@@ -161,7 +161,7 @@ print(catalog.scan("t").to_arrow_table().num_rows)
 
 ## 与其他方案对比
 
-表格式停在“文件怎么摆”。数据库给你一个引擎，但你要采用它的存储。LakeSoul 是中间那层引擎：存储还是你的对象存储，文件仍是开放格式，上面是一层无状态的计算。
+表格式只描述文件怎么摆；数据库自带引擎，但存储也归它。LakeSoul 两者都不是：catalog、存储格式、执行引擎和索引都在同一套代码里，而数据仍然留在你的对象存储，文件保持开放。
 
 | | Postgres 扩展 | Postgres + 列存镜像 | 托管 Postgres | LakeSoul |
 | --- | --- | --- | --- | --- |

@@ -1,5 +1,6 @@
 {
   "label": "Operations",
   "position": 5,
-  "collapsible": false
+  "collapsible": true,
+  "collapsed": true
 }
