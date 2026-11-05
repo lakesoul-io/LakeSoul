@@ -41,6 +41,7 @@ mod read_only;
 mod server;
 mod session;
 mod session_settings;
+mod subscribe;
 use rootcause::Report;
 
 pub(crate) type Result<T, E = Report> = std::result::Result<T, E>;
@@ -78,6 +79,9 @@ struct Cli {
 
     #[command(flatten)]
     pub memory_sampling: MemorySamplingArgs,
+
+    #[command(flatten)]
+    pub subscribe: subscribe::SubscribeArgs,
 
     /// Bind address, defaults to the loopback interface; container/cluster
     /// deployments set `LAKESOUL_PG_BIND=0.0.0.0` explicitly.
@@ -132,6 +136,9 @@ async fn main_inner(cli: Cli) -> Result<()> {
     ))?;
     cancel::register_query_metrics();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
+    if cli.subscribe.subscribe {
+        return subscribe::run(cli.subscribe, Arc::clone(&meta_client)).await;
+    }
     let auth_manager = Arc::new(AuthManager::new());
     cli.memory.install_vortex_decode_budget()?;
     let memory_pool = cli.memory.create_pool();

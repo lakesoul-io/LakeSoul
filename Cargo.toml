@@ -111,11 +111,10 @@ vortex-datafusion = { git = "https://github.com/mag1c1an1/vortex.git", rev = "79
 futures = "0.3"
 async-trait = "0.1"
 # async runtime
-# pingora 0.9.0 creates a zero-capacity BufReader on accept, which tokio 1.54
-# rejects with "capacity must be greater than zero"
-# (https://github.com/cloudflare/pingora/issues/1059). Remove the upper bound
-# once pingora ships the fix.
-tokio = { version = ">=1.53.3, <1.54", features = ["full"] }
+# tokio 1.54 is required by pg_walstream 0.10; pingora 0.9.1 carries the
+# zero-capacity BufReader fix for tokio 1.54
+# (https://github.com/cloudflare/pingora/issues/1059).
+tokio = { version = "1.54.1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io", "compat"] }
 tokio-stream = "0.1.9"
 # web
