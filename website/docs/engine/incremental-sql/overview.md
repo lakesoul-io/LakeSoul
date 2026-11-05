@@ -24,6 +24,8 @@ is the work: a run over 10 new rows touches 10 rows, not the whole table.
   is no separate definition to create, no scheduled job, and no refresh command.
 - **Change-driven.** The engine reads the source table's commits, folds them into
   the query, and writes the delta to the target.
+- **Partition-aware.** A run finds the source partitions whose commits changed and
+  reads only their new data; the target is updated only in the partitions it owns.
 - **CDC-enabled target.** The target is a keyed table with `use_cdc = true` and
   the `rowKinds` change column, so a run can write retractions for rows that
   disappear.

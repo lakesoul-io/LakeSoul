@@ -17,7 +17,7 @@ One engine provides four capabilities over the same tables and the same snapshot
 | --- | --- | --- |
 | **PostgreSQL front end** | `psql`, JDBC, `pgx`, `pg_catalog`, DDL, `INSERT`, upserts and queries executed by the engine | [PostgreSQL](postgres/overview.md) |
 | **Incremental SQL** | `INSERT ... SELECT` that reads only new commits and writes only changed rows | [Incremental SQL](incremental-sql/overview.md) |
-| **Vector search** | pgvector-style SQL over lake-resident IVF + RaBitQ indexes | [Vector search](vector-search/overview.md) |
+| **Vector search** | pgvector-compatible SQL over lake-resident IVF + RaBitQ indexes | [Vector search](vector-search/overview.md) |
 | **Full-text search** | BM25 ranking over Tantivy indexes in the same engine | [Full-text search](full-text-search/overview.md) |
 
 ## One snapshot, several readers

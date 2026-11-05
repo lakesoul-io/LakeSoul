@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![PG wire](https://img.shields.io/badge/PG%20wire-DDL%20%2B%20INSERT%20%2B%20query-green.svg)](#postgres-native)
-[![pgvector](https://img.shields.io/badge/pgvector-style%20SQL-purple.svg)](#vector-native)
+[![pgvector](https://img.shields.io/badge/pgvector-compatible%20SQL-purple.svg)](#vector-native)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-yellow.svg)](#python-native)
 [![Daft](https://img.shields.io/badge/Daft-multimodal-orange.svg)](#python-native)
 [![Release](https://img.shields.io/github/v/release/lakesoul-io/LakeSoul?include_prereleases&sort=semver)](https://github.com/lakesoul-io/LakeSoul/releases)
@@ -23,7 +23,7 @@ SPDX-License-Identifier: Apache-2.0
 An open lakehouse engine — a shared catalog, ACID upserts, SQL, incremental
 compute, vector search and a Python SDK, in Rust, over your object storage.
 
-Point the tools you already use at it — `psql`, Python, pgvector-style SQL — and
+Point the tools you already use at it — `psql`, Python, pgvector-compatible SQL — and
 get an incremental lakehouse underneath.
 
 [Quick Start](#quick-start) · [Architecture](#architecture) · [Docs](https://lakesoul-io.github.io/docs/engine/overview)
@@ -77,7 +77,7 @@ GROUP BY 1, 2;
 
 ## Vector-native
 
-pgvector-style SQL over ANN indexes that live next to the data. New rows update
+pgvector-compatible SQL over ANN indexes that live next to the data. New rows update
 the index; there is no rebuild and no second system to operate.
 
 ```sql

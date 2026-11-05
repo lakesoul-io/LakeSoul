@@ -42,7 +42,7 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 - `CREATE TABLE AS`、`RETURNING`
 - 显式事务块或多语句 batch 内的写入
 - `REPEATABLE READ` 和 `SERIALIZABLE`
-- `CREATE TABLE ... PARTITION BY`、`LIKE`、`CLONE`、`INHERITS`
+- `LIKE`、`CLONE`、`INHERITS`
 - 列默认值、`UNIQUE`、`CHECK`、`FOREIGN KEY` 约束
 - DDL 里的 `STORED AS` / `LOCATION`（改用 `WITH (file_format = ...)`）
 - PostgreSQL 扩展、PL/pgSQL、`LISTEN`/`NOTIFY`

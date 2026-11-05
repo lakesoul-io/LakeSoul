@@ -11,9 +11,11 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-LakeSoul answers pgvector-style queries over ANN indexes that live in the same
-object storage as the table. The index is maintained as data is written; there is
-no separate vector database to operate.
+LakeSoul answers pgvector-compatible queries over ANN indexes that live in the
+same object storage as the table. The compatibility is at the PostgreSQL wire
+protocol and SQL syntax level: the `vector` type, the distance operators
+(`<->`, `<#>`, `<=>`), and `SET ivfflat.probes`. The index is maintained as data
+is written; there is no separate vector database to operate.
 
 ## What you get
 

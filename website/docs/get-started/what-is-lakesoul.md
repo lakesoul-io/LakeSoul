@@ -25,7 +25,7 @@ required to read the data, and no second copy of the data for search or AI.
 - **Incremental SQL.** An `INSERT ... SELECT` can maintain its target from the
   table's own commit log, so each run reads only the commits since its cursor and
   writes only the changed rows.
-- **Vector and full-text search.** pgvector-style SQL over IVF + RaBitQ indexes,
+- **Vector and full-text search.** pgvector-compatible SQL over IVF + RaBitQ indexes,
   and BM25 full-text search over Tantivy indexes, both living next to the data
   and maintained on write.
 - **Python-native reads.** The Python SDK reads object storage directly through
@@ -61,7 +61,7 @@ stateless compute layer on top.
 
 | Interface | For | What you get |
 | --- | --- | --- |
-| **PostgreSQL** | SQL, BI, applications | Wire protocol and SQL dialect, `psql`, JDBC, `pgx`, pgvector-style operators |
+| **PostgreSQL** | SQL, BI, applications | Wire protocol and SQL dialect, `psql`, JDBC, `pgx`, pgvector-compatible operators |
 | **Python** | AI and data science | Daft, Ray, PyTorch, Pandas and DuckDB reading object storage directly |
 | **Connectors** | Existing compute stacks | Spark, Flink, Presto and other engines, through the same Rust IO path |
 

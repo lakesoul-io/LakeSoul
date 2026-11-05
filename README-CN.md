@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![PG wire](https://img.shields.io/badge/PG%20wire-DDL%20%2B%20INSERT%20%2B%20query-green.svg)](#postgres-%E5%8E%9F%E7%94%9F)
-[![pgvector](https://img.shields.io/badge/pgvector-style%20SQL-purple.svg)](#%E5%90%91%E9%87%8F%E5%8E%9F%E7%94%9F)
+[![pgvector](https://img.shields.io/badge/pgvector-compatible%20SQL-purple.svg)](#%E5%90%91%E9%87%8F%E5%8E%9F%E7%94%9F)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-yellow.svg)](#python-%E5%8E%9F%E7%94%9F)
 [![Daft](https://img.shields.io/badge/Daft-multimodal-orange.svg)](#python-%E5%8E%9F%E7%94%9F)
 [![Release](https://img.shields.io/github/v/release/lakesoul-io/LakeSoul?include_prereleases&sort=semver)](https://github.com/lakesoul-io/LakeSoul/releases)
@@ -22,7 +22,7 @@ SPDX-License-Identifier: Apache-2.0
 **Postgres 原生。Vector 原生。Python 原生。**<br>
 一个开放的湖仓引擎 —— 共享 catalog、ACID upsert、SQL 查询、增量计算、向量检索与 Python SDK，纯 Rust 实现，运行在你的对象存储之上。
 
-把已经在用的工具接上来 —— `psql`、Python、pgvector 风格的 SQL —— 底下是一个增量湖仓。
+把已经在用的工具接上来 —— `psql`、Python、兼容 pgvector 的 SQL —— 底下是一个增量湖仓。
 
 [快速开始](#快速开始) · [架构](#架构) · [文档](https://lakesoul-io.github.io/zh-Hans/docs/engine/overview)
 
@@ -67,7 +67,7 @@ GROUP BY 1, 2;
 
 ## 向量原生
 
-pgvector 风格的 SQL，查的是和数据放在一起的 ANN 索引。新行写入会更新索引，不重建，也不需要再运维一套系统。
+兼容 pgvector 的 SQL，查的是和数据放在一起的 ANN 索引。新行写入会更新索引，不重建，也不需要再运维一套系统。
 
 ```sql
 -- documents.embedding 是 vector(768)

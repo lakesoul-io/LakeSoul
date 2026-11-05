@@ -43,7 +43,7 @@ These return SQLSTATE `0A000` rather than being silently ignored:
 - `CREATE TABLE AS`, `RETURNING`
 - Writes inside an explicit transaction block or a multi-statement batch
 - `REPEATABLE READ` and `SERIALIZABLE`
-- `CREATE TABLE ... PARTITION BY`, `LIKE`, `CLONE`, `INHERITS`
+- `LIKE`, `CLONE`, `INHERITS`
 - Column defaults, `UNIQUE`, `CHECK` and `FOREIGN KEY` constraints
 - `STORED AS` / `LOCATION` in DDL (use `WITH (file_format = ...)`)
 - PostgreSQL extensions, PL/pgSQL and `LISTEN`/`NOTIFY`

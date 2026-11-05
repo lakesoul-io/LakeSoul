@@ -123,7 +123,7 @@ export default function Home() {
       title: t('homepage.pillar3.title', 'Vector-native'),
       body: t(
         'homepage.pillar3.body',
-        'pgvector-style SQL over IVF + RaBitQ indexes on object storage. Structured filters and ANN in one plan, with BM25 full-text search beside it.'
+        'pgvector-compatible SQL over IVF + RaBitQ indexes on object storage. Structured filters and ANN in one plan, with BM25 full-text search beside it.'
       ),
     },
     {

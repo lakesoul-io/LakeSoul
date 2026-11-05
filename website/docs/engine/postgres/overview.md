@@ -37,7 +37,7 @@ for the metadata database and the first table.
 | **DDL** | `CREATE TABLE`, `DROP TABLE`, primary keys, `PARTITIONED BY`, `WITH (...)` options |
 | **Writes** | `INSERT ... VALUES`, `INSERT ... SELECT`, `ON CONFLICT DO NOTHING`, `ON CONFLICT ... DO UPDATE SET col = EXCLUDED.col` (every non-key column) |
 | **Queries** | The DataFusion SQL surface, including joins, aggregates, windows, CTEs and set operations |
-| **Search** | pgvector-style vector operators, `text_score` for BM25 |
+| **Search** | pgvector-compatible vector operators, `text_score` for BM25 |
 | **Incremental SQL** | `INSERT ... SELECT` maintains its target when the session enables it |
 | **Transactions** | Autocommit; `READ COMMITTED`; failed-transaction recovery |
 | **Isolation** | One database maps to one LakeSoul namespace; user tables live in `public` |

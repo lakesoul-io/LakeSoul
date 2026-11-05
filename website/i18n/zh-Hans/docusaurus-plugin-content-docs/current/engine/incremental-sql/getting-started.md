@@ -31,7 +31,8 @@ CREATE TABLE daily_revenue (
   revenue numeric(20,4),
   "rowKinds" text,
   PRIMARY KEY (day, region)
-) WITH (hash_bucket_num = 4, use_cdc = true);
+) PARTITIONED BY (day)
+  WITH (hash_bucket_num = 4, use_cdc = true);
 ```
 
 - 主键标识目标行；对于消失的行，引擎会写删除标记。
@@ -39,7 +40,7 @@ CREATE TABLE daily_revenue (
 - `use_cdc = true` 开启目标表写入撤回记录所需的变更流。没有它，运行无法删除源表里消失的行。
 - 如果目标 schema 缺少 epoch 列，引擎会自动加上。
 
-目标表也可以用 `PARTITIONED BY` 做范围分区。一次运行只替换它拥有的分区，其他分区保持不变。
+如果源表做了范围分区，一次运行会检测哪些源分区有新提交，只读取这些分区的数据。目标表也可以做范围分区：运行只替换它拥有的分区，其他分区保持不变。
 
 ## 3. 运行查询
 

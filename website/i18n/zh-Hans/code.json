@@ -391,7 +391,7 @@
     "message": "Vector 原生"
   },
   "homepage.pillar3.body": {
-    "message": "pgvector 风格的 SQL，查的是对象存储上的 IVF + RaBitQ 索引。结构化过滤与 ANN 在同一个计划里，旁边还有 BM25 全文检索。"
+    "message": "兼容 pgvector 的 SQL，查的是对象存储上的 IVF + RaBitQ 索引。结构化过滤与 ANN 在同一个计划里，旁边还有 BM25 全文检索。"
   },
   "homepage.pillar4.title": {
     "message": "Python 原生"

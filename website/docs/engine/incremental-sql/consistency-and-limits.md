@@ -42,6 +42,12 @@ A rebuild happens when:
   overwriting it. Compaction commits are allowed.
 - Ordinary writes to other partitions can proceed concurrently.
 
+## Partitions
+
+A run detects the source partitions whose commits changed and reads only their
+new data. The target is replaced only in the partitions it owns; other target
+partitions are left untouched.
+
 ## Retention
 
 A run needs the source history between its cursor and the present. Do not enable

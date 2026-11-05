@@ -48,7 +48,7 @@ Vector and full-text indexes are table properties. They are stored under the
 table path, built per (partition, bucket) shard, and maintained as rows are
 written.
 
-- **Vector**: IVF + RaBitQ, queried with pgvector-style operators.
+- **Vector**: IVF + RaBitQ, queried with pgvector-compatible operators.
 - **Full text**: Tantivy BM25, queried with `text_match` and `text_score`.
 
 ## Incremental SQL

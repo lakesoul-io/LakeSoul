@@ -39,7 +39,7 @@ LakeSoul 的**表**属于一个 **namespace**。PostgreSQL 端点把 database �
 
 向量和全文索引是表的属性。它们存放在表路径下，按（分区，bucket）shard 构建，随写入维护。
 
-- **向量**：IVF + RaBitQ，用 pgvector 风格操作符查询。
+- **向量**：IVF + RaBitQ，用兼容 pgvector 的操作符查询。
 - **全文**：Tantivy BM25，用 `text_match` 和 `text_score` 查询。
 
 ## 增量 SQL

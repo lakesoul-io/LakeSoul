@@ -11,7 +11,7 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-LakeSoul 在表数据所在的对象存储上维护 ANN 索引，用 pgvector 风格的 SQL 查询。索引随写入维护，不需要另起一套向量数据库。
+LakeSoul 在表数据所在的对象存储上维护 ANN 索引，用兼容 pgvector 的 SQL 查询。这里的兼容指的是 PostgreSQL wire protocol 和 SQL 语法：`vector` 类型、距离操作符（`<->`、`<#>`、`<=>`）以及 `SET ivfflat.probes`。索引随写入维护，不需要另起一套向量数据库。
 
 ## 能获得什么
 

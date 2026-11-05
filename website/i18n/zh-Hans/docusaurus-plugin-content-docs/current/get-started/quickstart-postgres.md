@@ -91,7 +91,7 @@ SELECT region, sum(amount) FROM orders GROUP BY 1;
 - [DDL](../engine/postgres/ddl.md) —— 表选项、类型、分区，以及会被拒绝的子句。
 - [写入与 Upsert](../engine/postgres/insert-and-upsert.md) —— `ON CONFLICT` 语义、重复键和写入路径。
 - [增量 SQL](../engine/incremental-sql/getting-started.md) —— 用 `INSERT ... SELECT` 基于 commit log 维护目标表。
-- [向量检索](../engine/vector-search/overview.md) —— 湖上 ANN 索引上的 pgvector 风格 SQL。
+- [向量检索](../engine/vector-search/overview.md) —— 湖上 ANN 索引上的 兼容 pgvector 的 SQL。
 
 ## 对象存储
 

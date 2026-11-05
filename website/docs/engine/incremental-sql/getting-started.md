@@ -32,7 +32,8 @@ CREATE TABLE daily_revenue (
   revenue numeric(20,4),
   "rowKinds" text,
   PRIMARY KEY (day, region)
-) WITH (hash_bucket_num = 4, use_cdc = true);
+) PARTITIONED BY (day)
+  WITH (hash_bucket_num = 4, use_cdc = true);
 ```
 
 - The primary key identifies a target row; the engine writes delete markers for
@@ -43,8 +44,9 @@ CREATE TABLE daily_revenue (
   Without it, a run cannot remove rows that disappear from the source.
 - The engine adds its epoch column to the target schema if it is missing.
 
-The target can also be range-partitioned with `PARTITIONED BY`. A run replaces
-only the partitions it owns; other partitions are left alone.
+If the source is range-partitioned, a run detects which source partitions have
+new commits and reads only those partitions. The target can be range-partitioned
+too: a run replaces only the partitions it owns and leaves the others alone.
 
 ## 3. Run the query
 

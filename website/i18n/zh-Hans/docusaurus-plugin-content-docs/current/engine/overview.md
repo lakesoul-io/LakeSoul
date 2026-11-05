@@ -17,7 +17,7 @@ SPDX-License-Identifier: Apache-2.0
 | --- | --- | --- |
 | **PostgreSQL 前端** | `psql`、JDBC、`pgx`、`pg_catalog`、DDL、`INSERT`、upsert 和查询，由引擎执行 | [PostgreSQL](postgres/overview.md) |
 | **增量 SQL** | `INSERT ... SELECT` 只读新提交、只写变化的行 | [增量 SQL](incremental-sql/overview.md) |
-| **向量检索** | 湖上 IVF + RaBitQ 索引上的 pgvector 风格 SQL | [向量检索](vector-search/overview.md) |
+| **向量检索** | 湖上 IVF + RaBitQ 索引上的 兼容 pgvector 的 SQL | [向量检索](vector-search/overview.md) |
 | **全文检索** | 同一引擎里的 Tantivy BM25 排序 | [全文检索](full-text-search/overview.md) |
 
 ## 一份快照，多个读者

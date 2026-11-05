@@ -106,7 +106,7 @@ rejected.
   semantics, duplicate keys, and the write path.
 - [Incremental SQL](../engine/incremental-sql/getting-started.md) — maintain a
   target from the table's commit log with `INSERT ... SELECT`.
-- [Vector search](../engine/vector-search/overview.md) — pgvector-style SQL over
+- [Vector search](../engine/vector-search/overview.md) — pgvector-compatible SQL over
   lake-resident ANN indexes.
 
 ## Object storage
