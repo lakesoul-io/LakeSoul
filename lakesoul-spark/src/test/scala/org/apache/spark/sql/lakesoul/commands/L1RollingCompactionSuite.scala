@@ -47,7 +47,10 @@ class L1RollingCompactionSuite
         "com.dmetasoul.lakesoul.sql.LakeSoulSparkSessionExtension"
       )
       .set(LakeSoulSQLConf.COMPACTION_MAX_LEVEL0_FILE_NUM_LIMIT.key, "4")
-      .set(LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE.key, "100MB")
+      .set(
+        LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE.key,
+        "100MB"
+      )
       .set(LakeSoulSQLConf.COMPACTION_L1_TARGET_FILE_SIZE.key, "256MB")
       .set(LakeSoulSQLConf.COMPACTION_LOWLEVEL_ROLLING_ENABLED.key, "true")
       .set(LakeSoulSQLConf.COMPACTION_LOWLEVEL_ROLLING_TABLES.key, "")
@@ -158,24 +161,54 @@ class L1RollingCompactionSuite
     withTempDir { dir =>
       val data = new CorrectnessData(dir.getCanonicalPath)
       (0 until 4).foreach { version =>
-        data.write(Seq((1, version, s"latest-$version"),
-          (100 + version, version, s"unique-$version")))
+        data.write(
+          Seq(
+            (1, version, s"latest-$version"),
+            (100 + version, version, s"unique-$version")
+          )
+        )
       }
       val original = data.files
-      val input = original.map(f => new CompressDataFileInfo(
-        f.path, f.size, f.file_exist_cols, f.modification_time)).toList.asJava
+      val input = original
+        .map(f =>
+          new CompressDataFileInfo(
+            f.path,
+            f.size,
+            f.file_exist_cols,
+            f.modification_time
+          )
+        )
+        .toList
+        .asJava
       val conf = spark.sessionState.newHadoopConf()
       simpleOptions.foreach { case (key, value) => conf.set(key, value) }
-      conf.set(LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE.key, "10MB")
+      conf.set(
+        LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE.key,
+        "10MB"
+      )
       conf.unset("max_file_size")
       val info = getTableInfo(data.path)
-      val inputs = scala.collection.mutable.ArrayBuffer.empty[Seq[CompressDataFileInfo]]
-      val written = scala.collection.mutable.ArrayBuffer.empty[CompressDataFileInfo]
+      val inputs =
+        scala.collection.mutable.ArrayBuffer.empty[Seq[CompressDataFileInfo]]
+      val written =
+        scala.collection.mutable.ArrayBuffer.empty[CompressDataFileInfo]
       def compact(budget: Long) = {
-        val io = new CompactBucketIO(conf, input, info, info.table_path.toString,
-          "-5", 1, 3, budget, false, 0L, "parquet") {
+        val io = new CompactBucketIO(
+          conf,
+          input,
+          info,
+          info.table_path.toString,
+          "-5",
+          1,
+          3,
+          budget,
+          false,
+          0L,
+          "parquet"
+        ) {
           override protected def mergeSmallFileBatch(
-              files: java.util.List[CompressDataFileInfo], level: Int
+              files: java.util.List[CompressDataFileInfo],
+              level: Int
           ): java.util.List[CompressDataFileInfo] = {
             assert(level == 0)
             assert(files.size() <= 3)
@@ -187,13 +220,18 @@ class L1RollingCompactionSuite
             generated
           }
         }
-        try io.startCompactTask() finally io.close()
+        try io.startCompactTask()
+        finally io.close()
       }
       // This real-size budget cannot accommodate any two of the input files.
       val limited = compact(original.map(_.size).min)
       assertDiscardPathsAreSafe(limited)
       assert(inputs.isEmpty)
-      assert(limited.get("-5").asScala.map(_.getFilePath).toSeq == original.map(_.path).toSeq)
+      assert(
+        limited.get("-5").asScala.map(_.getFilePath).toSeq == original
+          .map(_.path)
+          .toSeq
+      )
       assert(limited.get(CompactBucketIO.DISCARD_FILE_LIST_KEY).isEmpty())
 
       val budget = 1024L * 1024
@@ -201,18 +239,29 @@ class L1RollingCompactionSuite
       val rolled = compact(budget)
       assertDiscardPathsAreSafe(rolled)
       assert(inputs.map(_.size).toSeq == Seq(3, 2))
-      assert(inputs.head.map(_.getFilePath) == original.take(3).map(_.path).toSeq)
+      assert(
+        inputs.head.map(_.getFilePath) == original.take(3).map(_.path).toSeq
+      )
       assert(inputs(1).head.getFilePath == written.head.getFilePath)
-      assert(inputs(1).tail.map(_.getFilePath) == original.drop(3).map(_.path).toSeq)
+      assert(
+        inputs(1).tail.map(_.getFilePath) == original.drop(3).map(_.path).toSeq
+      )
       val outputs = rolled.get("-5").asScala.toSeq
       assert(outputs.size == 1 && outputs.head.getFileSize < 10L * 1024 * 1024)
       assert(!outputs.head.getFilePath.contains("/compactdir"))
-      assert(rolled.get(CompactBucketIO.DISCARD_FILE_LIST_KEY).asScala
-        .exists(_.getFilePath == written.head.getFilePath))
-      checkAnswer(spark.read.parquet(outputs.head.getFilePath)
-        .select("id", "version", "payload"),
+      assert(
+        rolled
+          .get(CompactBucketIO.DISCARD_FILE_LIST_KEY)
+          .asScala
+          .exists(_.getFilePath == written.head.getFilePath)
+      )
+      checkAnswer(
+        spark.read
+          .parquet(outputs.head.getFilePath)
+          .select("id", "version", "payload"),
         Seq(Row(1, 3, "latest-3")) ++
-          (0 until 4).map(v => Row(100 + v, v, s"unique-$v")))
+          (0 until 4).map(v => Row(100 + v, v, s"unique-$v"))
+      )
       data.verify()
     }
   }
@@ -221,7 +270,9 @@ class L1RollingCompactionSuite
     checkRealRolling(level = 0)
   }
 
-  test("L1 rolls real files over six rounds to 10MB and preserves CDC through L2") {
+  test(
+    "L1 rolls real files over six rounds to 10MB and preserves CDC through L2"
+  ) {
     checkRealRolling(level = 1)
   }
 
@@ -255,12 +306,14 @@ class L1RollingCompactionSuite
         (0 until 6).foreach { round =>
           val before = if (round == 0) Array.empty[DataFileInfo] else data.files
           val oldSmall = before.filter(file => atLevel(file, level))
-          val oldCompleted = before.filter(file => atLevel(file, completedLevel))
+          val oldCompleted =
+            before.filter(file => atLevel(file, completedLevel))
           val oldCompletedPaths = oldCompleted.map(_.path).toSet
           val updateOnly = round == 2 || round == 5
           (0 until 4).foreach { batch =>
             val version = round * 4 + batch
-            val first = 1000 + (if (updateOnly) batch else version) * rowsPerBatch
+            val first =
+              1000 + (if (updateOnly) batch else version) * rowsPerBatch
             val rows = (first until first + rowsPerBatch).map { id =>
               (id, version, payload(id + version * 1000003, 4096))
             }
@@ -271,36 +324,56 @@ class L1RollingCompactionSuite
             } else if (cdc && version == 17) {
               Seq((2, version, "reinserted"))
             } else Seq.empty[(Int, Int, String)]
-            data.write(rows ++ Seq((1, version, s"latest-$version")) ++ special,
+            data.write(
+              rows ++ Seq((1, version, s"latest-$version")) ++ special,
               if (cdc && version == 5) Set(2) else Set.empty[Int],
-              verifyAfterWrite = false)
+              verifyAfterWrite = false
+            )
           }
           data.verify()
           val inputSnapshot = data.files
           val l0Inputs = inputSnapshot.filter(file => atLevel(file, 0))
-          assert(l0Inputs.nonEmpty && l0Inputs.forall(_.size < l0Target),
-            s"Round $round must start with genuinely small L0 files")
+          assert(
+            l0Inputs.nonEmpty && l0Inputs.forall(_.size < l0Target),
+            s"Round $round must start with genuinely small L0 files"
+          )
 
           data.compact(Some(3))
           val after = data.files
           val small = after.filter(file => atLevel(file, level))
           val completed = after.filter(file => atLevel(file, completedLevel))
           val completedPaths = completed.map(_.path).toSet
-          assert(small.length <= 1, s"Round $round left multiple unfinished L$level files")
+          assert(
+            small.length <= 1,
+            s"Round $round left multiple unfinished L$level files"
+          )
           assert(small.forall(_.size < target))
           assert(completed.forall(_.size >= target))
-          assert(after.filter(file => atLevel(file, 0)).forall(_.size < l0Target))
-          assert(oldCompletedPaths.subsetOf(completedPaths),
-            "Completed files must stop participating in regular rolling")
-          assert(completed.take(oldCompleted.length).map(_.path).toSeq ==
-            oldCompleted.map(_.path).toSeq,
-            "Previously completed files must retain their priority order")
-          assert(after.take(completed.length).map(_.path).toSeq == completed.map(_.path).toSeq,
-            "Completed higher-level files must precede the unfinished lower-level tail")
-          if ((completedPaths -- oldCompletedPaths).nonEmpty) promotionRounds += 1
-          if (oldSmall.nonEmpty && small.nonEmpty
-              && oldSmall.head.path != small.head.path
-              && small.head.size > oldSmall.head.size) growingRounds += 1
+          assert(
+            after.filter(file => atLevel(file, 0)).forall(_.size < l0Target)
+          )
+          assert(
+            oldCompletedPaths.subsetOf(completedPaths),
+            "Completed files must stop participating in regular rolling"
+          )
+          assert(
+            completed.take(oldCompleted.length).map(_.path).toSeq ==
+              oldCompleted.map(_.path).toSeq,
+            "Previously completed files must retain their priority order"
+          )
+          assert(
+            after.take(completed.length).map(_.path).toSeq == completed
+              .map(_.path)
+              .toSeq,
+            "Completed higher-level files must precede the unfinished lower-level tail"
+          )
+          if ((completedPaths -- oldCompletedPaths).nonEmpty)
+            promotionRounds += 1
+          if (
+            oldSmall.nonEmpty && small.nonEmpty
+            && oldSmall.head.path != small.head.path
+            && small.head.size > oldSmall.head.size
+          ) growingRounds += 1
 
           if (round == 2) {
             // Rewriting existing keys crosses the INPUT target, but cannot
@@ -313,21 +386,35 @@ class L1RollingCompactionSuite
           }
           inputSnapshot.foreach { file =>
             val path = new Path(file.path)
-            assert(path.getFileSystem(spark.sessionState.newHadoopConf()).exists(path),
-              "Compaction must keep the previous snapshot's paths readable")
+            assert(
+              path
+                .getFileSystem(spark.sessionState.newHadoopConf())
+                .exists(path),
+              "Compaction must keep the previous snapshot's paths readable"
+            )
           }
           val stablePaths = after.map(_.path).toSeq
           LakeSoulTable.forPath(data.path).newCompaction(fileNumLimit = Some(3))
-          assert(data.files.map(_.path).toSeq == stablePaths,
-            "No new input means no additional rolling rewrite")
+          assert(
+            data.files.map(_.path).toSeq == stablePaths,
+            "No new input means no additional rolling rewrite"
+          )
         }
       }
-      assert(growingRounds >= 2, "Real unfinished outputs must grow over multiple rounds")
-      assert(promotionRounds >= 2, "The workload must reach the fixed target more than once")
+      assert(
+        growingRounds >= 2,
+        "Real unfinished outputs must grow over multiple rounds"
+      )
+      assert(
+        promotionRounds >= 2,
+        "The workload must reach the fixed target more than once"
+      )
     }
   }
 
-  test("L0 reconsiders an earlier injected split when the pass reduces file count") {
+  test(
+    "L0 reconsiders an earlier injected split when the pass reduces file count"
+  ) {
     checkSplitL0Outputs(alwaysSplit = false)
   }
 
@@ -339,81 +426,140 @@ class L1RollingCompactionSuite
     withTempDir { dir =>
       val data = new CorrectnessData(dir.getCanonicalPath)
       (0 until 4).foreach { version =>
-        data.write(Seq((1, version, s"latest-$version"),
-          (100 + version, version, s"unique-$version")))
+        data.write(
+          Seq(
+            (1, version, s"latest-$version"),
+            (100 + version, version, s"unique-$version")
+          )
+        )
       }
       val original = data.files
-      val input = original.map(f => new CompressDataFileInfo(
-        f.path, f.size, f.file_exist_cols, f.modification_time)).toList.asJava
+      val input = original
+        .map(f =>
+          new CompressDataFileInfo(
+            f.path,
+            f.size,
+            f.file_exist_cols,
+            f.modification_time
+          )
+        )
+        .toList
+        .asJava
       val conf = spark.sessionState.newHadoopConf()
       simpleOptions.foreach { case (key, value) => conf.set(key, value) }
       val info = getTableInfo(data.path)
       val origin = scala.collection.mutable.Map.empty[String, Int]
-      original.zipWithIndex.foreach { case (file, index) => origin(file.path) = index }
+      original.zipWithIndex.foreach { case (file, index) =>
+        origin(file.path) = index
+      }
       var calls = 0
-      val io = new CompactBucketIO(conf, input, info, info.table_path.toString,
-        "-5", 1, 2, Long.MaxValue, false, 0L, "parquet") {
+      val io = new CompactBucketIO(
+        conf,
+        input,
+        info,
+        info.table_path.toString,
+        "-5",
+        1,
+        2,
+        Long.MaxValue,
+        false,
+        0L,
+        "parquet"
+      ) {
         override protected def mergeSmallFileBatch(
-            files: java.util.List[CompressDataFileInfo], level: Int
+            files: java.util.List[CompressDataFileInfo],
+            level: Int
         ): java.util.List[CompressDataFileInfo] = {
           calls += 1
-          assert(files.size() <= 2, "Every IO batch must respect readFileNumLimit")
-          assert(calls <= 8, "Writer splits must not cause an endless rolling loop")
+          assert(
+            files.size() <= 2,
+            "Every IO batch must respect readFileNumLimit"
+          )
+          assert(
+            calls <= 8,
+            "Writer splits must not cause an endless rolling loop"
+          )
           if (alwaysSplit || calls == 1) {
             // Ordered copies exercise split-output control flow. This does not
             // reproduce the Native writer's actual file-splitting conditions.
-            files.asScala.map { file =>
-              val source = new Path(file.getFilePath)
-              val destination = new Path(source.getParent,
-                s"split-$calls-${source.getName}")
-              val fs = source.getFileSystem(conf)
-              assert(org.apache.hadoop.fs.FileUtil.copy(
-                fs, source, fs, destination, false, false, conf))
-              origin(destination.toString) = origin(file.getFilePath)
-              new CompressDataFileInfo(destination.toString, file.getFileSize,
-                file.getFileExistCols, fs.getFileStatus(destination).getModificationTime)
-            }.toList.asJava
+            files.asScala
+              .map { file =>
+                val source = new Path(file.getFilePath)
+                val destination =
+                  new Path(source.getParent, s"split-$calls-${source.getName}")
+                val fs = source.getFileSystem(conf)
+                assert(
+                  org.apache.hadoop.fs.FileUtil
+                    .copy(fs, source, fs, destination, false, false, conf)
+                )
+                origin(destination.toString) = origin(file.getFilePath)
+                new CompressDataFileInfo(
+                  destination.toString,
+                  file.getFileSize,
+                  file.getFileExistCols,
+                  fs.getFileStatus(destination).getModificationTime
+                )
+              }
+              .toList
+              .asJava
           } else super.mergeSmallFileBatch(files, level)
         }
       }
-      val result = try io.startCompactTask() finally io.close()
+      val result =
+        try io.startCompactTask()
+        finally io.close()
       assertDiscardPathsAreSafe(result)
       val outputs = result.get("-5").asScala.toSeq
       if (alwaysSplit) {
         assert(calls == 3 && outputs.size == 4)
         assert(outputs.map(file => origin(file.getFilePath)) == Seq(0, 1, 2, 3))
       } else {
-        assert(calls == 4,
-          "The earlier small split must be merged again after the first pass")
+        assert(
+          calls == 4,
+          "The earlier small split must be merged again after the first pass"
+        )
         assert(outputs.size == 1)
-        checkAnswer(spark.read.parquet(outputs.head.getFilePath)
-          .select("id", "version", "payload"),
+        checkAnswer(
+          spark.read
+            .parquet(outputs.head.getFilePath)
+            .select("id", "version", "payload"),
           Seq(Row(1, 3, "latest-3")) ++
-            (0 until 4).map(v => Row(100 + v, v, s"unique-$v")))
+            (0 until 4).map(v => Row(100 + v, v, s"unique-$v"))
+        )
       }
       // Copies and intermediate outputs must not invalidate the old snapshot.
       data.verify()
     }
   }
 
-  test("L1 merges promoted L0 copies while preserving original snapshot paths") {
+  test(
+    "L1 merges promoted L0 copies while preserving original snapshot paths"
+  ) {
     withTempDir { dir =>
       val data = new CorrectnessData(dir.getCanonicalPath)
       (0 until 4).foreach { version =>
-        data.write(Seq((1, version, s"updated-$version"),
-          (100 + version, version, payload(version))))
+        data.write(
+          Seq(
+            (1, version, s"updated-$version"),
+            (100 + version, version, payload(version))
+          )
+        )
       }
       val original = data.files
       assert(original.length == 4)
       val promotion = original.map(_.size).min - 1
       val l1Target = 256L * 1024 * 1024
       assert(original.map(_.size).sum < l1Target)
-      val oldSnapshot = LakeSoulTable.forPath(data.path).toDF
+      val oldSnapshot = LakeSoulTable
+        .forPath(data.path)
+        .toDF
         .select("id", "version", "payload")
       val oldRows = oldSnapshot.collect().toSeq
-      withCompactionOptions(simpleOptions ++ Map(
-        LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE.key -> s"${promotion}B"
-      )) {
+      withCompactionOptions(
+        simpleOptions ++ Map(
+          LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE.key -> s"${promotion}B"
+        )
+      ) {
         data.compact()
         val compacted = data.files
         assert(compacted.length == 1)
@@ -426,23 +572,32 @@ class L1RollingCompactionSuite
           assert(fs.getFileStatus(source).getLen == file.size)
           // L0 copies retain their names and bytes, then become real consumed
           // L1 inputs rather than the final files in the committed snapshot.
-          val promoted = new Path(new Path(source.getParent, "compactdir1"), source.getName)
+          val promoted =
+            new Path(new Path(source.getParent, "compactdir1"), source.getName)
           assert(fs.getFileStatus(promoted).getLen == file.size)
           promoted.toString
         }.toSet
         val expectedDiscardPaths = original.map(_.path).toSet ++ promotedPaths
         expectedDiscardPaths.foreach { path =>
-          assert(SparkMetaVersion.dbManager.getDiscardCompressedFileByFilePath(path) != null,
-            s"Consumed original files and L1 copies must be recorded for cleanup: $path")
+          assert(
+            SparkMetaVersion.dbManager.getDiscardCompressedFileByFilePath(
+              path
+            ) != null,
+            s"Consumed original files and L1 copies must be recorded for cleanup: $path"
+          )
         }
-        assert(SparkMetaVersion.dbManager
-          .getDiscardCompressedFileByFilePath(compacted.head.path) == null)
+        assert(
+          SparkMetaVersion.dbManager
+            .getDiscardCompressedFileByFilePath(compacted.head.path) == null
+        )
         checkAnswer(oldSnapshot, oldRows)
       }
     }
   }
 
-  test("the shared switch and exact namespace.table allowlist govern both L0 and L1") {
+  test(
+    "the shared switch and exact namespace.table allowlist govern both L0 and L1"
+  ) {
     Seq(
       (false, "match", false),
       (true, "other_namespace", false),
@@ -453,38 +608,76 @@ class L1RollingCompactionSuite
       withTempDir { dir =>
         val data = new CorrectnessData(dir.getCanonicalPath)
         (0 until 4).foreach { version =>
-          data.write(Seq((1, version, s"latest-$version"),
-            (100 + version, version, s"unique-$version")))
+          data.write(
+            Seq(
+              (1, version, s"latest-$version"),
+              (100 + version, version, s"unique-$version")
+            )
+          )
         }
         val original = data.files
         val tableName = "rolling_config_fixture"
-        val info = getTableInfo(data.path).copy(short_table_name = Some(tableName))
+        val info =
+          getTableInfo(data.path).copy(short_table_name = Some(tableName))
         val tables = scope match {
           case "match" => s"unrelated.table, ${info.namespace}.$tableName "
           case "other_namespace" => s"${info.namespace}_other.$tableName"
-          case "other_table" => s"${info.namespace}.${tableName}_other"
-          case "all" => ""
-          case other => fail(s"Unexpected table scope: $other")
+          case "other_table"     => s"${info.namespace}.${tableName}_other"
+          case "all"             => ""
+          case other             => fail(s"Unexpected table scope: $other")
         }
         val conf = spark.sessionState.newHadoopConf()
         simpleOptions.foreach { case (key, value) => conf.set(key, value) }
-        conf.setBoolean(LakeSoulSQLConf.COMPACTION_LOWLEVEL_ROLLING_ENABLED.key, enabled)
+        conf.setBoolean(
+          LakeSoulSQLConf.COMPACTION_LOWLEVEL_ROLLING_ENABLED.key,
+          enabled
+        )
         conf.set(LakeSoulSQLConf.COMPACTION_LOWLEVEL_ROLLING_TABLES.key, tables)
-        conf.set(LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE.key, "1B")
-        conf.setInt(LakeSoulSQLConf.COMPACTION_MAX_LEVEL_FILE_NUM_LIMIT.key, 1000)
+        conf.set(
+          LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE.key,
+          "1B"
+        )
+        conf.setInt(
+          LakeSoulSQLConf.COMPACTION_MAX_LEVEL_FILE_NUM_LIMIT.key,
+          1000
+        )
         conf.set(LakeSoulSQLConf.COMPACTION_MAX_BYTES_FOR_LEVEL_BASE.key, "1GB")
         conf.unset("max_file_size")
-        val input = original.map(f => new CompressDataFileInfo(
-          f.path, f.size, f.file_exist_cols, f.modification_time)).toList.asJava
+        val input = original
+          .map(f =>
+            new CompressDataFileInfo(
+              f.path,
+              f.size,
+              f.file_exist_cols,
+              f.modification_time
+            )
+          )
+          .toList
+          .asJava
         var l0Merges = 0
         var l1Merges = 0
-        val io = new CompactBucketIO(conf, input, info, info.table_path.toString,
-          "-5", 1, 1, 1L, false, 0L, "parquet") {
+        val io = new CompactBucketIO(
+          conf,
+          input,
+          info,
+          info.table_path.toString,
+          "-5",
+          1,
+          1,
+          1L,
+          false,
+          0L,
+          "parquet"
+        ) {
           override protected def mergeSmallFileBatch(
-              files: java.util.List[CompressDataFileInfo], level: Int
+              files: java.util.List[CompressDataFileInfo],
+              level: Int
           ): java.util.List[CompressDataFileInfo] = {
             if (level == 0) {
-              assert(files.size() == 1, "Legacy L0 must rewrite singleton batches")
+              assert(
+                files.size() == 1,
+                "Legacy L0 must rewrite singleton batches"
+              )
               l0Merges += 1
             } else {
               assert(level == 1)
@@ -493,25 +686,41 @@ class L1RollingCompactionSuite
             super.mergeSmallFileBatch(files, level)
           }
         }
-        val result = try io.startCompactTask() finally io.close()
+        val result =
+          try io.startCompactTask()
+          finally io.close()
         assertDiscardPathsAreSafe(result)
         val outputs = result.get("-5").asScala.toSeq
-        assert(l0Merges == (if (shouldMerge) 0 else 4), s"enabled=$enabled tables=$tables")
-        assert(l1Merges == (if (shouldMerge) 1 else 0), s"enabled=$enabled tables=$tables")
+        assert(
+          l0Merges == (if (shouldMerge) 0 else 4),
+          s"enabled=$enabled tables=$tables"
+        )
+        assert(
+          l1Merges == (if (shouldMerge) 1 else 0),
+          s"enabled=$enabled tables=$tables"
+        )
         assert(outputs.forall(_.getFilePath.contains("/compactdir1/")))
         if (shouldMerge) {
           assert(outputs.size == 1)
-          checkAnswer(spark.read.parquet(outputs.head.getFilePath)
-            .select("id", "version", "payload"),
+          checkAnswer(
+            spark.read
+              .parquet(outputs.head.getFilePath)
+              .select("id", "version", "payload"),
             Seq(Row(1, 3, "latest-3")) ++
-              (0 until 4).map(v => Row(100 + v, v, s"unique-$v")))
+              (0 until 4).map(v => Row(100 + v, v, s"unique-$v"))
+          )
         } else {
           assert(outputs.size == 4)
           outputs.zipWithIndex.foreach { case (file, version) =>
-            checkAnswer(spark.read.parquet(file.getFilePath)
-              .select("id", "version", "payload"),
-              Seq(Row(1, version, s"latest-$version"),
-                Row(100 + version, version, s"unique-$version")))
+            checkAnswer(
+              spark.read
+                .parquet(file.getFilePath)
+                .select("id", "version", "payload"),
+              Seq(
+                Row(1, version, s"latest-$version"),
+                Row(100 + version, version, s"unique-$version")
+              )
+            )
           }
         }
         data.verify()
@@ -519,7 +728,9 @@ class L1RollingCompactionSuite
     }
   }
 
-  test("completed L1 files are retained without rewriting at the maximum level") {
+  test(
+    "completed L1 files are retained without rewriting at the maximum level"
+  ) {
     withTempDir { dir =>
       val path = dir.getCanonicalPath
       val options = simpleOptions ++ Map(
@@ -540,52 +751,99 @@ class L1RollingCompactionSuite
     }
   }
 
-  test("disabled rolling preserves legacy L0 count and post-add byte grouping") {
+  test(
+    "disabled rolling preserves legacy L0 count and post-add byte grouping"
+  ) {
     Seq((3, Long.MaxValue), (4, 20L * 1024)).foreach { case (limit, budget) =>
       withTempDir { dir =>
         val data = new CorrectnessData(dir.getCanonicalPath)
         (0 until 4).foreach { version =>
-          data.write(Seq((1, version, s"latest-$version"),
-            (100 + version, version, s"unique-$version")))
+          data.write(
+            Seq(
+              (1, version, s"latest-$version"),
+              (100 + version, version, s"unique-$version")
+            )
+          )
         }
         val original = data.files
         val info = getTableInfo(data.path)
         val conf = spark.sessionState.newHadoopConf()
         simpleOptions.foreach { case (key, value) => conf.set(key, value) }
-        conf.setBoolean(LakeSoulSQLConf.COMPACTION_LOWLEVEL_ROLLING_ENABLED.key, false)
-        conf.set(LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE.key, "1B")
-        conf.setInt(LakeSoulSQLConf.COMPACTION_MAX_LEVEL_FILE_NUM_LIMIT.key, 1000)
+        conf.setBoolean(
+          LakeSoulSQLConf.COMPACTION_LOWLEVEL_ROLLING_ENABLED.key,
+          false
+        )
+        conf.set(
+          LakeSoulSQLConf.COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE.key,
+          "1B"
+        )
+        conf.setInt(
+          LakeSoulSQLConf.COMPACTION_MAX_LEVEL_FILE_NUM_LIMIT.key,
+          1000
+        )
         conf.unset("max_file_size")
         // Planning sizes exceed the promotion threshold, but legacy L0 must
         // still rewrite them. The byte check admits a third 10KB file at 20KB.
-        val input = original.map(f => new CompressDataFileInfo(
-          f.path, 10L * 1024, f.file_exist_cols, f.modification_time)).toList.asJava
+        val input = original
+          .map(f =>
+            new CompressDataFileInfo(
+              f.path,
+              10L * 1024,
+              f.file_exist_cols,
+              f.modification_time
+            )
+          )
+          .toList
+          .asJava
         val batches = scala.collection.mutable.ArrayBuffer.empty[Seq[String]]
-        val io = new CompactBucketIO(conf, input, info, info.table_path.toString,
-          "-5", 1, limit, budget, false, 0L, "parquet") {
+        val io = new CompactBucketIO(
+          conf,
+          input,
+          info,
+          info.table_path.toString,
+          "-5",
+          1,
+          limit,
+          budget,
+          false,
+          0L,
+          "parquet"
+        ) {
           override protected def mergeSmallFileBatch(
-              files: java.util.List[CompressDataFileInfo], level: Int
+              files: java.util.List[CompressDataFileInfo],
+              level: Int
           ): java.util.List[CompressDataFileInfo] = {
             assert(level == 0, "Disabled rolling must not enter L1 rolling")
             batches += files.asScala.map(_.getFilePath).toVector
             super.mergeSmallFileBatch(files, level)
           }
         }
-        val result = try io.startCompactTask() finally io.close()
+        val result =
+          try io.startCompactTask()
+          finally io.close()
         assertDiscardPathsAreSafe(result)
         assert(batches.map(_.size).toSeq == Seq(3, 1))
         assert(batches.flatten.toSeq == original.map(_.path).toSeq)
         val outputs = result.get("-5").asScala.toSeq
         assert(outputs.size == 2)
         assert(outputs.forall(_.getFilePath.contains("/compactdir1/")))
-        Seq(0 until 3, 3 until 4).zip(outputs).foreach { case (versions, file) =>
-          checkAnswer(spark.read.parquet(file.getFilePath)
-            .select("id", "version", "payload"),
-            versions.map(v => Row(100 + v, v, s"unique-$v")) :+
-              Row(1, versions.last, s"latest-${versions.last}"))
+        Seq(0 until 3, 3 until 4).zip(outputs).foreach {
+          case (versions, file) =>
+            checkAnswer(
+              spark.read
+                .parquet(file.getFilePath)
+                .select("id", "version", "payload"),
+              versions.map(v => Row(100 + v, v, s"unique-$v")) :+
+                Row(1, versions.last, s"latest-${versions.last}")
+            )
         }
-        assert(result.get(CompactBucketIO.DISCARD_FILE_LIST_KEY).asScala
-          .map(_.getFilePath).toSet == original.map(_.path).toSet)
+        assert(
+          result
+            .get(CompactBucketIO.DISCARD_FILE_LIST_KEY)
+            .asScala
+            .map(_.getFilePath)
+            .toSet == original.map(_.path).toSet
+        )
         data.verify()
       }
     }
@@ -812,8 +1070,9 @@ class L1RollingCompactionSuite
       val count = if (round == 1) 512 else 16
       val first = 10000 + round * 100000 + index * count
       val version = round * 4 + index
-      val rows = (first until first + count).map(id => (id, version, payload(id))) :+
-        (1, version, s"middle-boundary-$version")
+      val rows =
+        (first until first + count).map(id => (id, version, payload(id))) :+
+          (1, version, s"middle-boundary-$version")
       if (round <= 1) rows :+ (2, version, s"middle-only-$version") else rows
     }
     val smallSize = calibrationSize((0 until 4).map(index => batch(0, index)))
@@ -835,16 +1094,17 @@ class L1RollingCompactionSuite
         data.compact()
         val large = data.files.filter(_.size >= target)
         assert(large.nonEmpty)
-        assert(large.forall(_.path.contains("/compactdir1/")),
-          "Completed files must not promote past the older unfinished L1 prefix")
+        assert(
+          large.forall(_.path.contains("/compactdir1/")),
+          "Completed files must not promote past the older unfinished L1 prefix"
+        )
         val largePaths = large.map(_.path).toSet
         val largeOrder = large.map(_.path).toSeq
         assert(data.files.exists(_.path == firstSmall))
         (0 until 4).foreach(index => data.write(batch(2, index)))
         data.compact()
-        val tail = data.files.filterNot(f =>
-          (largePaths + firstSmall).contains(f.path)
-        )
+        val tail =
+          data.files.filterNot(f => (largePaths + firstSmall).contains(f.path))
         assert(tail.length == 1 && tail.head.size < target)
         (0 until 4).foreach(index => data.write(batch(3, index)))
         data.compact()
@@ -852,8 +1112,10 @@ class L1RollingCompactionSuite
         assert(data.files.exists(_.path == firstSmall))
         assert(largePaths.subsetOf(data.files.map(_.path).toSet))
         assert(data.files.forall(_.path.contains("/compactdir1/")))
-        assert(data.files.take(large.length + 1).map(_.path).toSeq ==
-          Seq(firstSmall) ++ largeOrder)
+        assert(
+          data.files.take(large.length + 1).map(_.path).toSeq ==
+            Seq(firstSmall) ++ largeOrder
+        )
         assert(
           !data.files.exists(_.path == tail.head.path),
           "Only the trailing small interval must rewrite"
@@ -999,20 +1261,30 @@ class L1RollingCompactionSuite
   private def assertDiscardPathsAreSafe(
       result: java.util.Map[String, java.util.List[CompressDataFileInfo]]
   ): Unit = {
-    val discarded = result.get(CompactBucketIO.DISCARD_FILE_LIST_KEY).asScala.toSeq
+    val discarded =
+      result.get(CompactBucketIO.DISCARD_FILE_LIST_KEY).asScala.toSeq
     val discardPaths = discarded.map(_.getFilePath)
     val activePaths = result.asScala.iterator
-      .filter { case (partition, _) => partition != CompactBucketIO.DISCARD_FILE_LIST_KEY }
-      .flatMap { case (_, files) => files.asScala.iterator.map(_.getFilePath) }.toSet
-    assert(discardPaths.distinct.size == discardPaths.size,
-      "Each discarded path must be recorded only once")
-    assert(activePaths.intersect(discardPaths.toSet).isEmpty,
-      "Final output paths must never be marked discarded")
+      .filter { case (partition, _) =>
+        partition != CompactBucketIO.DISCARD_FILE_LIST_KEY
+      }
+      .flatMap { case (_, files) => files.asScala.iterator.map(_.getFilePath) }
+      .toSet
+    assert(
+      discardPaths.distinct.size == discardPaths.size,
+      "Each discarded path must be recorded only once"
+    )
+    assert(
+      activePaths.intersect(discardPaths.toSet).isEmpty,
+      "Final output paths must never be marked discarded"
+    )
     val conf = spark.sessionState.newHadoopConf()
     discarded.foreach { file =>
       val path = new Path(file.getFilePath)
-      assert(path.getFileSystem(conf).getFileStatus(path).isFile,
-        s"Discard must reference a real file: $path")
+      assert(
+        path.getFileSystem(conf).getFileStatus(path).isFile,
+        s"Discard must reference a real file: $path"
+      )
     }
   }
 
