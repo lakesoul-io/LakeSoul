@@ -182,6 +182,18 @@ impl KeyCodec {
             .convert_rows(keys.iter().map(|key| parser.parse(key.as_bytes())))
             .map_err(|e| report!("failed to decode index keys: {}", e))
     }
+
+    /// Decode keys the caller only borrows.
+    ///
+    /// Ranking keeps the surviving keys by reference (they live in the search
+    /// results), so decoding them without cloning each key saves one
+    /// allocation per candidate.
+    pub fn decode_refs(&self, keys: &[&IndexKey]) -> crate::Result<Vec<ArrayRef>> {
+        let parser = self.converter.parser();
+        self.converter
+            .convert_rows(keys.iter().map(|key| parser.parse(key.as_bytes())))
+            .map_err(|e| report!("failed to decode index keys: {}", e))
+    }
 }
 
 #[cfg(test)]

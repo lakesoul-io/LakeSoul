@@ -741,12 +741,12 @@ impl LakeSoulVectorSearchExec {
             lakesoul_io::vector::search::parse_query_vector(&column.query_csv, None)
                 .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
         let top_k = self.vector_search.candidates_per_bucket();
-        // Load every shard first (the index cache makes this a lookup after
-        // the first query) so that the probes themselves can run on their own
-        // threads: one bucket's probe does not depend on another's, and the
-        // index call is synchronous CPU work.
+        // The coverage proof only reads the resolved views, so check every
+        // shard first and then issue the index-cache lookups together: a hit
+        // is a moka read, and four of them overlap instead of queuing.
         let t_search = std::time::Instant::now();
-        let mut shards: Vec<LoadedShard> = Vec::with_capacity(groups.len());
+        let mut requested: Vec<(String, Arc<IndexCommitView<VectorSegmentEntry>>)> =
+            Vec::with_capacity(groups.len());
         for group in &groups {
             for (prefix, _bucket) in &group.index_prefixes {
                 let Some(view) = views.get(prefix).and_then(Option::as_ref) else {
@@ -766,44 +766,46 @@ impl LakeSoulVectorSearchExec {
                 ) {
                     return Ok(None);
                 }
-                // A hot query takes the loaded shard straight from the
-                // cache; the segment list is only rebuilt when it has to
-                // load.
-                let shard =
-                    match cached_typed_shard(prefix, view.commit_id, expected_key_kind)
-                        .await
-                    {
-                        Some(shard) => shard,
-                        None => {
-                            // The catalog view already holds the parsed segment
-                            // list; hand it over instead of rebuilding (and
-                            // re-parsing) the serialized transport form.
-                            let segments = crate::vector_batch::segment_entries(view);
-                            let Some(shard) = load_typed_shard(
-                                store,
-                                prefix,
-                                view.commit_id,
-                                view.version,
-                                &view.header,
-                                &segments,
-                                view.mutation_head.as_deref(),
-                                view.mutation_records,
-                                expected_key_kind,
-                            )
-                            .await
-                            .map_err(|error| {
-                                DataFusionError::External(error.into_boxed_error())
-                            })?
-                            else {
-                                // The shard was written for another key layout;
-                                // the reader path reports that case the same way.
-                                return Ok(None);
-                            };
-                            shard
-                        }
-                    };
-                shards.push(shard);
+                requested.push((prefix.clone(), Arc::clone(view)));
             }
+        }
+        let lookups = requested.iter().map(|(prefix, view)| {
+            cached_typed_shard(prefix, view.commit_id, expected_key_kind)
+        });
+        let cached = futures::future::join_all(lookups).await;
+        let mut shards: Vec<LoadedShard> = Vec::with_capacity(requested.len());
+        for ((prefix, view), cached_shard) in requested.into_iter().zip(cached) {
+            let shard = match cached_shard {
+                Some(shard) => shard,
+                None => {
+                    // A cold shard loads from its commit; the catalog view
+                    // already holds the parsed segment list, so hand it over
+                    // instead of rebuilding the serialized transport form.
+                    let segments = crate::vector_batch::segment_entries(view.as_ref());
+                    let Some(shard) = load_typed_shard(
+                        store,
+                        &prefix,
+                        view.commit_id,
+                        view.version,
+                        &view.header,
+                        &segments,
+                        view.mutation_head.as_deref(),
+                        view.mutation_records,
+                        expected_key_kind,
+                    )
+                    .await
+                    .map_err(|error| {
+                        DataFusionError::External(error.into_boxed_error())
+                    })?
+                    else {
+                        // The shard was written for another key layout; the
+                        // reader path reports that case the same way.
+                        return Ok(None);
+                    };
+                    shard
+                }
+            };
+            shards.push(shard);
         }
         let load_ms = t_search.elapsed().as_secs_f64() * 1000.0;
         let t_probe = std::time::Instant::now();

@@ -140,8 +140,10 @@ fn rank_query(
     if best.is_empty() {
         return Ok(Vec::new());
     }
-    let keys: Vec<IndexKey> = best.keys().map(|key| (*key).clone()).collect();
-    let ids = decode_ids(codec, &keys)?;
+    // The map already borrows the keys of the search results: decode them by
+    // reference instead of cloning one key per candidate.
+    let keys: Vec<&IndexKey> = best.keys().copied().collect();
+    let ids = decode_ids_refs(codec, &keys)?;
     Ok(best.values().copied().zip(ids).collect())
 }
 
@@ -803,9 +805,9 @@ pub(crate) fn can_skip_verification(
 }
 
 /// Decode a batch of index keys into their Int64 primary keys.
-fn decode_ids(codec: &KeyCodec, keys: &[IndexKey]) -> DFResult<Vec<i64>> {
+fn decode_ids_refs(codec: &KeyCodec, keys: &[&IndexKey]) -> DFResult<Vec<i64>> {
     let decoded = codec
-        .decode(keys)
+        .decode_refs(keys)
         .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
     let Some(array) = decoded.first() else {
         return Err(DataFusionError::Execution(
