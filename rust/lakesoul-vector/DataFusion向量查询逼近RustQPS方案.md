@@ -508,3 +508,43 @@ R24 的收尾清理（零拷贝 key 解码 + 并行取句柄）让批量中位 1
 单查询 **+15%**（相对最初 reader 路径 61.3 QPS/16.0 ms 为 5.6×），RSS 未升、Recall 不变；
 批量入口不受影响。剩余 2.74 ms 中 planning 占 ~2.35 ms（86%），属于"一条 SQL 一次查询"的固有
 成本；exec 只剩 ~0.51 ms。
+
+## 25. 单查询：执行计划快路径 + 表 provider 复用
+
+用 profile 把单查询 2.72 ms 拆细之后，两个"每条语句都重复"的成本浮出来：默认物理 planner 的
+逐节点转换/物理优化器（~0.16 ms）和 catalog 的 `table()` 查找（0.398 ms = 表信息 PG 查询
+0.215 + provider 构建 0.183）。对应的两项优化：
+
+1. **执行计划快路径**（`LAKESOUL_VECTOR_FAST_PLAN`，默认开）：优化后的逻辑计划恒为
+   `Limit(fetch) -> TableScan(projection, filters=[marker])`（index-only 已吃掉排序），因此直接
+   `provider.scan()` + `GlobalLimitExec`，跳过默认 planner；必须验证计划树含向量 exec 且输出
+   schema 与逻辑计划一致，否则回退。
+2. **表 provider 复用**（`LAKESOUL_TABLE_PROVIDER_CACHE`，默认开）：每条语句仍从 PG 读
+   `TableInfo`，只有元数据与 catalog options 指纹都没变时才复用已构建的 provider。
+
+| 版本（bits=1、200 query） | 单 query QPS 中位 | p50 | Recall |
+|---|---:|---:|---:|
+| R25 | 349 | 2.70–2.78 ms | 0.42035 |
+| + 执行计划快路径 | 362（+4.9%） | 2.596 ms | 0.42035 |
+| **+ 表 provider 复用** | **392（+8.9%）** | **2.407 ms** | 0.42035 |
+
+本轮合计 **+12%**，相对最初 reader 路径（61.3 QPS / 16.0 ms）为 6.4×。剩余 2.4 ms = logical
+optimizer ~0.86 + analyzer 剩余 ~0.75（含 0.215 ms 的表信息 PG 查询，出自快照新鲜度要求）+
+物理规划 ~0.16 + exec ~0.51。
+
+## 26. 大批次（10,000 query）：分块与有界并发
+
+用 10,000 个查询（从 base 均匀取样、分块 BLAS 精确 GT）验证批量入口的伸缩性：
+
+| 配置（bits=1、10k query） | QPS | p50 | peak RSS | CPU/query |
+|---|---:|---:|---:|---:|
+| 整批（10k 一个 chunk） | 13226–14211 | 0.067–0.072 ms | **547 MB** | 0.99 ms |
+| **分块 1024 + 最多 2 chunk 在飞** | **13190–13801** | 0.069–0.073 ms | **349–351 MB** | 0.99 ms |
+| 200 query（对照） | 11559 | 0.083 ms | 237 MB | 1.05 ms |
+
+结论：**批量 10,000 query 的 QPS 比 200 query 更高（约 +15–18%）** —— 每批的固定成本（快照列文件、
+index 解析、句柄装载、合并启动）被摊薄，CPU/query 从 1.05 ms 降到 0.99 ms；但把 10k 个查询同时
+留在内存里会让 peak RSS 从 238 MB 涨到 547 MB。因此 fast path 的批量上限设为 1024 个 query、
+最多 2 个 chunk 同时在飞：QPS 保持 ~13.4k，peak RSS 回到 350 MB。分块 512 或 2048 都会掉到
+11–13k，256 掉到 11k；两个参数都可用
+`LAKESOUL_VECTOR_BATCH_CHUNK_QUERIES` / `LAKESOUL_VECTOR_BATCH_CHUNKS_IN_FLIGHT` 覆盖。

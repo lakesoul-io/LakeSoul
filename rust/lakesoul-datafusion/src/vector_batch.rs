@@ -27,6 +27,7 @@ use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::common::{Column, ScalarValue};
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::logical_expr::Expr;
+use futures::{StreamExt, TryStreamExt};
 use lakesoul_common::IndexKind;
 use lakesoul_io::config::{LakeSoulIOConfigBuilder, OPTION_KEY_FILE_FILTER_PUSHDOWN};
 use lakesoul_io::index::key::{KeyCodec, KeyLayout};
@@ -50,6 +51,39 @@ use rootcause::compat::boxed_error::IntoBoxedError;
 /// candidate union grows with the batch. 32-64 is the measured optimum; 64
 /// keeps more queries per snapshot without reaching the union blow-up.
 pub const DEFAULT_BATCH_SIZE: usize = 64;
+
+/// Queries a fast-path batch takes at most.
+///
+/// The fast path keeps every candidate of a batch in memory from the probe
+/// until the merge, so the batch also bounds the query-phase footprint: a
+/// 200-query batch costs a few MB, while keeping 10k queries in one batch
+/// roughly doubles the process RSS for ~8% more QPS.  Chunking at this size
+/// keeps the footprint flat and, since chunks overlap, the throughput.
+fn max_fast_batch_queries() -> usize {
+    std::env::var("LAKESOUL_VECTOR_BATCH_CHUNK_QUERIES")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(MAX_FAST_BATCH_QUERIES)
+}
+
+const MAX_FAST_BATCH_QUERIES: usize = 1024;
+
+/// Chunks of one batch kept in flight at the same time.
+///
+/// One chunk already fills the machine: its index probes use the whole rayon
+/// pool and its ranking uses every core.  Overlapping two chunks hides the
+/// serial fold between the probe and the ranking without multiplying the
+/// memory a batch holds.
+fn max_concurrent_chunks() -> usize {
+    std::env::var("LAKESOUL_VECTOR_BATCH_CHUNKS_IN_FLIGHT")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(MAX_CONCURRENT_CHUNKS)
+}
+
+const MAX_CONCURRENT_CHUNKS: usize = 2;
 
 /// One batch vector search request.
 #[derive(Debug, Clone)]
@@ -297,7 +331,7 @@ fn adaptive_batch_size(
         )
     });
     if skip_everywhere {
-        request.queries.len().max(1)
+        request.queries.len().clamp(1, max_fast_batch_queries())
     } else {
         DEFAULT_BATCH_SIZE
     }
@@ -358,31 +392,42 @@ pub async fn search_vector_batch(
         adaptive_batch_size(&buckets, &views, cdc_column, request)
     };
     if request.queries.len() > batch_size {
-        // The chunks are independent, and one chunk's index probes (rayon)
-        // and reader/merge work do not fill every core on their own, so run
-        // them concurrently and concatenate the results in query order.
-        let mut chunk_futures = Vec::new();
+        // The chunks are independent; overlap a bounded number of them so the
+        // serial fold between probe and ranking of one chunk is hidden by the
+        // other's probe, while the number of queries held in memory stays
+        // bounded.  Results are concatenated in query order.
         let views = &views;
         let buckets = &buckets;
-        for chunk in request.queries.chunks(batch_size) {
-            let mut chunk_request = request.clone();
-            chunk_request.queries = chunk.to_vec();
-            chunk_futures.push(async move {
-                search_vector_batch_chunk(
-                    views,
-                    buckets,
-                    store,
-                    table_prefix,
-                    schema,
-                    primary_keys,
-                    cdc_column,
-                    &chunk_request,
-                )
-                .await
-            });
-        }
+        let chunk_futures =
+            request
+                .queries
+                .chunks(batch_size)
+                .enumerate()
+                .map(|(index, chunk)| {
+                    let mut chunk_request = request.clone();
+                    chunk_request.queries = chunk.to_vec();
+                    async move {
+                        let rows = search_vector_batch_chunk(
+                            views,
+                            buckets,
+                            store,
+                            table_prefix,
+                            schema,
+                            primary_keys,
+                            cdc_column,
+                            &chunk_request,
+                        )
+                        .await?;
+                        Ok::<_, DataFusionError>((index, rows))
+                    }
+                });
+        let mut chunked = futures::stream::iter(chunk_futures)
+            .buffer_unordered(max_concurrent_chunks())
+            .try_collect::<Vec<_>>()
+            .await?;
+        chunked.sort_by_key(|(index, _)| *index);
         let mut results = Vec::with_capacity(request.queries.len());
-        for chunk_results in futures::future::try_join_all(chunk_futures).await? {
+        for (_, chunk_results) in chunked {
             results.extend(chunk_results);
         }
         return Ok(results);

@@ -4,8 +4,9 @@
 
 //! The [`datafusion::catalog::SchemaProvider`] implementation for the LakeSoul.
 
+use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use datafusion::catalog::SchemaProvider;
@@ -14,6 +15,7 @@ use datafusion::error::DataFusionError;
 use datafusion::error::Result as DFResult;
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
+use lakesoul_metadata_proto::entity::TableInfo;
 use rootcause::compat::boxed_error::IntoBoxedError;
 use rootcause::prelude::ResultExt;
 use rootcause::report;
@@ -27,6 +29,90 @@ use crate::datasource::table_provider::LakeSoulTableProvider;
 use crate::error::df_external_err;
 use crate::lakesoul_table::LakeSoulTable;
 use crate::lakesoul_table::helpers::case_fold_table_name;
+
+/// A built table provider together with the exact metadata it was built from.
+///
+/// Building the provider parses the table schema, the table properties and the
+/// IO configuration, so a workload that resolves the same table on every
+/// statement pays that cost per statement.  The provider is deterministic in
+/// the table metadata (and the catalog's provider options), so it can be
+/// reused as long as both are unchanged; the table metadata itself is still
+/// read from the catalog on every lookup, so a schema or property change is
+/// picked up immediately.
+struct CachedTableProvider {
+    table_info: TableInfo,
+    provider_options: String,
+    provider: Arc<dyn TableProvider>,
+}
+
+static TABLE_PROVIDER_CACHE: LazyLock<
+    Mutex<HashMap<(String, String), CachedTableProvider>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+const TABLE_PROVIDER_CACHE_ENTRIES: usize = 256;
+
+/// Whether the provider cache is enabled (`LAKESOUL_TABLE_PROVIDER_CACHE=0`
+/// turns it off for A/B runs).
+fn table_provider_cache_enabled() -> bool {
+    !std::env::var("LAKESOUL_TABLE_PROVIDER_CACHE").is_ok_and(|value| value == "0")
+}
+
+/// Fingerprint of the catalog options that go into a provider.
+fn provider_options_fingerprint(options: &LakeSoulProviderOptions) -> String {
+    let mut object_store_options: Vec<(String, String)> = options
+        .object_store_options
+        .clone()
+        .into_inner()
+        .into_iter()
+        .collect();
+    object_store_options.sort();
+    format!(
+        "{}|{}|{:?}|{:?}",
+        options.parquet_force_view_types,
+        options.pushdown_filters,
+        object_store_options,
+        options.vector_field_metadata
+    )
+}
+
+fn cached_table_provider(
+    namespace: &str,
+    name: &str,
+    table_info: &TableInfo,
+    provider_options: &str,
+) -> Option<Arc<dyn TableProvider>> {
+    let cache = TABLE_PROVIDER_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = cache.get(&(namespace.to_string(), name.to_string()))?;
+    if &entry.table_info != table_info || entry.provider_options != provider_options {
+        return None;
+    }
+    Some(Arc::clone(&entry.provider))
+}
+
+fn store_table_provider(
+    namespace: &str,
+    name: &str,
+    table_info: TableInfo,
+    provider_options: String,
+    provider: Arc<dyn TableProvider>,
+) {
+    let mut cache = TABLE_PROVIDER_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cache.len() >= TABLE_PROVIDER_CACHE_ENTRIES {
+        cache.clear();
+    }
+    cache.insert(
+        (namespace.to_string(), name.to_string()),
+        CachedTableProvider {
+            table_info,
+            provider_options,
+            provider,
+        },
+    );
+}
 
 /// A [`SchemaProvider`] that query from LakeSoul metadata.
 pub struct LakeSoulNamespace {
@@ -133,6 +219,8 @@ impl SchemaProvider for LakeSoulNamespace {
             name, &self.namespace
         );
         let name = case_fold_table_name(name);
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_lookup = std::time::Instant::now();
         let table = match LakeSoulTable::for_namespace_and_name(
             &self.namespace,
             &name,
@@ -153,12 +241,55 @@ impl SchemaProvider for LakeSoulNamespace {
             table.table_info().table_id
         );
 
-        Ok(Some(
-            table
-                .as_provider_without_session(self.provider_options.clone())
-                .await
-                .map_err(|e| DataFusionError::External(e.into_boxed_error()))?,
-        ))
+        let table_info_ms = t_lookup.elapsed().as_secs_f64() * 1000.0;
+        // Building the provider is deterministic in the table metadata and the
+        // catalog options, both of which are validated here, so a statement
+        // resolving an unchanged table reuses it.
+        let cache_enabled = table_provider_cache_enabled();
+        let options_fingerprint =
+            cache_enabled.then(|| provider_options_fingerprint(&self.provider_options));
+        if let Some(options) = options_fingerprint.as_deref()
+            && let Some(provider) = cached_table_provider(
+                &self.namespace,
+                &name,
+                table.table_info().as_ref(),
+                options,
+            )
+        {
+            if profile {
+                debug!(
+                    table_info_ms,
+                    total_ms = t_lookup.elapsed().as_secs_f64() * 1000.0,
+                    cached = true,
+                    "lakesoul catalog table lookup"
+                );
+            }
+            return Ok(Some(provider));
+        }
+        let t_provider = std::time::Instant::now();
+        let provider = table
+            .as_provider_without_session(self.provider_options.clone())
+            .await
+            .map_err(|e| DataFusionError::External(e.into_boxed_error()))?;
+        if let Some(options) = options_fingerprint {
+            store_table_provider(
+                &self.namespace,
+                &name,
+                table.table_info().as_ref().clone(),
+                options,
+                Arc::clone(&provider),
+            );
+        }
+        if profile {
+            debug!(
+                table_info_ms,
+                provider_ms = t_provider.elapsed().as_secs_f64() * 1000.0,
+                total_ms = t_lookup.elapsed().as_secs_f64() * 1000.0,
+                cached = false,
+                "lakesoul catalog table lookup"
+            );
+        }
+        Ok(Some(provider))
     }
 
     /// If supported by the implementation, adds a new table to this schema.
