@@ -50,7 +50,9 @@ use lakesoul_io::execution_trace::instrument_record_batch_stream;
 use lakesoul_io::index::IndexLease;
 use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
-use lakesoul_metadata::index_catalog::VectorCatalog;
+use lakesoul_metadata::index_catalog::{
+    IndexCommitView, VectorCatalog, VectorSegmentEntry,
+};
 use lakesoul_vector::SegmentEntry;
 
 use crate::udf::vector_search_marker::{LakeSoulVectorSearchConfig, VectorSearchRequest};
@@ -90,6 +92,25 @@ pub struct LakeSoulVectorSearchExec {
     metrics: ExecutionPlanMetricsSet,
     /// Plan properties.
     properties: Arc<PlanProperties>,
+}
+
+/// Path arithmetic of one bucket group, computed once per query.
+struct GroupFiles {
+    file_uris: Vec<String>,
+    table_prefix: String,
+    /// `(index_prefix, hash_bucket)` of every searched index column.
+    index_prefixes: Vec<(String, u32)>,
+}
+
+/// Current commits of one scan's shards, resolved with one catalog call.
+struct ResolvedShards {
+    views: std::collections::HashMap<String, Option<IndexCommitView<VectorSegmentEntry>>>,
+}
+
+impl ResolvedShards {
+    fn view(&self, index_prefix: &str) -> Option<&IndexCommitView<VectorSegmentEntry>> {
+        self.views.get(index_prefix).and_then(Option::as_ref)
+    }
 }
 
 impl LakeSoulVectorSearchExec {
@@ -132,20 +153,11 @@ impl LakeSoulVectorSearchExec {
         })
     }
 
-    /// Build the native reader configuration for one file group.
+    /// File URIs, table prefix and index shard prefixes of one bucket group.
     ///
-    /// Resolves the shard's current index commit from the catalog and holds
-    /// a reader lease for it; the native reader then searches the injected
-    /// commit without touching the catalog itself.
-    async fn reader_config(
-        &self,
-        files: &[PartitionedFile],
-        partition_values: &[ScalarValue],
-        nprobe: usize,
-        parallelism: usize,
-        read_schema: &SchemaRef,
-        filters: Vec<Expr>,
-    ) -> DFResult<LakeSoulIOConfig> {
+    /// Pure path arithmetic: the caller resolves all groups' shards in one
+    /// catalog round trip before building their configs.
+    fn group_files(&self, files: &[PartitionedFile]) -> DFResult<GroupFiles> {
         let file_uris = files
             .iter()
             .map(|f| file_uri(&self.object_store_url, &f.object_meta.location))
@@ -165,56 +177,55 @@ impl LakeSoulVectorSearchExec {
                 &column.column,
             ));
         }
-        let mut seen_prefixes = std::collections::HashSet::new();
+        Ok(GroupFiles {
+            file_uris,
+            table_prefix,
+            index_prefixes,
+        })
+    }
+
+    /// Build the native reader configuration for one file group.
+    ///
+    /// The shard commits were resolved (and leased, unless already cached)
+    /// for every group before this call; the native reader then searches the
+    /// injected commit without touching the catalog itself, so this is pure
+    /// configuration work.
+    fn reader_config(
+        &self,
+        views: &ResolvedShards,
+        leases_by_prefix: &std::collections::HashMap<String, Vec<Arc<IndexLease>>>,
+        files: &GroupFiles,
+        partition_values: &[ScalarValue],
+        nprobe: usize,
+        parallelism: usize,
+        read_schema: &SchemaRef,
+        filters: Vec<Expr>,
+    ) -> DFResult<LakeSoulIOConfig> {
+        let GroupFiles {
+            file_uris,
+            table_prefix,
+            index_prefixes,
+        } = files;
+        let file_uris = file_uris.clone();
+        if file_uris.is_empty() {
+            return Err(DataFusionError::Internal(
+                "empty vector-search file group".into(),
+            ));
+        }
+        let table_prefix = table_prefix.clone();
+        let mut seen_prefixes: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
         let mut resolved_shards = Vec::with_capacity(index_prefixes.len());
         let mut leases = Vec::with_capacity(index_prefixes.len());
         for (index_prefix, _bucket) in index_prefixes {
-            if !seen_prefixes.insert(index_prefix.clone()) {
+            if !seen_prefixes.insert(index_prefix.as_str()) {
                 continue;
             }
-            let view =
-                self.catalog
-                    .resolve_cached(&index_prefix)
-                    .await
-                    .map_err(|error| {
-                        DataFusionError::External(
-                            rootcause::report!(
-                                "failed to resolve vector index at '{}': {}",
-                                index_prefix,
-                                error
-                            )
-                            .into_boxed_error(),
-                        )
-                    })?;
-            let Some(view) = view else {
+            let Some(view) = views.view(index_prefix.as_str()) else {
                 continue;
             };
-            // A lease is only needed while the index is being loaded; a
-            // cache hit reads no file at all.
-            if !lakesoul_io::index::cache::is_loaded(
-                IndexKind::Vector,
-                index_prefix.trim_end_matches('/'),
-                view.commit_id,
-            )
-            .await
-            {
-                let lease = self
-                    .catalog
-                    .acquire_lease(&index_prefix, lease_ttl(), &lease_owner())
-                    .await
-                    .map_err(|error| {
-                        DataFusionError::External(
-                            rootcause::report!(
-                                "failed to lease vector index at '{}': {}",
-                                index_prefix,
-                                error
-                            )
-                            .into_boxed_error(),
-                        )
-                    })?;
-                if let Some(handle) = lease {
-                    leases.push(Arc::new(IndexLease::new(handle)));
-                }
+            if let Some(prefix_leases) = leases_by_prefix.get(index_prefix.as_str()) {
+                leases.extend(prefix_leases.iter().cloned());
             }
             let segments: Vec<SegmentEntry> = view
                 .segments
@@ -231,11 +242,11 @@ impl LakeSoulVectorSearchExec {
                 .collect();
             resolved_shards.push(ResolvedIndex {
                 kind: IndexKind::Vector,
-                index_prefix,
+                index_prefix: index_prefix.to_string(),
                 commit_id: view.commit_id,
                 generation: view.generation,
                 version: view.version,
-                header: view.header,
+                header: view.header.clone(),
                 segments: serde_json::to_value(&segments).map_err(|error| {
                     DataFusionError::External(
                         rootcause::report!(
@@ -245,7 +256,7 @@ impl LakeSoulVectorSearchExec {
                         .into_boxed_error(),
                     )
                 })?,
-                mutation_head: view.mutation_head,
+                mutation_head: view.mutation_head.clone(),
                 mutation_records: view.mutation_records,
             });
         }
@@ -254,7 +265,7 @@ impl LakeSoulVectorSearchExec {
             .with_files(file_uris)
             .with_primary_keys(self.primary_keys.clone())
             .with_schema(Arc::clone(read_schema))
-            .with_prefix(derive_prefix(&first))
+            .with_prefix(table_prefix)
             // Phase 2 narrows the second read to the rows ranking kept.
             .with_filters(filters)
             // Push the candidate pk filter into the file scans so the merge
@@ -466,6 +477,10 @@ impl LakeSoulVectorSearchExec {
     }
 
     /// Build one reader config per bucket group.
+    ///
+    /// The shard commits of every bucket are resolved with a single catalog
+    /// round trip: resolving one shard per group used to cost one round trip
+    /// per bucket and dominated this phase of a query.
     fn build_configs(
         &self,
         read_schema: &SchemaRef,
@@ -473,20 +488,95 @@ impl LakeSoulVectorSearchExec {
         nprobe: usize,
         parallelism: usize,
     ) -> DFResult<Vec<LakeSoulIOConfig>> {
+        let groups = self
+            .file_groups
+            .iter()
+            .map(|group| self.group_files(group))
+            .collect::<DFResult<Vec<_>>>()?;
+        let mut prefixes: Vec<String> = groups
+            .iter()
+            .flat_map(|group| {
+                group
+                    .index_prefixes
+                    .iter()
+                    .map(|(prefix, _)| prefix.clone())
+            })
+            .collect();
+        prefixes.sort_unstable();
+        prefixes.dedup();
+        let (views, leases_by_prefix) = tokio::task::block_in_place(|| {
+            lakesoul_io::session::GLOBAL_RUNTIME.block_on(async {
+                let views = self.catalog.resolve_cached_many(&prefixes).await.map_err(
+                    |error| {
+                        DataFusionError::External(
+                            rootcause::report!(
+                                "failed to resolve vector index shards: {}",
+                                error
+                            )
+                            .into_boxed_error(),
+                        )
+                    },
+                )?;
+                // A lease is only needed while the index is being loaded; a
+                // cache hit reads no file at all.  Leases are taken in the
+                // same trip as the resolution so the whole phase costs one
+                // runtime hand-off instead of one per bucket.
+                let mut leases: std::collections::HashMap<String, Vec<Arc<IndexLease>>> =
+                    std::collections::HashMap::new();
+                for prefix in &prefixes {
+                    let Some(view) = views.get(prefix).and_then(Option::as_ref) else {
+                        continue;
+                    };
+                    if lakesoul_io::index::cache::is_loaded(
+                        IndexKind::Vector,
+                        prefix.trim_end_matches('/'),
+                        view.commit_id,
+                    )
+                    .await
+                    {
+                        continue;
+                    }
+                    let lease = self
+                        .catalog
+                        .acquire_lease(prefix, lease_ttl(), &lease_owner())
+                        .await
+                        .map_err(|error| {
+                            DataFusionError::External(
+                                rootcause::report!(
+                                    "failed to lease vector index at '{}': {}",
+                                    prefix,
+                                    error
+                                )
+                                .into_boxed_error(),
+                            )
+                        })?;
+                    if let Some(handle) = lease {
+                        leases
+                            .entry(prefix.clone())
+                            .or_default()
+                            .push(Arc::new(IndexLease::new(handle)));
+                    }
+                }
+                Ok::<_, DataFusionError>((ResolvedShards { views }, leases))
+            })
+        })?;
         let mut configs = Vec::with_capacity(self.file_groups.len());
-        for (group, values) in self.file_groups.iter().zip(&self.partition_values) {
-            let schema = Arc::clone(read_schema);
-            let filters = filters.clone();
-            let config = tokio::task::block_in_place(|| {
-                lakesoul_io::session::GLOBAL_RUNTIME.block_on(self.reader_config(
-                    group,
-                    values,
-                    nprobe,
-                    parallelism,
-                    &schema,
-                    filters,
-                ))
-            })?;
+        for ((_group, values), files) in self
+            .file_groups
+            .iter()
+            .zip(&self.partition_values)
+            .zip(groups)
+        {
+            let config = self.reader_config(
+                &views,
+                &leases_by_prefix,
+                &files,
+                values,
+                nprobe,
+                parallelism,
+                read_schema,
+                filters.clone(),
+            )?;
             configs.push(config);
         }
         Ok(configs)

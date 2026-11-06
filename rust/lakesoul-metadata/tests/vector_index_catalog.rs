@@ -31,6 +31,7 @@ fn segment(
         num_vectors,
         file_size: 1024,
         data_files: Vec::new(),
+        birth_version: 0,
     }
 }
 
@@ -97,6 +98,65 @@ async fn commit_resolve_roundtrip() -> Result<()> {
 
     catalog.delete_shard(&prefix).await?;
     assert!(catalog.resolve(&prefix).await?.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn resolve_cached_many_matches_single_resolution() -> Result<()> {
+    let catalog = catalog().await?;
+    let first = unique_prefix("many_a");
+    let second = unique_prefix("many_b");
+    let missing = unique_prefix("many_missing");
+    let committed_first = catalog
+        .commit(
+            &first,
+            b"header-a",
+            &[segment(0, 0, 10)],
+            CommitMode::Rebuild,
+        )
+        .await?;
+    catalog
+        .commit(
+            &second,
+            b"header-b",
+            &[segment(1, 0, 20)],
+            CommitMode::Rebuild,
+        )
+        .await?;
+    // A delta moves the second shard to a newer commit than the first, so a
+    // batched lookup has to report the current commit of each shard.
+    let committed_second = catalog
+        .commit(&second, b"header-b", &[segment(1, 1, 5)], CommitMode::Delta)
+        .await?;
+    assert_ne!(committed_first.commit_id, committed_second.commit_id);
+
+    let mut prefixes = vec![first.clone(), second.clone(), missing.clone()];
+    prefixes.sort_unstable();
+    let views = catalog.resolve_cached_many(&prefixes).await?;
+    assert_eq!(views.len(), prefixes.len());
+    let resolved_first = views
+        .get(&first)
+        .and_then(Option::as_ref)
+        .expect("first shard");
+    assert_eq!(resolved_first.commit_id, committed_first.commit_id);
+    assert_eq!(resolved_first.header, b"header-a");
+    assert_eq!(resolved_first.segments.len(), 1);
+    let resolved_second = views
+        .get(&second)
+        .and_then(Option::as_ref)
+        .expect("second shard");
+    assert_eq!(resolved_second.commit_id, committed_second.commit_id);
+    assert_eq!(resolved_second.segments.len(), 2);
+    assert!(views.get(&missing).is_some_and(Option::is_none));
+
+    // The batched answer must agree with a full single-shard resolution.
+    let single = catalog.resolve(&second).await?.expect("second shard");
+    assert_eq!(single.commit_id, resolved_second.commit_id);
+    assert_eq!(single.segments, resolved_second.segments);
+
+    catalog.delete_shard(&first).await?;
+    catalog.delete_shard(&second).await?;
+    assert!(catalog.resolve(&first).await?.is_none());
     Ok(())
 }
 
@@ -292,5 +352,129 @@ async fn drop_table_cleans_index_rows() -> Result<()> {
         catalog.resolve(&prefix).await?.is_none(),
         "dropping the table must clean its index rows"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn mutation_head_roundtrip_and_empty_segment_commit() -> Result<()> {
+    use lakesoul_metadata::error::LakeSoulMetaDataError;
+
+    let catalog = catalog().await?;
+    let prefix = unique_prefix("mutations");
+
+    let base = vec![segment(0, 0, 100)];
+    let view = catalog
+        .commit(&prefix, b"h", &base, CommitMode::Rebuild)
+        .await?;
+    assert_eq!(view.mutation_head, None);
+    assert_eq!(view.mutation_records, 0);
+
+    // Delta commit with a mutation sidecar stamps the new segment and
+    // publishes the head atomically.
+    let mut delta = segment(0, 1, 10);
+    delta.birth_version = view.version + 1;
+    let view2 = catalog
+        .commit_with_mutations(
+            &prefix,
+            b"h",
+            &[delta.clone()],
+            CommitMode::Delta,
+            (view.generation, view.version),
+            Some("_mutations/g00000001/a.delta".to_string()),
+            1,
+        )
+        .await?;
+    assert_eq!((view2.generation, view2.version), (1, 2));
+    assert_eq!(
+        view2.mutation_head.as_deref(),
+        Some("_mutations/g00000001/a.delta")
+    );
+    assert_eq!(view2.mutation_records, 1);
+
+    // A delete-only commit carries no segments but a new head.
+    let view3 = catalog
+        .commit_with_mutations(
+            &prefix,
+            b"h",
+            &[],
+            CommitMode::Delta,
+            (view2.generation, view2.version),
+            Some("_mutations/g00000001/b.delta".to_string()),
+            2,
+        )
+        .await?;
+    assert_eq!((view3.generation, view3.version), (1, 3));
+    assert_eq!(view3.segments.len(), 2);
+    assert_eq!(
+        view3.mutation_head.as_deref(),
+        Some("_mutations/g00000001/b.delta")
+    );
+    assert_eq!(view3.mutation_records, 2);
+
+    // A stale expected version is rejected without publishing a row.
+    let stale = catalog
+        .commit_with_mutations(
+            &prefix,
+            b"h",
+            &[],
+            CommitMode::Delta,
+            (view.generation, view.version),
+            None,
+            0,
+        )
+        .await;
+    match stale {
+        Err(LakeSoulMetaDataError::IndexVersionConflict {
+            expected_generation,
+            expected_version,
+            actual_generation,
+            actual_version,
+        }) => {
+            assert_eq!((expected_generation, expected_version), (1, 1));
+            assert_eq!((actual_generation, actual_version), (1, 3));
+        }
+        other => panic!("expected a version conflict, got {other:?}"),
+    }
+
+    // A rebuild starts a new generation and clears the mutation chain.
+    let rebuild = vec![segment(0, 0, 200)];
+    let view4 = catalog
+        .commit_with_mutations(
+            &prefix,
+            b"h2",
+            &rebuild,
+            CommitMode::Rebuild,
+            (view3.generation, view3.version),
+            Some("_mutations/g00000001/c.delta".to_string()),
+            3,
+        )
+        .await?;
+    assert_eq!((view4.generation, view4.version), (2, 1));
+    assert_eq!(view4.mutation_head, None);
+    assert_eq!(view4.mutation_records, 0);
+
+    let resolved = catalog.resolve(&prefix).await?.expect("view");
+    assert_eq!(resolved.mutation_head, None);
+    assert_eq!(resolved.mutation_records, 0);
+    assert_eq!(resolved.segments, rebuild);
+
+    catalog.delete_shard(&prefix).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_segment_json_defaults_birth_version() -> Result<()> {
+    use lakesoul_metadata::index_catalog::VectorSegmentEntry;
+
+    let entry: VectorSegmentEntry = serde_json::from_value(serde_json::json!({
+        "cluster_id": 3,
+        "segment_version": 1,
+        "filename": "cluster_0003_0001_legacy.seg",
+        "num_vectors": 7,
+        "file_size": 64,
+    }))
+    .expect("legacy segment entry");
+    assert_eq!(entry.birth_version, 0);
+    assert!(entry.data_files.is_empty());
     Ok(())
 }

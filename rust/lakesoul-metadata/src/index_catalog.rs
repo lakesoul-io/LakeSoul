@@ -66,10 +66,15 @@ create table if not exists index_commit
     version       bigint      not null,
     header        bytea       not null,
     segments      jsonb       not null default '[]'::jsonb,
+    mutation_head text,
+    mutation_records integer   not null default 0,
     created_at    timestamptz not null default now(),
     superseded_at timestamptz,
     unique (shard_id, generation, version)
 );
+
+alter table index_commit add column if not exists mutation_head text;
+alter table index_commit add column if not exists mutation_records integer not null default 0;
 
 create index if not exists index_commit_shard_key_index
     on index_commit (shard_id, generation desc, version desc);
@@ -108,6 +113,9 @@ pub struct VectorSegmentEntry {
     /// written before coverage tracking.
     #[serde(default)]
     pub data_files: Vec<String>,
+    /// Catalog revision this segment was published at (0 = legacy/unknown).
+    #[serde(default)]
+    pub birth_version: u64,
 }
 
 impl CatalogSegment for VectorSegmentEntry {
@@ -138,6 +146,10 @@ pub struct IndexCommitView<S> {
     pub header: Vec<u8>,
     /// Every segment of the current generation up to `version`.
     pub segments: Vec<S>,
+    /// Head object key of the durable mutation chain, if any.
+    pub mutation_head: Option<String>,
+    /// Number of mutation objects in the chain.
+    pub mutation_records: u32,
 }
 
 /// How a commit advances the index.
@@ -182,6 +194,10 @@ pub struct GcShardPlan {
     pub retained_filenames: Vec<String>,
     /// Segment filenames that became unreferenced in this pass.
     pub removed_filenames: Vec<String>,
+    /// Generations whose rows were dropped in this pass.  Mutation sidecars
+    /// under `_mutations/g{generation}/` may be deleted with their
+    /// generation.
+    pub removed_generations: Vec<u64>,
 }
 
 /// Shared connection state of a catalog; non-generic so [`LeaseHandle`] can
@@ -389,6 +405,85 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         Ok(view)
     }
 
+    /// Resolve the current commits of several shards with one catalog round
+    /// trip.
+    ///
+    /// Same freshness contract as [`resolve_cached`](Self::resolve_cached):
+    /// every call reads the current commit id of every shard, and only the
+    /// header/segments of a commit this process has not seen yet are fetched.
+    /// The vector search scan resolves one shard per bucket, so batching the
+    /// lookup turns N round trips per query into one.
+    pub async fn resolve_cached_many(
+        &self,
+        index_prefixes: &[String],
+    ) -> Result<HashMap<String, Option<IndexCommitView<S>>>> {
+        self.core.ensure_tables().await?;
+        let kind = self.core.kind;
+        let mut result: HashMap<String, Option<IndexCommitView<S>>> =
+            HashMap::with_capacity(index_prefixes.len());
+        if index_prefixes.is_empty() {
+            return Ok(result);
+        }
+        let prefixes: Vec<String> = index_prefixes.to_vec();
+        let guard = self.core.client.lock().await;
+        // A left join keeps one row per requested prefix, so a shard without
+        // a commit resolves to `None` exactly like the single-shard call.
+        let rows = guard
+            .query(
+                "select p.prefix, c.commit_id \
+                 from unnest($2::text[]) as p(prefix) \
+                 left join index_shard sh \
+                   on sh.kind = $1 and sh.index_prefix = p.prefix \
+                 left join lateral (select commit_id from index_commit \
+                                    where shard_id = sh.shard_id \
+                                    order by generation desc, version desc \
+                                    limit 1) c on true",
+                QueryType::RO,
+                &[&kind.as_str(), &prefixes],
+            )
+            .await?;
+        let mut current: HashMap<String, i64> = HashMap::with_capacity(rows.len());
+        for row in &rows {
+            if let Some(commit_id) = row.get::<usize, Option<i64>>(1) {
+                current.insert(row.get(0), commit_id);
+            }
+        }
+        for prefix in index_prefixes {
+            let Some(&commit_id) = current.get(prefix) else {
+                result.insert(prefix.clone(), None);
+                continue;
+            };
+            // Reuse the cached view only when it is exactly the commit the
+            // catalog just reported; a moved commit resolves in full below.
+            let cache_key = (kind, prefix.clone());
+            let cached = {
+                let cache = VIEW_CACHE.lock().await;
+                cache
+                    .get(&cache_key)
+                    .and_then(|entry| entry.downcast_ref::<IndexCommitView<S>>())
+                    .filter(|view| view.commit_id == commit_id)
+                    .cloned()
+            };
+            let view = match cached {
+                Some(view) => Some(view),
+                None => {
+                    let view = resolve_with(&guard, kind, prefix).await?;
+                    if let Some(view) = &view {
+                        let mut cache = VIEW_CACHE.lock().await;
+                        // Keep the map bounded by the number of live shards.
+                        if cache.len() > 4096 {
+                            cache.clear();
+                        }
+                        cache.insert(cache_key, Arc::new(view.clone()));
+                    }
+                    view
+                }
+            };
+            result.insert(prefix.clone(), view);
+        }
+        Ok(result)
+    }
+
     /// Publish a commit and return the refreshed view.
     ///
     /// Retries against the concurrent view on a unique violation.
@@ -405,7 +500,9 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         for _ in 0..self.core.max_retry.max(1) {
             let guard = self.core.client.lock().await;
             let shard_id = ensure_shard(&guard, kind, index_prefix).await?;
-            match try_commit::<S>(&guard, shard_id, header, segments, mode).await {
+            match try_commit::<S>(&guard, shard_id, header, segments, mode, None, None, 0)
+                .await
+            {
                 Ok(view) => return Ok(view),
                 Err(error) if is_unique_violation(&error) => {
                     last_error = Some(error);
@@ -419,6 +516,62 @@ impl<S: CatalogSegment> IndexCatalog<S> {
                 "{kind} index commit exceeded its retry budget"
             ))
         }))
+    }
+
+    /// Publish a commit together with its mutation-chain head.
+    ///
+    /// `expected` guards against publishing a mutation object that was
+    /// computed from a stale view.  Unlike [`commit`], this is not retried
+    /// internally: a stale view yields
+    /// [`LakeSoulMetaDataError::IndexVersionConflict`] so the caller can
+    /// rewrite its sidecar object at the new revision and try again.
+    ///
+    /// Empty `segments` are allowed so a delete-only mutation can be
+    /// published.  [`CommitMode::Rebuild`] always clears the mutation chain.
+    pub async fn commit_with_mutations(
+        &self,
+        index_prefix: &str,
+        header: &[u8],
+        segments: &[S],
+        mode: CommitMode,
+        expected: (u64, u64),
+        mutation_head: Option<String>,
+        mutation_records: u32,
+    ) -> Result<IndexCommitView<S>> {
+        self.core.ensure_tables().await?;
+        let kind = self.core.kind;
+        let guard = self.core.client.lock().await;
+        let shard_id = ensure_shard(&guard, kind, index_prefix).await?;
+        match try_commit::<S>(
+            &guard,
+            shard_id,
+            header,
+            segments,
+            mode,
+            Some(expected),
+            mutation_head,
+            mutation_records,
+        )
+        .await
+        {
+            Ok(view) => Ok(view),
+            Err(error) if is_unique_violation(&error) => {
+                // Another writer landed between validation and insert.
+                let actual = resolve_with(&guard, kind, index_prefix)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|view: IndexCommitView<S>| (view.generation, view.version))
+                    .unwrap_or((0, 0));
+                Err(LakeSoulMetaDataError::IndexVersionConflict {
+                    expected_generation: expected.0,
+                    expected_version: expected.1,
+                    actual_generation: actual.0,
+                    actual_version: actual.1,
+                })
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Acquire a reader lease for the shard's current commit.
@@ -586,6 +739,10 @@ impl<S: CatalogSegment> IndexCatalog<S> {
             deleted_lease_rows,
             retained_filenames: retained,
             removed_filenames: removed,
+            removed_generations: removable
+                .iter()
+                .map(|generation| *generation as u64)
+                .collect(),
         })
     }
 
@@ -707,9 +864,11 @@ async fn resolve_with<S: CatalogSegment>(
     // its generation.
     let row = client
         .query_opt(
-            "select sh.shard_id, c.commit_id, c.generation, c.version, c.header, c.segments \
+            "select sh.shard_id, c.commit_id, c.generation, c.version, c.header, c.segments, \
+                    c.mutation_head, c.mutation_records \
              from index_shard sh \
-             join lateral (select commit_id, shard_id, generation, version, header, segments \
+             join lateral (select commit_id, shard_id, generation, version, header, segments, \
+                                  mutation_head, mutation_records \
                            from index_commit where shard_id = sh.shard_id \
                            order by generation desc, version desc limit 1) c on true \
              where sh.kind = $1 and sh.index_prefix = $2",
@@ -726,6 +885,8 @@ async fn resolve_with<S: CatalogSegment>(
     let version = row.get::<_, i64>(3) as u64;
     let header: Vec<u8> = row.get(4);
     let segments_json: serde_json::Value = row.get(5);
+    let mutation_head: Option<String> = row.get(6);
+    let mutation_records: i32 = row.get(7);
 
     let mut segments = parse_segments::<S>(segments_json)?;
     // Deterministic base-then-deltas order.
@@ -738,6 +899,8 @@ async fn resolve_with<S: CatalogSegment>(
         version,
         header,
         segments,
+        mutation_head,
+        mutation_records: mutation_records.max(0) as u32,
     }))
 }
 
@@ -816,22 +979,41 @@ async fn try_commit<S: CatalogSegment>(
     header: &[u8],
     segments: &[S],
     mode: CommitMode,
+    expected: Option<(u64, u64)>,
+    mutation_head: Option<String>,
+    mutation_records: u32,
 ) -> Result<IndexCommitView<S>> {
     let mut conn = client.get(QueryType::RW).await?;
     let tx = conn.transaction().await?;
 
-    let current: Option<(i64, i64, serde_json::Value)> = tx
+    let current: Option<(i64, i64, serde_json::Value, Option<String>, i32)> = tx
         .query_opt(
-            "select generation, version, segments from index_commit \
-             where shard_id = $1 order by generation desc, version desc limit 1",
+            "select generation, version, segments, mutation_head, mutation_records \
+             from index_commit where shard_id = $1 \
+             order by generation desc, version desc limit 1",
             &[&shard_id],
         )
         .await?
-        .map(|row| (row.get(0), row.get(1), row.get(2)));
+        .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)));
+
+    if let Some((expected_generation, expected_version)) = expected {
+        let actual = current
+            .as_ref()
+            .map(|(generation, version, ..)| (*generation as u64, *version as u64))
+            .unwrap_or((0, 0));
+        if actual != (expected_generation, expected_version) {
+            return Err(LakeSoulMetaDataError::IndexVersionConflict {
+                expected_generation,
+                expected_version,
+                actual_generation: actual.0,
+                actual_version: actual.1,
+            });
+        }
+    }
 
     let current_key = current
         .as_ref()
-        .map(|(generation, version, _)| (*generation, *version));
+        .map(|(generation, version, ..)| (*generation, *version));
     let (generation, version) = match (mode, current_key) {
         (CommitMode::Delta, Some((generation, version))) => {
             (generation.max(1), version + 1)
@@ -854,8 +1036,24 @@ async fn try_commit<S: CatalogSegment>(
     // Every commit row carries the cumulative segment list of its
     // generation, so resolve() reads a single row instead of aggregating
     // the arrays of all versions.
+    // A rebuild starts a fresh generation and drops the mutation chain.
+    // Delta commits that do not publish a new mutation object inherit the
+    // current head so legacy callers cannot silently forget tombstones.
+    let (mutation_head, mutation_records) = match mode {
+        CommitMode::Rebuild => (None, 0),
+        CommitMode::Delta => match (mutation_head, &current) {
+            (Some(head), _) => (Some(head), mutation_records),
+            (None, Some((_, _, _, Some(head), records))) => {
+                (Some(head.clone()), (*records).max(0) as u32)
+            }
+            _ => (None, 0),
+        },
+    };
+
     let mut cumulative: Vec<S> = match (mode, &current) {
-        (CommitMode::Delta, Some((_, _, value))) => parse_segments::<S>(value.clone())?,
+        (CommitMode::Delta, Some((_, _, value, ..))) => {
+            parse_segments::<S>(value.clone())?
+        }
         _ => Vec::new(),
     };
     let mut seen: HashSet<String> = cumulative
@@ -872,8 +1070,8 @@ async fn try_commit<S: CatalogSegment>(
     let row = tx
         .query_one(
             "insert into index_commit \
-             (shard_id, generation, version, header, segments) \
-             values ($1, $2, $3, $4, $5) \
+             (shard_id, generation, version, header, segments, mutation_head, mutation_records) \
+             values ($1, $2, $3, $4, $5, $6, $7) \
              returning commit_id",
             &[
                 &shard_id,
@@ -881,6 +1079,8 @@ async fn try_commit<S: CatalogSegment>(
                 &version,
                 &header,
                 &Json(&segments_json),
+                &mutation_head,
+                &(mutation_records as i32),
             ],
         )
         .await?;
@@ -894,6 +1094,8 @@ async fn try_commit<S: CatalogSegment>(
         version: version as u64,
         header: header.to_vec(),
         segments: cumulative,
+        mutation_head,
+        mutation_records,
     })
 }
 
@@ -1096,6 +1298,7 @@ mod tests {
             num_vectors: 1,
             file_size: 1,
             data_files: Vec::new(),
+            birth_version: 0,
         };
         let delta = VectorSegmentEntry {
             cluster_id: 1,
@@ -1104,6 +1307,7 @@ mod tests {
             num_vectors: 1,
             file_size: 1,
             data_files: Vec::new(),
+            birth_version: 0,
         };
         assert!(base.sort_key() > delta.sort_key());
     }
