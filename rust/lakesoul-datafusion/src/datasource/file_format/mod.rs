@@ -5,7 +5,7 @@
 mod insert_only;
 mod metadata_format;
 mod text_search_exec;
-mod vector_search_exec;
+pub(crate) mod vector_search_exec;
 
 pub use metadata_format::LakeSoulMetaDataFormat;
 pub use text_search_exec::LakeSoulTextSearchExec;

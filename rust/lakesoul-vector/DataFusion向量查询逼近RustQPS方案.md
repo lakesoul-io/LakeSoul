@@ -292,3 +292,21 @@ R11 的设计已落地，实测（GloVe-200、4 bucket、nprobe 16、index-only�
 - 下一步：把批量入口接到 `LakeSoulTableProvider`（由 provider 提供 snapshot 文件列表，
   当前低层 API 由调用方传入文件列表）、补 provider 级集成测试、Python/Daft 绑定；
   以及在批内进一步降低校验读成本（locator 批量 take / 只对需要验证的行取行）。
+
+## 14. 批量入口接入 provider + 安全校验跳过（实测）
+
+- `LakeSoulTableProvider::vector_batch_search(state, request)`：provider 用当前 snapshot 列文件，
+  调用方无需自己传文件列表，“同一 snapshot”契约由 provider 保证。
+- 批量候选默认走校验读（LakeSoulReader，保证 merge-on-read/删除语义）；仅当
+  「无 CDC 列 + 无 mutation chain + commit 覆盖该桶全部 active 文件」时跳过校验读，
+  该判定有单测；`LAKESOUL_VECTOR_BATCH_FORCE_VERIFY=1` 可强制回退用于验证。
+- 实测（构建/搜索分离、warmup 后各 4 次、默认批量 64）：
+
+| 模式 | QPS 中位 | p50 | CPU/query | 查询期 RSS | Recall@100 |
+|---|---:|---:|---:|---:|---:|
+| 批量 + 跳过校验（默认） | **2155** | 0.462 ms | 2.18 ms | 548–551 MB | 0.63805 |
+| 批量 + 强制校验 | 1399 | 0.712 ms | 3.30 ms | 576–585 MB | 0.63805 |
+| 单 query SQL | 61.1 | 16.1 ms | 42.1 ms | 574 MB | 0.63805 |
+
+相对纯 Rust：单线程 1604 QPS 的 134%，16 线程 16239 QPS 的 13%。剩余优化点：
+批内 ANN 之外的合并/解码开销、payload/非 id-only 查询、以及多批次并发上限。

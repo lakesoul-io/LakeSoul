@@ -833,6 +833,69 @@ impl LakeSoulTableProvider {
         Ok((file_groups, Statistics::new_unknown(self.schema().deref())))
     }
 
+    /// Search several query vectors against the table's current snapshot.
+    ///
+    /// All queries share the snapshot resolved at call time: its files are
+    /// listed once, every bucket's index is probed once for the whole group,
+    /// and the candidate rows are verified with one native-reader pass per
+    /// bucket — or skipped when the index provably covers the snapshot and
+    /// the table cannot hold delete tombstones.  Returns the primary keys of
+    /// the top-k neighbours per query, ranked by the index distance
+    /// (index-only ordering), exactly like the single-query path.
+    pub async fn vector_batch_search(
+        &self,
+        state: &SessionState,
+        request: &crate::vector_batch::VectorBatchRequest,
+    ) -> DFResult<Vec<Vec<i64>>> {
+        let (file_groups, _) = self
+            .list_files_for_scan(state, &[], None)
+            .await
+            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+        let Some(table_path) = self.table_paths().first() else {
+            return Err(DataFusionError::Execution(
+                "table has no path for a vector batch search".to_string(),
+            ));
+        };
+        let object_store_url = table_path.object_store();
+        let store = state
+            .runtime_env()
+            .object_store(object_store_url.clone())
+            .map_err(|error| {
+                DataFusionError::External(
+                    rootcause::report!("failed to get object store: {}", error)
+                        .into_boxed_error(),
+                )
+            })?;
+        let files: Vec<String> = file_groups
+            .iter()
+            .flatten()
+            .map(|file| {
+                crate::datasource::file_format::vector_search_exec::file_uri(
+                    &object_store_url,
+                    &file.object_meta.location,
+                )
+            })
+            .collect();
+        let Some(first) = files.first() else {
+            return Err(DataFusionError::Execution(
+                "no data files for a vector batch search".to_string(),
+            ));
+        };
+        let table_prefix =
+            crate::datasource::file_format::vector_search_exec::derive_prefix(first);
+        crate::vector_batch::search_vector_batch(
+            &self.client.vector_index_catalog(),
+            &store,
+            &table_prefix,
+            &files,
+            &self.file_schema(),
+            &self.primary_keys,
+            &self.io_config.cdc_column(),
+            request,
+        )
+        .await
+    }
+
     /// Build the vector-index candidate scan for a marker request.
     ///
     /// Returns `Ok(None)` when the request cannot be served — no primary

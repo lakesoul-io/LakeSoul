@@ -2607,14 +2607,8 @@ async fn run_sql_search(
     let explain_analyze = explain_text(&search_ctx, &analyze_sql).await?;
 
     if args.batch_size > 0 {
-        let root = args
-            .table_root
-            .as_deref()
-            .map(|root| root.trim_start_matches("file://").to_string())
-            .unwrap_or_else(|| work_dir.display().to_string());
         let mut summary =
-            run_batch_probe(args, dataset, &client, Path::new(&root), &gt, &table_name)
-                .await?;
+            run_batch_probe(args, dataset, &search_ctx, &gt, &table_name).await?;
         if let Some(object) = summary.as_object_mut() {
             object.insert("explain".to_string(), json!(explain));
             object.insert("explain_analyze".to_string(), json!(explain_analyze));
@@ -2826,49 +2820,43 @@ async fn run_sql_search(
 async fn run_batch_probe(
     args: &Args,
     dataset: &Dataset,
-    client: &Arc<lakesoul_datafusion::MetaDataClient>,
-    root: &Path,
+    search_ctx: &datafusion::prelude::SessionContext,
     gt: &Ivecs,
     table_name: &str,
 ) -> Result<Value, String> {
-    let files: Vec<String> = find_data_files(root)
-        .into_iter()
-        .map(|file| format!("file://{file}"))
-        .collect();
-    if files.is_empty() {
-        return Err(format!(
-            "no data files under {} for the batch probe",
-            root.display()
-        ));
-    }
-    let table_prefix = format!("file://{}", root.display());
-    let schema = Arc::new(Schema::new(vec![
-        Field::new(PK_COLUMN, DataType::Int64, false),
-        Field::new(
-            VEC_COLUMN,
-            DataType::List(Arc::new(Field::new(
-                "item",
-                args.vector_type.element_type(),
-                true,
-            ))),
-            false,
-        ),
-    ]));
-    let catalog = client.vector_index_catalog();
-    let store: Arc<dyn object_store::ObjectStore> = Arc::new(LocalFileSystem::new());
-    let primary_keys = vec![PK_COLUMN.to_string()];
+    // The provider pins the snapshot the batch runs on: it lists the files of
+    // the current snapshot and hands them to the batch search together with
+    // the index shard commits.
+    let state = search_ctx.state();
+    let catalog = search_ctx
+        .catalog("lakesoul")
+        .ok_or_else(|| "lakesoul catalog is not registered".to_string())?;
+    let schema_provider = catalog
+        .schema("default")
+        .ok_or_else(|| "default schema is missing".to_string())?;
+    let table = schema_provider
+        .table(table_name)
+        .await
+        .map_err(|error| format!("table {table_name}: {error}"))?
+        .ok_or_else(|| format!("table {table_name} is not registered"))?;
+    let provider = table
+        .downcast_ref::<lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider>()
+        .ok_or_else(|| format!("table {table_name} is not a LakeSoul table"))?;
+    let table_prefix = args
+        .table_root
+        .clone()
+        .unwrap_or_else(|| args.work_dir.to_string_lossy().to_string());
     let nq = dataset.queries.n;
     let queries: Vec<Vec<f32>> = (0..nq)
         .map(|query| dataset.queries.query(query).to_vec())
         .collect();
-    let batch_size = args.batch_size.max(1);
-    let mut latencies: Vec<f64> = Vec::with_capacity(nq);
-    let mut batch_ms: Vec<f64> = Vec::new();
-    let mut recall_sum = 0.0;
     let cpu_before = process_cpu_ms();
     let rss_before = process_rss_mb();
     let mut query_rss_peak_mb = rss_before.unwrap_or(0.0);
     let t_all = Instant::now();
+    let mut latencies: Vec<f64> = Vec::with_capacity(nq);
+    let mut batch_ms: Vec<f64> = Vec::new();
+    let mut recall_sum = 0.0;
     let request = lakesoul_datafusion::vector_batch::VectorBatchRequest {
         column: VEC_COLUMN.to_string(),
         queries,
@@ -2882,18 +2870,12 @@ async fn run_batch_probe(
             args.batch_size
         },
     };
+    let batch_size = request.batch_size();
     let t = Instant::now();
-    let results = lakesoul_datafusion::vector_batch::search_vector_batch(
-        &catalog,
-        &store,
-        &table_prefix,
-        &files,
-        &schema,
-        &primary_keys,
-        &request,
-    )
-    .await
-    .map_err(|error| format!("batch vector search: {error}"))?;
+    let results = provider
+        .vector_batch_search(&state, &request)
+        .await
+        .map_err(|error| format!("batch vector search: {error}"))?;
     let elapsed_ms = t.elapsed().as_secs_f64() * 1000.0;
     if let Some(rss) = process_rss_mb() {
         query_rss_peak_mb = query_rss_peak_mb.max(rss);

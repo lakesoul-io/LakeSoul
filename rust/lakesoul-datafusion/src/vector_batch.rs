@@ -94,6 +94,7 @@ pub async fn search_vector_batch(
     files: &[String],
     schema: &SchemaRef,
     primary_keys: &[String],
+    cdc_column: &str,
     request: &VectorBatchRequest,
 ) -> DFResult<Vec<Vec<i64>>> {
     if request.queries.is_empty() {
@@ -115,6 +116,7 @@ pub async fn search_vector_batch(
                     files,
                     schema,
                     primary_keys,
+                    cdc_column,
                     &chunk_request,
                 )
                 .await?,
@@ -136,12 +138,14 @@ pub async fn search_vector_batch(
         files,
         schema,
         primary_keys,
+        cdc_column,
         request,
     )
     .await
 }
 
 /// Search one bounded group of queries against one snapshot.
+#[allow(clippy::too_many_arguments)]
 async fn search_vector_batch_chunk(
     catalog: &VectorCatalog,
     store: &Arc<dyn ObjectStore>,
@@ -149,6 +153,7 @@ async fn search_vector_batch_chunk(
     files: &[String],
     schema: &SchemaRef,
     primary_keys: &[String],
+    cdc_column: &str,
     request: &VectorBatchRequest,
 ) -> DFResult<Vec<Vec<i64>>> {
     // One shard (index) per hash bucket; the batch resolves all of them with
@@ -220,6 +225,7 @@ async fn search_vector_batch_chunk(
         let pk_schema = &pk_schema;
         let primary_keys = primary_keys;
         let table_prefix = table_prefix;
+        let cdc_column = cdc_column;
         let store = store;
         let request = request;
         probe_futures.push(async move {
@@ -254,16 +260,48 @@ async fn search_vector_batch_chunk(
                     }
                 }
             }
-            let live = read_live_keys(
-                &layout,
-                table_prefix,
-                &bucket_files,
-                &pk_schema,
-                primary_keys,
-                &codec,
-                &keys,
-            )
-            .await?;
+            // Skip the verification read when the index provably covers
+            // every file of this snapshot and nothing can have deleted a row
+            // behind its back: no index mutations, no CDC change column (the
+            // table cannot hold delete tombstones) and no active file that
+            // the commit does not list.  Anything else falls back to the
+            // reader pass below.
+            let covered: Vec<&str> = view
+                .segments
+                .iter()
+                .flat_map(|segment| segment.data_files.iter().map(String::as_str))
+                .collect();
+            let force_verify =
+                std::env::var("LAKESOUL_VECTOR_BATCH_FORCE_VERIFY").is_ok();
+            let skip_verification = !force_verify
+                && can_skip_verification(
+                    cdc_column,
+                    view.mutation_head.is_none(),
+                    view.mutation_records,
+                    &bucket_files,
+                    &covered,
+                );
+            if skip_verification {
+                tracing::debug!(
+                    prefix = %prefix,
+                    keys = seen.len(),
+                    "batch candidate verification skipped (index covers the snapshot)"
+                );
+            }
+            let live = if skip_verification {
+                seen
+            } else {
+                read_live_keys(
+                    &layout,
+                    table_prefix,
+                    &bucket_files,
+                    &pk_schema,
+                    primary_keys,
+                    &codec,
+                    &keys,
+                )
+                .await?
+            };
             Ok::<_, DataFusionError>((hits, live))
         });
     }
@@ -441,6 +479,28 @@ async fn read_live_keys(
     })?
 }
 
+/// Whether the candidate rows of one bucket can skip the reader pass.
+///
+/// The pass exists to drop index keys whose row is no longer part of the
+/// snapshot (merge-on-read deletes, CDC tombstones, files the commit does not
+/// cover).  When none of those can apply — the table has no CDC column, the
+/// commit carries no mutation chain, and every active file of the bucket is
+/// listed by the commit — every index key is a live row of the snapshot and
+/// the keys can be trusted as they are.
+fn can_skip_verification(
+    cdc_column: &str,
+    mutation_head_absent: bool,
+    mutation_records: u32,
+    active_files: &[String],
+    covered_files: &[&str],
+) -> bool {
+    cdc_column.is_empty()
+        && mutation_head_absent
+        && mutation_records == 0
+        && !covered_files.is_empty()
+        && lakesoul_common::index::pending_files(active_files, covered_files).is_empty()
+}
+
 /// Decode one index key back into the single Int64 primary key.
 fn decode_id(codec: &KeyCodec, key: &IndexKey) -> DFResult<Option<i64>> {
     let decoded = codec
@@ -453,4 +513,51 @@ fn decode_id(codec: &KeyCodec, key: &IndexKey) -> DFResult<Option<i64>> {
         return Ok(None);
     };
     Ok(array.iter().next().flatten())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::can_skip_verification;
+
+    fn files(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    #[test]
+    fn verification_skips_only_when_nothing_can_hide_a_row() {
+        let active = files(&["a.vortex", "b.vortex"]);
+        let covered = ["a.vortex", "b.vortex"];
+        // Fresh index: every active file is covered, no deletes possible.
+        assert!(can_skip_verification("", true, 0, &active, &covered));
+        // A CDC change column can hold delete tombstones for indexed rows.
+        assert!(!can_skip_verification(
+            "_change_type",
+            true,
+            0,
+            &active,
+            &covered
+        ));
+        // An index mutation chain hides keys itself.
+        assert!(!can_skip_verification("", false, 0, &active, &covered));
+        assert!(!can_skip_verification("", true, 3, &active, &covered));
+        // A file the commit does not cover (append, compaction, rebuild in
+        // progress) needs the reader pass to resolve the rows.
+        assert!(!can_skip_verification(
+            "",
+            true,
+            0,
+            &files(&["a.vortex", "c.vortex"]),
+            &covered,
+        ));
+        // An index that does not record its covered files cannot be trusted.
+        assert!(!can_skip_verification("", true, 0, &active, &[]));
+        // Coverage is compared by object name, not by full URI.
+        assert!(can_skip_verification(
+            "",
+            true,
+            0,
+            &files(&["file:///data/a.vortex", "s3://bucket/b.vortex"]),
+            &covered,
+        ));
+    }
 }
