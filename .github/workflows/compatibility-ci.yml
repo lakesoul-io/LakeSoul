@@ -116,10 +116,7 @@ jobs:
           toolchain: stable
       - uses: ./.github/actions/setup-flatc
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - name: Install uv
         uses: astral-sh/setup-uv@v6
       - uses: Swatinem/rust-cache@v2
@@ -271,10 +268,7 @@ jobs:
           toolchain: stable
       - uses: ./.github/actions/setup-flatc
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - name: Install uv
         uses: astral-sh/setup-uv@v6
       - uses: Swatinem/rust-cache@v2

@@ -54,10 +54,7 @@ jobs:
           distribution: "temurin"
           cache: maven
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: dtolnay/rust-toolchain@stable
       - uses: ./.github/actions/setup-flatc
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

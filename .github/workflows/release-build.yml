@@ -146,10 +146,7 @@ jobs:
           components: rustfmt, clippy
       - uses: ./.github/actions/setup-flatc
       - name: Install protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ github.token }}
+        uses: ./.github/actions/setup-protoc
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -222,10 +219,7 @@ jobs:
       - name: Check out release commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ github.token }}
+        uses: ./.github/actions/setup-protoc
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable action
         with:
@@ -321,10 +315,7 @@ jobs:
           wait_dfs
           "$HADOOP_HOME/bin/hadoop" fs -chmod -R 777 /
       - name: Install protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ github.token }}
+        uses: ./.github/actions/setup-protoc
       - name: Generate ephemeral artifact-signing key
         run: |
           cat > /tmp/release-signing-key <<'KEY'
@@ -507,10 +498,7 @@ jobs:
       - name: Initialize metadata database
         run: ./script/meta_init_for_local_test.sh -j 2
       - name: Install protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ github.token }}
+        uses: ./.github/actions/setup-protoc
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable action
         with:
@@ -708,10 +696,7 @@ jobs:
       - name: Initialize metadata database
         run: ./script/meta_init_for_local_test.sh -j 2
       - name: Install protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ github.token }}
+        uses: ./.github/actions/setup-protoc
       - name: Set up JDK 11 and Maven Central credentials
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:

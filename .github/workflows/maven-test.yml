@@ -76,10 +76,7 @@ jobs:
       - uses: ./.github/actions/setup-flatc
 
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
@@ -160,10 +157,7 @@ jobs:
         run: |
           ./script/meta_init_for_local_test.sh -j 2
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
@@ -230,10 +224,7 @@ jobs:
         run: |
           ./script/meta_init_for_local_test.sh -j 2
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
@@ -299,10 +290,7 @@ jobs:
         run: |
           ./script/meta_init_for_local_test.sh -j 1
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
@@ -376,10 +364,7 @@ jobs:
         run: |
           ./script/meta_rbac_init_for_local_test.sh -j 1
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: beyondstorage/setup-hdfs@master
         with:
           hdfs-version: "3.3.6"
@@ -453,10 +438,7 @@ jobs:
         run: |
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
@@ -523,10 +505,7 @@ jobs:
         run: |
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
@@ -593,10 +572,7 @@ jobs:
         run: |
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
@@ -678,10 +654,7 @@ jobs:
           sudo sysctl -w kernel.core_pattern=/tmp/lakesoul-core.%p.%t
 
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: beyondstorage/setup-hdfs@master
         with:
           hdfs-version: "3.3.6"

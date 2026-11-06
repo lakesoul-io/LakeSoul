@@ -80,10 +80,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lld postgresql-client-16
           command -v ld.lld
-      - uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Protoc
+        uses: ./.github/actions/setup-protoc
       - name: Initialize metadata
         run: ./script/meta_init_for_local_test.sh -j 1
       - name: Strict q01-q22 over both wire protocols
