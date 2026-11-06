@@ -16,7 +16,7 @@ and integrations with common data and machine-learning frameworks.
 - Build and search secondary indexes — vector similarity (IVF+RaBitQ) and
   full-text (Tantivy BM25) — with automatic maintenance on write.
 
-Python 3.10 or later is required.
+Python 3.11 or later is required.
 
 ```bash
 pip install lakesoul

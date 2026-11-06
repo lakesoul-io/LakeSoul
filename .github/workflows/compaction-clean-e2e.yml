@@ -114,7 +114,7 @@ jobs:
       - name: Install python dependencies
         run: |
           cd python
-          uv sync --no-install-project --python 3.10 --group dev
+          uv sync --no-install-project --python 3.11 --group dev
       - name: Copy jars to work-dir
         run: |
           FLINK_JAR_NAME="$(python script/get_jar_name.py integrations/lakesoul-flink)"
