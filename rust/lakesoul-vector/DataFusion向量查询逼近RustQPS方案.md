@@ -585,3 +585,19 @@ analyzer/optimizer 不再逐维遍历；精度不变（Float64 仍 Float64），
 
 单查询 **+26%**，planning 从 1.90 → 1.35 ms（logical optimizer 0.82 → 0.31 ms）；批量路径不变。
 累计：相对 R25（349 QPS / 2.70 ms）+40%，相对最初 reader 路径（61.3 QPS / 16.0 ms）**8.0×**。
+
+## 29. analyzer 阶段查询向量句柄化（单查询再 +3%）
+
+R31 归因出：optimizer 的剩余成本在**规则运行之前**、随 analyzed plan 里 200 值字面量的规模增长，
+所以 marker 句柄（改写时才生成）无效。R32 改为在 **analyzer** 就把距离调用改写成内部 UDF
+`__lakesoul_vector_distance(vec, handle, metric)`：向量存进程 registry，plan 里只留句柄；
+UDF 求值时解析句柄并**委托内置 `array_distance`/`inner_product`**，因此非索引搜索的语句结果不变
+（exact-rerank Recall 两种实现完全一致：0.64015）。`LAKESOUL_DISTANCE_HANDLE=0` 可退回 R30 行为。
+
+| 配置（bits=1、200 query、12+12 次交错） | 单 query QPS 中位 | p50 | physical planner | Recall |
+|---|---:|---:|---:|---:|
+| 内联 list 字面量（R30） | 506 | 1.849 ms | 0.501 ms | 0.42035 |
+| **句柄 UDF（R32）** | **522** | **1.788 ms** | **0.413 ms** | 0.42035 |
+
+单查询 **+3.2%**（均值 +4.8%），planner −17.6%。累计相对最初 reader 路径 61.3 QPS / 16.0 ms 为
+**8.5× / 8.9×**。

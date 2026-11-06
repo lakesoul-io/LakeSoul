@@ -32,6 +32,9 @@ use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
 
 use tracing::debug;
 
+use crate::udf::vector_distance_handle::{
+    handle_metric, handle_query, is_handle_distance_name, resolve_query_vector,
+};
 use crate::udf::vector_search_marker::{
     LakeSoulVectorSearchConfig, RerankMode, VectorColumnQuery, is_marker_expr,
     marker_expr, multi_marker_expr,
@@ -228,6 +231,9 @@ fn fetch_value(fetch: Option<&Expr>) -> Option<usize> {
 /// the LakeSoul index cannot serve (e.g. `cosine_distance`).
 fn distance_metric(expr: &Expr) -> Option<&'static str> {
     let call = as_scalar_function(unwrap_cast(expr))?;
+    if let Some(metric) = handle_metric(call) {
+        return Some(metric);
+    }
     match call.func.name() {
         "array_distance" => Some("L2"),
         "inner_product" | "dot_product" => Some("IP"),
@@ -317,10 +323,21 @@ fn numeric_literal(expr: &Expr) -> Option<f32> {
 /// validating the column type against the scan schema.
 fn extract_distance_args(expr: &Expr, ts: &TableScan) -> Option<(String, Vec<f32>)> {
     let call = as_scalar_function(unwrap_cast(expr))?;
-    if call.args.len() != 2 {
-        return None;
-    }
-    let col = match unwrap_cast(&call.args[0]) {
+    // A handle call carries its query vector in the process registry; a
+    // literal call carries it inline.
+    let (column_expr, query) = if let Some(handle) = handle_query(call) {
+        let query = resolve_query_vector(handle)?;
+        (unwrap_cast(&call.args[0]), query.as_ref().clone())
+    } else {
+        if call.args.len() != 2 {
+            return None;
+        }
+        (
+            unwrap_cast(&call.args[0]),
+            extract_query(unwrap_cast(&call.args[1]))?,
+        )
+    };
+    let col = match column_expr {
         Expr::Column(col) => col,
         _ => return None,
     };
@@ -338,7 +355,6 @@ fn extract_distance_args(expr: &Expr, ts: &TableScan) -> Option<(String, Vec<f32
     if !is_vector_type(field.data_type()) {
         return None;
     }
-    let query = extract_query(unwrap_cast(&call.args[1]))?;
     if query.is_empty() {
         return None;
     }
@@ -541,10 +557,10 @@ fn count_distance_calls(expr: &Expr) -> usize {
         // Count the call nodes themselves: `distance_metric` unwraps
         // aliases/casts, so using it here would count a wrapped call twice.
         if let Expr::ScalarFunction(call) = node
-            && matches!(
+            && (matches!(
                 call.func.name(),
                 "array_distance" | "inner_product" | "dot_product"
-            )
+            ) || is_handle_distance_name(call.func.name()))
         {
             count += 1;
         }
