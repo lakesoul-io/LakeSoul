@@ -50,6 +50,7 @@ jobs:
         with:
           toolchain: stable
       - uses: ./.github/actions/setup-flatc
+      # Canonical producer for native-glibc217-v2. Other zigbuild jobs only restore it.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ". -> rust/target"

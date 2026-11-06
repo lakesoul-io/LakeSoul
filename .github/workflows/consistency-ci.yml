@@ -100,8 +100,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
-          shared-key: "rust-consistency"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: "native-glibc217-v2"
+          save-if: false
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:

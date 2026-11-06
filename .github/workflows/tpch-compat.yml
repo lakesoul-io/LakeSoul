@@ -74,7 +74,7 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           shared-key: rust-test-fast
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: false
       - name: Install native requirements
         run: |
           sudo apt-get update
