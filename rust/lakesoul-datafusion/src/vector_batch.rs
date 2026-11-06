@@ -288,6 +288,8 @@ async fn search_vector_batch_chunk(
     let codec = KeyCodec::new(layout.clone())
         .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
 
+    let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+    let t_chunk = std::time::Instant::now();
     // Phase 1 + 2 run per bucket and in parallel: probe every bucket once for
     // every query of the batch, then verify that bucket's candidate rows with
     // one native-reader pass.
@@ -404,7 +406,10 @@ async fn search_vector_batch_chunk(
             Ok::<_, DataFusionError>(per_query)
         });
     }
-    let bucket_ranked = futures::future::try_join_all(probe_futures).await?;
+    let probed = futures::future::try_join_all(probe_futures).await?;
+    let bucket_ranked = probed;
+    let probe_ms = t_chunk.elapsed().as_secs_f64() * 1000.0;
+    let t_merge = std::time::Instant::now();
 
     // Phase 3: keep verified candidates per query, merge the buckets' ranked
     // candidates by index distance and take the global top-k per query.
@@ -426,6 +431,16 @@ async fn search_vector_batch_chunk(
         ranked.truncate(request.top_k);
         results.push(ranked.into_iter().map(|(_, id)| id).collect());
     }
+    if profile {
+        tracing::debug!(
+            queries = request.queries.len(),
+            buckets = buckets.len(),
+            probe_ms,
+            merge_ms = t_merge.elapsed().as_secs_f64() * 1000.0,
+            chunk_ms = t_chunk.elapsed().as_secs_f64() * 1000.0,
+            "profiled vector batch chunk"
+        );
+    }
     Ok(results)
 }
 
@@ -445,12 +460,11 @@ fn pk_only_schema(schema: &SchemaRef, primary_keys: &[String]) -> DFResult<Schem
     Ok(Arc::new(Schema::new(fields)))
 }
 
-fn resolved_index(
-    prefix: &str,
+/// The typed segment entries of a vector index view.
+pub(crate) fn segment_entries(
     view: &IndexCommitView<VectorSegmentEntry>,
-) -> DFResult<ResolvedIndex> {
-    let segments: Vec<SegmentEntry> = view
-        .segments
+) -> Vec<SegmentEntry> {
+    view.segments
         .iter()
         .map(|segment| SegmentEntry {
             cluster_id: segment.cluster_id,
@@ -461,7 +475,14 @@ fn resolved_index(
             data_files: segment.data_files.clone(),
             birth_version: segment.birth_version,
         })
-        .collect();
+        .collect()
+}
+
+pub(crate) fn resolved_index(
+    prefix: &str,
+    view: &IndexCommitView<VectorSegmentEntry>,
+) -> DFResult<ResolvedIndex> {
+    let segments: Vec<SegmentEntry> = segment_entries(view);
     let segments = serde_json::to_value(&segments).map_err(|error| {
         DataFusionError::Execution(format!(
             "failed to serialize vector index segments of '{prefix}': {error}"
@@ -563,7 +584,7 @@ async fn read_live_keys(
 /// commit carries no mutation chain, and every active file of the bucket is
 /// listed by the commit — every index key is a live row of the snapshot and
 /// the keys can be trusted as they are.
-fn can_skip_verification(
+pub(crate) fn can_skip_verification(
     cdc_column: &str,
     mutation_head_absent: bool,
     mutation_records: u32,

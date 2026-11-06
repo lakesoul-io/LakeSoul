@@ -317,20 +317,28 @@ impl LakeSoulReader {
     /// A Result indicating success or failure of the initialization
     #[instrument(level = "debug", skip(self))]
     pub async fn start(&mut self) -> Result<()> {
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_total = std::time::Instant::now();
         let options = self.io_session.config().options().clone();
         self.io_session
             .execution_props_mut()
             .mark_start_execution(options);
+        let t_phase = std::time::Instant::now();
         let table_schema = self.io_session.get_table_schema().await?;
+        let schema_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
+        let t_phase = std::time::Instant::now();
         let filters = {
             let io_config = self.io_session.io_config_mut();
             io_config
                 .get_filter_exprs(table_schema.table_schema().as_ref())
                 .await?
         };
+        let filters_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
+        let t_phase = std::time::Instant::now();
         let (filters, text_candidate_scores, key_candidates, vector_distances) = self
             .inject_index_search_filters(filters, &table_schema)
             .await?;
+        let index_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
         // An IVM keyed lookup already holds the exact contribution tuples.
         // Use those encoded keys directly instead of asking the locator to
         // reconstruct them from per-column IN filters (which is a cross
@@ -466,6 +474,8 @@ impl LakeSoulReader {
         };
 
         let target_schema = io_config.target_schema.0.clone();
+        let mut plan_ms = 0.0_f64;
+        let mut exec_ms = 0.0_f64;
         let stream = if skip_reader {
             // Create an empty stream with the target schema
             debug!("Skipping reader due to hash bucket optimization");
@@ -476,16 +486,19 @@ impl LakeSoulReader {
                 futures::stream::once(async move { Ok(empty_batch) }).boxed(),
             )) as SendableRecordBatchStream
         } else {
+            let t_phase = std::time::Instant::now();
             let plan = self
                 .io_session
                 .build_physical_plan(filters, key_candidates.as_deref())
                 .await?;
+            plan_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
             if std::env::var("LAKESOUL_READER_PLAN").is_ok() {
                 eprintln!(
                     "reader plan:\n{}",
                     datafusion::physical_plan::displayable(plan.as_ref()).indent(true)
                 );
             }
+            let t_phase = std::time::Instant::now();
             let stream = execute_stream(plan, self.io_session.task_ctx())?;
             let stream: SendableRecordBatchStream =
                 match BlobMaterializer::try_new(&self.io_session)? {
@@ -493,7 +506,9 @@ impl LakeSoulReader {
                     None => stream,
                 };
             let prefetch_size = self.io_session.io_config().prefetch_size();
-            maybe_prefetch(stream, prefetch_size)
+            let stream = maybe_prefetch(stream, prefetch_size);
+            exec_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
+            stream
         };
         let stream: SendableRecordBatchStream = match verify_request {
             Some(request) => {
@@ -534,6 +549,17 @@ impl LakeSoulReader {
         self.schema = Some(schema);
         self.stream = Some(stream);
 
+        if profile {
+            debug!(
+                schema_ms,
+                filters_ms,
+                index_ms,
+                plan_ms,
+                exec_ms,
+                total_ms = t_total.elapsed().as_secs_f64() * 1000.0,
+                "reader start profile"
+            );
+        }
         Ok(())
     }
 

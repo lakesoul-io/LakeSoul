@@ -49,11 +49,12 @@ use lakesoul_io::config::{
 use lakesoul_io::execution_trace::instrument_record_batch_stream;
 use lakesoul_io::index::IndexLease;
 use lakesoul_io::index::commit::ResolvedIndex;
+use lakesoul_io::index::key::{KeyCodec, KeyLayout};
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 use lakesoul_metadata::index_catalog::{
     IndexCommitView, VectorCatalog, VectorSegmentEntry,
 };
-use lakesoul_vector::SegmentEntry;
+use lakesoul_vector::{IndexKey, SegmentEntry};
 
 use crate::udf::vector_search_marker::{LakeSoulVectorSearchConfig, VectorSearchRequest};
 
@@ -504,8 +505,13 @@ impl LakeSoulVectorSearchExec {
             .collect();
         prefixes.sort_unstable();
         prefixes.dedup();
+        let t_handoff = std::time::Instant::now();
+        let mut handoff_ms = 0.0_f64;
+        let mut resolve_ms = 0.0_f64;
         let (views, leases_by_prefix) = tokio::task::block_in_place(|| {
+            handoff_ms = t_handoff.elapsed().as_secs_f64() * 1000.0;
             lakesoul_io::session::GLOBAL_RUNTIME.block_on(async {
+                let t_resolve = std::time::Instant::now();
                 let views = self.catalog.resolve_cached_many(&prefixes).await.map_err(
                     |error| {
                         DataFusionError::External(
@@ -517,6 +523,7 @@ impl LakeSoulVectorSearchExec {
                         )
                     },
                 )?;
+                resolve_ms = t_resolve.elapsed().as_secs_f64() * 1000.0;
                 // A lease is only needed while the index is being loaded; a
                 // cache hit reads no file at all.  Leases are taken in the
                 // same trip as the resolution so the whole phase costs one
@@ -560,6 +567,8 @@ impl LakeSoulVectorSearchExec {
                 Ok::<_, DataFusionError>((ResolvedShards { views }, leases))
             })
         })?;
+        let block_ms = t_handoff.elapsed().as_secs_f64() * 1000.0;
+        let t_configs = std::time::Instant::now();
         let mut configs = Vec::with_capacity(self.file_groups.len());
         for ((_group, values), files) in self
             .file_groups
@@ -579,7 +588,256 @@ impl LakeSoulVectorSearchExec {
             )?;
             configs.push(config);
         }
+        if std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok() {
+            debug!(
+                handoff_ms,
+                resolve_ms,
+                block_ms,
+                configs_ms = t_configs.elapsed().as_secs_f64() * 1000.0,
+                groups = configs.len(),
+                "vector build_configs profile"
+            );
+        }
         Ok(configs)
+    }
+
+    /// True when the output of this scan is exactly primary-key columns of
+    /// the index-only ordering.
+    ///
+    /// Anything else (a payload projection, an exact re-rank, a CDC change
+    /// column, range partitions) needs the data files and keeps the reader
+    /// path.
+    fn index_only_eligible(&self) -> bool {
+        // Escape hatch for A/B runs against the reader path
+        // (`LAKESOUL_VECTOR_INDEX_ONLY=0`).
+        if std::env::var("LAKESOUL_VECTOR_INDEX_ONLY").is_ok_and(|value| value == "0")
+        {
+            return false;
+        }
+        if !self.vector_search.order_by
+            || !self.vector_search.is_single()
+            || !self.cdc_column.is_empty()
+            || !self.partition_cols.is_empty()
+        {
+            return false;
+        }
+        let primary_keys: std::collections::HashSet<&str> =
+            self.primary_keys.iter().map(String::as_str).collect();
+        self.schema
+            .fields()
+            .iter()
+            .all(|field| primary_keys.contains(field.name().as_str()))
+    }
+
+    /// Answer a primary-key-only projection from the index keys alone.
+    ///
+    /// When the plan ranks on the index distance (`rerank = 'index'`), the
+    /// output holds nothing but primary-key columns, and every shard's commit
+    /// provably covers its snapshot (no mutation chain, no CDC change column,
+    /// no active file outside the commit), the candidate rows *are* the keys
+    /// the index returned: no data file has to be opened, scanned or merged.
+    /// This is the single-query counterpart of the snapshot batch entry and
+    /// it removes the per-bucket reader setup (a DataFusion session and a
+    /// physical plan per bucket) from the query path.
+    ///
+    /// Returns `Ok(None)` whenever a condition cannot be proven.  The caller
+    /// then runs the regular reader path, so correctness never depends on the
+    /// fast path being taken.
+    fn try_index_only_batches(
+        &self,
+        context: &TaskContext,
+        nprobe: usize,
+        parallelism: usize,
+    ) -> DFResult<Option<Vec<arrow::record_batch::RecordBatch>>> {
+        if !self.index_only_eligible() {
+            return Ok(None);
+        }
+        let store = context
+            .runtime_env()
+            .object_store(self.object_store_url.clone())
+            .map_err(|error| {
+                DataFusionError::External(
+                    rootcause::report!("failed to get object store: {}", error)
+                        .into_boxed_error(),
+                )
+            })?;
+        let t_handoff = std::time::Instant::now();
+        let mut handoff_ms = 0.0_f64;
+        let batches = tokio::task::block_in_place(|| {
+            handoff_ms = t_handoff.elapsed().as_secs_f64() * 1000.0;
+            lakesoul_io::session::GLOBAL_RUNTIME.block_on(
+                self.index_only_batches_inner(&store, nprobe, parallelism),
+            )
+        });
+        if std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok() {
+            debug!(
+                handoff_ms,
+                total_ms = t_handoff.elapsed().as_secs_f64() * 1000.0,
+                "vector index-only profile"
+            );
+        }
+        batches
+    }
+
+    /// Async body of [`Self::try_index_only_batches`]; the caller has already
+    /// checked [`Self::index_only_eligible`].
+    async fn index_only_batches_inner(
+        &self,
+        store: &Arc<dyn object_store::ObjectStore>,
+        nprobe: usize,
+        parallelism: usize,
+    ) -> DFResult<Option<Vec<arrow::record_batch::RecordBatch>>> {
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_inner = std::time::Instant::now();
+        let layout = KeyLayout::from_schema(self.file_schema.as_ref(), &self.primary_keys)
+            .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let codec = KeyCodec::new(layout.clone())
+            .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let expected_key_kind = layout.kind_hash();
+
+        let groups = self
+            .file_groups
+            .iter()
+            .map(|group| self.group_files(group))
+            .collect::<DFResult<Vec<_>>>()?;
+        let mut prefixes: Vec<String> = groups
+            .iter()
+            .flat_map(|group| {
+                group
+                    .index_prefixes
+                    .iter()
+                    .map(|(prefix, _)| prefix.clone())
+            })
+            .collect();
+        prefixes.sort_unstable();
+        prefixes.dedup();
+        let t_resolve = std::time::Instant::now();
+        let views = self
+            .catalog
+            .resolve_cached_many(&prefixes)
+            .await
+            .map_err(|error| {
+                DataFusionError::External(
+                    rootcause::report!(
+                        "failed to resolve vector index shards: {}",
+                        error
+                    )
+                    .into_boxed_error(),
+                )
+            })?;
+
+        let resolve_ms = t_resolve.elapsed().as_secs_f64() * 1000.0;
+        let column = &self.vector_search.columns[0];
+        let query =
+            lakesoul_io::vector::search::parse_query_vector(&column.query_csv, None)
+                .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let top_k = self.vector_search.candidates_per_bucket();
+        let mut best: std::collections::HashMap<IndexKey, f32> =
+            std::collections::HashMap::new();
+        let t_search = std::time::Instant::now();
+        let mut shards = 0_usize;
+        for group in &groups {
+            for (prefix, _bucket) in &group.index_prefixes {
+                let Some(view) = views.get(prefix).and_then(Option::as_ref) else {
+                    return Ok(None);
+                };
+                let covered: Vec<&str> = view
+                    .segments
+                    .iter()
+                    .flat_map(|segment| {
+                        segment.data_files.iter().map(String::as_str)
+                    })
+                    .collect();
+                if !crate::vector_batch::can_skip_verification(
+                    &self.cdc_column,
+                    view.mutation_head.is_none(),
+                    view.mutation_records,
+                    &group.file_uris,
+                    &covered,
+                ) {
+                    return Ok(None);
+                }
+                shards += 1;
+                // The catalog view already holds the parsed segment list;
+                // hand it over instead of rebuilding (and re-parsing) the
+                // serialized transport form.
+                let segments = crate::vector_batch::segment_entries(view);
+                let Some(hits) = lakesoul_io::vector::search::search_typed_shard(
+                    store,
+                    prefix,
+                    view.commit_id,
+                    view.version,
+                    &view.header,
+                    &segments,
+                    view.mutation_head.as_deref(),
+                    view.mutation_records,
+                    &query,
+                    top_k,
+                    nprobe,
+                    parallelism,
+                    expected_key_kind,
+                )
+                .await
+                .map_err(|error| DataFusionError::External(error.into_boxed_error()))?
+                else {
+                    // The shard was written for another key layout; the
+                    // reader path reports that case the same way.
+                    return Ok(None);
+                };
+                for hit in hits {
+                    best.entry(hit.key)
+                        .and_modify(|score| *score = score.min(hit.score))
+                        .or_insert(hit.score);
+                }
+            }
+        }
+        let mut ranked: Vec<(f32, IndexKey)> =
+            best.into_iter().map(|(key, score)| (score, key)).collect();
+        let descending = !column.metric.eq_ignore_ascii_case("L2");
+        ranked.sort_by(|left, right| {
+            let order = left
+                .0
+                .partial_cmp(&right.0)
+                .unwrap_or(std::cmp::Ordering::Equal);
+            let order = if descending { order.reverse() } else { order };
+            order.then_with(|| left.1.cmp(&right.1))
+        });
+        if ranked.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let candidates = ranked.len();
+        let keys: Vec<IndexKey> = ranked.into_iter().map(|(_, key)| key).collect();
+        let decoded = codec
+            .decode(&keys)
+            .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let mut columns = Vec::with_capacity(self.schema.fields().len());
+        for field in self.schema.fields() {
+            let position = self
+                .primary_keys
+                .iter()
+                .position(|key| key == field.name())
+                .ok_or_else(|| {
+                    DataFusionError::Execution(format!(
+                        "primary key column '{}' is missing from the index key layout",
+                        field.name()
+                    ))
+                })?;
+            columns.push(Arc::clone(&decoded[position]));
+        }
+        if profile {
+            debug!(
+                resolve_ms,
+                search_ms = t_search.elapsed().as_secs_f64() * 1000.0,
+                candidates,
+                shards,
+                total_ms = t_inner.elapsed().as_secs_f64() * 1000.0,
+                "vector index-only inner profile"
+            );
+        }
+        Ok(Some(vec![arrow::record_batch::RecordBatch::try_new(
+            Arc::clone(&self.schema),
+            columns,
+        )?]))
     }
 
     /// Read every bucket's candidates through the native reader.
@@ -631,7 +889,11 @@ impl LakeSoulVectorSearchExec {
             Ok(batches)
         }
 
-        tokio::task::block_in_place(|| {
+        let t_handoff = std::time::Instant::now();
+        let mut handoff_ms = 0.0_f64;
+        let t_total = std::time::Instant::now();
+        let batches = tokio::task::block_in_place(|| {
+            handoff_ms = t_handoff.elapsed().as_secs_f64() * 1000.0;
             let mut configs = configs;
             if configs.len() == 1 {
                 let config = configs.pop().expect("one config");
@@ -659,7 +921,15 @@ impl LakeSoulVectorSearchExec {
                 }
                 Ok::<_, DataFusionError>(batches)
             })
-        })
+        });
+        if profile {
+            debug!(
+                handoff_ms,
+                total_ms = t_total.elapsed().as_secs_f64() * 1000.0,
+                "vector read_configs profile"
+            );
+        }
+        batches
     }
 
     /// Rank the phase-1 candidates, keep the rows the plan's limit may return
@@ -848,10 +1118,50 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
         } else {
             Arc::clone(&self.file_schema)
         };
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_exec = std::time::Instant::now();
+        // Fast path: for a primary-key-only projection of the index-only
+        // ordering the shard keys themselves are the answer, so the four
+        // bucket readers are unnecessary.
+        if let Some(batches) =
+            self.try_index_only_batches(&context, nprobe, parallelism)?
+        {
+            if profile {
+                debug!(
+                    batches = batches.len(),
+                    rows = batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+                    "vector search served from the index keys"
+                );
+            }
+            let stream = futures::stream::iter(batches.into_iter().map(Ok));
+            let stream = Box::pin(RecordBatchStreamAdapter::new(
+                Arc::clone(&self.schema),
+                stream,
+            )) as SendableRecordBatchStream;
+            drop(entered);
+            return Ok(instrument_record_batch_stream(
+                stream,
+                span,
+                "vector_search",
+            ));
+        }
+        let t_phase = std::time::Instant::now();
         let configs =
             self.build_configs(&ranking_schema, Vec::new(), nprobe, parallelism)?;
-        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let build_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
+        let t_phase = std::time::Instant::now();
         let candidates = self.read_configs(configs, &span, profile)?;
+        let read_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
+        if profile {
+            debug!(
+                build_ms,
+                read_ms,
+                total_ms = t_exec.elapsed().as_secs_f64() * 1000.0,
+                defer_payload,
+                batches = candidates.len(),
+                "vector search exec profile"
+            );
+        }
         let batches = if defer_payload {
             self.deferred_payload_batches(
                 candidates,

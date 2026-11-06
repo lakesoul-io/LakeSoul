@@ -18,7 +18,7 @@ use lakesoul_vector::rabitq::mutation::load_state;
 use lakesoul_vector::rabitq::segment::{IndexHeader, IndexStore, SegmentEntry};
 use lakesoul_vector::{IndexKey, IvfRabitqIndex, Metric, RabitqError, SearchParams};
 use object_store::ObjectStore;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::Result as IoResult;
 use crate::config::LakeSoulIOConfig;
@@ -34,7 +34,6 @@ use crate::index::prefix::derive_index_prefixes;
 /// Why a shard could not be loaded from its commit.
 #[derive(Debug)]
 enum ShardLoadError {
-    Segments(rootcause::Report),
     Mutation(RabitqError),
     Index(RabitqError),
 }
@@ -234,36 +233,72 @@ async fn load_resolved_shard(
             return Ok(None);
         }
     };
+    let segments: Vec<SegmentEntry> = match resolved.segments_as() {
+        Ok(segments) => segments,
+        Err(error) => {
+            return Err(rootcause::report!(
+                "invalid vector index segment list at '{}': {error}",
+                resolved.index_prefix
+            ));
+        }
+    };
+    load_shard(
+        store,
+        &resolved.index_prefix,
+        resolved.commit_id,
+        resolved.version,
+        &header,
+        &segments,
+        resolved.mutation_head.as_deref(),
+        resolved.mutation_records,
+        expected_key_kind,
+    )
+    .await
+}
+
+/// Load (or take from the cache) one shard described by its typed commit
+/// pieces.
+///
+/// [`load_resolved_shard`] needs the serialized transport form, which the
+/// catalog layer can hand over as JSON.  A caller that already holds the
+/// parsed segments (the DataFusion layer keeps the typed catalog view) calls
+/// this instead and skips serializing a thousand segment entries per query.
+#[allow(clippy::too_many_arguments)]
+async fn load_shard(
+    store: &Arc<dyn ObjectStore>,
+    index_prefix: &str,
+    commit_id: i64,
+    revision: u64,
+    header: &IndexHeader,
+    segments: &[SegmentEntry],
+    mutation_head: Option<&str>,
+    mutation_records: u32,
+    expected_key_kind: u64,
+) -> IoResult<Option<Arc<LoadedVectorShard>>> {
     if header.key_kind != expected_key_kind {
         warn!(
             "vector index at '{}' was built with key kind {:#x} but the table \
              now uses {:#x}; scanning without the index",
-            resolved.index_prefix, header.key_kind, expected_key_kind
+            index_prefix, header.key_kind, expected_key_kind
         );
         return Ok(None);
     }
-    let prefix = resolved.index_prefix.trim_end_matches('/').to_string();
-    let cache_prefix = prefix.clone();
-    let error_prefix = resolved.index_prefix.clone();
-    let commit_id = resolved.commit_id;
-    let revision = resolved.version;
-    let mutation_records = resolved.mutation_records;
-    let mutation_head = resolved.mutation_head.clone();
+    let prefix = index_prefix.trim_end_matches('/').to_string();
+    let error_prefix = index_prefix.to_string();
     let entry = cache::get_or_load(IndexKind::Vector, &prefix, commit_id, || {
+        // Copied only on a cache miss: a hit must not rebuild coverage or
+        // clone the segment list.
         let store = store.clone();
-        let prefix = cache_prefix.clone();
+        let prefix = prefix.clone();
         let header = header.clone();
-        let mutation_head = mutation_head.clone();
+        let segments = segments.to_vec();
+        let mutation_head = mutation_head.map(str::to_owned);
         async move {
-            // Decode only while loading this immutable commit.  A hit must
-            // not clone the transport JSON or rebuild its coverage set.
-            let segments: Vec<SegmentEntry> =
-                resolved.segments_as().map_err(ShardLoadError::Segments)?;
             let covered = CoveredFiles::from_segments(&segments);
             let istore = IndexStore::new(store, prefix);
-            let mutation = match mutation_head {
+            let mutation = match mutation_head.as_deref() {
                 Some(head) => Some(
-                    load_state(&istore, Some(&head), mutation_records, revision)
+                    load_state(&istore, Some(head), mutation_records, revision)
                         .await
                         .map_err(ShardLoadError::Mutation)?,
                 ),
@@ -295,10 +330,6 @@ async fn load_resolved_shard(
         Ok(entry) => entry,
         Err(error) => {
             return match error.as_ref() {
-                ShardLoadError::Segments(error) => Err(rootcause::report!(
-                    "invalid vector index segment list at '{}': {error}",
-                    error_prefix
-                )),
                 ShardLoadError::Mutation(error) => {
                     // Without the mutation chain the masks cannot hide
                     // logically deleted keys, so do not silently serve an
@@ -319,6 +350,66 @@ async fn load_resolved_shard(
         }
     };
     Ok(Some(entry))
+}
+
+/// Search one shard from its typed catalog pieces.
+///
+/// Same contract as [`search_resolved_shard`], except that the caller passes
+/// the parsed header and segment list instead of the serialized transport
+/// form.  The DataFusion layer keeps the typed view in memory, so a
+/// single-query scan no longer serializes the whole segment list (one entry
+/// per cluster, i.e. thousands per shard) and parses it back.
+#[allow(clippy::too_many_arguments)]
+pub async fn search_typed_shard(
+    store: &Arc<dyn ObjectStore>,
+    index_prefix: &str,
+    commit_id: i64,
+    version: u64,
+    header: &[u8],
+    segments: &[SegmentEntry],
+    mutation_head: Option<&str>,
+    mutation_records: u32,
+    query: &[f32],
+    top_k: usize,
+    nprobe: usize,
+    parallelism: usize,
+    expected_key_kind: u64,
+) -> IoResult<Option<Vec<VectorHit>>> {
+    let header = match IndexHeader::deserialize(header) {
+        Ok(header) => header,
+        Err(e) => {
+            warn!(
+                "vector index at '{}' has an unreadable header ({}); scanning \
+                 without the index",
+                index_prefix, e
+            );
+            return Ok(None);
+        }
+    };
+    let Some(entry) = load_shard(
+        store,
+        index_prefix,
+        commit_id,
+        version,
+        &header,
+        segments,
+        mutation_head,
+        mutation_records,
+        expected_key_kind,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let hits = search_loaded_index(
+        &entry.cached.index,
+        index_prefix,
+        query,
+        top_k,
+        nprobe,
+        parallelism,
+    )?;
+    Ok(Some(hits))
 }
 
 /// Search the vector index matching a single bucket's files.
@@ -363,10 +454,18 @@ pub async fn search_matching_shards(
             normalized
         ));
     };
+    let t_load = std::time::Instant::now();
+    let load_profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
     let Some(entry) = load_resolved_shard(store, resolved, expected_key_kind).await?
     else {
         return Ok(None);
     };
+    if load_profile {
+        debug!(
+            load_ms = t_load.elapsed().as_secs_f64() * 1000.0,
+            "vector shard load profile"
+        );
+    }
     let mut hits = search_loaded_index(
         &entry.cached.index,
         &resolved.index_prefix,
@@ -579,9 +678,29 @@ fn search_loaded_index(
     parallelism: usize,
 ) -> IoResult<Vec<VectorHit>> {
     let params = SearchParams::new(top_k, nprobe).with_parallelism(parallelism);
-    let results = index.search(query, params).map_err(|e| {
-        rootcause::report!("vector search failed at '{}': {:?}", prefix, e)
-    })?;
+    let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+    let (results, diagnostics) = if profile {
+        index.search_with_diagnostics(query, params).map_err(|e| {
+            rootcause::report!("vector search failed at '{}': {:?}", prefix, e)
+        })?
+    } else {
+        (
+            index.search(query, params).map_err(|e| {
+                rootcause::report!("vector search failed at '{}': {:?}", prefix, e)
+            })?,
+            Default::default(),
+        )
+    };
+    if profile {
+        debug!(
+            vectors = diagnostics.vectors_scanned,
+            extended = diagnostics.extended_evaluations,
+            fastscan_ms = diagnostics.fastscan_ns as f64 / 1e6,
+            scalar_ms = diagnostics.scalar_ns as f64 / 1e6,
+            hits = results.len(),
+            "vector ann profile"
+        );
+    }
     let hits: Vec<VectorHit> = results.into_iter().map(vector_hit).collect();
     info!(
         "Vector search at '{}': {} results (nprobe={})",
