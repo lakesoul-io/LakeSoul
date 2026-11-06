@@ -108,12 +108,18 @@ struct GroupFiles {
 
 /// Current commits of one scan's shards, resolved with one catalog call.
 struct ResolvedShards {
-    views: std::collections::HashMap<String, Option<IndexCommitView<VectorSegmentEntry>>>,
+    views: std::collections::HashMap<
+        String,
+        Option<Arc<IndexCommitView<VectorSegmentEntry>>>,
+    >,
 }
 
 impl ResolvedShards {
     fn view(&self, index_prefix: &str) -> Option<&IndexCommitView<VectorSegmentEntry>> {
-        self.views.get(index_prefix).and_then(Option::as_ref)
+        self.views
+            .get(index_prefix)
+            .and_then(Option::as_ref)
+            .map(Arc::as_ref)
     }
 }
 

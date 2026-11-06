@@ -416,10 +416,10 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     pub async fn resolve_cached_many(
         &self,
         index_prefixes: &[String],
-    ) -> Result<HashMap<String, Option<IndexCommitView<S>>>> {
+    ) -> Result<HashMap<String, Option<Arc<IndexCommitView<S>>>>> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let mut result: HashMap<String, Option<IndexCommitView<S>>> =
+        let mut result: HashMap<String, Option<Arc<IndexCommitView<S>>>> =
             HashMap::with_capacity(index_prefixes.len());
         if index_prefixes.is_empty() {
             return Ok(result);
@@ -455,28 +455,37 @@ impl<S: CatalogSegment> IndexCatalog<S> {
             };
             // Reuse the cached view only when it is exactly the commit the
             // catalog just reported; a moved commit resolves in full below.
+            // The view is shared by `Arc` so a warm query does not clone the
+            // (potentially thousand-entry) segment list per shard.
             let cache_key = (kind, prefix.clone());
             let cached = {
                 let cache = VIEW_CACHE.lock().await;
-                cache
-                    .get(&cache_key)
-                    .and_then(|entry| entry.downcast_ref::<IndexCommitView<S>>())
-                    .filter(|view| view.commit_id == commit_id)
-                    .cloned()
+                cache.get(&cache_key).and_then(|entry| {
+                    let view = entry.downcast_ref::<IndexCommitView<S>>()?;
+                    if view.commit_id != commit_id {
+                        return None;
+                    }
+                    entry.clone().downcast::<IndexCommitView<S>>().ok()
+                })
             };
             let view = match cached {
                 Some(view) => Some(view),
                 None => {
-                    let view = resolve_with(&guard, kind, prefix).await?;
-                    if let Some(view) = &view {
-                        let mut cache = VIEW_CACHE.lock().await;
-                        // Keep the map bounded by the number of live shards.
-                        if cache.len() > 4096 {
-                            cache.clear();
+                    let resolved = resolve_with(&guard, kind, prefix).await?;
+                    match resolved {
+                        Some(view) => {
+                            let view = Arc::new(view);
+                            let mut cache = VIEW_CACHE.lock().await;
+                            // Keep the map bounded by the number of live
+                            // shards.
+                            if cache.len() > 4096 {
+                                cache.clear();
+                            }
+                            cache.insert(cache_key, view.clone() as CachedView);
+                            Some(view)
                         }
-                        cache.insert(cache_key, Arc::new(view.clone()));
+                        None => None,
                     }
-                    view
                 }
             };
             result.insert(prefix.clone(), view);

@@ -409,3 +409,19 @@ R17 之后单查询的 exec 还剩 2.8 ms，其中 shard 装载/搜索 1.77 ms�
 单查询相对最初 reader 路径（61.3 QPS / 16.0 ms）为 3.7×；批量相对 R18 再 +4%。剩下
 4.1 ms 中 logical plan 1.07 + physical plan 1.44 已是主项（每 query 的快照/列文件解析），
 要继续提升需要显式 snapshot 复用入口。
+
+## 19. 缓存命中共享视图 + 批量单次解析
+
+`resolve_cached_many` 命中 `VIEW_CACHE` 后仍克隆整个 `IndexCommitView`（每 shard ~1024 条
+segment，含 data_files 字符串），这是单查询 exec 里 0.75–0.9 ms、批量每批 1.08 ms 的主要原因；
+批量入口还在 batch-size 判定与 chunk 各解析一次 shard。改成返回 `Arc<IndexCommitView>`（缓存条目
+本身即 Arc）、批量入口每次调用只解析一次之后：
+
+| 版本（bits=1、200 query） | 单 query QPS | p50 | CPU/query | 批量 QPS 中位 | 查询期 RSS | Recall |
+|---|---:|---:|---:|---:|---:|---:|
+| R19 | 227–233 | 4.1 ms | 4.6 ms | 8890 | 233–241 MB | 0.42035 |
+| **R20** | **264–274** | **3.4–3.5 ms** | **4.0 ms** | **9466** | **233–238 MB** | 0.42035 |
+
+单查询相对本轮开始（61.3 QPS / 16.0 ms）为 4.4×；批量相对 R17（4331）为 2.2×。批量合并线程数
+8 实测更差（7.3–7.8k），保持全核。剩余：单查询 3.4 ms 中 logical plan 1.07 + physical plan
+1.44 仍是主项。

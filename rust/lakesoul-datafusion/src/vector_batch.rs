@@ -175,36 +175,21 @@ fn bucket_files_by_prefix(
 /// pass (see [`can_skip_verification`]) the union is free and the batch can
 /// take the whole query set, which amortizes the per-batch shard work: on the
 /// GloVe-200 index-only table this is 3.8k QPS against 2.9k at 64 queries.
-async fn adaptive_batch_size(
-    catalog: &VectorCatalog,
-    table_prefix: &str,
-    files: &[String],
+fn adaptive_batch_size(
+    buckets: &[(String, Vec<String>)],
+    views: &std::collections::HashMap<
+        String,
+        Option<Arc<IndexCommitView<VectorSegmentEntry>>>,
+    >,
     cdc_column: &str,
     request: &VectorBatchRequest,
-) -> DFResult<usize> {
+) -> usize {
     if std::env::var("LAKESOUL_VECTOR_BATCH_FORCE_VERIFY").is_ok() {
-        return Ok(DEFAULT_BATCH_SIZE);
+        return DEFAULT_BATCH_SIZE;
     }
-    let buckets = bucket_files_by_prefix(table_prefix, files, &request.column);
     if buckets.is_empty() {
-        return Ok(DEFAULT_BATCH_SIZE);
+        return DEFAULT_BATCH_SIZE;
     }
-    let mut prefixes: Vec<String> =
-        buckets.iter().map(|(prefix, _)| prefix.clone()).collect();
-    prefixes.sort_unstable();
-    prefixes.dedup();
-    let views = catalog
-        .resolve_cached_many(&prefixes)
-        .await
-        .map_err(|error| {
-            DataFusionError::External(
-                rootcause::report!(
-                    "failed to resolve vector index shards for a batch: {}",
-                    error
-                )
-                .into_boxed_error(),
-            )
-        })?;
     let skip_everywhere = buckets.iter().all(|(prefix, bucket_files)| {
         let Some(view) = views.get(prefix).and_then(Option::as_ref) else {
             return false;
@@ -222,11 +207,11 @@ async fn adaptive_batch_size(
             &covered,
         )
     });
-    Ok(if skip_everywhere {
+    if skip_everywhere {
         request.queries.len().max(1)
     } else {
         DEFAULT_BATCH_SIZE
-    })
+    }
 }
 
 pub async fn search_vector_batch(
@@ -242,28 +227,63 @@ pub async fn search_vector_batch(
     if request.queries.is_empty() {
         return Ok(Vec::new());
     }
+    // Resolve every bucket's shard once for the whole call: the batch-size
+    // decision and every chunk read the same views.  Resolving per chunk used
+    // to cost one catalog round trip per chunk.
+    let buckets = bucket_files_by_prefix(table_prefix, files, &request.column);
+    if buckets.is_empty() {
+        return Err(DataFusionError::Internal(
+            "no data files for the vector batch search".to_string(),
+        ));
+    }
+    let mut prefixes: Vec<String> =
+        buckets.iter().map(|(prefix, _)| prefix.clone()).collect();
+    prefixes.sort_unstable();
+    prefixes.dedup();
+    let t_resolve = std::time::Instant::now();
+    let views = catalog
+        .resolve_cached_many(&prefixes)
+        .await
+        .map_err(|error| {
+            DataFusionError::External(
+                rootcause::report!(
+                    "failed to resolve vector index shards for a batch: {}",
+                    error
+                )
+                .into_boxed_error(),
+            )
+        })?;
+    if std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok() {
+        tracing::debug!(
+            resolve_ms = t_resolve.elapsed().as_secs_f64() * 1000.0,
+            shards = prefixes.len(),
+            "resolved batch shards"
+        );
+    }
     // The snapshot is listed once by the caller; the queries are searched in
     // bounded groups so the verified candidate union stays small.  A batch
     // that needs no verification read can take the whole query set instead.
     let batch_size = if request.batch_size != 0 {
         request.batch_size
     } else {
-        adaptive_batch_size(catalog, table_prefix, files, cdc_column, request).await?
+        adaptive_batch_size(&buckets, &views, cdc_column, request)
     };
     if request.queries.len() > batch_size {
         // The chunks are independent, and one chunk's index probes (rayon)
         // and reader/merge work do not fill every core on their own, so run
         // them concurrently and concatenate the results in query order.
         let mut chunk_futures = Vec::new();
+        let views = &views;
+        let buckets = &buckets;
         for chunk in request.queries.chunks(batch_size) {
             let mut chunk_request = request.clone();
             chunk_request.queries = chunk.to_vec();
             chunk_futures.push(async move {
                 search_vector_batch_chunk(
-                    catalog,
+                    views,
+                    buckets,
                     store,
                     table_prefix,
-                    files,
                     schema,
                     primary_keys,
                     cdc_column,
@@ -286,10 +306,10 @@ pub async fn search_vector_batch(
     }
 
     search_vector_batch_chunk(
-        catalog,
+        &views,
+        &buckets,
         store,
         table_prefix,
-        files,
         schema,
         primary_keys,
         cdc_column,
@@ -301,40 +321,18 @@ pub async fn search_vector_batch(
 /// Search one bounded group of queries against one snapshot.
 #[allow(clippy::too_many_arguments)]
 async fn search_vector_batch_chunk(
-    catalog: &VectorCatalog,
+    views: &std::collections::HashMap<
+        String,
+        Option<Arc<IndexCommitView<VectorSegmentEntry>>>,
+    >,
+    buckets: &[(String, Vec<String>)],
     store: &Arc<dyn ObjectStore>,
     table_prefix: &str,
-    files: &[String],
     schema: &SchemaRef,
     primary_keys: &[String],
     cdc_column: &str,
     request: &VectorBatchRequest,
 ) -> DFResult<Vec<Vec<i64>>> {
-    // One shard (index) per hash bucket; the batch resolves all of them with
-    // one catalog round trip.
-    let buckets = bucket_files_by_prefix(table_prefix, files, &request.column);
-    if buckets.is_empty() {
-        return Err(DataFusionError::Internal(
-            "no data files for the vector batch search".to_string(),
-        ));
-    }
-    let mut prefixes: Vec<String> =
-        buckets.iter().map(|(prefix, _)| prefix.clone()).collect();
-    prefixes.sort_unstable();
-    prefixes.dedup();
-    let views = catalog
-        .resolve_cached_many(&prefixes)
-        .await
-        .map_err(|error| {
-            DataFusionError::External(
-                rootcause::report!(
-                    "failed to resolve vector index shards for a batch: {}",
-                    error
-                )
-                .into_boxed_error(),
-            )
-        })?;
-
     // The index stores arrow-Row encoded primary keys; the codec must match
     // the layout the index was built with.
     let layout = KeyLayout::from_schema(schema.as_ref(), primary_keys)
@@ -355,7 +353,7 @@ async fn search_vector_batch_chunk(
     let mut shards: Vec<LoadedShard> = Vec::with_capacity(buckets.len());
     let mut shard_skip: Vec<bool> = Vec::with_capacity(buckets.len());
     let mut shard_files: Vec<Vec<String>> = Vec::with_capacity(buckets.len());
-    for (prefix, bucket_files) in &buckets {
+    for (prefix, bucket_files) in buckets {
         let view = views.get(prefix).and_then(Option::as_ref).ok_or_else(|| {
             DataFusionError::Execution(format!(
                 "no vector index commit for shard '{prefix}'"
@@ -384,7 +382,7 @@ async fn search_vector_batch_chunk(
                 // The catalog view already holds the parsed segment list;
                 // handing it over avoids serializing a thousand entries per
                 // bucket and parsing them back on every batch.
-                let segments = segment_entries(view);
+                let segments = segment_entries(view.as_ref());
                 load_typed_shard(
                     store,
                     prefix,

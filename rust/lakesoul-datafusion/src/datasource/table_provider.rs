@@ -768,11 +768,16 @@ impl LakeSoulTableProvider {
             return Ok((vec![], Statistics::new_unknown(&self.file_schema())));
         };
 
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_listing = std::time::Instant::now();
+        let t_phase = std::time::Instant::now();
         let all_partition_info = self
             .client
             .get_all_partition_info(self.table_id())
             .await
             .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
+        let meta_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
+        let t_phase = std::time::Instant::now();
         let total_partition_count = all_partition_info.len();
         let prune_partition_info = prune_partitions(
             all_partition_info,
@@ -790,6 +795,8 @@ impl LakeSoulTableProvider {
             "partition pruning completed"
         );
 
+        let prune_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
+        let t_phase = std::time::Instant::now();
         let mut futures = FuturesUnordered::new();
         for partition in prune_partition_info {
             futures.push(listing_partition_info(
@@ -825,6 +832,16 @@ impl LakeSoulTableProvider {
             file_groups.push(files)
         }
         let file_count = file_groups.iter().map(Vec::len).sum::<usize>();
+        if profile {
+            debug!(
+                meta_ms,
+                prune_ms,
+                list_ms = t_phase.elapsed().as_secs_f64() * 1000.0,
+                total_ms = t_listing.elapsed().as_secs_f64() * 1000.0,
+                file_count,
+                "listed vector scan files"
+            );
+        }
         debug!(
             listed_partition_count = file_groups.len(),
             file_count, "object metadata listing completed"
@@ -847,10 +864,13 @@ impl LakeSoulTableProvider {
         state: &SessionState,
         request: &crate::vector_batch::VectorBatchRequest,
     ) -> DFResult<Vec<Vec<i64>>> {
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_batch = std::time::Instant::now();
         let (file_groups, _) = self
             .list_files_for_scan(state, &[], None)
             .await
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+        let list_ms = t_batch.elapsed().as_secs_f64() * 1000.0;
         let Some(table_path) = self.table_paths().first() else {
             return Err(DataFusionError::Execution(
                 "table has no path for a vector batch search".to_string(),
@@ -883,7 +903,7 @@ impl LakeSoulTableProvider {
         };
         let table_prefix =
             crate::datasource::file_format::vector_search_exec::derive_prefix(first);
-        crate::vector_batch::search_vector_batch(
+        let results = crate::vector_batch::search_vector_batch(
             &self.client.vector_index_catalog(),
             &store,
             &table_prefix,
@@ -893,7 +913,18 @@ impl LakeSoulTableProvider {
             &self.io_config.cdc_column(),
             request,
         )
-        .await
+        .await?;
+        if profile {
+            debug!(
+                list_ms,
+                search_ms = t_batch.elapsed().as_secs_f64() * 1000.0 - list_ms,
+                total_ms = t_batch.elapsed().as_secs_f64() * 1000.0,
+                files = files.len(),
+                queries = request.queries.len(),
+                "profiled vector batch entry"
+            );
+        }
+        Ok(results)
     }
 
     /// Build the vector-index candidate scan for a marker request.
@@ -986,10 +1017,13 @@ impl LakeSoulTableProvider {
                 return Ok(None);
             }
         }
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_scan = std::time::Instant::now();
         let (partitioned_file_lists, _) = self
             .list_files_for_scan(session_state, partition_filters, limit)
             .await
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+        let list_ms = t_scan.elapsed().as_secs_f64() * 1000.0;
         if partitioned_file_lists.is_empty() {
             record_fallback("no_files");
             return Ok(None);
@@ -1070,6 +1104,13 @@ impl LakeSoulTableProvider {
             self.client.vector_index_catalog(),
         )?;
         let exec: Arc<dyn ExecutionPlan> = Arc::new(exec);
+        if profile {
+            debug!(
+                list_ms,
+                build_ms = t_scan.elapsed().as_secs_f64() * 1000.0 - list_ms,
+                "built vector search exec"
+            );
+        }
         if Self::needs_output_projection(&scan_schema, &merged_schema) {
             let mut projection_expr = vec![];
             for field in scan_schema.fields() {
