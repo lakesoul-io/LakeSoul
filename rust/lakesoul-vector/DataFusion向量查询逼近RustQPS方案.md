@@ -601,3 +601,20 @@ UDF 求值时解析句柄并**委托内置 `array_distance`/`inner_product`**，
 
 单查询 **+3.2%**（均值 +4.8%），planner −17.6%。累计相对最初 reader 路径 61.3 QPS / 16.0 ms 为
 **8.5× / 8.9×**。
+
+## 30. 元数据客户端读并发化（单查询并发 2.5×）
+
+单查询并发 c=4 只有 770 QPS、c=8 831 QPS，而每 query CPU 仅 2.4 ms —— 机器没吃满，说明有串行点。
+根因是 `MetaDataClient`/`IndexCatalog` 的 `Arc<Mutex<PooledClient>>`：进程内所有元数据查询
+（包括纯读）都被同一把互斥锁串行化。改成 `Arc<tokio::sync::RwLock<PooledClient>>` 后，纯读路径
+（表信息、分区信息、索引 resolve）可以并行，写路径（insert/update、DDL、lease、commit、事务体）
+仍取写锁保持独占；锁粒度不变，多步操作原本就在步骤间释放锁，因此没有削弱原子性契约。
+
+| 场景（bits=1、GloVe-200） | 改动前 | 改动后 |
+|---|---:|---:|
+| 顺序单查询 | 509 QPS / 1.814 ms | **526 QPS / 1.770 ms** |
+| 并发 c=4 | 770 QPS / 4.51 ms | **1,221 QPS / 2.74 ms** |
+| 并发 c=8 | 831 QPS / 8.10 ms | **2,068 QPS / 2.91 ms** |
+| 并发 c=16 | ~415 QPS（R25） | **2,496 QPS / 4.43 ms** |
+
+批量路径与 Recall（0.42035）不变。

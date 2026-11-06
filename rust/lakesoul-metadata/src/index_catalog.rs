@@ -35,7 +35,7 @@ use std::time::Duration;
 use lakesoul_common::IndexKind;
 use postgres_types::Json;
 use serde::Serialize;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::MetaDataClient;
@@ -203,7 +203,7 @@ pub struct GcShardPlan {
 /// Shared connection state of a catalog; non-generic so [`LeaseHandle`] can
 /// release itself without knowing the segment payload type.
 struct CatalogCore {
-    client: Arc<Mutex<PooledClient>>,
+    client: Arc<RwLock<PooledClient>>,
     max_retry: usize,
     kind: IndexKind,
 }
@@ -222,12 +222,12 @@ impl CatalogCore {
     }
 
     async fn init_tables(&self) -> Result<()> {
-        let guard = self.client.lock().await;
+        let guard = self.client.write().await;
         guard.batch_execute(CREATE_TABLES_SQL, QueryType::RW).await
     }
 
     async fn release_lease(&self, lease_id: Uuid) -> Result<()> {
-        let guard = self.client.lock().await;
+        let guard = self.client.write().await;
         guard
             .execute(
                 "delete from index_lease where lease_id = $1",
@@ -326,7 +326,7 @@ impl<S: CatalogSegment> std::fmt::Debug for IndexCatalog<S> {
 
 impl<S: CatalogSegment> IndexCatalog<S> {
     fn from_pooled(
-        client: Arc<Mutex<PooledClient>>,
+        client: Arc<RwLock<PooledClient>>,
         max_retry: usize,
         kind: IndexKind,
     ) -> Self {
@@ -356,7 +356,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         index_prefix: &str,
     ) -> Result<Option<IndexCommitView<S>>> {
         self.core.ensure_tables().await?;
-        let guard = self.core.client.lock().await;
+        let guard = self.core.client.read().await;
         resolve_with(&guard, self.core.kind, index_prefix).await
     }
 
@@ -368,7 +368,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     ) -> Result<Option<IndexCommitView<S>>> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let guard = self.core.client.lock().await;
+        let guard = self.core.client.read().await;
         let current: Option<i64> = guard
             .query_opt(
                 "select commit_id from index_commit c \
@@ -425,7 +425,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
             return Ok(result);
         }
         let prefixes: Vec<String> = index_prefixes.to_vec();
-        let guard = self.core.client.lock().await;
+        let guard = self.core.client.read().await;
         // A left join keeps one row per requested prefix, so a shard without
         // a commit resolves to `None` exactly like the single-shard call.
         let rows = guard
@@ -507,7 +507,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         let kind = self.core.kind;
         let mut last_error: Option<LakeSoulMetaDataError> = None;
         for _ in 0..self.core.max_retry.max(1) {
-            let guard = self.core.client.lock().await;
+            let guard = self.core.client.write().await;
             let shard_id = ensure_shard(&guard, kind, index_prefix).await?;
             match try_commit::<S>(&guard, shard_id, header, segments, mode, None, None, 0)
                 .await
@@ -549,7 +549,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     ) -> Result<IndexCommitView<S>> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let guard = self.core.client.lock().await;
+        let guard = self.core.client.write().await;
         let shard_id = ensure_shard(&guard, kind, index_prefix).await?;
         match try_commit::<S>(
             &guard,
@@ -594,7 +594,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     ) -> Result<Option<LeaseHandle>> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let guard = self.core.client.lock().await;
+        let guard = self.core.client.write().await;
         let mut conn = guard.get(QueryType::RW).await?;
         let tx = conn.transaction().await?;
 
@@ -638,7 +638,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
 
     /// Extend a lease; returns `false` when the row no longer exists.
     pub async fn renew_lease(&self, lease: &LeaseHandle, ttl: Duration) -> Result<bool> {
-        let guard = self.core.client.lock().await;
+        let guard = self.core.client.write().await;
         let updated = guard
             .execute(
                 "update index_lease set expires_at = now() + make_interval(secs => $2) \
@@ -665,7 +665,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     ) -> Result<GcShardPlan> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let guard = self.core.client.lock().await;
+        let guard = self.core.client.write().await;
         let mut conn = guard.get(QueryType::RW).await?;
         let tx = conn.transaction().await?;
 
@@ -769,7 +769,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         }
         let kind = self.core.kind;
         let pattern = format!("{}/", normalized.trim_end_matches('/'));
-        let guard = self.core.client.lock().await;
+        let guard = self.core.client.write().await;
         let deleted = guard
             .execute(
                 "delete from index_shard \
@@ -791,7 +791,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         }
         let kind = self.core.kind;
         let pattern = format!("{normalized}/");
-        let guard = self.core.client.lock().await;
+        let guard = self.core.client.read().await;
         let rows = guard
             .query(
                 "select index_prefix from index_shard \
@@ -808,7 +808,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     pub async fn delete_shard(&self, index_prefix: &str) -> Result<u64> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let guard = self.core.client.lock().await;
+        let guard = self.core.client.write().await;
         let deleted = guard
             .execute(
                 "delete from index_shard where kind = $1 and index_prefix = $2",

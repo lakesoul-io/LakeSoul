@@ -15,7 +15,7 @@ use std::{
 
 use postgres::Config;
 use prost::Message;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use url::Url;
 
 use lakesoul_metadata_proto::entity::{
@@ -34,7 +34,7 @@ use crate::{
 /// The metadata client for the postgres database.
 pub struct MetaDataClient {
     /// The pooled client for the postgres database.
-    client: Arc<Mutex<PooledClient>>,
+    client: Arc<RwLock<PooledClient>>,
     /// The maximum number of retries for the postgres database.
     max_retry: usize,
     /// The encoded secret for the postgres database.
@@ -319,7 +319,7 @@ impl MetaDataClient {
     /// created as a pooled PostgreSQL client by `create_tokio_postgres_client`.
     pub fn from_pooled(pooled: PooledClient) -> Self {
         Self {
-            client: Arc::new(Mutex::new(pooled)),
+            client: Arc::new(RwLock::new(pooled)),
             max_retry: MAX_COMMIT_ATTEMPTS,
             secret: String::new(),
         }
@@ -331,7 +331,7 @@ impl MetaDataClient {
         secondary_config: Option<String>,
         max_retry: usize,
     ) -> Result<Self> {
-        let client = Arc::new(Mutex::new(
+        let client = Arc::new(RwLock::new(
             create_connection(config.clone(), secondary_config).await?,
         ));
         let config = config.parse::<Config>()?;
@@ -355,14 +355,14 @@ impl MetaDataClient {
     /// Share the existing primary pool, bypassing read replicas for write checks.
     pub async fn primary_only(&self) -> Self {
         Self {
-            client: Arc::new(Mutex::new(self.client.lock().await.primary_only())),
+            client: Arc::new(RwLock::new(self.client.read().await.primary_only())),
             max_retry: self.max_retry,
             secret: self.secret.clone(),
         }
     }
 
     /// The shared connection pool backing this client.
-    pub(crate) fn pooled_client(&self) -> Arc<Mutex<PooledClient>> {
+    pub(crate) fn pooled_client(&self) -> Arc<RwLock<PooledClient>> {
         self.client.clone()
     }
 
@@ -508,7 +508,7 @@ impl MetaDataClient {
     async fn execute_insert(&self, insert_type: i32, wrapper: JniWrapper) -> Result<i32> {
         for times in 0..self.max_retry as i64 {
             match execute_insert(
-                self.client.lock().await.deref_mut(),
+                self.client.write().await.deref_mut(),
                 insert_type,
                 wrapper.clone(),
             )
@@ -529,7 +529,7 @@ impl MetaDataClient {
     ) -> Result<i32> {
         for times in 0..self.max_retry as i64 {
             match execute_update(
-                self.client.lock().await.deref_mut(),
+                self.client.write().await.deref_mut(),
                 update_type,
                 joined_string.clone(),
             )
@@ -551,12 +551,11 @@ impl MetaDataClient {
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         for times in 0..self.max_retry as i64 {
             let t_lock = std::time::Instant::now();
-            let mut locked = self.client.lock().await;
+            let locked = self.client.read().await;
             let lock_ms = t_lock.elapsed().as_secs_f64() * 1000.0;
             let t_query = std::time::Instant::now();
             let executed =
-                execute_query(locked.deref_mut(), query_type, joined_string.clone())
-                    .await;
+                execute_query(&locked, query_type, joined_string.clone()).await;
             if profile {
                 tracing::debug!(
                     lock_ms,
@@ -602,7 +601,7 @@ impl MetaDataClient {
     ) -> Result<i32> {
         for times in 0..self.max_retry as i64 {
             match execute_update(
-                self.client.lock().await.deref_mut(),
+                self.client.write().await.deref_mut(),
                 update_type,
                 joined_string.clone(),
             )
@@ -726,7 +725,7 @@ impl MetaDataClient {
     }
 
     pub async fn meta_cleanup(&self) -> Result<i32> {
-        clean_meta_for_test(self.client.lock().await.deref_mut()).await?;
+        clean_meta_for_test(self.client.write().await.deref_mut()).await?;
         self.insert_namespace(&Namespace {
             namespace: "default".to_string(),
             properties: "{}".to_string(),
@@ -1263,7 +1262,7 @@ impl MetaDataClient {
             .duration_since(UNIX_EPOCH)
             .map_err(|error| LakeSoulMetaDataError::Internal(error.to_string()))?
             .as_millis() as i64;
-        let guard = self.client.lock().await;
+        let guard = self.client.write().await;
         let mut connection = guard.get(QueryType::RW).await?;
         let transaction = connection.transaction().await?;
         let domain: String = transaction
