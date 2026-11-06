@@ -393,3 +393,19 @@ DataFusion 侧只剩 ~5% 开销；纯 Rust 上限 ≈ 14 k QPS，实测 8.5 k（
 固定成本（load/merge/probe 尾巴）和 provider 每批的 snapshot 列文件开销。单查询在 R17
 之后是 183 QPS（5.26 ms：plan 1.07 + physical plan 1.44 + exec 2.8），瓶颈已转移到每条
 SQL 的规划/快照解析。
+
+## 18. 单查询按 shard 并行 + 缓存命中直取
+
+R17 之后单查询的 exec 还剩 2.8 ms，其中 shard 装载/搜索 1.77 ms（4 个 shard 串行、ANN 只占
+0.1 ms/shard），且缓存命中时还在克隆 ~1024 条 segment。把 shard 先装好、`search_batch` 放到
+4 个线程上并行，并新增 `cached_typed_shard`（命中缓存直接返回 `LoadedShard`，不再克隆 segment
+列表、不解析 header，`key_kind` 不匹配即失效）之后：
+
+| 版本（bits=1、200 query） | 单 query QPS | p50 | CPU/query | 查询期 RSS | 批量 QPS | Recall |
+|---|---:|---:|---:|---:|---:|---:|
+| R17 | 183.3 | 5.26 ms | 4.9 ms | 235 MB | 4331 | 0.42035 |
+| **R19** | **227–233** | **4.1 ms** | **4.6 ms** | **233–237 MB** | **8816–8950** | 0.42035 |
+
+单查询相对最初 reader 路径（61.3 QPS / 16.0 ms）为 3.7×；批量相对 R18 再 +4%。剩下
+4.1 ms 中 logical plan 1.07 + physical plan 1.44 已是主项（每 query 的快照/列文件解析），
+要继续提升需要显式 snapshot 复用入口。

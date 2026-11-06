@@ -107,6 +107,23 @@ pub async fn is_loaded(kind: IndexKind, prefix: &str, commit_id: i64) -> bool {
         .is_some_and(|entry| entry.commit_id == commit_id)
 }
 
+/// Return the cached entry for `(kind, prefix)` at `commit_id`, if present.
+///
+/// Used by callers that can rebuild the loader inputs only on a miss (the
+/// typed shard segment list is not free to clone).
+pub async fn get_loaded<T: IndexCacheEntry>(
+    kind: IndexKind,
+    prefix: &str,
+    commit_id: i64,
+) -> Option<Arc<T>> {
+    let cache = CACHE.as_ref()?;
+    let entry = cache.get(&cache_key(kind, prefix)).await?;
+    if entry.commit_id != commit_id {
+        return None;
+    }
+    entry.data.clone().downcast::<T>().ok()
+}
+
 /// Return the loaded index for `(kind, store, prefix)` at the resolved
 /// commit, loading and caching it when needed.
 ///

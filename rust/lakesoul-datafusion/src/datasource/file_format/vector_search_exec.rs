@@ -51,6 +51,9 @@ use lakesoul_io::index::IndexLease;
 use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::index::key::{KeyCodec, KeyLayout};
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
+use lakesoul_io::vector::search::{
+    LoadedShard, VectorHit, cached_typed_shard, load_typed_shard,
+};
 use lakesoul_metadata::index_catalog::{
     IndexCommitView, VectorCatalog, VectorSegmentEntry,
 };
@@ -732,10 +735,12 @@ impl LakeSoulVectorSearchExec {
             lakesoul_io::vector::search::parse_query_vector(&column.query_csv, None)
                 .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
         let top_k = self.vector_search.candidates_per_bucket();
-        let mut best: std::collections::HashMap<IndexKey, f32> =
-            std::collections::HashMap::new();
+        // Load every shard first (the index cache makes this a lookup after
+        // the first query) so that the probes themselves can run on their own
+        // threads: one bucket's probe does not depend on another's, and the
+        // index call is synchronous CPU work.
         let t_search = std::time::Instant::now();
-        let mut shards = 0_usize;
+        let mut shards: Vec<LoadedShard> = Vec::with_capacity(groups.len());
         for group in &groups {
             for (prefix, _bucket) in &group.index_prefixes {
                 let Some(view) = views.get(prefix).and_then(Option::as_ref) else {
@@ -757,39 +762,93 @@ impl LakeSoulVectorSearchExec {
                 ) {
                     return Ok(None);
                 }
-                shards += 1;
-                // The catalog view already holds the parsed segment list;
-                // hand it over instead of rebuilding (and re-parsing) the
-                // serialized transport form.
-                let segments = crate::vector_batch::segment_entries(view);
-                let Some(hits) = lakesoul_io::vector::search::search_typed_shard(
-                    store,
+                // A hot query takes the loaded shard straight from the
+                // cache; the segment list is only rebuilt when it has to
+                // load.
+                let shard = match cached_typed_shard(
                     prefix,
                     view.commit_id,
-                    view.version,
-                    &view.header,
-                    &segments,
-                    view.mutation_head.clone(),
-                    view.mutation_records,
-                    &query,
-                    top_k,
-                    nprobe,
-                    parallelism,
                     expected_key_kind,
                 )
                 .await
-                .map_err(|error| DataFusionError::External(error.into_boxed_error()))?
-                else {
-                    // The shard was written for another key layout; the
-                    // reader path reports that case the same way.
-                    return Ok(None);
+                {
+                    Some(shard) => shard,
+                    None => {
+                        // The catalog view already holds the parsed segment
+                        // list; hand it over instead of rebuilding (and
+                        // re-parsing) the serialized transport form.
+                        let segments =
+                            crate::vector_batch::segment_entries(view);
+                        let Some(shard) = load_typed_shard(
+                            store,
+                            prefix,
+                            view.commit_id,
+                            view.version,
+                            &view.header,
+                            &segments,
+                            view.mutation_head.as_deref(),
+                            view.mutation_records,
+                            expected_key_kind,
+                        )
+                        .await
+                        .map_err(|error| {
+                            DataFusionError::External(error.into_boxed_error())
+                        })?
+                        else {
+                            // The shard was written for another key layout;
+                            // the reader path reports that case the same way.
+                            return Ok(None);
+                        };
+                        shard
+                    }
                 };
-                for hit in hits {
-                    best.entry(hit.key)
-                        .and_modify(|score| *score = score.min(hit.score))
-                        .or_insert(hit.score);
-                }
+                shards.push(shard);
             }
+        }
+        let load_ms = t_search.elapsed().as_secs_f64() * 1000.0;
+        let t_probe = std::time::Instant::now();
+        let query_ref: [&[f32]; 1] = [query.as_slice()];
+        let per_shard: Vec<Vec<Vec<VectorHit>>> = {
+            let shards = &shards;
+            let query_ref = &query_ref;
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = shards
+                    .iter()
+                    .map(|shard| {
+                        scope.spawn(move || {
+                            shard
+                                .search_batch(
+                                    query_ref,
+                                    top_k,
+                                    nprobe,
+                                    parallelism,
+                                )
+                                .map_err(|error| {
+                                    DataFusionError::External(
+                                        error.into_boxed_error(),
+                                    )
+                                })
+                        })
+                    })
+                    .collect();
+                let mut probes = Vec::with_capacity(handles.len());
+                for handle in handles {
+                    probes.push(handle.join().map_err(|_| {
+                        DataFusionError::Execution(
+                            "vector shard probe panicked".to_string(),
+                        )
+                    })??);
+                }
+                Ok::<_, DataFusionError>(probes)
+            })
+        }?;
+        let probe_ms = t_probe.elapsed().as_secs_f64() * 1000.0;
+        let mut best: std::collections::HashMap<IndexKey, f32> =
+            std::collections::HashMap::new();
+        for hits in per_shard.into_iter().flatten().flatten() {
+            best.entry(hits.key)
+                .and_modify(|score| *score = score.min(hits.score))
+                .or_insert(hits.score);
         }
         let mut ranked: Vec<(f32, IndexKey)> =
             best.into_iter().map(|(key, score)| (score, key)).collect();
@@ -827,9 +886,10 @@ impl LakeSoulVectorSearchExec {
         if profile {
             debug!(
                 resolve_ms,
-                search_ms = t_search.elapsed().as_secs_f64() * 1000.0,
+                load_ms,
+                probe_ms,
                 candidates,
-                shards,
+                shards = shards.len(),
                 total_ms = t_inner.elapsed().as_secs_f64() * 1000.0,
                 "vector index-only inner profile"
             );

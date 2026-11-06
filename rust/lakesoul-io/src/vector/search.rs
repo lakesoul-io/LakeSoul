@@ -98,6 +98,9 @@ struct LoadedVectorShard {
     covered: CoveredFiles,
     dim: usize,
     metric: Metric,
+    /// Key layout the shard was built with; a cache hit must not serve a
+    /// table whose layout changed.
+    key_kind: u64,
 }
 
 impl IndexCacheEntry for LoadedVectorShard {
@@ -322,6 +325,7 @@ async fn load_shard(
                 covered,
                 dim: header.dim,
                 metric: header.metric,
+                key_kind: header.key_kind,
             })
         }
     })
@@ -447,6 +451,27 @@ impl LoadedShard {
         }
         Ok(per_query)
     }
+}
+
+/// Take an already-loaded shard for `(index_prefix, commit_id)`.
+///
+/// Returns `None` when the shard is not cached (the caller then loads it with
+/// [`load_typed_shard`]) or when the cached entry was built for another key
+/// layout.  A hot query therefore skips the header parse and the segment list
+/// entirely.
+pub async fn cached_typed_shard(
+    index_prefix: &str,
+    commit_id: i64,
+    expected_key_kind: u64,
+) -> Option<LoadedShard> {
+    let prefix = index_prefix.trim_end_matches('/');
+    let entry =
+        cache::get_loaded::<LoadedVectorShard>(IndexKind::Vector, prefix, commit_id)
+            .await?;
+    if entry.key_kind != expected_key_kind {
+        return None;
+    }
+    Some(LoadedShard { inner: entry })
 }
 
 /// Load one shard from its typed catalog pieces.

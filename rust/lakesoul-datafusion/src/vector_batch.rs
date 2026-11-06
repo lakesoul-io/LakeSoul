@@ -32,7 +32,9 @@ use lakesoul_io::config::{LakeSoulIOConfigBuilder, OPTION_KEY_FILE_FILTER_PUSHDO
 use lakesoul_io::index::key::{KeyCodec, KeyLayout};
 use lakesoul_io::index::prefix::derive_index_prefixes;
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
-use lakesoul_io::vector::search::{LoadedShard, VectorHit, load_typed_shard};
+use lakesoul_io::vector::search::{
+    LoadedShard, VectorHit, cached_typed_shard, load_typed_shard,
+};
 use lakesoul_metadata::index_catalog::{
     IndexCommitView, VectorCatalog, VectorSegmentEntry,
 };
@@ -372,28 +374,43 @@ async fn search_vector_batch_chunk(
                 bucket_files,
                 &covered,
             );
-        // The catalog view already holds the parsed segment list; handing it
-        // over avoids serializing a thousand entries per bucket and parsing
-        // them back on every batch.
-        let segments = segment_entries(view);
-        let shard = load_typed_shard(
-            store,
+        // A hot batch takes the loaded shard straight from the cache; the
+        // parsed segment list is only rebuilt when the shard has to load.
+        let shard = match cached_typed_shard(
             prefix,
             view.commit_id,
-            view.version,
-            &view.header,
-            &segments,
-            view.mutation_head.as_deref(),
-            view.mutation_records,
             expected_key_kind,
         )
         .await
-        .map_err(|error| DataFusionError::External(error.into_boxed_error()))?
-        .ok_or_else(|| {
-            DataFusionError::Execution(format!(
-                "the vector index at '{prefix}' cannot serve this table's key layout"
-            ))
-        })?;
+        {
+            Some(shard) => shard,
+            None => {
+                // The catalog view already holds the parsed segment list;
+                // handing it over avoids serializing a thousand entries per
+                // bucket and parsing them back on every batch.
+                let segments = segment_entries(view);
+                load_typed_shard(
+                    store,
+                    prefix,
+                    view.commit_id,
+                    view.version,
+                    &view.header,
+                    &segments,
+                    view.mutation_head.as_deref(),
+                    view.mutation_records,
+                    expected_key_kind,
+                )
+                .await
+                .map_err(|error| {
+                    DataFusionError::External(error.into_boxed_error())
+                })?
+                .ok_or_else(|| {
+                    DataFusionError::Execution(format!(
+                        "the vector index at '{prefix}' cannot serve this table's key layout"
+                    ))
+                })?
+            }
+        };
         shards.push(shard);
         shard_skip.push(skip_verification);
         shard_files.push(bucket_files.clone());
