@@ -18,7 +18,11 @@ object SparkMetaVersion extends Logging {
   val dbManager = new DBManager()
 
   def createNamespace(namespace: String): Unit = {
-    dbManager.createNewNamespace(namespace, JsonUtils.createObjectNode().toString, "")
+    dbManager.createNewNamespace(
+      namespace,
+      JsonUtils.createObjectNode().toString,
+      ""
+    )
   }
 
   def listNamespaces(): Array[String] = {

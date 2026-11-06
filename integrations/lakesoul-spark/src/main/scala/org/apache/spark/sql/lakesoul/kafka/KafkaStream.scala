@@ -175,7 +175,11 @@ object KafkaStream {
     }
 
     if (!dbManager.isNamespaceExists(namespace)) {
-      dbManager.createNewNamespace(namespace, JsonUtils.createObjectNode().toString, "")
+      dbManager.createNewNamespace(
+        namespace,
+        JsonUtils.createObjectNode().toString,
+        ""
+      )
     }
 
     val getTopicMsg = kafkaUtils.getTopicMsg _
