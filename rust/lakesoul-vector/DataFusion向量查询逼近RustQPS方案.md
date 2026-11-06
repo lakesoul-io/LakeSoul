@@ -371,3 +371,25 @@ R11 的设计已落地，实测（GloVe-200、4 bucket、nprobe 16、index-only�
    单查询要再上一个台阶，需要“一个 statement 固定一个 snapshot 的多次查询”显式入口
    （与 §12 的批量入口同一思路，只是 batch=1..N 由调用方声明）。
 3. 批量入口：1.15 ms CPU/query 中 ANN 约 0.6 ms，其余是候选合并/解码；14 核利用空间仍在。
+
+## 17. 批量入口按桶并行（nbits=1）
+
+§15/§16 的批量入口把 4 个桶放进 `try_join_all`。每个桶的 `batch_search` 是**同步** CPU 工作，
+同一个 task 轮询时 4 个桶实际是串行的：profile 显示 1.15 ms/query 的 CPU 只用掉约 5.3/16 核。
+把“每桶探测 + 排序”放到各自的 OS 线程、按 query 切分跨桶合并之后：
+
+| 版本（bits=1、200 query、6 次） | QPS 中位 | p50 | CPU/query | 查询期 RSS | Recall |
+|---|---:|---:|---:|---:|---:|
+| R17 串行探测 | 4331 | 0.226–0.238 ms | 1.10 ms | 238–241 MB | 0.42035 |
+| **R18 按桶并行** | **8512** | **0.110–0.124 ms** | 1.15 ms | 239–242 MB | 0.42035 |
+
+并行的前提是 lakesoul-io 暴露线程安全的 `LoadedShard`（同步 `search_batch`）：批入口先把
+shard 装好，再把桶分给线程，避免把 async future 搬过线程边界。跳过校验时也不再构建候选
+并集（覆盖证明已保证候选是活行）。强制校验路径复测 1090–1191 QPS / Recall 0.42035，
+与跳过校验一致。
+
+**当前口径**：批量 CPU/query 1.15 ms ≈ 4 个 shard 的 ANN 本身（0.275 ms/query/shard），
+DataFusion 侧只剩 ~5% 开销；纯 Rust 上限 ≈ 14 k QPS，实测 8.5 k（60%），差额为每 chunk
+固定成本（load/merge/probe 尾巴）和 provider 每批的 snapshot 列文件开销。单查询在 R17
+之后是 183 QPS（5.26 ms：plan 1.07 + physical plan 1.44 + exec 2.8），瓶颈已转移到每条
+SQL 的规划/快照解析。

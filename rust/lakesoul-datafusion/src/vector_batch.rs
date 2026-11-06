@@ -29,11 +29,10 @@ use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::logical_expr::Expr;
 use lakesoul_common::IndexKind;
 use lakesoul_io::config::{LakeSoulIOConfigBuilder, OPTION_KEY_FILE_FILTER_PUSHDOWN};
-use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::index::key::{KeyCodec, KeyLayout};
 use lakesoul_io::index::prefix::derive_index_prefixes;
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
-use lakesoul_io::vector::search::search_resolved_shard_batch;
+use lakesoul_io::vector::search::{LoadedShard, VectorHit, load_typed_shard};
 use lakesoul_metadata::index_catalog::{
     IndexCommitView, VectorCatalog, VectorSegmentEntry,
 };
@@ -88,6 +87,61 @@ impl VectorBatchRequest {
 /// Returns one `Vec<i64>` per query with the primary keys of its nearest
 /// neighbours, ranked by the index distance (index-only ordering).
 /// `(index prefix, files)` of every hash bucket of one snapshot.
+/// Rank one query's candidates across the buckets and keep its top-k.
+fn merge_query(
+    bucket_ranked: &[Vec<Vec<(f32, i64)>>],
+    query_index: usize,
+    top_k: usize,
+    bucket_count: usize,
+) -> Vec<i64> {
+    let mut ranked: Vec<(f32, i64)> = Vec::with_capacity(bucket_count * top_k);
+    for per_bucket in bucket_ranked {
+        ranked.extend(per_bucket[query_index].iter().copied());
+    }
+    // L2 index distance: smaller is closer, the same ordering the
+    // single-query path uses with `lakesoul_vector_search.rerank=index`.
+    ranked.sort_by(|left, right| {
+        left.0
+            .total_cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    ranked.truncate(top_k);
+    ranked.into_iter().map(|(_, id)| id).collect()
+}
+
+/// Rank one bucket's per-query candidates and decode the primary keys.
+///
+/// Candidate keys are deduplicated per query (the index may hold a key in
+/// several segments) and the newest/minimum distance is kept.  `live` filters
+/// the candidates to the rows the verification read found in the snapshot;
+/// `None` means the coverage proof already guarantees every candidate is live.
+fn rank_bucket(
+    codec: &KeyCodec,
+    hits: &[Vec<VectorHit>],
+    live: Option<&HashSet<IndexKey>>,
+) -> DFResult<Vec<Vec<(f32, i64)>>> {
+    let mut per_query: Vec<Vec<(f32, i64)>> = Vec::with_capacity(hits.len());
+    for per_query_hits in hits {
+        let mut best: BTreeMap<&IndexKey, f32> = BTreeMap::new();
+        for hit in per_query_hits {
+            if live.is_some_and(|live| !live.contains(&hit.key)) {
+                continue;
+            }
+            best.entry(&hit.key)
+                .and_modify(|score| *score = score.min(hit.score))
+                .or_insert(hit.score);
+        }
+        if best.is_empty() {
+            per_query.push(Vec::new());
+            continue;
+        }
+        let keys: Vec<IndexKey> = best.keys().map(|key| (*key).clone()).collect();
+        let ids = decode_ids(codec, &keys)?;
+        per_query.push(best.values().copied().zip(ids).collect());
+    }
+    Ok(per_query)
+}
+
 fn bucket_files_by_prefix(
     table_prefix: &str,
     files: &[String],
@@ -290,154 +344,228 @@ async fn search_vector_batch_chunk(
 
     let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
     let t_chunk = std::time::Instant::now();
-    // Phase 1 + 2 run per bucket and in parallel: probe every bucket once for
-    // every query of the batch, then verify that bucket's candidate rows with
-    // one native-reader pass.
-    let mut probe_futures = Vec::with_capacity(buckets.len());
+
+    // Load every shard once for the whole batch and decide, per bucket,
+    // whether the coverage proof lets the verification read be skipped: no
+    // index mutations, no CDC change column (the table cannot hold delete
+    // tombstones) and no active file that the commit does not list.
+    let force_verify = std::env::var("LAKESOUL_VECTOR_BATCH_FORCE_VERIFY").is_ok();
+    let mut shards: Vec<LoadedShard> = Vec::with_capacity(buckets.len());
+    let mut shard_skip: Vec<bool> = Vec::with_capacity(buckets.len());
+    let mut shard_files: Vec<Vec<String>> = Vec::with_capacity(buckets.len());
     for (prefix, bucket_files) in &buckets {
-        let prefix = prefix.clone();
-        let bucket_files = bucket_files.clone();
-        // Borrow the batch-wide state instead of moving it into each future.
-        let views = &views;
-        let layout = &layout;
-        let codec = &codec;
-        let pk_schema = &pk_schema;
-        let primary_keys = primary_keys;
-        let table_prefix = table_prefix;
-        let cdc_column = cdc_column;
-        let store = store;
-        let request = request;
-        probe_futures.push(async move {
-            let view = views.get(&prefix).and_then(Option::as_ref).ok_or_else(|| {
-                DataFusionError::Execution(format!(
-                    "no vector index commit for shard '{prefix}'"
-                ))
-            })?;
-            let resolved = resolved_index(&prefix, view)?;
-            let hits = search_resolved_shard_batch(
-                store,
-                &resolved,
-                &request.queries,
-                request.top_k,
-                request.nprobe,
-                request.parallelism,
-                expected_key_kind,
-            )
-            .await
-            .map_err(|error| DataFusionError::External(error.into_boxed_error()))?
-            .ok_or_else(|| {
-                DataFusionError::Execution(format!(
-                    "the vector index at '{prefix}' cannot serve this table's key layout"
-                ))
-            })?;
-            let mut keys: Vec<IndexKey> = Vec::new();
-            let mut seen: HashSet<IndexKey> = HashSet::new();
-            for per_query in &hits {
-                for hit in per_query {
-                    if seen.insert(hit.key.clone()) {
-                        keys.push(hit.key.clone());
-                    }
-                }
-            }
-            // Skip the verification read when the index provably covers
-            // every file of this snapshot and nothing can have deleted a row
-            // behind its back: no index mutations, no CDC change column (the
-            // table cannot hold delete tombstones) and no active file that
-            // the commit does not list.  Anything else falls back to the
-            // reader pass below.
-            let covered: Vec<&str> = view
-                .segments
-                .iter()
-                .flat_map(|segment| segment.data_files.iter().map(String::as_str))
-                .collect();
-            let force_verify =
-                std::env::var("LAKESOUL_VECTOR_BATCH_FORCE_VERIFY").is_ok();
-            let skip_verification = !force_verify
-                && can_skip_verification(
-                    cdc_column,
-                    view.mutation_head.is_none(),
-                    view.mutation_records,
-                    &bucket_files,
-                    &covered,
-                );
-            if skip_verification {
-                tracing::debug!(
-                    prefix = %prefix,
-                    keys = seen.len(),
-                    "batch candidate verification skipped (index covers the snapshot)"
-                );
-            }
-            let live = if skip_verification {
-                seen
-            } else {
-                read_live_keys(
-                    &layout,
-                    table_prefix,
-                    &bucket_files,
-                    &pk_schema,
-                    primary_keys,
-                    &codec,
-                    &keys,
-                )
-                .await?
-            };
-            // Rank this bucket's candidates per query and decode the primary
-            // keys in one batch per query: one codec call per query instead
-            // of one per candidate.
-            let mut per_query: Vec<Vec<(f32, i64)>> = Vec::with_capacity(hits.len());
-            for per_query_hits in &hits {
-                let mut best: BTreeMap<&IndexKey, f32> = BTreeMap::new();
-                for hit in per_query_hits {
-                    if !live.contains(&hit.key) {
-                        continue;
-                    }
-                    best.entry(&hit.key)
-                        .and_modify(|score| *score = score.min(hit.score))
-                        .or_insert(hit.score);
-                }
-                if best.is_empty() {
-                    per_query.push(Vec::new());
-                    continue;
-                }
-                let keys: Vec<IndexKey> = best.keys().map(|key| (*key).clone()).collect();
-                let ids = decode_ids(&codec, &keys)?;
-                per_query.push(best.values().copied().zip(ids).collect());
-            }
-            Ok::<_, DataFusionError>(per_query)
-        });
+        let view = views.get(prefix).and_then(Option::as_ref).ok_or_else(|| {
+            DataFusionError::Execution(format!(
+                "no vector index commit for shard '{prefix}'"
+            ))
+        })?;
+        let covered: Vec<&str> = view
+            .segments
+            .iter()
+            .flat_map(|segment| segment.data_files.iter().map(String::as_str))
+            .collect();
+        let skip_verification = !force_verify
+            && can_skip_verification(
+                cdc_column,
+                view.mutation_head.is_none(),
+                view.mutation_records,
+                bucket_files,
+                &covered,
+            );
+        // The catalog view already holds the parsed segment list; handing it
+        // over avoids serializing a thousand entries per bucket and parsing
+        // them back on every batch.
+        let segments = segment_entries(view);
+        let shard = load_typed_shard(
+            store,
+            prefix,
+            view.commit_id,
+            view.version,
+            &view.header,
+            &segments,
+            view.mutation_head.as_deref(),
+            view.mutation_records,
+            expected_key_kind,
+        )
+        .await
+        .map_err(|error| DataFusionError::External(error.into_boxed_error()))?
+        .ok_or_else(|| {
+            DataFusionError::Execution(format!(
+                "the vector index at '{prefix}' cannot serve this table's key layout"
+            ))
+        })?;
+        shards.push(shard);
+        shard_skip.push(skip_verification);
+        shard_files.push(bucket_files.clone());
     }
-    let probed = futures::future::try_join_all(probe_futures).await?;
-    let bucket_ranked = probed;
-    let probe_ms = t_chunk.elapsed().as_secs_f64() * 1000.0;
+    let load_ms = t_chunk.elapsed().as_secs_f64() * 1000.0;
+    let t_probe = std::time::Instant::now();
+
+    let refs: Vec<&[f32]> = request.queries.iter().map(Vec::as_slice).collect();
+    let skip_all = shard_skip.iter().all(|skip| *skip);
+    let bucket_ranked: Vec<Vec<Vec<(f32, i64)>>> = if skip_all {
+        // Index-only ordering: with the coverage proof every candidate is a
+        // live row, so the buckets are independent.  The index call is
+        // synchronous CPU work (rayon inside), so probing the buckets from
+        // one task would serialize them and leave most of the machine idle:
+        // each bucket gets its own thread.
+        let codec = &codec;
+        let refs = &refs;
+        let shards = &shards;
+        tokio::task::block_in_place(|| {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = shards
+                    .iter()
+                    .enumerate()
+                    .map(|(shard_index, shard)| {
+                        scope.spawn(move || -> DFResult<Vec<Vec<(f32, i64)>>> {
+                            let t_search = std::time::Instant::now();
+                            let hits = shard
+                                .search_batch(
+                                    refs,
+                                    request.top_k,
+                                    request.nprobe,
+                                    request.parallelism,
+                                )
+                                .map_err(|error| {
+                                    DataFusionError::External(
+                                        error.into_boxed_error(),
+                                    )
+                                })?;
+                            let search_ms =
+                                t_search.elapsed().as_secs_f64() * 1000.0;
+                            let t_rank = std::time::Instant::now();
+                            let ranked = rank_bucket(codec, &hits, None);
+                            if profile {
+                                tracing::debug!(
+                                    shard = shard_index,
+                                    queries = hits.len(),
+                                    search_ms,
+                                    rank_ms =
+                                        t_rank.elapsed().as_secs_f64() * 1000.0,
+                                    "profiled vector batch shard"
+                                );
+                            }
+                            ranked
+                        })
+                    })
+                    .collect();
+                let mut ranked = Vec::with_capacity(handles.len());
+                for handle in handles {
+                    ranked.push(handle.join().map_err(|_| {
+                        DataFusionError::Execution(
+                            "vector batch bucket probe panicked".to_string(),
+                        )
+                    })??);
+                }
+                Ok::<_, DataFusionError>(ranked)
+            })
+        })?
+    } else {
+        // Anything unproven falls back to the verification read: one native
+        // reader pass per bucket over that bucket's candidate union.
+        let mut ranked = Vec::with_capacity(shards.len());
+        for (index, shard) in shards.iter().enumerate() {
+            let hits = shard
+                .search_batch(
+                    &refs,
+                    request.top_k,
+                    request.nprobe,
+                    request.parallelism,
+                )
+                .map_err(|error| {
+                    DataFusionError::External(error.into_boxed_error())
+                })?;
+            let live = if shard_skip[index] {
+                None
+            } else {
+                let mut keys: Vec<IndexKey> = Vec::new();
+                let mut seen: HashSet<IndexKey> = HashSet::new();
+                for per_query in &hits {
+                    for hit in per_query {
+                        if seen.insert(hit.key.clone()) {
+                            keys.push(hit.key.clone());
+                        }
+                    }
+                }
+                Some(
+                    read_live_keys(
+                        &layout,
+                        table_prefix,
+                        &shard_files[index],
+                        &pk_schema,
+                        primary_keys,
+                        &codec,
+                        &keys,
+                    )
+                    .await?,
+                )
+            };
+            ranked.push(rank_bucket(&codec, &hits, live.as_ref())?);
+        }
+        ranked
+    };
+    let probe_ms = t_probe.elapsed().as_secs_f64() * 1000.0;
     let t_merge = std::time::Instant::now();
 
-    // Phase 3: keep verified candidates per query, merge the buckets' ranked
-    // candidates by index distance and take the global top-k per query.
+    // Phase 3: merge the buckets' ranked candidates by index distance and
+    // take the global top-k per query.
     let queries = request.queries.len();
-    let mut results: Vec<Vec<i64>> = Vec::with_capacity(queries);
-    for query_index in 0..queries {
-        let mut ranked: Vec<(f32, i64)> =
-            Vec::with_capacity(bucket_ranked.len() * request.top_k);
-        for per_bucket in &bucket_ranked {
-            ranked.extend(per_bucket[query_index].iter().copied());
-        }
-        // L2 index distance: smaller is closer, the same ordering the
-        // single-query path uses with `lakesoul_vector_search.rerank=index`.
-        ranked.sort_by(|left, right| {
-            left.0
-                .total_cmp(&right.0)
-                .then_with(|| left.1.cmp(&right.1))
+    let top_k = request.top_k;
+    let bucket_count = bucket_ranked.len();
+    let merge_threads = std::thread::available_parallelism()
+        .map(std::num::NonZero::get)
+        .unwrap_or(1)
+        .min(queries.max(1));
+    let results: Vec<Vec<i64>> = if merge_threads <= 1 {
+        (0..queries)
+            .map(|query_index| {
+                merge_query(&bucket_ranked, query_index, top_k, bucket_count)
+            })
+            .collect()
+    } else {
+        let per_thread = queries.div_ceil(merge_threads).max(1);
+        let mut parts: Vec<(usize, Vec<Vec<i64>>)> = Vec::new();
+        std::thread::scope(|scope| {
+            let bucket_ranked = &bucket_ranked;
+            let handles: Vec<_> = (0..queries)
+                .step_by(per_thread)
+                .map(|start| {
+                    let end = (start + per_thread).min(queries);
+                    scope.spawn(move || {
+                        let rows = (start..end)
+                            .map(|query_index| {
+                                merge_query(
+                                    bucket_ranked,
+                                    query_index,
+                                    top_k,
+                                    bucket_count,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        (start, rows)
+                    })
+                })
+                .collect();
+            for handle in handles {
+                parts.push(handle.join().expect("vector batch merge thread"));
+            }
         });
-        ranked.truncate(request.top_k);
-        results.push(ranked.into_iter().map(|(_, id)| id).collect());
-    }
+        parts.sort_by_key(|(start, _)| *start);
+        parts
+            .into_iter()
+            .flat_map(|(_, rows)| rows)
+            .collect::<Vec<_>>()
+    };
     if profile {
         tracing::debug!(
-            queries = request.queries.len(),
-            buckets = buckets.len(),
+            queries,
+            buckets = bucket_ranked.len(),
+            load_ms,
             probe_ms,
             merge_ms = t_merge.elapsed().as_secs_f64() * 1000.0,
             chunk_ms = t_chunk.elapsed().as_secs_f64() * 1000.0,
+            skipped_verification = skip_all,
             "profiled vector batch chunk"
         );
     }
@@ -476,29 +604,6 @@ pub(crate) fn segment_entries(
             birth_version: segment.birth_version,
         })
         .collect()
-}
-
-pub(crate) fn resolved_index(
-    prefix: &str,
-    view: &IndexCommitView<VectorSegmentEntry>,
-) -> DFResult<ResolvedIndex> {
-    let segments: Vec<SegmentEntry> = segment_entries(view);
-    let segments = serde_json::to_value(&segments).map_err(|error| {
-        DataFusionError::Execution(format!(
-            "failed to serialize vector index segments of '{prefix}': {error}"
-        ))
-    })?;
-    Ok(ResolvedIndex {
-        kind: IndexKind::Vector,
-        index_prefix: prefix.to_string(),
-        commit_id: view.commit_id,
-        generation: view.generation,
-        version: view.version,
-        header: view.header.clone(),
-        segments,
-        mutation_head: view.mutation_head.clone(),
-        mutation_records: view.mutation_records,
-    })
 }
 
 /// Read the candidate rows of one bucket and return the keys that still exist

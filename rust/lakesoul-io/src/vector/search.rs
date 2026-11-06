@@ -367,7 +367,7 @@ pub async fn search_typed_shard(
     version: u64,
     header: &[u8],
     segments: &[SegmentEntry],
-    mutation_head: Option<&str>,
+    mutation_head: Option<String>,
     mutation_records: u32,
     query: &[f32],
     top_k: usize,
@@ -393,7 +393,7 @@ pub async fn search_typed_shard(
         version,
         &header,
         segments,
-        mutation_head,
+        mutation_head.as_deref(),
         mutation_records,
         expected_key_kind,
     )
@@ -410,6 +410,90 @@ pub async fn search_typed_shard(
         parallelism,
     )?;
     Ok(Some(hits))
+}
+
+/// A loaded shard that any thread can search.
+///
+/// The handle wraps the cached index; [`Self::search_batch`] is synchronous so
+/// a caller can probe several shards from its own threads (a batch entry that
+/// wants every bucket probed concurrently) without moving async futures
+/// between threads.
+#[derive(Clone)]
+pub struct LoadedShard {
+    inner: Arc<LoadedVectorShard>,
+}
+
+impl LoadedShard {
+    /// Vector dimension the shard was built for.
+    pub fn dim(&self) -> usize {
+        self.inner.dim
+    }
+
+    /// Search several queries against this shard (rayon parallel inside).
+    pub fn search_batch(
+        &self,
+        queries: &[&[f32]],
+        top_k: usize,
+        nprobe: usize,
+        parallelism: usize,
+    ) -> IoResult<Vec<Vec<VectorHit>>> {
+        let params = SearchParams::new(top_k, nprobe).with_parallelism(parallelism);
+        let mut per_query = Vec::with_capacity(queries.len());
+        for result in self.inner.cached.index.batch_search(queries, params) {
+            let results = result.map_err(|e| {
+                rootcause::report!("vector search failed: {:?}", e)
+            })?;
+            per_query.push(results.into_iter().map(vector_hit).collect::<Vec<_>>());
+        }
+        Ok(per_query)
+    }
+}
+
+/// Load one shard from its typed catalog pieces.
+///
+/// The caller (the DataFusion layer) already holds the parsed header and
+/// segment list from the catalog view; handing them over avoids serializing a
+/// thousand segment entries per query and parsing them back.  A cache hit only
+/// resolves the cache key, so the handle is cheap to obtain before a batch.
+#[allow(clippy::too_many_arguments)]
+pub async fn load_typed_shard(
+    store: &Arc<dyn ObjectStore>,
+    index_prefix: &str,
+    commit_id: i64,
+    version: u64,
+    header: &[u8],
+    segments: &[SegmentEntry],
+    mutation_head: Option<&str>,
+    mutation_records: u32,
+    expected_key_kind: u64,
+) -> IoResult<Option<LoadedShard>> {
+    let header = match IndexHeader::deserialize(header) {
+        Ok(header) => header,
+        Err(e) => {
+            warn!(
+                "vector index at '{}' has an unreadable header ({}); scanning \
+                 without the index",
+                index_prefix, e
+            );
+            return Ok(None);
+        }
+    };
+    let Some(inner) = load_shard(
+        store,
+        index_prefix,
+        commit_id,
+        version,
+        &header,
+        segments,
+        mutation_head,
+        mutation_records,
+        expected_key_kind,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(LoadedShard { inner }))
 }
 
 /// Search the vector index matching a single bucket's files.

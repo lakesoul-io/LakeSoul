@@ -769,7 +769,7 @@ impl LakeSoulVectorSearchExec {
                     view.version,
                     &view.header,
                     &segments,
-                    view.mutation_head.as_deref(),
+                    view.mutation_head.clone(),
                     view.mutation_records,
                     &query,
                     top_k,
