@@ -188,7 +188,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                                 desiredColumns,
                                 partitionKeys.primaryKeys,
                                 partitionKeys.rangeKeys,
-                                properties,
+                                DBUtil.jsonToStringMap(properties),
                                 constraint.getSummary(),
                                 allColumns));
         return ImmutableList.of(new ConnectorTableLayoutResult(layout, constraint.getSummary()));
