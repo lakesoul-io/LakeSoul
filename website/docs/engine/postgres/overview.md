@@ -39,6 +39,7 @@ for the metadata database and the first table.
 | **Queries** | The DataFusion SQL surface, including joins, aggregates, windows, CTEs and set operations |
 | **Search** | pgvector-compatible vector operators, `text_score` for BM25 |
 | **Incremental SQL** | `INSERT ... SELECT` maintains its target when the session enables it |
+| **Subscriptions** | `CREATE/DROP/ALTER SUBSCRIPTION` replicates one source PostgreSQL table into a LakeSoul CDC table |
 | **Transactions** | Autocommit; `READ COMMITTED`; failed-transaction recovery |
 | **Isolation** | One database maps to one LakeSoul namespace; user tables live in `public` |
 
@@ -54,5 +55,6 @@ refused with SQLSTATE `0A000`. See the
 - [DDL](ddl.md)
 - [Insert and upsert](insert-and-upsert.md)
 - [Transactions and catalog](transactions-and-catalog.md)
+- [PostgreSQL subscriptions](subscription.md)
 - [Compatibility](compatibility.md)
 - [Operations](operations.md)

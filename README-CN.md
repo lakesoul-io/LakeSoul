@@ -47,6 +47,23 @@ SELECT region, sum(amount) FROM orders GROUP BY 1;
 
 wire protocol、扩展查询协议、`pg_catalog` 和 `psql \d` 都可用。但这不是 drop-in 的 PostgreSQL：`UPDATE`、`DELETE`、`COPY`、`RETURNING` 以及非 `READ COMMITTED` 隔离级别会返回 `0A000`，写入必须在 autocommit 下执行。
 
+### PostgreSQL 订阅
+
+同一个端点也可以订阅源 PostgreSQL，把变更持续写入 LakeSoul CDC 表。用 SQL 定义订阅；端点会校验 publication 和目标表，执行受管初始快照，并拉起受监管的本地订阅进程。
+
+```sql
+CREATE SUBSCRIPTION users_from_app
+CONNECTION 'postgresql://user:pass@source:5432/app'
+PUBLICATION app_pub
+WITH (
+  source_table = 'public.users',
+  target_table = 'users',
+  snapshot     = 'managed'
+);
+```
+
+源库需要开启 logical WAL、创建 publication，并设置 `REPLICA IDENTITY FULL`；目标端是预先创建且为空的 LakeSoul CDC 表。用 `ALTER SUBSCRIPTION ... DISABLE/ENABLE` 和 `DROP SUBSCRIPTION` 管理进程。完整配置和 SQL 参考见 [PostgreSQL 订阅](https://lakesoul-io.github.io/zh-Hans/docs/engine/postgres/subscription)。
+
 ## 高效的 SQL 增量计算
 
 开启增量 SQL 后，从 `psql` 发出的一条 `INSERT ... SELECT` 会以增量方式更新目标表：每次执行只读取游标之后的提交，只写入发生变化的行，结果与全量重算一致。

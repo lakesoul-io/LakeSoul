@@ -34,6 +34,7 @@ cargo run -p postgres-lakesoul -- --port 5433 \
 | **查询** | DataFusion SQL 表面，包括 join、聚合、窗口、CTE 和集合运算 |
 | **检索** | 兼容 pgvector 的向量操作符、BM25 的 `text_score` |
 | **增量 SQL** | 会话开启后，`INSERT ... SELECT` 维护目标表 |
+| **订阅** | `CREATE/DROP/ALTER SUBSCRIPTION` 把一张源 PostgreSQL 表复制到 LakeSoul CDC 表 |
 | **事务** | Autocommit；`READ COMMITTED`；失败事务恢复 |
 | **目录** | 一个 database 映射一个 LakeSoul namespace；用户表在 `public` |
 
@@ -46,5 +47,6 @@ cargo run -p postgres-lakesoul -- --port 5433 \
 - [DDL](ddl.md)
 - [写入与 Upsert](insert-and-upsert.md)
 - [事务与目录](transactions-and-catalog.md)
+- [PostgreSQL 订阅](subscription.md)
 - [兼容性](compatibility.md)
 - [运维](operations.md)

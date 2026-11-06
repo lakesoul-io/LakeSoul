@@ -243,6 +243,11 @@ impl LakeSoulQueryRouter {
             let query_text =
                 crate::session_settings::rewrite_reset_time_zone(&query_text)
                     .unwrap_or(query_text);
+            // Subscription DDL is not in sqlparser. Rewrite a single
+            // subscription statement to the internal sentinel SELECT the
+            // subscription hook claims; a mixed batch is rejected here.
+            let query_text =
+                crate::subscribe::sql::rewrite(&query_text)?.unwrap_or(query_text);
             let statements =
                 split_statements(&query_text).unwrap_or_else(|| vec![query_text.clone()]);
             if statements.is_empty() {
@@ -352,13 +357,20 @@ impl LakeSoulQueryRouter {
             // never ran, so it gives up its slot here instead of staying in
             // flight until the connection goes away - and writes no report,
             // like a `Parse` that is never executed.
-            if let Some(execution) = pending {
+            if let Some(execution) = pending.take() {
                 execution.discard();
                 state.cancellation.finish_execution(&execution);
             }
             Ok(())
         }
         .await;
+        // An error before the first statement runs (a mixed subscription
+        // batch, for example) returns from the async block without reaching
+        // its empty-batch cleanup. Give the pre-registered slot back here.
+        if let Some(execution) = pending.take() {
+            execution.discard();
+            state.cancellation.finish_execution(&execution);
+        }
         client.set_transaction_status(transaction_status);
         outcome?;
 
@@ -613,6 +625,15 @@ pub(crate) fn connection_statement_hooks(
     hooks.push(Arc::new(crate::ivm::IvmSettingsHook));
     hooks.push(Arc::new(crate::ivm::IvmInsertHook));
     hooks.push(Arc::new(crate::insert::InsertStatementHook));
+    if let Some(supervisor) = factory.subscriptions() {
+        hooks.push(Arc::new(
+            crate::subscribe::sql::SubscriptionStatementHook::new(
+                Arc::clone(factory.meta_client()),
+                database.to_string(),
+                Arc::clone(supervisor),
+            ),
+        ));
+    }
     statement_hooks_with(hooks)
 }
 
@@ -645,9 +666,10 @@ impl QueryParser for __ConnectionParser {
     {
         let rewritten = crate::session_settings::rewrite_reset_time_zone(sql);
         let sql = rewritten.as_deref().unwrap_or(sql);
+        let sql = crate::subscribe::sql::rewrite(sql)?.unwrap_or_else(|| sql.to_string());
         let state = connection_session(client)?;
         let parser = state.service.query_parser();
-        parser.parse_sql(client, sql, types).await
+        parser.parse_sql(client, &sql, types).await
     }
 
     fn get_parameter_types(&self, stmt: &Self::Statement) -> PgWireResult<Vec<Type>> {
@@ -837,6 +859,11 @@ impl SimpleQueryHandler for LakeSoulQueryRouter {
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
         let state = connection_session(client)?;
+        // `on_query` rewrites the batch before splitting; this direct entry
+        // point (used by tests and embedded callers) does the same.
+        let query =
+            crate::subscribe::sql::rewrite(query)?.unwrap_or_else(|| query.to_string());
+        let query = query.as_str();
         // The whole text in one call: `on_query` hands a statement of a batch
         // - or a single statement - to every bounded execution, and this call
         // has no batch to split.
@@ -948,15 +975,28 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
         {
             message.query = rewritten;
         }
-        let result = run_under_limit(
-            &execution,
-            <DfSessionService as ExtendedQueryHandler>::on_parse(
-                state.service.as_ref(),
-                client,
-                message,
-            ),
-        )
-        .await;
+        let rewrite = match crate::subscribe::sql::rewrite(&message.query) {
+            Ok(Some(rewritten)) => {
+                message.query = rewritten;
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(error) => Err(error),
+        };
+        let result = match rewrite {
+            Ok(()) => {
+                run_under_limit(
+                    &execution,
+                    <DfSessionService as ExtendedQueryHandler>::on_parse(
+                        state.service.as_ref(),
+                        client,
+                        message,
+                    ),
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
         match result {
             // Planned, not run: the connection has nothing in flight, though
             // the statement keeps its identity (and its log line) for the

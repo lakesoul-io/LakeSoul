@@ -2,6 +2,8 @@
 
 `postgres-lakesoul` 是 PostgreSQL 协议的 LakeSoul 服务：查询面是只读的，另支持 `CREATE TABLE`／`DROP TABLE` 与 `INSERT`，不是完整 PostgreSQL。以下矩阵说明阶段一、二、三·3.1／3.2／3.3、阶段四 integration targets、阶段七 DDL 及阶段八 INSERT 的具体证据，不将 DataFusion 的全部 SQL 能力视为已验证兼容。
 
+> 实验特性：同一个二进制可用 `--subscribe` 运行 P0 的 PostgreSQL 逻辑复制订阅端；服务端也支持 `CREATE/DROP/ALTER SUBSCRIPTION` 并由本机子进程执行同步，详见 [SUBSCRIBE_P0.md](SUBSCRIBE_P0.md)。它不属于下面的 SQL 兼容矩阵。
+
 ## 运行
 
 在仓库根目录、配置好原生编译依赖的开发环境中执行（推荐 `nix develop`）：

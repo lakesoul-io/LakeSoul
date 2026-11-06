@@ -28,6 +28,9 @@ required to read the data, and no second copy of the data for search or AI.
 - **Vector and full-text search.** pgvector-compatible SQL over IVF + RaBitQ indexes,
   and BM25 full-text search over Tantivy indexes, both living next to the data
   and maintained on write.
+- **PostgreSQL subscriptions.** `CREATE SUBSCRIPTION` replicates one source
+  PostgreSQL table into a LakeSoul CDC table, with a managed initial snapshot
+  and a supervised local subscriber process.
 - **Python-native reads.** The Python SDK reads object storage directly through
   the Rust IO layer, so Daft, Ray and PyTorch can shard a scan without a SQL
   gateway.

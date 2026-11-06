@@ -180,6 +180,55 @@ export default function Home() {
       </Section>
 
       <Section
+        title={t('homepage.subscription.title', 'PostgreSQL subscriptions')}
+        subtitle={t(
+          'homepage.subscription.subtitle',
+          'Consume a PostgreSQL publication into a LakeSoul CDC table. The endpoint manages the snapshot, the changes and the local subscriber process.'
+        )}>
+        <div className={styles.quickGrid}>
+          <article className={styles.quickCard}>
+            <h3 className={styles.quickTitle}>
+              {t('homepage.subscription.code.title', 'Define it from psql')}
+            </h3>
+            <CodeBlock language="sql">{`CREATE SUBSCRIPTION users_from_app
+CONNECTION 'postgresql://user:pass@source:5432/app'
+PUBLICATION app_pub
+WITH (
+  source_table = 'public.users',
+  target_table = 'users',
+  snapshot     = 'managed'
+);`}</CodeBlock>
+            <p className={styles.quickNote}>
+              <Link to="/docs/engine/postgres/subscription">
+                {t(
+                  'homepage.subscription.code.note',
+                  'Set up the source publication and target table'
+                )}
+              </Link>
+            </p>
+          </article>
+
+          <article className={styles.quickCard}>
+            <h3 className={styles.quickTitle}>
+              {t('homepage.subscription.managed.title', 'Managed end to end')}
+            </h3>
+            <p className={styles.pillarBody}>
+              {t(
+                'homepage.subscription.managed.body',
+                'The endpoint validates the publication and the CDC target, takes a managed snapshot with one atomic handoff, then streams changes in batches. ENABLE, DISABLE and DROP control the supervised local process.'
+              )}
+            </p>
+            <div className={styles.fitChips}>
+              <span>{t('homepage.subscription.chipSnapshot', 'managed snapshot')}</span>
+              <span>{t('homepage.subscription.chipChanges', 'logical replication')}</span>
+              <span>{t('homepage.subscription.chipAtomic', 'atomic handoff')}</span>
+              <span>{t('homepage.subscription.chipLifecycle', 'supervised process')}</span>
+            </div>
+          </article>
+        </div>
+      </Section>
+
+      <Section
         tinted
         title={t('homepage.fit.title', 'How it differs')}
         subtitle={t(

@@ -5,6 +5,7 @@
 
 use std::io::IsTerminal;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -41,6 +42,7 @@ mod read_only;
 mod server;
 mod session;
 mod session_settings;
+mod subscribe;
 use rootcause::Report;
 
 pub(crate) type Result<T, E = Report> = std::result::Result<T, E>;
@@ -79,6 +81,9 @@ struct Cli {
     #[command(flatten)]
     pub memory_sampling: MemorySamplingArgs,
 
+    #[command(flatten)]
+    pub subscribe: subscribe::SubscribeArgs,
+
     /// Bind address, defaults to the loopback interface; container/cluster
     /// deployments set `LAKESOUL_PG_BIND=0.0.0.0` explicitly.
     #[clap(long, env = "LAKESOUL_PG_BIND", default_value = "127.0.0.1")]
@@ -95,6 +100,17 @@ struct Cli {
         default_value = "127.0.0.1:19090"
     )]
     metrics_addr: SocketAddr,
+
+    /// Do not install the Prometheus metrics endpoint. Subscriber children use
+    /// this so they do not contend with the server or each other on one port.
+    #[clap(long, env = "LAKESOUL_PG_NO_METRICS")]
+    no_metrics: bool,
+
+    /// Directory for supervised subscriber stdout/stderr logs. Defaults to
+    /// `LAKESOUL_LOG_DIR` when set, otherwise a directory under the system
+    /// temporary directory.
+    #[clap(long, env = "LAKESOUL_PG_SUBSCRIPTION_LOG_DIR")]
+    subscription_log_dir: Option<PathBuf>,
 
     /// Maximum number of concurrent connections, 0 for unlimited
     #[clap(long, env = "LAKESOUL_PG_MAX_CONNECTIONS", default_value_t = 0)]
@@ -126,12 +142,46 @@ async fn main_inner(cli: Cli) -> Result<()> {
     // `kill -HUP <pid>`.
     spawn_reload_on_sighup(tracing.filter_handle());
     allocator::log_active();
-    install_prometheus_metrics(PrometheusMetricsConfig::new(
-        "postgres-lakesoul",
-        cli.metrics_addr,
-    ))?;
+    if !cli.no_metrics {
+        install_prometheus_metrics(PrometheusMetricsConfig::new(
+            "postgres-lakesoul",
+            cli.metrics_addr,
+        ))?;
+    }
     cancel::register_query_metrics();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
+    if cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some() {
+        return subscribe::run(cli.subscribe, Arc::clone(&meta_client)).await;
+    }
+
+    let program = match std::env::current_exe() {
+        Ok(program) => program,
+        Err(error) => {
+            warn!(%error, "cannot resolve the server binary for subscription children");
+            PathBuf::new()
+        }
+    };
+    let log_dir = cli
+        .subscription_log_dir
+        .clone()
+        .or_else(|| std::env::var_os("LAKESOUL_LOG_DIR").map(PathBuf::from))
+        .unwrap_or_else(|| std::env::temp_dir().join("lakesoul-subscriptions"));
+    let subscriptions = Arc::new(subscribe::supervisor::SubscriptionSupervisor::new(
+        Arc::clone(&meta_client),
+        program,
+        log_dir.clone(),
+    ));
+    info!(log_dir = %log_dir.display(), "subscription supervisor ready");
+    {
+        let metadata = subscriptions.metadata().await;
+        if let Err(error) = metadata.init_schema().await {
+            warn!(%error, "subscription metadata schema is unavailable");
+        }
+    }
+    if let Err(error) = subscriptions.resume_all().await {
+        warn!(%error, "failed to resume subscriptions");
+    }
+
     let auth_manager = Arc::new(AuthManager::new());
     cli.memory.install_vortex_decode_budget()?;
     let memory_pool = cli.memory.create_pool();
@@ -145,7 +195,8 @@ async fn main_inner(cli: Cli) -> Result<()> {
         &cli.core,
         Arc::clone(&auth_manager),
         memory_pool,
-    )?;
+    )?
+    .with_subscriptions(Arc::clone(&subscriptions));
     info!(
         version = lakesoul_build_info::VERSION,
         commit = lakesoul_build_info::GIT_COMMIT,
@@ -156,7 +207,9 @@ async fn main_inner(cli: Cli) -> Result<()> {
     if let Some(endpoint) = tracing.otlp_endpoint() {
         info!(endpoint, "OTLP trace exporter enabled");
     }
-    info!(metrics_addr = %cli.metrics_addr, "Prometheus metrics endpoint started");
+    if !cli.no_metrics {
+        info!(metrics_addr = %cli.metrics_addr, "Prometheus metrics endpoint started");
+    }
     // Warm the shared catalog view once: every connection lists from it, so
     // the first one must not pay for the initial metadata load.
     if let Err(err) = session_factory.catalog_snapshot().load().await {
@@ -217,12 +270,46 @@ async fn main_inner(cli: Cli) -> Result<()> {
         max_result_bytes: cli.max_result_bytes,
     });
 
-    serve_with_handlers(
-        Arc::new(LakeSoulHandlers::new(Arc::new(session_factory), limits)),
-        &server_opts,
-    )
-    .await?;
+    let handlers = Arc::new(LakeSoulHandlers::new(Arc::new(session_factory), limits));
+    let server_result = tokio::select! {
+        result = serve_with_handlers(handlers, &server_opts) => Some(result),
+        _ = shutdown_signal() => None,
+    };
+    // Children are separate processes. Stop them before this supervisor exits;
+    // otherwise a graceful server shutdown would leave them holding
+    // replication slots.
+    subscriptions.stop_all().await;
+    if let Some(result) = server_result {
+        result?;
+    }
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            warn!(%error, "failed to install Ctrl-C handler");
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                warn!(%error, "failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
 }
 
 fn main() -> Result<()> {
