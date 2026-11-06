@@ -548,3 +548,23 @@ index 解析、句柄装载、合并启动）被摊薄，CPU/query 从 1.05 ms �
 最多 2 个 chunk 同时在飞：QPS 保持 ~13.4k，peak RSS 回到 350 MB。分块 512 或 2048 都会掉到
 11–13k，256 掉到 11k；两个参数都可用
 `LAKESOUL_VECTOR_BATCH_CHUNK_QUERIES` / `LAKESOUL_VECTOR_BATCH_CHUNKS_IN_FLIGHT` 覆盖。
+
+## 27. 单查询 planning 分阶段实测（含两次无收益回滚）
+
+`--scenario plan-probe`（bench 内置诊断）把每条语句拆成 parse / analyze / logical optimizer /
+physical planner，并对比 200 维向量、2 维向量与普通 limit 三种形态（p50，GloVe 表）：
+
+| 阶段 | 200 维向量 | 2 维向量 | `select id limit 100` |
+|---|---:|---:|---:|
+| parse | 0.215 ms | 0.048 ms | 0.028 ms |
+| analyze | 0.607 ms | 0.270 ms | 0.226 ms |
+| logical optimizer | **0.835 ms** | 0.185 ms | 0.047 ms |
+| physical planner | 0.242 ms | 0.218 ms | 0.826 ms |
+| 合计 | 1.90 ms | 0.72 ms | 1.13 ms |
+
+- 200 维字面量让 planning 多 ~1.1 ms，其中 logical optimizer 占 0.65 ms；
+- 物理规划我们反而比普通扫描快 0.58 ms（R26 的 fast plan）；
+- 两次尝试均无收益并已回滚：把 pushdown 规则前置（optimizer 0.835→0.843 ms）、
+  marker 只携带 query 句柄（0.810 ms）；pushdown 规则本身每条语句仅 ~11 µs。
+- 下一步方向：在 analyzer 阶段把全字面量 `ARRAY[...]` 折叠成单个 `List` 字面量（自定义
+  coercion），或提供"固定快照 + 多次查询"入口。

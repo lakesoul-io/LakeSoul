@@ -30,6 +30,8 @@ use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::{Cast, Expr, LogicalPlan, Operator, Sort, TableScan};
 use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
 
+use tracing::debug;
+
 use crate::udf::vector_search_marker::{
     LakeSoulVectorSearchConfig, RerankMode, VectorColumnQuery, is_marker_expr,
     marker_expr, multi_marker_expr,
@@ -83,19 +85,29 @@ impl OptimizerRule for VectorSearchPushdownRule {
         plan: LogicalPlan,
         config: &dyn OptimizerConfig,
     ) -> DFResult<Transformed<LogicalPlan>> {
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let started = std::time::Instant::now();
         let index_only = config
             .options()
             .extensions
             .get::<LakeSoulVectorSearchConfig>()
             .is_some_and(|options| options.rerank_mode() == RerankMode::Index);
-        match detect(&plan, index_only) {
+        let result = match detect(&plan, index_only) {
             Some((spec, target)) => {
                 let rewritten = rewrite_chain(plan, &spec, &target, true)
                     .expect("matching plan must be rewritable");
                 Ok(Transformed::yes(rewritten))
             }
             None => Ok(Transformed::no(plan)),
+        };
+        if profile {
+            debug!(
+                elapsed_us = started.elapsed().as_micros() as u64,
+                matched = result.as_ref().is_ok_and(|t| t.transformed),
+                "vector search pushdown rule"
+            );
         }
+        result
     }
 }
 

@@ -93,6 +93,11 @@ enum Scenario {
     /// "one thread per shard, rayon over queries, merge per query" pipeline
     /// without DataFusion, to measure how close the SQL path gets.
     RustShardBatch,
+    /// Planning-only probe: splits `ctx.sql` (parse+analysis), the logical
+    /// optimizer and the physical planner for the index-only vector statement
+    /// and for a trivial statement on the same table, so the per-statement
+    /// overheads can be attributed.
+    PlanProbe,
 }
 
 /// Rebuild policy exercised by the `stream`/`trigger` scenarios.
@@ -176,6 +181,8 @@ struct Args {
     search_parallelism: usize,
     /// SQL scenario: queries kept in flight at the same time (default 1).
     concurrency: usize,
+    /// Repetitions of the planning-only probe (`--scenario plan-probe`).
+    probe_rounds: usize,
     /// SQL scenario: queries per snapshot-batch search (0 = use per-query SQL).
     batch_size: usize,
     /// SQL scenario: only create the table, write the data and build the
@@ -239,6 +246,7 @@ impl Default for Args {
             search_stats: false,
             search_parallelism: 1,
             concurrency: 1,
+            probe_rounds: 30,
             batch_size: 0,
             build_only: false,
             policy: Policy::Auto,
@@ -269,7 +277,7 @@ USAGE:
   cargo bench -p lakesoul-datafusion --bench vector_rebuild_bench -- [OPTIONS]
 
 OPTIONS:
-  --scenario <build|search|stream|trigger|sql|rust-shard-batch>
+  --scenario <build|search|stream|trigger|sql|rust-shard-batch|plan-probe>
                                             Scenario to run (default: build)
   --base <path.fvecs>                       Base vectors (required)
   --query <path.fvecs>                      Query vectors (required)
@@ -293,6 +301,7 @@ OPTIONS:
   --search-parallelism <n>                  Probe n clusters concurrently in the search scenario
                                             (default: 1 = sequential)
   --concurrency <n>                         SQL scenario: queries kept in flight at the same time
+  --probe-rounds <n>                        plan-probe scenario: measured repetitions (default: 30)
                                             (default: 1 = one query at a time)
   --batch-size <n|auto>                     SQL scenario: run the queries through the snapshot-batch
                                             vector search in groups of n, or `auto` for the default
@@ -348,6 +357,7 @@ fn parse_args() -> Result<Args, String> {
                     "trigger" => Scenario::Trigger,
                     "sql" => Scenario::Sql,
                     "rust-shard-batch" => Scenario::RustShardBatch,
+                    "plan-probe" => Scenario::PlanProbe,
                     other => return Err(format!("unknown scenario: {other}")),
                 };
             }
@@ -422,6 +432,11 @@ fn parse_args() -> Result<Args, String> {
                 args.search_parallelism = value(flag)?
                     .parse()
                     .map_err(|e| format!("bad --search-parallelism: {e}"))?
+            }
+            "--probe-rounds" => {
+                args.probe_rounds = value(flag)?
+                    .parse()
+                    .map_err(|e| format!("bad --probe-rounds: {e}"))?;
             }
             "--concurrency" => {
                 args.concurrency = value(flag)?
@@ -539,8 +554,12 @@ fn parse_args() -> Result<Args, String> {
     if args.vector_type != VectorType::F32 && args.scenario != Scenario::Sql {
         return Err("--vector-type is only supported by --scenario sql".to_string());
     }
-    if args.rerank != "exact" && args.scenario != Scenario::Sql {
-        return Err("--rerank is only supported by --scenario sql".to_string());
+    if args.rerank != "exact"
+        && !matches!(args.scenario, Scenario::Sql | Scenario::PlanProbe)
+    {
+        return Err(
+            "--rerank is only supported by --scenario sql / plan-probe".to_string()
+        );
     }
     if args.table_root.is_some() && args.scenario != Scenario::Sql {
         return Err("--table-root is only supported by --scenario sql".to_string());
@@ -1611,6 +1630,171 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     });
     print_summary(&summary);
     Ok(summary)
+}
+
+/// Planning-only probe for the single-query path.
+///
+/// The single-query statement pays three per-statement costs that are not the
+/// index search itself: parsing and analysing the SQL (which resolves the table
+/// through the catalog), the logical optimizer, and the physical planner.  This
+/// scenario times those three stages for the index-only vector statement and
+/// for a trivial statement on the same table, so a change can be attributed to
+/// the stage it actually affects.
+async fn run_plan_probe(args: &Args, dataset: &Dataset) -> Result<Value, String> {
+    let client = Arc::new(
+        lakesoul_datafusion::MetaDataClient::from_env()
+            .await
+            .map_err(|e| format!("plan-probe requires PostgreSQL metadata: {e}"))?,
+    );
+    let table_name = args.table.clone();
+    let core = core_args();
+    let mut session_config = lakesoul_datafusion::create_lakesoul_session_config()
+        .map_err(|e| format!("session config: {e}"))?;
+    let mut vector_options = LakeSoulVectorSearchConfig::default();
+    vector_options.nprobe = args.nprobe;
+    vector_options.rerank = args.rerank.clone();
+    vector_options.parallelism = args.search_parallelism;
+    session_config
+        .options_mut()
+        .extensions
+        .insert(vector_options);
+    let ctx = lakesoul_datafusion::create_lakesoul_session_ctx_with_config(
+        client.clone(),
+        &core,
+        session_config,
+    )
+    .map_err(|e| format!("probe session: {e}"))?;
+    let state = ctx.state();
+    let vector_sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{}]) limit {}",
+        query_literal(dataset, 0),
+        args.top_k
+    );
+    let trivial_sql = format!(
+        "select id from \"lakesoul\".default.{table_name} limit {}",
+        args.top_k
+    );
+    // The same statement with a two-element query vector: planning does not
+    // check dimensions, so this isolates how much of the planning cost comes
+    // from the per-dimension literal instead of the query shape.
+    let short_vector_sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[0.1,0.2]) limit {}",
+        args.top_k
+    );
+
+    let rounds = args.probe_rounds.max(1);
+    for _ in 0..3 {
+        let _ = ctx.sql(&vector_sql).await.map_err(|e| format!("{e}"))?;
+        let _ = ctx.sql(&trivial_sql).await.map_err(|e| format!("{e}"))?;
+        let _ = ctx
+            .sql(&short_vector_sql)
+            .await
+            .map_err(|e| format!("{e}"))?;
+    }
+    let mut stages: Vec<(&str, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)> = vec![
+        (
+            "vector_index_only",
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ),
+        (
+            "vector_two_element",
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ),
+        (
+            "trivial_limit",
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ),
+    ];
+    for _ in 0..rounds {
+        for (name, sql) in [
+            ("vector_index_only", &vector_sql),
+            ("vector_two_element", &short_vector_sql),
+            ("trivial_limit", &trivial_sql),
+        ] {
+            let t = Instant::now();
+            let _ = datafusion::sql::parser::DFParser::parse_sql(sql)
+                .map_err(|e| format!("parse: {e}"))?;
+            let parse_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let t = Instant::now();
+            let dataframe = ctx.sql(sql).await.map_err(|e| format!("{e}"))?;
+            let plan_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let logical = dataframe.logical_plan().clone();
+            let t = Instant::now();
+            let optimized = state
+                .optimize(&logical)
+                .map_err(|e| format!("optimize: {e}"))?;
+            let optimize_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let t = Instant::now();
+            let physical = state
+                .create_physical_plan(&optimized)
+                .await
+                .map_err(|e| format!("physical plan: {e}"))?;
+            let physical_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let stages_entry = stages
+                .iter_mut()
+                .find(|(entry, _, _, _, _)| *entry == name)
+                .expect("stage entry");
+            stages_entry.1.push(parse_ms);
+            stages_entry.2.push(plan_ms);
+            stages_entry.3.push(optimize_ms);
+            stages_entry.4.push(physical_ms);
+            std::hint::black_box(&physical);
+        }
+    }
+
+    fn summary(values: &[f64]) -> Value {
+        let mut sorted = values.to_vec();
+        sorted.sort_by(|left, right| left.total_cmp(right));
+        let mean = sorted.iter().sum::<f64>() / sorted.len().max(1) as f64;
+        let p50 = sorted[sorted.len() / 2];
+        json!({"mean_ms": mean, "p50_ms": p50, "min_ms": sorted.first().copied().unwrap_or(0.0)})
+    }
+    let mut result = serde_json::Map::new();
+    for (name, parse, plan, optimize, physical) in &stages {
+        result.insert(
+            name.to_string(),
+            json!({
+                "parse_only": summary(parse),
+                "parse_analyze": summary(plan),
+                "analyze_only": summary(
+                    &plan.iter()
+                        .zip(parse.iter())
+                        .map(|(a, b)| a - b)
+                        .collect::<Vec<_>>()
+                ),
+                "logical_optimizer": summary(optimize),
+                "physical_planner": summary(physical),
+                "total_ms": summary(
+                    &plan.iter()
+                        .zip(optimize.iter())
+                        .zip(physical.iter())
+                        .map(|((a, b), c)| a + b + c)
+                        .collect::<Vec<_>>()
+                ),
+            }),
+        );
+    }
+    let out = json!({
+        "scenario": "plan-probe",
+        "table": table_name,
+        "rounds": rounds,
+        "top_k": args.top_k,
+        "nprobe": args.nprobe,
+        "stages": result,
+    });
+    print_summary(&out);
+    Ok(out)
 }
 
 /// Hand-written Rust reference for the snapshot batch path.
@@ -3217,6 +3401,7 @@ fn main() {
             Scenario::Trigger => run_trigger(&args, &dataset).await,
             Scenario::Sql => run_sql(&args, &dataset).await,
             Scenario::RustShardBatch => run_rust_shard_batch(&args, &dataset).await,
+            Scenario::PlanProbe => run_plan_probe(&args, &dataset).await,
         }
     });
 
