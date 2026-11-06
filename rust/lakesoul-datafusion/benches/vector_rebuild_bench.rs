@@ -1665,6 +1665,15 @@ async fn run_plan_probe(args: &Args, dataset: &Dataset) -> Result<Value, String>
     )
     .map_err(|e| format!("probe session: {e}"))?;
     let state = ctx.state();
+    if std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok() {
+        let names = state
+            .optimizer()
+            .rules
+            .iter()
+            .map(|rule| rule.name())
+            .collect::<Vec<_>>();
+        println!("optimizer rules: {names:?}");
+    }
     let vector_sql = format!(
         "select id from \"lakesoul\".default.{table_name} \
          order by array_distance(vec, ARRAY[{}]) limit {}",
