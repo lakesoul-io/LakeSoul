@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry;
 
-import com.alibaba.fastjson.JSONObject;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import io.debezium.data.Envelope;
 
@@ -25,7 +26,7 @@ public class PgDeserialization implements DebeziumDeserializationSchema<String> 
     @Override
     public void deserialize(SourceRecord sourceRecord, Collector<String> collector)
             throws Exception {
-        JSONObject result = new JSONObject();
+        ObjectNode result = JsonUtils.createObjectNode();
         String topic = sourceRecord.topic();
         String[] fields = topic.split("\\.");
         String database = fields[1];
@@ -34,7 +35,7 @@ public class PgDeserialization implements DebeziumDeserializationSchema<String> 
 
         // get "before" data
         Struct before = value.getStruct("before");
-        JSONObject beforeJson = new JSONObject();
+        ObjectNode beforeJson = JsonUtils.createObjectNode();
         if (before != null) {
             Schema beforeSchema = before.schema();
             List<Field> beforeFields = beforeSchema.fields();
@@ -51,16 +52,16 @@ public class PgDeserialization implements DebeziumDeserializationSchema<String> 
                             byte[] array = o.array();
                             arrayList.add(array);
                         }
-                        beforeJson.put(beforeField.name(), arrayList);
+                        JsonUtils.put(beforeJson, beforeField.name(), arrayList);
                         continue;
                     }
                 }
-                beforeJson.put(beforeField.name(), beforeValue);
+                JsonUtils.put(beforeJson, beforeField.name(), beforeValue);
             }
         }
         // get afterValue
         Struct after = value.getStruct("after");
-        JSONObject afterJson = new JSONObject();
+        ObjectNode afterJson = JsonUtils.createObjectNode();
 
         if (after != null) {
             Schema afterSchema = after.schema();
@@ -78,10 +79,10 @@ public class PgDeserialization implements DebeziumDeserializationSchema<String> 
                         byte[] array = o.array();
                         arrayList.add(array);
                     }
-                    afterJson.put(field.name(), arrayList);
+                    JsonUtils.put(afterJson, field.name(), arrayList);
                     continue;
                 }
-                afterJson.put(field.name(), afterValue);
+                JsonUtils.put(afterJson, field.name(), afterValue);
             }
         }
 
@@ -89,10 +90,10 @@ public class PgDeserialization implements DebeziumDeserializationSchema<String> 
         String type = operation.toString().toLowerCase();
         result.put("commitOp", type);
         result.put("tableName", tableName);
-        result.put("before", beforeJson);
-        result.put("after", afterJson);
+        result.set("before", beforeJson);
+        result.set("after", afterJson);
         if (!beforeJson.isEmpty() || !afterJson.isEmpty()) {
-            collector.collect(result.toJSONString());
+            collector.collect(result.toString());
         }
     }
 

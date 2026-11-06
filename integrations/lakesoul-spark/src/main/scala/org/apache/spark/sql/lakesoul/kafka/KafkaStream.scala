@@ -4,7 +4,6 @@
 
 package org.apache.spark.sql.lakesoul.kafka
 
-import com.alibaba.fastjson.JSONObject
 import com.dmetasoul.lakesoul.meta.{DBManager, DBUtil}
 import io.confluent.kafka.schemaregistry.client.{
   CachedSchemaRegistryClient,
@@ -17,7 +16,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.functions.{callUDF, col, from_json, lit}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
-import org.apache.spark.sql.lakesoul.utils.SparkUtil
+import org.apache.spark.sql.lakesoul.utils.{JsonUtils, SparkUtil}
 import org.apache.spark.sql.types.{DataTypes, StructType}
 import org.apache.spark.sql.{DataFrame, SparkSession}
 
@@ -62,7 +61,7 @@ object KafkaStream {
             tableName,
             tablePath,
             schema,
-            new JSONObject(),
+            JsonUtils.createObjectNode(),
             DBUtil.formatTableInfoPartitionsField("", LAKESOUL_PARTITION_COLUMN)
           )
         } else {
@@ -72,7 +71,7 @@ object KafkaStream {
             tableName,
             tablePath,
             schema,
-            new JSONObject(),
+            JsonUtils.createObjectNode(),
             ""
           )
         }
@@ -176,7 +175,11 @@ object KafkaStream {
     }
 
     if (!dbManager.isNamespaceExists(namespace)) {
-      dbManager.createNewNamespace(namespace, new JSONObject().toJSONString, "")
+      dbManager.createNewNamespace(
+        namespace,
+        JsonUtils.createObjectNode().toString,
+        ""
+      )
     }
 
     val getTopicMsg = kafkaUtils.getTopicMsg _

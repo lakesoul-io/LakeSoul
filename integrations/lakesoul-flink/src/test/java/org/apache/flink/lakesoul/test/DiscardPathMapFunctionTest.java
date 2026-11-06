@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: 2023 LakeSoul Contributors
 //
 // SPDX-License-Identifier: Apache-2.0
+
 package org.apache.flink.lakesoul.test;
 
 import static org.junit.Assert.assertEquals;
 
-import com.alibaba.fastjson.JSONObject;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.lakesoul.entry.clean.DiscardPathMapFunction;
@@ -14,22 +16,22 @@ import org.junit.Test;
 public class DiscardPathMapFunctionTest {
 
     private static String record(
-            String commitOp, JSONObject row, Long eventTime, boolean snapshot) {
-        JSONObject json = new JSONObject();
+            String commitOp, ObjectNode row, Long eventTime, boolean snapshot) {
+        ObjectNode json = JsonUtils.createObjectNode();
         json.put("tableName", "discard_compressed_file_info");
         json.put("commitOp", commitOp);
-        json.put("after", row);
-        json.put("before", new JSONObject());
+        json.set("after", row);
+        json.set("before", JsonUtils.createObjectNode());
         if (eventTime != null) {
             json.put("eventTime", eventTime);
         }
         json.put("snapshot", snapshot);
-        return json.toJSONString();
+        return json.toString();
     }
 
     @Test
     public void streamingRecordStartsRetentionAtEventTime() throws Exception {
-        JSONObject row = new JSONObject();
+        ObjectNode row = JsonUtils.createObjectNode();
         row.put("file_path", "s3://bucket/file.parquet");
         row.put("timestamp", 1_000L);
 
@@ -43,7 +45,7 @@ public class DiscardPathMapFunctionTest {
 
     @Test
     public void snapshotRecordKeepsFileTimestamp() throws Exception {
-        JSONObject row = new JSONObject();
+        ObjectNode row = JsonUtils.createObjectNode();
         row.put("file_path", "s3://bucket/file.parquet");
         row.put("timestamp", 1_000L);
 
@@ -55,7 +57,7 @@ public class DiscardPathMapFunctionTest {
 
     @Test
     public void recordWithoutEventTimeFallsBackToFileTimestamp() throws Exception {
-        JSONObject row = new JSONObject();
+        ObjectNode row = JsonUtils.createObjectNode();
         row.put("file_path", "s3://bucket/file.parquet");
         row.put("timestamp", 1_000L);
 
@@ -67,15 +69,15 @@ public class DiscardPathMapFunctionTest {
 
     @Test
     public void deleteRecordKeepsMinusFiveMarker() throws Exception {
-        JSONObject before = new JSONObject();
+        ObjectNode before = JsonUtils.createObjectNode();
         before.put("file_path", "s3://bucket/file.parquet");
-        JSONObject json = new JSONObject();
+        ObjectNode json = JsonUtils.createObjectNode();
         json.put("tableName", "discard_compressed_file_info");
         json.put("commitOp", "delete");
-        json.put("after", new JSONObject());
-        json.put("before", before);
+        json.set("after", JsonUtils.createObjectNode());
+        json.set("before", before);
 
-        Tuple3<String, Long, Long> result = new DiscardPathMapFunction().map(json.toJSONString());
+        Tuple3<String, Long, Long> result = new DiscardPathMapFunction().map(json.toString());
 
         assertEquals("s3://bucket/file.parquet", result.f0);
         assertEquals(-5L, result.f1.longValue());

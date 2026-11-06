@@ -119,10 +119,10 @@ jobs:
           java-version: "11"
           distribution: "temurin"
           cache: maven
-      - name: Set up Python 3.10
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
       - name: Install psql
         run: sudo apt-get install -y postgresql-client-16
       - name: Init PG
@@ -149,7 +149,7 @@ jobs:
         run: |
           mvn package -pl :lakesoul-spark-3.5_2.12 -am -DskipTests -Pcross-build
           cd python
-          uv sync --no-install-project --python 3.10 --group dev
+          uv sync --no-install-project --python 3.11 --group dev
           export LAKESOUL_IO_USE_V2_MERGE=true
           ../rust/target/release/lakesoul-console tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8
           ../rust/target/release/lakesoul-console -f test.sql

@@ -7,12 +7,11 @@ package com.dmetasoul.lakesoul.meta;
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_PARTITION_SPLITTER_OF_RANGE_AND_HASH;
 import static com.dmetasoul.lakesoul.meta.DBConfig.LAKESOUL_RANGE_PARTITION_SPLITTER;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.dao.*;
 import com.dmetasoul.lakesoul.meta.entity.*;
 import com.dmetasoul.lakesoul.meta.jnr.NativeMetadataJavaClient;
 import com.dmetasoul.lakesoul.meta.jnr.NativeUtils;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -107,7 +106,7 @@ public class DBManager {
             String tableName,
             String tablePath,
             String tableSchema,
-            JSONObject properties,
+            ObjectNode properties,
             String partitions) {
         properties.put(
                 DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME,
@@ -118,7 +117,7 @@ public class DBManager {
                 tableName,
                 tablePath,
                 tableSchema,
-                properties.toJSONString(),
+                properties.toString(),
                 partitions);
     }
 
@@ -353,12 +352,12 @@ public class DBManager {
 
     public void updateTableSchema(String tableId, String tableSchema) {
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
-        JSONObject propertiesJson = JSON.parseObject(tableInfo.getProperties());
+        ObjectNode propertiesJson = JsonUtils.parseObject(tableInfo.getProperties());
         propertiesJson.put(
                 DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME,
                 String.valueOf(System.currentTimeMillis()));
         tableInfoDao.updateByTableId(tableId, "", "", tableSchema);
-        tableInfoDao.updatePropertiesById(tableId, propertiesJson.toJSONString());
+        tableInfoDao.updatePropertiesById(tableId, propertiesJson.toString());
     }
 
     public void deleteTableInfo(String tablePath, String tableId, String tableNamespace) {
@@ -374,9 +373,9 @@ public class DBManager {
 
     public void logicallyDropColumn(String tableId, List<String> droppedColumn) {
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
-        JSONObject propertiesJson = JSON.parseObject(tableInfo.getProperties());
+        ObjectNode propertiesJson = JsonUtils.parseObject(tableInfo.getProperties());
         String droppedColumnProperty =
-                (String) propertiesJson.get(DBConfig.TableInfoProperty.DROPPED_COLUMN);
+                propertiesJson.path(DBConfig.TableInfoProperty.DROPPED_COLUMN).asText(null);
         droppedColumnProperty = droppedColumnProperty == null ? "" : droppedColumnProperty;
         HashSet<String> set =
                 new HashSet<>(
@@ -387,14 +386,14 @@ public class DBManager {
         propertiesJson.put(
                 DBConfig.TableInfoProperty.DROPPED_COLUMN,
                 String.join(DBConfig.TableInfoProperty.DROPPED_COLUMN_SPLITTER, droppedColumn));
-        updateTableProperties(tableId, propertiesJson.toJSONString());
+        updateTableProperties(tableId, propertiesJson.toString());
     }
 
     public void removeLogicallyDropColumn(String tableId) {
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
-        JSONObject propertiesJson = JSON.parseObject(tableInfo.getProperties());
+        ObjectNode propertiesJson = JsonUtils.parseObject(tableInfo.getProperties());
         propertiesJson.remove(DBConfig.TableInfoProperty.DROPPED_COLUMN);
-        tableInfoDao.updatePropertiesById(tableId, propertiesJson.toJSONString());
+        tableInfoDao.updatePropertiesById(tableId, propertiesJson.toString());
     }
 
     public void deletePartitionInfoByTableId(String tableId) {
@@ -470,15 +469,15 @@ public class DBManager {
 
     public void updateTableProperties(String tableId, String properties) {
         TableInfo tableInfo = tableInfoDao.selectByTableId(tableId);
-        JSONObject newProperties = JSONObject.parseObject(properties);
+        ObjectNode newProperties = JsonUtils.parseObject(properties);
         if (tableInfo != null) {
-            JSONObject originProperties = JSON.parseObject(tableInfo.getProperties());
-            if (tableInfo.getProperties() != null && originProperties.containsKey("domain")) {
+            ObjectNode originProperties = JsonUtils.parseObject(tableInfo.getProperties());
+            if (tableInfo.getProperties() != null && originProperties.has("domain")) {
                 // do not modify domain in properties for this table
-                newProperties.put("domain", originProperties.get("domain"));
+                newProperties.set("domain", originProperties.get("domain"));
             }
         }
-        tableInfoDao.updatePropertiesById(tableId, newProperties.toJSONString());
+        tableInfoDao.updatePropertiesById(tableId, newProperties.toString());
     }
 
     public void updateTableShortName(
@@ -1256,14 +1255,14 @@ public class DBManager {
 
     public void updateNamespaceProperties(String namespace, String properties) {
         Namespace namespaceEntity = namespaceDao.findByNamespace(namespace);
-        JSONObject originProperties = JSON.parseObject(namespaceEntity.getProperties());
-        JSONObject newProperties = JSONObject.parseObject(properties);
+        ObjectNode originProperties = JsonUtils.parseObject(namespaceEntity.getProperties());
+        ObjectNode newProperties = JsonUtils.parseObject(properties);
 
-        if (originProperties.containsKey("domain")) {
+        if (originProperties.has("domain")) {
             // do not modify domain in properties for this table
-            newProperties.put("domain", originProperties.get("domain"));
+            newProperties.set("domain", originProperties.get("domain"));
         }
-        namespaceDao.updatePropertiesByNamespace(namespace, newProperties.toJSONString());
+        namespaceDao.updatePropertiesByNamespace(namespace, newProperties.toString());
     }
 
     public List<String> getTableAllPartitionDesc(String tableId) {

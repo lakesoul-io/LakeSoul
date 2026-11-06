@@ -5,6 +5,7 @@
 package org.apache.spark.sql.lakesoul.utils
 
 import com.fasterxml.jackson.annotation.JsonInclude.Include
+import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.databind.{DeserializationFeature, ObjectMapper}
 import com.fasterxml.jackson.module.scala.{
   DefaultScalaModule,
@@ -21,6 +22,15 @@ object JsonUtils {
 
   def toJson[T: Manifest](obj: T): String = {
     mapper.writeValueAsString(obj)
+  }
+
+  def createObjectNode(): ObjectNode = {
+    mapper.createObjectNode()
+  }
+
+  def parseObject(json: String): ObjectNode = {
+    val node = mapper.readTree(json)
+    if (node == null || node.isNull) null else node.asInstanceOf[ObjectNode]
   }
 
   def toPrettyJson[T: Manifest](obj: T): String = {

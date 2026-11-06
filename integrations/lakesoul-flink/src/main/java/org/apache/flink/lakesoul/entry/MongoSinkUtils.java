@@ -4,8 +4,7 @@
 
 package org.apache.flink.lakesoul.entry;
 
-import com.alibaba.fastjson.JSONArray;
-import com.alibaba.fastjson.JSONObject;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoDatabase;
@@ -98,7 +97,7 @@ public class MongoSinkUtils {
     }
 
     public List<String> findDirectNestedNames(
-            JSONObject jsonObject, String targetFieldName, int currentLevel, int targetLevel) {
+            JsonNode jsonObject, String targetFieldName, int currentLevel, int targetLevel) {
         List<String> nestedNames = new ArrayList<>();
         findDirectNestedNamesHelper(
                 jsonObject, targetFieldName, currentLevel, targetLevel, nestedNames);
@@ -106,23 +105,21 @@ public class MongoSinkUtils {
     }
 
     public void findDirectNestedNamesHelper(
-            JSONObject jsonObject,
+            JsonNode jsonObject,
             String targetFieldName,
             int currentLevel,
             int targetLevel,
             List<String> nestedNames) {
         if (currentLevel == targetLevel) {
-            if (jsonObject.getString("name").equals(targetFieldName)) {
-                JSONArray children = jsonObject.getJSONArray("children");
-                for (Object obj : children) {
-                    JSONObject child = (JSONObject) obj;
-                    nestedNames.add(child.getString("name"));
+            if (jsonObject.path("name").asText().equals(targetFieldName)) {
+                JsonNode children = jsonObject.path("children");
+                for (JsonNode child : children) {
+                    nestedNames.add(child.path("name").asText());
                 }
             }
         } else {
-            JSONArray children = jsonObject.getJSONArray("children");
-            for (Object obj : children) {
-                JSONObject child = (JSONObject) obj;
+            JsonNode children = jsonObject.path("children");
+            for (JsonNode child : children) {
                 findDirectNestedNamesHelper(
                         child, targetFieldName, currentLevel + 1, targetLevel, nestedNames);
             }

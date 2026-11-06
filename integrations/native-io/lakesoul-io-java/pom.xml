@@ -693,10 +693,6 @@ SPDX-License-Identifier: Apache-2.0
                                     <shadedPattern>com.lakesoul.shaded.io.netty</shadedPattern>
                                 </relocation>
                                 <relocation>
-                                    <pattern>com.alibaba.fastjson</pattern>
-                                    <shadedPattern>com.lakesoul.shaded.com.alibaba.fastjson</shadedPattern>
-                                </relocation>
-                                <relocation>
                                     <pattern>com.google.flatbuffers</pattern>
                                     <shadedPattern>com.lakesoul.shaded.com.google.flatbuffers</shadedPattern>
                                 </relocation>

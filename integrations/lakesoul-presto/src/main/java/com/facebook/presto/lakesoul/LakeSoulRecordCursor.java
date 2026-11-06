@@ -85,7 +85,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
                         .getSplit()
                         .getLayout()
                         .getTableParameters()
-                        .getString(PrestoUtil.CDC_CHANGE_COLUMN);
+                        .get(PrestoUtil.CDC_CHANGE_COLUMN);
         if (cdcColumn != null) {
             fields.add(Field.notNullable(cdcColumn, new ArrowType.Utf8()));
         }
@@ -157,7 +157,7 @@ public class LakeSoulRecordCursor implements RecordCursor {
                         .getSplit()
                         .getLayout()
                         .getTableParameters()
-                        .getString(PrestoUtil.CDC_CHANGE_COLUMN);
+                        .get(PrestoUtil.CDC_CHANGE_COLUMN);
         if (cdcColumn != null) {
             while (next()) {
                 FieldVector vector = currentVCR.getVector(cdcColumn);

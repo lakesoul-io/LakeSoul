@@ -6,7 +6,6 @@ package com.facebook.presto.lakesoul.handle;
 
 import static java.util.Objects.requireNonNull;
 
-import com.alibaba.fastjson.JSONObject;
 import com.facebook.airlift.log.Logger;
 import com.facebook.presto.common.predicate.Domain;
 import com.facebook.presto.common.predicate.Range;
@@ -35,7 +34,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
     private final Optional<Set<ColumnHandle>> dataColumns;
     private final List<String> primaryKeys;
     private final List<String> rangeKeys;
-    private final JSONObject tableParameters;
+    private final Map<String, String> tableParameters;
     private final HashMap<String, ColumnHandle> allColumns;
     private final List<FilterPredicate> filters;
     private List<FilterPredicate> parFilters;
@@ -50,7 +49,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
             @JsonProperty("dataColumns") Optional<Set<ColumnHandle>> dataColumns,
             @JsonProperty("primaryKeys") List<String> primaryKeys,
             @JsonProperty("rangeKeys") List<String> rangeKeys,
-            @JsonProperty("tableParameters") JSONObject tableParameters,
+            @JsonProperty("tableParameters") Map<String, String> tableParameters,
             @JsonProperty("tupleDomain") TupleDomain<ColumnHandle> tupleDomain,
             @JsonProperty("allColumns") HashMap<String, ColumnHandle> allColumns) {
 
@@ -132,7 +131,7 @@ public class LakeSoulTableLayoutHandle implements ConnectorTableLayoutHandle {
     }
 
     @JsonProperty
-    public JSONObject getTableParameters() {
+    public Map<String, String> getTableParameters() {
         return tableParameters;
     }
 

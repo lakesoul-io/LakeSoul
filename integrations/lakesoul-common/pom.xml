@@ -133,6 +133,7 @@ SPDX-License-Identifier: Apache-2.0
         <protoc.version>3.5.1</protoc.version>
         <scala.binary.version>2.12</scala.binary.version>
         <scala.version>2.12.15</scala.version>
+        <jackson.version>2.15.4</jackson.version>
     </properties>
 
     <dependencies>
@@ -164,9 +165,9 @@ SPDX-License-Identifier: Apache-2.0
             <version>3.12.0</version>
         </dependency>
         <dependency>
-            <groupId>com.alibaba</groupId>
-            <artifactId>fastjson</artifactId>
-            <version>1.2.83</version>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
         </dependency>
         <!-- scala deps -->
         <dependency>
@@ -406,20 +407,12 @@ SPDX-License-Identifier: Apache-2.0
                                     <shadedPattern>com.lakesoul.shaded.org.postgresql</shadedPattern>
                                 </relocation>
                                 <relocation>
-                                    <pattern>com.alibaba.fastjson</pattern>
-                                    <shadedPattern>com.lakesoul.shaded.com.alibaba.fastjson</shadedPattern>
-                                </relocation>
-                                <relocation>
                                     <pattern>org.ow2.asm</pattern>
                                     <shadedPattern>com.lakesoul.shaded.org.ow2.asm</shadedPattern>
                                 </relocation>
                                 <relocation>
                                     <pattern>org.objectweb.asm</pattern>
                                     <shadedPattern>com.lakesoul.shaded.org.objectweb.asm</shadedPattern>
-                                </relocation>
-                                <relocation>
-                                    <pattern>com.google.gson</pattern>
-                                    <shadedPattern>com.lakesoul.shaded.com.google.gson</shadedPattern>
                                 </relocation>
                                 <relocation>
                                     <pattern>com.fasterxml.jackson</pattern>

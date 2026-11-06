@@ -7,8 +7,6 @@ package com.facebook.presto.lakesoul;
 import static com.facebook.presto.lakesoul.util.PrestoUtil.CDC_CHANGE_COLUMN;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
@@ -18,8 +16,10 @@ import com.facebook.presto.lakesoul.handle.LakeSoulTableColumnHandle;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableHandle;
 import com.facebook.presto.lakesoul.handle.LakeSoulTableLayoutHandle;
 import com.facebook.presto.lakesoul.util.ArrowBlockBuilder;
+import com.facebook.presto.lakesoul.util.JsonUtil;
 import com.facebook.presto.spi.*;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.collect.ImmutableList;
 
 import org.apache.arrow.vector.types.pojo.Field;
@@ -152,7 +152,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                 dbManager.getTableInfoByTableId(((LakeSoulTableHandle) table).getId());
         DBUtil.TablePartitionKeys partitionKeys =
                 DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
-        JSONObject properties = JSON.parseObject(tableInfo.getProperties());
+        ObjectNode properties = JsonUtil.parseObject(tableInfo.getProperties());
         org.apache.arrow.vector.types.pojo.Schema arrowSchema = null;
         if (TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())) {
             try {
@@ -167,7 +167,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                             struct, ZoneId.of("UTC").toString());
         }
         HashMap<String, ColumnHandle> allColumns = new HashMap<>();
-        String cdcChangeColumn = properties.getString(CDC_CHANGE_COLUMN);
+        String cdcChangeColumn = properties.path(CDC_CHANGE_COLUMN).asText(null);
         for (org.apache.arrow.vector.types.pojo.Field field : arrowSchema.getFields()) {
             // drop cdc change column
             if (field.getName().equals(cdcChangeColumn)) {
@@ -188,7 +188,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                                 desiredColumns,
                                 partitionKeys.primaryKeys,
                                 partitionKeys.rangeKeys,
-                                properties,
+                                DBUtil.jsonToStringMap(properties),
                                 constraint.getSummary(),
                                 allColumns));
         return ImmutableList.of(new ConnectorTableLayoutResult(layout, constraint.getSummary()));
@@ -212,7 +212,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         if (tableInfo == null) {
             throw new RuntimeException("no such table: " + handle.getNames());
         }
-        JSONObject properties = JSON.parseObject(tableInfo.getProperties());
+        ObjectNode properties = JsonUtil.parseObject(tableInfo.getProperties());
         org.apache.arrow.vector.types.pojo.Schema arrowSchema = null;
         if (TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())) {
             try {
@@ -228,7 +228,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         }
 
         List<ColumnMetadata> columns = new LinkedList<>();
-        String cdcChangeColumn = properties.getString(CDC_CHANGE_COLUMN);
+        String cdcChangeColumn = properties.path(CDC_CHANGE_COLUMN).asText(null);
         for (org.apache.arrow.vector.types.pojo.Field field : arrowSchema.getFields()) {
             Map<String, Object> props = new HashMap<>(field.getMetadata());
             // drop cdc change column
@@ -253,7 +253,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
                 handle.getNames(),
                 columns,
                 Collections.emptyMap(),
-                Optional.ofNullable(properties.getString("comment")));
+                Optional.ofNullable(properties.path("comment").asText(null)));
     }
 
     @Override
@@ -264,7 +264,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         if (tableInfo == null) {
             throw new RuntimeException("no such table: " + table.getNames());
         }
-        JSONObject properties = JSON.parseObject(tableInfo.getProperties());
+        ObjectNode properties = JsonUtil.parseObject(tableInfo.getProperties());
 
         org.apache.arrow.vector.types.pojo.Schema arrowSchema = null;
         if (TableInfoDao.isArrowKindSchema(tableInfo.getTableSchema())) {
@@ -281,7 +281,7 @@ public class LakeSoulMetadata implements ConnectorMetadata {
         }
 
         HashMap<String, ColumnHandle> map = new HashMap<>();
-        String cdcChangeColumn = properties.getString(CDC_CHANGE_COLUMN);
+        String cdcChangeColumn = properties.path(CDC_CHANGE_COLUMN).asText(null);
         for (org.apache.arrow.vector.types.pojo.Field field : arrowSchema.getFields()) {
             // drop cdc change column
             if (field.getName().equals(cdcChangeColumn)) {

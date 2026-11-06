@@ -4,7 +4,6 @@
 
 package com.dmetasoul.lakesoul.tables
 
-import com.alibaba.fastjson.JSON
 import com.dmetasoul.lakesoul.meta.DBConfig.{
   LAKESOUL_HASH_PARTITION_SPLITTER,
   LAKESOUL_RANGE_PARTITION_SPLITTER,
@@ -26,6 +25,7 @@ import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.sources.LakeSoulSourceUtils
 import org.apache.spark.sql.lakesoul.utils.SparkUtil.tryWithResource
 import org.apache.spark.sql.lakesoul.utils.{
+  JsonUtils,
   MetaInfo,
   SparkUtil,
   TableInfo,
@@ -663,14 +663,14 @@ class LakeSoulTable(df: => Dataset[Row], snapshotManagement: SnapshotManagement)
       val properties = SparkMetaVersion.dbManager
         .getTableInfoByTableId(tableInfo.table_id)
         .getProperties
-      val newProperties = JSON.parseObject(properties);
+      val newProperties = JsonUtils.parseObject(properties);
       newProperties.put(
         TableInfoProperty.HASH_BUCKET_NUM,
         newBucketNum.get.toString
       )
       SparkMetaVersion.dbManager.updateTableProperties(
         tableInfo.table_id,
-        newProperties.toJSONString
+        newProperties.toString
       )
       snapshotManagement.updateSnapshot()
     }

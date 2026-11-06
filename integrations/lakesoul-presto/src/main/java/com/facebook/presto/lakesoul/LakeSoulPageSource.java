@@ -78,8 +78,7 @@ public class LakeSoulPageSource implements ConnectorPageSource {
             }
         }
         // add extra cdc column
-        String cdcColumn =
-                split.getLayout().getTableParameters().getString(PrestoUtil.CDC_CHANGE_COLUMN);
+        String cdcColumn = split.getLayout().getTableParameters().get(PrestoUtil.CDC_CHANGE_COLUMN);
         if (cdcColumn != null) {
             fields.add(Field.notNullable(cdcColumn, new ArrowType.Utf8()));
             reader.addFilter(

@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
-import com.alibaba.fastjson.JSONArray;
-import com.alibaba.fastjson.JSONObject;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import org.apache.flink.api.common.functions.MapFunction;
 
@@ -22,29 +23,26 @@ public class PartitionInfoRecordGets {
 
         @Override
         public PartitionInfo map(String value) throws Exception {
-            JSONObject parse = (JSONObject) JSONObject.parse(value);
-            String PGtableName = parse.get("tableName").toString();
-            JSONObject commitJson = null;
+            ObjectNode parse = JsonUtils.parseObject(value);
+            String PGtableName = parse.path("tableName").asText();
+            JsonNode commitJson = null;
             PartitionInfo partitionInfo = null;
 
             if (PGtableName.equals("partition_info")) {
-                if (!parse.getJSONObject("after").isEmpty()) {
-                    commitJson = (JSONObject) parse.get("after");
-                } else {
-                    commitJson = (JSONObject) parse.get("before");
-                }
+                JsonNode after = parse.path("after");
+                commitJson = after.isEmpty() ? parse.path("before") : after;
             }
-            String eventOp = parse.getString("commitOp");
+            String eventOp = parse.path("commitOp").asText();
             if (!eventOp.equals("delete")) {
-                String table_id = commitJson.getString("table_id");
-                String partition_desc = commitJson.getString("partition_desc");
-                String commit_op = commitJson.getString("commit_op");
-                int version = commitJson.getInteger("version");
-                long timestamp = commitJson.getLong("timestamp");
-                JSONArray snapshot = commitJson.getJSONArray("snapshot");
+                String table_id = commitJson.path("table_id").asText(null);
+                String partition_desc = commitJson.path("partition_desc").asText(null);
+                String commit_op = commitJson.path("commit_op").asText(null);
+                int version = commitJson.path("version").asInt();
+                long timestamp = commitJson.path("timestamp").asLong();
+                JsonNode snapshot = commitJson.path("snapshot");
                 List<String> snapshotList = new ArrayList<>();
-                for (Object o : snapshot) {
-                    snapshotList.add(o.toString());
+                for (JsonNode o : snapshot) {
+                    snapshotList.add(o.asText());
                 }
                 if (tablesId == null) {
                     partitionInfo =
@@ -72,10 +70,10 @@ public class PartitionInfoRecordGets {
                 }
 
             } else {
-                String table_id = commitJson.getString("table_id");
-                String partition_desc = commitJson.getString("partition_desc");
-                String commit_op = commitJson.getString("commit_op");
-                int version = commitJson.getInteger("version");
+                String table_id = commitJson.path("table_id").asText(null);
+                String partition_desc = commitJson.path("partition_desc").asText(null);
+                String commit_op = commitJson.path("commit_op").asText(null);
+                int version = commitJson.path("version").asInt();
                 long timestamp = -5L; // 标记这条数据被删除
                 if (tablesId == null) {
                     partitionInfo =

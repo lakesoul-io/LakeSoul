@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONObject;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.state.MapStateDescriptor;
@@ -151,8 +151,8 @@ public class NewCleanJob {
                                     String value, Context ctx, Collector<String> out)
                                     throws Exception {
                                 try {
-                                    JSONObject json = JSON.parseObject(value);
-                                    String tableName = json.getString("tableName");
+                                    ObjectNode json = JsonUtils.parseObject(value);
+                                    String tableName = json.path("tableName").asText();
                                     if ("partition_info".equals(tableName)) {
                                         ctx.output(partitionInfoTag, value);
                                     } else if ("discard_compressed_file_info".equals(tableName)) {

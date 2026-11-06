@@ -4,19 +4,19 @@
 
 package com.dmetasoul.lakesoul.meta.security;
 
-import com.alibaba.fastjson.annotation.JSONField;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.commons.lang3.builder.ToStringStyle;
 
 public class Claims {
-    @JSONField(name = "sub")
+    @JsonProperty("sub")
     private String sub;
 
-    @JSONField(name = "group")
+    @JsonProperty("group")
     private String group;
 
-    @JSONField(name = "exp")
+    @JsonProperty("exp")
     private long exp;
 
     public String getSub() {

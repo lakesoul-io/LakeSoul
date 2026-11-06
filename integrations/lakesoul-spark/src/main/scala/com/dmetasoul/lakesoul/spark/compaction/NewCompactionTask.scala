@@ -7,10 +7,10 @@ package com.dmetasoul.lakesoul.spark.compaction
 import com.dmetasoul.lakesoul.meta.{DBConnector, MetaUtils}
 import com.dmetasoul.lakesoul.spark.ParametersTool
 import com.dmetasoul.lakesoul.tables.LakeSoulTable
-import com.google.gson.{JsonObject, JsonParser}
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.lakesoul.catalog.LakeSoulCatalog
+import org.apache.spark.sql.lakesoul.utils.JsonUtils
 import org.postgresql.PGConnection
 
 import java.text.SimpleDateFormat
@@ -102,7 +102,6 @@ object NewCompactionTask {
     stmt.execute("LISTEN " + NOTIFY_CHANNEL_NAME)
     stmt.close()
 
-    val jsonParser = new JsonParser()
     while (true) {
       try {
         if (!conn.isValid(5000)) {
@@ -118,17 +117,16 @@ object NewCompactionTask {
             val notificationParameter = notification.getParameter
             if (threadMap.get(notificationParameter) != 1) {
               threadMap.put(notificationParameter, 1)
-              val jsonObj =
-                jsonParser.parse(notificationParameter).asInstanceOf[JsonObject]
+              val jsonObj = JsonUtils.parseObject(notificationParameter)
               println(
                 "========== " + dateFormat.format(
                   new Date()
                 ) + " start processing notification: " + jsonObj + " =========="
               )
-              val tablePath = jsonObj.get("table_path").getAsString
+              val tablePath = jsonObj.path("table_path").asText
               val partitionDesc =
-                jsonObj.get("table_partition_desc").getAsString
-              val tableNamespace = jsonObj.get("table_namespace").getAsString
+                jsonObj.path("table_partition_desc").asText
+              val tableNamespace = jsonObj.path("table_namespace").asText
               if (tableNamespace.equals(database) || database.equals("")) {
                 val rsPartitionDesc =
                   if (

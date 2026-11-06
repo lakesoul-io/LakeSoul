@@ -5,9 +5,9 @@ package com.dmetasoul.lakesoul.meta.jnr;
 
 import static com.dmetasoul.lakesoul.meta.jnr.NativeUtils.*;
 
-import com.alibaba.fastjson.JSON;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.DataBaseProperty;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
 import com.dmetasoul.lakesoul.meta.entity.CommitOp;
 import com.dmetasoul.lakesoul.meta.entity.JniWrapper;
 import com.dmetasoul.lakesoul.meta.entity.MetaInfo;
@@ -722,7 +722,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
             if (ans) {
                 //  This copies a zero (nul) terminated by array from native memory.
                 String json = ptr.getString(0);
-                List<SplitDesc> list = JSON.parseArray(json, SplitDesc.class);
+                List<SplitDesc> list = JsonUtils.parseArray(json, SplitDesc.class);
                 getLibLakeSoulMetaData().free_split_desc_array(ptr);
                 return list;
             }
@@ -742,7 +742,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
         String secret =
                 DBUtil.generateSecret(
                         DBUtil.getDBInfo().getUsername(), DBUtil.getDBInfo().getPassword());
-        String claimsJson = JSON.toJSONString(claims);
+        String claimsJson = JsonUtils.toJson(claims);
         final CompletableFuture<String> future = new CompletableFuture<>();
         getLibLakeSoulMetaData()
                 .encode_token_from_claims(
@@ -785,7 +785,7 @@ public class NativeMetadataJavaClient implements AutoCloseable {
                         secret);
         try {
             String claimsJson = future.get(timeout, TimeUnit.MILLISECONDS);
-            return JSON.parseObject(claimsJson, Claims.class);
+            return JsonUtils.parseObject(claimsJson, Claims.class);
         } catch (InterruptedException | ExecutionException e) {
             throw new RuntimeException(e);
         } catch (TimeoutException e) {

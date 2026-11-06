@@ -6,12 +6,12 @@ package com.dmetasoul.lakesoul.meta;
 
 import static com.dmetasoul.lakesoul.meta.DBConfig.*;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONArray;
-import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.entity.DataFileOp;
 import com.dmetasoul.lakesoul.meta.entity.FileOp;
 import com.dmetasoul.lakesoul.meta.entity.Uuid;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zaxxer.hikari.HikariConfig;
 
 import org.apache.commons.lang3.StringUtils;
@@ -182,30 +182,31 @@ public class DBUtil {
         }
     }
 
-    public static JSONObject stringToJSON(String s) {
-        return JSONObject.parseObject(s);
+    public static ObjectNode stringToJSON(String s) {
+        return JsonUtils.parseObject(s);
     }
 
-    public static JSONObject stringMapToJson(Map<String, String> map) {
-        JSONObject object = new JSONObject();
-        object.putAll(map);
-        return object;
+    public static ObjectNode stringMapToJson(Map<String, String> map) {
+        return JsonUtils.objectNode(map);
     }
 
-    public static Map<String, String> jsonToStringMap(JSONObject o) {
+    public static Map<String, String> jsonToStringMap(JsonNode o) {
         Map<String, String> map = new HashMap<>();
-        for (Map.Entry<String, Object> entry : o.entrySet()) {
-            map.put(entry.getKey(), entry.getValue().toString());
+        if (o == null) {
+            return map;
         }
+        o.fields()
+                .forEachRemaining(
+                        entry -> map.put(entry.getKey(), JsonUtils.asString(entry.getValue())));
         return map;
     }
 
-    public static String jsonToString(JSONObject o) {
-        return JSON.toJSONString(o);
+    public static String jsonToString(JsonNode o) {
+        return JsonUtils.toJson(o);
     }
 
-    public static JSONArray stringToJSONArray(String s) {
-        return JSONArray.parseArray(s);
+    public static ArrayNode stringToJSONArray(String s) {
+        return JsonUtils.parseArray(s);
     }
 
     public static String changeDataFileOpListToString(List<DataFileOp> dataFileOpList) {

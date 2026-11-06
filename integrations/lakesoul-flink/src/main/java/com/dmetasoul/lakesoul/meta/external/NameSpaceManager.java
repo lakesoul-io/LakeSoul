@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.dmetasoul.lakesoul.meta.external;
 
-import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
 
 public class NameSpaceManager implements ExternalDBManager {
     private final DBManager lakesoulDBManager = new DBManager();
@@ -14,6 +14,7 @@ public class NameSpaceManager implements ExternalDBManager {
         if (lakesoulDBManager.getNamespaceByNamespace(namespace) != null) {
             return;
         }
-        lakesoulDBManager.createNewNamespace(namespace, new JSONObject().toJSONString(), "");
+        lakesoulDBManager.createNewNamespace(
+                namespace, JsonUtils.createObjectNode().toString(), "");
     }
 }

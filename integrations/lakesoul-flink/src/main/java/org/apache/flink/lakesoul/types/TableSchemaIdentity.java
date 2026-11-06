@@ -6,10 +6,10 @@ package org.apache.flink.lakesoul.types;
 
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBUtil;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
@@ -58,10 +58,10 @@ public final class TableSchemaIdentity implements Serializable {
         RowType rowType = ArrowUtils.fromArrowSchema(Schema.fromJSON(tableInfo.getTableSchema()));
         DBUtil.TablePartitionKeys tablePartitionKeys =
                 DBUtil.parseTableInfoPartitions(tableInfo.getPartitions());
-        JSONObject properties = JSON.parseObject(tableInfo.getProperties());
+        ObjectNode properties = JsonUtils.parseObject(tableInfo.getProperties());
         String lakesoulCdcColumnName =
-                properties.getOrDefault(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT).toString();
-        boolean useCdc = properties.getOrDefault(USE_CDC.key(), "false").equals("true");
+                properties.path(CDC_CHANGE_COLUMN).asText(CDC_CHANGE_COLUMN_DEFAULT);
+        boolean useCdc = properties.path(USE_CDC.key()).asText("false").equals("true");
         return new TableSchemaIdentity(
                 new TableId(
                         LakeSoulCatalog.CATALOG_NAME,

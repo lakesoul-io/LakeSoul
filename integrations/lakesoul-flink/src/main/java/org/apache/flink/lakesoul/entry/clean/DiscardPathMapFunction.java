@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
-import com.alibaba.fastjson.JSONObject;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.java.tuple.Tuple3;
@@ -22,30 +24,27 @@ public class DiscardPathMapFunction implements MapFunction<String, Tuple3<String
     @Override
     public Tuple3<String, Long, Long> map(String value) throws Exception {
 
-        JSONObject parse = (JSONObject) JSONObject.parse(value);
-        String PGtableName = parse.get("tableName").toString();
-        JSONObject commitJson = null;
+        ObjectNode parse = JsonUtils.parseObject(value);
+        String PGtableName = parse.path("tableName").asText();
+        JsonNode commitJson = null;
         Tuple3<String, Long, Long> filePathInfo = new Tuple3<>();
         if (PGtableName.equals("discard_compressed_file_info")) {
-            if (!parse.getJSONObject("after").isEmpty()) {
-                commitJson = (JSONObject) parse.get("after");
-            } else {
-                commitJson = (JSONObject) parse.get("before");
-            }
+            JsonNode after = parse.path("after");
+            commitJson = after.isEmpty() ? parse.path("before") : after;
         }
-        String eventOp = parse.getString("commitOp");
+        String eventOp = parse.path("commitOp").asText();
         if (!eventOp.equals("delete")) {
-            String filePath = commitJson.getString("file_path");
-            long fileTimestamp = commitJson.getLongValue("timestamp");
-            long eventTime = parse.getLongValue("eventTime");
-            boolean fromSnapshot = parse.getBooleanValue("snapshot");
+            String filePath = commitJson.path("file_path").asText();
+            long fileTimestamp = commitJson.path("timestamp").asLong();
+            long eventTime = parse.path("eventTime").asLong();
+            boolean fromSnapshot = parse.path("snapshot").asBoolean();
             long retentionBase = fromSnapshot || eventTime <= 0 ? fileTimestamp : eventTime;
             filePathInfo.f0 = filePath;
             filePathInfo.f1 = fileTimestamp;
             filePathInfo.f2 = retentionBase;
             return filePathInfo;
         } else {
-            filePathInfo.f0 = commitJson.getString("file_path");
+            filePathInfo.f0 = commitJson.path("file_path").asText();
             filePathInfo.f1 = -5L;
             filePathInfo.f2 = -5L;
             return filePathInfo;

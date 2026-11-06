@@ -13,18 +13,18 @@ import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCom
 
 import static java.time.ZoneId.SHORT_IDS;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.lakesoul.io.NativeIOBase;
 import com.dmetasoul.lakesoul.meta.DBUtil;
 import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
 import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
 import com.dmetasoul.lakesoul.meta.MetaVersion;
 import com.dmetasoul.lakesoul.meta.PartitionInfoScala;
 import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import com.dmetasoul.lakesoul.util.SensitiveConfig;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
@@ -218,10 +218,10 @@ public class FlinkUtil {
     }
 
     public static boolean isView(TableInfo tableInfo) {
-        JSONObject jsb = DBUtil.stringToJSON(tableInfo.getProperties());
-        if (jsb.containsKey(LAKESOUL_VIEW.key())
-                && "true".equals(jsb.getString(LAKESOUL_VIEW.key()))
-                && LAKESOUL_VIEW_KIND.equals(jsb.getString(LAKESOUL_VIEW_TYPE.key()))) {
+        ObjectNode jsb = DBUtil.stringToJSON(tableInfo.getProperties());
+        if (jsb.has(LAKESOUL_VIEW.key())
+                && "true".equals(jsb.path(LAKESOUL_VIEW.key()).asText())
+                && LAKESOUL_VIEW_KIND.equals(jsb.path(LAKESOUL_VIEW_TYPE.key()).asText())) {
             return true;
         } else {
             return false;
@@ -229,9 +229,8 @@ public class FlinkUtil {
     }
 
     public static boolean isTable(TableInfo tableInfo) {
-        JSONObject jsb = DBUtil.stringToJSON(tableInfo.getProperties());
-        if (jsb.containsKey(LAKESOUL_VIEW.key())
-                && "true".equals(jsb.getString(LAKESOUL_VIEW.key()))) {
+        ObjectNode jsb = DBUtil.stringToJSON(tableInfo.getProperties());
+        if (jsb.has(LAKESOUL_VIEW.key()) && "true".equals(jsb.path(LAKESOUL_VIEW.key()).asText())) {
             return false;
         } else {
             return true;
@@ -240,7 +239,7 @@ public class FlinkUtil {
 
     public static CatalogBaseTable toFlinkCatalog(TableInfo tableInfo) {
         String tableSchema = tableInfo.getTableSchema();
-        JSONObject properties = JSON.parseObject(tableInfo.getProperties());
+        ObjectNode properties = JsonUtils.parseObject(tableInfo.getProperties());
         properties.put(CATALOG_PATH.key(), tableInfo.getTablePath());
 
         org.apache.arrow.vector.types.pojo.Schema arrowSchema = null;
@@ -260,7 +259,7 @@ public class FlinkUtil {
         RowType rowType = ArrowUtils.fromArrowSchema(arrowSchema);
         Builder bd = Schema.newBuilder();
 
-        String lakesoulCdcColumnName = properties.getString(CDC_CHANGE_COLUMN);
+        String lakesoulCdcColumnName = properties.path(CDC_CHANGE_COLUMN).asText(null);
         boolean containsCdc = (lakesoulCdcColumnName != null && !lakesoulCdcColumnName.isEmpty());
 
         for (RowType.RowField field : rowType.getFields()) {
@@ -274,11 +273,15 @@ public class FlinkUtil {
                                     .getMetadata()
                                     .getOrDefault("spark_comment", null));
         }
-        if (properties.getString(COMPUTE_COLUMN_JSON) != null) {
-            JSONObject computeColumnJson =
-                    JSONObject.parseObject(properties.getString(COMPUTE_COLUMN_JSON));
-            computeColumnJson.forEach(
-                    (column, columnExpr) -> bd.columnByExpression(column, (String) columnExpr));
+        if (properties.hasNonNull(COMPUTE_COLUMN_JSON)) {
+            ObjectNode computeColumnJson =
+                    JsonUtils.parseObject(properties.path(COMPUTE_COLUMN_JSON).asText());
+            computeColumnJson
+                    .fields()
+                    .forEachRemaining(
+                            entry ->
+                                    bd.columnByExpression(
+                                            entry.getKey(), entry.getValue().asText()));
         }
 
         DBUtil.TablePartitionKeys partitionKeys =
@@ -287,28 +290,26 @@ public class FlinkUtil {
             bd.primaryKey(partitionKeys.primaryKeys);
         }
 
-        if (properties.getString(WATERMARK_SPEC_JSON) != null) {
-            JSONObject watermarkJson =
-                    JSONObject.parseObject(properties.getString(WATERMARK_SPEC_JSON));
-            watermarkJson.forEach(
-                    (column, watermarkExpr) -> bd.watermark(column, (String) watermarkExpr));
+        if (properties.hasNonNull(WATERMARK_SPEC_JSON)) {
+            ObjectNode watermarkJson =
+                    JsonUtils.parseObject(properties.path(WATERMARK_SPEC_JSON).asText());
+            watermarkJson
+                    .fields()
+                    .forEachRemaining(
+                            entry -> bd.watermark(entry.getKey(), entry.getValue().asText()));
         }
 
         List<String> parKeys = partitionKeys.rangeKeys;
-        HashMap<String, String> conf = new HashMap<>();
-        properties.forEach((key, value) -> conf.put(key, value.toString()));
+        HashMap<String, String> conf = new HashMap<>(DBUtil.jsonToStringMap(properties));
 
-        String comment = "";
-        if (properties.containsKey("comment")) {
-            comment = properties.getString("comment");
-        }
+        String comment = properties.path("comment").asText("");
 
         if (FlinkUtil.isView(tableInfo)) {
             return CatalogView.of(
                     bd.build(),
                     comment,
-                    properties.getString(VIEW_ORIGINAL_QUERY),
-                    properties.getString(VIEW_EXPANDED_QUERY),
+                    properties.path(VIEW_ORIGINAL_QUERY).asText(null),
+                    properties.path(VIEW_EXPANDED_QUERY).asText(null),
                     conf);
         } else {
             return CatalogTable.of(bd.build(), comment, parKeys, conf);
@@ -620,12 +621,12 @@ public class FlinkUtil {
     }
 
     public static boolean isExistHashPartition(TableInfo tif) {
-        JSONObject tableProperties = JSON.parseObject(tif.getProperties());
-        if (tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM())
-                && tableProperties.getString(LakeSoulOptions.HASH_BUCKET_NUM()).equals("-1")) {
+        ObjectNode tableProperties = JsonUtils.parseObject(tif.getProperties());
+        if (tableProperties.has(LakeSoulOptions.HASH_BUCKET_NUM())
+                && tableProperties.path(LakeSoulOptions.HASH_BUCKET_NUM()).asText().equals("-1")) {
             return false;
         } else {
-            return tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM());
+            return tableProperties.has(LakeSoulOptions.HASH_BUCKET_NUM());
         }
     }
 
@@ -678,12 +679,12 @@ public class FlinkUtil {
         }
     }
 
-    public static JSONObject getPropertiesFromConfiguration(Configuration conf) {
+    public static ObjectNode getPropertiesFromConfiguration(Configuration conf) {
         Map<String, Object> map = new HashMap<>();
         map.put(USE_CDC.key(), String.valueOf(conf.getBoolean(USE_CDC)));
         map.put(HASH_BUCKET_NUM.key(), String.valueOf(conf.getInteger(BUCKET_PARALLELISM)));
         map.put(CDC_CHANGE_COLUMN, conf.getString(CDC_CHANGE_COLUMN, CDC_CHANGE_COLUMN_DEFAULT));
-        return new JSONObject(map);
+        return JsonUtils.objectNode(map);
     }
 
     public static boolean hasHdfsClasses() {
@@ -749,6 +750,6 @@ public class FlinkUtil {
             // LakeSoul TableSchema
             map.put(watermarkSpec.getRowtimeAttribute(), watermarkSpec.getWatermarkExpr());
         }
-        return JSON.toJSONString(map);
+        return JsonUtils.toJson(map);
     }
 }

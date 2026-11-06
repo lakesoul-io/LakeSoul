@@ -11,7 +11,7 @@ SPDX-License-Identifier: Apache-2.0
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![PG wire](https://img.shields.io/badge/PG%20wire-DDL%20%2B%20INSERT%20%2B%20query-green.svg)](#postgres-native)
 [![pgvector](https://img.shields.io/badge/pgvector-compatible%20SQL-purple.svg)](#vector-native)
-[![Python](https://img.shields.io/badge/Python-3.10%2B-yellow.svg)](#python-native)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-yellow.svg)](#python-native)
 [![Daft](https://img.shields.io/badge/Daft-multimodal-orange.svg)](#python-native)
 [![Release](https://img.shields.io/github/v/release/lakesoul-io/LakeSoul?include_prereleases&sort=semver)](https://github.com/lakesoul-io/LakeSoul/releases)
 

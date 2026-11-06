@@ -4,7 +4,6 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
-import com.alibaba.fastjson.JSON
 import com.dmetasoul.lakesoul.meta.DBConfig.TableInfoProperty
 import com.dmetasoul.lakesoul.meta.entity.{DataCommitInfo, DataFileOp, FileOp}
 import com.dmetasoul.lakesoul.meta.{
@@ -44,7 +43,7 @@ import org.apache.spark.sql.lakesoul.sources.LakeSoulSQLConf.{
   COMPACTION_TASK,
   SCAN_FILE_NUMBER_LIMIT
 }
-import org.apache.spark.sql.lakesoul.utils.TableInfo
+import org.apache.spark.sql.lakesoul.utils.{JsonUtils, TableInfo}
 import org.apache.spark.sql.lakesoul.{
   BatchDataSoulFileIndexV2,
   LakeSoulOptions,
@@ -495,14 +494,14 @@ case class CompactionCommand(
       val properties = SparkMetaVersion.dbManager
         .getTableInfoByTableId(tableInfo.table_id)
         .getProperties
-      val newProperties = JSON.parseObject(properties);
+      val newProperties = JsonUtils.parseObject(properties);
       newProperties.put(
         TableInfoProperty.HASH_BUCKET_NUM,
         newBucketNum.get.toString
       )
       SparkMetaVersion.dbManager.updateTableProperties(
         tableInfo.table_id,
-        newProperties.toJSONString
+        newProperties.toString
       )
       snapshotManagement.updateSnapshot()
     }

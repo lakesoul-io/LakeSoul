@@ -4,9 +4,9 @@
 
 package com.dmetasoul.lakesoul.meta
 
-import com.alibaba.fastjson.JSONObject
 import com.dmetasoul.lakesoul.meta.entity.{DiscardCompressedFileInfo, Uuid}
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.lakesoul.utils.JsonUtils
 import org.apache.spark.sql.lakesoul.exception.LakeSoulErrors
 import org.apache.spark.sql.lakesoul.utils._
 
@@ -41,10 +41,10 @@ object MetaCommit extends Logging {
         table_info.range_column
       )
     )
-    val json = new JSONObject()
+    val json = JsonUtils.createObjectNode()
     table_info.configuration.foreach(x => json.put(x._1, x._2))
     json.put("hashBucketNum", table_info.bucket_num.toString)
-    tableInfo.setProperties(json.toJSONString)
+    tableInfo.setProperties(json.toString)
     if (table_info.short_table_name.isDefined) {
       tableInfo.setTableName(table_info.short_table_name.get)
     }
