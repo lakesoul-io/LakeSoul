@@ -33,7 +33,7 @@ use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::index::key::{KeyCodec, KeyLayout};
 use lakesoul_io::index::prefix::derive_index_prefixes;
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
-use lakesoul_io::vector::search::{VectorHit, search_resolved_shard_batch};
+use lakesoul_io::vector::search::search_resolved_shard_batch;
 use lakesoul_metadata::index_catalog::{
     IndexCommitView, VectorCatalog, VectorSegmentEntry,
 };
@@ -104,11 +104,14 @@ pub async fn search_vector_batch(
     // bounded groups so the verified candidate union stays small.
     let batch_size = request.batch_size();
     if request.queries.len() > batch_size {
-        let mut results = Vec::with_capacity(request.queries.len());
+        // The chunks are independent, and one chunk's index probes (rayon)
+        // and reader/merge work do not fill every core on their own, so run
+        // them concurrently and concatenate the results in query order.
+        let mut chunk_futures = Vec::new();
         for chunk in request.queries.chunks(batch_size) {
             let mut chunk_request = request.clone();
             chunk_request.queries = chunk.to_vec();
-            results.extend(
+            chunk_futures.push(async move {
                 search_vector_batch_chunk(
                     catalog,
                     store,
@@ -119,8 +122,12 @@ pub async fn search_vector_batch(
                     cdc_column,
                     &chunk_request,
                 )
-                .await?,
-            );
+                .await
+            });
+        }
+        let mut results = Vec::with_capacity(request.queries.len());
+        for chunk_results in futures::future::try_join_all(chunk_futures).await? {
+            results.extend(chunk_results);
         }
         return Ok(results);
     }
@@ -302,16 +309,32 @@ async fn search_vector_batch_chunk(
                 )
                 .await?
             };
-            Ok::<_, DataFusionError>((hits, live))
+            // Rank this bucket's candidates per query and decode the primary
+            // keys in one batch per query: one codec call per query instead
+            // of one per candidate.
+            let mut per_query: Vec<Vec<(f32, i64)>> = Vec::with_capacity(hits.len());
+            for per_query_hits in &hits {
+                let mut best: BTreeMap<&IndexKey, f32> = BTreeMap::new();
+                for hit in per_query_hits {
+                    if !live.contains(&hit.key) {
+                        continue;
+                    }
+                    best.entry(&hit.key)
+                        .and_modify(|score| *score = score.min(hit.score))
+                        .or_insert(hit.score);
+                }
+                if best.is_empty() {
+                    per_query.push(Vec::new());
+                    continue;
+                }
+                let keys: Vec<IndexKey> = best.keys().map(|key| (*key).clone()).collect();
+                let ids = decode_ids(&codec, &keys)?;
+                per_query.push(best.values().copied().zip(ids).collect());
+            }
+            Ok::<_, DataFusionError>(per_query)
         });
     }
-    let probed = futures::future::try_join_all(probe_futures).await?;
-    let mut bucket_hits: Vec<Vec<Vec<VectorHit>>> = Vec::with_capacity(probed.len());
-    let mut bucket_live: Vec<HashSet<IndexKey>> = Vec::with_capacity(probed.len());
-    for (hits, live) in probed {
-        bucket_hits.push(hits);
-        bucket_live.push(live);
-    }
+    let bucket_ranked = futures::future::try_join_all(probe_futures).await?;
 
     // Phase 3: keep verified candidates per query, merge the buckets' ranked
     // candidates by index distance and take the global top-k per query.
@@ -319,26 +342,9 @@ async fn search_vector_batch_chunk(
     let mut results: Vec<Vec<i64>> = Vec::with_capacity(queries);
     for query_index in 0..queries {
         let mut ranked: Vec<(f32, i64)> =
-            Vec::with_capacity(bucket_hits.len() * request.top_k);
-        for (bucket, hits) in bucket_hits.iter().enumerate() {
-            let live = &bucket_live[bucket];
-            let per_query = &hits[query_index];
-            // Several hits can share a key when a delta segment holds a newer
-            // vector for the same row; keep the best (lowest) distance.
-            let mut best: BTreeMap<&IndexKey, f32> = BTreeMap::new();
-            for hit in per_query {
-                if !live.contains(&hit.key) {
-                    continue;
-                }
-                best.entry(&hit.key)
-                    .and_modify(|score| *score = score.min(hit.score))
-                    .or_insert(hit.score);
-            }
-            for (key, score) in best {
-                if let Some(id) = decode_id(&codec, key)? {
-                    ranked.push((score, id));
-                }
-            }
+            Vec::with_capacity(bucket_ranked.len() * request.top_k);
+        for per_bucket in &bucket_ranked {
+            ranked.extend(per_bucket[query_index].iter().copied());
         }
         // L2 index distance: smaller is closer, the same ordering the
         // single-query path uses with `lakesoul_vector_search.rerank=index`.
@@ -501,18 +507,22 @@ fn can_skip_verification(
         && lakesoul_common::index::pending_files(active_files, covered_files).is_empty()
 }
 
-/// Decode one index key back into the single Int64 primary key.
-fn decode_id(codec: &KeyCodec, key: &IndexKey) -> DFResult<Option<i64>> {
+/// Decode a batch of index keys into their Int64 primary keys.
+fn decode_ids(codec: &KeyCodec, keys: &[IndexKey]) -> DFResult<Vec<i64>> {
     let decoded = codec
-        .decode(std::slice::from_ref(key))
+        .decode(keys)
         .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
     let Some(array) = decoded.first() else {
-        return Ok(None);
+        return Err(DataFusionError::Execution(
+            "the index key codec decoded no primary-key column".to_string(),
+        ));
     };
     let Some(array) = array.as_any().downcast_ref::<arrow::array::Int64Array>() else {
-        return Ok(None);
+        return Err(DataFusionError::Execution(
+            "the index key codec decoded a non-Int64 primary key".to_string(),
+        ));
     };
-    Ok(array.iter().next().flatten())
+    Ok(array.iter().map(|id| id.unwrap_or_default()).collect())
 }
 
 #[cfg(test)]
