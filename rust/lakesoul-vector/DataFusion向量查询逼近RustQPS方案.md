@@ -267,3 +267,28 @@ delete/CDC/ACL。批次入口是新增 API，现有单 query SQL 路径保持不
 
 **回滚门槛**：Recall/ID 与单 query 完全一致、RSS 不升、QPS 提升可重复；任一条不满足即回滚
 该路径，保留已提交的单 query 优化。
+
+## 13. 阶段 B 首版落地：批量入口默认 64（已实现并验证）
+
+R11 的设计已落地，实测（GloVe-200、4 bucket、nprobe 16、index-only、locator on；
+**构建与搜索分成两个进程**，搜索进程不加载 947 MB base 向量）：
+
+| 搜索配置 | QPS | p50 | CPU/query | 查询期峰值 RSS | Recall@100 |
+|---|---:|---:|---:|---:|---:|
+| 单 query SQL（原路径） | 60.1 | 16.4 ms | 43.0 ms | 577 MB | 0.63805 |
+| 批量 = 1 | 124.0 | 8.06 ms | 16.3 ms | 577 MB | 0.63805 |
+| **批量 = auto（默认 64）** | **1449.0** | **0.687 ms** | **3.25 ms** | **591 MB** | 0.63805 |
+| 批量 = 64 | 1454.4 | 0.685 ms | 3.20 ms | 589 MB | 0.63805 |
+
+- 默认批量 `DEFAULT_BATCH_SIZE = 64`：16→64 每 query 成本从 4.0 ms 降到 3.2 ms；
+  200（整批）因校验候选并集过大退化到 57 QPS，故 32–64 是实测最优区间，取 64。
+- 语义：批次内所有 query 共享同一个 snapshot / index commit（调用方选择 snapshot 即选择
+  一致性点）；结果与单 query 路径逐 query 的 top-100 完全一致（Recall 相同）；校验读仍走
+  LakeSoulReader，merge-on-read/删除/CDC 不变。
+- 内存：查询期 RSS 0.58–0.59 GB（其中解码索引 361 MB）；**5.2 GB 是建表+进程内建索引的
+  构建期峰值**，不属于查询路径；纯 Rust core 的 3.6 GB 峰值同样包含数据集加载。
+- 与纯 Rust 的差距：单线程 1604 QPS 的 ~90%；CPU/query 3.2 ms vs 0.62 ms（ANN 本身），
+  剩余为候选行校验读（locator take）与按 query 合并排序。
+- 下一步：把批量入口接到 `LakeSoulTableProvider`（由 provider 提供 snapshot 文件列表，
+  当前低层 API 由调用方传入文件列表）、补 provider 级集成测试、Python/Daft 绑定；
+  以及在批内进一步降低校验读成本（locator 批量 take / 只对需要验证的行取行）。

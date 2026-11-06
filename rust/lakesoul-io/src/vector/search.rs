@@ -157,6 +157,61 @@ pub async fn search_resolved_shard(
     .map(Some)
 }
 
+/// Search one resolved shard for several query vectors at once.
+///
+/// Same contract as [`search_resolved_shard`], except that the shard is
+/// loaded (or taken from the index cache) once and every query is searched
+/// against that one index.  A batch therefore pays the per-shard setup once
+/// instead of once per query, which is where the DataFusion scan spends most
+/// of its CPU for a single query.
+#[allow(clippy::too_many_arguments)]
+pub async fn search_resolved_shard_batch(
+    store: &Arc<dyn ObjectStore>,
+    resolved: &ResolvedIndex,
+    queries: &[Vec<f32>],
+    top_k: usize,
+    nprobe: usize,
+    parallelism: usize,
+    expected_key_kind: u64,
+) -> IoResult<Option<Vec<Vec<VectorHit>>>> {
+    let Some(entry) = load_resolved_shard(store, resolved, expected_key_kind).await?
+    else {
+        return Ok(None);
+    };
+    if queries.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let params = SearchParams::new(top_k, nprobe).with_parallelism(parallelism);
+    let refs: Vec<&[f32]> = queries.iter().map(Vec::as_slice).collect();
+    let mut per_query = Vec::with_capacity(queries.len());
+    for result in entry.cached.index.batch_search(&refs, params) {
+        let results = result.map_err(|e| {
+            rootcause::report!(
+                "vector search failed at '{}': {:?}",
+                resolved.index_prefix,
+                e
+            )
+        })?;
+        per_query.push(results.into_iter().map(vector_hit).collect::<Vec<_>>());
+    }
+    info!(
+        "Vector batch search at '{}': {} queries (nprobe={})",
+        resolved.index_prefix,
+        queries.len(),
+        nprobe
+    );
+    Ok(Some(per_query))
+}
+
+fn vector_hit(result: lakesoul_vector::SearchResult) -> VectorHit {
+    VectorHit {
+        key: result.id,
+        score: result.score,
+        version: result.version,
+        birth_version: result.birth_version,
+    }
+}
+
 async fn load_resolved_shard(
     store: &Arc<dyn ObjectStore>,
     resolved: &ResolvedIndex,
@@ -527,15 +582,7 @@ fn search_loaded_index(
     let results = index.search(query, params).map_err(|e| {
         rootcause::report!("vector search failed at '{}': {:?}", prefix, e)
     })?;
-    let hits: Vec<VectorHit> = results
-        .into_iter()
-        .map(|result| VectorHit {
-            key: result.id,
-            score: result.score,
-            version: result.version,
-            birth_version: result.birth_version,
-        })
-        .collect();
+    let hits: Vec<VectorHit> = results.into_iter().map(vector_hit).collect();
     info!(
         "Vector search at '{}': {} results (nprobe={})",
         prefix,
@@ -730,6 +777,53 @@ mod tests {
             .await
         );
         assert_eq!(loaded.cached.commit_id, 1);
+    }
+
+    #[tokio::test]
+    async fn batch_search_matches_single_query_results() {
+        let (store, resolved) = fixture().await;
+        let queries: Vec<Vec<f32>> = vec![
+            vec![0.0, 0.0],
+            vec![63.0, 0.0],
+            vec![12.5, 3.5],
+            vec![-4.0, 6.0],
+        ];
+        let batch = search_resolved_shard_batch(&store, &resolved, &queries, 5, 2, 1, 7)
+            .await
+            .unwrap()
+            .expect("batch search");
+        assert_eq!(batch.len(), queries.len());
+        let keyed =
+            |hits: &[VectorHit]| -> Vec<(lakesoul_vector::IndexKey, u32, u32, u64)> {
+                hits.iter()
+                    .map(|hit| {
+                        (
+                            hit.key.clone(),
+                            hit.score.to_bits(),
+                            hit.version,
+                            hit.birth_version,
+                        )
+                    })
+                    .collect()
+            };
+        for (query, batched) in queries.iter().zip(&batch) {
+            let single = search_resolved_shard(&store, &resolved, query, 5, 2, 1, 7)
+                .await
+                .unwrap()
+                .expect("single search");
+            assert_eq!(
+                keyed(batched),
+                keyed(&single),
+                "batched and single query disagree for {query:?}"
+            );
+        }
+        // A shard whose key layout does not match stays a caller-visible `None`.
+        assert!(
+            search_resolved_shard_batch(&store, &resolved, &queries, 5, 2, 1, 8)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

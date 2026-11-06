@@ -171,6 +171,11 @@ struct Args {
     search_parallelism: usize,
     /// SQL scenario: queries kept in flight at the same time (default 1).
     concurrency: usize,
+    /// SQL scenario: queries per snapshot-batch search (0 = use per-query SQL).
+    batch_size: usize,
+    /// SQL scenario: only create the table, write the data and build the
+    /// index, then stop (search runs use `--reuse`).
+    build_only: bool,
     // ---- stream / trigger ----
     policy: Policy,
     max_delta_ratio: f32,
@@ -229,6 +234,8 @@ impl Default for Args {
             search_stats: false,
             search_parallelism: 1,
             concurrency: 1,
+            batch_size: 0,
+            build_only: false,
             policy: Policy::Auto,
             max_delta_ratio: 1.0,
             period: 3,
@@ -281,6 +288,11 @@ OPTIONS:
                                             (default: 1 = sequential)
   --concurrency <n>                         SQL scenario: queries kept in flight at the same time
                                             (default: 1 = one query at a time)
+  --batch-size <n|auto>                     SQL scenario: run the queries through the snapshot-batch
+                                            vector search in groups of n, or `auto` for the default
+                                            (default: 0 = per-query SQL)
+  --build-only                              SQL scenario: build the table + index and stop, so the
+                                            search can run in its own process (with --reuse)
 
 STREAM / TRIGGER:
   --policy <none|auto|periodic|always>      Rebuild policy (default: auto)
@@ -410,6 +422,16 @@ fn parse_args() -> Result<Args, String> {
                     .map_err(|e| format!("bad --concurrency: {e}"))?
                     .max(1)
             }
+            "--batch-size" => {
+                let raw = value(flag)?;
+                args.batch_size = if raw.eq_ignore_ascii_case("auto") {
+                    usize::MAX
+                } else {
+                    raw.parse::<usize>()
+                        .map_err(|e| format!("bad --batch-size: {e}"))?
+                }
+            }
+            "--build-only" => args.build_only = true,
             "--table" => args.table = value(flag)?,
             "--sql-format" => args.sql_format = value(flag)?,
             "--sql-hash-buckets" => {
@@ -2330,7 +2352,11 @@ async fn explain_text(
 async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     let dim = dataset.dim();
     let work_dir = prepare_work_dir(&args.work_dir)?;
-    clean_work_dir(&work_dir)?;
+    let reuse = args.reuse;
+    // `--reuse` searches a table that a previous `--build-only` run created.
+    if !reuse {
+        clean_work_dir(&work_dir)?;
+    }
     let table_name = args.table.clone();
     // The table (data + index) lives in `--table-root` when given — e.g. an
     // `s3://bucket/prefix` URL — and falls back to the local work directory.
@@ -2344,6 +2370,29 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
             .await
             .map_err(|e| format!("sql scenario requires PostgreSQL metadata: {e}"))?,
     );
+    if reuse {
+        if args.rounds > 0 {
+            return Err("--reuse does not support --rounds".to_string());
+        }
+        if dataset.gt.n != dataset.queries.n {
+            return Err(
+                "--reuse needs a ground-truth file matching --n-queries".to_string()
+            );
+        }
+        println!("reusing existing table {table_name}");
+        return run_sql_search(
+            args,
+            dataset,
+            &client,
+            &table_name,
+            &table_root,
+            &work_dir,
+            &dataset.gt,
+            0.0,
+            Vec::new(),
+        )
+        .await;
+    }
     let _ = client.drop_table(&table_name, "default").await;
 
     // 1. Create the table (Arrow schema + vector index property) through the
@@ -2455,9 +2504,72 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         }
     }
 
+    if args.build_only {
+        let index_state = collect_all_shard_stats(&find_data_files(&work_dir))
+            .await
+            .unwrap_or(Value::Null);
+        let index_bytes = index_size_bytes(&work_dir);
+        let data_bytes = dir_size_bytes(&work_dir).saturating_sub(index_bytes);
+        let summary = json!({
+            "scenario": "sql-build",
+            "table": table_name,
+            "table_root": table_root,
+            "dim": dim,
+            "n_base": dataset.base.n,
+            "n_rounds": args.rounds,
+            "base_insert_ms": base_insert_ms,
+            "round_insert_ms": round_insert_ms,
+            "data_size_bytes": data_bytes,
+            "index_size_bytes": index_bytes,
+            "index_state": index_state,
+            "peak_rss_mb": peak_rss_mb(),
+        });
+        print_summary(&summary);
+        return Ok(summary);
+    }
+
     // 4. Ground truth over the current dataset.
     let gt = brute_force_gt(&vectors, dim, &dataset.queries, args.top_k, args.threads);
+    // Drop the build/ground-truth copies so the query phase is measured on the
+    // memory a query actually keeps alive.
+    drop(vectors);
+    drop(base_batch);
+    let _ = src_schema.deregister_table("bench_src");
 
+    run_sql_search(
+        args,
+        dataset,
+        &client,
+        &table_name,
+        &table_root,
+        &work_dir,
+        &gt,
+        base_insert_ms,
+        round_insert_ms,
+    )
+    .await
+}
+
+/// Search phase of the SQL scenario: open a session with the vector-search
+/// options, run the queries (per-query SQL or snapshot-batch) and summarize.
+///
+/// Kept separate from the build phase so a search-only process (with
+/// `--reuse`) measures the query path without the memory and CPU of the
+/// insert and index build.
+#[allow(clippy::too_many_arguments)]
+async fn run_sql_search(
+    args: &Args,
+    dataset: &Dataset,
+    client: &Arc<lakesoul_datafusion::MetaDataClient>,
+    table_name: &str,
+    table_root: &str,
+    work_dir: &Path,
+    gt: &Ivecs,
+    base_insert_ms: f64,
+    round_insert_ms: Vec<f64>,
+) -> Result<Value, String> {
+    let dim = dataset.dim();
+    let core = core_args();
     // 5. Search session with the vector-search options.
     let mut session_config = lakesoul_datafusion::create_lakesoul_session_config()
         .map_err(|e| format!("session config: {e}"))?;
@@ -2494,6 +2606,23 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     );
     let explain_analyze = explain_text(&search_ctx, &analyze_sql).await?;
 
+    if args.batch_size > 0 {
+        let root = args
+            .table_root
+            .as_deref()
+            .map(|root| root.trim_start_matches("file://").to_string())
+            .unwrap_or_else(|| work_dir.display().to_string());
+        let mut summary =
+            run_batch_probe(args, dataset, &client, Path::new(&root), &gt, &table_name)
+                .await?;
+        if let Some(object) = summary.as_object_mut() {
+            object.insert("explain".to_string(), json!(explain));
+            object.insert("explain_analyze".to_string(), json!(explain_analyze));
+        }
+        print_summary(&summary);
+        return Ok(summary);
+    }
+
     // 7. End-to-end SQL latency and recall, one query at a time (or
     // `--concurrency` queries in flight), split into logical planning,
     // physical planning (table metadata + file listing) and execution (index
@@ -2505,6 +2634,9 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     let mut exec_ms = Vec::with_capacity(nq);
     let mut recall_sum = 0.0;
     let cpu_before = process_cpu_ms();
+    let mut plan_cpu_ms = 0.0f64;
+    let mut phys_cpu_ms = 0.0f64;
+    let mut exec_cpu_ms = 0.0f64;
     let t_loop = Instant::now();
     if args.concurrency <= 1 {
         for qi in 0..nq {
@@ -2514,23 +2646,32 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
                 query_literal(dataset, qi),
                 args.top_k
             );
+            let cpu0 = process_cpu_ms();
             let t = Instant::now();
             let df = search_ctx
                 .sql(&sql)
                 .await
                 .map_err(|e| format!("query: {e}"))?;
             let t_plan = t.elapsed();
+            let cpu1 = process_cpu_ms();
             let t = Instant::now();
             let plan = df
                 .create_physical_plan()
                 .await
                 .map_err(|e| format!("query: {e}"))?;
             let t_phys = t.elapsed();
+            let cpu2 = process_cpu_ms();
             let t = Instant::now();
             let batches = datafusion::physical_plan::collect(plan, search_ctx.task_ctx())
                 .await
                 .map_err(|e| format!("query: {e}"))?;
             let t_exec = t.elapsed();
+            let cpu3 = process_cpu_ms();
+            if let (Some(a), Some(b), Some(c), Some(d)) = (cpu0, cpu1, cpu2, cpu3) {
+                plan_cpu_ms += b - a;
+                phys_cpu_ms += c - b;
+                exec_cpu_ms += d - c;
+            }
             plan_ms.push(t_plan.as_secs_f64() * 1000.0);
             phys_ms.push(t_phys.as_secs_f64() * 1000.0);
             exec_ms.push(t_exec.as_secs_f64() * 1000.0);
@@ -2651,6 +2792,9 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         "query_wall_ms": query_wall_s * 1000.0,
         "query_cpu_ms": query_cpu_ms,
         "query_cpu_ms_per_query": query_cpu_ms / nq.max(1) as f64,
+        "plan_cpu_ms_per_query": plan_cpu_ms / nq.max(1) as f64,
+        "physical_plan_cpu_ms_per_query": phys_cpu_ms / nq.max(1) as f64,
+        "exec_cpu_ms_per_query": exec_cpu_ms / nq.max(1) as f64,
         "base_insert_ms": base_insert_ms,
         "round_insert_ms": round_insert_ms,
         "recall_at_k": recall_sum / nq.max(1) as f64,
@@ -2673,6 +2817,149 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     Ok(summary)
 }
 
+/// Run the queries through the snapshot-batch vector search.
+///
+/// Every group of `--batch-size` queries shares one snapshot: the shard
+/// commits are resolved once, the index probe runs once per shard for the
+/// whole group and the candidate rows are verified with one native-reader
+/// pass per bucket.
+async fn run_batch_probe(
+    args: &Args,
+    dataset: &Dataset,
+    client: &Arc<lakesoul_datafusion::MetaDataClient>,
+    root: &Path,
+    gt: &Ivecs,
+    table_name: &str,
+) -> Result<Value, String> {
+    let files: Vec<String> = find_data_files(root)
+        .into_iter()
+        .map(|file| format!("file://{file}"))
+        .collect();
+    if files.is_empty() {
+        return Err(format!(
+            "no data files under {} for the batch probe",
+            root.display()
+        ));
+    }
+    let table_prefix = format!("file://{}", root.display());
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(PK_COLUMN, DataType::Int64, false),
+        Field::new(
+            VEC_COLUMN,
+            DataType::List(Arc::new(Field::new(
+                "item",
+                args.vector_type.element_type(),
+                true,
+            ))),
+            false,
+        ),
+    ]));
+    let catalog = client.vector_index_catalog();
+    let store: Arc<dyn object_store::ObjectStore> = Arc::new(LocalFileSystem::new());
+    let primary_keys = vec![PK_COLUMN.to_string()];
+    let nq = dataset.queries.n;
+    let queries: Vec<Vec<f32>> = (0..nq)
+        .map(|query| dataset.queries.query(query).to_vec())
+        .collect();
+    let batch_size = args.batch_size.max(1);
+    let mut latencies: Vec<f64> = Vec::with_capacity(nq);
+    let mut batch_ms: Vec<f64> = Vec::new();
+    let mut recall_sum = 0.0;
+    let cpu_before = process_cpu_ms();
+    let rss_before = process_rss_mb();
+    let mut query_rss_peak_mb = rss_before.unwrap_or(0.0);
+    let t_all = Instant::now();
+    let request = lakesoul_datafusion::vector_batch::VectorBatchRequest {
+        column: VEC_COLUMN.to_string(),
+        queries,
+        top_k: args.top_k,
+        nprobe: args.nprobe,
+        parallelism: args.search_parallelism,
+        // `auto` selects the API default batch size.
+        batch_size: if args.batch_size == usize::MAX {
+            0
+        } else {
+            args.batch_size
+        },
+    };
+    let t = Instant::now();
+    let results = lakesoul_datafusion::vector_batch::search_vector_batch(
+        &catalog,
+        &store,
+        &table_prefix,
+        &files,
+        &schema,
+        &primary_keys,
+        &request,
+    )
+    .await
+    .map_err(|error| format!("batch vector search: {error}"))?;
+    let elapsed_ms = t.elapsed().as_secs_f64() * 1000.0;
+    if let Some(rss) = process_rss_mb() {
+        query_rss_peak_mb = query_rss_peak_mb.max(rss);
+    }
+    batch_ms.push(elapsed_ms);
+    let per_query_ms = elapsed_ms / results.len().max(1) as f64;
+    for (query, ids) in results.iter().enumerate() {
+        let predicted: Vec<u64> = ids.iter().map(|&id| id as u64).collect();
+        recall_sum += recall_at_k(&predicted, gt.row(query), args.top_k);
+        latencies.push(per_query_ms);
+    }
+    let wall_ms = t_all.elapsed().as_secs_f64() * 1000.0;
+    let cpu_ms = match (cpu_before, process_cpu_ms()) {
+        (Some(before), Some(after)) => (after - before).max(0.0),
+        _ => 0.0,
+    };
+    batch_ms.sort_by(|left, right| left.total_cmp(right));
+    latencies.sort_by(|left, right| left.total_cmp(right));
+    let percentile = |values: &[f64], p: f64| -> f64 {
+        if values.is_empty() {
+            return 0.0;
+        }
+        values[((values.len() as f64 - 1.0) * p).round() as usize]
+    };
+    let qps = if wall_ms > 0.0 {
+        nq as f64 / (wall_ms / 1000.0)
+    } else {
+        f64::INFINITY
+    };
+    Ok(json!({
+        "scenario": "sql-batch",
+        "table": table_name,
+        "table_root": table_prefix,
+        "vector_type": args.vector_type.name(),
+        "rerank": "index",
+        "gt_source": "original-f32",
+        "dim": dataset.dim(),
+        "n_base": dataset.base.n,
+        "n_rounds": args.rounds,
+        "n_queries": nq,
+        "top_k": args.top_k,
+        "nprobe": args.nprobe,
+        "search_parallelism": args.search_parallelism,
+        "batch_size": batch_size,
+        "concurrency": 1,
+        "query_wall_ms": wall_ms,
+        "query_cpu_ms": cpu_ms,
+        "query_cpu_ms_per_query": cpu_ms / nq.max(1) as f64,
+        "recall_at_k": recall_sum / nq.max(1) as f64,
+        "qps": qps,
+        "mean_ms": wall_ms / nq.max(1) as f64,
+        "p50_ms": percentile(&latencies, 0.50),
+        "p99_ms": percentile(&latencies, 0.99),
+        "batch_ms_p50": percentile(&batch_ms, 0.50),
+        "batch_ms_p99": percentile(&batch_ms, 0.99),
+        "plan_mean_ms": 0.0,
+        "physical_plan_mean_ms": 0.0,
+        "exec_mean_ms": wall_ms / nq.max(1) as f64,
+        "uses_vector_index_exec": true,
+        "query_rss_before_mb": rss_before.unwrap_or(0.0),
+        "query_rss_after_mb": process_rss_mb().unwrap_or(0.0),
+        "query_rss_peak_mb": query_rss_peak_mb,
+        "peak_rss_mb": peak_rss_mb(),
+    }))
+}
+
 async fn run_trigger(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     run_stream_inner(args, dataset, true).await
 }
@@ -2680,6 +2967,18 @@ async fn run_trigger(args: &Args, dataset: &Dataset) -> Result<Value, String> {
 // ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
+
+/// Resident set size of this process in MiB.
+///
+/// The query-phase RSS is the number that matters for a serving deployment:
+/// `peak_rss_mb` also covers the build/insert phases, which hold the source
+/// vectors in the benchmark process.
+fn process_rss_mb() -> Option<f64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    let page_size = 4096.0;
+    Some(pages as f64 * page_size / (1024.0 * 1024.0))
+}
 
 /// CPU time this process has used so far (user + system), in milliseconds.
 ///

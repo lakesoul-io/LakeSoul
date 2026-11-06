@@ -28,6 +28,7 @@ pub mod session;
 pub mod text_index;
 pub mod tpch;
 pub mod udf;
+pub mod vector_batch;
 pub mod vector_index;
 
 // re export
