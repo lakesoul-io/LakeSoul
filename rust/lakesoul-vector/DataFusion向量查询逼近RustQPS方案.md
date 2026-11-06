@@ -326,3 +326,48 @@ R11 的设计已落地，实测（GloVe-200、4 bucket、nprobe 16、index-only�
 后续空间：每 query 仍有约 1.8 ms CPU（ANN 0.62 ms + 候选合并/解码/校验），且
 3594 QPS × 1.8 ms ≈ 6.5/16 核 —— 还有约 2× 的核利用空间（多批次并发或批内更细并行）；
 另需把入口暴露到 Python/Daft 并补 provider 级集成测试。
+
+## 16. 单查询 index-only 直返（nbits=1 基线）
+
+用户确认基准索引保持 **`total_bits=1`**（不再试 7 bit），因此 §15 之前 bits=7 的数值只作历史
+参照；bits=1 下同一 harness 的基线是：单 query SQL 61.3 QPS、p50 16.0 ms、CPU/query 41.5 ms、
+查询期 RSS 337 MB；批量入口 4537 QPS、0.217 ms、1.15 ms、315 MB；索引 103 MB；Recall@100
+0.42035（1-bit 码的固有精度，接受保留）。
+
+§10 的单 query 优化把每次查询的 42 ms CPU 里绝大部分定位为**固定成本**：每个 bucket 每次
+查询都新建 reader（每 reader 一个 tokio Runtime，4.47 ms）、`get_table_schema` +
+`build_physical_plan`（4.81 ms）、扫描候选行（3.20 ms），而 ANN 只有 0.1 ms。既然候选集合
+完全由索引决定，index-only 排序下的 PK-only 投影就不需要打开数据文件。
+
+**实现**（R17）：
+
+- 门槛（`index_only_eligible`，全部满足才生效，否则整条查询回落到原 reader 路径）：
+  `rerank='index'`（`order_by`）、单向量列、无 CDC 列、无 range partition、输出列 ⊆ 主键列、
+  每个 shard 通过覆盖证明 `can_skip_verification`（无 mutation chain、index 覆盖本快照的
+  全部 active 文件）。门槛与批量入口完全一致，因此不引入新的语义分支。
+- 执行：一次 `resolve_cached_many` → 每 shard `search_typed_shard` → 按 key 去重取最优 →
+  按索引距离排序 → `KeyCodec::decode` 直接生成主键列 → 返回单 batch。全程不建 Reader/物理计划。
+- `lakesoul-io` 新增 `search_typed_shard`：DataFusion 侧本来就持有 catalog 解析后的
+  `Vec<VectorSegmentEntry>`，直接传 `IndexHeader` + `Vec<SegmentEntry>`，不再每 query 把
+  约 1024 个 segment 序列化成 JSON 再解析（这一步单独占 4.7 ms/query）。
+- 回退开关：`LAKESOUL_VECTOR_INDEX_ONLY=0` 强制 reader 路径；profile 开关
+  `LAKESOUL_VECTOR_SEARCH_PROFILE=1`。
+
+| 版本（bits=1，200 query） | QPS | p50 | CPU/query | 查询期 RSS | Recall |
+|---|---:|---:|---:|---:|---:|
+| 基线 reader 路径 | 61.3 | 16.0 ms | 41.5 ms | 337 MB | 0.42035 |
+| R17a index-only（JSON 传输） | 118.4 | 8.25 ms | 7.9 ms | 237 MB | 0.42035 |
+| **R17b index-only + typed shard** | **183.3** | **5.26 ms** | **4.9 ms** | **235 MB** | **0.42035** |
+
+单查询 3.0×、CPU/query 8.4× 更低、RSS −30%，批量路径不受影响；用
+`LAKESOUL_VECTOR_INDEX_ONLY=0` 复测 reader 路径为 58.4 QPS / 16.6 ms / Recall 0.42035，
+说明回退路径与基线一致。
+
+**下一步**（按收益排序）：
+
+1. 单查询的 exec 残值 2.8 ms：`resolve_cached_many` 0.78 ms + 4 shard 检索约 1.8 ms
+   （可并发 + 缓存已加载 shard 以跳过 segment 转换）。
+2. logical plan 1.07 ms + physical plan 1.44 ms：每条 SQL 都要重新解析快照/列文件；
+   单查询要再上一个台阶，需要“一个 statement 固定一个 snapshot 的多次查询”显式入口
+   （与 §12 的批量入口同一思路，只是 batch=1..N 由调用方声明）。
+3. 批量入口：1.15 ms CPU/query 中 ANN 约 0.6 ms，其余是候选合并/解码；14 核利用空间仍在。
