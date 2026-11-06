@@ -20,6 +20,10 @@
 //! Nothing is skipped when the metadata database, the binary, or a socket is
 //! unavailable: setup errors fail the test, and cleanup always runs, including
 //! after suite panics.
+//!
+//! [`run_distributed_insert_suite`] serves the same base fixtures from two
+//! real Flight workers and disables local fallback, so an `INSERT` either runs
+//! on the workers or fails instead of silently reverting to the coordinator.
 
 mod catalog;
 pub mod compare;
@@ -65,6 +69,8 @@ const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(90);
 /// Upper bound for the entire suite body, including all client queries.
 const SUITE_TIMEOUT: Duration = Duration::from_secs(180);
+/// Upper bound for a suite that sends its writes through a Flight stage.
+const DISTRIBUTED_SUITE_TIMEOUT: Duration = Duration::from_secs(600);
 /// Upper bound for one cleanup step.
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(20);
 /// Test-only controlled-failure switch. `startup` makes the harness launch a
@@ -118,6 +124,21 @@ where
     run_fixture_suite(Fixtures::Base, suite).await
 }
 
+/// Run one suite against the [`run_suite`] fixtures with two real Flight
+/// workers, so writes can be planned onto workers.
+///
+/// The workers are built directly, not through the TPC-H workload switch, and
+/// no TPC-H data is prepared: the suite sees exactly the base tables, planned
+/// with `--discovery static --distributed-fallback-local=false`, so a
+/// statement either runs distributed or fails instead of silently reverting to
+/// the coordinator.
+pub async fn run_distributed_insert_suite<F>(suite: F) -> Result<()>
+where
+    F: for<'a> FnOnce(&'a Harness) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+{
+    run_fixture_suite(Fixtures::Distributed, suite).await
+}
+
 /// Prepare physical storage fixtures before the server's catalog is loaded.
 pub async fn run_storage_suite<F>(suite: F) -> Result<()>
 where
@@ -164,6 +185,8 @@ enum Fixtures {
     Storage,
     Catalog,
     Vector,
+    /// The base tables with two real Flight workers.
+    Distributed,
     Tpch(tpch::TpchConfig),
 }
 
@@ -172,10 +195,12 @@ where
     F: for<'a> FnOnce(&'a Harness) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
 {
     let fault = std::env::var(FAULT_ENV).ok();
-    let suite_timeout = if matches!(&fixtures, Fixtures::Tpch(_)) {
-        Duration::from_secs(3600)
-    } else {
-        SUITE_TIMEOUT
+    let suite_timeout = match &fixtures {
+        Fixtures::Tpch(_) => Duration::from_secs(3600),
+        // Every statement that has a scan also crosses a Flight stage, so the
+        // same matrix costs more than the coordinator-only run.
+        Fixtures::Distributed => DISTRIBUTED_SUITE_TIMEOUT,
+        _ => SUITE_TIMEOUT,
     };
     let mut state = StartupState::new()
         .await
@@ -365,6 +390,14 @@ impl StartupState {
             Fixtures::Ivm => {
                 self.ivm = true;
                 self.create_ivm_fixtures().await?;
+            }
+            Fixtures::Distributed => {
+                // A distributed `INSERT` suite: the base fixtures, served by
+                // two real Flight workers so a write can be planned onto them.
+                // No TPC-H data and no environment switch.
+                let mut workers = tpch_workers::Workers::new();
+                workers.start(&self.warehouse_url).await?;
+                self.workers = Some(workers);
             }
             Fixtures::Storage => self.create_storage_fixtures().await?,
             Fixtures::Catalog => self.create_catalog_fixtures().await?,

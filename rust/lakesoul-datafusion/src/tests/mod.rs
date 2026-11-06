@@ -51,6 +51,8 @@ mod catalog_tests;
 #[cfg(test)]
 mod distributed_tests;
 #[cfg(test)]
+mod distributed_write_tests;
+#[cfg(test)]
 mod lazy_scan_tests;
 #[cfg(test)]
 mod merge_scheduling_tests;
@@ -60,6 +62,8 @@ mod mor_filter_tests;
 mod mor_nullability_tests;
 #[cfg(test)]
 mod session_factory_tests;
+#[cfg(test)]
+mod update_concurrency_tests;
 #[cfg(test)]
 mod vortex_catalog_tests;
 

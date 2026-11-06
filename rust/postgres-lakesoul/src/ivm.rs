@@ -330,7 +330,7 @@ impl IvmInsertHook {
         client: &mut dyn HookClient,
     ) -> PgWireResult<Response> {
         let (status, database) = request_context(client)?;
-        reject_transaction(status)?;
+        reject_transaction(status, "INSERT")?;
         let session = client
             .session_extensions()
             .get::<ConnectionSession>()
@@ -363,7 +363,7 @@ impl IvmInsertHook {
         database: &str,
         session_context: &SessionContext,
     ) -> PgWireResult<LogicalPlan> {
-        let (table_ref, table_name) = target_reference(insert, database)?;
+        let (table_ref, table_name) = target_reference(&insert.table, database)?;
         let provider = session_context
             .table_provider(table_ref.clone())
             .await
@@ -424,7 +424,7 @@ impl QueryHook for IvmInsertHook {
             async {
                 validate_statement(insert)?;
                 let (status, database) = request_context(client)?;
-                reject_transaction(status)?;
+                reject_transaction(status, "INSERT")?;
                 Self::placeholder_plan(insert, &database, session_context).await
             }
             .await,

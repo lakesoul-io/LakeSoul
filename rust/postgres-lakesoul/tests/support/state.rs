@@ -104,6 +104,35 @@ impl Harness {
         }).await
     }
 
+    /// Exact bytes of every regular file under one table's warehouse
+    /// directory, keyed by table-relative path.
+    ///
+    /// A committed update appends a new version; files a statement did not
+    /// rewrite or replace must keep their exact bytes, so the caller can
+    /// compare this map before and after.
+    pub async fn table_file_bytes(
+        &self,
+        table: &str,
+    ) -> Result<BTreeMap<String, Vec<u8>>> {
+        let directory = self.warehouse_dir.join(&self.lake_namespace).join(table);
+        bounded(OPERATION_TIMEOUT, "table file bytes", async move {
+            let mut files = BTreeMap::new();
+            if !directory.exists() {
+                return Ok(BTreeMap::new());
+            }
+            snapshot_files(&directory, &directory, &mut files)?;
+            Ok::<_, anyhow::Error>(
+                files
+                    .into_iter()
+                    .filter_map(|(path, bytes)| {
+                        bytes.map(|bytes| (path.to_string_lossy().into_owned(), bytes))
+                    })
+                    .collect(),
+            )
+        })
+        .await
+    }
+
     /// A single management commit followed by a primary PostgreSQL metadata
     /// barrier. Never poll a SELECT on the measured LakeSoul connection.
     pub async fn commit_pk_rows(&self, values: &str) -> Result<()> {

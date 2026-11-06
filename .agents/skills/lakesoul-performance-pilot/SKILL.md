@@ -1,6 +1,6 @@
 ---
 name: lakesoul-performance-pilot
-description: Run LakeSoul IVM/performance pilots consistently: Vortex-only data files, jemalloc plus cgroup limits, cargo test with test-fast, and compaction before any measurement. Use when launching or comparing a LakeSoul pilot benchmark.
+description: "Run LakeSoul IVM/performance pilots consistently: Vortex-only data files, jemalloc plus cgroup limits, cargo test with test-fast, and compaction before any measurement. Use when launching or comparing a LakeSoul pilot benchmark."
 ---
 # LakeSoul Performance Pilot
 

@@ -331,7 +331,7 @@ pub async fn listing_partition_file_infos(
     let files = client
         .get_data_file_infos_of_single_partition(&partition_info)
         .await
-        .context("listing partition file infos")?;
+        .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
     trace!(file_count = files.len(), "listed partition file infos");
     Ok((partition_info, files))
 }

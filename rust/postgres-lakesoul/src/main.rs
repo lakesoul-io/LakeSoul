@@ -43,6 +43,7 @@ mod server;
 mod session;
 mod session_settings;
 mod subscribe;
+mod update;
 use rootcause::Report;
 
 pub(crate) type Result<T, E = Report> = std::result::Result<T, E>;

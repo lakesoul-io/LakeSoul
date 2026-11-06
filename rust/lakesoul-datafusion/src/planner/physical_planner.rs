@@ -14,6 +14,7 @@ use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr, create_physical_expr};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, Partitioning};
@@ -143,9 +144,53 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                             ));
                         }
 
-                        let physical_input = if !lakesoul_table.primary_keys().is_empty()
-                            || !lakesoul_table.range_partitions().is_empty()
-                        {
+                        // A keyed table - one with primary keys, or with range
+                        // partitions - needs its input shaped before the write:
+                        // rows of one key must reach a single write task.
+                        let keyed_write = !lakesoul_table.primary_keys().is_empty()
+                            || !lakesoul_table.range_partitions().is_empty();
+                        let distributed_write = keyed_write
+                            && crate::distributed::planner::distributed_writes_enabled(
+                                session_state.config(),
+                            );
+                        let physical_input = if distributed_write {
+                            // Distributed write: hash-shuffle the input on the
+                            // primary keys (or the range columns when the table
+                            // has none), so every write task sees a disjoint key
+                            // set and a key can never be written by two tasks.
+                            //
+                            // The worker sorts its own share of the rows and lays
+                            // them out in LakeSoul's buckets at run time; bucket
+                            // numbering uses LakeSoul's hashing of range and
+                            // primary-key columns, not the hash partition index of
+                            // this node, so nothing here is labelled as a LakeSoul
+                            // bucket. This also keeps the write plan serializable:
+                            // a local global sort and the LakeSoul-specific
+                            // range/hash wrapper have no wire form, while the
+                            // standard hash `RepartitionExec` is the stage boundary
+                            // the distributed planner turns into a network shuffle.
+                            let input_dfschema = input.as_ref().schema();
+                            let key_columns = if lakesoul_table.primary_keys().is_empty()
+                            {
+                                lakesoul_table.range_partitions()
+                            } else {
+                                lakesoul_table.primary_keys()
+                            };
+                            let key_expr = column_names_to_physical_expr(
+                                key_columns,
+                                input_dfschema,
+                                session_state,
+                            )
+                            .map_err(|report| {
+                                DataFusionError::External(report.into_boxed_error())
+                            })?;
+                            let shuffle_partitions =
+                                session_state.config().target_partitions().max(1);
+                            Arc::new(RepartitionExec::try_new(
+                                physical_input,
+                                Partitioning::Hash(key_expr, shuffle_partitions),
+                            )?)
+                        } else if keyed_write {
                             let _input_schema = physical_input.schema();
                             let input_dfschema = input.as_ref().schema();
                             let sort_expr = column_names_to_physical_sort_expr(

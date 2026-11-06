@@ -1,6 +1,6 @@
 # PostgreSQL SQL compatibility tests
 
-`postgres-lakesoul` 是 PostgreSQL 协议的 LakeSoul 服务：查询面是只读的，另支持 `CREATE TABLE`／`DROP TABLE` 与 `INSERT`，不是完整 PostgreSQL。以下矩阵说明阶段一、二、三·3.1／3.2／3.3、阶段四 integration targets、阶段七 DDL 及阶段八 INSERT 的具体证据，不将 DataFusion 的全部 SQL 能力视为已验证兼容。
+`postgres-lakesoul` 是 PostgreSQL 协议的 LakeSoul 服务：支持查询、`CREATE TABLE`／`DROP TABLE`、`INSERT` 与非 CDC 主键表的 `UPDATE`，不是完整 PostgreSQL。以下矩阵记录各 integration target 的具体证据，不将 DataFusion 的全部 SQL 能力视为已验证兼容。
 
 > 实验特性：同一个二进制可用 `--subscribe` 运行 P0 的 PostgreSQL 逻辑复制订阅端；服务端也支持 `CREATE/DROP/ALTER SUBSCRIPTION` 并由本机子进程执行同步，详见 [SUBSCRIBE_P0.md](SUBSCRIBE_P0.md)。它不属于下面的 SQL 兼容矩阵。
 
@@ -17,11 +17,11 @@ export TZ=UTC
 # 首次准备专用测试数据库；此脚本会清理测试库，勿用于生产库。
 ./script/meta_init_for_local_test.sh -j 1
 
-LAKESOUL_IO_USE_V2_MERGE=false cargo -q test -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract -- --nocapture
-LAKESOUL_IO_USE_V2_MERGE=true cargo -q test -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract -- --nocapture
+LAKESOUL_IO_USE_V2_MERGE=false cargo -q test -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test update_contract -- --nocapture
+LAKESOUL_IO_USE_V2_MERGE=true cargo -q test -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test update_contract -- --nocapture
 ```
 
-需要可连接、已初始化并迁移的 PostgreSQL，以及 `protoc`、Vortex 对应的 `flatc`、Clang/libclang 等仓库原生编译依赖；TPC-H target 还需要 Python 3.11+，只使用标准库。不需要额外启动 PG wire 服务或准备手工 fixture；六个 targets 使用本地 Parquet，不依赖 S3/RustFS，也不要求参考 PostgreSQL 安装 pgvector。
+需要可连接、已初始化并迁移的 PostgreSQL，以及 `protoc`、Vortex 对应的 `flatc`、Clang/libclang 等仓库原生编译依赖；TPC-H target 还需要 Python 3.11+，只使用标准库。不需要额外启动 PG wire 服务或准备手工 fixture；这些 targets 使用本地 warehouse，不依赖 S3/RustFS，也不要求参考 PostgreSQL 安装 pgvector。
 
 物理执行器使用根 `Cargo.toml` 中固定 Git `rev` 的 `datafusion-physical-plan`
 补丁（`mag1c1an1/datafusion` 的 `feature/lakesoul-physical-plan-55.2` 分支），
@@ -33,7 +33,7 @@ LAKESOUL_IO_USE_V2_MERGE=true cargo -q test -p postgres-lakesoul --test sql_comp
 CI 在现有 legacy/v2 默认成员测试之外，分别显式运行：
 
 ```sh
-cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --jobs 4 -- --nocapture
+cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test update_contract --jobs 4 -- --nocapture
 ```
 
 不修改 workspace `default-members`。默认结果包含两个**具名、明确标记的已知缺陷严格复现**（见下文），它们不属于通过的兼容声明；其余测试不能因缺少服务而跳过。投影标量子查询多行与 `SET TIME ZONE`／连接重置已修复并转为正常门禁，不再计入缺陷。
@@ -116,7 +116,7 @@ INSERT INTO target ...;
 | 明确拒绝 | `SET LOCAL TIME ZONE`／`SET LOCAL timezone`／`SET GLOBAL timezone` 为 `0A000` 且不改状态；不支持的 `DISCARD PLANS/SEQUENCES/TEMP` 在 simple 与 extended Parse 均为 `0A000` | `time-zone-scope`、`time-zone-discard-variant`；PG 接受这些语句，因此不宣称等价；sqlparser 无法区分 `SET GLOBAL TIME ZONE` 与 SESSION 形式，该拼写按 SESSION 处理 |
 | PG 等价（失败事务） | simple 执行／extended Parse 错误使事务失败，随后语句被拒；两端运行相同 SQL 同为 `25P02`，extended 覆盖 Parse 与「健康事务中已准备语句」的 Execute，语法错误仍先于 `25P02` 报出；失败块内 `COMMIT` 两端都不报错并以 ROLLBACK 结束事务；ROLLBACK 后第一条读成功 | `failed-transaction-simple`、`failed-transaction-extended-parse` |
 | 明确拒绝 | REPEATABLE READ／SERIALIZABLE 及相应默认隔离级别 SET，simple 与 Parse 均 0A000；第一条后续读成功 | `isolation-simple/parse`、`isolation-guc-simple/parse` |
-| 明确拒绝，无持久化副作用 | UPDATE/DELETE/CTAS/`DROP VIEW`/TRUNCATE/COPY，simple 与 Parse 均 0A000（`DROP TABLE` 由阶段七、`INSERT` 由阶段八支持，不再属于拒写）；第一条读、权威快照、重连读；batch 流中首条读确实执行，拒写后的 SET 不执行 | `read-only-*`、`read-only-batch` |
+| 明确拒绝，无持久化副作用 | 无主键表的 UPDATE，以及 DELETE/CTAS/`DROP VIEW`/TRUNCATE/COPY，simple 与 Parse 均 0A000；支持范围内的 UPDATE 见阶段九；第一条读、权威快照、重连读；batch 流中首条读确实执行，拒写后的 SET 不执行 | `read-only-*`、`read-only-batch` |
 | 客户端拒绝，不冒充服务端错误 | 参数数量／Rust 参数类型不匹配，本地拒绝且无 SQLSTATE；随后连接可用 | `parameter-count-mismatch`、`parameter-type-mismatch` |
 | 错误映射 | 非法整数转换 LakeSoul XX000／PG 22P02 是已记录映射边界；WHERE 与投影中的多行标量子查询两端均为执行期 `21000`（非 Parse 拒绝）；均检查服务端错误与连接恢复 | `invalid-conversion`、`parameter-server-cast`、`scalar-subquery-multirow`、`projection-scalar-cardinality` |
 | 类型映射边界 | 未 CAST 的 rank/row_number：LakeSoul UInt64 映射 NUMERIC、PG 为 INT8；值相同，单独检查不同 OID | `window-native-types` |
@@ -238,7 +238,7 @@ WITH (hash_bucket_num = 4);
 | `IF EXISTS` 幂等 | 不存在的表 `DROP TABLE IF EXISTS` 成功；一次多条名称同样成立 | `drop_absent_and_if_exists` |
 | 多名称 `DROP` 全或无 | `DROP TABLE a, missing` 为 `42P01`、`DROP TABLE a, nosuchschema.b` 为 `3F000`，两种情况下 `a` 及其元数据都保持不变；名称在第一次删除前全部校验 | `drop_table_is_all_or_nothing` |
 | 标识符 | 未加引号名称折叠为小写：`Orders(ID, Label)` 建出 `orders`，`partitions` 为 `;id`、路径以 `/orders` 结尾、`pg_class` 与 `SELECT` 列名为 `id/label`；`"Orders"`、`"../../outside"`、`"/tmp/outside"`、`"escaped?x=1"`、列名 `"a,b"` 均 `0A000` 且不发布元数据 | `identifiers_are_folded_and_contained` |
-| `WITH` 选项 | `hash_bucket_num`／`file_format`／`append_only`／`use_cdc`／`lakesoul_cdc_change_column` 写入表属性（实测显式值落到 `hashBucketNum`／`file_format`／`appendOnly`／`use_cdc`／`lakesoul_cdc_change_column`，不被 `vortex-compact` 默认覆盖；`append_only`／`use_cdc` 接受 `true`／`false`（大小写不敏感，规范为小写）。`append_only` **只持久化，尚未在 PG 层强制**；`use_cdc` 与变更列是**活语义**：写入端开 `stable_sort`，读端在 merge 后过滤 `变更列 != 'delete'`，`delete` 行作为墓碑，后续 `insert` 可复活该键；变更列必须是已声明列，`use_cdc = true` 未给变更列时默认 `rowKinds`（本层列名折叠，属性存 `rowkinds`））；旧拼写 `hashbucketnum`／`hashBucketNum` 在 simple 与 extended 均拒绝为 `0A000` | `options_and_column_types`、`cdc_options_reach_properties` |
+| `WITH` 选项 | `hash_bucket_num`／`file_format`／`append_only`／`use_cdc`／`lakesoul_cdc_change_column` 写入表属性（实测显式值落到 `hashBucketNum`／`file_format`／`appendOnly`／`use_cdc`／`lakesoul_cdc_change_column`，不被 `vortex-compact` 默认覆盖；`append_only`／`use_cdc` 接受 `true`／`false`（大小写不敏感，规范为小写）。`append_only` 在 INSERT 层仍只持久化，UPDATE 按仅追加表明确拒绝；`use_cdc` 与变更列是**活语义**：写入端开 `stable_sort`，读端在 merge 后过滤 `变更列 != 'delete'`，`delete` 行作为墓碑，后续 `insert` 可复活该键；变更列必须是已声明列，`use_cdc = true` 未给变更列时默认 `rowKinds`（本层列名折叠，属性存 `rowkinds`））；旧拼写 `hashbucketnum`／`hashBucketNum` 在 simple 与 extended 均拒绝为 `0A000` | `options_and_column_types`、`cdc_options_reach_properties` |
 | 明确拒绝，无副作用 | `CREATE TABLE AS`、`TEMPORARY`、`OR REPLACE`、`INHERITS`、`PARTITION BY`、`NUMERIC` 无精度、`UUID`、数组、`DEFAULT`、`UNIQUE`、`CHECK`、`FOREIGN KEY`、`DEFERRABLE` 等约束特征、`FLOAT(0)`、`TIMESTAMP(0)`、未知 `WITH` 选项、三段限定名、`CREATE SCHEMA`、`ALTER TABLE`、`DROP VIEW` 均为 `0A000`；重复列 `42701`、主键内重复列 `42P16`、主键引用不存在列 `42703`、`NULL`/`NOT NULL` 冲突 `42601`；`hash_bucket_num = 0` 与 `-1`、`append_only = 'yes'`、`use_cdc = 'maybe'`、`use_cdc = true` 但未声明变更列为 `22023`；`lakesoul_cdc_change_column` 指向不存在列为 `42703`；不存在的 schema 为 `3F000`；每次拒绝后连接仍可查询，且不发布元数据、不出现在 `pg_class` 中 | `refusal_matrix_creates_nothing` |
 | extended 协议 | `CREATE`／`DROP` 经 extended Parse／Execute 与 simple 行为一致；AST 可判定的拒绝（CTAS、`UUID`）在 Parse 阶段返回 `0A000`，`DROP` 的 schema 解析与 PG 一样留到 Execute（`3F000`） | `extended_protocol_creates_and_drops` |
 | 计划失效（本连接 DDL） | 本连接 `CREATE TABLE`／`DROP TABLE` 成功后推进连接内 `SettingsGeneration`（一条语句一次，拒绝不推进）；此前 Parse 的 prepared statement 在下一次 `Execute` 重新规划：`DROP` 后执行报 `42P01`，`DROP`+同名 `CREATE` 后绑定新表；被拒绝的 DDL 不影响已有计划 | `same_connection_ddl_replans_prepared_statements` |
@@ -278,6 +278,53 @@ WITH (hash_bucket_num = 4);
 - 事务：DataFusion 没有事务，`BEGIN` 块内和 simple-query 多语句批次内的 `INSERT` 一律 `0A000`，避免客户端误以为 `ROLLBACK` 能撤销。
 - `RETURNING` 暂不支持：sink 在语句末尾提交，没有行流可回填。
 - 源分析：规划前按 PostgreSQL 的语义检查源。显式列清单的表达式数与清单数不一致、无清单 `VALUES`／`SELECT` 比表宽时为 `42601`（`more expressions than target columns`），显式列清单比源宽时为 `42601`（`more target columns than expressions`）；无清单 `VALUES` 或 `SELECT` 比表窄时按 PG 默认值语义补 NULL（当前没有 `DEFAULT`，补的是 NULL）。无类型字面量与带类型表达式分开处理：`VALUES` 行与 `INSERT ... SELECT` 投影中的裸字面量都按目标列解析，字符串字面量做转换，失败为 `22P02`（`invalid input syntax for type ...`）；数字／布尔字面量、函数与 `CAST` 表达式、`SELECT` 投影中的列引用等带类型表达式按 PG assignment cast 矩阵检查，违反为 `42804`（`column "c" is of type X but expression is of type Y`）。矩阵覆盖数值族内部与数值→字符串、布尔→布尔／字符串、文本→文本、日期／时间戳族内部与→字符串、bytea→bytea／字符串；未列的源类型一律 `42804`。字符串长度溢出（`22001`）与 varchar(n)／char(n) 长度校验不在覆盖内；`SELECT` 投影含 `*` 通配符时无法从 AST 映射列位置，该用例回退到规划类型检查，不宣称与 PG 的未类型字面量规则完全等价。该分析不改变 `SELECT` 表达式转换：`SELECT 'abc'::int` 仍是已记录的 `XX000` 映射边界（见阶段二“错误映射”行）。upsert 语句内的重复主键仍未实现 `21000`。
+
+#### 分布式 INSERT
+
+配置 worker discovery 后，`INSERT ... SELECT` 使用与查询相同的自动 stage 划分；没有 worker 或进入显式本地 planning fallback 时走单机路径。分布式不改变上述 PG 冲突语义，也不表示每条语句都会并行：`VALUES`、全局聚合／LIMIT 等仍受现有 task placement 约束。
+
+```text
+源查询 → worker LakeSoulWriteExec → Arrow 文件报告
+                                     ↓
+          coordinator LakeSoulCommitExec → 一次元数据发布 → 索引维护 → INSERT 0 n
+```
+
+- worker 仅写文件，不连接 LakeSoul 元数据服务。主键已有键扫描在 coordinator 计划期捕获一次完整快照，作为嵌套物理计划随写节点下发，由每个 worker 独立流式校验；快照版本比较和发布只在 coordinator 执行。
+- 网络 hash 负责同键同 worker；worker 再排序并用 LakeSoul 原有 hash 生成持久化 bucket。不能把 DataFusion 网络分区号当作 LakeSoul bucket。写 task 数不要求等于 `hashBucketNum`：每个 task 可写多个持久化 bucket；多 task 文件名包含 task 后缀以避免覆盖。
+- worker 用报告保留唯一键／NOT NULL 的 typed 错误，由 coordinator 恢复 `23505`／`23502`；主键发布时输掉快照竞争仍为 `40001`。`n` 为所有成功文件报告的行数之和，Skip 只计实际插入行。
+- 任一报告流失败则不发布；coordinator drain 其余报告后清理本语句文件，并按 statement id 查找尚未报告的文件。健康 worker 的提交前取消同样清理；报告通道断开时由写任务停止所有 writer 后自行清理。worker／coordinator 进程崩溃仍可能留孤儿文件，由 GC 处理。提交结果不确定（连接中断）时只在主库按 commit id 判定是否已发布；查询失败按“可能已发布”保留文件。
+- 当前未发布协议保持 codec `2`／`lakesoul-distributed/2`。coordinator 与 worker 必须使用一致构建并一起更新重启；discovery 不能区分不同开发构建的 `/2`。
+
+### 阶段九：UPDATE
+
+`src/update.rs` 接管 PG simple 与 extended Parse/Execute；共享实现位于 `lakesoul-datafusion::planner::update`。只支持**非 CDC、有主键、非 appendOnly、覆盖式 merge** 的 LakeSoul 表；显式 `UseLast` 与默认覆盖式合并等价。range 分区表可更新，但主键和分区列不能出现在 SET 中。普通数据列恰好名为 `op`／`rowKinds` 不会使表变为 CDC。
+
+```sql
+UPDATE counters
+SET n = n + 1, label = NULL
+WHERE id = 1;
+```
+
+- 所有 SET 表达式读取同一旧行；未赋值列保持旧值，显式 NULL 覆盖。WHERE 在主键合并后的当前关系上求值，不能更新历史版本；不要求 WHERE 必须带键或分区条件。不带 WHERE 更新全部当前行。
+- 表达式沿用现有 SELECT 能力：等值相关与非相关标量子查询可用于赋值，多行标量结果为 `21000` 且不发布。现有 SELECT 本身不支持的非等值相关标量子查询（例如相关条件 `src.id > dst.id`）不在本次扩展范围内，不以 LIMIT 1／NULL 改写冒充支持。仍含运行时子查询的写计划在 coordinator 单计划执行，以保证其共享结果／基数状态与错误不被拆到不同 worker 写任务；已去相关为 join 的普通 UPDATE 仍使用分布式写阶段，`fallback_to_local=false` 的配置语义未改变。
+- 成功标签为 `UPDATE N`；同值赋值仍计入匹配行，零匹配返回 `UPDATE 0` 且不产生文件或 publication。
+- 不原地修改旧文件。写入完整新行的新版本，保留旧活动文件，通过原有 merge-on-read 得到当前关系；提交沿用 AppendCommit，不自动生成 CDC 事件。
+- 每次 Execute 重新核对主库的目标身份、schema 和表属性，捕获固定分区快照。prepared statement 不沿用 Parse 时的数据快照；另一连接 DROP/同名重建后的旧 UPDATE binding 返回 `42P01`，不能写入新 table_id。
+- 提交比较受影响分区的精确版本，多分区一次原子发布。冲突返回 `40001`，不刷新 head 后静默 rebase，不自动重试；客户端必须重试整个语句。校验粒度是整个 range 分区，无 range 时是整张表的单一分区，不承诺 PG 行锁并发能力。
+- CDC（包括空表、WHERE false、显式 SET 变更列）、无主键、appendOnly、非覆盖式 merge-op、修改主键/分区列、RETURNING、UPDATE FROM、显式事务与多语句写入 batch 均不支持。修改型 CTE 由语句 guard 明确拒绝 `0A000`，不将 DataFusion 的规划缺口暴露为内部错误，也不冒充已支持的事务行为。
+- CAS publication 与单表 DROP 使用同一 table_info 行的共享/排他锁；单表级联元数据删除在一个事务中完成。此保证不扩展为 generic commit_data 写入、多个表 DROP 或 GC/read lease 的全局串行化。
+- 文件生成先于 publication，明确未发布的文件才允许清理。索引维护沿用 INSERT 的提交后策略：维护错误不表示数据回滚，已发布或提交结果未知时不得删除数据文件。
+
+`tests/update_contract.rs` 包含本地与双 Flight worker 共用的协议行为矩阵，以及预建真实 vector/text 索引后 UPDATE 的检索契约。索引默认精确重排不得返回旧版本；index-only 模式仍遵循原有近似检索语义，不承诺立即删除历史索引条目。另有真实索引写故障用例：客户端收到维护错误，但新值已提交、其他行与已提交数据文件保留。`tests/session_contract/readonly.rs` 保留无主键拒绝并验证受支持 UPDATE 不再被 blanket guard 拒绝。
+
+底层并发验收须使用**专用测试 metadata 数据库**（`libtest` 的既有初始化会清空该库），不能指向开发数据。PG tests 可共用该专用库，但不能与 `libtest` 并行运行：
+
+```sh
+cargo -q test --profile test-fast -p lakesoul-metadata --test update_commit --jobs 4
+cargo -q test --profile test-fast -p lakesoul-datafusion --lib tests::update_concurrency_tests --jobs 4
+```
+
+并发用例使用真实 object-store gate／metadata 锁建立交错，不以 sleep 碰撞；检查版本、全部提交记录、实际文件和最终关系。通用 UPSERT 扩展不属于本次 UPDATE 交付。
 
 ## 失败验收
 

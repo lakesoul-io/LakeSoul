@@ -21,16 +21,13 @@ use datafusion::physical_plan::{
 };
 use futures::StreamExt;
 use lakesoul_io::writer::async_writer::WriteInvariants;
-use lakesoul_metadata_proto::entity::PartitionInfo;
 use object_store::ObjectStoreExt;
 
 use crate::write_mode::{ConflictMode, WriteViolation};
 
 #[derive(Clone, Debug)]
-pub(super) struct InsertOnly {
+pub(crate) struct InsertOnly {
     pub existing_keys: Arc<dyn ExecutionPlan>,
-    /// Captured before planning the existing-key scan. Publication must not rebase.
-    pub snapshot: Vec<PartitionInfo>,
     /// Range columns followed by PK columns: LakeSoul keys are partition-local.
     pub key_schema: SchemaRef,
     /// Whether a conflicting row fails the statement or is dropped from it.
