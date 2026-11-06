@@ -22,7 +22,6 @@ use std::sync::{Arc, LazyLock};
 
 use lakesoul_common::IndexKind;
 use moka::future::Cache;
-use object_store::ObjectStore;
 use tracing::{debug, info, warn};
 
 /// Byte budget of the process-wide index cache; `0` disables caching.
@@ -82,23 +81,28 @@ pub fn stats() -> (u64, u64) {
     (HITS.load(Ordering::Relaxed), MISSES.load(Ordering::Relaxed))
 }
 
-fn cache_key(kind: IndexKind, store: &Arc<dyn ObjectStore>, prefix: &str) -> String {
-    format!("{kind}\u{0}{store}\u{0}{prefix}")
+/// Cache key of a loaded index shard: `(kind, index_prefix)`.
+///
+/// That pair is the shard identity of the whole system — `index_shard` has
+/// `unique (kind, index_prefix)` — and the prefix already embeds the table
+/// path, so the cache keys on exactly the same identity.  The object store's
+/// display form used to be part of the key, but the same store is reached
+/// through different handles: the DataFusion side gets
+/// `MonitoredObjectStore(kind, <store>)` while the native reader builds its
+/// own runtime and gets the plain store, so one shard had two cache keys and
+/// `is_loaded` could never report a hit.
+fn cache_key(kind: IndexKind, prefix: &str) -> String {
+    format!("{kind}\u{0}{prefix}")
 }
 
 /// Whether the shard at `commit_id` is already loaded, so a query would not
 /// touch any file (and therefore needs no reader lease).
-pub async fn is_loaded(
-    store: &Arc<dyn ObjectStore>,
-    kind: IndexKind,
-    prefix: &str,
-    commit_id: i64,
-) -> bool {
+pub async fn is_loaded(kind: IndexKind, prefix: &str, commit_id: i64) -> bool {
     let Some(cache) = CACHE.as_ref() else {
         return false;
     };
     cache
-        .get(&cache_key(kind, store, prefix))
+        .get(&cache_key(kind, prefix))
         .await
         .is_some_and(|entry| entry.commit_id == commit_id)
 }
@@ -111,7 +115,6 @@ pub async fn is_loaded(
 /// commits are picked up on the next query.  `loader` is only called on a
 /// cache miss (or when the entry lost a race against a newer commit).
 pub async fn get_or_load<T, E, F, Fut>(
-    store: &Arc<dyn ObjectStore>,
     kind: IndexKind,
     prefix: &str,
     commit_id: i64,
@@ -126,7 +129,7 @@ where
     let Some(cache) = CACHE.as_ref() else {
         return loader().await.map(Arc::new).map_err(Arc::new);
     };
-    let key = cache_key(kind, store, prefix);
+    let key = cache_key(kind, prefix);
     if let Some(entry) = cache.get(&key).await
         && entry.commit_id == commit_id
         && let Ok(value) = entry.data.clone().downcast::<T>()
@@ -185,8 +188,6 @@ where
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use object_store::memory::InMemory;
-
     use super::*;
 
     #[derive(Clone)]
@@ -205,10 +206,6 @@ mod tests {
         }
     }
 
-    fn store() -> Arc<dyn ObjectStore> {
-        Arc::new(InMemory::new())
-    }
-
     async fn load(
         commit_id: i64,
         bytes: usize,
@@ -218,17 +215,16 @@ mod tests {
 
     #[tokio::test]
     async fn cache_reuses_loaded_entry_until_commit_changes() {
-        let store = store();
         let prefix = "index_cache_reuse_test";
         let loads = AtomicUsize::new(0);
 
-        let first = get_or_load(&store, IndexKind::Vector, prefix, 1, || {
+        let first = get_or_load(IndexKind::Vector, prefix, 1, || {
             loads.fetch_add(1, Ordering::Relaxed);
             load(1, 16)
         })
         .await
         .unwrap();
-        let second = get_or_load(&store, IndexKind::Vector, prefix, 1, || {
+        let second = get_or_load(IndexKind::Vector, prefix, 1, || {
             loads.fetch_add(1, Ordering::Relaxed);
             load(1, 16)
         })
@@ -239,7 +235,7 @@ mod tests {
             "same commit must reuse the cached entry"
         );
 
-        let after = get_or_load(&store, IndexKind::Vector, prefix, 2, || load(2, 32))
+        let after = get_or_load(IndexKind::Vector, prefix, 2, || load(2, 32))
             .await
             .unwrap();
         assert!(
@@ -252,12 +248,11 @@ mod tests {
 
     #[tokio::test]
     async fn cache_is_scoped_by_kind() {
-        let store = store();
         let prefix = "index_cache_kind_scope_test";
-        let vector = get_or_load(&store, IndexKind::Vector, prefix, 1, || load(1, 8))
+        let vector = get_or_load(IndexKind::Vector, prefix, 1, || load(1, 8))
             .await
             .unwrap();
-        let text = get_or_load(&store, IndexKind::Text, prefix, 1, || load(1, 8))
+        let text = get_or_load(IndexKind::Text, prefix, 1, || load(1, 8))
             .await
             .unwrap();
         assert!(
@@ -268,13 +263,12 @@ mod tests {
 
     #[tokio::test]
     async fn is_loaded_matches_the_commit() {
-        let store = store();
         let prefix = "index_cache_is_loaded_test";
-        assert!(!is_loaded(&store, IndexKind::Vector, prefix, 1).await);
-        let _ = get_or_load(&store, IndexKind::Vector, prefix, 1, || load(1, 8))
+        assert!(!is_loaded(IndexKind::Vector, prefix, 1).await);
+        let _ = get_or_load(IndexKind::Vector, prefix, 1, || load(1, 8))
             .await
             .unwrap();
-        assert!(is_loaded(&store, IndexKind::Vector, prefix, 1).await);
-        assert!(!is_loaded(&store, IndexKind::Vector, prefix, 2).await);
+        assert!(is_loaded(IndexKind::Vector, prefix, 1).await);
+        assert!(!is_loaded(IndexKind::Vector, prefix, 2).await);
     }
 }

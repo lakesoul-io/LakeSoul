@@ -131,7 +131,7 @@ async fn open_cached_shard(
     let prefix = resolved.index_prefix.trim_end_matches('/').to_string();
     let cache_prefix = prefix.clone();
     let commit_id = resolved.commit_id;
-    cache::get_or_load(store, IndexKind::Text, &prefix, commit_id, move || {
+    cache::get_or_load(IndexKind::Text, &prefix, commit_id, move || {
         let store = store.clone();
         let prefix = cache_prefix.clone();
         let splits = splits.clone();

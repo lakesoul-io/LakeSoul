@@ -194,7 +194,7 @@ async fn load_resolved_shard(
     let revision = resolved.version;
     let mutation_records = resolved.mutation_records;
     let mutation_head = resolved.mutation_head.clone();
-    let entry = cache::get_or_load(store, IndexKind::Vector, &prefix, commit_id, || {
+    let entry = cache::get_or_load(IndexKind::Vector, &prefix, commit_id, || {
         let store = store.clone();
         let prefix = cache_prefix.clone();
         let header = header.clone();
@@ -723,7 +723,6 @@ mod tests {
         );
         assert!(
             !cache::is_loaded(
-                &store,
                 IndexKind::Vector,
                 &resolved.index_prefix,
                 resolved.commit_id

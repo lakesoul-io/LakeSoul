@@ -2386,7 +2386,6 @@ async fn collect_candidates(
                 let mut stats = CorpusStats::default();
                 if let Some(view) = &view {
                     if !lakesoul_io::index::cache::is_loaded(
-                        &store,
                         IndexKind::Text,
                         &prefix,
                         view.commit_id,
@@ -2416,6 +2415,8 @@ async fn collect_candidates(
                         header: view.header.clone(),
                         segments: serde_json::to_value(&view.segments)
                             .map_err(crate::error::internal)?,
+                        mutation_head: view.mutation_head.clone(),
+                        mutation_records: view.mutation_records,
                     };
                     let search_started = Instant::now();
                     hits = search_resolved_shard_with(
@@ -2570,7 +2571,6 @@ async fn collect_vector_candidates(
                     let mut index_unusable = false;
                     if let Some(view) = &view {
                         if !lakesoul_io::index::cache::is_loaded(
-                            &store,
                             IndexKind::Vector,
                             &prefix,
                             view.commit_id,
@@ -2733,6 +2733,7 @@ fn vector_resolved(
             num_vectors: segment.num_vectors,
             file_size: segment.file_size,
             data_files: segment.data_files.clone(),
+            birth_version: segment.birth_version,
         })
         .collect();
     Ok(ResolvedIndex {
@@ -2743,6 +2744,8 @@ fn vector_resolved(
         version: view.version,
         header: view.header.clone(),
         segments: serde_json::to_value(&segments).map_err(crate::error::internal)?,
+        mutation_head: view.mutation_head.clone(),
+        mutation_records: view.mutation_records,
     })
 }
 

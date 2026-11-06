@@ -139,7 +139,6 @@ impl LakeSoulVectorSearchExec {
     /// commit without touching the catalog itself.
     async fn reader_config(
         &self,
-        store: &Arc<dyn object_store::ObjectStore>,
         files: &[PartitionedFile],
         partition_values: &[ScalarValue],
         nprobe: usize,
@@ -154,7 +153,6 @@ impl LakeSoulVectorSearchExec {
         let first = file_uris.first().cloned().ok_or_else(|| {
             DataFusionError::Internal("empty vector-search file group".into())
         })?;
-
         let table_prefix = derive_prefix(&first);
         // Every searched column contributes its shard prefixes; a prefix is
         // resolved (and leased) once even when it appears twice.
@@ -194,7 +192,6 @@ impl LakeSoulVectorSearchExec {
             // A lease is only needed while the index is being loaded; a
             // cache hit reads no file at all.
             if !lakesoul_io::index::cache::is_loaded(
-                store,
                 IndexKind::Vector,
                 index_prefix.trim_end_matches('/'),
                 view.commit_id,
@@ -229,6 +226,7 @@ impl LakeSoulVectorSearchExec {
                     num_vectors: segment.num_vectors,
                     file_size: segment.file_size,
                     data_files: segment.data_files.clone(),
+                    birth_version: segment.birth_version,
                 })
                 .collect();
             resolved_shards.push(ResolvedIndex {
@@ -247,6 +245,8 @@ impl LakeSoulVectorSearchExec {
                         .into_boxed_error(),
                     )
                 })?,
+                mutation_head: view.mutation_head,
+                mutation_records: view.mutation_records,
             });
         }
 
@@ -468,7 +468,6 @@ impl LakeSoulVectorSearchExec {
     /// Build one reader config per bucket group.
     fn build_configs(
         &self,
-        store: &Arc<dyn object_store::ObjectStore>,
         read_schema: &SchemaRef,
         filters: Vec<datafusion::logical_expr::Expr>,
         nprobe: usize,
@@ -480,7 +479,6 @@ impl LakeSoulVectorSearchExec {
             let filters = filters.clone();
             let config = tokio::task::block_in_place(|| {
                 lakesoul_io::session::GLOBAL_RUNTIME.block_on(self.reader_config(
-                    store,
                     group,
                     values,
                     nprobe,
@@ -580,7 +578,6 @@ impl LakeSoulVectorSearchExec {
     fn deferred_payload_batches(
         &self,
         candidates: Vec<arrow::record_batch::RecordBatch>,
-        store: &Arc<dyn object_store::ObjectStore>,
         nprobe: usize,
         parallelism: usize,
         metric: &str,
@@ -609,7 +606,7 @@ impl LakeSoulVectorSearchExec {
         counters.ranked.add(kept.num_rows());
         let filters = self.pk_filters(&kept)?;
         let configs =
-            self.build_configs(store, &self.file_schema, filters, nprobe, parallelism)?;
+            self.build_configs(&self.file_schema, filters, nprobe, parallelism)?;
         let payload = self.read_configs(configs, span, profile)?;
         let payload_rows: usize = payload.iter().map(|batch| batch.num_rows()).sum();
         counters.payload_rows.add(payload_rows);
@@ -749,15 +746,6 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
         );
         let entered = span.enter();
 
-        let store = context
-            .runtime_env()
-            .object_store(self.object_store_url.clone())
-            .map_err(|error| {
-                DataFusionError::External(
-                    rootcause::report!("failed to get object store: {}", error)
-                        .into_boxed_error(),
-                )
-            })?;
         // Phase 1 reads only the columns the ranking needs.  When the plan
         // above has no filter between the scan and the sort and a limit, the
         // scan keeps only the rows that limit may return and fetches the
@@ -771,13 +759,12 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
             Arc::clone(&self.file_schema)
         };
         let configs =
-            self.build_configs(&store, &ranking_schema, Vec::new(), nprobe, parallelism)?;
+            self.build_configs(&ranking_schema, Vec::new(), nprobe, parallelism)?;
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         let candidates = self.read_configs(configs, &span, profile)?;
         let batches = if defer_payload {
             self.deferred_payload_batches(
                 candidates,
-                &store,
                 nprobe,
                 parallelism,
                 primary_metric,
