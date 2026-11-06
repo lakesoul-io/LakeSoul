@@ -1105,6 +1105,7 @@ fn catalog_segments(
             num_vectors: segment.num_vectors,
             file_size: segment.file_size,
             data_files: segment.data_files.clone(),
+            birth_version: segment.birth_version,
         })
         .collect()
 }
@@ -1122,6 +1123,7 @@ fn vector_segments(
                 num_vectors: segment.num_vectors,
                 file_size: segment.file_size,
                 data_files: Vec::new(),
+                birth_version: segment.birth_version,
             },
         )
         .collect()
@@ -2635,6 +2637,18 @@ fn main() {
     if std::env::var("RAYON_NUM_THREADS").is_err() {
         // SAFETY: single-threaded at this point, before any rayon pool exists.
         unsafe { std::env::set_var("RAYON_NUM_THREADS", args.threads.to_string()) };
+    }
+    // Opt-in tracing so a profiling run can read the per-bucket
+    // create/start/scan lines (`LAKESOUL_VECTOR_SEARCH_PROFILE=1`) and the
+    // native reader's own spans.  Default runs install no subscriber, so the
+    // timings are unaffected.
+    if std::env::var_os("RUST_LOG").is_some() {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .try_init();
     }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
