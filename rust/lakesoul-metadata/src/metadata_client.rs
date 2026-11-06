@@ -548,14 +548,24 @@ impl MetaDataClient {
         query_type: i32,
         joined_string: String,
     ) -> Result<Vec<u8>> {
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         for times in 0..self.max_retry as i64 {
-            match execute_query(
-                self.client.lock().await.deref_mut(),
-                query_type,
-                joined_string.clone(),
-            )
-            .await
-            {
+            let t_lock = std::time::Instant::now();
+            let mut locked = self.client.lock().await;
+            let lock_ms = t_lock.elapsed().as_secs_f64() * 1000.0;
+            let t_query = std::time::Instant::now();
+            let executed =
+                execute_query(locked.deref_mut(), query_type, joined_string.clone())
+                    .await;
+            if profile {
+                tracing::debug!(
+                    lock_ms,
+                    query_ms = t_query.elapsed().as_secs_f64() * 1000.0,
+                    dao_type = query_type,
+                    "metadata client query split"
+                );
+            }
+            match executed {
                 Ok(encoded) => {
                     return Ok(encoded);
                 }
@@ -572,7 +582,17 @@ impl MetaDataClient {
         joined_string: String,
     ) -> Result<JniWrapper> {
         let bytes = self.execute_query_raw(query_type, joined_string).await?;
-        Ok(JniWrapper::decode(prost::bytes::Bytes::from(bytes))?)
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_decode = std::time::Instant::now();
+        let decoded = JniWrapper::decode(prost::bytes::Bytes::from(bytes))?;
+        if profile {
+            tracing::debug!(
+                decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0,
+                dao_type = query_type,
+                "metadata client decode split"
+            );
+        }
+        Ok(decoded)
     }
 
     pub async fn execute_update_raw(

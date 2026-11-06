@@ -96,13 +96,25 @@ impl LakeSoulTable {
             Some(client) => client,
             None => Arc::new(MetaDataClient::from_env().await?),
         };
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_query = std::time::Instant::now();
         let table_info = client
             .get_table_info_by_table_name(table_name, namespace)
             .await?;
+        let query_ms = t_query.elapsed().as_secs_f64() * 1000.0;
         if let Some(table_info) = table_info {
-            Self::try_new_with_client_and_table_info(client, table_info)
+            let t_build = std::time::Instant::now();
+            let table = Self::try_new_with_client_and_table_info(client, table_info)
                 .await
-                .map_err(|e| report!(LakeSoulMetaDataError::Internal(e.to_string())))
+                .map_err(|e| report!(LakeSoulMetaDataError::Internal(e.to_string())));
+            if profile {
+                tracing::debug!(
+                    query_ms,
+                    build_ms = t_build.elapsed().as_secs_f64() * 1000.0,
+                    "lakesoul table lookup split"
+                );
+            }
+            table
         } else {
             Err(report!(LakeSoulMetaDataError::NotFound(format!(
                 "Table '{}' in '{}' not found",
@@ -116,17 +128,33 @@ impl LakeSoulTable {
         client: MetaDataClientRef,
         table_info: TableInfo,
     ) -> Result<Self> {
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_schema = std::time::Instant::now();
         let table_schema = Arc::new(schema_from_table_info_metadata(
             &table_info.table_schema,
             &table_info.table_schema_arrow_ipc,
             &table_info.table_schema_arrow_ipc_json_hash,
         )?);
+        let schema_ms = t_schema.elapsed().as_secs_f64() * 1000.0;
 
         let table_name = table_info.table_name.clone();
+        let t_props = std::time::Instant::now();
         let properties =
             serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties)?;
+        let properties_ms = t_props.elapsed().as_secs_f64() * 1000.0;
+        let t_partitions = std::time::Instant::now();
         let (range_partitions, hash_partitions) =
             parse_table_info_partitions(&table_info.partitions)?;
+        if profile {
+            tracing::debug!(
+                schema_ms,
+                properties_ms,
+                partitions_ms = t_partitions.elapsed().as_secs_f64() * 1000.0,
+                schema_json_bytes = table_info.table_schema.len(),
+                schema_ipc_bytes = table_info.table_schema_arrow_ipc.len(),
+                "lakesoul table info parse split"
+            );
+        }
 
         Ok(Self {
             client,
