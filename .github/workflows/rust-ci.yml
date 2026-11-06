@@ -131,6 +131,8 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
       - uses: ./.github/actions/setup-flatc
+      # Canonical producer for rust-test-fast. Clippy, TPC-H, IVM, and release
+      # gates only restore it.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
@@ -178,8 +180,10 @@ jobs:
   clippy_check:
     runs-on: ubuntu-24.04
     env:
-      # Make sure CI fails on all warnings, including Clippy lints.
-      RUSTFLAGS: "-Dwarnings"
+      # Match the test job's compiler flags so both jobs share rust-test-fast.
+      # Warnings are denied on the clippy command line instead of RUSTFLAGS,
+      # because RUSTFLAGS participates in the cache key and dependency fingerprints.
+      RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
@@ -189,12 +193,17 @@ jobs:
       - uses: ./.github/actions/setup-flatc
       - name: Install Protoc
         uses: ./.github/actions/setup-protoc
+      - name: Install lld
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lld
+          command -v ld.lld >/dev/null || sudo ln -s "$(command -v lld)" /usr/local/bin/ld.lld
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
-          shared-key: "rust-clippy"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: "rust-test-fast"
+          save-if: false
       - name: Run Clippy
         # Keep every cargo invocation in this workflow on `test-fast` so all
         # artifacts stay in a single profile directory (rust/target/test-fast).
-        run: cargo clippy --profile test-fast --no-deps --all-features -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python -p lakesoul-io
+        run: cargo clippy --profile test-fast --no-deps --all-features -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python -p lakesoul-io -- -D warnings
