@@ -37,6 +37,22 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
+      # Metadata PostgreSQL used by the postgres-lakesoul contract tests.
+      LAKESOUL_PG_URL: "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
+      LAKESOUL_PG_USERNAME: lakesoul_test
+      LAKESOUL_PG_PASSWORD: lakesoul_test
+      TZ: UTC
+      # One package selection for every cargo invocation in this job. Cargo
+      # resolves features per invocation, and the selected packages' dev-deps
+      # take part in that unification. A different selection -- a bare
+      # `-p postgres-lakesoul`, for example -- resolves a different feature set
+      # (tokio without `test-util`, libc without `extra_traits`, ...), which
+      # recompiles that crate plus its entire dependent subtree.
+      TEST_PKGS: >-
+        -p lakesoul-build-info -p lakesoul-metadata-proto -p lakesoul-metadata
+        -p lakesoul-common -p lakesoul-io -p lakesoul-vector
+        -p lakesoul-datafusion -p lakesoul-console -p lakesoul-worker
+        -p postgres-lakesoul
     services:
       # Label used to access the service container
       postgres:
@@ -103,7 +119,7 @@ jobs:
 
               echo "RustFS Configuration Complete!"
             '
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Strict TPC-H driver boundary regressions
         env:
           PYTHONPATH: rust/postgres-lakesoul/benchmark/driver
@@ -119,7 +135,6 @@ jobs:
         with:
           workspaces: ". -> rust/target"
           shared-key: "rust-test-fast"
-          key: ${{ hashFiles('Cargo.toml') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
@@ -134,42 +149,31 @@ jobs:
         run: |
           ./script/meta_init_for_local_test.sh -j 1
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - name: Test legacy merge
         env:
           LAKESOUL_IO_USE_V2_MERGE: "false"
           RUST_LOG: info
           RUST_BACKTRACE: full
         run: |
-          cargo test --profile test-fast --lib --bins --tests --jobs 4
+          cargo test --profile test-fast $TEST_PKGS --lib --bins --tests --jobs 4
       - name: PostgreSQL SQL compatibility (legacy merge)
         env:
           LAKESOUL_IO_USE_V2_MERGE: "false"
-          LAKESOUL_PG_URL: "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
-          LAKESOUL_PG_USERNAME: lakesoul_test
-          LAKESOUL_PG_PASSWORD: lakesoul_test
-          TZ: UTC
           RUST_BACKTRACE: full
-        run: cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --jobs 4 -- --nocapture
+        run: cargo test --profile test-fast $TEST_PKGS --bins --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --jobs 4 -- --nocapture
       - name: Test v2 merge
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
           RUST_LOG: info
           RUST_BACKTRACE: full
         run: |
-          cargo test --profile test-fast --lib --bins --tests --jobs 4
+          cargo test --profile test-fast $TEST_PKGS --lib --bins --tests --jobs 4
       - name: PostgreSQL SQL compatibility (v2 merge)
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
-          LAKESOUL_PG_URL: "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
-          LAKESOUL_PG_USERNAME: lakesoul_test
-          LAKESOUL_PG_PASSWORD: lakesoul_test
-          TZ: UTC
           RUST_BACKTRACE: full
-        run: cargo -q test --profile test-fast -p postgres-lakesoul --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --jobs 4 -- --nocapture
+        run: cargo test --profile test-fast $TEST_PKGS --bins --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --jobs 4 -- --nocapture
 
   clippy_check:
     runs-on: ubuntu-24.04
@@ -177,22 +181,20 @@ jobs:
       # Make sure CI fails on all warnings, including Clippy lints.
       RUSTFLAGS: "-Dwarnings"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
           components: clippy
       - uses: ./.github/actions/setup-flatc
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
           shared-key: "rust-clippy"
-          key: ${{ hashFiles('Cargo.toml') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Run Clippy
-        run: cargo clippy --no-deps --all-features -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python -p lakesoul-io
+        # Keep every cargo invocation in this workflow on `test-fast` so all
+        # artifacts stay in a single profile directory (rust/target/test-fast).
+        run: cargo clippy --profile test-fast --no-deps --all-features -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python -p lakesoul-io

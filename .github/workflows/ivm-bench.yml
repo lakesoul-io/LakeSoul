@@ -104,7 +104,7 @@ jobs:
               done
             '
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -135,10 +135,7 @@ jobs:
           ./script/meta_init_for_local_test.sh -j 1
 
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
 
       - name: Run the benchmark
         env:

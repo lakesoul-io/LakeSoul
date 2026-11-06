@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: "Setup protoc"
+description: "Install the pinned protoc that the Rust build scripts and the Maven build expect"
+inputs:
+  protoc_version:
+    description: "Version of the protoc binary"
+    default: "23.4"
+runs:
+  using: "composite"
+  steps:
+    # arduino/setup-protoc@v2 still targets Node 16, so GitHub forces it onto
+    # Node 24 and every job prints a Node deprecation annotation plus a
+    # `url.parse()` DEP0169 warning. prost-build only needs the compiler
+    # binary, so fetch the release archive directly instead.
+    - name: Install protoc
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        VERSION="${{ inputs.protoc_version }}"
+        if [ "$(protoc --version 2>/dev/null)" = "libprotoc ${VERSION}" ]; then
+          echo "protoc ${VERSION} is already installed"
+          exit 0
+        fi
+
+        ARCH=$(uname -m)
+        case "$ARCH" in
+          x86_64) ASSET="linux-x86_64" ;;
+          aarch64 | arm64) ASSET="linux-aarch_64" ;;
+          *)
+            echo "No protoc release for ${ARCH}" >&2
+            exit 1
+            ;;
+        esac
+
+        # This sometimes runs in a container where the user is root and there is no sudo.
+        if command -v sudo &>/dev/null; then
+          CMD=sudo
+        else
+          CMD=
+        fi
+
+        # The archive ships bin/protoc and include/google/protobuf, so extracting
+        # it under /usr/local puts both on the default PATH / include path.
+        curl -fsSL -o /tmp/protoc.zip \
+          "https://github.com/protocolbuffers/protobuf/releases/download/v${VERSION}/protoc-${VERSION}-${ASSET}.zip"
+        $CMD unzip -o -q /tmp/protoc.zip -d /usr/local
+        rm -f /tmp/protoc.zip
+        protoc --version

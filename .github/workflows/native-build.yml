@@ -36,7 +36,7 @@ jobs:
     env:
       RUSTFLAGS: "-Awarnings"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Set up JDK 11
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
@@ -45,10 +45,7 @@ jobs:
           cache: maven
 
       - name: Install Protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable action
         with:
           toolchain: stable
@@ -88,7 +85,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: build-linux-x86_64
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: lakesoul-nativeio-x86_64-unknown-linux-gnu
@@ -104,10 +101,7 @@ jobs:
           distribution: "temurin"
           cache: maven
       - name: Install Protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - name: Build with Maven
         run: |
           MAVEN_OPTS="-Xmx4000m" mvn -B install --file pom.xml -pl "!:lakesoul-presto-0.296" -Pcross-build -DskipTests -Dmaven.test.skip=true -e

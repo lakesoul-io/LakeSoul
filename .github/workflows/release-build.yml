@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out release commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
       - name: Set up JDK 11
@@ -138,7 +138,7 @@ jobs:
           docker-images: true
           swap-storage: true
       - name: Check out release commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable action
         with:
@@ -146,10 +146,7 @@ jobs:
           components: rustfmt, clippy
       - uses: ./.github/actions/setup-flatc
       - name: Install protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ github.token }}
+        uses: ./.github/actions/setup-protoc
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -206,13 +203,13 @@ jobs:
         env:
           RUST_BACKTRACE: full
           RUST_LOG: info
-        run: cargo -q test --profile test-fast --lib --bins --tests --jobs 2
+        run: cargo test --profile test-fast --lib --bins --tests --jobs 2
       - name: Run Rust tests with v2 merge
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
           RUST_BACKTRACE: full
           RUST_LOG: info
-        run: cargo -q test --profile test-fast --lib --bins --tests --jobs 2
+        run: cargo test --profile test-fast --lib --bins --tests --jobs 2
 
   build-native-linux-x86-64:
     name: Build Linux x86_64 native libraries
@@ -220,12 +217,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out release commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ github.token }}
+        uses: ./.github/actions/setup-protoc
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable action
         with:
@@ -282,7 +276,7 @@ jobs:
           - 5432:5432
     steps:
       - name: Check out release commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Download Linux x86_64 native libraries
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -321,10 +315,7 @@ jobs:
           wait_dfs
           "$HADOOP_HOME/bin/hadoop" fs -chmod -R 777 /
       - name: Install protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ github.token }}
+        uses: ./.github/actions/setup-protoc
       - name: Generate ephemeral artifact-signing key
         run: |
           cat > /tmp/release-signing-key <<'KEY'
@@ -416,7 +407,7 @@ jobs:
       attestations: write
     steps:
       - name: Check out release commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Download assembled connector assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -494,7 +485,7 @@ jobs:
           docker-images: true
           swap-storage: true
       - name: Check out release commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
       - name: Download Linux x86_64 native libraries
@@ -507,10 +498,7 @@ jobs:
       - name: Initialize metadata database
         run: ./script/meta_init_for_local_test.sh -j 2
       - name: Install protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ github.token }}
+        uses: ./.github/actions/setup-protoc
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable action
         with:
@@ -654,7 +642,7 @@ jobs:
           - 5432:5432
     steps:
       - name: Check out release history
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
       - name: Install PostgreSQL client
@@ -694,7 +682,7 @@ jobs:
           - 5432:5432
     steps:
       - name: Check out release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
@@ -708,10 +696,7 @@ jobs:
       - name: Initialize metadata database
         run: ./script/meta_init_for_local_test.sh -j 2
       - name: Install protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ github.token }}
+        uses: ./.github/actions/setup-protoc
       - name: Set up JDK 11 and Maven Central credentials
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
@@ -765,7 +750,7 @@ jobs:
           - 5432:5432
     steps:
       - name: Check out release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.tag }}
       - name: Set up JDK 11 and release signing key
@@ -817,7 +802,7 @@ jobs:
       contents: write
     steps:
       - name: Check out release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.tag }}
       - name: Download immutable release assets

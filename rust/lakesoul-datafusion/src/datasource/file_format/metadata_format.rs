@@ -659,6 +659,44 @@ impl LakeSoulHashSinkExec {
         self.metadata_client.clone()
     }
 
+    /// Creates the sink's root span through `dispatch`, resolving its parent
+    /// from that same dispatcher.
+    ///
+    /// `Span::current()` and `info_span!` each consult the thread-local
+    /// dispatcher, so resolving the parent under one dispatcher and creating the
+    /// child under another hands `Registry::clone_span` an id owned by a foreign
+    /// registry; it panics with "no span exists with that ID". Running both
+    /// through the captured dispatcher keeps parent and child in the same
+    /// registry no matter which dispatcher is ambient by then (a caller under a
+    /// scoped subscriber, or a future polled on a different thread).
+    ///
+    /// The span is created eagerly for the same reason the parent is cloned
+    /// explicitly: the implicit parent in `info_span!` clones the thread-local
+    /// id after the macro has already observed it, which can race with a
+    /// test/task closing that span, and holding our own clone keeps the id
+    /// valid for the lifetime of the span it parents.
+    fn create_sink_span(
+        dispatch: &tracing::Dispatch,
+        table_info: &TableInfo,
+        partition: usize,
+    ) -> tracing::Span {
+        tracing::dispatcher::with_default(dispatch, || {
+            let parent = tracing::Span::current();
+            info_span!(
+                parent: &parent,
+                "hash_sink_execute",
+                table_id = %table_info.table_id,
+                table_name = %table_info.table_name,
+                partition,
+                input_partition_count = tracing::field::Empty,
+                outcome = tracing::field::Empty,
+                output_batches = tracing::field::Empty,
+                output_rows = tracing::field::Empty,
+                error = tracing::field::Empty,
+            )
+        })
+    }
+
     #[instrument(
         name = "table_write_partition",
         level = "info",
@@ -1465,23 +1503,10 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         // spawned write tasks. A Tokio task may be polled after moving away
         // from the thread where `execute` was called.
         let dispatch = tracing::dispatcher::get_default(|dispatch| dispatch.clone());
-        // Hold the current span explicitly: the implicit parent in
-        // `info_span!` clones the thread-local id after the macro has already
-        // observed it, which can race with a test/task closing that span.
-        // Keeping our own clone alive keeps the parent id valid.
-        let parent = tracing::Span::current();
-        let span = info_span!(
-            parent: &parent,
-            "hash_sink_execute",
-            table_id = %self.table_info.table_id,
-            table_name = %self.table_info.table_name,
-            partition,
-            input_partition_count = tracing::field::Empty,
-            outcome = tracing::field::Empty,
-            output_batches = tracing::field::Empty,
-            output_rows = tracing::field::Empty,
-            error = tracing::field::Empty,
-        );
+        // Resolve the parent and create the span through that same subscriber;
+        // see `create_sink_span`.
+        let span =
+            Self::create_sink_span(&dispatch, self.table_info().as_ref(), partition);
         let entered = span.enter();
 
         if partition != 0 {
@@ -1537,18 +1562,22 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
             table: self.table_info().table_name.clone().into(),
         };
         let table_name = table_ref.to_string();
-        // Create the commit span before spawning. Besides assigning its parent
-        // deterministically, this avoids making span creation depend on which
-        // executor thread first polls the commit future.
-        let commit_span = info_span!(
-            parent: &span,
-            "table_write_commit",
-            table_name = %table_name,
-            input_partition_count = join_handles.len(),
-            primary_key_count = self.primary_keys.len(),
-            outcome = tracing::field::Empty,
-            error = tracing::field::Empty,
-        );
+        // Create the commit span before spawning, through the dispatcher the
+        // sink span came from. Besides assigning its parent deterministically,
+        // this avoids making span creation depend on which executor thread first
+        // polls the commit future, and on the dispatcher that thread happens to
+        // have.
+        let commit_span = tracing::dispatcher::with_default(&dispatch, || {
+            info_span!(
+                parent: &span,
+                "table_write_commit",
+                table_name = %table_name,
+                input_partition_count = join_handles.len(),
+                primary_key_count = self.primary_keys.len(),
+                outcome = tracing::field::Empty,
+                error = tracing::field::Empty,
+            )
+        });
         let commit_result_span = commit_span.clone();
         let commit_future = Self::wait_for_commit(
             join_handles,
@@ -1881,6 +1910,56 @@ mod span_tests {
             captured.parent_of("table_write_commit"),
             Some(Some("hash_sink_execute".to_string())),
             "the production commit spawn must join the sink trace"
+        );
+    }
+
+    /// `execute` captures the caller's dispatcher, and every span it creates has
+    /// to be created through that dispatcher. `Span::current()` and
+    /// `info_span!` each read the thread-local dispatcher, so resolving the
+    /// parent under one registry and creating the child under another makes
+    /// `Registry::new_span` clone an id it does not own, which panics with
+    /// "no span exists with that ID" (the failure reported from
+    /// `sql_insert_checks_stored_not_null_for_append_and_primary_key_tables`
+    /// while a neighbouring test had a scoped subscriber installed).
+    #[test]
+    fn sink_span_uses_the_captured_dispatcher() {
+        let owner_spans = CapturedSpans::default();
+        let owner = tracing::Dispatch::new(Registry::default().with(owner_spans.clone()));
+        let foreign_spans = CapturedSpans::default();
+        let foreign =
+            tracing::Dispatch::new(Registry::default().with(foreign_spans.clone()));
+
+        // The caller's statement span belongs to `owner` and is current on this
+        // thread, while the ambient dispatcher below is `foreign`.
+        let statement =
+            tracing::dispatcher::with_default(&owner, || info_span!("statement_execute"));
+        let entered = statement.enter();
+        let sink = tracing::dispatcher::with_default(&foreign, || {
+            LakeSoulHashSinkExec::create_sink_span(&owner, &TableInfo::default(), 0)
+        });
+        drop(entered);
+        drop(sink);
+
+        assert_eq!(
+            owner_spans.parent_of("hash_sink_execute"),
+            Some(Some("statement_execute".to_string())),
+            "the sink span must hang off the caller's statement span"
+        );
+        assert!(
+            foreign_spans.0.lock().unwrap().is_empty(),
+            "the sink span must not be created in the ambient registry"
+        );
+
+        // The shape this guards against: the child created under the ambient
+        // dispatcher while the parent lives in another registry.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tracing::dispatcher::with_default(&foreign, || {
+                let _ = info_span!(parent: &statement, "unscoped_child");
+            });
+        }));
+        assert!(
+            panicked.is_err(),
+            "cloning a parent owned by another registry is a hard panic"
         );
     }
 }
