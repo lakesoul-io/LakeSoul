@@ -11,7 +11,7 @@ be externalized into shared blob packs, and reads can be pinned to a snapshot or
 reproducibility.
 
 This page is the overall guide; the design is described in
-[`docs/embodied-snapshot-tag-design.md`](https://github.com/lakesoul-io/LakeSoul/blob/main/docs/embodied-snapshot-tag-design.md)
+[`dev/embodied-snapshot-tag-design.md`](https://github.com/lakesoul-io/LakeSoul/blob/main/dev/embodied-snapshot-tag-design.md)
 and runnable examples live in
 [`python/examples/embodied`](https://github.com/lakesoul-io/LakeSoul/tree/main/python/examples/embodied).
 

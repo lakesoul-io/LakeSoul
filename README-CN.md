@@ -204,7 +204,7 @@ print(catalog.scan("t").to_arrow_table().num_rows)
 
 - [Discord](https://discord.gg/WJrHKq4BPf)：提问与设计讨论
 - [GitHub Issues](https://github.com/lakesoul-io/LakeSoul/issues)：缺陷与需求；想开始贡献可以找 `good first issue`
-- [社区准则](docs/community/guideline-cn.md)
+- [社区准则](dev/community/guideline-cn.md)
 - 邮件列表：[lakesoul-technical-discuss@lists.lfaidata.foundation](mailto:lakesoul-technical-discuss@lists.lfaidata.foundation)
 - 路线图：[ROADMAP.md](ROADMAP.md)
 

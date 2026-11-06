@@ -171,4 +171,4 @@ npm run start
 5. 文档改动构建 Website。
 6. 生成文件和 Lockfile 只应包含有意的依赖或代码生成变更。
 
-贡献流程、分支名及 Pull Request 规范参见 [`CONTRIBUTING.md`](https://github.com/lakesoul-io/LakeSoul/blob/main/CONTRIBUTING.md)。
+贡献流程、分支名及 Pull Request 规范参见 [`CONTRIBUTING.md`](https://github.com/lakesoul-io/LakeSoul/blob/main/dev/CONTRIBUTING.md)。
