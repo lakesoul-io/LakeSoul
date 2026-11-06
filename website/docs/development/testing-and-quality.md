@@ -171,4 +171,4 @@ npm run start
 5. Build the website when documentation changed.
 6. Keep generated files and lockfile changes limited to intentional dependency or code-generation updates.
 
-Contribution workflow, branch names, and pull-request conventions are defined in [`CONTRIBUTING.md`](https://github.com/lakesoul-io/LakeSoul/blob/main/CONTRIBUTING.md).
+Contribution workflow, branch names, and pull-request conventions are defined in [`CONTRIBUTING.md`](https://github.com/lakesoul-io/LakeSoul/blob/main/dev/CONTRIBUTING.md).

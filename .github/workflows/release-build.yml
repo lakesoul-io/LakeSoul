@@ -832,7 +832,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           version="${RELEASE_TAG#v}"
-          notes="docs/release/release-${version}.md"
+          notes="dev/release/release-${version}.md"
           test -f "$notes"
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-assets/* --clobber

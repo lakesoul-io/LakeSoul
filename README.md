@@ -237,7 +237,7 @@ pg_mooncake, and Lakebase. The dated, sourced comparison lives in the docs.
 - [Discord](https://discord.gg/WJrHKq4BPf) for questions and design discussions
 - [GitHub issues](https://github.com/lakesoul-io/LakeSoul/issues) for bugs and
   feature requests — look for `good first issue` to start contributing
-- [Community guidelines](docs/community/guideline.md)
+- [Community guidelines](dev/community/guideline.md)
 - Mailing list: [lakesoul-technical-discuss@lists.lfaidata.foundation](mailto:lakesoul-technical-discuss@lists.lfaidata.foundation)
 - Roadmap: [ROADMAP.md](ROADMAP.md)
 

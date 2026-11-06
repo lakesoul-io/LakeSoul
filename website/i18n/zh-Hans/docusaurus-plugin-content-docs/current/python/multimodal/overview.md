@@ -7,7 +7,7 @@ sidebar_position: 9
 LakeSoul 的具身数据支持把多模态机器人/训练数据（状态/动作 tick + 压缩视频的 episode）存储为普通 LakeSoul 表，并以训练窗口的方式读取。视频以 GOP 索引的字节区间（或逐帧图片）保存，大二进制列可以外置到共享 blob pack，读取可以固定到某个快照或标签，保证严格可复现。
 
 本页是总体使用指南；设计细节见
-[`docs/embodied-snapshot-tag-design.md`](https://github.com/lakesoul-io/LakeSoul/blob/main/docs/embodied-snapshot-tag-design.md)，
+[`dev/embodied-snapshot-tag-design.md`](https://github.com/lakesoul-io/LakeSoul/blob/main/dev/embodied-snapshot-tag-design.md)，
 可运行示例见
 [`python/examples/embodied`](https://github.com/lakesoul-io/LakeSoul/tree/main/python/examples/embodied)。
 

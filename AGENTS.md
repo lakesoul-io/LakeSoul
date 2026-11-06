@@ -212,7 +212,7 @@ uv run maturin build --release
 | `RUSTFLAGS` | Set to `-Awarnings` in CI to suppress warnings as errors |
 
 Local config files:
-- `lakesoul.properties` — default runtime properties
+- `dev/lakesoul.properties` — local docker-compose test runtime properties
 - `pg.property` — PostgreSQL connection details for local dev
 
 ---

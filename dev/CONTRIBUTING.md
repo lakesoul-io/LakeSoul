@@ -14,7 +14,7 @@ willing to follow the simple processes outlined below, as well as adhere to the
 
 The community collaborates primarily through  `GitHub` and the instance messaging tool, `Slack`.
 There is also a mailing list.
-See how to join [here](https://github.com/lakesoul-io/LakeSoul/blob/main/docs/community/community-guideline.md)
+See how to join [here](community/guideline.md)
 
 ## Reporting an Issue
 
@@ -26,11 +26,11 @@ For example, in the case of bugs, please provide steps to reproduce it and tag y
 
 ## Development environment
 
-The [Development Environment](website/docs/05-Development/01-development-environment.md)
+The [Development Environment](../website/docs/development/environment.md)
 guide covers the Nix Flake shells, Devenv PostgreSQL and RustFS services, manual
 prerequisites, and environment variables. Continue with
-[Build from Source](website/docs/05-Development/02-build-from-source.md) and
-[Testing and Quality Checks](website/docs/05-Development/03-testing-and-quality.md).
+[Build from Source](../website/docs/development/build-from-source.md) and
+[Testing and Quality Checks](../website/docs/development/testing-and-quality.md).
 
 ## Contributing to the project
 
@@ -80,7 +80,7 @@ The pre-commit hook checks supported staged files with Treefmt. The pre-push hoo
 cargo clippy --no-deps --all-features --all-targets --workspace -- -D warnings
 ```
 
-See [Testing and Quality Checks](website/docs/05-Development/03-testing-and-quality.md) for hook details and component test commands.
+See [Testing and Quality Checks](../website/docs/development/testing-and-quality.md) for hook details and component test commands.
 
 ### Branching
 

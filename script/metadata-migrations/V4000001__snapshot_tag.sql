@@ -3,7 +3,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 
 -- Table snapshots, tags and pin flags for retention-aware cleanup.
--- See docs/embodied-snapshot-tag-design.md.
+-- See dev/embodied-snapshot-tag-design.md.
 
 create table if not exists table_snapshot
 (
