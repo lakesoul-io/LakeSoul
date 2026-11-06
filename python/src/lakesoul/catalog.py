@@ -89,6 +89,18 @@ def _validate_vector_layout(properties: Mapping[str, Any]) -> None:
             raise ValueError(f"{key} must be a positive integer")
 
 
+def _vector_layout_write_options(
+    properties: Mapping[str, Any], options: Mapping[str, str] | None
+) -> dict[str, str]:
+    merged = {
+        writer_key: str(properties[property_key])
+        for property_key, writer_key in _VECTOR_LAYOUT_WRITER_OPTIONS.items()
+        if property_key in properties
+    }
+    merged.update(dict(options or {}))
+    return merged
+
+
 _ASCII_LOWER_TRANS = str.maketrans(
     {chr(code): chr(code + 32) for code in range(ord("A"), ord("Z") + 1)}
 )
@@ -937,13 +949,7 @@ class LakeSoulTable:
         self, options: Mapping[str, str] | None
     ) -> dict[str, str]:
         """Map table-level vector layout properties to writer options."""
-        merged = {
-            writer_key: str(self.properties[property_key])
-            for property_key, writer_key in _VECTOR_LAYOUT_WRITER_OPTIONS.items()
-            if property_key in self.properties
-        }
-        merged.update(dict(options or {}))
-        return merged
+        return _vector_layout_write_options(self.properties, options)
 
     def write_arrow(
         self,
@@ -1069,7 +1075,9 @@ class LakeSoulTable:
             max_file_size=max_file_size,
             max_row_group_size=max_row_group_size,
             object_store_options=object_store_options,
-            options=self._vector_layout_write_options(options),
+            options=_vector_layout_write_options(
+                getattr(self, "properties", {}), options
+            ),
             ray_remote_args=ray_remote_args,
             concurrency=concurrency,
         )
@@ -1108,7 +1116,9 @@ class LakeSoulTable:
             max_file_size=max_file_size,
             max_row_group_size=max_row_group_size,
             object_store_options=object_store_options,
-            options=self._vector_layout_write_options(options),
+            options=_vector_layout_write_options(
+                getattr(self, "properties", {}), options
+            ),
             results_buffer_size=results_buffer_size,
             auto_build_vector_index=auto_build_vector_index,
             vector_index_cpus=vector_index_cpus,
