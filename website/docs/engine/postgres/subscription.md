@@ -64,11 +64,21 @@ CREATE PUBLICATION app_pub
 The source user needs `REPLICATION` and `SELECT` on the table. Use a dedicated
 replication user with only the privileges it needs.
 
+The source must be a primary. A hot standby cannot create the logical slot
+this subscriber needs, and an independent standby snapshot cannot be handed
+off to the primary slot without an LSN-alignment protocol.
+
+`REPLICA IDENTITY FULL` is required. It makes the old tuple complete, including
+unchanged TOAST values; PostgreSQL still sends `u` for an unchanged TOAST column
+in the new tuple, and the subscriber fills it from the old tuple. Without FULL,
+those values are unavailable and a typed target cannot use Debezium-style
+placeholders. INSERT and DELETE still require complete tuples.
+
 The source table must be an ordinary table in the `public` schema. Set
 `max_slot_wal_keep_size` to a value that fits the WAL the subscription may need
-to retain, and run large initial copies outside peak hours. Source session
-settings `statement_timeout = 0`, `DateStyle = ISO`, `TimeZone = UTC` and
-`bytea_output = hex` are operator responsibilities.
+to retain, and run large initial copies outside peak hours. Snapshot readers
+set `statement_timeout = 0`, `DateStyle = ISO`, `TimeZone = UTC` and
+`bytea_output = hex` on their own connections.
 
 ## Target setup
 
@@ -109,7 +119,9 @@ WITH (
   commit_rows          = 50000,
   commit_interval_ms   = 1000,
   snapshot_batch_rows  = 50000,
-  snapshot_batch_bytes = 67108864
+  snapshot_batch_bytes = 67108864,
+  snapshot_parallelism = 4,
+  snapshot_memory_bytes = 1073741824
 );
 ```
 
@@ -124,9 +136,18 @@ WITH (
 | `commit_interval_ms` | `1000` | Maximum delay before flushing a streaming batch |
 | `snapshot_batch_rows` | `50000` | Rows per snapshot file batch |
 | `snapshot_batch_bytes` | `67108864` | Bytes per snapshot file batch |
+| `snapshot_parallelism` | `4` | Parallel COPY readers; every reader imports the same exported snapshot |
+| `snapshot_memory_bytes` | `1073741824` | Process-wide DataFusion memory pool shared by snapshot writers; `0` is unbounded |
 
 `CONNECTION` is an ordinary libpq-style connection string. The subscriber adds
 the replication parameter internally.
+
+The initial snapshot splits the source table into CTID ranges, runs one COPY
+reader per range, and lets every reader write its own files. All readers import
+the same exported snapshot, so the parallel copy still has one consistent point.
+Writers share `snapshot_memory_bytes` instead of each taking an independent
+budget. The target stays empty until all readers finish and one commit publishes
+the complete snapshot.
 
 `CREATE SUBSCRIPTION` validates the source and target before writing metadata. It
 returns after the local subscriber process has started; the initial snapshot
@@ -197,9 +218,11 @@ manually launched subscriber is not duplicated.
    ```
 
 4. For `auto` and `managed`, the child opens the slot with an exported snapshot,
-   copies the table, writes files in batches, and publishes all snapshot files in
-   one atomic LakeSoul commit at the consistent point. Readers therefore see
-   either an empty target or the complete snapshot.
+   splits the table into CTID ranges, and runs one COPY reader per range. Every
+   reader imports the same snapshot and writes files in batches; the writers
+   share one bounded memory pool. After every reader finishes, all files are
+   published in one atomic LakeSoul commit at the consistent point. Readers
+   therefore see either an empty target or the complete snapshot.
 5. After the handoff, changes are accumulated per source transaction. A batch is
    written and published with one LakeSoul commit. The commit id records the
    source LSN, so replaying from an older slot position skips data that was
@@ -231,10 +254,14 @@ postgres-lakesoul --subscribe \
   --target-table users \
   --target-namespace default \
   --primary-key id \
-  --snapshot managed
+  --snapshot managed \
+  --snapshot-parallelism 4 \
+  --snapshot-memory-bytes 1073741824
 ```
 
-`--snapshot` accepts `auto`, `managed` and `none`. `--dry-run` validates the
+`--snapshot` accepts `auto`, `managed` and `none`. `--snapshot-parallelism`
+sets the number of COPY readers, and `--snapshot-memory-bytes` bounds the
+DataFusion pool shared by their writers (`0` is unbounded). `--dry-run` validates the
 source, target and types without creating a slot or writing subscription
 metadata. CLI-created subscriptions are stored in the metadata database but are
 not auto-started by the endpoint.

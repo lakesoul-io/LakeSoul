@@ -31,7 +31,7 @@ use datafusion_execution::cache::cache_manager::CacheManagerConfig;
 use datafusion_execution::cache::cache_manager::{CachedFileList, CachedFileMetadata};
 use datafusion_execution::cache::default_cache::DefaultCache;
 use datafusion_execution::config::SessionConfig;
-use datafusion_execution::memory_pool::{FairSpillPool, GreedyMemoryPool};
+use datafusion_execution::memory_pool::{FairSpillPool, GreedyMemoryPool, MemoryPool};
 use datafusion_execution::object_store::ObjectStoreUrl;
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_execution::{TaskContext, runtime_env::RuntimeEnv};
@@ -275,7 +275,20 @@ struct IOSessionInner {
 }
 
 impl LakeSoulIOSession {
-    pub fn try_new(mut io_config: LakeSoulIOConfig) -> Result<Self, Report> {
+    pub fn try_new(io_config: LakeSoulIOConfig) -> Result<Self, Report> {
+        Self::try_new_with_memory_pool(io_config, None)
+    }
+
+    /// Build an IO session that shares an externally owned memory pool.
+    ///
+    /// The pool bounds the DataFusion spill/sort reservations of every writer
+    /// created from this session. Callers that build several writers (for
+    /// example a parallel initial snapshot) pass the same pool to all of them
+    /// so their combined memory stays within one process-wide limit.
+    pub fn try_new_with_memory_pool(
+        mut io_config: LakeSoulIOConfig,
+        external_memory_pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<Self, Report> {
         info!("Initializing from io config: {:?}", io_config);
         let mut sess_conf = SessionConfig::default()
             .with_batch_size(io_config.batch_size)
@@ -327,7 +340,9 @@ impl LakeSoulIOSession {
             std::fs::create_dir_all(&dir)?;
             runtime_conf = runtime_conf.with_temp_file_path(&dir);
 
-            let mem_pool = Arc::new(GreedyMemoryPool::new(pool_size));
+            let mem_pool = external_memory_pool
+                .clone()
+                .unwrap_or_else(|| Arc::new(GreedyMemoryPool::new(pool_size)));
 
             runtime_conf = runtime_conf.with_memory_pool(mem_pool);
 
@@ -339,6 +354,8 @@ impl LakeSoulIOSession {
                 io_config.mem_limit(),
                 reserve_bytes
             );
+        } else if let Some(mem_pool) = external_memory_pool {
+            runtime_conf = runtime_conf.with_memory_pool(mem_pool);
         }
 
         let runtime = runtime_conf.build()?;

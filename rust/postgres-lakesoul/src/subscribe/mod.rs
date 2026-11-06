@@ -5,15 +5,16 @@
 //! Native PostgreSQL logical-replication subscriber (P0).
 //!
 //! P0 is intentionally narrow: one publication, one table, ordinary `public`
-//! tables, `REPLICA IDENTITY FULL`, no TOAST (`u` is an error), no schema
-//! evolution, no truncate, no initial snapshot, and no target range
-//! partitioning. The goal is to prove the WAL -> Arrow -> LakeSoul CDC batch
-//! path and its replay semantics before broadening the surface.
+//! tables, `REPLICA IDENTITY FULL`, no schema evolution, no truncate, no target
+//! range partitioning. Unchanged TOAST columns in an UPDATE are recovered from
+//! the complete old tuple. The goal is to prove the WAL -> Arrow -> LakeSoul CDC
+//! batch path and its replay semantics before broadening the surface.
 //!
 //! The subscription definition and progress live in the metadata PostgreSQL
 //! (`subscription` schema); the target table's commit ids remain the
 //! authoritative data watermark.
 
+mod copy_text;
 mod decode;
 mod plan;
 mod runner;
@@ -24,9 +25,13 @@ pub(crate) mod sql;
 mod state;
 pub(crate) mod supervisor;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Args, ValueEnum};
+use datafusion::execution::memory_pool::{
+    FairSpillPool, MemoryPool, UnboundedMemoryPool,
+};
 use lakesoul_metadata::MetaDataClientRef;
 use rootcause::{bail, report};
 use tokio_postgres::NoTls;
@@ -105,6 +110,16 @@ pub struct SubscribeArgs {
     #[clap(long, default_value_t = 64 * 1024 * 1024)]
     pub snapshot_batch_bytes: usize,
 
+    /// Number of parallel COPY readers for the initial snapshot. Each reader
+    /// also writes its own LakeSoul files.
+    #[clap(long, default_value_t = 4)]
+    pub snapshot_parallelism: usize,
+
+    /// Process-wide memory budget shared by the snapshot writers. 0 means
+    /// unbounded.
+    #[clap(long, default_value_t = 1024 * 1024 * 1024)]
+    pub snapshot_memory_bytes: usize,
+
     /// Run a subscription stored in the metadata PostgreSQL. This is used by
     /// the server's subscription supervisor; all other definition flags are
     /// ignored.
@@ -132,6 +147,9 @@ pub struct SubscribeConfig {
     pub snapshot: SnapshotMode,
     pub snapshot_batch_rows: usize,
     pub snapshot_batch_bytes: usize,
+    pub snapshot_parallelism: usize,
+    pub snapshot_memory_bytes: usize,
+    pub memory_pool: Arc<dyn MemoryPool>,
     pub dry_run: bool,
     /// A supervised child must find its metadata row; it must never recreate
     /// a row concurrently removed by DROP.
@@ -167,6 +185,9 @@ impl SubscribeConfig {
         if args.snapshot_batch_bytes == 0 {
             bail!("--snapshot-batch-bytes must be greater than zero");
         }
+        if args.snapshot_parallelism == 0 {
+            bail!("--snapshot-parallelism must be greater than zero");
+        }
 
         let (source_schema, source_table) = parse_source_table(&source_table)?;
 
@@ -186,6 +207,9 @@ impl SubscribeConfig {
             snapshot: args.snapshot,
             snapshot_batch_rows: args.snapshot_batch_rows,
             snapshot_batch_bytes: args.snapshot_batch_bytes,
+            snapshot_parallelism: args.snapshot_parallelism,
+            snapshot_memory_bytes: args.snapshot_memory_bytes,
+            memory_pool: create_memory_pool(args.snapshot_memory_bytes),
             dry_run: args.dry_run,
             require_existing: false,
         })
@@ -198,6 +222,16 @@ impl SubscribeConfig {
 
 fn required(value: Option<String>, flag: &str) -> Result<String> {
     value.ok_or_else(|| report!("{flag} is required with --subscribe"))
+}
+
+/// One process-wide pool shared by every snapshot writer. A zero budget keeps
+/// the old unbounded behavior for small/development deployments.
+pub(crate) fn create_memory_pool(bytes: usize) -> Arc<dyn MemoryPool> {
+    if bytes == 0 {
+        Arc::new(UnboundedMemoryPool::default())
+    } else {
+        Arc::new(FairSpillPool::new(bytes))
+    }
 }
 
 pub(crate) fn parse_source_table(source_table: &str) -> Result<(String, String)> {
@@ -311,6 +345,9 @@ async fn run_from_metadata(subscription_id: &str, meta: MetaDataClientRef) -> Re
         snapshot,
         snapshot_batch_rows: record.snapshot_batch_rows,
         snapshot_batch_bytes: record.snapshot_batch_bytes,
+        snapshot_parallelism: record.snapshot_parallelism,
+        snapshot_memory_bytes: record.snapshot_memory_bytes,
+        memory_pool: create_memory_pool(record.snapshot_memory_bytes),
         dry_run: false,
         require_existing: true,
     };
@@ -318,6 +355,7 @@ async fn run_from_metadata(subscription_id: &str, meta: MetaDataClientRef) -> Re
         || config.commit_interval.is_zero()
         || config.snapshot_batch_rows == 0
         || config.snapshot_batch_bytes == 0
+        || config.snapshot_parallelism == 0
     {
         bail!("subscription {subscription_id} has invalid batch settings");
     }
@@ -702,6 +740,8 @@ async fn register_or_validate(
         commit_interval_ms: config.commit_interval.as_millis() as u64,
         snapshot_batch_rows: config.snapshot_batch_rows,
         snapshot_batch_bytes: config.snapshot_batch_bytes,
+        snapshot_parallelism: config.snapshot_parallelism,
+        snapshot_memory_bytes: config.snapshot_memory_bytes,
     };
     match metadata.load_by_id(&config.subscription_id).await? {
         Some(record) => {

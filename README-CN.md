@@ -62,7 +62,7 @@ WITH (
 );
 ```
 
-源库需要开启 logical WAL、创建 publication，并设置 `REPLICA IDENTITY FULL`；目标端是预先创建且为空的 LakeSoul CDC 表。用 `ALTER SUBSCRIPTION ... DISABLE/ENABLE` 和 `DROP SUBSCRIPTION` 管理进程。完整配置和 SQL 参考见 [PostgreSQL 订阅](https://lakesoul-io.github.io/zh-Hans/docs/engine/postgres/subscription)。
+源库需要开启 logical WAL、创建 publication，并设置 `REPLICA IDENTITY FULL`；目标端是预先创建且为空的 LakeSoul CDC 表。初始拷贝按 CTID 范围并行执行（`snapshot_parallelism`、`snapshot_memory_bytes`）。用 `ALTER SUBSCRIPTION ... DISABLE/ENABLE` 和 `DROP SUBSCRIPTION` 管理进程。完整配置和 SQL 参考见 [PostgreSQL 订阅](https://lakesoul-io.github.io/zh-Hans/docs/engine/postgres/subscription)。
 
 ## 高效的 SQL 增量计算
 

@@ -6,10 +6,12 @@
 //! initial snapshot.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use datafusion::common::ScalarValue;
+use datafusion::execution::memory_pool::MemoryPool;
 use lakesoul_common::misc::SecretMap;
 use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
 use lakesoul_io::writer::async_writer::FlushOutput;
@@ -20,20 +22,30 @@ use super::decode::KeyValue;
 use super::plan::{RowState, TablePlan, commit_id_for};
 use crate::Result;
 
+/// Streaming batches are bounded by both `commit_rows` and this byte budget.
+/// A TOAST payload can be large enough that 50,000 rows would otherwise pin
+/// an unbounded amount of memory before the next commit.
+pub const STREAM_BATCH_MAX_BYTES: usize = 64 * 1024 * 1024;
+
 pub struct TableSink {
     pub plan: TablePlan,
     rows: HashMap<Vec<KeyValue>, RowState>,
+    memory_pool: Arc<dyn MemoryPool>,
+    buffered_bytes: usize,
 }
 
 impl TableSink {
-    pub fn new(plan: TablePlan) -> Self {
+    pub fn new(plan: TablePlan, memory_pool: Arc<dyn MemoryPool>) -> Self {
         Self {
             plan,
             rows: HashMap::new(),
+            memory_pool,
+            buffered_bytes: 0,
         }
     }
 
     pub fn apply(&mut self, key: Vec<KeyValue>, state: RowState) {
+        self.buffered_bytes += state.values.iter().map(scalar_size).sum::<usize>();
         self.rows.insert(key, state);
     }
 
@@ -45,6 +57,12 @@ impl TableSink {
         self.rows.len()
     }
 
+    pub fn should_flush(&self, max_rows: usize) -> bool {
+        !self.rows.is_empty()
+            && (self.pending_rows() >= max_rows
+                || self.buffered_bytes >= STREAM_BATCH_MAX_BYTES)
+    }
+
     /// Write and publish the batch. Returns the LSN that became durable, or
     /// `None` when the batch was empty.
     pub async fn flush(&mut self, batch_lsn: u64) -> Result<Option<u64>> {
@@ -54,8 +72,13 @@ impl TableSink {
         let row_count = self.rows.len();
         let states: Vec<&RowState> = self.rows.values().collect();
         let batch = build_batch(&self.plan.schema, self.plan.cdc_index, &states)?;
-        let outputs =
-            write_files(&self.plan.table, &self.plan.target_table, batch).await?;
+        let outputs = write_files(
+            &self.plan.table,
+            &self.plan.target_table,
+            batch,
+            &self.memory_pool,
+        )
+        .await?;
         commit_outputs(
             &self.plan.table,
             &self.plan.target_table,
@@ -65,6 +88,7 @@ impl TableSink {
         )
         .await?;
         self.rows.clear();
+        self.buffered_bytes = 0;
         Ok(Some(batch_lsn))
     }
 }
@@ -96,13 +120,27 @@ pub(crate) fn build_batch(
         .map_err(|error| report!("build target batch: {error}"))
 }
 
+fn scalar_size(value: &ScalarValue) -> usize {
+    match value {
+        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) => {
+            value.len()
+        }
+        ScalarValue::Binary(Some(value)) | ScalarValue::LargeBinary(Some(value)) => {
+            value.len()
+        }
+        ScalarValue::Utf8View(Some(value)) => value.len(),
+        _ => 16,
+    }
+}
+
 pub(crate) async fn write_files(
     table: &LakeSoulTable,
     target_table: &str,
     batch: RecordBatch,
+    memory_pool: &Arc<dyn MemoryPool>,
 ) -> Result<Vec<FlushOutput>> {
     let mut writer = table
-        .get_writer(SecretMap::new())
+        .get_writer_with_memory_pool(SecretMap::new(), Arc::clone(memory_pool))
         .await
         .map_err(|error| report!("create LakeSoul writer for {target_table}: {error}"))?;
     const CHUNK_ROWS: usize = 8192;

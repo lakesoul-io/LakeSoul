@@ -27,6 +27,7 @@ use datafusion_postgres::pgwire::api::ClientInfo;
 use datafusion_postgres::pgwire::api::results::{Response, Tag};
 use datafusion_postgres::pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use datafusion_postgres::pgwire::messages::response::TransactionStatus;
+use lakesoul_datafusion::session::parse_memory_limit;
 use lakesoul_metadata::MetaDataClientRef;
 use rootcause::report;
 
@@ -97,6 +98,8 @@ struct CreateSubscription {
     commit_interval_ms: u64,
     snapshot_batch_rows: usize,
     snapshot_batch_bytes: usize,
+    snapshot_parallelism: usize,
+    snapshot_memory_bytes: usize,
 }
 
 pub(crate) struct SubscriptionStatementHook {
@@ -249,6 +252,8 @@ impl SubscriptionStatementHook {
             commit_interval_ms: create.commit_interval_ms,
             snapshot_batch_rows: create.snapshot_batch_rows,
             snapshot_batch_bytes: create.snapshot_batch_bytes,
+            snapshot_parallelism: create.snapshot_parallelism,
+            snapshot_memory_bytes: create.snapshot_memory_bytes,
         };
         if !metadata.register(&definition).await.map_err(internal)? {
             return Err(duplicate_subscription(&create.name));
@@ -533,6 +538,8 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
         "commit_interval_ms",
         "snapshot_batch_rows",
         "snapshot_batch_bytes",
+        "snapshot_parallelism",
+        "snapshot_memory_bytes",
     ];
     for key in options.keys() {
         if !allowed.contains(&key.as_str()) {
@@ -588,6 +595,10 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
         parse_option_usize(&mut options, "snapshot_batch_rows", 50_000)?;
     let snapshot_batch_bytes =
         parse_option_usize(&mut options, "snapshot_batch_bytes", 64 * 1024 * 1024)?;
+    let snapshot_parallelism =
+        parse_option_usize(&mut options, "snapshot_parallelism", 4)?;
+    let snapshot_memory_bytes =
+        parse_option_memory(&mut options, "snapshot_memory_bytes", 1024 * 1024 * 1024)?;
 
     Ok(CreateSubscription {
         name,
@@ -603,6 +614,8 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
         commit_interval_ms,
         snapshot_batch_rows,
         snapshot_batch_bytes,
+        snapshot_parallelism,
+        snapshot_memory_bytes,
     })
 }
 
@@ -635,6 +648,18 @@ fn parse_option_usize(
         )));
     }
     Ok(parsed)
+}
+
+fn parse_option_memory(
+    options: &mut BTreeMap<String, String>,
+    key: &str,
+    default: usize,
+) -> PgWireResult<usize> {
+    let Some(value) = options.remove(key) else {
+        return Ok(default);
+    };
+    parse_memory_limit(&value)
+        .map_err(|error| invalid_parameter(format!("{key}: {error}")))
 }
 
 fn parse_option_u64(
@@ -972,7 +997,9 @@ mod tests {
            commit_rows = 100,
            commit_interval_ms = 250,
            snapshot_batch_rows = 1000,
-           snapshot_batch_bytes = 4096
+           snapshot_batch_bytes = 4096,
+           snapshot_parallelism = 3,
+           snapshot_memory_bytes = 2048
          )"
     }
 
@@ -1031,6 +1058,8 @@ mod tests {
         assert_eq!(create.commit_interval_ms, 250);
         assert_eq!(create.snapshot_batch_rows, 1000);
         assert_eq!(create.snapshot_batch_bytes, 4096);
+        assert_eq!(create.snapshot_parallelism, 3);
+        assert_eq!(create.snapshot_memory_bytes, 2048);
         assert_eq!(create.snapshot, SnapshotMode::Auto);
         assert!(create.primary_key.is_none());
     }

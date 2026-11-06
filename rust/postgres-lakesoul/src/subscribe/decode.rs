@@ -311,6 +311,7 @@ mod tests {
             pg_type,
             type_name: String::new(),
             not_null: true,
+            toastable: false,
         }
     }
 

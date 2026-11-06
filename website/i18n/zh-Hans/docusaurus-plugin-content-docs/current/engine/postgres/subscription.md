@@ -57,7 +57,11 @@ CREATE PUBLICATION app_pub
 
 源库用户需要 `REPLICATION` 权限和表的 `SELECT` 权限。建议使用只具备所需权限的专用复制用户。
 
-源表必须是 `public` schema 下的普通表。把 `max_slot_wal_keep_size` 设置为能容纳订阅可能保留的 WAL 的大小，并尽量在业务低峰执行大表初始拷贝。源会话的 `statement_timeout = 0`、`DateStyle = ISO`、`TimeZone = UTC` 和 `bytea_output = hex` 由运维侧配置。
+源库必须是主库。从库无法创建本订阅所需的 logical slot，而从库自己的一致性快照也无法在没有 LSN 对齐协议的情况下接到主库 slot 上。
+
+必须使用 `REPLICA IDENTITY FULL`。它让 old tuple 包含完整旧行（包括未变化的 TOAST 值）；PostgreSQL 仍会在 UPDATE 的 new tuple 中用 `u` 表示未变化的 TOAST 列，订阅端会从 old tuple 补齐。没有 FULL 时这些值不可得，强类型目标表也不能使用 Debezium 风格的占位符。INSERT 和 DELETE 仍然要求完整行。
+
+源表必须是 `public` schema 下的普通表。把 `max_slot_wal_keep_size` 设置为能容纳订阅可能保留的 WAL 的大小，并尽量在业务低峰执行大表初始拷贝。快照 reader 会在自己的连接上设置 `statement_timeout = 0`、`DateStyle = ISO`、`TimeZone = UTC` 和 `bytea_output = hex`。
 
 ## 目标表配置
 
@@ -94,7 +98,9 @@ WITH (
   commit_rows          = 50000,
   commit_interval_ms   = 1000,
   snapshot_batch_rows  = 50000,
-  snapshot_batch_bytes = 67108864
+  snapshot_batch_bytes = 67108864,
+  snapshot_parallelism = 4,
+  snapshot_memory_bytes = 1073741824
 );
 ```
 
@@ -109,8 +115,12 @@ WITH (
 | `commit_interval_ms` | `1000` | 流式批次最长等待时间 |
 | `snapshot_batch_rows` | `50000` | 快照文件批次行数 |
 | `snapshot_batch_bytes` | `67108864` | 快照文件批次字节数 |
+| `snapshot_parallelism` | `4` | 并行 COPY reader 数；所有 reader 导入同一个 exported snapshot |
+| `snapshot_memory_bytes` | `1073741824` | 快照 writer 共享的进程级 DataFusion 内存池；`0` 表示不限制 |
 
 `CONNECTION` 是普通的 libpq 风格连接串；订阅端会在内部补上 replication 参数。
+
+初始快照按 CTID 把源表切成多个范围，每个范围一个 COPY reader，每个 reader 自己写文件。所有 reader 导入同一个 exported snapshot，因此并行拷贝仍然只有一个一致点。writer 共享 `snapshot_memory_bytes`，而不是各自占用一份预算。目标表在所有 reader 完成、一次 commit 发布完整快照之前保持为空。
 
 `CREATE SUBSCRIPTION` 会先校验源库和目标表，再写元数据。命令在本地订阅进程启动后返回，初始快照在后台继续。SQL 创建的订阅在任何 snapshot 模式下都要求目标表为空；空目标上的 `snapshot = none` 从 slot 当前位点开始，只应用后续变更。
 
@@ -161,7 +171,7 @@ DROP SUBSCRIPTION IF EXISTS users_from_app;
    postgres-lakesoul --subscribe --subscription-id <name>
    ```
 
-4. 对于 `auto` 和 `managed`，子进程用导出的快照打开 slot，拷贝表数据，按批次写文件，并在一致点用一次原子 LakeSoul commit 发布所有快照文件。读请求因此只会看到空表或完整快照。
+4. 对于 `auto` 和 `managed`，子进程用导出的快照打开 slot，按 CTID 把表切成多个范围，每个范围一个 COPY reader。所有 reader 导入同一个快照并按批次写文件，writer 共享一个有界内存池；全部完成后，在一致点用一次原子 LakeSoul commit 发布所有快照文件。读请求因此只会看到空表或完整快照。
 5. 切换完成后，变更按源事务累积；一个批次用一次 LakeSoul commit 写入和发布。commit id 记录源 LSN，从更早的 slot 位点重放时会跳过已应用的数据。
 6. 元数据进度还会记录没有触及订阅表的事务。
 
@@ -186,10 +196,12 @@ postgres-lakesoul --subscribe \
   --target-table users \
   --target-namespace default \
   --primary-key id \
-  --snapshot managed
+  --snapshot managed \
+  --snapshot-parallelism 4 \
+  --snapshot-memory-bytes 1073741824
 ```
 
-`--snapshot` 支持 `auto`、`managed` 和 `none`。`--dry-run` 只校验源库、目标表和类型，不创建 slot，也不写订阅元数据。CLI 创建的订阅会记录在元数据库中，但不会由端点自动拉起。
+`--snapshot` 支持 `auto`、`managed` 和 `none`。`--snapshot-parallelism` 设置 COPY reader 数，`--snapshot-memory-bytes` 限制 writer 共享的 DataFusion 内存池（`0` 表示不限制）。`--dry-run` 只校验源库、目标表和类型，不创建 slot，也不写订阅元数据。CLI 创建的订阅会记录在元数据库中，但不会由端点自动拉起。
 
 ## 安全说明
 
