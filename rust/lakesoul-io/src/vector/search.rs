@@ -8,12 +8,13 @@
 //! module searches an already-resolved [`ResolvedIndex`] and derives index
 //! prefixes from data file paths through the shared index framework.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use lakesoul_common::IndexKind;
 use lakesoul_common::misc::SecretMap;
 use lakesoul_vector::rabitq::math::{dot, l2_distance_sqr};
+use lakesoul_vector::rabitq::mutation::load_state;
 use lakesoul_vector::rabitq::segment::{IndexHeader, IndexStore, SegmentEntry};
 use lakesoul_vector::{IndexKey, IvfRabitqIndex, Metric, RabitqError, SearchParams};
 use object_store::ObjectStore;
@@ -29,6 +30,14 @@ use crate::vector::reader::extract_vector_batch;
 
 use crate::index::options::{SearchRequest, option_key};
 use crate::index::prefix::derive_index_prefixes;
+
+/// Why a shard could not be loaded from its commit.
+#[derive(Debug)]
+enum ShardLoadError {
+    Segments(rootcause::Report),
+    Mutation(RabitqError),
+    Index(RabitqError),
+}
 
 /// A loaded vector index shard plus the commit it was loaded from.
 pub struct CachedVectorIndex {
@@ -47,6 +56,61 @@ impl IndexCacheEntry for CachedVectorIndex {
     }
 }
 
+/// Query-independent coverage of one immutable vector commit.  Match the
+/// basename/unknown-coverage contract in `lakesoul_common::index::pending_files`.
+#[derive(Default)]
+struct CoveredFiles {
+    names: HashSet<String>,
+}
+
+impl CoveredFiles {
+    fn from_segments(segments: &[SegmentEntry]) -> Self {
+        Self {
+            names: segments
+                .iter()
+                .flat_map(|segment| &segment.data_files)
+                .map(|file| file.rsplit('/').next().unwrap_or(file).to_owned())
+                .collect(),
+        }
+    }
+
+    fn pending(&self, active: &[String]) -> Vec<String> {
+        if self.names.is_empty() {
+            // Legacy segments have unknown coverage, not empty coverage.
+            return Vec::new();
+        }
+        active
+            .iter()
+            .filter(|file| !self.names.contains(file.rsplit('/').next().unwrap_or(file)))
+            .cloned()
+            .collect()
+    }
+
+    fn memory_bytes(&self) -> usize {
+        self.names.capacity() * (std::mem::size_of::<String>() + 1)
+            + self.names.iter().map(String::capacity).sum::<usize>()
+    }
+}
+
+// Preserve the public CachedVectorIndex shape; coverage belongs to this
+// private, vector-only cache entry and shares its exact commit lifetime.
+struct LoadedVectorShard {
+    cached: CachedVectorIndex,
+    covered: CoveredFiles,
+    dim: usize,
+    metric: Metric,
+}
+
+impl IndexCacheEntry for LoadedVectorShard {
+    fn commit_id(&self) -> i64 {
+        self.cached.commit_id
+    }
+
+    fn memory_bytes(&self) -> usize {
+        self.cached.bytes + self.covered.memory_bytes() + std::mem::size_of::<Self>()
+    }
+}
+
 /// One search hit: the stored index key and its score.
 #[derive(Debug, Clone)]
 pub struct VectorHit {
@@ -56,6 +120,10 @@ pub struct VectorHit {
     /// Segment version the entry came from; the newest entry of a key wins
     /// when several delta segments contain it.
     pub version: u32,
+    /// Catalog revision the entry's segment was published at.  Unlike
+    /// [`version`](Self::version) this is comparable across clusters, so it
+    /// ranks duplicate keys from different clusters.
+    pub birth_version: u64,
 }
 
 /// Search one resolved shard (base + deltas of its current commit).
@@ -74,6 +142,26 @@ pub async fn search_resolved_shard(
     parallelism: usize,
     expected_key_kind: u64,
 ) -> IoResult<Option<Vec<VectorHit>>> {
+    let Some(entry) = load_resolved_shard(store, resolved, expected_key_kind).await?
+    else {
+        return Ok(None);
+    };
+    search_loaded_index(
+        &entry.cached.index,
+        &resolved.index_prefix,
+        query,
+        top_k,
+        nprobe,
+        parallelism,
+    )
+    .map(Some)
+}
+
+async fn load_resolved_shard(
+    store: &Arc<dyn ObjectStore>,
+    resolved: &ResolvedIndex,
+    expected_key_kind: u64,
+) -> IoResult<Option<Arc<LoadedVectorShard>>> {
     if !resolved.is_kind(IndexKind::Vector) {
         return Err(rootcause::report!(
             "resolved index '{}' is not a vector index",
@@ -101,44 +189,81 @@ pub async fn search_resolved_shard(
     }
     let prefix = resolved.index_prefix.trim_end_matches('/').to_string();
     let cache_prefix = prefix.clone();
+    let error_prefix = resolved.index_prefix.clone();
     let commit_id = resolved.commit_id;
-    let segments: Vec<SegmentEntry> = resolved.segments_as()?;
-    let entry =
-        cache::get_or_load(store, IndexKind::Vector, &prefix, commit_id, move || {
-            let store = store.clone();
-            let prefix = cache_prefix.clone();
-            let header = header.clone();
-            let segments = segments.clone();
-            async move {
-                let istore = IndexStore::new(store, prefix);
-                let index =
-                    IvfRabitqIndex::load_from_segments(&istore, &header, &segments)
-                        .await?;
-                let bytes = index.memory_bytes();
-                Ok::<CachedVectorIndex, RabitqError>(CachedVectorIndex {
+    let revision = resolved.version;
+    let mutation_records = resolved.mutation_records;
+    let mutation_head = resolved.mutation_head.clone();
+    let entry = cache::get_or_load(store, IndexKind::Vector, &prefix, commit_id, || {
+        let store = store.clone();
+        let prefix = cache_prefix.clone();
+        let header = header.clone();
+        let mutation_head = mutation_head.clone();
+        async move {
+            // Decode only while loading this immutable commit.  A hit must
+            // not clone the transport JSON or rebuild its coverage set.
+            let segments: Vec<SegmentEntry> =
+                resolved.segments_as().map_err(ShardLoadError::Segments)?;
+            let covered = CoveredFiles::from_segments(&segments);
+            let istore = IndexStore::new(store, prefix);
+            let mutation = match mutation_head {
+                Some(head) => Some(
+                    load_state(&istore, Some(&head), mutation_records, revision)
+                        .await
+                        .map_err(ShardLoadError::Mutation)?,
+                ),
+                None => None,
+            };
+            let index = IvfRabitqIndex::load_from_segments_with_mutations(
+                &istore,
+                &header,
+                &segments,
+                mutation.as_ref(),
+            )
+            .await
+            .map_err(ShardLoadError::Index)?;
+            let bytes = index.memory_bytes();
+            Ok::<LoadedVectorShard, ShardLoadError>(LoadedVectorShard {
+                cached: CachedVectorIndex {
                     commit_id,
                     index,
                     bytes,
-                })
-            }
-        })
-        .await
-        .map_err(|e| {
-            rootcause::report!(
-                "failed to load vector index at '{}': {:?}",
-                resolved.index_prefix,
-                e
-            )
-        })?;
-    search_loaded_index(
-        &entry.index,
-        &resolved.index_prefix,
-        query,
-        top_k,
-        nprobe,
-        parallelism,
-    )
-    .map(Some)
+                },
+                covered,
+                dim: header.dim,
+                metric: header.metric,
+            })
+        }
+    })
+    .await;
+    let entry = match entry {
+        Ok(entry) => entry,
+        Err(error) => {
+            return match error.as_ref() {
+                ShardLoadError::Segments(error) => Err(rootcause::report!(
+                    "invalid vector index segment list at '{}': {error}",
+                    error_prefix
+                )),
+                ShardLoadError::Mutation(error) => {
+                    // Without the mutation chain the masks cannot hide
+                    // logically deleted keys, so do not silently serve an
+                    // index that still contains them.
+                    warn!(
+                        "vector index at '{}' has an unreadable mutation \
+                         chain ({}); scanning without the index",
+                        error_prefix, error
+                    );
+                    Ok(None)
+                }
+                ShardLoadError::Index(error) => Err(rootcause::report!(
+                    "failed to load vector index at '{}': {:?}",
+                    error_prefix,
+                    error
+                )),
+            };
+        }
+    };
+    Ok(Some(entry))
 }
 
 /// Search the vector index matching a single bucket's files.
@@ -183,45 +308,34 @@ pub async fn search_matching_shards(
             normalized
         ));
     };
-    let hits = search_resolved_shard(
-        store,
-        resolved,
+    let Some(entry) = load_resolved_shard(store, resolved, expected_key_kind).await?
+    else {
+        return Ok(None);
+    };
+    let mut hits = search_loaded_index(
+        &entry.cached.index,
+        &resolved.index_prefix,
         query,
         top_k,
         nprobe,
         parallelism,
-        expected_key_kind,
-    )
-    .await?;
-    let Some(mut hits) = hits else {
-        return Ok(None);
-    };
+    )?;
 
     // The index is built after each commit, so a commit whose build is
     // deferred or failed leaves newer files outside it.  A row in those files
     // has no index entry, and narrowing to the index's keys alone would
     // silently drop it: score them exactly and merge them in.
-    let segments: Vec<SegmentEntry> = resolved.segments_as()?;
-    let covered: Vec<&str> = segments
-        .iter()
-        .flat_map(|segment| segment.data_files.iter())
-        .map(String::as_str)
-        .collect();
-    let pending = lakesoul_common::index::pending_files(file_paths, &covered);
+    // Coverage is immutable with the pinned index commit, but the active
+    // files are request-specific and must be checked even on a cache hit.
+    let pending = entry.covered.pending(file_paths);
     if !pending.is_empty() {
-        let header = IndexHeader::deserialize(&resolved.header).map_err(|error| {
-            rootcause::report!(
-                "unreadable vector index header at '{}': {error}",
-                resolved.index_prefix
-            )
-        })?;
         let Some(tail) = uncovered_file_candidates(
             &pending,
             primary_keys,
             vector_column,
             query,
-            header.dim,
-            header.metric,
+            entry.dim,
+            entry.metric,
             top_k,
             object_store_options,
             expected_key_kind,
@@ -346,6 +460,7 @@ async fn uncovered_file_candidates(
                 // The caller keeps the newest entry per key, and these rows
                 // come from files newer than the whole index commit.
                 version: u32::MAX,
+                birth_version: u64::MAX,
             });
         }
     }
@@ -418,6 +533,7 @@ fn search_loaded_index(
             key: result.id,
             score: result.score,
             version: result.version,
+            birth_version: result.birth_version,
         })
         .collect();
     info!(
@@ -445,4 +561,182 @@ pub fn parse_query_vector(s: &str, expected_dim: Option<usize>) -> IoResult<Vec<
         ));
     }
     Ok(vec)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lakesoul_vector::{IdAndVecBatch, IvfRabitqBuilder, RotatorType};
+    use object_store::memory::InMemory;
+
+    fn segment(files: &[&str]) -> SegmentEntry {
+        SegmentEntry {
+            cluster_id: 0,
+            segment_version: 0,
+            segment_filename: "cluster.seg".into(),
+            num_vectors: 1,
+            file_size: 1,
+            data_files: files.iter().map(|file| (*file).to_owned()).collect(),
+            birth_version: 1,
+        }
+    }
+
+    #[test]
+    fn cached_coverage_preserves_pending_file_contract() {
+        let segments = vec![
+            segment(&["s3://bucket/old/a.vortex", "file:///old/b.vortex"]),
+            segment(&["a.vortex"]),
+        ];
+        let active = [
+            "file:///new/b.vortex",
+            "new/c.vortex",
+            "a.vortex",
+            "new/c.vortex",
+        ]
+        .map(str::to_owned);
+        let covered = CoveredFiles::from_segments(&segments);
+        let references: Vec<_> = segments
+            .iter()
+            .flat_map(|entry| entry.data_files.iter().map(String::as_str))
+            .collect();
+        assert_eq!(covered.names.len(), 2);
+        assert_eq!(
+            covered.pending(&active),
+            lakesoul_common::index::pending_files(&active, &references)
+        );
+        assert_eq!(
+            covered.pending(&active),
+            vec!["new/c.vortex", "new/c.vortex"]
+        );
+        assert!(CoveredFiles::default().pending(&active).is_empty());
+        assert!(covered.memory_bytes() > 0);
+    }
+
+    async fn fixture() -> (Arc<dyn ObjectStore>, ResolvedIndex) {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let prefix = format!("vector-cache-test/{}", uuid::Uuid::new_v4());
+        let batch = IdAndVecBatch {
+            ids: (0u64..64)
+                .map(|id| IndexKey::new(id.to_le_bytes()))
+                .collect(),
+            vectors: (0..64)
+                .flat_map(|id| [id as f32, (id % 7) as f32])
+                .collect(),
+        };
+        let mut builder = IvfRabitqBuilder::new(
+            2,
+            2,
+            7,
+            Metric::L2,
+            RotatorType::FhtKacRotator,
+            42,
+            false,
+            7,
+        );
+        builder.insert_batch(batch.clone()).unwrap();
+        let index = builder
+            .build(|| futures::stream::iter(vec![batch.clone()]))
+            .await
+            .unwrap();
+        let istore = IndexStore::new(store.clone(), prefix.clone());
+        let (header, mut segments) = index.write_base_segments(&istore).await.unwrap();
+        for entry in &mut segments {
+            entry.birth_version = 1;
+            entry.data_files = vec!["base.vortex".into()];
+        }
+        let resolved = ResolvedIndex {
+            kind: IndexKind::Vector,
+            index_prefix: prefix,
+            commit_id: 1,
+            generation: 1,
+            version: 1,
+            header: header.serialize(),
+            segments: serde_json::to_value(segments).unwrap(),
+            mutation_head: None,
+            mutation_records: 0,
+        };
+        (store, resolved)
+    }
+
+    #[tokio::test]
+    async fn loaded_entry_reuses_coverage_but_checks_current_active_files() {
+        let (store, resolved) = fixture().await;
+        let first = load_resolved_shard(&store, &resolved, 7)
+            .await
+            .unwrap()
+            .unwrap();
+        let second = load_resolved_shard(&store, &resolved, 7)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(first.covered.pending(&["base.vortex".into()]).is_empty());
+        assert_eq!(
+            second
+                .covered
+                .pending(&["base.vortex".into(), "new.vortex".into()]),
+            vec!["new.vortex"]
+        );
+        assert!(
+            load_resolved_shard(&store, &resolved, 8)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let mut next = resolved.clone();
+        next.commit_id += 1;
+        next.version += 1;
+        let mut segments: Vec<SegmentEntry> = next.segments_as().unwrap();
+        for entry in &mut segments {
+            entry.data_files.push("new.vortex".into());
+        }
+        next.segments = serde_json::to_value(segments).unwrap();
+        let updated = load_resolved_shard(&store, &next, 7)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!Arc::ptr_eq(&first, &updated));
+        assert!(updated.covered.pending(&["new.vortex".into()]).is_empty());
+        assert_eq!(
+            first.covered.pending(&["new.vortex".into()]),
+            vec!["new.vortex"]
+        );
+    }
+
+    #[tokio::test]
+    async fn corrupt_mutation_never_reuses_the_previous_commit() {
+        let (store, mut resolved) = fixture().await;
+        let loaded = load_resolved_shard(&store, &resolved, 7)
+            .await
+            .unwrap()
+            .unwrap();
+        resolved.commit_id += 1;
+        resolved.version += 1;
+        resolved.mutation_head = Some("missing.delta".into());
+        resolved.mutation_records = 1;
+        assert!(
+            load_resolved_shard(&store, &resolved, 7)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !cache::is_loaded(
+                &store,
+                IndexKind::Vector,
+                &resolved.index_prefix,
+                resolved.commit_id
+            )
+            .await
+        );
+        assert_eq!(loaded.cached.commit_id, 1);
+    }
+
+    #[tokio::test]
+    async fn malformed_segment_transport_remains_an_error_on_load() {
+        let (store, mut resolved) = fixture().await;
+        resolved.segments = serde_json::json!({"invalid": "segment list"});
+        assert!(load_resolved_shard(&store, &resolved, 7).await.is_err());
+    }
 }
