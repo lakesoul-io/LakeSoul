@@ -54,7 +54,7 @@ work. This is not a drop-in PostgreSQL: `UPDATE`, `DELETE`, `COPY`, `RETURNING`
 and non-`READ COMMITTED` isolation are refused with `0A000`, and writes must be
 autocommit.
 
-## PostgreSQL subscriptions
+### PostgreSQL subscriptions
 
 The same endpoint can subscribe to a source PostgreSQL database and keep a
 LakeSoul CDC table in sync. Define the subscription with SQL; the endpoint

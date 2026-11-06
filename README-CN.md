@@ -47,7 +47,7 @@ SELECT region, sum(amount) FROM orders GROUP BY 1;
 
 wire protocol、扩展查询协议、`pg_catalog` 和 `psql \d` 都可用。但这不是 drop-in 的 PostgreSQL：`UPDATE`、`DELETE`、`COPY`、`RETURNING` 以及非 `READ COMMITTED` 隔离级别会返回 `0A000`，写入必须在 autocommit 下执行。
 
-## PostgreSQL 订阅
+### PostgreSQL 订阅
 
 同一个端点也可以订阅源 PostgreSQL，把变更持续写入 LakeSoul CDC 表。用 SQL 定义订阅；端点会校验 publication 和目标表，执行受管初始快照，并拉起受监管的本地订阅进程。
 
