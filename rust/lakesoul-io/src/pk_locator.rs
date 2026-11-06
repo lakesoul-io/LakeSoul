@@ -2313,9 +2313,17 @@ async fn take_rows(
     projected_schema: &SchemaRef,
     projection_names: &[String],
 ) -> crate::Result<Vec<RecordBatch>> {
-    let projection = root()
-        .bind(file.dtype())
-        .map_err(|e| open_error(location, e))?;
+    // Project only the columns the caller asked for.  A dense projection of
+    // the whole file (`root()`) decodes every column of every chunk the row
+    // indices touch, so a candidate fetch of a few hundred rows would pay for
+    // the whole payload — including a 200-dimensional vector column — instead
+    // of the handful of projected columns it actually returns.
+    let projection = select(
+        FieldNames::from_iter(projection_names.iter().map(|name| name.as_str())),
+        root(),
+    )
+    .bind(file.dtype())
+    .map_err(|e| open_error(location, e))?;
     let row_indices =
         StrictSortedBuffer::try_new(Buffer::from_iter(indices.iter().copied()))
             .map_err(|e| open_error(location, e))?;
