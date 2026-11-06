@@ -169,6 +169,8 @@ struct Args {
     search_stats: bool,
     /// Cluster-probe parallelism for the search scenario (1 = sequential).
     search_parallelism: usize,
+    /// SQL scenario: queries kept in flight at the same time (default 1).
+    concurrency: usize,
     // ---- stream / trigger ----
     policy: Policy,
     max_delta_ratio: f32,
@@ -226,6 +228,7 @@ impl Default for Args {
             reuse: false,
             search_stats: false,
             search_parallelism: 1,
+            concurrency: 1,
             policy: Policy::Auto,
             max_delta_ratio: 1.0,
             period: 3,
@@ -276,6 +279,8 @@ OPTIONS:
                                             (search scenario)
   --search-parallelism <n>                  Probe n clusters concurrently in the search scenario
                                             (default: 1 = sequential)
+  --concurrency <n>                         SQL scenario: queries kept in flight at the same time
+                                            (default: 1 = one query at a time)
 
 STREAM / TRIGGER:
   --policy <none|auto|periodic|always>      Rebuild policy (default: auto)
@@ -398,6 +403,12 @@ fn parse_args() -> Result<Args, String> {
                 args.search_parallelism = value(flag)?
                     .parse()
                     .map_err(|e| format!("bad --search-parallelism: {e}"))?
+            }
+            "--concurrency" => {
+                args.concurrency = value(flag)?
+                    .parse::<usize>()
+                    .map_err(|e| format!("bad --concurrency: {e}"))?
+                    .max(1)
             }
             "--table" => args.table = value(flag)?,
             "--sql-format" => args.sql_format = value(flag)?,
@@ -2483,51 +2494,114 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
     );
     let explain_analyze = explain_text(&search_ctx, &analyze_sql).await?;
 
-    // 7. End-to-end SQL latency and recall, one query at a time; split into
-    // logical planning, physical planning (table metadata + file listing) and
-    // execution (index probe + candidate scan + exact re-rank).
+    // 7. End-to-end SQL latency and recall, one query at a time (or
+    // `--concurrency` queries in flight), split into logical planning,
+    // physical planning (table metadata + file listing) and execution (index
+    // probe + candidate scan + exact re-rank).
     let nq = dataset.queries.n;
     let mut latencies = Vec::with_capacity(nq);
     let mut plan_ms = Vec::with_capacity(nq);
     let mut phys_ms = Vec::with_capacity(nq);
     let mut exec_ms = Vec::with_capacity(nq);
     let mut recall_sum = 0.0;
-    for qi in 0..nq {
-        let sql = format!(
-            "select id from \"lakesoul\".default.{table_name} \
-             order by array_distance(vec, ARRAY[{}]) limit {}",
-            query_literal(dataset, qi),
-            args.top_k
-        );
-        let t = Instant::now();
-        let df = search_ctx
-            .sql(&sql)
-            .await
-            .map_err(|e| format!("query: {e}"))?;
-        let t_plan = t.elapsed();
-        let t = Instant::now();
-        let plan = df
-            .create_physical_plan()
-            .await
-            .map_err(|e| format!("query: {e}"))?;
-        let t_phys = t.elapsed();
-        let t = Instant::now();
-        let batches = datafusion::physical_plan::collect(plan, search_ctx.task_ctx())
-            .await
-            .map_err(|e| format!("query: {e}"))?;
-        let t_exec = t.elapsed();
-        plan_ms.push(t_plan.as_secs_f64() * 1000.0);
-        phys_ms.push(t_phys.as_secs_f64() * 1000.0);
-        exec_ms.push(t_exec.as_secs_f64() * 1000.0);
-        latencies.push((t_plan + t_phys + t_exec).as_secs_f64() * 1000.0);
-        let mut predicted = Vec::new();
-        for batch in &batches {
-            if let Some(arr) = batch.column(0).as_any().downcast_ref::<Int64Array>() {
-                predicted.extend(arr.values().iter().map(|&v| v as u64));
+    let cpu_before = process_cpu_ms();
+    let t_loop = Instant::now();
+    if args.concurrency <= 1 {
+        for qi in 0..nq {
+            let sql = format!(
+                "select id from \"lakesoul\".default.{table_name} \
+                 order by array_distance(vec, ARRAY[{}]) limit {}",
+                query_literal(dataset, qi),
+                args.top_k
+            );
+            let t = Instant::now();
+            let df = search_ctx
+                .sql(&sql)
+                .await
+                .map_err(|e| format!("query: {e}"))?;
+            let t_plan = t.elapsed();
+            let t = Instant::now();
+            let plan = df
+                .create_physical_plan()
+                .await
+                .map_err(|e| format!("query: {e}"))?;
+            let t_phys = t.elapsed();
+            let t = Instant::now();
+            let batches = datafusion::physical_plan::collect(plan, search_ctx.task_ctx())
+                .await
+                .map_err(|e| format!("query: {e}"))?;
+            let t_exec = t.elapsed();
+            plan_ms.push(t_plan.as_secs_f64() * 1000.0);
+            phys_ms.push(t_phys.as_secs_f64() * 1000.0);
+            exec_ms.push(t_exec.as_secs_f64() * 1000.0);
+            latencies.push((t_plan + t_phys + t_exec).as_secs_f64() * 1000.0);
+            let mut predicted = Vec::new();
+            for batch in &batches {
+                if let Some(arr) = batch.column(0).as_any().downcast_ref::<Int64Array>() {
+                    predicted.extend(arr.values().iter().map(|&v| v as u64));
+                }
             }
+            recall_sum += recall_at_k(&predicted, gt.row(qi), args.top_k);
         }
-        recall_sum += recall_at_k(&predicted, gt.row(qi), args.top_k);
+    } else {
+        // Keep `--concurrency` queries in flight on the same session: this is
+        // what a serving deployment does, and it shows how much of the
+        // per-query setup cost overlaps instead of adding up.
+        let mut next = 0usize;
+        while next < nq {
+            let end = (next + args.concurrency).min(nq);
+            let mut tasks = tokio::task::JoinSet::new();
+            for qi in next..end {
+                let ctx = search_ctx.clone();
+                let sql = format!(
+                    "select id from \"lakesoul\".default.{table_name} \
+                     order by array_distance(vec, ARRAY[{}]) limit {}",
+                    query_literal(dataset, qi),
+                    args.top_k
+                );
+                tasks.spawn(async move {
+                    let t = Instant::now();
+                    let df = ctx.sql(&sql).await?;
+                    let t_plan = t.elapsed();
+                    let t = Instant::now();
+                    let plan = df.create_physical_plan().await?;
+                    let t_phys = t.elapsed();
+                    let t = Instant::now();
+                    let batches =
+                        datafusion::physical_plan::collect(plan, ctx.task_ctx()).await?;
+                    let t_exec = t.elapsed();
+                    Ok::<_, datafusion::error::DataFusionError>((
+                        qi, t_plan, t_phys, t_exec, batches,
+                    ))
+                });
+            }
+            while let Some(joined) = tasks.join_next().await {
+                let (qi, t_plan, t_phys, t_exec, batches) = joined
+                    .map_err(|e| format!("query task failed: {e}"))?
+                    .map_err(|e| format!("query: {e}"))?;
+                plan_ms.push(t_plan.as_secs_f64() * 1000.0);
+                phys_ms.push(t_phys.as_secs_f64() * 1000.0);
+                exec_ms.push(t_exec.as_secs_f64() * 1000.0);
+                latencies.push((t_plan + t_phys + t_exec).as_secs_f64() * 1000.0);
+                let mut predicted = Vec::new();
+                for batch in &batches {
+                    if let Some(arr) =
+                        batch.column(0).as_any().downcast_ref::<Int64Array>()
+                    {
+                        predicted.extend(arr.values().iter().map(|&v| v as u64));
+                    }
+                }
+                recall_sum += recall_at_k(&predicted, gt.row(qi), args.top_k);
+            }
+            next = end;
+        }
     }
+    let query_wall_s = t_loop.elapsed().as_secs_f64();
+    let query_cpu_ms = match (cpu_before, process_cpu_ms()) {
+        (Some(before), Some(after)) => (after - before).max(0.0),
+        _ => 0.0,
+    };
+
     let mean = |v: &[f64]| -> f64 {
         if v.is_empty() {
             0.0
@@ -2545,8 +2619,10 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         latencies[((latencies.len() as f64 - 1.0) * p).round() as usize]
     };
     let total_ms: f64 = latencies.iter().sum();
-    let qps = if total_ms > 0.0 {
-        nq as f64 / (total_ms / 1000.0)
+    // Wall-clock throughput: identical to `nq / sum(latency)` for a serial
+    // run and the meaningful number when several queries are in flight.
+    let qps = if query_wall_s > 0.0 {
+        nq as f64 / query_wall_s
     } else {
         f64::INFINITY
     };
@@ -2571,6 +2647,10 @@ async fn run_sql(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         "top_k": args.top_k,
         "nprobe": args.nprobe,
         "search_parallelism": args.search_parallelism,
+        "concurrency": args.concurrency,
+        "query_wall_ms": query_wall_s * 1000.0,
+        "query_cpu_ms": query_cpu_ms,
+        "query_cpu_ms_per_query": query_cpu_ms / nq.max(1) as f64,
         "base_insert_ms": base_insert_ms,
         "round_insert_ms": round_insert_ms,
         "recall_at_k": recall_sum / nq.max(1) as f64,
@@ -2600,6 +2680,22 @@ async fn run_trigger(args: &Args, dataset: &Dataset) -> Result<Value, String> {
 // ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
+
+/// CPU time this process has used so far (user + system), in milliseconds.
+///
+/// Reading `/proc/self/stat` keeps this std-only and lets the SQL scenario
+/// report how much CPU one query actually costs — a serial latency number
+/// hides the parallel reader/index work behind it.
+fn process_cpu_ms() -> Option<f64> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let close = stat.rfind(')')?;
+    let rest: Vec<&str> = stat[close + 1..].split_whitespace().collect();
+    // Fields after the comm: state(3) ppid(4) ... utime(14) stime(15).
+    let utime: f64 = rest.get(11)?.parse().ok()?;
+    let stime: f64 = rest.get(12)?.parse().ok()?;
+    // USER_HZ is 100 on Linux.
+    Some((utime + stime) / 100.0 * 1000.0)
+}
 
 fn print_summary(summary: &Value) {
     println!("\n── summary ──");
