@@ -21,13 +21,13 @@ import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.VIEW_ORIGINAL_Q
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.WATERMARK_SPEC_JSON;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
 import com.dmetasoul.lakesoul.meta.entity.Namespace;
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.text.StringEscapeUtils;
@@ -106,7 +106,7 @@ public class LakeSoulCatalog implements Catalog {
         } else {
 
             Map<String, String> properties =
-                    DBUtil.jsonToStringMap(JSON.parseObject(namespaceEntity.getProperties()));
+                    DBUtil.jsonToStringMap(JsonUtils.parseObject(namespaceEntity.getProperties()));
 
             return new LakesoulCatalogDatabase(properties, namespaceEntity.getComment());
         }
@@ -131,7 +131,7 @@ public class LakeSoulCatalog implements Catalog {
         try {
             dbManager.createNewNamespace(
                     databaseName,
-                    DBUtil.stringMapToJson(catalogDatabase.getProperties()).toJSONString(),
+                    DBUtil.stringMapToJson(catalogDatabase.getProperties()).toString(),
                     catalogDatabase.getComment());
         } catch (RuntimeException e) {
             e.printStackTrace();
@@ -178,8 +178,7 @@ public class LakeSoulCatalog implements Catalog {
             }
         }
         dbManager.updateNamespaceProperties(
-                databaseName,
-                DBUtil.stringMapToJson(catalogDatabase.getProperties()).toJSONString());
+                databaseName, DBUtil.stringMapToJson(catalogDatabase.getProperties()).toString());
     }
 
     @Override
@@ -412,11 +411,10 @@ public class LakeSoulCatalog implements Catalog {
                             }
                         });
         if (!computedColumns.isEmpty()) {
-            tableOptions.put(COMPUTE_COLUMN_JSON, JSON.toJSONString(computedColumns));
+            tableOptions.put(COMPUTE_COLUMN_JSON, JsonUtils.toJson(computedColumns));
         }
 
-        String json = JSON.toJSONString(tableOptions);
-        JSONObject properties = JSON.parseObject(json);
+        ObjectNode properties = JsonUtils.objectNode(tableOptions);
         String tableName = tablePath.getObjectName();
         dbManager.createNewTable(
                 tableId,

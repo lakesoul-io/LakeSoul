@@ -4,13 +4,12 @@
 
 package com.facebook.presto.lakesoul.util;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DataFileInfo;
 import com.dmetasoul.lakesoul.meta.DataOperation;
 import com.dmetasoul.lakesoul.meta.LakeSoulOptions;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 import com.facebook.presto.lakesoul.pojo.Path;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.*;
 import java.util.regex.Matcher;
@@ -74,12 +73,12 @@ public class PrestoUtil {
     }
 
     public static boolean isExistHashPartition(TableInfo tif) {
-        JSONObject tableProperties = JSON.parseObject(tif.getProperties());
-        if (tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM())
-                && tableProperties.getString(LakeSoulOptions.HASH_BUCKET_NUM()).equals("-1")) {
+        ObjectNode tableProperties = JsonUtil.parseObject(tif.getProperties());
+        if (tableProperties.has(LakeSoulOptions.HASH_BUCKET_NUM())
+                && tableProperties.path(LakeSoulOptions.HASH_BUCKET_NUM()).asText().equals("-1")) {
             return false;
         } else {
-            return tableProperties.containsKey(LakeSoulOptions.HASH_BUCKET_NUM());
+            return tableProperties.has(LakeSoulOptions.HASH_BUCKET_NUM());
         }
     }
 

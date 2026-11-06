@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
-import com.alibaba.fastjson.JSONObject;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
+import com.fasterxml.jackson.databind.JsonNode;
 
 import org.apache.flink.api.common.functions.MapFunction;
 
@@ -12,13 +13,13 @@ public class TableInfoRecordGets {
 
         @Override
         public TableInfo map(String value) {
-            JSONObject tableInfoParse = (JSONObject) JSONObject.parse(value);
-            JSONObject properties = (JSONObject) tableInfoParse.get("after");
-            String tableId = properties.getString("tableId");
-            if (properties.containsKey("partition.ttl")) {
-                int partitionTtl = properties.getInteger("partition.ttl");
+            JsonNode tableInfoParse = JsonUtils.parse(value);
+            JsonNode properties = tableInfoParse.path("after");
+            String tableId = properties.path("tableId").asText(null);
+            if (properties.has("partition.ttl")) {
+                int partitionTtl = properties.path("partition.ttl").asInt();
                 return new TableInfo(partitionTtl, tableId);
-            } else if (properties.containsKey("operation")) {
+            } else if (properties.has("operation")) {
                 // which means table has been dropped;
                 return new TableInfo(-5, tableId);
             } else {

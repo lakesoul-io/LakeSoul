@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.assets;
 
-import com.alibaba.fastjson.JSONArray;
-import com.alibaba.fastjson.JSONObject;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.state.ValueState;
@@ -29,33 +30,34 @@ public class PartitionLevelAssets {
         @Override
         public Tuple3<String, String, String[]> map(String s) {
             // 解析传入的 JSON 字符串
-            JSONObject parse = (JSONObject) JSONObject.parse(s);
-            String PGtableName = parse.get("tableName").toString();
+            ObjectNode parse = JsonUtils.parseObject(s);
+            String PGtableName = parse.path("tableName").asText();
             String[] tableInfos = new String[6];
-            JSONObject commitJson;
+            ObjectNode commitJson;
 
             if (PGtableName.equals("data_commit_info")) {
                 String beforeCommitted = "true";
-                if (!parse.getJSONObject("before").isEmpty()) {
-                    JSONObject before = (JSONObject) parse.get("before");
-                    beforeCommitted = before.getString("committed");
+                JsonNode before = parse.path("before");
+                JsonNode after = parse.path("after");
+                if (!before.isEmpty()) {
+                    beforeCommitted = before.path("committed").asText();
                 }
-                if (!parse.getJSONObject("after").isEmpty()) {
-                    commitJson = (JSONObject) parse.get("after");
+                if (!after.isEmpty()) {
+                    commitJson = (ObjectNode) after;
                 } else {
-                    commitJson = (JSONObject) parse.get("before");
+                    commitJson = (ObjectNode) before;
                 }
 
-                String tableId = commitJson.getString("table_id");
-                JSONArray fileOps = commitJson.getJSONArray("file_ops");
-                String committed = commitJson.getString("committed");
-                String commitOp = commitJson.getString("commit_op");
-                String eventOp = parse.getString("commitOp");
-                String partitionDesc = commitJson.getString("partition_desc");
+                String tableId = commitJson.path("table_id").asText(null);
+                JsonNode fileOps = commitJson.path("file_ops");
+                String committed = commitJson.path("committed").asText(null);
+                String commitOp = commitJson.path("commit_op").asText(null);
+                String eventOp = parse.path("commitOp").asText(null);
+                String partitionDesc = commitJson.path("partition_desc").asText(null);
                 long fileBytesSize = 0L;
                 int fileCount = 0;
-                for (Object op : fileOps) {
-                    byte[] decode = Base64.getDecoder().decode(op.toString());
+                for (JsonNode op : fileOps) {
+                    byte[] decode = Base64.getDecoder().decode(op.asText());
                     String fileOp = new String(decode, StandardCharsets.UTF_8);
                     AssetsUtils assetsUtils = new AssetsUtils();
                     String[] fileOpsString = assetsUtils.parseFileOpsString(fileOp);

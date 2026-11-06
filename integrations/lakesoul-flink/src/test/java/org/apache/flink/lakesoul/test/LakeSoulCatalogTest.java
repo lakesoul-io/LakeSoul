@@ -10,8 +10,8 @@ import static org.apache.spark.sql.types.DataTypes.StringType;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
-import com.alibaba.fastjson.JSON;
 import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 
 import org.apache.flink.lakesoul.metadata.LakeSoulCatalog;
@@ -142,12 +142,16 @@ public class LakeSoulCatalogTest extends AbstractTestBase {
                                         "UTC")
                                 .toJson());
         Assertions.assertThat(
-                        JSON.parseObject(info.getProperties()).get("lakesoul_cdc_change_column"))
+                        JsonUtils.parseObject(info.getProperties())
+                                .path("lakesoul_cdc_change_column")
+                                .asText())
                 .isEqualTo(
-                        JSON.parseObject(info2.getProperties()).get("lakesoul_cdc_change_column"));
-        Assertions.assertThat(JSON.parseObject(info.getProperties()).get("path"))
+                        JsonUtils.parseObject(info2.getProperties())
+                                .path("lakesoul_cdc_change_column")
+                                .asText());
+        Assertions.assertThat(JsonUtils.parseObject(info.getProperties()).path("path").asText())
                 .isEqualTo("/tmp/user_behaviorgg");
-        Assertions.assertThat(JSON.parseObject(info2.getProperties()).get("path"))
+        Assertions.assertThat(JsonUtils.parseObject(info2.getProperties()).path("path").asText())
                 .isEqualTo("/tmp/like_table");
 
         tEnvs.executeSql("DROP TABLE user_behaviorgg");

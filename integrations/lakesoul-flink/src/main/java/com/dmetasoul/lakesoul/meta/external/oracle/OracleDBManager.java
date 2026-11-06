@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.dmetasoul.lakesoul.meta.external.oracle;
 
-import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DataBaseProperty;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
 import com.dmetasoul.lakesoul.meta.external.DBConnector;
 import com.dmetasoul.lakesoul.meta.external.ExternalDBManager;
 
@@ -92,7 +92,8 @@ public class OracleDBManager implements ExternalDBManager {
         if (lakesoulDBManager.getNamespaceByNamespace(namespace) != null) {
             return;
         }
-        lakesoulDBManager.createNewNamespace(namespace, new JSONObject().toJSONString(), "");
+        lakesoulDBManager.createNewNamespace(
+                namespace, JsonUtils.createObjectNode().toString(), "");
     }
 
     public String showCreateTable(String tableName) {

@@ -1,6 +1,6 @@
 package com.dmetasoul.lakesoul.meta.jnr;
 
-import com.alibaba.fastjson.annotation.JSONField;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.commons.lang3.builder.ToStringStyle;
@@ -9,16 +9,16 @@ import java.util.HashMap;
 import java.util.List;
 
 public class SplitDesc {
-    @JSONField(name = "file_paths")
+    @JsonProperty("file_paths")
     private List<String> filePaths;
 
-    @JSONField(name = "primary_keys")
+    @JsonProperty("primary_keys")
     private List<String> primaryKeys;
 
-    @JSONField(name = "partition_desc")
+    @JsonProperty("partition_desc")
     private HashMap<String, String> partitionDesc;
 
-    @JSONField(name = "table_schema")
+    @JsonProperty("table_schema")
     private String tableSchema;
 
     public List<String> getFilePaths() {

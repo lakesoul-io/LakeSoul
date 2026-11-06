@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
-import com.alibaba.fastjson.JSONObject;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import io.debezium.data.Envelope;
 
@@ -31,9 +32,9 @@ public class PgCleanDeserialization implements DebeziumDeserializationSchema<Str
         String tableName = fields[2];
         Struct value = (Struct) sourceRecord.value();
         if (value == null) return;
-        JSONObject result = new JSONObject();
-        JSONObject beforeJson = extractStructJson(value.getStruct("before"));
-        JSONObject afterJson = extractStructJson(value.getStruct("after"));
+        ObjectNode result = JsonUtils.createObjectNode();
+        ObjectNode beforeJson = extractStructJson(value.getStruct("before"));
+        ObjectNode afterJson = extractStructJson(value.getStruct("after"));
         Envelope.Operation operation = Envelope.operationFor(sourceRecord);
 
         result.put("commitOp", operation.toString().toLowerCase());
@@ -55,51 +56,48 @@ public class PgCleanDeserialization implements DebeziumDeserializationSchema<Str
         }
         if (tableName.equals("table_info")) {
             boolean hasPartitionTtlProperty = false;
-            if (beforeJson.containsKey("properties")
-                    && operation.toString().equalsIgnoreCase("delete")) {
-                String tableId = beforeJson.getString("table_id");
-                JSONObject deleteJson = new JSONObject();
+            if (beforeJson.has("properties") && operation.toString().equalsIgnoreCase("delete")) {
+                String tableId = beforeJson.path("table_id").asText(null);
+                ObjectNode deleteJson = JsonUtils.createObjectNode();
                 deleteJson.put("tableId", tableId);
                 deleteJson.put("operation", "delete");
-                result.put("after", deleteJson);
+                result.set("after", deleteJson);
             }
-            if (afterJson.containsKey("properties")) {
-                String afterProperties = afterJson.get("properties").toString();
-                JSONObject afterPropertiesParse = (JSONObject) JSONObject.parse(afterProperties);
-                String tableId = afterJson.getString("table_id");
+            if (afterJson.has("properties")) {
+                String afterProperties = afterJson.path("properties").asText();
+                ObjectNode afterPropertiesParse = JsonUtils.parseObject(afterProperties);
+                String tableId = afterJson.path("table_id").asText(null);
                 afterPropertiesParse.put("tableId", tableId);
-                result.put("after", afterPropertiesParse);
-                hasPartitionTtlProperty =
-                        ((JSONObject) JSONObject.parse(afterProperties))
-                                .containsKey("partition.ttl");
+                result.set("after", afterPropertiesParse);
+                hasPartitionTtlProperty = afterPropertiesParse.has("partition.ttl");
             }
             if (hasPartitionTtlProperty || operation.toString().equalsIgnoreCase("delete")) {
-                collector.collect(result.toJSONString());
+                collector.collect(result.toString());
             }
         } else {
-            result.put("before", beforeJson);
-            result.put("after", afterJson);
+            result.set("before", beforeJson);
+            result.set("after", afterJson);
             if (!beforeJson.isEmpty() || !afterJson.isEmpty()) {
-                collector.collect(result.toJSONString());
+                collector.collect(result.toString());
             }
         }
     }
 
-    private JSONObject extractStructJson(Struct struct) {
-        JSONObject json = new JSONObject();
+    private ObjectNode extractStructJson(Struct struct) {
+        ObjectNode json = JsonUtils.createObjectNode();
         if (struct == null) return json;
         Schema schema = struct.schema();
         for (Field field : schema.fields()) {
             Object value = struct.get(field);
             if (value == null) {
-                json.put(field.name(), null);
+                json.putNull(field.name());
                 continue;
             }
 
             if ("file_ops".equals(field.name()) && value instanceof ArrayList) {
-                json.put(field.name(), convertByteBufferList((ArrayList<?>) value));
+                JsonUtils.put(json, field.name(), convertByteBufferList((ArrayList<?>) value));
             } else {
-                json.put(field.name(), value);
+                JsonUtils.put(json, field.name(), value);
             }
         }
         return json;

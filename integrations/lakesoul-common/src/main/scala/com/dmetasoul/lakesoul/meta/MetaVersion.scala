@@ -4,7 +4,6 @@
 
 package com.dmetasoul.lakesoul.meta
 
-import com.alibaba.fastjson.JSONObject
 import com.dmetasoul.lakesoul.meta.entity.PartitionInfo
 
 import java.util
@@ -16,7 +15,7 @@ object MetaVersion {
   val dbManager = new DBManager()
 
   def createNamespace(namespace: String): Unit = {
-    dbManager.createNewNamespace(namespace, new JSONObject().toJSONString, "")
+    dbManager.createNewNamespace(namespace, JsonUtils.createObjectNode().toString, "")
   }
 
   def listNamespaces(): Array[String] = {
@@ -76,7 +75,7 @@ object MetaVersion {
 
     val partitions =
       DBUtil.formatTableInfoPartitionsField(hash_column, range_column)
-    val json = new JSONObject()
+    val json = JsonUtils.createObjectNode()
     configuration.foreach(x => json.put(x._1, x._2))
     json.put("hashBucketNum", String.valueOf(bucket_num))
     dbManager.createNewTable(

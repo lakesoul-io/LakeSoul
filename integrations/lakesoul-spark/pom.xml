@@ -551,7 +551,6 @@ SPDX-License-Identifier: Apache-2.0
                             <include>com.google.flatbuffers:*</include>
                             <include>com.zaxxer:HikariCP</include>
                             <include>org.postgresql:postgresql</include>
-                            <include>com.alibaba:fastjson</include>
                             <include>mysql:mysql-connector-java</include>
                             <include>io.jhdf:jhdf</include>
 
@@ -582,10 +581,6 @@ SPDX-License-Identifier: Apache-2.0
                         <relocation>
                             <pattern>org.postgresql</pattern>
                             <shadedPattern>com.lakesoul.shaded.org.postgresql</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>com.alibaba.fastjson</pattern>
-                            <shadedPattern>com.lakesoul.shaded.com.alibaba.fastjson</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>com.google.flatbuffers</pattern>

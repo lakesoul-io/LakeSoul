@@ -10,13 +10,13 @@ import static org.apache.flink.lakesoul.metadata.LakeSoulCatalog.TABLE_ID_PREFIX
 import static org.apache.flink.lakesoul.tool.LakeSoulDDLSinkOptions.SOURCE_DB_TYPE;
 import static org.apache.flink.lakesoul.tool.LakeSoulSinkOptions.*;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONObject;
 import com.dmetasoul.lakesoul.meta.DBConfig;
 import com.dmetasoul.lakesoul.meta.DBManager;
 import com.dmetasoul.lakesoul.meta.DBUtil;
+import com.dmetasoul.lakesoul.meta.JsonUtils;
 import com.dmetasoul.lakesoul.meta.dao.TableInfoDao;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.flink.api.connector.sink.GlobalCommitter;
@@ -234,7 +234,7 @@ public class LakeSoulSinkGlobalCommitter
                     identity.useCDC,
                     identity.cdcColumn,
                     partition);
-            JSONObject properties = new JSONObject();
+            ObjectNode properties = JsonUtils.createObjectNode();
             if (!identity.primaryKeys.isEmpty()) {
                 properties.put(
                         HASH_BUCKET_NUM.key(), Integer.toString(conf.getInteger(HASH_BUCKET_NUM)));
@@ -345,18 +345,17 @@ public class LakeSoulSinkGlobalCommitter
                                     tableInfo.getTableId(),
                                     ArrowUtils.toMetadataArrowSchema(schemaToUpdate, "UTC")
                                             .toJson());
-                            if (JSONObject.parseObject(tableInfo.getProperties())
-                                    .containsKey(DBConfig.TableInfoProperty.DROPPED_COLUMN)) {
+                            if (JsonUtils.parseObject(tableInfo.getProperties())
+                                    .has(DBConfig.TableInfoProperty.DROPPED_COLUMN)) {
                                 dbManager.removeLogicallyDropColumn(tableInfo.getTableId());
                             }
                         }
                     }
                 } else if (!equalOrCanCast.equals(DataTypeCastUtils.IS_EQUAL())) {
                     long schemaLastChangeTime =
-                            JSON.parseObject(tableInfo.getProperties())
-                                    .getLongValue(
-                                            DBConfig.TableInfoProperty
-                                                    .LAST_TABLE_SCHEMA_CHANGE_TIME);
+                            JsonUtils.parseObject(tableInfo.getProperties())
+                                    .path(DBConfig.TableInfoProperty.LAST_TABLE_SCHEMA_CHANGE_TIME)
+                                    .asLong();
                     StringBuilder sb = new StringBuilder();
                     sb.append(equalOrCanCast);
                     sb.append(", for table ");
