@@ -3411,9 +3411,12 @@ fn main() {
             .try_init();
     }
 
+    // One worker per requested thread: a service runtime is sized to its cores,
+    // and capping it at eight hid how the single-query path scales past eight
+    // concurrent statements (each statement plans on one worker).
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(args.threads.min(8))
+        .worker_threads(args.threads)
         .build()
         .expect("tokio runtime");
 
