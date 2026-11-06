@@ -309,14 +309,17 @@ impl TablePlan {
         Ok(())
     }
 
-    /// P0 rejects unchanged-TOAST markers instead of writing NULLs. `RowData`
-    /// silently drops `u` columns, so a missing column is the signal.
+    /// Verify a tuple that must be complete: INSERT, DELETE, or the old tuple
+    /// of an UPDATE. `RowData` silently drops `u` columns, so a missing column
+    /// is the signal. An UPDATE *new* tuple is handled by [`parse_update`],
+    /// which fills unchanged TOASTable columns from the complete old tuple.
     pub fn check_full_row(&self, data: &RowData, context: &str) -> Result<()> {
         for column in &self.source.columns {
             if data.get(&column.name).is_none() {
                 bail!(
-                    "column {} is missing from {context}: pgoutput sent an unchanged \
-                     TOAST marker ('u'); P0 does not support TOASTed columns",
+                    "column {} is missing from {context}: expected a full tuple, but \
+                     pgoutput sent an unchanged TOAST marker ('u') or omitted the \
+                     column; REPLICA IDENTITY FULL is required",
                     column.name
                 );
             }
@@ -361,8 +364,13 @@ impl TablePlan {
     }
 
     /// An UPDATE may change the primary key. With REPLICA IDENTITY FULL the
-    /// old tuple is the complete non-TOAST row, so the old key gets a full
-    /// delete tombstone and the new key gets the new row.
+    /// old tuple is the complete row, so the old key gets a full delete
+    /// tombstone and the new key gets the new row.
+    ///
+    /// PostgreSQL still sends `u` (unchanged TOAST) for an unchanged TOASTable
+    /// column in the *new* tuple, even with REPLICA IDENTITY FULL. `RowData`
+    /// drops those columns. The old tuple is complete, so start from its values
+    /// and overwrite only the columns the new tuple actually carries.
     pub fn parse_update(
         &self,
         old_data: Option<&RowData>,
@@ -375,7 +383,17 @@ impl TablePlan {
             )
         })?;
         let old_state = self.parse_row(old_data, Op::Delete, "UPDATE old tuple")?;
-        let new_state = self.parse_row(new_data, Op::Update, "UPDATE new tuple")?;
+        let values = merge_update_values(
+            &self.schema,
+            &self.source,
+            &self.mappings,
+            &old_state.values,
+            new_data,
+        )?;
+        let new_state = RowState {
+            op: Op::Update,
+            values,
+        };
         let old_key = self.key_of(&old_state.values)?;
         let new_key = self.key_of(&new_state.values)?;
         if old_key == new_key {
@@ -390,6 +408,37 @@ impl TablePlan {
         let key = self.key_of(&state.values)?;
         Ok((key, state))
     }
+}
+
+/// Build an UPDATE's new row from the complete old row and the columns the new
+/// tuple actually carries. Missing columns are `u` (unchanged TOAST), which is
+/// only legal for a TOASTable source column.
+fn merge_update_values(
+    schema: &SchemaRef,
+    source: &super::source::SourceTable,
+    mappings: &[ColumnMapping],
+    old_values: &[ScalarValue],
+    new_data: &RowData,
+) -> Result<Vec<ScalarValue>> {
+    let mut values = old_values.to_vec();
+    for mapping in mappings {
+        let source_column = &source.columns[mapping.source_index];
+        let Some(value) = new_data.get(&source_column.name) else {
+            if source_column.toastable {
+                // Unchanged TOAST: keep the old tuple's value.
+                continue;
+            }
+            bail!(
+                "column {} is missing from the UPDATE new tuple but is not \
+                 TOASTable; the source schema or protocol changed",
+                source_column.name
+            );
+        };
+        let target = schema.field(mapping.target_index).data_type();
+        values[mapping.target_index] = parse_value(source_column, target, value)
+            .map_err(|error| report!("column {}: {error}", source_column.name))?;
+    }
+    Ok(values)
 }
 
 fn property_string(properties: &Value, key: &str) -> Option<String> {
@@ -478,5 +527,126 @@ mod tests {
         assert_eq!(Op::Insert.as_str(), "insert");
         assert_eq!(Op::Update.as_str(), "update");
         assert_eq!(Op::Delete.as_str(), "delete");
+    }
+
+    fn toast_source() -> (SchemaRef, super::super::source::SourceTable) {
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+            Field::new("payload", DataType::Utf8, true),
+            Field::new("rowKinds", DataType::Utf8, true),
+        ]));
+        let source = super::super::source::SourceTable {
+            schema: "public".to_string(),
+            name: "toast_test".to_string(),
+            relation_oid: 42,
+            columns: vec![
+                SourceColumn {
+                    name: "id".to_string(),
+                    type_id: 20,
+                    type_modifier: -1,
+                    pg_type: crate::subscribe::source::PgType::Int8,
+                    type_name: "int8".to_string(),
+                    not_null: true,
+                    toastable: false,
+                },
+                SourceColumn {
+                    name: "name".to_string(),
+                    type_id: 25,
+                    type_modifier: -1,
+                    pg_type: crate::subscribe::source::PgType::Text,
+                    type_name: "text".to_string(),
+                    not_null: false,
+                    toastable: true,
+                },
+                SourceColumn {
+                    name: "payload".to_string(),
+                    type_id: 25,
+                    type_modifier: -1,
+                    pg_type: crate::subscribe::source::PgType::Text,
+                    type_name: "text".to_string(),
+                    not_null: false,
+                    toastable: true,
+                },
+            ],
+            primary_key: vec!["id".to_string()],
+        };
+        (schema, source)
+    }
+
+    fn toast_mappings() -> Vec<ColumnMapping> {
+        vec![
+            ColumnMapping {
+                target_index: 0,
+                source_index: 0,
+            },
+            ColumnMapping {
+                target_index: 1,
+                source_index: 1,
+            },
+            ColumnMapping {
+                target_index: 2,
+                source_index: 2,
+            },
+        ]
+    }
+
+    #[test]
+    fn unchanged_toast_is_filled_from_the_old_tuple() {
+        use arrow_schema::DataType;
+        use pg_walstream::{ColumnValue, RowData};
+        use std::sync::Arc;
+
+        let (schema, source) = toast_source();
+        let mappings = toast_mappings();
+        let old_values = vec![
+            ScalarValue::Int64(Some(1)),
+            ScalarValue::Utf8(Some("Alice".to_string())),
+            ScalarValue::Utf8(Some("large payload".to_string())),
+            ScalarValue::Utf8(Some("insert".to_string())),
+        ];
+        let mut new_data = RowData::new();
+        new_data.push(Arc::from("id"), ColumnValue::text("1"));
+        new_data.push(Arc::from("name"), ColumnValue::text("Alice updated"));
+        // payload is deliberately absent: pgoutput sent `u`.
+
+        let values =
+            merge_update_values(&schema, &source, &mappings, &old_values, &new_data)
+                .unwrap();
+        assert_eq!(
+            values[2],
+            ScalarValue::Utf8(Some("large payload".to_string()))
+        );
+        assert_eq!(
+            values[1],
+            ScalarValue::Utf8(Some("Alice updated".to_string()))
+        );
+        assert_eq!(schema.field(2).data_type(), &DataType::Utf8);
+    }
+
+    #[test]
+    fn a_missing_non_toast_column_is_an_error() {
+        use pg_walstream::{ColumnValue, RowData};
+        use std::sync::Arc;
+
+        let (schema, mut source) = toast_source();
+        source.columns[1].toastable = false; // name is not TOASTable
+        let mappings = toast_mappings();
+        let old_values = vec![
+            ScalarValue::Int64(Some(1)),
+            ScalarValue::Utf8(Some("Alice".to_string())),
+            ScalarValue::Utf8(Some("large payload".to_string())),
+        ];
+        let mut new_data = RowData::new();
+        new_data.push(Arc::from("id"), ColumnValue::text("1"));
+
+        let error =
+            merge_update_values(&schema, &source, &mappings, &old_values, &new_data)
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("not TOASTable"), "{error}");
     }
 }

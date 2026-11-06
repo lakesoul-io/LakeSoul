@@ -190,8 +190,7 @@ pub async fn run(
                             processed_lsn = lsn;
                         }
 
-                        if !sink.is_empty() && sink.pending_rows() >= config.commit_rows
-                        {
+                        if sink.should_flush(config.commit_rows) {
                             flush(
                                 &mut sink,
                                 &config,

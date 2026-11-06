@@ -22,10 +22,16 @@ use super::decode::KeyValue;
 use super::plan::{RowState, TablePlan, commit_id_for};
 use crate::Result;
 
+/// Streaming batches are bounded by both `commit_rows` and this byte budget.
+/// A TOAST payload can be large enough that 50,000 rows would otherwise pin
+/// an unbounded amount of memory before the next commit.
+pub const STREAM_BATCH_MAX_BYTES: usize = 64 * 1024 * 1024;
+
 pub struct TableSink {
     pub plan: TablePlan,
     rows: HashMap<Vec<KeyValue>, RowState>,
     memory_pool: Arc<dyn MemoryPool>,
+    buffered_bytes: usize,
 }
 
 impl TableSink {
@@ -34,10 +40,12 @@ impl TableSink {
             plan,
             rows: HashMap::new(),
             memory_pool,
+            buffered_bytes: 0,
         }
     }
 
     pub fn apply(&mut self, key: Vec<KeyValue>, state: RowState) {
+        self.buffered_bytes += state.values.iter().map(scalar_size).sum::<usize>();
         self.rows.insert(key, state);
     }
 
@@ -47,6 +55,12 @@ impl TableSink {
 
     pub fn pending_rows(&self) -> usize {
         self.rows.len()
+    }
+
+    pub fn should_flush(&self, max_rows: usize) -> bool {
+        !self.rows.is_empty()
+            && (self.pending_rows() >= max_rows
+                || self.buffered_bytes >= STREAM_BATCH_MAX_BYTES)
     }
 
     /// Write and publish the batch. Returns the LSN that became durable, or
@@ -74,6 +88,7 @@ impl TableSink {
         )
         .await?;
         self.rows.clear();
+        self.buffered_bytes = 0;
         Ok(Some(batch_lsn))
     }
 }
@@ -103,6 +118,19 @@ pub(crate) fn build_batch(
     }
     RecordBatch::try_new(schema.clone(), columns)
         .map_err(|error| report!("build target batch: {error}"))
+}
+
+fn scalar_size(value: &ScalarValue) -> usize {
+    match value {
+        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) => {
+            value.len()
+        }
+        ScalarValue::Binary(Some(value)) | ScalarValue::LargeBinary(Some(value)) => {
+            value.len()
+        }
+        ScalarValue::Utf8View(Some(value)) => value.len(),
+        _ => 16,
+    }
 }
 
 pub(crate) async fn write_files(

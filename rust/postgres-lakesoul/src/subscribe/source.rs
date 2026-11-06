@@ -89,6 +89,11 @@ pub struct SourceColumn {
     pub pg_type: PgType,
     pub type_name: String,
     pub not_null: bool,
+    /// Whether PostgreSQL may store this column out of line in a TOAST table.
+    /// `pgoutput` sends `u` for an unchanged TOASTable value in an UPDATE's
+    /// new tuple; with REPLICA IDENTITY FULL the old tuple carries the value
+    /// that the subscriber merges back in.
+    pub toastable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -230,7 +235,7 @@ async fn inspect(
     let rows = client
         .query(
             "select a.attname, a.atttypid::int8, a.atttypmod, a.attnotnull, \
-                    a.attgenerated::text, t.typname \
+                    a.attgenerated::text, t.typname, a.attstorage::text, a.attlen \
              from pg_attribute a \
              join pg_class c on c.oid = a.attrelid \
              join pg_namespace n on n.oid = c.relnamespace \
@@ -251,6 +256,8 @@ async fn inspect(
         let not_null: bool = row.get(3);
         let generated: String = row.get(4);
         let type_name: String = row.get(5);
+        let storage: String = row.get(6);
+        let attlen: i16 = row.get(7);
         if !generated.is_empty() {
             bail!(
                 "column {name} of {schema}.{table} is generated; P0 does not support \
@@ -274,6 +281,7 @@ async fn inspect(
             pg_type,
             type_name,
             not_null,
+            toastable: attlen == -1 && matches!(storage.as_str(), "e" | "m" | "x"),
         });
     }
     if columns.is_empty() {

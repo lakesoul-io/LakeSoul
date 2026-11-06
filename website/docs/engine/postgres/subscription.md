@@ -68,6 +68,12 @@ The source must be a primary. A hot standby cannot create the logical slot
 this subscriber needs, and an independent standby snapshot cannot be handed
 off to the primary slot without an LSN-alignment protocol.
 
+`REPLICA IDENTITY FULL` is required. It makes the old tuple complete, including
+unchanged TOAST values; PostgreSQL still sends `u` for an unchanged TOAST column
+in the new tuple, and the subscriber fills it from the old tuple. Without FULL,
+those values are unavailable and a typed target cannot use Debezium-style
+placeholders. INSERT and DELETE still require complete tuples.
+
 The source table must be an ordinary table in the `public` schema. Set
 `max_slot_wal_keep_size` to a value that fits the WAL the subscription may need
 to retain, and run large initial copies outside peak hours. Snapshot readers

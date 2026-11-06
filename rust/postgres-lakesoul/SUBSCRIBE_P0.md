@@ -21,7 +21,7 @@ PostgreSQL subscription implementation.
 | Target partitioning | Unpartitioned (hash buckets only) |
 | Replica identity | `REPLICA IDENTITY FULL` required |
 | Writes | INSERT / UPDATE / DELETE; full rows plus `rowKinds` |
-| TOAST | Not supported; an unchanged-TOAST marker (`u`) stops the worker |
+| TOAST | Supported; unchanged values in an UPDATE are filled from the full old tuple |
 | Initial load | Managed snapshot; target stays empty until one atomic final commit |
 | pg_dump | Next phase; schema fields are reserved, implementation is not present |
 | TRUNCATE | Rejected at startup and at runtime |
@@ -33,18 +33,24 @@ PostgreSQL subscription implementation.
 ### Why FULL
 
 With `REPLICA IDENTITY FULL`, DELETE and key-changing UPDATE carry a complete
-non-TOAST old row, so the sink can write a full delete tombstone without padding
-NULLs or splitting the writer schema. `DEFAULT` would only carry the old key.
+old row, including unchanged TOAST values, so the sink can write a full delete
+tombstone without padding NULLs or splitting the writer schema. `DEFAULT` would
+only carry the old key and cannot supply unchanged TOAST values.
 
-### Why `u` is an error
+### Unchanged TOAST
 
-`REPLICA IDENTITY FULL` does **not** make TOAST values available. PostgreSQL 14's
-`logicalrep_write_tuple()` writes `'u'` for every externally stored TOAST datum
-in both the old and new tuple; `ReorderBufferToastReplace()` only fills the new
-tuple when the TOAST chunks arrived in the same transaction. A missing column in
-`RowData` is therefore an unchanged TOAST value, and P0 fails instead of writing
-NULL over the existing value. Partial-column writes (or a read-modify-write per
-key) are the next phase.
+With `REPLICA IDENTITY FULL`, PostgreSQL logs the complete old row
+(`toast_flatten_tuple`) and the subscriber can recover unchanged TOAST values.
+The new tuple still sends `'u'` for an externally stored value that did not
+change; `pgoutput` does not repeat the payload. `RowData` drops the `u` column,
+so `parse_update` starts from the old tuple's full values and overwrites only
+the columns the new tuple actually carries. A missing column is accepted only
+when the source column is TOASTable; any other missing column is a protocol or
+schema error. INSERT and DELETE still require complete tuples.
+
+This is the same trade-off Debezium documents: `REPLICA IDENTITY DEFAULT`
+cannot supply unchanged TOAST values and needs a placeholder or a racy
+out-of-band reselect; `FULL` avoids both at the cost of larger WAL records.
 
 ## Source setup
 
@@ -260,6 +266,9 @@ child without repeating the command line.
 
 - Changes are accumulated per source transaction. A batch keeps at most one row
   per primary key; the last change wins.
+- A streaming batch flushes when `commit_rows` keys are pending or its estimated
+  buffered values reach 64 MiB, whichever comes first. The byte cap keeps a
+  batch of large TOAST values from pinning unbounded memory.
 - A batch is published with one `commit_data_commit_infos` call per table. The
   commit id is `high = 0x4c53504700000000`, `low = last commit_lsn` in the batch.
 - On startup, the latest partition snapshot of the target is scanned for that
@@ -303,8 +312,9 @@ The local PostgreSQL 14 smoke test covered:
   metadata;
 - duplicate subscription, transaction-block, mixed-batch and non-empty-target
   requests were rejected with their PostgreSQL SQLSTATEs;
-- TOAST guard: a 9,600-byte incompressible `payload` followed by an update to a
-  different column stops the worker with the `u` error instead of writing NULL;
+- TOAST merge: a 20,000-byte externally stored `payload` followed by an update
+  to a different column keeps the payload; updating the payload, changing the
+  primary key, and deleting the row also round-trip correctly;
 - startup rejection of a publication that publishes truncate and of a source
   table without `REPLICA IDENTITY FULL`.
 

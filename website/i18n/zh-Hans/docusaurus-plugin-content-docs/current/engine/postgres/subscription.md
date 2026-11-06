@@ -59,6 +59,8 @@ CREATE PUBLICATION app_pub
 
 源库必须是主库。从库无法创建本订阅所需的 logical slot，而从库自己的一致性快照也无法在没有 LSN 对齐协议的情况下接到主库 slot 上。
 
+必须使用 `REPLICA IDENTITY FULL`。它让 old tuple 包含完整旧行（包括未变化的 TOAST 值）；PostgreSQL 仍会在 UPDATE 的 new tuple 中用 `u` 表示未变化的 TOAST 列，订阅端会从 old tuple 补齐。没有 FULL 时这些值不可得，强类型目标表也不能使用 Debezium 风格的占位符。INSERT 和 DELETE 仍然要求完整行。
+
 源表必须是 `public` schema 下的普通表。把 `max_slot_wal_keep_size` 设置为能容纳订阅可能保留的 WAL 的大小，并尽量在业务低峰执行大表初始拷贝。快照 reader 会在自己的连接上设置 `statement_timeout = 0`、`DateStyle = ISO`、`TimeZone = UTC` 和 `bytea_output = hex`。
 
 ## 目标表配置

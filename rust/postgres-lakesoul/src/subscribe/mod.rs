@@ -5,10 +5,10 @@
 //! Native PostgreSQL logical-replication subscriber (P0).
 //!
 //! P0 is intentionally narrow: one publication, one table, ordinary `public`
-//! tables, `REPLICA IDENTITY FULL`, no TOAST (`u` is an error), no schema
-//! evolution, no truncate, no initial snapshot, and no target range
-//! partitioning. The goal is to prove the WAL -> Arrow -> LakeSoul CDC batch
-//! path and its replay semantics before broadening the surface.
+//! tables, `REPLICA IDENTITY FULL`, no schema evolution, no truncate, no target
+//! range partitioning. Unchanged TOAST columns in an UPDATE are recovered from
+//! the complete old tuple. The goal is to prove the WAL -> Arrow -> LakeSoul CDC
+//! batch path and its replay semantics before broadening the surface.
 //!
 //! The subscription definition and progress live in the metadata PostgreSQL
 //! (`subscription` schema); the target table's commit ids remain the
