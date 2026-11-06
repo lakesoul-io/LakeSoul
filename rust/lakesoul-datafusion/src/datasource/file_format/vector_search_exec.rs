@@ -1047,8 +1047,9 @@ impl LakeSoulVectorSearchExec {
             );
         }
         let probe_ms = t_probe.elapsed().as_secs_f64() * 1000.0;
+        let candidates_total = per_shard.iter().map(|hits| hits.len()).sum::<usize>();
         let mut best: std::collections::HashMap<IndexKey, f32> =
-            std::collections::HashMap::new();
+            std::collections::HashMap::with_capacity(candidates_total);
         for hits in per_shard.into_iter().flatten().flatten() {
             best.entry(hits.key)
                 .and_modify(|score| *score = score.min(hits.score))
@@ -1057,17 +1058,32 @@ impl LakeSoulVectorSearchExec {
         let mut ranked: Vec<(f32, IndexKey)> =
             best.into_iter().map(|(key, score)| (score, key)).collect();
         let descending = !column.metric.eq_ignore_ascii_case("L2");
-        ranked.sort_by(|left, right| {
+        let compare = |left: &(f32, IndexKey), right: &(f32, IndexKey)| {
             let order = left
                 .0
                 .partial_cmp(&right.0)
                 .unwrap_or(std::cmp::Ordering::Equal);
             let order = if descending { order.reverse() } else { order };
             order.then_with(|| left.1.cmp(&right.1))
-        });
+        };
         if ranked.is_empty() {
             return Ok(Some(Vec::new()));
         }
+        // Index-only ordering: the plan above keeps at most `top_k` rows, and
+        // with no filter between the scan and that limit (`narrow`) nothing can
+        // drop a candidate, so only the leading rows need to be ordered and
+        // decoded.  Partitioning first keeps the cost of the candidate scan
+        // linear in the candidate count instead of sorting all of it.
+        let output_rows = if self.vector_search.narrow {
+            self.vector_search.top_k.max(1).min(ranked.len())
+        } else {
+            ranked.len()
+        };
+        if output_rows < ranked.len() {
+            ranked.select_nth_unstable_by(output_rows - 1, compare);
+            ranked.truncate(output_rows);
+        }
+        ranked.sort_by(compare);
         let candidates = ranked.len();
         let keys: Vec<IndexKey> = ranked.into_iter().map(|(_, key)| key).collect();
         let decoded = codec
