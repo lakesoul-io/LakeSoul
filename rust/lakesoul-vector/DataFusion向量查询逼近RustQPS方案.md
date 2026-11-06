@@ -440,3 +440,23 @@ R20 的批量快路径是"每桶一个线程 = ANN + 排序"，但排序（逐 q
 批量中位 **+30.5%**。此时每批 200 query 的 chunk 为 load 0.18 + probe 20.4 + merge 0.89 ms；
 探测阶段 18.5 ms 对理想 13.75 ms（220 ms CPU / 16 核）≈ 73% 并行效率，差距来自 SIMD 满载
 下的频率与内存带宽，不是调度问题。
+
+## 21. 与纯 Rust 天花板对照（bits=1）
+
+新增 `--scenario rust-shard-batch`：用 catalog 直接加载表里的 4 个 shard，按「每 shard 一线程
+`batch_search` + 每 query 跨 shard 合并」的手写 Rust 流程测量，作为 DataFusion 路径的天花板
+（3 次，bits=1、200 query、nprobe 16、top_k 100、16 rayon 线程）：
+
+| 指标 | 纯 Rust 参考 | DataFusion（R21/R22） |
+|---|---:|---:|
+| 检索段 QPS | 13.4–13.8k | — |
+| 检索 + 合并 | ≈10.7k（合并单线程 4.0 ms） | **11.2–11.5k（端到端）** |
+| Recall@100 | 0.42035 | 0.42035 |
+| 单线程单 query（4 shard）p50 | 0.73–0.78 ms | 单 query SQL 3.46 ms |
+
+即：**批量入口端到端已达纯 Rust 检索段的 82%、纯 Rust「检索+合并」的 105%**（我们的合并并行），
+Recall 与参考逐位一致。单查询 SQL 里真正属于检索的只有约 1.0 ms（exec），其余 2.4 ms 是每条
+SQL 的 logical/physical planning 与快照列文件。
+
+R22 另把排序与跨桶合并融合成同一个并行区：批量中位 10943 → **11206**（6 次，+2.4%），且抖动
+收窄（最小值 8572 → 10867）。

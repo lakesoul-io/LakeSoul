@@ -156,75 +156,79 @@ fn rank_bucket(
         .collect()
 }
 
-/// Rank every bucket's candidates, spreading the per-query work over all
-/// cores.
-///
-/// The index probe fills the rayon pool by itself, but the ranking that
-/// follows it (dedupe, key decode) is per query and would otherwise run on
-/// only one thread per bucket: with four buckets that leaves three quarters of
-/// the machine idle for the whole ranking stage.
-fn rank_buckets(
+/// Rank one query's candidates across the buckets and keep its top-k.
+fn merge_one_query(
     codec: &KeyCodec,
     bucket_hits: &[Vec<Vec<VectorHit>>],
-) -> DFResult<Vec<Vec<Vec<(f32, i64)>>>> {
-    let total: usize = bucket_hits.iter().map(|hits| hits.len()).sum();
+    query_index: usize,
+    top_k: usize,
+) -> DFResult<Vec<i64>> {
+    let mut ranked: Vec<(f32, i64)> = Vec::with_capacity(bucket_hits.len() * top_k);
+    for hits in bucket_hits {
+        ranked.extend(rank_query(codec, &hits[query_index], None)?);
+    }
+    // L2 index distance: smaller is closer, the same ordering the single-query
+    // path uses with `lakesoul_vector_search.rerank=index`.
+    ranked.sort_by(|left, right| {
+        left.0
+            .total_cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    ranked.truncate(top_k);
+    Ok(ranked.into_iter().map(|(_, id)| id).collect())
+}
+
+/// Rank and merge every query, spreading the per-query work over all cores.
+///
+/// Both stages are per query, so fusing them keeps one parallel region: the
+/// candidate dedupe/decode of every bucket and the cross-bucket top-k of a
+/// query run on the same core, and no separate merge pass has to spawn threads
+/// again.
+fn rank_and_merge(
+    codec: &KeyCodec,
+    bucket_hits: &[Vec<Vec<VectorHit>>],
+    top_k: usize,
+) -> DFResult<Vec<Vec<i64>>> {
+    let queries = bucket_hits.first().map(|hits| hits.len()).unwrap_or(0);
+    if queries == 0 {
+        return Ok(Vec::new());
+    }
     let threads = std::thread::available_parallelism()
         .map(std::num::NonZero::get)
         .unwrap_or(1)
-        .min(total.max(1));
-    let mut ranked: Vec<Vec<Vec<(f32, i64)>>> = bucket_hits
-        .iter()
-        .map(|hits| Vec::with_capacity(hits.len()))
-        .collect();
-    if threads <= 1 || total <= threads {
-        for (bucket, hits) in bucket_hits.iter().enumerate() {
-            ranked[bucket] = rank_bucket(codec, hits, None)?;
-        }
-        return Ok(ranked);
+        .min(queries);
+    if threads <= 1 {
+        return (0..queries)
+            .map(|query_index| merge_one_query(codec, bucket_hits, query_index, top_k))
+            .collect();
     }
-    // Flat index -> (bucket, query) mapping for an even split.
-    let mut offsets = Vec::with_capacity(bucket_hits.len() + 1);
-    offsets.push(0);
-    for hits in bucket_hits {
-        offsets.push(offsets.last().copied().unwrap_or(0) + hits.len());
-    }
-    let locate = |flat: usize| -> (usize, usize) {
-        let bucket = offsets
-            .partition_point(|offset| *offset <= flat)
-            .saturating_sub(1)
-            .min(bucket_hits.len().saturating_sub(1));
-        (bucket, flat - offsets[bucket])
-    };
-    let per_thread = total.div_ceil(threads).max(1);
-    let mut parts: Vec<(usize, usize, DFResult<Vec<(f32, i64)>>)> = Vec::new();
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..total)
+    let per_thread = queries.div_ceil(threads).max(1);
+    let mut parts: Vec<(usize, Vec<i64>)> = Vec::with_capacity(queries);
+    let merged: DFResult<()> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..queries)
             .step_by(per_thread)
             .map(|start| {
-                let end = (start + per_thread).min(total);
-                scope.spawn(move || {
+                let end = (start + per_thread).min(queries);
+                scope.spawn(move || -> DFResult<Vec<(usize, Vec<i64>)>> {
                     let mut rows = Vec::with_capacity(end - start);
-                    for flat in start..end {
-                        let (bucket, query) = locate(flat);
+                    for query_index in start..end {
                         rows.push((
-                            bucket,
-                            query,
-                            rank_query(codec, &bucket_hits[bucket][query], None),
+                            query_index,
+                            merge_one_query(codec, bucket_hits, query_index, top_k)?,
                         ));
                     }
-                    rows
+                    Ok(rows)
                 })
             })
             .collect();
         for handle in handles {
-            parts.extend(handle.join().expect("vector batch rank thread"));
+            parts.extend(handle.join().expect("vector batch rank thread")?);
         }
+        Ok(())
     });
-    parts.sort_by_key(|(bucket, query, _)| (*bucket, *query));
-    for (bucket, _, row) in parts {
-        ranked[bucket].push(row?);
-    }
-    Ok(ranked)
+    merged?;
+    parts.sort_by_key(|(query_index, _)| *query_index);
+    Ok(parts.into_iter().map(|(_, ids)| ids).collect())
 }
 
 fn bucket_files_by_prefix(
@@ -545,18 +549,24 @@ async fn search_vector_batch_chunk(
                 Ok::<_, DataFusionError>(probed)
             })
         })?;
+        let probe_ms = t_probe.elapsed().as_secs_f64() * 1000.0;
         let t_rank = std::time::Instant::now();
-        // Ranking is per query and fills every core, unlike the probe stage
-        // which is limited by the number of buckets.
-        let ranked = rank_buckets(&codec, &bucket_hits)?;
+        // Ranking and the cross-bucket top-k are per query, so they fill every
+        // core even though the probe stage is limited to the bucket count.
+        let results = rank_and_merge(&codec, &bucket_hits, request.top_k)?;
         if profile {
             tracing::debug!(
-                rows = bucket_hits.iter().map(|hits| hits.len()).sum::<usize>(),
-                rank_ms = t_rank.elapsed().as_secs_f64() * 1000.0,
-                "profiled vector batch ranking"
+                queries = request.queries.len(),
+                shards = shards.len(),
+                load_ms,
+                probe_ms,
+                rank_merge_ms = t_rank.elapsed().as_secs_f64() * 1000.0,
+                total_ms = t_chunk.elapsed().as_secs_f64() * 1000.0,
+                skipped_verification = true,
+                "profiled vector batch chunk"
             );
         }
-        ranked
+        return Ok(results);
     } else {
         // Anything unproven falls back to the verification read: one native
         // reader pass per bucket over that bucket's candidate union.

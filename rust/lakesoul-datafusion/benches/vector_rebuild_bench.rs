@@ -88,6 +88,11 @@ enum Scenario {
     /// `ORDER BY array_distance(...) LIMIT k` (index candidates + exact
     /// re-rank).  Requires PostgreSQL metadata.
     Sql,
+    /// Hand-written Rust reference for the snapshot batch path: load the
+    /// table's vector shards straight from the catalog and run the same
+    /// "one thread per shard, rayon over queries, merge per query" pipeline
+    /// without DataFusion, to measure how close the SQL path gets.
+    RustShardBatch,
 }
 
 /// Rebuild policy exercised by the `stream`/`trigger` scenarios.
@@ -264,7 +269,8 @@ USAGE:
   cargo bench -p lakesoul-datafusion --bench vector_rebuild_bench -- [OPTIONS]
 
 OPTIONS:
-  --scenario <build|search|stream|trigger|sql>  Scenario to run (default: build)
+  --scenario <build|search|stream|trigger|sql|rust-shard-batch>
+                                            Scenario to run (default: build)
   --base <path.fvecs>                       Base vectors (required)
   --query <path.fvecs>                      Query vectors (required)
   --gt <path.ivecs>                         Ground truth (optional; brute-forced if absent)
@@ -341,6 +347,7 @@ fn parse_args() -> Result<Args, String> {
                     "stream" => Scenario::Stream,
                     "trigger" => Scenario::Trigger,
                     "sql" => Scenario::Sql,
+                    "rust-shard-batch" => Scenario::RustShardBatch,
                     other => return Err(format!("unknown scenario: {other}")),
                 };
             }
@@ -1601,6 +1608,173 @@ async fn run_search(args: &Args, dataset: &Dataset) -> Result<Value, String> {
         "index_size_bytes": index_size_bytes(&work_dir),
         "sweep": sweep,
         "diagnostics": diagnostics,
+    });
+    print_summary(&summary);
+    Ok(summary)
+}
+
+/// Hand-written Rust reference for the snapshot batch path.
+///
+/// Loads every vector shard of the table's data directory straight from the
+/// catalog and runs the same pipeline the batch entry uses — one thread per
+/// shard calling `IvfRabitqIndex::batch_search` (rayon over the queries
+/// inside), then a per-query merge across the shards — without DataFusion, the
+/// native reader or the SQL planner.  The reported QPS is the ceiling the SQL
+/// batch entry is compared against.
+async fn run_rust_shard_batch(args: &Args, dataset: &Dataset) -> Result<Value, String> {
+    use lakesoul_io::index::key::{KeyCodec, KeyLayout};
+
+    let work_dir = prepare_work_dir(&args.work_dir)?;
+    let files = find_data_files(&work_dir);
+    if files.is_empty() {
+        return Err(format!(
+            "no vortex data files under {} — run the sql scenario first",
+            work_dir.display()
+        ));
+    }
+    let catalog = bench_catalog().await?;
+    let prefixes = all_shard_prefixes(&files, VEC_COLUMN);
+    if prefixes.is_empty() {
+        return Err("no vector index shards for the data files".to_string());
+    }
+    let t_load = Instant::now();
+    let mut indexes = Vec::with_capacity(prefixes.len());
+    for prefix in &prefixes {
+        indexes.push(load_index(&catalog, prefix).await?);
+    }
+    let load_ms = t_load.elapsed().as_secs_f64() * 1000.0;
+    // The table's primary key is an Int64 column; decode it the way the scan
+    // does, one bulk call per shard.
+    let codec = KeyCodec::new(KeyLayout::new(
+        vec![PK_COLUMN.to_string()],
+        vec![DataType::Int64],
+    ))
+    .map_err(|e| format!("key codec: {e}"))?;
+
+    let nq = dataset.queries.n;
+    let top_k = args.top_k;
+    let params =
+        SearchParams::new(top_k, args.nprobe).with_parallelism(args.search_parallelism);
+    let query_refs: Vec<&[f32]> = (0..nq).map(|i| dataset.queries.query(i)).collect();
+
+    // Batched throughput: one thread per shard, rayon over the queries inside —
+    // exactly the structure of the snapshot batch entry.
+    let t = Instant::now();
+    let mut per_shard = Vec::with_capacity(indexes.len());
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = indexes
+            .iter()
+            .map(|index| {
+                let query_refs = &query_refs;
+                scope.spawn(move || index.batch_search(query_refs, params))
+            })
+            .collect();
+        for handle in handles {
+            per_shard.push(handle.join().expect("rust shard batch thread"));
+        }
+    });
+    let batch_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+    // Decode the ids of every shard in one call, then merge per query.
+    let merge_start = Instant::now();
+    let mut ids_per_shard: Vec<Vec<Vec<i64>>> = Vec::with_capacity(per_shard.len());
+    for results in &per_shard {
+        let keys: Vec<lakesoul_vector::IndexKey> = results
+            .iter()
+            .flat_map(|per_query| match per_query {
+                Ok(hits) => hits.iter().map(|hit| hit.id.clone()).collect::<Vec<_>>(),
+                Err(_) => Vec::new(),
+            })
+            .collect();
+        let decoded = codec
+            .decode(&keys)
+            .map_err(|e| format!("key decode: {e}"))?;
+        let values = decoded[0]
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .ok_or("key decode did not produce an Int64Array")?;
+        let mut ids = values.iter().map(|value| value.unwrap_or_default());
+        let mut per_query = Vec::with_capacity(results.len());
+        for result in results {
+            let count = result.as_ref().map(|hits| hits.len()).unwrap_or(0);
+            per_query.push(ids.by_ref().take(count).collect::<Vec<i64>>());
+        }
+        ids_per_shard.push(per_query);
+    }
+    let gt = if dataset.gt.n == nq {
+        Some(dataset.gt.clone())
+    } else {
+        None
+    };
+    let mut recall_sum = 0.0f64;
+    let mut counted = 0usize;
+    for query_index in 0..nq {
+        let mut ranked: Vec<(f32, i64)> = Vec::with_capacity(indexes.len() * top_k);
+        for (shard_index, results) in per_shard.iter().enumerate() {
+            let Ok(hits) = &results[query_index] else {
+                continue;
+            };
+            let ids = &ids_per_shard[shard_index][query_index];
+            ranked.extend(hits.iter().zip(ids).map(|(hit, id)| (hit.score, *id)));
+        }
+        ranked.sort_by(|left, right| {
+            left.0
+                .total_cmp(&right.0)
+                .then_with(|| left.1.cmp(&right.1))
+        });
+        ranked.truncate(top_k);
+        if let Some(gt) = &gt {
+            let predicted: Vec<u64> = ranked.iter().map(|(_, id)| *id as u64).collect();
+            recall_sum += recall_at_k(&predicted, gt.row(query_index), top_k);
+            counted += 1;
+        }
+    }
+    let merge_ms = merge_start.elapsed().as_secs_f64() * 1000.0;
+    let recall_at_k = if counted > 0 {
+        recall_sum / counted as f64
+    } else {
+        f64::NAN
+    };
+    let pipeline_ms = load_ms + batch_ms + merge_ms;
+
+    // Single-threaded latency of one query across every shard.
+    let mut latencies = Vec::with_capacity(nq);
+    for query in &query_refs {
+        let t = Instant::now();
+        for index in &indexes {
+            let _ = index.search(query, params);
+        }
+        latencies.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    latencies.sort_by(|a, b| a.total_cmp(b));
+    let percentile = |p: f64| -> f64 {
+        if latencies.is_empty() {
+            return 0.0;
+        }
+        latencies[((latencies.len() as f64 - 1.0) * p).round() as usize]
+    };
+    let mean_ms = latencies.iter().sum::<f64>() / latencies.len().max(1) as f64;
+
+    let summary = json!({
+        "scenario": "rust-shard-batch",
+        "shards": prefixes.len(),
+        "shard_sizes": indexes.iter().map(|index| index.len()).collect::<Vec<_>>(),
+        "dim": dataset.dim(),
+        "n_queries": nq,
+        "top_k": top_k,
+        "nprobe": args.nprobe,
+        "search_parallelism": args.search_parallelism,
+        "load_ms": load_ms,
+        "batch_ms": batch_ms,
+        "qps": nq as f64 / (batch_ms / 1000.0),
+        "merge_ms": merge_ms,
+        "pipeline_ms": pipeline_ms,
+        "pipeline_qps": nq as f64 / (pipeline_ms / 1000.0),
+        "single_thread_p50_ms": percentile(0.50),
+        "single_thread_p99_ms": percentile(0.99),
+        "single_thread_mean_ms": mean_ms,
+        "recall_at_k": recall_at_k,
+        "peak_rss_mb": peak_rss_mb(),
     });
     print_summary(&summary);
     Ok(summary)
@@ -3042,6 +3216,7 @@ fn main() {
             Scenario::Stream => run_stream(&args, &dataset).await,
             Scenario::Trigger => run_trigger(&args, &dataset).await,
             Scenario::Sql => run_sql(&args, &dataset).await,
+            Scenario::RustShardBatch => run_rust_shard_batch(&args, &dataset).await,
         }
     });
 
