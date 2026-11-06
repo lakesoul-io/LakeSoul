@@ -76,11 +76,19 @@ pub static OPTION_KEY_TEXT_SEARCH_VERIFY: &str = "text_search_verify";
 /// enables the verification pass, which drops stale candidates.
 pub static OPTION_KEY_TEXT_SEARCH_SCORES: &str = "text_search_scores";
 /// Vortex: target row block size (rows) for every column of a written file.
-/// Random row access reads a row block per column, so smaller blocks make
-/// candidate/pk reads cheaper; the writer default is 8192 rows.
+/// Unset keeps the Vortex writer default (8192 rows); columns declared in a
+/// table's `vector_index_columns` property have a separate small-block default.
 pub static OPTION_KEY_VORTEX_ROW_BLOCK_SIZE: &str = "vortex_row_block_size";
 /// Vortex: target uncompressed bytes per data block of a written file.
-/// Blocks are the smallest unit a random read fetches; the writer default is
-/// 1 MiB, which reads far more than a candidate row needs.
+/// Unset keeps the Vortex writer default (1 MiB); vector columns have a
+/// separate small-block default.
 pub static OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES: &str =
     "vortex_data_block_target_bytes";
+/// Vortex: target row block size (rows) for the table's vector columns.
+/// Unset uses the small vector layout default (1024 rows) whenever the table
+/// declares vector columns; other columns keep the Vortex writer default.
+pub static OPTION_KEY_VORTEX_VECTOR_ROW_BLOCK_SIZE: &str = "vortex_vector_row_block_size";
+/// Vortex: target uncompressed bytes per data block for the table's vector
+/// columns. Unset uses the small vector layout default (128 KiB).
+pub static OPTION_KEY_VORTEX_VECTOR_DATA_BLOCK_TARGET_BYTES: &str =
+    "vortex_vector_data_block_target_bytes";

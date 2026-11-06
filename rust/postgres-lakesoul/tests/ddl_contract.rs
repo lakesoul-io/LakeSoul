@@ -32,6 +32,8 @@ struct TableRow {
     append_only: Option<String>,
     use_cdc: Option<String>,
     cdc_change_column: Option<String>,
+    vortex_row_block_size: Option<String>,
+    vortex_data_block_target_bytes: Option<String>,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -358,7 +360,9 @@ async fn options_and_column_types(h: &Harness) -> Result<()> {
     command(
         h,
         "CREATE TABLE ddl_buckets (id BIGINT PRIMARY KEY, tag TEXT) \
-         WITH (hash_bucket_num = 8, file_format = 'parquet', append_only = true)",
+         WITH (hash_bucket_num = 8, file_format = 'parquet', append_only = true, \
+               vortex_row_block_size = 4096, \
+               vortex_data_block_target_bytes = 262144)",
     )
     .await?;
     let row = metadata(h, "ddl_buckets")
@@ -389,6 +393,27 @@ async fn options_and_column_types(h: &Harness) -> Result<()> {
             "ddl_buckets",
             "append only",
             &format!("expected true, actual {:?}", row.append_only)
+        )
+    );
+    ensure!(
+        row.vortex_row_block_size.as_deref() == Some("4096"),
+        "{}",
+        detail(
+            "ddl_buckets",
+            "vector row block size",
+            &format!("expected 4096, actual {:?}", row.vortex_row_block_size)
+        )
+    );
+    ensure!(
+        row.vortex_data_block_target_bytes.as_deref() == Some("262144"),
+        "{}",
+        detail(
+            "ddl_buckets",
+            "vector data block target",
+            &format!(
+                "expected 262144, actual {:?}",
+                row.vortex_data_block_target_bytes
+            )
         )
     );
     command(h, "DROP TABLE ddl_buckets").await?;
@@ -1582,7 +1607,9 @@ async fn metadata(h: &Harness, table: &str) -> Result<Option<TableRow>> {
             "SELECT table_id, table_path, partitions, \
              properties->>'hashBucketNum', properties->>'file_format', \
              properties->>'appendOnly', properties->>'use_cdc', \
-             properties->>'lakesoul_cdc_change_column' \
+             properties->>'lakesoul_cdc_change_column', \
+             properties->>'vortex_row_block_size', \
+             properties->>'vortex_data_block_target_bytes' \
              FROM public.table_info WHERE table_namespace = $1 AND table_name = $2",
             &[&h.lake_namespace, &table],
         )
@@ -1597,6 +1624,8 @@ async fn metadata(h: &Harness, table: &str) -> Result<Option<TableRow>> {
         append_only: row.get(5),
         use_cdc: row.get(6),
         cdc_change_column: row.get(7),
+        vortex_row_block_size: row.get(8),
+        vortex_data_block_target_bytes: row.get(9),
     }))
 }
 

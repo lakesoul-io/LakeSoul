@@ -817,16 +817,18 @@ impl IvmTable {
             self.file_format,
             PhysicalFormat::Vortex | PhysicalFormat::VortexCompact
         ) {
-            if let Some(value) = &options.vortex_row_block_size {
-                builder =
-                    builder.with_option(OPTION_KEY_VORTEX_ROW_BLOCK_SIZE, value.clone());
-            }
-            if let Some(value) = &options.vortex_data_block_bytes {
-                builder = builder.with_option(
-                    OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES,
-                    value.clone(),
-                );
-            }
+            // IVM keeps the small random-access layout for its internal
+            // tables; the generic Vortex writer default is 8192 / 1 MiB.
+            let row_block_size =
+                options.vortex_row_block_size.as_deref().unwrap_or("1024");
+            builder =
+                builder.with_option(OPTION_KEY_VORTEX_ROW_BLOCK_SIZE, row_block_size);
+            let data_block_bytes = options
+                .vortex_data_block_bytes
+                .as_deref()
+                .unwrap_or("131072");
+            builder = builder
+                .with_option(OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES, data_block_bytes);
         }
         builder
     }

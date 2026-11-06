@@ -334,10 +334,10 @@ zone-map pruning.  Two changes remove it:
   `LAKESOUL_PK_CACHE_BYTES` (default 256 MiB, `0` disables it).
 - *Small row blocks for vector columns.*  Vortex reads random rows at
   row-block granularity, so the writer gives every column declared in the
-  table's `vector_index_columns` property 1024-row blocks instead of the
-  default 8192.  Fetching 100 scattered candidates then reads ~1/8 of the
-  bytes, and full-column scans are also slightly faster for these wide
-  columns.
+  table's `vector_index_columns` property 1024-row blocks and a 128 KiB
+  data-block target instead of the defaults (8192 rows, 1 MiB).  Fetching 100
+  scattered candidates then reads ~1/8 of the bytes, and full-column scans are
+  also slightly faster for these wide columns.
 
 Together they cut execution from 34.3 ms to 20.4 ms (GloVe) and 53.5 ms to
 31.3 ms (GIST): the candidate fetch is now ~4 ms (GloVe) / ~7 ms (GIST) warm,

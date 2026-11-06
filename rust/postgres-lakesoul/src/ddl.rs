@@ -1005,11 +1005,53 @@ fn table_options(options: &CreateTableOptions) -> PgWireResult<HashMap<String, S
                 validate_name(&folded)?;
                 parsed.insert(name, folded);
             }
+            "vortex_row_block_size" => {
+                let rows: usize = value.parse().map_err(|_| {
+                    user_error(
+                        INVALID_PARAMETER_VALUE,
+                        format!(
+                            "value \"{value}\" for option \"vortex_row_block_size\" \
+                             is not valid (expects a positive integer)"
+                        ),
+                    )
+                })?;
+                if rows == 0 {
+                    return Err(user_error(
+                        INVALID_PARAMETER_VALUE,
+                        "value 0 for option \"vortex_row_block_size\" is out of \
+                         range (expects a positive integer)"
+                            .to_string(),
+                    ));
+                }
+                parsed.insert(name, rows.to_string());
+            }
+            "vortex_data_block_target_bytes" => {
+                let bytes: u64 = value.parse().map_err(|_| {
+                    user_error(
+                        INVALID_PARAMETER_VALUE,
+                        format!(
+                            "value \"{value}\" for option \
+                             \"vortex_data_block_target_bytes\" is not valid \
+                             (expects a positive integer)"
+                        ),
+                    )
+                })?;
+                if bytes == 0 {
+                    return Err(user_error(
+                        INVALID_PARAMETER_VALUE,
+                        "value 0 for option \"vortex_data_block_target_bytes\" \
+                         is out of range (expects a positive integer)"
+                            .to_string(),
+                    ));
+                }
+                parsed.insert(name, bytes.to_string());
+            }
             other => {
                 return Err(feature_not_supported(format!(
                     "table option \"{other}\" is not supported (expects \
                      hash_bucket_num, file_format, append_only, use_cdc, \
-                     lakesoul_cdc_change_column)"
+                     lakesoul_cdc_change_column, vortex_row_block_size, \
+                     vortex_data_block_target_bytes)"
                 )));
             }
         }

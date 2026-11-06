@@ -636,8 +636,8 @@ default session, but production code should pass its own config.
 | `internal_file_format` | `Vortex` | Format of newly created internal tables |
 | `write_pool_size` | `500mb` | Bounded memory pool of one streaming writer |
 | `write_pool_dir` | `<tmp>/lakesoul/ivm-spill` | Writer spill directory |
-| `vortex_row_block_size` | writer default `1024` | Vortex row-block override for internal tables |
-| `vortex_data_block_bytes` | writer default `128 KiB` | Vortex data-block target override |
+| `vortex_row_block_size` | IVM default `1024` | Vortex row-block override for internal tables |
+| `vortex_data_block_bytes` | IVM default `128 KiB` | Vortex data-block target override |
 
 ## Rust API
 
@@ -759,9 +759,10 @@ storage or S3, and prints a CSV plus p50/p95 summaries.  Start with
 
 A refresh that retracts rows reads the affected keys of its state (the MV
 rows being replaced).  On **Vortex** tables that read goes through the
-row-level pk index by default: the sink writes every column in 1024-row
-blocks, so only the blocks with a matched key are read (the index itself
-needs `LAKESOUL_CACHE`; without it the read falls back to a scan).  On the
+row-level pk index by default: the IVM sink writes every column of its
+internal tables in 1024-row blocks, so only the blocks with a matched key are
+read (the index itself needs `LAKESOUL_CACHE`; without it the read falls back
+to a scan).  On the
 10M star this is 182–204 / 266–279 / 402–421 ms for the join step at
 0.01%/0.1%/1% change (635–662 ms with `vortex-compact`), against 2.0–2.2 s
 for a full rebuild; at 3% the chain is still ~0.8 s.  On **Parquet** the index

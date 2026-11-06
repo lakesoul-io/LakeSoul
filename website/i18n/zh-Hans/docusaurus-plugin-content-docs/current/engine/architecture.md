@@ -108,7 +108,7 @@ writer:
 
 ### Vortex：随机访问与多模态
 
-Vortex 是直接在有编码的列上操作的压缩列式格式，支持投影和谓词下推。LakeSoul 写入时使用小 row block（1024 行）和 128 KiB 的 data block 目标，因此一批分散的行只读取宽列的一小部分，而不是每行读一个大块。这个布局让向量检索的 payload 读取和主键点查都变便宜。
+Vortex 是直接在有编码的列上操作的压缩列式格式，支持投影和谓词下推。普通 Vortex 表使用 Vortex Writer 的默认值：每个 row block 8192 行、data block 目标 1 MiB，以保持压缩比。表属性 `vector_index_columns` 中声明的列则默认使用 1024 行 block 和 128 KiB 的 data block 目标，因为向量检索读取的是这些宽列上分散的候选行。这个布局按列生效、可按表配置；其他列仍使用 Writer 默认值。
 
 Vortex 也承载大二进制 payload。视频帧、机器人 episode、tensor 以 blob 列与元数据放在一起；`BlobRef` 和 `materialize_blob` 让引用和 payload 处于同一个快照。具身数据集不需要再为媒体准备一个对象存储、为元数据准备第三套系统。
 

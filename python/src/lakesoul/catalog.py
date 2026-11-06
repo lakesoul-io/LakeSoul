@@ -41,6 +41,66 @@ TEXT_SEARCH_SCORE_COLUMN = "__lakesoul_text_score"
 #: requests ``vector_search_order_by=true``.
 VECTOR_DISTANCE_COLUMN = "__lakesoul_vector_distance"
 PhysicalFormat = Literal["parquet", "vortex", "vortex-compact"]
+#: Table properties that tune the Vortex layout of the columns declared in
+#: ``vector_index_columns``.  Other columns keep the Vortex writer defaults.
+VECTOR_LAYOUT_PROPERTIES = (
+    "vortex_row_block_size",
+    "vortex_data_block_target_bytes",
+)
+_VECTOR_LAYOUT_WRITER_OPTIONS = {
+    "vortex_row_block_size": "vortex_vector_row_block_size",
+    "vortex_data_block_target_bytes": "vortex_vector_data_block_target_bytes",
+}
+_DEFAULT_VECTOR_LAYOUT = {
+    "vortex_row_block_size": "1024",
+    "vortex_data_block_target_bytes": "131072",
+}
+
+
+def _has_vector_columns(properties: Mapping[str, Any]) -> bool:
+    raw = properties.get("vector_index_columns")
+    if not raw:
+        return False
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return False
+    return bool(raw)
+
+
+def _apply_vector_layout_defaults(properties: dict[str, Any]) -> None:
+    """Default the Vortex layout of vector columns, preserving explicit values."""
+    if not _has_vector_columns(properties):
+        return
+    for key, value in _DEFAULT_VECTOR_LAYOUT.items():
+        properties.setdefault(key, value)
+
+
+def _validate_vector_layout(properties: Mapping[str, Any]) -> None:
+    for key in VECTOR_LAYOUT_PROPERTIES:
+        if key not in properties:
+            continue
+        try:
+            value = int(str(properties[key]))
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{key} must be a positive integer") from error
+        if value <= 0:
+            raise ValueError(f"{key} must be a positive integer")
+
+
+def _vector_layout_write_options(
+    properties: Mapping[str, Any], options: Mapping[str, str] | None
+) -> dict[str, str]:
+    merged = {
+        writer_key: str(properties[property_key])
+        for property_key, writer_key in _VECTOR_LAYOUT_WRITER_OPTIONS.items()
+        if property_key in properties
+    }
+    merged.update(dict(options or {}))
+    return merged
+
+
 _ASCII_LOWER_TRANS = str.maketrans(
     {chr(code): chr(code + 32) for code in range(ord("A"), ord("Z") + 1)}
 )
@@ -384,6 +444,8 @@ class LakeSoulCatalog:
             props[spec.property_key] = json.dumps(
                 _index.normalize_index_configs(kind, value)
             )
+        _apply_vector_layout_defaults(props)
+        _validate_vector_layout(props)
         if hash_bucket_num is not None:
             props["hashBucketNum"] = str(hash_bucket_num)
         elif normalized_primary_keys and "hashBucketNum" not in props:
@@ -883,6 +945,12 @@ class LakeSoulTable:
             blob_columns=self._blob_columns_option(),
         )
 
+    def _vector_layout_write_options(
+        self, options: Mapping[str, str] | None
+    ) -> dict[str, str]:
+        """Map table-level vector layout properties to writer options."""
+        return _vector_layout_write_options(self.properties, options)
+
     def write_arrow(
         self,
         data: pa.RecordBatch | pa.Table | pa.RecordBatchReader,
@@ -940,7 +1008,10 @@ class LakeSoulTable:
             object_store_options=self._catalog._merge_object_store_options(
                 object_store_options
             ),
-            options=merge_blob_option(dict(options or {}), write_config.blob_columns),
+            options=merge_blob_option(
+                self._vector_layout_write_options(options),
+                write_config.blob_columns,
+            ),
         )
         with Writer(writer_config) as writer:
             writer.write(data)
@@ -1004,7 +1075,9 @@ class LakeSoulTable:
             max_file_size=max_file_size,
             max_row_group_size=max_row_group_size,
             object_store_options=object_store_options,
-            options=options,
+            options=_vector_layout_write_options(
+                getattr(self, "properties", {}), options
+            ),
             ray_remote_args=ray_remote_args,
             concurrency=concurrency,
         )
@@ -1043,7 +1116,9 @@ class LakeSoulTable:
             max_file_size=max_file_size,
             max_row_group_size=max_row_group_size,
             object_store_options=object_store_options,
-            options=options,
+            options=_vector_layout_write_options(
+                getattr(self, "properties", {}), options
+            ),
             results_buffer_size=results_buffer_size,
             auto_build_vector_index=auto_build_vector_index,
             vector_index_cpus=vector_index_cpus,

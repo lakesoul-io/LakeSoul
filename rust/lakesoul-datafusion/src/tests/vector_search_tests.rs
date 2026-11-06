@@ -1076,6 +1076,16 @@ async fn sql_create_table_declares_vector_index_via_option() {
     assert_eq!(configs[0].column, "vec");
     assert_eq!(configs[0].params.dim, DIM);
 
+    // A vector table without explicit layout options stores the small
+    // random-access defaults for its vector columns.
+    let properties: crate::catalog::LakeSoulTableProperty =
+        serde_json::from_str(&table_info.properties).unwrap();
+    assert_eq!(properties.vortex_row_block_size.as_deref(), Some("1024"));
+    assert_eq!(
+        properties.vortex_data_block_target_bytes.as_deref(),
+        Some("131072")
+    );
+
     // An invalid option value is rejected before any metadata is created.
     let table_name2 = "vec_search_sql_create_badopt";
     let _ = client.drop_table(table_name2, "default").await;
@@ -1117,6 +1127,43 @@ async fn sql_create_table_declares_vector_index_via_option() {
         err.to_string().contains("total_bits must be 1, 3 or 7"),
         "expected an unsupported-width error, got: {err}"
     );
+
+    // Explicit layout options override the vector-table defaults and are
+    // stored as table properties.
+    let table_name4 = "vec_search_sql_create_layout";
+    let _ = client.drop_table(table_name4, "default").await;
+    clean_table_dir(table_name4);
+    let location = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name4)
+        .display()
+        .to_string();
+    let create_sql = format!(
+        "CREATE EXTERNAL TABLE \"lakesoul\".default.{table_name4} (
+            id BIGINT NOT NULL PRIMARY KEY,
+            vec FLOAT[] NOT NULL
+         ) STORED AS LAKESOUL \
+         LOCATION '{location}' \
+         OPTIONS ('vector_index_columns' '{vector_option}', 'hashBucketNum' '4', \
+                  'vortex_row_block_size' '2048', \
+                  'vortex_data_block_target_bytes' '65536')"
+    );
+    ctx.sql(&create_sql).await.unwrap().collect().await.unwrap();
+    let table_info = client
+        .get_table_info_by_table_name(table_name4, "default")
+        .await
+        .unwrap()
+        .expect("table must exist");
+    let properties: crate::catalog::LakeSoulTableProperty =
+        serde_json::from_str(&table_info.properties).unwrap();
+    assert_eq!(properties.vortex_row_block_size.as_deref(), Some("2048"));
+    assert_eq!(
+        properties.vortex_data_block_target_bytes.as_deref(),
+        Some("65536")
+    );
+    let _ = client.drop_table(table_name4, "default").await;
+    clean_table_dir(table_name4);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

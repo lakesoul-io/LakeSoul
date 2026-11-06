@@ -22,6 +22,25 @@ LakeSoul 4.0 的所有 NativeIO Writer 默认使用 `vortex-compact`。LakeSoul 
 
 Vortex 是一种可直接在编码数组上执行操作的压缩列式格式。LakeSoul 为 Vortex 启用了列裁剪和谓词下推。底层布局及压缩模型参见 [Vortex 文件格式文档](https://docs.vortex.dev/concepts/file-format.html)。
 
+## 写入布局
+
+普通 Vortex 表使用 Vortex Writer 的默认值：每个 row block 8192 行、data block 目标 1 MiB。该布局压缩比更好，适合顺序分析扫描。
+
+带向量索引的表只调整 `vector_index_columns` 中声明的列。这些列默认使用 1024 行 block 和 128 KiB 的 data block 目标，因为向量检索会从这些宽列中读取分散的候选行，而随机读取按 block 拉取整列数据。其他列仍使用 Writer 默认值。代价是这些向量列的文件略大、布局元数据更多；这也是向量检索候选读取（对候选文件做带 `LIMIT` 的第二阶段扫描）成本较低的原因。
+
+| 选项 | 普通列默认 | 向量列默认 | 含义 |
+|---|---|---|---|
+| `vortex_row_block_size` | `8192` | `1024` | 每个 row block 的行数。决定一次随机读取覆盖多少行。 |
+| `vortex_data_block_target_bytes` | `1048576` | `131072` | 每个 data block 的目标未压缩字节数。决定宽列的一次随机读取拉取多少字节。 |
+
+取值必须是正整数。在创建表时配置：
+
+- Python：`create_table(..., properties={"vortex_row_block_size": "4096", "vortex_data_block_target_bytes": "262144"})`
+- DataFusion：`CREATE EXTERNAL TABLE ... OPTIONS ('vortex_row_block_size' '4096', 'vortex_data_block_target_bytes' '262144')`
+- PostgreSQL 前端：`CREATE TABLE ... WITH (vortex_row_block_size = 4096, vortex_data_block_target_bytes = 262144)`
+
+这些值只作用于向量列；没有向量索引的表设置它们不会改变写入布局。Spark 和 Flink 目前不会透传这两个表属性，因此它们的写入仍使用 Vortex Writer 的默认值。
+
 ## 读取行为
 
 LakeSoul 4.0 Reader 根据文件路径识别物理格式，按格式和对象存储对文件分组，然后构建统一的逻辑扫描。因此：

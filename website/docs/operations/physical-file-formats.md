@@ -24,16 +24,22 @@ Vortex is a compressed columnar format designed to operate directly on encoded a
 
 ## Write layout
 
-LakeSoul writes Vortex files with small row blocks (1024 rows per block) and a small data block target (128 KiB) for every column, instead of the Vortex writer defaults (8192 rows, 1 MiB). Random row access — the candidate rows of a vector search, a primary-key lookup, a merge-on-read take — fetches whole blocks per column, so a scattered set of rows reads a small fraction of a wide payload column instead of one megabyte per row.
+Ordinary Vortex tables use the Vortex writer defaults: 8192-row blocks and a 1 MiB data-block target. That layout compresses well and suits sequential analytical scans.
 
-The trade-off is a slightly larger file (roughly 10% more bytes on compressible payloads) and more layout metadata, and it is what makes the vector-search payload read (`LIMIT`-bounded second pass over the candidate files) cheap. Two write options tune it per write:
+Tables with vector indexes tune only the columns declared in `vector_index_columns`. Those columns default to 1024-row blocks and a 128 KiB data-block target, because a vector search fetches a scattered candidate set from wide vector columns and reads whole blocks per column. The other columns keep the writer defaults. The trade-off is a slightly larger file for the vector columns and more layout metadata; that is what makes the vector-search candidate read (`LIMIT`-bounded second pass over the candidate files) cheap.
 
-| Option | Default | Meaning |
-|---|---|---|
-| `vortex_row_block_size` | `1024` | Rows per row block. Sets how many rows a random read covers in a narrow column. |
-| `vortex_data_block_target_bytes` | `131072` | Target uncompressed bytes per data block. Sets the bytes a random read fetches for a wide column. |
+| Option | Ordinary default | Vector column default | Meaning |
+|---|---|---|---|
+| `vortex_row_block_size` | `8192` | `1024` | Rows per row block. Sets how many rows a random read covers in a column. |
+| `vortex_data_block_target_bytes` | `1048576` | `131072` | Target uncompressed bytes per data block. Sets the bytes a random read fetches for a wide column. |
 
-Set them like any other write option (Spark `.option(...)`, SQL `OPTIONS (...)`, or the SDK's write options), for example `vortex_row_block_size = 8192, vortex_data_block_target_bytes = 1048576` to restore the writer defaults.
+The values are positive integers. Configure them when creating a table:
+
+- Python: `create_table(..., properties={"vortex_row_block_size": "4096", "vortex_data_block_target_bytes": "262144"})`
+- DataFusion: `CREATE EXTERNAL TABLE ... OPTIONS ('vortex_row_block_size' '4096', 'vortex_data_block_target_bytes' '262144')`
+- PostgreSQL front end: `CREATE TABLE ... WITH (vortex_row_block_size = 4096, vortex_data_block_target_bytes = 262144)`
+
+The values apply to the vector columns only; setting them on a table without a vector index has no effect on the layout. Spark and Flink do not forward these table properties yet, so their writes keep the Vortex writer defaults.
 
 ## Read behavior
 
