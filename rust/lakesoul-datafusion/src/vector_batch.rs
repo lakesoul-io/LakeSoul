@@ -376,12 +376,8 @@ async fn search_vector_batch_chunk(
             );
         // A hot batch takes the loaded shard straight from the cache; the
         // parsed segment list is only rebuilt when the shard has to load.
-        let shard = match cached_typed_shard(
-            prefix,
-            view.commit_id,
-            expected_key_kind,
-        )
-        .await
+        let shard = match cached_typed_shard(prefix, view.commit_id, expected_key_kind)
+            .await
         {
             Some(shard) => shard,
             None => {
@@ -445,12 +441,9 @@ async fn search_vector_batch_chunk(
                                     request.parallelism,
                                 )
                                 .map_err(|error| {
-                                    DataFusionError::External(
-                                        error.into_boxed_error(),
-                                    )
+                                    DataFusionError::External(error.into_boxed_error())
                                 })?;
-                            let search_ms =
-                                t_search.elapsed().as_secs_f64() * 1000.0;
+                            let search_ms = t_search.elapsed().as_secs_f64() * 1000.0;
                             let t_rank = std::time::Instant::now();
                             let ranked = rank_bucket(codec, &hits, None);
                             if profile {
@@ -458,8 +451,7 @@ async fn search_vector_batch_chunk(
                                     shard = shard_index,
                                     queries = hits.len(),
                                     search_ms,
-                                    rank_ms =
-                                        t_rank.elapsed().as_secs_f64() * 1000.0,
+                                    rank_ms = t_rank.elapsed().as_secs_f64() * 1000.0,
                                     "profiled vector batch shard"
                                 );
                             }
@@ -484,15 +476,8 @@ async fn search_vector_batch_chunk(
         let mut ranked = Vec::with_capacity(shards.len());
         for (index, shard) in shards.iter().enumerate() {
             let hits = shard
-                .search_batch(
-                    &refs,
-                    request.top_k,
-                    request.nprobe,
-                    request.parallelism,
-                )
-                .map_err(|error| {
-                    DataFusionError::External(error.into_boxed_error())
-                })?;
+                .search_batch(&refs, request.top_k, request.nprobe, request.parallelism)
+                .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
             let live = if shard_skip[index] {
                 None
             } else {

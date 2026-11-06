@@ -444,9 +444,8 @@ impl LoadedShard {
         let params = SearchParams::new(top_k, nprobe).with_parallelism(parallelism);
         let mut per_query = Vec::with_capacity(queries.len());
         for result in self.inner.cached.index.batch_search(queries, params) {
-            let results = result.map_err(|e| {
-                rootcause::report!("vector search failed: {:?}", e)
-            })?;
+            let results = result
+                .map_err(|e| rootcause::report!("vector search failed: {:?}", e))?;
             per_query.push(results.into_iter().map(vector_hit).collect::<Vec<_>>());
         }
         Ok(per_query)

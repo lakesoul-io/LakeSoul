@@ -613,8 +613,7 @@ impl LakeSoulVectorSearchExec {
     fn index_only_eligible(&self) -> bool {
         // Escape hatch for A/B runs against the reader path
         // (`LAKESOUL_VECTOR_INDEX_ONLY=0`).
-        if std::env::var("LAKESOUL_VECTOR_INDEX_ONLY").is_ok_and(|value| value == "0")
-        {
+        if std::env::var("LAKESOUL_VECTOR_INDEX_ONLY").is_ok_and(|value| value == "0") {
             return false;
         }
         if !self.vector_search.order_by
@@ -666,12 +665,12 @@ impl LakeSoulVectorSearchExec {
             })?;
         let t_handoff = std::time::Instant::now();
         let mut handoff_ms = 0.0_f64;
-        let batches = tokio::task::block_in_place(|| {
-            handoff_ms = t_handoff.elapsed().as_secs_f64() * 1000.0;
-            lakesoul_io::session::GLOBAL_RUNTIME.block_on(
-                self.index_only_batches_inner(&store, nprobe, parallelism),
-            )
-        });
+        let batches =
+            tokio::task::block_in_place(|| {
+                handoff_ms = t_handoff.elapsed().as_secs_f64() * 1000.0;
+                lakesoul_io::session::GLOBAL_RUNTIME
+                    .block_on(self.index_only_batches_inner(&store, nprobe, parallelism))
+            });
         if std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok() {
             debug!(
                 handoff_ms,
@@ -692,8 +691,9 @@ impl LakeSoulVectorSearchExec {
     ) -> DFResult<Option<Vec<arrow::record_batch::RecordBatch>>> {
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         let t_inner = std::time::Instant::now();
-        let layout = KeyLayout::from_schema(self.file_schema.as_ref(), &self.primary_keys)
-            .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let layout =
+            KeyLayout::from_schema(self.file_schema.as_ref(), &self.primary_keys)
+                .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
         let codec = KeyCodec::new(layout.clone())
             .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
         let expected_key_kind = layout.kind_hash();
@@ -715,19 +715,19 @@ impl LakeSoulVectorSearchExec {
         prefixes.sort_unstable();
         prefixes.dedup();
         let t_resolve = std::time::Instant::now();
-        let views = self
-            .catalog
-            .resolve_cached_many(&prefixes)
-            .await
-            .map_err(|error| {
-                DataFusionError::External(
-                    rootcause::report!(
-                        "failed to resolve vector index shards: {}",
-                        error
+        let views =
+            self.catalog
+                .resolve_cached_many(&prefixes)
+                .await
+                .map_err(|error| {
+                    DataFusionError::External(
+                        rootcause::report!(
+                            "failed to resolve vector index shards: {}",
+                            error
+                        )
+                        .into_boxed_error(),
                     )
-                    .into_boxed_error(),
-                )
-            })?;
+                })?;
 
         let resolve_ms = t_resolve.elapsed().as_secs_f64() * 1000.0;
         let column = &self.vector_search.columns[0];
@@ -749,9 +749,7 @@ impl LakeSoulVectorSearchExec {
                 let covered: Vec<&str> = view
                     .segments
                     .iter()
-                    .flat_map(|segment| {
-                        segment.data_files.iter().map(String::as_str)
-                    })
+                    .flat_map(|segment| segment.data_files.iter().map(String::as_str))
                     .collect();
                 if !crate::vector_batch::can_skip_verification(
                     &self.cdc_column,
@@ -765,43 +763,39 @@ impl LakeSoulVectorSearchExec {
                 // A hot query takes the loaded shard straight from the
                 // cache; the segment list is only rebuilt when it has to
                 // load.
-                let shard = match cached_typed_shard(
-                    prefix,
-                    view.commit_id,
-                    expected_key_kind,
-                )
-                .await
-                {
-                    Some(shard) => shard,
-                    None => {
-                        // The catalog view already holds the parsed segment
-                        // list; hand it over instead of rebuilding (and
-                        // re-parsing) the serialized transport form.
-                        let segments =
-                            crate::vector_batch::segment_entries(view);
-                        let Some(shard) = load_typed_shard(
-                            store,
-                            prefix,
-                            view.commit_id,
-                            view.version,
-                            &view.header,
-                            &segments,
-                            view.mutation_head.as_deref(),
-                            view.mutation_records,
-                            expected_key_kind,
-                        )
+                let shard =
+                    match cached_typed_shard(prefix, view.commit_id, expected_key_kind)
                         .await
-                        .map_err(|error| {
-                            DataFusionError::External(error.into_boxed_error())
-                        })?
-                        else {
-                            // The shard was written for another key layout;
-                            // the reader path reports that case the same way.
-                            return Ok(None);
-                        };
-                        shard
-                    }
-                };
+                    {
+                        Some(shard) => shard,
+                        None => {
+                            // The catalog view already holds the parsed segment
+                            // list; hand it over instead of rebuilding (and
+                            // re-parsing) the serialized transport form.
+                            let segments = crate::vector_batch::segment_entries(view);
+                            let Some(shard) = load_typed_shard(
+                                store,
+                                prefix,
+                                view.commit_id,
+                                view.version,
+                                &view.header,
+                                &segments,
+                                view.mutation_head.as_deref(),
+                                view.mutation_records,
+                                expected_key_kind,
+                            )
+                            .await
+                            .map_err(|error| {
+                                DataFusionError::External(error.into_boxed_error())
+                            })?
+                            else {
+                                // The shard was written for another key layout;
+                                // the reader path reports that case the same way.
+                                return Ok(None);
+                            };
+                            shard
+                        }
+                    };
                 shards.push(shard);
             }
         }
@@ -817,16 +811,9 @@ impl LakeSoulVectorSearchExec {
                     .map(|shard| {
                         scope.spawn(move || {
                             shard
-                                .search_batch(
-                                    query_ref,
-                                    top_k,
-                                    nprobe,
-                                    parallelism,
-                                )
+                                .search_batch(query_ref, top_k, nprobe, parallelism)
                                 .map_err(|error| {
-                                    DataFusionError::External(
-                                        error.into_boxed_error(),
-                                    )
+                                    DataFusionError::External(error.into_boxed_error())
                                 })
                         })
                     })
