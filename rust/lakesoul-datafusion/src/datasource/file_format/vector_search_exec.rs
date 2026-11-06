@@ -15,7 +15,7 @@
 
 use lakesoul_common::misc::SecretMap;
 use std::fmt::Formatter;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::common::ScalarValue;
@@ -60,6 +60,91 @@ use lakesoul_metadata::index_catalog::{
 use lakesoul_vector::{IndexKey, SegmentEntry};
 
 use crate::udf::vector_search_marker::{LakeSoulVectorSearchConfig, VectorSearchRequest};
+
+/// One resolved shard of a snapshot, ready to be probed.
+struct CachedSnapshotShard {
+    prefix: String,
+    /// Data files of the scan group this shard was resolved for; the coverage
+    /// proof is re-checked against them on every reuse.
+    files: Vec<String>,
+    /// Distinct file names the commit covers, so the per-query proof does not
+    /// rebuild the same set from a thousand segment entries.
+    covered: Vec<String>,
+    view: Arc<IndexCommitView<VectorSegmentEntry>>,
+    shard: LoadedShard,
+}
+
+/// Distinct data-file names covered by a shard commit.
+fn covered_file_names(view: &IndexCommitView<VectorSegmentEntry>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut covered = Vec::new();
+    for segment in &view.segments {
+        for file in &segment.data_files {
+            let name = file.rsplit('/').next().unwrap_or(file).to_string();
+            if seen.insert(name.clone()) {
+                covered.push(name);
+            }
+        }
+    }
+    covered
+}
+
+/// Index shards of the exact file set a vector scan was planned from.
+///
+/// Data files are immutable, so a file set always describes the same rows: a
+/// query planned against the set a previous query already resolved can reuse
+/// its resolved commits and loaded shards.  Correctness does not rest on that
+/// argument alone — the per-query coverage proof re-runs against the cached
+/// commits and falls back to the reader path when it fails — and a data commit
+/// changes the file set, which misses the cache and resolves afresh.
+struct CachedSnapshot {
+    key: String,
+    shards: Vec<CachedSnapshotShard>,
+    bytes: usize,
+}
+
+/// How many snapshots stay pinned, and the memory they may hold.
+///
+/// The entries only add `Arc` references to shards the process-wide index cache
+/// already owns, so the budget is a guard for the case where that cache evicts.
+const SNAPSHOT_CACHE_ENTRIES: usize = 2;
+const SNAPSHOT_CACHE_BYTES: usize = 512 * 1024 * 1024;
+
+static SNAPSHOT_CACHE: LazyLock<Mutex<Vec<Arc<CachedSnapshot>>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Whether the snapshot shard cache is enabled (`LAKESOUL_VECTOR_SNAPSHOT_CACHE=0`
+/// turns it off for A/B runs).
+fn snapshot_cache_enabled() -> bool {
+    !std::env::var("LAKESOUL_VECTOR_SNAPSHOT_CACHE").is_ok_and(|value| value == "0")
+}
+
+fn snapshot_cache_get(key: &str) -> Option<Arc<CachedSnapshot>> {
+    let cache = SNAPSHOT_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.iter().find(|entry| entry.key == key).map(Arc::clone)
+}
+
+fn snapshot_cache_put(entry: Arc<CachedSnapshot>) {
+    if entry.bytes > SNAPSHOT_CACHE_BYTES {
+        return;
+    }
+    let mut cache = SNAPSHOT_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.retain(|existing| existing.key != entry.key);
+    cache.insert(0, entry);
+    cache.truncate(SNAPSHOT_CACHE_ENTRIES);
+    // The entries pin shards the index cache may otherwise evict, so keep the
+    // total footprint inside the budget as well.
+    let mut total = cache.iter().map(|entry| entry.bytes).sum::<usize>();
+    while cache.len() > 1 && total > SNAPSHOT_CACHE_BYTES {
+        if let Some(dropped) = cache.pop() {
+            total -= dropped.bytes;
+        }
+    }
+}
 
 /// Execution plan for the vector-index candidate scan.
 #[derive(Debug)]
@@ -637,6 +722,71 @@ impl LakeSoulVectorSearchExec {
             .all(|field| primary_keys.contains(field.name().as_str()))
     }
 
+    /// Identity of the snapshot this scan reads.
+    ///
+    /// The file groups are the rows the plan can return, and the searched
+    /// columns plus the ordering decide which shards serve them; data files are
+    /// immutable, so two scans with this key read the same rows from the same
+    /// shards.
+    fn snapshot_key(&self, expected_key_kind: u64) -> String {
+        let mut key = String::with_capacity(256);
+        key.push_str(self.object_store_url.as_str());
+        key.push('\u{0}');
+        key.push_str(&format!("{expected_key_kind:016x}"));
+        key.push('\u{0}');
+        key.push(if self.vector_search.order_by {
+            '1'
+        } else {
+            '0'
+        });
+        for column in &self.vector_search.columns {
+            key.push('\u{0}');
+            key.push_str(&column.column);
+            key.push('\u{2}');
+            key.push_str(&column.metric);
+        }
+        for group in &self.file_groups {
+            key.push('\u{1}');
+            for file in group {
+                key.push('\u{0}');
+                key.push_str(file.object_meta.location.as_ref());
+            }
+        }
+        key
+    }
+
+    /// Re-run the coverage proof on a cached snapshot.
+    ///
+    /// The cache never bypasses the proof: a cached commit is only served while
+    /// it still covers exactly the files the plan reads.
+    fn snapshot_covered(
+        &self,
+        snapshot: &CachedSnapshot,
+        expected_prefixes: &[String],
+    ) -> bool {
+        if snapshot.shards.len() != expected_prefixes.len() {
+            return false;
+        }
+        if snapshot
+            .shards
+            .iter()
+            .zip(expected_prefixes)
+            .any(|(slot, prefix)| &slot.prefix != prefix)
+        {
+            return false;
+        }
+        snapshot.shards.iter().all(|slot| {
+            let covered: Vec<&str> = slot.covered.iter().map(String::as_str).collect();
+            crate::vector_batch::can_skip_verification(
+                &self.cdc_column,
+                slot.view.mutation_head.is_none(),
+                slot.view.mutation_records,
+                &slot.files,
+                &covered,
+            )
+        })
+    }
+
     /// Answer a primary-key-only projection from the index keys alone.
     ///
     /// When the plan ranks on the index distance (`rerank = 'index'`), the
@@ -720,123 +870,182 @@ impl LakeSoulVectorSearchExec {
             .collect();
         prefixes.sort_unstable();
         prefixes.dedup();
-        let t_resolve = std::time::Instant::now();
-        let views =
-            self.catalog
-                .resolve_cached_many(&prefixes)
-                .await
-                .map_err(|error| {
-                    DataFusionError::External(
-                        rootcause::report!(
-                            "failed to resolve vector index shards: {}",
-                            error
-                        )
-                        .into_boxed_error(),
-                    )
-                })?;
-
-        let resolve_ms = t_resolve.elapsed().as_secs_f64() * 1000.0;
         let column = &self.vector_search.columns[0];
         let query =
             lakesoul_io::vector::search::parse_query_vector(&column.query_csv, None)
                 .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
         let top_k = self.vector_search.candidates_per_bucket();
-        // The coverage proof only reads the resolved views, so check every
-        // shard first and then issue the index-cache lookups together: a hit
-        // is a moka read, and four of them overlap instead of queuing.
+
+        // A repeat query on the same file set reuses the shards the previous
+        // one resolved: the plan is built from the snapshot's file groups and
+        // data files are immutable, so the same file set reads the same rows.
+        // The coverage proof re-runs below, so an unproven entry falls back.
         let t_search = std::time::Instant::now();
-        let mut requested: Vec<(String, Arc<IndexCommitView<VectorSegmentEntry>>)> =
-            Vec::with_capacity(groups.len());
-        for group in &groups {
-            for (prefix, _bucket) in &group.index_prefixes {
-                let Some(view) = views.get(prefix).and_then(Option::as_ref) else {
-                    return Ok(None);
-                };
-                let covered: Vec<&str> = view
-                    .segments
+        let mut resolve_ms = 0.0_f64;
+        let cache_key = self.snapshot_key(expected_key_kind);
+        let expected_prefixes: Vec<String> = groups
+            .iter()
+            .flat_map(|group| {
+                group
+                    .index_prefixes
                     .iter()
-                    .flat_map(|segment| segment.data_files.iter().map(String::as_str))
-                    .collect();
-                if !crate::vector_batch::can_skip_verification(
-                    &self.cdc_column,
-                    view.mutation_head.is_none(),
-                    view.mutation_records,
-                    &group.file_uris,
-                    &covered,
-                ) {
-                    return Ok(None);
+                    .map(|(prefix, _)| prefix.clone())
+            })
+            .collect();
+        let cached_snapshot = if snapshot_cache_enabled() {
+            snapshot_cache_get(&cache_key)
+                .filter(|entry| self.snapshot_covered(entry, &expected_prefixes))
+        } else {
+            None
+        };
+        let snapshot_cached = cached_snapshot.is_some();
+        let snapshot = match cached_snapshot {
+            Some(entry) => entry,
+            None => {
+                let t_resolve = std::time::Instant::now();
+                let views = self.catalog.resolve_cached_many(&prefixes).await.map_err(
+                    |error| {
+                        DataFusionError::External(
+                            rootcause::report!(
+                                "failed to resolve vector index shards: {}",
+                                error
+                            )
+                            .into_boxed_error(),
+                        )
+                    },
+                )?;
+                resolve_ms = t_resolve.elapsed().as_secs_f64() * 1000.0;
+                // Prove that the resolved commits cover this snapshot before
+                // touching any shard.
+                let mut requested: Vec<(
+                    String,
+                    Vec<String>,
+                    Arc<IndexCommitView<VectorSegmentEntry>>,
+                )> = Vec::with_capacity(groups.len());
+                for group in &groups {
+                    for (prefix, _bucket) in &group.index_prefixes {
+                        let Some(view) = views.get(prefix).and_then(Option::as_ref)
+                        else {
+                            return Ok(None);
+                        };
+                        let covered: Vec<&str> = view
+                            .segments
+                            .iter()
+                            .flat_map(|segment| {
+                                segment.data_files.iter().map(String::as_str)
+                            })
+                            .collect();
+                        if !crate::vector_batch::can_skip_verification(
+                            &self.cdc_column,
+                            view.mutation_head.is_none(),
+                            view.mutation_records,
+                            &group.file_uris,
+                            &covered,
+                        ) {
+                            return Ok(None);
+                        }
+                        requested.push((
+                            prefix.clone(),
+                            group.file_uris.clone(),
+                            Arc::clone(view),
+                        ));
+                    }
                 }
-                requested.push((prefix.clone(), Arc::clone(view)));
-            }
-        }
-        let lookups = requested.iter().map(|(prefix, view)| {
-            cached_typed_shard(prefix, view.commit_id, expected_key_kind)
-        });
-        let cached = futures::future::join_all(lookups).await;
-        let mut shards: Vec<LoadedShard> = Vec::with_capacity(requested.len());
-        for ((prefix, view), cached_shard) in requested.into_iter().zip(cached) {
-            let shard = match cached_shard {
-                Some(shard) => shard,
-                None => {
-                    // A cold shard loads from its commit; the catalog view
-                    // already holds the parsed segment list, so hand it over
-                    // instead of rebuilding the serialized transport form.
-                    let segments = crate::vector_batch::segment_entries(view.as_ref());
-                    let Some(shard) = load_typed_shard(
-                        store,
-                        &prefix,
-                        view.commit_id,
-                        view.version,
-                        &view.header,
-                        &segments,
-                        view.mutation_head.as_deref(),
-                        view.mutation_records,
-                        expected_key_kind,
-                    )
-                    .await
-                    .map_err(|error| {
-                        DataFusionError::External(error.into_boxed_error())
-                    })?
-                    else {
-                        // The shard was written for another key layout; the
-                        // reader path reports that case the same way.
-                        return Ok(None);
+                // A hot shard comes straight from the index cache; four
+                // lookups overlap instead of queuing.
+                let lookups = requested.iter().map(|(prefix, _, view)| {
+                    cached_typed_shard(prefix, view.commit_id, expected_key_kind)
+                });
+                let cached = futures::future::join_all(lookups).await;
+                let mut shards: Vec<CachedSnapshotShard> =
+                    Vec::with_capacity(requested.len());
+                for ((prefix, files, view), cached_shard) in
+                    requested.into_iter().zip(cached)
+                {
+                    let shard = match cached_shard {
+                        Some(shard) => shard,
+                        None => {
+                            // A cold shard loads from its commit; the catalog
+                            // view already holds the parsed segment list, so
+                            // hand it over instead of rebuilding the serialized
+                            // transport form.
+                            let segments =
+                                crate::vector_batch::segment_entries(view.as_ref());
+                            let Some(shard) = load_typed_shard(
+                                store,
+                                &prefix,
+                                view.commit_id,
+                                view.version,
+                                &view.header,
+                                &segments,
+                                view.mutation_head.as_deref(),
+                                view.mutation_records,
+                                expected_key_kind,
+                            )
+                            .await
+                            .map_err(|error| {
+                                DataFusionError::External(error.into_boxed_error())
+                            })?
+                            else {
+                                // The shard was written for another key
+                                // layout; the reader path reports that the
+                                // same way.
+                                return Ok(None);
+                            };
+                            shard
+                        }
                     };
-                    shard
+                    let covered = covered_file_names(view.as_ref());
+                    shards.push(CachedSnapshotShard {
+                        prefix,
+                        files,
+                        covered,
+                        view,
+                        shard,
+                    });
                 }
-            };
-            shards.push(shard);
-        }
+                let bytes = shards.iter().map(|slot| slot.shard.memory_bytes()).sum();
+                let entry = Arc::new(CachedSnapshot {
+                    key: cache_key.clone(),
+                    shards,
+                    bytes,
+                });
+                snapshot_cache_put(Arc::clone(&entry));
+                entry
+            }
+        };
+        let shards: Vec<LoadedShard> = snapshot
+            .shards
+            .iter()
+            .map(|slot| slot.shard.clone())
+            .collect();
         let load_ms = t_search.elapsed().as_secs_f64() * 1000.0;
         let t_probe = std::time::Instant::now();
-        let query_ref: [&[f32]; 1] = [query.as_slice()];
-        let per_shard: Vec<Vec<Vec<VectorHit>>> = {
-            let shards = &shards;
-            let query_ref = &query_ref;
-            std::thread::scope(|scope| {
-                let handles: Vec<_> = shards
-                    .iter()
-                    .map(|shard| {
-                        scope.spawn(move || {
-                            shard
-                                .search_batch(query_ref, top_k, nprobe, parallelism)
-                                .map_err(|error| {
-                                    DataFusionError::External(error.into_boxed_error())
-                                })
-                        })
-                    })
-                    .collect();
-                let mut probes = Vec::with_capacity(handles.len());
-                for handle in handles {
-                    probes.push(handle.join().map_err(|_| {
-                        DataFusionError::Execution(
-                            "vector shard probe panicked".to_string(),
-                        )
-                    })??);
-                }
-                Ok::<_, DataFusionError>(probes)
-            })
-        }?;
+        // Probe the shards on the shared blocking pool: a query does not
+        // warrant four fresh OS threads, and the pool threads are already warm.
+        let query = Arc::new(query);
+        let mut tasks = Vec::with_capacity(shards.len());
+        for shard in &shards {
+            let shard = shard.clone();
+            let query = Arc::clone(&query);
+            tasks.push(
+                lakesoul_io::session::GLOBAL_RUNTIME.spawn_blocking(move || {
+                    let query_ref: [&[f32]; 1] = [query.as_slice()];
+                    shard.search_batch(&query_ref, top_k, nprobe, parallelism)
+                }),
+            );
+        }
+        let mut per_shard: Vec<Vec<Vec<VectorHit>>> = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let probed = task.await.map_err(|error| {
+                DataFusionError::Execution(format!("vector shard probe failed: {error}"))
+            })?;
+            per_shard.push(
+                probed.map_err(|error| {
+                    DataFusionError::External(error.into_boxed_error())
+                })?,
+            );
+        }
         let probe_ms = t_probe.elapsed().as_secs_f64() * 1000.0;
         let mut best: std::collections::HashMap<IndexKey, f32> =
             std::collections::HashMap::new();
@@ -885,6 +1094,7 @@ impl LakeSoulVectorSearchExec {
                 probe_ms,
                 candidates,
                 shards = shards.len(),
+                snapshot_cached,
                 total_ms = t_inner.elapsed().as_secs_f64() * 1000.0,
                 "vector index-only inner profile"
             );

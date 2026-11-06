@@ -433,6 +433,11 @@ impl LoadedShard {
         self.inner.dim
     }
 
+    /// In-memory footprint of the loaded index, for cache budgeting.
+    pub fn memory_bytes(&self) -> usize {
+        self.inner.cached.bytes
+    }
+
     /// Search several queries against this shard (rayon parallel inside).
     pub fn search_batch(
         &self,
