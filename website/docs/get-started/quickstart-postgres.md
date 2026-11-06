@@ -106,6 +106,8 @@ rejected.
   semantics, duplicate keys, and the write path.
 - [Incremental SQL](../engine/incremental-sql/getting-started.md) — maintain a
   target from the table's commit log with `INSERT ... SELECT`.
+- [PostgreSQL subscriptions](../engine/postgres/subscription.md) — replicate a
+  source PostgreSQL publication into a LakeSoul CDC table.
 - [Vector search](../engine/vector-search/overview.md) — pgvector-compatible SQL over
   lake-resident ANN indexes.
 

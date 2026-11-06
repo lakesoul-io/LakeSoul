@@ -24,6 +24,8 @@ SPDX-License-Identifier: Apache-2.0
 | `--s3-virtual-host-style` | `false` | Use virtual-hosted S3 requests |
 | `--worker-threads` | `2` | Tokio worker threads |
 | `--metrics-addr` | `127.0.0.1:19090` | Prometheus metrics listener |
+| `--no-metrics` | off | Do not start the Prometheus endpoint |
+| `--subscription-log-dir` | `LAKESOUL_LOG_DIR` or a temp directory | Logs for supervised subscription processes |
 | `--max-connections` | `0` (unlimited) | Concurrent connections |
 | `--max-queries-per-user` | `0` | Concurrent statements per user |
 | `--max-result-rows` | `0` | Row limit per statement |

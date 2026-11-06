@@ -25,6 +25,8 @@ SPDX-License-Identifier: Apache-2.0
 | `--s3-virtual-host-style` | `false` | 使用 virtual-hosted S3 请求 |
 | `--worker-threads` | `2` | Tokio worker 线程数 |
 | `--metrics-addr` | `127.0.0.1:19090` | Prometheus 指标监听地址 |
+| `--no-metrics` | 关闭 | 不启动 Prometheus 指标端点 |
+| `--subscription-log-dir` | `LAKESOUL_LOG_DIR` 或临时目录 | 受监管订阅进程的日志目录 |
 | `--max-connections` | `0`（不限） | 并发连接数 |
 | `--max-queries-per-user` | `0` | 每个用户的并发语句数 |
 | `--max-result-rows` | `0` | 每条语句的行数上限 |

@@ -500,5 +500,35 @@
   },
   "homepage.fit.chipStorage": {
     "message": "你的对象存储"
+  },
+  "homepage.subscription.title": {
+    "message": "PostgreSQL 订阅"
+  },
+  "homepage.subscription.subtitle": {
+    "message": "订阅源 PostgreSQL publication，把变更写入 LakeSoul CDC 表。端点负责初始快照、增量变更和本地订阅进程。"
+  },
+  "homepage.subscription.code.title": {
+    "message": "在 psql 里定义"
+  },
+  "homepage.subscription.code.note": {
+    "message": "配置源库 publication 和目标表"
+  },
+  "homepage.subscription.managed.title": {
+    "message": "端到端托管"
+  },
+  "homepage.subscription.managed.body": {
+    "message": "端点会校验 publication 与 CDC 目标表，执行受管快照并通过一次原子切换开始按批写入变更。ENABLE、DISABLE 和 DROP 控制受监管的本地进程。"
+  },
+  "homepage.subscription.chipSnapshot": {
+    "message": "受管快照"
+  },
+  "homepage.subscription.chipChanges": {
+    "message": "逻辑复制"
+  },
+  "homepage.subscription.chipAtomic": {
+    "message": "原子切换"
+  },
+  "homepage.subscription.chipLifecycle": {
+    "message": "进程监管"
   }
 }

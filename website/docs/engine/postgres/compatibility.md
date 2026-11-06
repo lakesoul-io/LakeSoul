@@ -29,6 +29,7 @@ covered today.
 | Queries | `SELECT` with joins, aggregates, windows, CTEs, `UNION`/`INTERSECT`/`EXCEPT`, subqueries |
 | DDL | `CREATE TABLE`, `DROP TABLE`, primary keys, `PARTITIONED BY`, `WITH (...)` |
 | Writes | `INSERT ... VALUES`, `INSERT ... SELECT`, `ON CONFLICT DO NOTHING`, `ON CONFLICT ... DO UPDATE SET col = EXCLUDED.col` (every non-key column) |
+| Subscriptions | `CREATE SUBSCRIPTION`, `ALTER SUBSCRIPTION ... ENABLE/DISABLE`, `DROP SUBSCRIPTION` for logical replication into a LakeSoul CDC table |
 | Transactions | Autocommit, `READ COMMITTED`, `BEGIN`/`COMMIT`/`ROLLBACK` for reads |
 | Catalog | `pg_catalog`, `information_schema`, `psql \d`, `current_database()` |
 | Session | `SET TIME ZONE`, `statement_timeout`, `search_path`, `ivfflat.probes`, `RESET`, `DISCARD ALL` |
