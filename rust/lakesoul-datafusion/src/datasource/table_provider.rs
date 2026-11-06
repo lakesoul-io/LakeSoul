@@ -118,6 +118,58 @@ fn record_index_selected(index_type: &'static str) {
     .increment(1);
 }
 
+/// Files of one immutable partition version, used by the vector scan path.
+///
+/// A partition version is published once and its data files never change, so
+/// the metadata query and the per-file HEAD requests that produced the listing
+/// can be reused by the next vector query.  The key contains the version, so a
+/// new commit simply misses.  Only the vector scan paths read this cache: a
+/// regular scan keeps listing exactly as before, so no other reader's
+/// behaviour or freshness guarantee changes.
+type PartitionVersionKey = (String, String, i32);
+
+/// Bounded cache of the listed files of one partition version.
+struct VectorListingCache {
+    entries: HashMap<PartitionVersionKey, Arc<Vec<PartitionedFile>>>,
+    order: std::collections::VecDeque<PartitionVersionKey>,
+}
+
+const VECTOR_LISTING_CACHE_ENTRIES: usize = 512;
+
+static VECTOR_LISTING_CACHE: std::sync::LazyLock<std::sync::Mutex<VectorListingCache>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Mutex::new(VectorListingCache {
+            entries: HashMap::new(),
+            order: std::collections::VecDeque::new(),
+        })
+    });
+
+fn cached_partition_listing(
+    key: &PartitionVersionKey,
+) -> Option<Arc<Vec<PartitionedFile>>> {
+    let cache = VECTOR_LISTING_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.entries.get(key).cloned()
+}
+
+fn store_partition_listing(key: PartitionVersionKey, files: Arc<Vec<PartitionedFile>>) {
+    let mut cache = VECTOR_LISTING_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cache.entries.contains_key(&key) {
+        return;
+    }
+    while cache.order.len() >= VECTOR_LISTING_CACHE_ENTRIES {
+        let Some(evicted) = cache.order.pop_front() else {
+            break;
+        };
+        cache.entries.remove(&evicted);
+    }
+    cache.order.push_back(key.clone());
+    cache.entries.insert(key, files);
+}
+
 fn record_index_fallback(index_type: &'static str, reason: &'static str) {
     describe_metrics();
     metrics::counter!(
@@ -850,6 +902,78 @@ impl LakeSoulTableProvider {
         Ok((file_groups, Statistics::new_unknown(self.schema().deref())))
     }
 
+    /// List the files of the current snapshot for the vector scan path.
+    ///
+    /// Same result as [`Self::list_files_for_scan`], but the file list of each
+    /// partition version is cached: the version is immutable once published,
+    /// so a warm vector query only pays the (cheap) partition-info query
+    /// instead of re-issuing the data-file query and one HEAD per file.
+    async fn list_files_for_vector_scan<'a>(
+        &'a self,
+        ctx: &'a SessionState,
+        partition_filters: &'a [Expr],
+    ) -> Result<Vec<Vec<PartitionedFile>>> {
+        let Some(url) = self.table_paths().first() else {
+            return Ok(Vec::new());
+        };
+        let store = ctx
+            .runtime_env()
+            .object_store(url)
+            .attach(format!("{:?}", ctx.runtime_env().object_store_registry))?;
+        let all_partition_info = self
+            .client
+            .get_all_partition_info(self.table_id())
+            .await
+            .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
+        let prune_partition_info = prune_partitions(
+            all_partition_info,
+            partition_filters,
+            self.table_partition_cols(),
+        )
+        .await
+        .map_err(|report| report.attach(self.table_info().table_name.clone()))?;
+        let mut file_groups = Vec::with_capacity(prune_partition_info.len());
+        for partition in prune_partition_info {
+            let key = (
+                partition.table_id.clone(),
+                partition.partition_desc.clone(),
+                partition.version,
+            );
+            if let Some(files) = cached_partition_listing(&key) {
+                file_groups.push((*files).clone());
+                continue;
+            }
+            let (partition, object_metas) =
+                listing_partition_info(partition, store.as_ref(), self.client())
+                    .await
+                    .map_err(|report| {
+                        report.attach(self.table_info().table_name.clone())
+                    })?;
+            let cols = self.table_partition_cols().iter().map(|x| x.0.as_str());
+            let parsed =
+                parse_partitions_for_partition_desc(&partition.partition_desc, cols);
+            let partition_values = parsed
+                .into_iter()
+                .flatten()
+                .zip(self.table_partition_cols())
+                .map(|(parsed, (_, datatype))| {
+                    ScalarValue::try_from_string(parsed.to_string(), datatype)
+                })
+                .collect::<Result<Vec<_>, DataFusionError>>()?;
+            let files: Vec<PartitionedFile> = object_metas
+                .into_iter()
+                .map(|object_meta| {
+                    PartitionedFile::new_from_meta(object_meta)
+                        .with_partition_values(partition_values.clone())
+                })
+                .collect();
+            let files = Arc::new(files);
+            store_partition_listing(key, Arc::clone(&files));
+            file_groups.push((*files).clone());
+        }
+        Ok(file_groups)
+    }
+
     /// Search several query vectors against the table's current snapshot.
     ///
     /// All queries share the snapshot resolved at call time: its files are
@@ -866,8 +990,8 @@ impl LakeSoulTableProvider {
     ) -> DFResult<Vec<Vec<i64>>> {
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         let t_batch = std::time::Instant::now();
-        let (file_groups, _) = self
-            .list_files_for_scan(state, &[], None)
+        let file_groups = self
+            .list_files_for_vector_scan(state, &[])
             .await
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
         let list_ms = t_batch.elapsed().as_secs_f64() * 1000.0;
@@ -1019,8 +1143,8 @@ impl LakeSoulTableProvider {
         }
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         let t_scan = std::time::Instant::now();
-        let (partitioned_file_lists, _) = self
-            .list_files_for_scan(session_state, partition_filters, limit)
+        let partitioned_file_lists = self
+            .list_files_for_vector_scan(session_state, partition_filters)
             .await
             .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
         let list_ms = t_scan.elapsed().as_secs_f64() * 1000.0;

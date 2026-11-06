@@ -460,3 +460,20 @@ SQL 的 logical/physical planning 与快照列文件。
 
 R22 另把排序与跨桶合并融合成同一个并行区：批量中位 10943 → **11206**（6 次，+2.4%），且抖动
 收窄（最小值 8572 → 10867）。
+
+## 22. 向量扫描复用不可变 partition 版本文件列表
+
+单查询的 physical planning 里 `list_files_for_scan` 每次都要重做 2 次 PG 查询 + 每文件一次 HEAD
+（0.49 ms）。partition 版本发布后其数据文件不可变，因此向量扫描路径改走
+`list_files_for_vector_scan`：**每次仍解析当前 partition 版本**（保证快照新鲜度），但
+`(table_id, partition_desc, version)` 的文件列表走 512 项进程内 LRU（≈0.5 MB），按版本号失效；
+普通扫描与文本索引扫描完全不变。
+
+| 版本（bits=1、200 query） | 单 query QPS | p50 | physical plan | CPU/query | 批量 QPS | Recall |
+|---|---:|---:|---:|---:|---:|---:|
+| R22 | 269 | 3.5 ms | 1.44–1.54 ms | 4.0 ms | 11206 | 0.42035 |
+| **R23** | **301** | **3.12–3.20 ms** | **1.13–1.17 ms** | **3.65–3.8 ms** | **11547** | 0.42035 |
+
+单查询 +10%（相对本轮会话开始 61.3 QPS 为 **4.9×**），批量 +3%；RSS 234–238 MB 不变。
+单查询剩余的 3.15 ms = logical plan 1.02–1.08 + physical plan 1.13–1.17 + exec 1.0，
+其中 planning 部分（约 2.1 ms）已是纯 SQL/DataFusion 开销。
