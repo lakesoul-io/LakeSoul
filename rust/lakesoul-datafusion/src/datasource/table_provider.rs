@@ -46,6 +46,7 @@ use lakesoul_io::physical_plan::lakesoul_scan::{
     LakeSoulScanConfig, LakeSoulScanExec, ScanFile, ScanWorkUnit,
 };
 use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::transfusion::DataFileInfo;
 use lakesoul_metadata::utils::qualify_path;
 use lakesoul_metadata_proto::entity::{PartitionInfo, TableInfo};
@@ -68,6 +69,7 @@ use lakesoul_common::ser::arrow_java::{
 };
 
 use super::file_format::LakeSoulMetaDataFormat;
+use crate::write_mode::UpdateUnsupported;
 
 const SCAN_STRATEGY_TOTAL: &str = "lakesoul_table_scan_strategy_total";
 const INDEX_PLANNING_TOTAL: &str = "lakesoul_index_planning_total";
@@ -264,12 +266,26 @@ impl LakeSoulTableProvider {
         &self,
         ctx: &SessionState,
         partition_filters: &[Expr],
+        snapshot: Option<Arc<Vec<PartitionInfo>>>,
     ) -> Result<Vec<(PartitionInfo, Vec<DataFileInfo>)>> {
-        let all_partition_info = self
-            .client
-            .get_all_partition_info(self.table_id())
-            .await
-            .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
+        // A fixed snapshot came from the primary. Its commit descriptors must
+        // come from the same authority: a lagging replica could silently omit
+        // those commits and turn a real update into UPDATE 0.
+        let client = if snapshot.is_some() {
+            Arc::new(self.client.primary_only().await)
+        } else {
+            self.client()
+        };
+        let all_partition_info = match snapshot {
+            // A read-modify-write statement replays the versions it captured
+            // before planning this scan; it must never refresh to a newer view.
+            Some(partitions) => (*partitions).clone(),
+            None => self
+                .client
+                .get_all_partition_info(self.table_id())
+                .await
+                .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?,
+        };
         let prune_partition_info = prune_partitions(
             all_partition_info,
             partition_filters,
@@ -280,7 +296,6 @@ impl LakeSoulTableProvider {
         let concurrency: usize =
             ctx.config_options().execution.meta_fetch_concurrency.into();
         let concurrency = concurrency.max(1);
-        let client = self.client();
         let mut listed = futures::stream::iter(prune_partition_info)
             .map(|partition| {
                 let client = client.clone();
@@ -886,6 +901,178 @@ impl LakeSoulTableProvider {
         self.client.clone()
     }
 
+    /// The partition versions of this table as read from the primary metadata
+    /// store. A read-modify-write statement captures these once and binds both
+    /// its old-row scan and its commit validation to them.
+    pub async fn primary_snapshot(&self) -> Result<Arc<Vec<PartitionInfo>>> {
+        let client = self.client.primary_only().await;
+        let partitions = client
+            .get_all_partition_info(self.table_id())
+            .await
+            .map_err(|error| report!(error))?;
+        Ok(Arc::new(partitions))
+    }
+
+    /// The table's durable definition, read from the primary metadata store.
+    ///
+    /// Catalog providers may be built from a replica or a cached view; a
+    /// read-modify-write statement re-reads the definition it is about to use
+    /// so CDC/append-only/schema checks reflect the committed configuration
+    /// even for `WHERE false` and empty tables.
+    pub async fn primary_table_info(
+        &self,
+    ) -> std::result::Result<TableInfo, LakeSoulMetaDataError> {
+        let client = self.client.primary_only().await;
+        client
+            .get_table_info_by_table_id(self.table_id())
+            .await?
+            .ok_or_else(|| {
+                LakeSoulMetaDataError::NotFound(format!(
+                    "table {} not found",
+                    self.table_id()
+                ))
+            })
+    }
+
+    /// Why `UPDATE` cannot run, judged from a table definition.
+    pub fn update_unsupported_for(
+        table_info: &TableInfo,
+        custom_merge_operators: bool,
+    ) -> Option<UpdateUnsupported> {
+        let (_, primary_keys) =
+            parse_table_info_partitions(&table_info.partitions).ok()?;
+        if primary_keys.iter().all(|column| column.trim().is_empty()) {
+            return Some(UpdateUnsupported::NoPrimaryKey);
+        }
+        if custom_merge_operators {
+            return Some(UpdateUnsupported::CustomMergeOperator);
+        }
+        let properties =
+            serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties).ok();
+        let use_cdc = properties
+            .as_ref()
+            .and_then(|properties| properties.use_cdc.as_deref())
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+        let change_column = properties
+            .as_ref()
+            .and_then(|properties| properties.cdc_change_column.as_deref())
+            .is_some_and(|value| !value.trim().is_empty());
+        if use_cdc || change_column {
+            return Some(UpdateUnsupported::Cdc);
+        }
+        let append_only = properties
+            .as_ref()
+            .and_then(|properties| properties.append_only.as_deref())
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+        if append_only {
+            return Some(UpdateUnsupported::AppendOnly);
+        }
+        None
+    }
+
+    /// The primary-key columns of this table.
+    pub fn primary_key_columns(&self) -> &[String] {
+        &self.primary_keys
+    }
+
+    /// The range-partition columns of this table.
+    pub fn range_partition_columns(&self) -> &[String] {
+        &self.range_partitions
+    }
+
+    /// Whether this table has a non-overwrite merge operator configured.
+    ///
+    /// `UseLast` (the default, also when configured explicitly) replaces a
+    /// row's value with the newest version, which is exactly SQL `SET`;
+    /// everything else (`UseLastNotNull`, `SumAll`, `SumLast`, joined
+    /// variants) changes what the new value would mean.
+    pub fn has_custom_merge_operators(&self) -> bool {
+        self.io_config
+            .merge_operators()
+            .values()
+            .any(|operator| operator != "UseLast")
+    }
+
+    /// Why a SQL `UPDATE` cannot run against this table, if it cannot.
+    ///
+    /// The verdict uses the effective configuration the scan/write path reads
+    /// (table properties plus io config), not column names.
+    pub fn update_unsupported(&self) -> Option<UpdateUnsupported> {
+        if self.primary_keys.is_empty() {
+            return Some(UpdateUnsupported::NoPrimaryKey);
+        }
+        if self.has_custom_merge_operators() {
+            return Some(UpdateUnsupported::CustomMergeOperator);
+        }
+        let properties =
+            serde_json::from_str::<LakeSoulTableProperty>(&self.table_info.properties)
+                .ok();
+        let use_cdc = properties
+            .as_ref()
+            .and_then(|properties| properties.use_cdc.as_deref())
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+        if use_cdc || !self.io_config.cdc_column().trim().is_empty() {
+            return Some(UpdateUnsupported::Cdc);
+        }
+        let append_only = properties
+            .as_ref()
+            .and_then(|properties| properties.append_only.as_deref())
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+        if append_only {
+            return Some(UpdateUnsupported::AppendOnly);
+        }
+        None
+    }
+
+    /// The snapshot a scan of this provider must replay, if one is fixed.
+    ///
+    /// The per-statement handle applies to scans of the same table. A scan
+    /// of the same name bound to a different `table_id` is a recreated table
+    /// and is refused rather than read from the stale snapshot.
+    fn scan_snapshot(
+        &self,
+        session_state: &SessionState,
+    ) -> DFResult<Option<Arc<Vec<PartitionInfo>>>> {
+        let Some(fixed) =
+            crate::write_mode::LakeSoulFixedSnapshot::from_session(session_state)
+        else {
+            return Ok(None);
+        };
+        if fixed.table_id == self.table_info.table_id {
+            if !crate::write_mode::same_table_definition(
+                &fixed.table_info,
+                &self.table_info,
+            ) {
+                return Err(DataFusionError::External(Box::new(
+                    crate::write_mode::WriteConflict {
+                        detail: format!(
+                            "table {} changed while the statement was running; \
+                             retry the statement",
+                            self.table_info.table_id
+                        ),
+                    },
+                )));
+            }
+            return Ok(Some(Arc::clone(&fixed.partitions)));
+        }
+        if fixed
+            .table_name
+            .eq_ignore_ascii_case(&self.table_info.table_name)
+            && fixed.table_namespace == self.table_info.table_namespace
+        {
+            return Err(DataFusionError::External(Box::new(
+                crate::write_mode::WriteConflict {
+                    detail: format!(
+                        "table {}.{} was dropped and recreated while the statement \
+                         was running; retry the statement",
+                        self.table_info.table_namespace, self.table_info.table_name
+                    ),
+                },
+            )));
+        }
+        Ok(None)
+    }
+
     fn _primary_keys(&self) -> &[String] {
         &self.primary_keys
     }
@@ -960,11 +1147,22 @@ impl LakeSoulTableProvider {
             return Ok((vec![], Statistics::new_unknown(&self.file_schema())));
         };
 
-        let all_partition_info = self
-            .client
-            .get_all_partition_info(self.table_id())
-            .await
-            .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
+        let snapshot = self.scan_snapshot(ctx).map_err(|error| {
+            report!(error).attach(self.table_info().table_name.clone())
+        })?;
+        let client = if snapshot.is_some() {
+            Arc::new(self.client.primary_only().await)
+        } else {
+            self.client()
+        };
+        let all_partition_info = match snapshot {
+            Some(partitions) => (*partitions).clone(),
+            None => self
+                .client
+                .get_all_partition_info(self.table_id())
+                .await
+                .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?,
+        };
         let total_partition_count = all_partition_info.len();
         let prune_partition_info = prune_partitions(
             all_partition_info,
@@ -987,7 +1185,7 @@ impl LakeSoulTableProvider {
             futures.push(listing_partition_info(
                 partition,
                 store.as_ref(),
-                self.client(),
+                client.clone(),
             ))
         }
 
@@ -1648,13 +1846,18 @@ impl TableProvider for LakeSoulTableProvider {
         // range or list request is issued, and the provider builds descriptors
         // rather than per-file scan plans.
         let list_started = Instant::now();
+        let fixed_snapshot = self.scan_snapshot(session_state)?;
         let partition_file_infos = self
             .list_partition_file_infos_for_scan(
                 session_state,
                 &classified.partition_pruning,
+                fixed_snapshot,
             )
             .await
-            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+            .map_err(|report| match report.downcast_report::<DataFusionError>() {
+                Ok(report) => report.into_current_context(),
+                Err(report) => DataFusionError::External(report.into_boxed_error()),
+            })?;
         let list_ms = list_started.elapsed().as_secs_f64() * 1000.0;
 
         if partition_file_infos

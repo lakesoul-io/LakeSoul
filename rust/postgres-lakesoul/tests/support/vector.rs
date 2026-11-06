@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Owned, real Parquet fixtures: an unindexed corpus, the same corpus with a
-//! committed IVF+RaBitQ index, and nullable fixed vectors for protocol tests.
+//! committed IVF+RaBitQ index, nullable fixed vectors for protocol tests, and
+//! a controlled text corpus with a committed `text_match` index.
 //! Before startup, decode the Parquet inputs and committed segment payloads;
 //! require multiple occupied IVF clusters so probes can change coverage.
 
@@ -47,6 +48,13 @@ pub const PLAIN_TABLE: &str = "vector_plain";
 pub const ANN_TABLE: &str = "vector_ann";
 /// Fixed-value table for codec, distance and NULL cases (no index).
 pub const VALUES_TABLE: &str = "vector_values";
+/// Corpus with one committed text (`text_match`) index over `body`:
+/// `(1, 'apple pie'), (2, 'banana bread'), (3, 'cherry tart'),
+/// (4, 'apple juice')`.
+pub const TEXT_TABLE: &str = "vector_text_ann";
+/// `text_index_columns` declaration for [`TEXT_TABLE`]; the remaining fields
+/// are the documented defaults.
+const TEXT_INDEX_CONFIG: &str = r#"[{"column":"body","tokenizer":"jieba"}]"#;
 
 /// Exact float32 input shared by the indexed and unindexed tables. Four
 /// separated groups; L2 distance from zero strictly increases with id.
@@ -75,7 +83,7 @@ impl StartupState {
         self.create_corpus_table(PLAIN_TABLE, false).await?;
         self.create_corpus_table(ANN_TABLE, true).await?;
         self.create_values_table().await?;
-        Ok(())
+        self.create_text_table().await
     }
 
     /// Table location inside this suite's disposable warehouse.
@@ -176,6 +184,116 @@ impl StartupState {
         )?;
         self.verify_persisted(VALUES_TABLE, &values_rows()).await?;
         self.verify_no_index(VALUES_TABLE).await
+    }
+
+    /// A controlled text corpus with one committed `text_match` index. The
+    /// UPDATE contract moves row 1 from `apple pie` to `elderberry pie`, so
+    /// `apple` loses that row and `elderberry` gains it.
+    async fn create_text_table(&mut self) -> Result<()> {
+        self.create_vector_table(
+            TEXT_TABLE,
+            "id BIGINT NOT NULL PRIMARY KEY, body TEXT",
+            &format!(", 'text_index_columns' '{TEXT_INDEX_CONFIG}'"),
+        )
+        .await?;
+        management_execute(
+            &self.management,
+            &format!(
+                "INSERT INTO lakesoul.{}.{TEXT_TABLE} (id, body) VALUES \
+                 (1, 'apple pie'), (2, 'banana bread'), \
+                 (3, 'cherry tart'), (4, 'apple juice')",
+                self.namespace
+            ),
+        )
+        .await
+        .with_context(|| {
+            format!("insert text corpus into vector fixture table={TEXT_TABLE}")
+        })?;
+        ensure_eq(
+            &format!("lake {TEXT_TABLE}"),
+            management_row_count(&self.management, &self.namespace, TEXT_TABLE).await?,
+            4,
+        )?;
+        // The insert above commits the data and, inline, the text index.
+        self.verify_text_index(TEXT_TABLE).await?;
+        Ok(())
+    }
+
+    /// The text fixture must have written committed index artifacts before the
+    /// server starts, and a `text_match` query on the fixture session must be
+    /// served by the text search node; the wire contract then questions the
+    /// same index through `UPDATE`.
+    async fn verify_text_index(&self, table: &str) -> Result<()> {
+        let directory = self.warehouse_dir.join(&self.namespace).join(table);
+        let artifacts = index_artifact_files(&directory, IndexKind::Text.directory())?;
+        ensure!(
+            artifacts > 0,
+            "{table}: no committed {} artifact under {}",
+            IndexKind::Text.directory(),
+            directory.display()
+        );
+
+        let sql = format!(
+            "SELECT id FROM lakesoul.{}.{table} WHERE text_match(body, 'apple') \
+             ORDER BY id LIMIT 10",
+            self.namespace
+        );
+        let batches = bounded(OPERATION_TIMEOUT, "fixture text_match query", async {
+            let frame = self
+                .management
+                .sql(&sql)
+                .await
+                .map_err(|error| format!("{error:?}"))?;
+            frame.collect().await.map_err(|error| format!("{error:?}"))
+        })
+        .await
+        .with_context(|| format!("{table}: fixture text_match query"))?;
+        let mut ids = Vec::new();
+        for batch in &batches {
+            let column = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or_else(|| anyhow!("{table}: text_match id column is not Int64"))?;
+            for row in 0..batch.num_rows() {
+                ids.push(column.value(row));
+            }
+        }
+        ensure!(
+            ids == vec![1i64, 4],
+            "{table}: fixture text_match(apple) returned {ids:?}, expected [1, 4]"
+        );
+
+        let explain = bounded(OPERATION_TIMEOUT, "fixture text_match EXPLAIN", async {
+            let frame = self
+                .management
+                .sql(&format!("EXPLAIN VERBOSE {sql}"))
+                .await
+                .map_err(|error| format!("{error:?}"))?;
+            frame.collect().await.map_err(|error| format!("{error:?}"))
+        })
+        .await
+        .with_context(|| format!("{table}: fixture text_match EXPLAIN"))?;
+        let mut plan = String::new();
+        for batch in &explain {
+            for row in 0..batch.num_rows() {
+                plan.push_str(&datafusion::arrow::util::display::array_value_to_string(
+                    batch.column(1),
+                    row,
+                )?);
+                plan.push('\n');
+            }
+        }
+        ensure!(
+            plan.contains("LakeSoulTextSearchExec"),
+            "{table}: fixture text_match query did not use the text index:\n{plan}"
+        );
+
+        eprintln!(
+            "vector fixture proof: table={table} text_index_artifacts={artifacts} \
+             committed=true route=LakeSoulTextSearchExec"
+        );
+        Ok(())
     }
 
     async fn vector_table_files(&self, table: &str) -> Result<Vec<String>> {
@@ -558,4 +676,44 @@ fn local_file(file: &str) -> Result<&Path> {
         "not an existing absolute local file: {file}"
     );
     Ok(path)
+}
+
+/// Count the regular files under the `directory` (for example `_text_index`)
+/// of one table directory.
+///
+/// A committed index writes at least one artifact; the contract starts the
+/// server only after that file exists.
+fn index_artifact_files(table_dir: &Path, directory: &str) -> Result<usize> {
+    if !table_dir.exists() {
+        return Ok(0);
+    }
+    let mut files = 0;
+    for entry in std::fs::read_dir(table_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        if path.file_name().and_then(|name| name.to_str()) == Some(directory) {
+            files += regular_files(&path)?;
+        } else {
+            files += index_artifact_files(&path, directory)?;
+        }
+    }
+    Ok(files)
+}
+
+/// Regular files below `directory`, recursively.
+fn regular_files(directory: &Path) -> Result<usize> {
+    let mut files = 0;
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            files += regular_files(&entry.path())?;
+        } else if kind.is_file() {
+            files += 1;
+        }
+    }
+    Ok(files)
 }

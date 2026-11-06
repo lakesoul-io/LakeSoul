@@ -84,7 +84,7 @@ use crate::write_mode::{ConflictMode, LakeSoulWriteMode, WriteConflict, WriteVio
 /// Workers of the distributed writes, which is also the task count the write
 /// stage gets for the multi-task tests: three range partitions fan out to one
 /// task each.
-const WRITE_WORKERS: usize = 3;
+pub(crate) const WRITE_WORKERS: usize = 3;
 
 /// Source files written per range partition by the test fixture.
 const SOURCE_CALLS: usize = 4;
@@ -128,10 +128,10 @@ fn expected_source_rows() -> Vec<(i32, i32)> {
 }
 
 /// A table created for one test, with its metadata id and local directory.
-struct TableFixture {
-    name: String,
-    table_id: String,
-    root: PathBuf,
+pub(crate) struct TableFixture {
+    pub(crate) name: String,
+    pub(crate) table_id: String,
+    pub(crate) root: PathBuf,
 }
 
 /// Creates an append-only Parquet table of [`write_schema`], optionally
@@ -153,7 +153,7 @@ async fn create_append_table(
 
 /// Creates a Parquet table with an explicit schema, range partitioning and
 /// primary keys, and resolves its metadata id and local directory.
-async fn create_table_fixture(
+pub(crate) async fn create_table_fixture(
     client: &MetaDataClientRef,
     prefix: &str,
     schema: SchemaRef,
@@ -198,7 +198,7 @@ async fn seed_source(table: &TableFixture) -> Result<()> {
 }
 
 /// Removes the fixture's local directory after the test is done with it.
-fn remove_table_dir(table: &TableFixture) {
+pub(crate) fn remove_table_dir(table: &TableFixture) {
     let _ = std::fs::remove_dir_all(&table.root);
 }
 
@@ -207,17 +207,17 @@ fn remove_table_dir(table: &TableFixture) {
 // ---------------------------------------------------------------------------
 
 /// What a write statement's physical plan says about where the write runs.
-struct WritePlanShape {
-    explain: String,
+pub(crate) struct WritePlanShape {
+    pub(crate) explain: String,
     /// The coordinator's head stage contains the commit node.
-    head_has_commit: bool,
+    pub(crate) head_has_commit: bool,
     /// The coordinator's head stage contains the write node. A distributed
     /// write must keep this `false`.
-    head_has_write: bool,
+    pub(crate) head_has_write: bool,
     /// Task counts of the worker stages whose plan contains a write node.
-    write_stage_tasks: Vec<usize>,
+    pub(crate) write_stage_tasks: Vec<usize>,
     /// Statement id stamped into the file names of the plan's write node.
-    write_id: Option<String>,
+    pub(crate) write_id: Option<String>,
 }
 
 /// Reads the write structure out of a planned statement.
@@ -226,7 +226,7 @@ struct WritePlanShape {
 /// worker stages are the stages behind the boundaries. [`stage_contains_write`]
 /// stops at a nested boundary, so only the stage a write node actually runs in
 /// is reported, not every stage above it.
-fn write_plan_shape(plan: &Arc<dyn ExecutionPlan>) -> WritePlanShape {
+pub(crate) fn write_plan_shape(plan: &Arc<dyn ExecutionPlan>) -> WritePlanShape {
     let explain = display_plan_ascii(plan.as_ref(), false);
 
     let mut head_has_commit = false;
@@ -301,7 +301,7 @@ fn stage_contains_write(plan: &Arc<dyn ExecutionPlan>) -> bool {
 
 /// Rows the `INSERT` reports as affected: the `count` column the SQL front
 /// end reads.
-fn inserted_rows(batches: &[RecordBatch]) -> u64 {
+pub(crate) fn inserted_rows(batches: &[RecordBatch]) -> u64 {
     batches
         .iter()
         .map(|batch| {
@@ -346,7 +346,10 @@ async fn read_write_rows(ctx: &SessionContext, table: &str) -> Result<Vec<(i32, 
 /// bucket: `part-{write_id}T{task}_{bucket:04}.parquet` (task suffix present
 /// only when the write stage ran in several tasks) or
 /// `part-{write_id}_{bucket:04}.parquet`.
-fn split_data_file_name(path: &Path, write_id: &str) -> Option<(Option<usize>, usize)> {
+pub(crate) fn split_data_file_name(
+    path: &Path,
+    write_id: &str,
+) -> Option<(Option<usize>, usize)> {
     let name = path.file_name()?.to_str()?;
     let stem = name.strip_prefix("part-")?.strip_suffix(".parquet")?;
     let rest = stem.strip_prefix(write_id)?;
@@ -367,14 +370,14 @@ fn split_data_file_name(path: &Path, write_id: &str) -> Option<(Option<usize>, u
 }
 
 /// Converts a `file://` path from the metadata into a local path.
-fn local_path(path: &str) -> Result<PathBuf> {
+pub(crate) fn local_path(path: &str) -> Result<PathBuf> {
     let url = url::Url::parse(path).map_err(|error| report!(error))?;
     url.to_file_path()
         .map_err(|_| report!("metadata path is not a local file: {path}"))
 }
 
 /// Every Parquet file below `root`, sorted.
-fn data_files_on_disk(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn data_files_on_disk(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut directories = vec![root.to_path_buf()];
     while let Some(directory) = directories.pop() {
@@ -407,7 +410,7 @@ fn data_files_on_disk(root: &Path) -> Vec<PathBuf> {
 
 /// A pooled PostgreSQL client for the assertions that need the commit rows
 /// themselves: snapshot APIs cannot show an uncommitted or orphan row.
-async fn metadata_pool() -> Result<PooledClient> {
+pub(crate) async fn metadata_pool() -> Result<PooledClient> {
     Ok(PooledClient::try_new(
         pg_config_from_env(PRIMARY_URL_PROP_KEY, PRIMARY_URL_ENV_KEY)?,
         None,
@@ -418,7 +421,7 @@ async fn metadata_pool() -> Result<PooledClient> {
 /// Per-partition commit rows of `table_id`: `(partition_desc, commits, files
 /// listed by those commits, committed commits)`, plus the number of
 /// uncommitted rows.
-async fn metadata_counts(
+pub(crate) async fn metadata_counts(
     pool: &PooledClient,
     table_id: &str,
 ) -> Result<(Vec<(String, i64, i64, i64)>, i64)> {
@@ -594,7 +597,7 @@ async fn assert_committed_each_partition_once(
 
 /// Asserts nothing was published for `table`: no commit row (committed or
 /// not), no partition version, and no active file.
-async fn assert_nothing_published(
+pub(crate) async fn assert_nothing_published(
     pool: &PooledClient,
     client: &MetaDataClientRef,
     table: &TableFixture,
@@ -1027,22 +1030,22 @@ async fn test_single_task_write_does_not_stamp_a_task_index_inner() -> Result<()
 /// returned `Ok`, or a multipart upload whose `complete` succeeded), so a
 /// test can prove which worker servers actually wrote data.
 #[derive(Debug, Clone, Default)]
-struct WorkerWriteProbe {
+pub(crate) struct WorkerWriteProbe {
     arrived: Arc<AtomicUsize>,
     uploads: Arc<AtomicUsize>,
     failures: Arc<AtomicUsize>,
 }
 
 impl WorkerWriteProbe {
-    fn arrived(&self) -> usize {
+    pub(crate) fn arrived(&self) -> usize {
         self.arrived.load(Ordering::SeqCst)
     }
 
-    fn uploads(&self) -> usize {
+    pub(crate) fn uploads(&self) -> usize {
         self.uploads.load(Ordering::SeqCst)
     }
 
-    fn failures(&self) -> usize {
+    pub(crate) fn failures(&self) -> usize {
         self.failures.load(Ordering::SeqCst)
     }
 
@@ -1208,7 +1211,7 @@ impl object_store::ObjectStore for FailPartitionStore {
 
 /// Spawns LakeSoul workers whose `file://` store is a [`FailPartitionStore`]
 /// and returns each worker's [`WorkerWriteProbe`].
-async fn spawn_fail_partition_workers(
+pub(crate) async fn spawn_fail_partition_workers(
     workers: usize,
     fail_segment: &str,
 ) -> Result<(Vec<String>, Vec<WorkerWriteProbe>, JoinSet<()>)> {
@@ -1449,7 +1452,7 @@ impl object_store::ObjectStore for GatedWriteStore {
 /// so a test can observe the tasks leave the worker cache once the statement
 /// is dropped. The returned probes record the worker-local uploads and
 /// deletions.
-async fn spawn_gated_workers(
+pub(crate) async fn spawn_gated_workers(
     workers: usize,
     gate: watch::Receiver<bool>,
 ) -> Result<(Vec<String>, Vec<WorkerWriteProbe>, JoinSet<()>)> {
@@ -1499,7 +1502,7 @@ async fn spawn_gated_workers(
 }
 
 /// Polls until `predicate` holds or panics at a 30 s deadline.
-async fn wait_until(mut predicate: impl FnMut() -> bool, label: &str) {
+pub(crate) async fn wait_until(mut predicate: impl FnMut() -> bool, label: &str) {
     for _ in 0..600 {
         if predicate() {
             return;
@@ -1510,7 +1513,7 @@ async fn wait_until(mut predicate: impl FnMut() -> bool, label: &str) {
 }
 
 /// Connects to the observability service of every worker in `urls`.
-async fn connect_observers(
+pub(crate) async fn connect_observers(
     urls: &[String],
 ) -> Result<Vec<ObservabilityServiceClient<tonic::transport::Channel>>> {
     let mut observers = Vec::with_capacity(urls.len());
@@ -1522,7 +1525,7 @@ async fn connect_observers(
 
 /// Waits until a worker holds no initialized task, so no further upload or
 /// report can be produced by it.
-async fn wait_until_worker_drained(
+pub(crate) async fn wait_until_worker_drained(
     observer: &mut ObservabilityServiceClient<tonic::transport::Channel>,
     label: &str,
 ) -> Result<()> {
@@ -1677,7 +1680,7 @@ async fn test_distributed_insert_cancelled_before_commit_publishes_nothing_inner
 // ---------------------------------------------------------------------------
 
 /// `(id INT NOT NULL, v INT NOT NULL)` with `id` as primary key.
-fn pk_schema() -> SchemaRef {
+pub(crate) fn pk_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("v", DataType::Int32, false),
@@ -1695,7 +1698,7 @@ fn pk_part_schema() -> SchemaRef {
     ]))
 }
 
-fn iv_batch(rows: &[(i32, i32)]) -> RecordBatch {
+pub(crate) fn iv_batch(rows: &[(i32, i32)]) -> RecordBatch {
     let ids: ArrayRef = Arc::new(Int32Array::from(
         rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
     ));
@@ -1705,7 +1708,7 @@ fn iv_batch(rows: &[(i32, i32)]) -> RecordBatch {
     RecordBatch::try_new(pk_schema(), vec![ids, values]).unwrap()
 }
 
-fn piv_batch(rows: &[(i32, i32, i32)]) -> RecordBatch {
+pub(crate) fn piv_batch(rows: &[(i32, i32, i32)]) -> RecordBatch {
     let parts: ArrayRef = Arc::new(Int32Array::from(
         rows.iter().map(|(part, _, _)| *part).collect::<Vec<_>>(),
     ));
@@ -1719,7 +1722,7 @@ fn piv_batch(rows: &[(i32, i32, i32)]) -> RecordBatch {
 }
 
 /// Creates a primary-key table, optionally range-partitioned by `part`.
-async fn create_pk_table(
+pub(crate) async fn create_pk_table(
     client: &MetaDataClientRef,
     prefix: &str,
     range_partitioned: bool,
@@ -1740,7 +1743,10 @@ async fn create_pk_table(
 }
 
 /// Seeds committed keys through the normal upsert path.
-async fn seed_pk_rows(table: &TableFixture, rows: &[(i32, i32)]) -> Result<()> {
+pub(crate) async fn seed_pk_rows(
+    table: &TableFixture,
+    rows: &[(i32, i32)],
+) -> Result<()> {
     LakeSoulTable::for_name(&table.name)
         .await?
         .execute_upsert(iv_batch(rows))
@@ -1785,7 +1791,10 @@ fn int32_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Int32Array
         .ok_or_else(|| report!("column {name} is missing or not Int32"))
 }
 
-async fn read_iv_rows(ctx: &SessionContext, table: &str) -> Result<Vec<(i32, i32)>> {
+pub(crate) async fn read_iv_rows(
+    ctx: &SessionContext,
+    table: &str,
+) -> Result<Vec<(i32, i32)>> {
     let batches = ctx
         .sql(&format!("SELECT id, v FROM {table} ORDER BY id"))
         .await?
@@ -1802,7 +1811,7 @@ async fn read_iv_rows(ctx: &SessionContext, table: &str) -> Result<Vec<(i32, i32
     Ok(rows)
 }
 
-async fn read_piv_rows(
+pub(crate) async fn read_piv_rows(
     ctx: &SessionContext,
     table: &str,
 ) -> Result<Vec<(i32, i32, i32)>> {
@@ -1829,13 +1838,13 @@ async fn read_piv_rows(
 /// the number of uncommitted rows, and the latest version/snapshot length of
 /// every partition. Two equal states mean a statement changed nothing.
 #[derive(Debug, PartialEq, Eq)]
-struct MetadataState {
-    commits: Vec<(String, i64, i64, i64)>,
-    uncommitted: i64,
-    versions: Vec<(String, i32, usize)>,
+pub(crate) struct MetadataState {
+    pub(crate) commits: Vec<(String, i64, i64, i64)>,
+    pub(crate) uncommitted: i64,
+    pub(crate) versions: Vec<(String, i32, usize)>,
 }
 
-async fn metadata_state(
+pub(crate) async fn metadata_state(
     pool: &PooledClient,
     client: &MetaDataClientRef,
     table: &TableFixture,
@@ -1862,7 +1871,7 @@ async fn metadata_state(
 
 /// Asserts the files the metadata references are exactly the files on disk,
 /// so a statement did not leave an orphan and did not lose a committed file.
-async fn assert_disk_equals_active_files(
+pub(crate) async fn assert_disk_equals_active_files(
     client: &MetaDataClientRef,
     table: &TableFixture,
 ) -> Result<()> {
@@ -1888,7 +1897,7 @@ async fn assert_disk_equals_active_files(
 /// The write validation runs on a worker and comes back through the report
 /// stream, so the error may be wrapped; the type is what preserves the
 /// SQLSTATE, not the message.
-fn find_cause<T>(error: &DataFusionError) -> Option<&T>
+pub(crate) fn find_cause<T>(error: &DataFusionError) -> Option<&T>
 where
     T: std::error::Error + 'static,
 {
@@ -1916,7 +1925,7 @@ where
 /// A keyed statement must keep the commit on the coordinator and the keyed
 /// write in a worker stage; the keyed shuffle is what gives equal keys one
 /// validator.
-fn assert_keyed_write_is_distributed(
+pub(crate) fn assert_keyed_write_is_distributed(
     plan: &Arc<dyn ExecutionPlan>,
     shape: &WritePlanShape,
     label: &str,

@@ -740,6 +740,15 @@ fn build_schema(
             fields[*index] = Field::new(field.name(), field.data_type().clone(), false);
         }
     }
+    // Every other declared `NOT NULL` is a stored constraint: the writer
+    // enforces it (SQLSTATE 23502) and every read reports the same
+    // nullability, so it must not be dropped while building the schema.
+    for (index, not_null) in declared_not_null.iter().enumerate() {
+        if *not_null == Some(true) && fields[index].is_nullable() {
+            let field = &fields[index];
+            fields[index] = Field::new(field.name(), field.data_type().clone(), false);
+        }
+    }
     Ok((Schema::new(fields), primary_key))
 }
 

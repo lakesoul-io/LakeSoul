@@ -43,9 +43,9 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use datafusion::arrow::datatypes::{DataType, Field, SchemaRef};
+use datafusion::arrow::datatypes::{Field, SchemaRef};
 use datafusion::catalog::TableProvider;
-use datafusion::common::{DFSchemaRef, ParamValues, ScalarValue};
+use datafusion::common::{DFSchemaRef, ParamValues};
 use datafusion::error::DataFusionError;
 use datafusion::functions_aggregate::expr_fn::count;
 use datafusion::logical_expr::dml::{InsertOp, WriteOp};
@@ -66,6 +66,7 @@ use datafusion_postgres::pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use datafusion_postgres::pgwire::messages::response::TransactionStatus;
 
 use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
+use lakesoul_datafusion::pg_assignment::{check_literal, ensure_assignment, literal};
 use lakesoul_datafusion::write_mode::{
     ConflictMode, LakeSoulWriteMode, WriteConflict, WriteViolation,
 };
@@ -84,10 +85,6 @@ const INVALID_CATALOG_NAME: &str = "3D000";
 const NO_UNIQUE_CONSTRAINT: &str = "42P10";
 /// SQLSTATE `syntax_error` (the source does not match the target column count).
 const SYNTAX_ERROR: &str = "42601";
-/// SQLSTATE `datatype_mismatch` (the source expression is not assignable).
-const DATATYPE_MISMATCH: &str = "42804";
-/// SQLSTATE `invalid_text_representation` (a string literal does not convert).
-const INVALID_TEXT_REPRESENTATION: &str = "22P02";
 /// SQLSTATE `cardinality_violation` (an upsert source repeats a key).
 const CARDINALITY_VIOLATION: &str = "21000";
 
@@ -189,9 +186,9 @@ async fn prepare(
     status: TransactionStatus,
     database: &str,
 ) -> PgWireResult<Target> {
-    reject_transaction(status)?;
+    reject_transaction(status, "INSERT")?;
     reject_unsupported(insert)?;
-    let (table_ref, table_name) = target_reference(insert, database)?;
+    let (table_ref, table_name) = target_reference(&insert.table, database)?;
     let provider = session_context
         .table_provider(table_ref.clone())
         .await
@@ -465,31 +462,6 @@ fn values_have_typed(values: &Values) -> bool {
         .any(|expr| literal(expr).is_none())
 }
 
-/// A literal PostgreSQL treats as `unknown` (or a parameter whose type is
-/// supplied by the target column), as opposed to a typed expression.
-enum Literal<'a> {
-    Null,
-    String(&'a str),
-    Number(&'a str),
-    Boolean,
-    Placeholder,
-}
-
-fn literal(expr: &Expr) -> Option<Literal<'_>> {
-    match expr {
-        Expr::Nested(inner) => literal(inner),
-        Expr::Value(value) => match &value.value {
-            Value::Null => Some(Literal::Null),
-            Value::SingleQuotedString(text) => Some(Literal::String(text)),
-            Value::Number(text, _) => Some(Literal::Number(text)),
-            Value::Boolean(_) => Some(Literal::Boolean),
-            Value::Placeholder(_) => Some(Literal::Placeholder),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 fn validate_values_column(
     index: usize,
     column: &[&Expr],
@@ -511,58 +483,14 @@ fn validate_values_column(
             .and_then(|schema| schema.fields().get(index))
             .map(|field| field.data_type())
         {
-            return ensure_assignment(source, target);
+            return ensure_assignment(source, target).map_err(assignment_error);
         }
         return Ok(());
     }
     for value in literals {
-        check_literal(value, target)?;
+        check_literal(value, target).map_err(assignment_error)?;
     }
     Ok(())
-}
-
-fn check_literal(value: Literal<'_>, target: &Field) -> PgWireResult<()> {
-    let target_type = target.data_type();
-    match value {
-        Literal::Null | Literal::Placeholder => Ok(()),
-        Literal::String(text) => {
-            if is_string(target_type) {
-                return Ok(());
-            }
-            if is_numeric(target_type)
-                || is_temporal(target_type)
-                || *target_type == DataType::Boolean
-                || is_binary(target_type)
-            {
-                ScalarValue::Utf8(Some(text.to_string()))
-                    .cast_to(target_type)
-                    .map_err(|_| {
-                        user_error(
-                            INVALID_TEXT_REPRESENTATION,
-                            format!(
-                                "invalid input syntax for type {}: \"{text}\"",
-                                pg_type_name(target_type)
-                            ),
-                        )
-                    })?;
-            }
-            Ok(())
-        }
-        Literal::Number(text) => {
-            if is_numeric(target_type) || is_string(target_type) {
-                Ok(())
-            } else {
-                Err(datatype_mismatch(target, number_type(text)))
-            }
-        }
-        Literal::Boolean => {
-            if *target_type == DataType::Boolean || is_string(target_type) {
-                Ok(())
-            } else {
-                Err(datatype_mismatch(target, "boolean"))
-            }
-        }
-    }
 }
 
 /// Check one exported column of an `INSERT ... SELECT` source. A projection
@@ -593,7 +521,7 @@ fn validate_body_column(
             if let Some(expr) = projected_expression(&select.projection, index, width)
                 && let Some(value) = literal(expr)
             {
-                return check_literal(value, target);
+                return check_literal(value, target).map_err(assignment_error);
             }
             ensure_planned_type(index, target, planned)
         }
@@ -622,7 +550,7 @@ fn validate_body_column(
                 return ensure_planned_type(index, target, planned);
             }
             for value in literals {
-                check_literal(value, target)?;
+                check_literal(value, target).map_err(assignment_error)?;
             }
             Ok(())
         }
@@ -661,134 +589,17 @@ fn ensure_planned_type(
     planned: &DFSchemaRef,
 ) -> PgWireResult<()> {
     match planned.fields().get(index) {
-        Some(source) => ensure_assignment(source.data_type(), target),
+        Some(source) => {
+            ensure_assignment(source.data_type(), target).map_err(assignment_error)
+        }
         None => Ok(()),
     }
 }
 
-/// PostgreSQL's assignment cast matrix for the types a LakeSoul column can
-/// have. Everything else is a `42804`.
-fn ensure_assignment(source: &DataType, target: &Field) -> PgWireResult<()> {
-    if *source == DataType::Null {
-        // An unresolved parameter takes its type from the target column.
-        return Ok(());
-    }
-    if assignment_allowed(source, target.data_type()) {
-        return Ok(());
-    }
-    Err(datatype_mismatch(target, pg_type_name(source)))
-}
-
-fn assignment_allowed(source: &DataType, target: &DataType) -> bool {
-    if is_numeric(source) {
-        is_numeric(target) || is_string(target)
-    } else if *source == DataType::Boolean {
-        *target == DataType::Boolean || is_string(target)
-    } else if is_string(source) {
-        is_string(target)
-    } else if is_temporal(source) {
-        is_temporal(target) || is_string(target)
-    } else if is_binary(source) {
-        is_binary(target) || is_string(target)
-    } else {
-        false
-    }
-}
-
-fn is_numeric(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
-            | DataType::Float16
-            | DataType::Float32
-            | DataType::Float64
-            | DataType::Decimal128(..)
-            | DataType::Decimal256(..)
-    )
-}
-
-fn is_string(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-    )
-}
-
-fn is_temporal(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Date32
-            | DataType::Date64
-            | DataType::Time32(_)
-            | DataType::Time64(_)
-            | DataType::Timestamp(_, _)
-    )
-}
-
-fn is_binary(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Binary
-            | DataType::LargeBinary
-            | DataType::BinaryView
-            | DataType::FixedSizeBinary(_)
-    )
-}
-
-fn pg_type_name(data_type: &DataType) -> &'static str {
-    match data_type {
-        DataType::Boolean => "boolean",
-        DataType::Int8 | DataType::Int16 | DataType::UInt8 | DataType::UInt16 => {
-            "smallint"
-        }
-        DataType::Int32 | DataType::UInt32 => "integer",
-        DataType::Int64 | DataType::UInt64 => "bigint",
-        DataType::Float16 | DataType::Float32 => "real",
-        DataType::Float64 => "double precision",
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => "text",
-        DataType::Date32 | DataType::Date64 => "date",
-        DataType::Timestamp(_, timezone) => match timezone {
-            Some(_) => "timestamp with time zone",
-            None => "timestamp without time zone",
-        },
-        DataType::Decimal128(..) | DataType::Decimal256(..) => "numeric",
-        DataType::Binary
-        | DataType::LargeBinary
-        | DataType::BinaryView
-        | DataType::FixedSizeBinary(_) => "bytea",
-        _ => "unknown",
-    }
-}
-
-/// The PostgreSQL type an untyped numeric literal gets.
-fn number_type(text: &str) -> &'static str {
-    if text.contains(['.', 'e', 'E']) {
-        "numeric"
-    } else if text.parse::<i32>().is_ok() {
-        "integer"
-    } else if text.parse::<i64>().is_ok() {
-        "bigint"
-    } else {
-        "numeric"
-    }
-}
-
-fn datatype_mismatch(target: &Field, source: &str) -> PgWireError {
-    user_error(
-        DATATYPE_MISMATCH,
-        format!(
-            "column \"{}\" is of type {} but expression is of type {source}",
-            target.name(),
-            pg_type_name(target.data_type())
-        ),
-    )
+fn assignment_error(
+    error: lakesoul_datafusion::pg_assignment::AssignmentError,
+) -> PgWireError {
+    user_error(error.sqlstate, error.to_string())
 }
 
 /// `ON CONFLICT` mapped onto LakeSoul's write modes.
@@ -1017,15 +828,17 @@ fn reject_unsupported(insert: &Insert) -> PgWireResult<()> {
     Ok(())
 }
 
-pub(crate) fn reject_transaction(status: TransactionStatus) -> PgWireResult<()> {
+pub(crate) fn reject_transaction(
+    status: TransactionStatus,
+    verb: &str,
+) -> PgWireResult<()> {
     if status == TransactionStatus::Idle {
         return Ok(());
     }
-    Err(feature_not_supported(
-        "INSERT is not supported inside a transaction block: LakeSoul commits \
+    Err(feature_not_supported(format!(
+        "{verb} is not supported inside a transaction block: LakeSoul commits \
          every statement immediately and cannot roll it back"
-            .to_string(),
-    ))
+    )))
 }
 
 fn table_name(insert: &Insert) -> String {
@@ -1038,12 +851,12 @@ fn table_name(insert: &Insert) -> String {
 /// The table reference PostgreSQL's catalog resolves, and the name a client
 /// wrote (for messages).
 pub(crate) fn target_reference(
-    insert: &Insert,
+    table: &TableObject,
     database: &str,
 ) -> PgWireResult<(datafusion::common::TableReference, String)> {
-    let TableObject::TableName(name) = &insert.table else {
+    let TableObject::TableName(name) = table else {
         return Err(feature_not_supported(
-            "INSERT into a table function or subquery is not supported".to_string(),
+            "a write target that is not a table is not supported".to_string(),
         ));
     };
     let written = name.to_string();
@@ -1186,7 +999,7 @@ async fn execute_bound(
 }
 
 /// The sink reports the written row count in its single `count` batch.
-fn rows_affected(
+pub(crate) fn rows_affected(
     batches: &[datafusion::arrow::record_batch::RecordBatch],
 ) -> PgWireResult<usize> {
     let mut rows = 0usize;
@@ -1272,7 +1085,7 @@ async fn reject_duplicate_upsert_rows(
 
 /// Map a write violation to its PostgreSQL SQLSTATE; other errors keep the
 /// server's generic internal error, like every other DataFusion failure.
-fn insert_error(error: DataFusionError) -> PgWireError {
+pub(crate) fn insert_error(error: DataFusionError) -> PgWireError {
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
     while let Some(current) = source {
         if let Some(violation) = current.downcast_ref::<WriteViolation>() {
@@ -1286,12 +1099,18 @@ fn insert_error(error: DataFusionError) -> PgWireError {
         {
             return user_error("23502", violation.to_string());
         }
+        if let Some(
+            error @ lakesoul_metadata::error::LakeSoulMetaDataError::CommitConflict(_),
+        ) = current.downcast_ref::<lakesoul_metadata::error::LakeSoulMetaDataError>()
+        {
+            return user_error("40001", error.to_string());
+        }
         source = current.source();
     }
     PgWireError::ApiError(Box::new(error))
 }
 
-fn user_error(code: &str, message: String) -> PgWireError {
+pub(crate) fn user_error(code: &str, message: String) -> PgWireError {
     PgWireError::UserError(Box::new(ErrorInfo::new(
         "ERROR".to_string(),
         code.to_string(),

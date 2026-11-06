@@ -62,6 +62,43 @@ impl Debug for MetaDataClient {
 
 pub type MetaDataClientRef = Arc<MetaDataClient>;
 
+/// The parts of a table definition a read-modify-write statement is planned
+/// against. A commit re-reads them under its identity lock and refuses to
+/// publish rows whose schema no longer describes them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TableIdentity {
+    table_name: String,
+    table_namespace: String,
+    table_schema: String,
+    partitions: String,
+    properties: String,
+    schema_hash: String,
+}
+
+impl TableIdentity {
+    fn from_table_info(table_info: &TableInfo) -> Self {
+        Self {
+            table_name: table_info.table_name.clone(),
+            table_namespace: table_info.table_namespace.clone(),
+            table_schema: table_info.table_schema.clone(),
+            partitions: table_info.partitions.clone(),
+            properties: table_info.properties.clone(),
+            schema_hash: table_info.table_schema_arrow_ipc_json_hash.clone(),
+        }
+    }
+
+    fn from_row(row: &tokio_postgres::Row) -> Self {
+        Self {
+            table_name: row.get(1),
+            table_namespace: row.get(2),
+            table_schema: row.get(3),
+            partitions: row.get(4),
+            properties: row.get::<_, serde_json::Value>(5).to_string(),
+            schema_hash: row.get::<_, Option<String>>(6).unwrap_or_default(),
+        }
+    }
+}
+
 /// Observable result of a metadata commit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitOutcome {
@@ -419,7 +456,6 @@ impl MetaDataClient {
         Ok(())
     }
 
-    // Use transaction?
     pub async fn delete_table_by_table_info_cascade(
         &self,
         table_info: &TableInfo,
@@ -445,17 +481,62 @@ impl MetaDataClient {
         Ok(())
     }
 
+    /// Remove every metadata row of one table in a single transaction.
+    ///
+    /// The `table_info` row is locked `for update` before anything is deleted,
+    /// so publication transactions (which hold it `for share`, see
+    /// [`Self::commit_update`] and [`Self::commit_insert_only`]) serialize with
+    /// the drop: either the drop commits first and a later publication finds no
+    /// row (and publishes nothing), or the publication commits first and this
+    /// transaction removes the rows it added. Writing the five deletes as
+    /// separate transactions would let a publication slip between them and
+    /// leave orphan partition/data-commit rows.
     pub async fn delete_table_by_table_id_cascade(
         &self,
         table_id: &str,
         table_path: &str,
     ) -> Result<()> {
-        self.delete_table_name_id_by_table_id(table_id).await?;
-        self.delete_table_path_id_by_table_id(table_id).await?;
-        self.delete_partition_info_by_table_id(table_id).await?;
-        self.delete_data_commit_info_by_table_id(table_id).await?;
-        self.delete_table_info_by_id_and_path(table_id, table_path)
+        let guard = self.client.lock().await;
+        let mut connection = guard.get(QueryType::RW).await?;
+        let transaction = connection.transaction().await?;
+        transaction
+            .query_opt(
+                "select 1 from table_info where table_id = $1::TEXT for update",
+                &[&table_id],
+            )
             .await?;
+        transaction
+            .execute(
+                "delete from table_name_id where table_id = $1::TEXT",
+                &[&table_id],
+            )
+            .await?;
+        transaction
+            .execute(
+                "delete from table_path_id where table_id = $1::TEXT",
+                &[&table_id],
+            )
+            .await?;
+        transaction
+            .execute(
+                "delete from partition_info where table_id = $1::TEXT",
+                &[&table_id],
+            )
+            .await?;
+        transaction
+            .execute(
+                "delete from data_commit_info where table_id = $1::TEXT",
+                &[&table_id],
+            )
+            .await?;
+        crate::index_catalog::clean_for_table_path(&transaction, table_path).await?;
+        transaction
+            .execute(
+                "delete from table_info where table_id = $1::TEXT and table_path = $2::TEXT",
+                &[&table_id, &table_path],
+            )
+            .await?;
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -1156,8 +1237,10 @@ impl MetaDataClient {
                 continue;
             }
             saw_commit = true;
+            // These are prospective publication IDs: a missing commit means
+            // "not already committed", not an invalid published read snapshot.
             let commits = self
-                .get_data_commit_info_of_single_partition(partition)
+                .get_data_commit_info_of_single_partition(partition, false)
                 .await?;
             if commits.len() != partition.snapshot.len()
                 || commits.iter().any(|commit| !commit.committed)
@@ -1325,14 +1408,52 @@ impl MetaDataClient {
     /// data-commit rows are published in one PostgreSQL transaction.
     ///
     /// The next-version unique key also arbitrates with ordinary writers that
-    /// do not use this API. This assumes partition versions are not removed and
-    /// reused while validation is in flight: it does not acquire a GC/read lease
-    /// or serialize against destructive metadata deletion.
+    /// do not use this API. The `table_info` row is share-locked for the whole
+    /// transaction, so a destructive DROP (which locks it exclusively and
+    /// deletes all rows in one transaction) serializes with this publication:
+    /// either the drop committed first and this call fails with `NotFound`
+    /// before publishing, or this call published and the drop removes its
+    /// rows too. Partition versions are not removed and reused while
+    /// validation is in flight beyond that identity lock (no GC/read lease).
+    ///
+    /// The generic [`Self::commit_data`] path stages its partition rows
+    /// through a database function in its own transaction and does not take
+    /// this lock; a DROP concurrent with that path can still leave orphan
+    /// rows. Read-modify-write statements use this method, not that one.
     pub async fn commit_insert_only(
         &self,
         table_info: &TableInfo,
         expected_partitions: &[PartitionInfo],
         files: Vec<DataFileInfo>,
+    ) -> Result<Vec<String>> {
+        self.commit_append_files(table_info, expected_partitions, files, false)
+            .await
+    }
+
+    /// Publish rows that were read from `expected_partitions` and rewritten.
+    ///
+    /// Same per-partition version validation and atomic publication as
+    /// [`Self::commit_insert_only`]; the insert-only "a key must not already
+    /// exist" rule is not part of this method (it lives in the writer). The
+    /// table identity, schema and properties the statement was analysed
+    /// against are re-checked inside the commit transaction, so a DROP or
+    /// rebuild of the same name cannot receive these files.
+    pub async fn commit_update(
+        &self,
+        table_info: &TableInfo,
+        expected_partitions: &[PartitionInfo],
+        files: Vec<DataFileInfo>,
+    ) -> Result<Vec<String>> {
+        self.commit_append_files(table_info, expected_partitions, files, true)
+            .await
+    }
+
+    async fn commit_append_files(
+        &self,
+        table_info: &TableInfo,
+        expected_partitions: &[PartitionInfo],
+        files: Vec<DataFileInfo>,
+        verify_identity: bool,
     ) -> Result<Vec<String>> {
         if files.is_empty() {
             return Ok(Vec::new());
@@ -1345,19 +1466,40 @@ impl MetaDataClient {
         let guard = self.client.lock().await;
         let mut connection = guard.get(QueryType::RW).await?;
         let transaction = connection.transaction().await?;
-        let domain: String = transaction
+        // Share-lock the table identity row. A destructive DROP takes the
+        // same row exclusively (`delete_table_by_table_id_cascade`), so the
+        // two orders are safe: either the DROP committed first and this row
+        // is gone (the statement fails before publishing anything), or this
+        // publication commits first and the DROP then removes its rows too.
+        // Without the lock, a DROP could commit between the read and the
+        // inserts below and leave orphan partition/data-commit rows.
+        let locked = transaction
             .query_opt(
-                "select domain from table_info where table_id = $1::TEXT",
+                "select domain, table_name, table_namespace, table_schema, \
+                 partitions, properties, table_schema_arrow_ipc_json_hash \
+                 from table_info where table_id = $1::TEXT for share",
                 &[&table_info.table_id],
             )
             .await?
             .ok_or_else(|| {
                 LakeSoulMetaDataError::NotFound(format!(
-                    "table {} has no domain row",
+                    "table {} no longer exists",
                     table_info.table_id
                 ))
-            })?
-            .get(0);
+            })?;
+        let domain: String = locked.get(0);
+        if verify_identity {
+            let current = TableIdentity::from_row(&locked);
+            let expected = TableIdentity::from_table_info(table_info);
+            if current != expected {
+                transaction.rollback().await?;
+                return Err(LakeSoulMetaDataError::CommitConflict(format!(
+                    "table {} was redefined while the statement was running; \
+                     retry the statement",
+                    table_info.table_id
+                )));
+            }
+        }
         let mut data_commits = data_commit_info_list_from_files(
             table_info,
             files,
@@ -1436,7 +1578,7 @@ impl MetaDataClient {
             // Do not use ON CONFLICT or retry: another writer may have inserted
             // expected_version + 1 after the read above. Its unique-key conflict
             // must abort every partition and data commit in this transaction.
-            transaction
+            if let Err(error) = transaction
                 .execute(
                     &insert_partition,
                     &[
@@ -1449,7 +1591,22 @@ impl MetaDataClient {
                         &domain,
                     ],
                 )
-                .await?;
+                .await
+            {
+                // Both writers can pass the version read above and then race
+                // on the `(table_id, partition_desc, version)` primary key.
+                // Report that lost race as the retryable metadata conflict
+                // instead of leaking the raw unique violation to the caller.
+                if error.code().is_some_and(|code| code.code() == "23505") {
+                    transaction.rollback().await?;
+                    return Err(LakeSoulMetaDataError::CommitConflict(format!(
+                        "lost the partition version race on table {} partition \
+                         {partition_desc} version {expected_version}",
+                        table_info.table_id
+                    )));
+                }
+                return Err(error.into());
+            }
             let file_ops = data_commit
                 .file_ops
                 .iter()
@@ -1923,7 +2080,7 @@ impl MetaDataClient {
         partition_info: &PartitionInfo,
     ) -> Result<Vec<String>> {
         let data_commit_info_list = self
-            .get_data_commit_info_of_single_partition(partition_info)
+            .get_data_commit_info_of_single_partition(partition_info, true)
             .await?;
         Ok(active_data_files(&data_commit_info_list))
     }
@@ -1938,12 +2095,15 @@ impl MetaDataClient {
     /// surviving add keeps its recorded size, `file_exist_cols`, partition
     /// description and commit timestamp. A recorded size `<= 0` means the
     /// writer did not know the size; callers must not treat it as known.
+    ///
+    /// Every referenced commit must still exist. Losing any descriptor fails
+    /// with a snapshot conflict instead of returning a partial relation.
     pub async fn get_data_file_infos_of_single_partition(
         &self,
         partition_info: &PartitionInfo,
     ) -> Result<Vec<DataFileInfo>> {
         let data_commit_info_list = self
-            .get_data_commit_info_of_single_partition(partition_info)
+            .get_data_commit_info_of_single_partition(partition_info, true)
             .await?;
         Ok(active_added_files(&data_commit_info_list))
     }
@@ -1951,6 +2111,7 @@ impl MetaDataClient {
     async fn get_data_commit_info_of_single_partition(
         &self,
         partition_info: &PartitionInfo,
+        require_complete: bool,
     ) -> Result<Vec<DataCommitInfo>> {
         if partition_info.snapshot.is_empty() {
             return Ok(Vec::new());
@@ -1976,7 +2137,31 @@ impl MetaDataClient {
             )
             .await
         {
-            Ok(wrapper) => Ok(wrapper.data_commit_info),
+            Ok(wrapper) => {
+                // Replaying only the surviving commits would fabricate a
+                // different relation (or UPDATE 0) after DROP/GC invalidates
+                // a captured snapshot. Fail instead of silently losing rows.
+                if require_complete {
+                    let found = wrapper
+                        .data_commit_info
+                        .iter()
+                        .filter_map(|commit| commit.commit_id.as_ref())
+                        .map(|id| (id.high, id.low))
+                        .collect::<HashSet<_>>();
+                    if partition_info
+                        .snapshot
+                        .iter()
+                        .any(|id| !found.contains(&(id.high, id.low)))
+                    {
+                        return Err(LakeSoulMetaDataError::CommitConflict(format!(
+                            "snapshot commits disappeared for table {table_id} \
+                             partition {partition_desc} version {}; retry the statement",
+                            partition_info.version
+                        )));
+                    }
+                }
+                Ok(wrapper.data_commit_info)
+            }
             Err(e) => Err(e),
         }
     }
@@ -2250,7 +2435,7 @@ impl MetaDataClient {
                 ..Default::default()
             };
             let commits = self
-                .get_data_commit_info_of_single_partition(&snapshot)
+                .get_data_commit_info_of_single_partition(&snapshot, true)
                 .await?;
             changelog.added_files = active_added_files(&commits);
         }

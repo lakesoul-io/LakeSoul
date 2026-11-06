@@ -138,6 +138,23 @@ impl ScalarUDFImpl for TextSearchMarkerUDF {
         &self.signature
     }
 
+    fn coerce_types(&self, arg_types: &[DataType]) -> DFResult<Vec<DataType>> {
+        if arg_types.len() != 4
+            || !matches!(
+                arg_types[0],
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+            )
+            || arg_types[1] != DataType::Utf8
+            || arg_types[2] != DataType::Int64
+            || arg_types[3] != DataType::Boolean
+        {
+            return Err(DataFusionError::Execution(
+                "__lakesoul_text_search expects (text, Utf8, Int64, Boolean)".to_string(),
+            ));
+        }
+        Ok(arg_types.to_vec())
+    }
+
     fn return_type(&self, _arg_types: &[DataType]) -> DFResult<DataType> {
         Ok(DataType::Boolean)
     }

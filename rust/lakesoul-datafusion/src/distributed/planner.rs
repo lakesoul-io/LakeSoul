@@ -7,6 +7,13 @@
 //! The gate decides per query what a distributed session does when the
 //! distributed planner cannot produce a *distributable* plan:
 //!
+//! - a table write whose plan carries a runtime subquery (`Expr::ScalarSubquery`
+//!   and its siblings) runs on the coordinator: the statement-local
+//!   result/cardinality state of such a subquery has no stage contract, and a
+//!   decorrelated `LEFT JOIN ... ON true` would silently answer a multi-row
+//!   subquery with duplicate rows instead of PostgreSQL's `21000`. This is a
+//!   required execution placement, not fallback: it applies whether or not
+//!   `fallback_to_local` is set;
 //! - the worker resolver fails (Kubernetes discovery without an eligible
 //!   worker, or a stale snapshot) → the query fails before planning, whatever
 //!   `fallback_to_local` says;
@@ -44,7 +51,7 @@ use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::execution::SessionState;
 use datafusion::execution::context::QueryPlanner;
-use datafusion::logical_expr::LogicalPlan;
+use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use datafusion_distributed::{
@@ -58,11 +65,11 @@ use crate::distributed::codec::{lazy_scan_has_wire_form, source_has_wire_form};
 use crate::planner::LakeSoulQueryPlanner;
 use crate::planner::query_planner::end_current_otel_span;
 
-/// Session extension marking a query the coordinator plans locally after the
-/// distributed planner gave up on it ([`LakeSoulDistributedQueryPlanner`]
-/// with `fallback_to_local`), although the session has workers.
+/// Restricts this planning attempt to coordinator execution: an explicitly
+/// local key scan, a write with statement-local subquery state, or a configured
+/// fallback after distributed planning fails. Other statements keep their workers.
 #[derive(Debug)]
-struct LocalFallback;
+struct CoordinatorPlanning;
 
 /// How many distributed tasks the stage that runs a table scan may get.
 ///
@@ -79,7 +86,7 @@ struct LocalFallback;
 /// distributed planner asks again yields more or fewer merges per task, never
 /// a merge split across tasks.
 pub(crate) fn scan_task_budget(config: &SessionConfig) -> usize {
-    if config.get_extension::<LocalFallback>().is_some() {
+    if config.get_extension::<CoordinatorPlanning>().is_some() {
         return 1;
     }
     let Ok(resolver) = get_distributed_worker_resolver(config) else {
@@ -93,10 +100,10 @@ pub(crate) fn scan_task_budget(config: &SessionConfig) -> usize {
     }
 }
 
-/// Whether this planning attempt may put writes on workers. A local fallback
-/// retains the resolver in its config, but must never create remote writes.
+/// Whether this planning attempt may put writes on workers. Coordinator-only
+/// planning retains the resolver but must not create remote write tasks.
 pub(crate) fn distributed_writes_enabled(config: &SessionConfig) -> bool {
-    config.get_extension::<LocalFallback>().is_none()
+    config.get_extension::<CoordinatorPlanning>().is_none()
         && get_distributed_worker_resolver(config)
             .is_ok_and(|resolver| resolver.get_urls().is_ok_and(|urls| !urls.is_empty()))
 }
@@ -113,7 +120,9 @@ pub(crate) fn local_key_scan_session(session: &dyn Session) -> DFResult<SessionS
             )
         })?
         .clone();
-    state.config_mut().set_extension(Arc::new(LocalFallback));
+    state
+        .config_mut()
+        .set_extension(Arc::new(CoordinatorPlanning));
     Ok(state)
 }
 
@@ -158,22 +167,98 @@ impl LakeSoulDistributedQueryPlanner {
     /// Plans the query with the plain LakeSoul planner, so it runs on the
     /// coordinator.
     ///
+    /// `placement` is recorded on the trace, because two very different things
+    /// lead here: a required execution placement (a write with runtime
+    /// subquery state) and the configured fallback after the distributed
+    /// planner failed.
+    ///
     /// The session still lists the workers, so it is marked with
-    /// [`LocalFallback`]: scans then plan for the one node that runs them
-    /// ([`scan_task_budget`]).
+    /// [`CoordinatorPlanning`]: scans then plan for the one node that runs
+    /// them ([`scan_task_budget`]) and writes are never sent to workers.
     async fn plan_locally(
         &self,
         logical_plan: &LogicalPlan,
         session: &dyn Session,
+        reason: &'static str,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
-        info!("fallback to local planner");
+        info!(placement = reason, "planning on the coordinator");
         let Some(state) = session.as_any().downcast_ref::<SessionState>() else {
             return self.local.create_physical_plan(logical_plan, session).await;
         };
         let mut state = state.clone();
-        state.config_mut().set_extension(Arc::new(LocalFallback));
+        state
+            .config_mut()
+            .set_extension(Arc::new(CoordinatorPlanning));
+        // A runtime subquery can only be planned by the coordinator's own
+        // planner: a distributed session clears this option so the optimizer
+        // flattens uncorrelated subqueries the stage could not ship. The
+        // placement is already coordinator-only here, so put the option back
+        // and let `DefaultPhysicalPlanner` build the `ScalarSubqueryExec` the
+        // statement needs (including its typed cardinality error).
+        if plan_contains_subquery(logical_plan) {
+            state
+                .config_mut()
+                .options_mut()
+                .optimizer
+                .enable_physical_uncorrelated_scalar_subquery = true;
+        }
         self.local.create_physical_plan(logical_plan, &state).await
     }
+}
+
+/// Whether any node of `plan` carries a subquery expression.
+///
+/// These are the expressions that are evaluated at *runtime* by a
+/// `ScalarSubqueryExec`/`SubqueryExec` and share statement-local
+/// result/cardinality state; a subquery the optimizer already decorrelated
+/// into a join is an ordinary join and no longer matches.
+///
+/// A distributed session turns physical uncorrelated scalar subqueries off
+/// (`with_distributed_planner` clears
+/// `optimizer.enable_physical_uncorrelated_scalar_subquery` because a stage
+/// cannot ship `ScalarSubqueryExec`), which makes the optimizer flatten such a
+/// subquery into `LEFT JOIN ... ON true` *before* a planner can see it. A
+/// write planned from `lakesoul_datafusion::planner::update` therefore keeps
+/// the option enabled for the statement (`RuntimeSubqueryGuard`), so the
+/// subquery survives to here and can be recognized.
+pub(crate) fn plan_contains_subquery(plan: &LogicalPlan) -> bool {
+    let mut found = false;
+    let _ = plan.apply(|node| {
+        node.apply_expressions(|expr| {
+            expr.apply(|expr| {
+                if matches!(
+                    expr,
+                    Expr::ScalarSubquery(_)
+                        | Expr::InSubquery(_)
+                        | Expr::Exists(_)
+                        | Expr::SetComparison(_)
+                ) {
+                    found = true;
+                    Ok(TreeNodeRecursion::Stop)
+                } else {
+                    Ok(TreeNodeRecursion::Continue)
+                }
+            })
+        })?;
+        Ok(if found {
+            TreeNodeRecursion::Stop
+        } else {
+            TreeNodeRecursion::Continue
+        })
+    });
+    found
+}
+
+/// Whether a write plan carries a runtime subquery.
+///
+/// Runtime subqueries have statement-local result/cardinality state. Keep
+/// these writes on the coordinator until that state has a distributed stage
+/// contract: a worker stage cannot share the subquery result, and a
+/// decorrelated `LEFT JOIN ... ON true` does not reproduce PostgreSQL's
+/// `21000` for a multi-row subquery. Already-decorrelated joins and ordinary
+/// writes remain distributable.
+fn write_has_subquery(plan: &LogicalPlan) -> bool {
+    matches!(plan, LogicalPlan::Dml(_)) && plan_contains_subquery(plan)
 }
 
 /// The first scan or write node a worker stage cannot receive.
@@ -346,6 +431,23 @@ impl QueryPlanner for LakeSoulDistributedQueryPlanner {
                 "distributed planning worker availability snapshot"
             );
         }
+        // This is a required execution placement, not recovery from a planning
+        // error: a runtime subquery's shared result/cardinality state must stay
+        // in one coordinator plan. Do not split it into independent worker
+        // writes, which would lose that state and can report `UPDATE 0`
+        // instead of the subquery's typed error. The update planner keeps the
+        // subquery as an expression (instead of a decorrelated join) for the
+        // duration of the statement, so this check sees it; a query without
+        // surviving subqueries keeps its workers.
+        if write_has_subquery(logical_plan) {
+            let plan = self
+                .plan_locally(logical_plan, session, "write with runtime subquery")
+                .await?;
+            record_distributed_plan(&plan, "subquery_write_coordinator");
+            end_current_otel_span();
+            return Ok(plan);
+        }
+
         let plan = match self
             .distributed
             .create_physical_plan(logical_plan, session)
@@ -357,7 +459,9 @@ impl QueryPlanner for LakeSoulDistributedQueryPlanner {
                 if !self.fallback_to_local {
                     return Err(e);
                 }
-                let plan = self.plan_locally(logical_plan, session).await?;
+                let plan = self
+                    .plan_locally(logical_plan, session, "distributed planning failed")
+                    .await?;
                 record_distributed_plan(&plan, "local_fallback");
                 end_current_otel_span();
                 return Ok(plan);
@@ -376,7 +480,9 @@ impl QueryPlanner for LakeSoulDistributedQueryPlanner {
                 return Err(error);
             }
             warn!("{error}; planning the query locally instead");
-            let plan = self.plan_locally(logical_plan, session).await?;
+            let plan = self
+                .plan_locally(logical_plan, session, "unshippable worker stage")
+                .await?;
             record_distributed_plan(&plan, "local_fallback");
             end_current_otel_span();
             return Ok(plan);
@@ -842,7 +948,7 @@ mod tests {
             .with_distributed_max_tasks_per_stage(2)
             .unwrap();
         assert_eq!(scan_task_budget(&capped), 2, "max_tasks_per_stage");
-        let fallback = workers(Some(3)).with_extension(Arc::new(LocalFallback));
+        let fallback = workers(Some(3)).with_extension(Arc::new(CoordinatorPlanning));
         assert_eq!(scan_task_budget(&fallback), 1, "local fallback");
     }
 }

@@ -2109,7 +2109,10 @@ pub async fn execute_update(
         DaoType::DeleteTableInfoByIdAndPath if params.len() == 2 => {
             let result = client.execute(&statement, &[&params[0], &params[1]]).await;
             log_index_cleanup(
-                crate::index_catalog::clean_for_table_path(&client, &params[1]).await,
+                crate::index_catalog::clean_for_table_path::<tokio_postgres::Client>(
+                    &client, &params[1],
+                )
+                .await,
             );
             result
         }

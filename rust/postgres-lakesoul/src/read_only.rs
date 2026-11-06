@@ -55,8 +55,8 @@ use datafusion::common::ParamValues;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::{
-    CloseCursor, DiscardObject, Expr, ObjectName, ObjectType, Set, Statement,
-    TransactionIsolationLevel, TransactionMode,
+    CloseCursor, DiscardObject, Expr, ObjectName, ObjectType, Query, Set, SetExpr,
+    Statement, TransactionIsolationLevel, TransactionMode,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::hooks::HookClient;
@@ -110,6 +110,9 @@ pub(crate) fn statement_hooks_with(
     ];
     hooks.extend(connection_hooks);
     hooks.extend([
+        // A write nested in a CTE has no supported execution path; refuse it
+        // with `0A000` before DataFusion reports its planner gap as `XX000`.
+        Arc::new(ModifyingCteGuard) as Arc<dyn QueryHook>, // new
         // After the transaction hook (a failed transaction must reject these
         // statements with `25P02` rather than apply them) and before the
         // upstream `SetShowHook`: that hook's `SET TIME ZONE` branch writes
@@ -431,6 +434,95 @@ impl QueryHook for ReadCommittedOnlyGuard {
     }
 }
 
+/// Rejects a query whose CTE body modifies data.
+///
+/// `WITH changed AS (UPDATE ... RETURNING ...) SELECT ...` is valid
+/// PostgreSQL but LakeSoul cannot execute a write nested in a CTE: the write
+/// is claimed only as a top-level statement. Refusing the query here keeps the
+/// failure a stable `0A000` instead of the planner's internal
+/// `Query UPDATE ... not implemented yet` (`XX000`).
+struct ModifyingCteGuard;
+
+impl ModifyingCteGuard {
+    fn modifies(statement: &Statement) -> bool {
+        let query = match statement {
+            Statement::Query(query) => query,
+            Statement::Explain {
+                statement: inner, ..
+            } => match &**inner {
+                Statement::Query(query) => query,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        query_has_modifying_cte(query)
+    }
+}
+
+fn query_has_modifying_cte(query: &Query) -> bool {
+    query.with.as_ref().is_some_and(|with| {
+        with.cte_tables
+            .iter()
+            .any(|cte| query_has_modifying_cte(&cte.query))
+    }) || body_has_modifying_cte(query.body.as_ref())
+}
+
+fn body_has_modifying_cte(body: &SetExpr) -> bool {
+    match body {
+        SetExpr::Insert(_)
+        | SetExpr::Update(_)
+        | SetExpr::Delete(_)
+        | SetExpr::Merge(_) => true,
+        SetExpr::Select(_) | SetExpr::Values(_) | SetExpr::Table(_) => false,
+        SetExpr::Query(query) => query_has_modifying_cte(query),
+        SetExpr::SetOperation { left, right, .. } => {
+            body_has_modifying_cte(left) || body_has_modifying_cte(right)
+        }
+    }
+}
+
+#[async_trait]
+impl QueryHook for ModifyingCteGuard {
+    async fn handle_simple_query(
+        &self,
+        statement: &Statement,
+        _session_context: &SessionContext,
+        _client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        Self::modifies(statement).then(|| Err(modifying_cte_error()))
+    }
+
+    async fn handle_extended_parse_query(
+        &self,
+        statement: &Statement,
+        _session_context: &SessionContext,
+        _client: &(dyn ClientInfo + Send + Sync),
+    ) -> Option<PgWireResult<LogicalPlan>> {
+        Self::modifies(statement).then(|| Err(modifying_cte_error()))
+    }
+
+    async fn handle_extended_query(
+        &self,
+        statement: &Statement,
+        _logical_plan: &LogicalPlan,
+        _params: &ParamValues,
+        _session_context: &SessionContext,
+        _client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        Self::modifies(statement).then(|| Err(modifying_cte_error()))
+    }
+}
+
+fn modifying_cte_error() -> PgWireError {
+    PgWireError::UserError(Box::new(ErrorInfo::new(
+        "ERROR".to_string(),
+        FEATURE_NOT_SUPPORTED.to_string(),
+        "a data-modifying statement inside a CTE is not supported: run the \
+         modifying statement and the query separately"
+            .to_string(),
+    )))
+}
+
 /// Rejects every statement the read-only server does not support.
 struct ReadOnlyStatementGuard;
 
@@ -468,9 +560,11 @@ impl ReadOnlyStatementGuard {
             // them (and refuses the untracked parameter / `DISCARD` variants
             // with their own SQLSTATE).
             | Statement::Reset(_) => true,
-            // Writes are claimed by `InsertStatementHook`, which executes
-            // them and maps their violations to PostgreSQL SQLSTATEs.
+            // Writes are claimed by `InsertStatementHook` / `UpdateStatementHook`,
+            // which execute them and map their violations to PostgreSQL
+            // SQLSTATEs.
             Statement::Insert(_) => true,
+            Statement::Update(_) => true,
             // DDL is claimed by `DdlStatementHook`, which refuses the
             // unsupported clauses itself.
             Statement::CreateTable(_) => true,
@@ -642,7 +736,6 @@ mod tests {
     }
 
     const REJECTED: &[&str] = &[
-        "UPDATE t SET a = 1",
         "DELETE FROM t",
         "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET a = 1",
         "COPY t TO STDOUT",
@@ -720,11 +813,11 @@ mod tests {
         }
     }
 
-    /// `INSERT` is answered by `InsertStatementHook`, which refuses the
-    /// unsupported clauses itself, so the guard must not claim it; UPDATE,
+    /// `INSERT` and `UPDATE` are answered by their own hooks, which refuse
+    /// the unsupported clauses themselves, so the guard must not claim them;
     /// DELETE and `EXPLAIN INSERT` stay rejected.
     #[test]
-    fn insert_is_left_to_the_insert_hook() {
+    fn writes_are_left_to_their_hooks() {
         use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
         use datafusion::sql::sqlparser::parser::Parser;
 
@@ -732,7 +825,7 @@ mod tests {
             ("INSERT INTO t VALUES (1)", true),
             ("INSERT INTO t (a) SELECT a FROM s", true),
             ("INSERT INTO t VALUES (1) ON CONFLICT (id) DO NOTHING", true),
-            ("UPDATE t SET a = 1", false),
+            ("UPDATE t SET a = 1", true),
             ("DELETE FROM t", false),
             ("EXPLAIN INSERT INTO t VALUES (1)", false),
         ] {
@@ -913,7 +1006,7 @@ mod tests {
         // Second line of defense behind the parse hook: feed a write
         // statement straight into the execute-phase hook.
         let statements = PostgresCompatibilityParser::new()
-            .parse("UPDATE t SET a = 1")
+            .parse("DELETE FROM t")
             .expect("parse");
         let statement = statements.first().expect("statement");
         let mut client = MockClient::new();

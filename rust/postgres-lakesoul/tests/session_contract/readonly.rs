@@ -3,6 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Read-only policy refusals and parameter-error boundaries.
+//!
+//! `UPDATE` is no longer part of the blanket refusal list: the server executes
+//! it for primary-key LakeSoul tables. The refusal matrix keeps the
+//! `UPDATE items` case as a *target-shape* refusal (no primary key) and a
+//! separate control proves a supported `UPDATE` reaches execution, so a
+//! regression that refuses every `UPDATE` again is caught from both sides.
 
 use anyhow::{Context, Result, bail, ensure};
 use tokio_postgres::types::{ToSql, Type};
@@ -12,6 +18,7 @@ use crate::support::{Harness, compare};
 
 pub async fn run(h: &Harness) -> Result<()> {
     refused_writes_and_ddl(h).await?;
+    supported_update_is_not_a_read_only_refusal(h).await?;
     refused_write_in_simple_batch(h).await?;
     parameter_error_boundaries(h).await?;
     Ok(())
@@ -27,7 +34,12 @@ struct Refusal {
 /// than accidentally succeed against a missing object.
 const REFUSALS: &[Refusal] = &[
     Refusal {
-        id: "update",
+        // `UPDATE` now executes for primary-key LakeSoul tables, so this case
+        // pins the remaining target-shape refusal: `items` has no primary key
+        // and therefore no row identity to update (`0A000`). It is not a
+        // blanket read-only ban on `UPDATE`; see
+        // [`supported_update_is_not_a_read_only_refusal`].
+        id: "update-without-primary-key",
         sql: "UPDATE items SET val = -1 WHERE id = 1",
     },
     Refusal {
@@ -132,6 +144,86 @@ async fn refused_writes_and_ddl(h: &Harness) -> Result<()> {
             case.id, case.sql
         );
     }
+    Ok(())
+}
+
+/// `UPDATE` is no longer refused wholesale.
+///
+/// `items` is still refused above, but for its own shape: it has no primary
+/// key and therefore no row identity. A primary-key LakeSoul table must reach
+/// execution on this connection, so the probe creates a throwaway table
+/// (leaving the shared fixtures untouched), updates it with both protocols,
+/// reads the committed values back, and drops it again.
+async fn supported_update_is_not_a_read_only_refusal(h: &Harness) -> Result<()> {
+    const TABLE: &str = "readonly_update_probe";
+    h.lake
+        .simple_query(&format!(
+            "CREATE TABLE {TABLE} (\
+               id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))"
+        ))
+        .await
+        .context("case=read-only-update-supported CREATE TABLE")?;
+    h.lake
+        .simple_query(&format!("INSERT INTO {TABLE} (id, val) VALUES (1, 10)"))
+        .await
+        .context("case=read-only-update-supported seed")?;
+
+    let messages = h
+        .lake
+        .simple_query(&format!("UPDATE {TABLE} SET val = 11 WHERE id = 1"))
+        .await
+        .context(
+            "case=read-only-update-supported protocol=simple-text: the read-only \
+             guard must not refuse an UPDATE on a primary-key table",
+        )?;
+    let simple_rows = messages.iter().find_map(|message| match message {
+        tokio_postgres::SimpleQueryMessage::CommandComplete(rows) => Some(*rows),
+        _ => None,
+    });
+    ensure!(
+        simple_rows == Some(1),
+        "case=read-only-update-supported protocol=simple-text: expected UPDATE 1, \
+         actual tag {simple_rows:?}"
+    );
+
+    let prepared = h
+        .lake
+        .prepare_typed(
+            &format!("UPDATE {TABLE} SET val = $1 WHERE id = $2"),
+            &[Type::INT8, Type::INT8],
+        )
+        .await
+        .context("case=read-only-update-supported protocol=extended-Parse")?;
+    let rows = h.lake.execute(&prepared, &[&12i64, &1i64]).await.context(
+        "case=read-only-update-supported protocol=extended-Execute: a prepared \
+             UPDATE on a primary-key table must execute",
+    )?;
+    ensure!(
+        rows == 1,
+        "case=read-only-update-supported protocol=extended-Execute: expected 1 row, \
+         actual {rows}"
+    );
+
+    let value: i64 = h
+        .lake
+        .query_one(&format!("SELECT val FROM {TABLE} WHERE id = 1"), &[])
+        .await
+        .context("case=read-only-update-supported read back")?
+        .get(0);
+    ensure!(
+        value == 12,
+        "case=read-only-update-supported: expected the committed value 12, \
+         actual {value}"
+    );
+
+    h.lake
+        .simple_query(&format!("DROP TABLE {TABLE}"))
+        .await
+        .context("case=read-only-update-supported DROP TABLE")?;
+    eprintln!(
+        "sql-compat case=read-only-update-supported classification=executed \
+         simple=1 extended=1 value=12"
+    );
     Ok(())
 }
 

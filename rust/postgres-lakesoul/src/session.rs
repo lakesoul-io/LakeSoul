@@ -333,6 +333,13 @@ impl PgSessionFactory {
         config.set_extension(Arc::new(
             lakesoul_datafusion::write_mode::LakeSoulWriteMode::new(),
         ));
+        // The read-modify-write snapshot of the UPDATE being executed. A new
+        // handle is created for each connection (never cloned from another
+        // session), so two sessions cannot share a mutable snapshot; the
+        // statement hook sets it at Execute and its guard clears it again.
+        config.set_extension(Arc::new(
+            lakesoul_datafusion::write_mode::LakeSoulFixedSnapshot::new(),
+        ));
         let state = SessionStateBuilder::new_from_existing(state)
             .with_config(config)
             .build();

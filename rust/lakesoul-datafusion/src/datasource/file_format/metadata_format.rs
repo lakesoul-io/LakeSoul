@@ -37,7 +37,7 @@ use object_store::{ObjectMeta, ObjectStore};
 use rootcause::compat::boxed_error::IntoBoxedError;
 
 use super::insert_only::InsertOnly;
-use super::write_exec::{LakeSoulCommitExec, LakeSoulWriteExec};
+use super::write_exec::{CommitSnapshot, LakeSoulCommitExec, LakeSoulWriteExec};
 use crate::Result;
 use crate::datasource::table_provider::LakeSoulTableProvider;
 
@@ -238,6 +238,60 @@ impl FileFormat for LakeSoulMetaDataFormat {
         conf: FileSinkConfig,
         order_requirements: Option<LexRequirement>,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        // A read-modify-write statement installed the snapshot its old-row
+        // scan is bound to. Publishing against it is the statement's commit
+        // condition; the fixed snapshot never refreshes to a newer view.
+        let cas = match crate::write_mode::LakeSoulFixedSnapshot::from_session(state) {
+            Some(snapshot) => {
+                let target = self.table_info();
+                if !crate::write_mode::same_table_definition(
+                    &snapshot.table_info,
+                    &target,
+                ) {
+                    return Err(DataFusionError::External(Box::new(
+                        crate::write_mode::WriteConflict {
+                            detail: format!(
+                                "target table {} was redefined while the statement \
+                                 was running; retry the statement",
+                                target.table_id
+                            ),
+                        },
+                    )));
+                }
+                Some(CommitSnapshot::Update(Arc::clone(&snapshot.partitions)))
+            }
+            None => None,
+        };
+        self.create_writer_physical_plan_with_commit(
+            input,
+            state,
+            conf,
+            order_requirements,
+            cas,
+        )
+        .await
+    }
+
+    fn file_source(&self, table_schema: TableSchema) -> Arc<dyn FileSource> {
+        self.table_format().file_source(table_schema)
+    }
+}
+
+impl LakeSoulMetaDataFormat {
+    /// Plan the write with an explicit publication condition.
+    ///
+    /// `cas` is the partition snapshot an insert-only or update statement was
+    /// planned against. It is captured by the caller *before* the input plan
+    /// is built, so the versions validated at commit are the versions the
+    /// rows were read from.
+    pub(crate) async fn create_writer_physical_plan_with_commit(
+        &self,
+        input: Arc<dyn ExecutionPlan>,
+        state: &dyn Session,
+        conf: FileSinkConfig,
+        order_requirements: Option<LexRequirement>,
+        cas: Option<CommitSnapshot>,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
         if conf.insert_op == InsertOp::Overwrite {
             return Err(DataFusionError::NotImplemented(
                 "Overwrites are not implemented yet for LakeSoul tables".to_string(),
@@ -256,8 +310,11 @@ impl FileFormat for LakeSoulMetaDataFormat {
         if remote && (!primary_keys.is_empty() || !write.range_partitions().is_empty()) {
             write = write.with_task_partitioning();
         }
-        let mut insert_only_snapshot = None;
-        if conf.insert_op == InsertOp::Append && !primary_keys.is_empty() {
+        let mut cas_commit = cas;
+        if cas_commit.is_none()
+            && conf.insert_op == InsertOp::Append
+            && !primary_keys.is_empty()
+        {
             // Both version capture and file listing must use the primary:
             // different replica snapshots could miss a committed duplicate.
             let client = Arc::new(self.client.primary_only().await);
@@ -300,7 +357,7 @@ impl FileFormat for LakeSoulMetaDataFormat {
                     self.table_info.table_namespace, self.table_info.table_name
                 ),
             };
-            insert_only_snapshot = Some(snapshot);
+            cas_commit = Some(CommitSnapshot::InsertOnly(snapshot));
             write = write.with_insert_only(insert_only);
         }
         let attempted_files = write.attempted_files();
@@ -321,7 +378,7 @@ impl FileFormat for LakeSoulMetaDataFormat {
             self.client(),
             primary_keys,
             self.conf.object_store_options().clone(),
-            insert_only_snapshot,
+            cas_commit,
             attempted_files,
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
@@ -329,10 +386,6 @@ impl FileFormat for LakeSoulMetaDataFormat {
             commit = commit.with_remote_write(write_id);
         }
         Ok(Arc::new(commit))
-    }
-
-    fn file_source(&self, table_schema: TableSchema) -> Arc<dyn FileSource> {
-        self.table_format().file_source(table_schema)
     }
 }
 

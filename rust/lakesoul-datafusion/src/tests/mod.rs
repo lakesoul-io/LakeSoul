@@ -63,6 +63,8 @@ mod mor_nullability_tests;
 #[cfg(test)]
 mod session_factory_tests;
 #[cfg(test)]
+mod update_concurrency_tests;
+#[cfg(test)]
 mod vortex_catalog_tests;
 
 // in cargo test, this executed only once

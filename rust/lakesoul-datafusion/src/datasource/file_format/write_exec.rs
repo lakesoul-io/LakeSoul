@@ -90,6 +90,20 @@ struct CommittedFile {
 
 type PartitionedFile = HashMap<String, (Vec<CommittedFile>, u64)>;
 
+/// How a write statement publishes its files against the partition versions
+/// it read.
+///
+/// Both variants compare every affected partition against `snapshot` and fail
+/// with a retryable conflict instead of rebasing. They differ only in the
+/// metadata check performed inside the commit transaction: insert-only
+/// statements already rejected existing keys during the write; update
+/// statements re-verify the table identity/schema they were planned against.
+#[derive(Debug, Clone)]
+pub(crate) enum CommitSnapshot {
+    InsertOnly(Vec<PartitionInfo>),
+    Update(Arc<Vec<PartitionInfo>>),
+}
+
 /// One file written by a [`LakeSoulWriteExec`] task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct WriteFileReport {
@@ -1237,8 +1251,10 @@ pub struct LakeSoulCommitExec {
     /// builder after the write commits.
     object_store_options: SecretMap,
 
-    /// Snapshot captured at plan time; present for insert-only statements.
-    insert_only_snapshot: Option<Vec<PartitionInfo>>,
+    /// Snapshot captured at plan time; present for statements that validate
+    /// their publication against the versions they read (insert-only and
+    /// update), absent for plain append/replace writes.
+    cas_commit: Option<CommitSnapshot>,
 
     /// Files the write node opened, so a failed statement can remove them.
     attempted_files: Arc<Mutex<Vec<String>>>,
@@ -1261,13 +1277,13 @@ impl Debug for LakeSoulCommitExec {
 
 impl LakeSoulCommitExec {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         input: Arc<dyn ExecutionPlan>,
         table_info: Arc<TableInfo>,
         metadata_client: MetaDataClientRef,
         primary_keys: Vec<String>,
         object_store_options: SecretMap,
-        insert_only_snapshot: Option<Vec<PartitionInfo>>,
+        cas_commit: Option<CommitSnapshot>,
         attempted_files: Arc<Mutex<Vec<String>>>,
         cancelled: Arc<AtomicBool>,
     ) -> Self {
@@ -1278,7 +1294,7 @@ impl LakeSoulCommitExec {
             metadata_client,
             primary_keys,
             object_store_options,
-            insert_only_snapshot,
+            cas_commit,
             attempted_files,
             remote_write_id: None,
             cancelled,
@@ -1405,7 +1421,7 @@ impl ExecutionPlan for LakeSoulCommitExec {
             metadata_client: self.metadata_client.clone(),
             primary_keys: self.primary_keys.clone(),
             object_store_options: self.object_store_options.clone(),
-            insert_only_snapshot: self.insert_only_snapshot.clone(),
+            cas_commit: self.cas_commit.clone(),
             attempted_files: Arc::clone(&self.attempted_files),
             remote_write_id: self.remote_write_id.clone(),
             cancelled: Arc::clone(&self.cancelled),
@@ -1436,7 +1452,7 @@ impl ExecutionPlan for LakeSoulCommitExec {
         let metadata_client = self.metadata_client.clone();
         let primary_keys = self.primary_keys.clone();
         let object_store_options = self.object_store_options.clone();
-        let insert_only_snapshot = self.insert_only_snapshot.clone();
+        let cas_commit = self.cas_commit.clone();
         let attempted_files = Arc::clone(&self.attempted_files);
         let remote_write_id = self.remote_write_id.clone();
         let cancelled = Arc::clone(&self.cancelled);
@@ -1450,7 +1466,7 @@ impl ExecutionPlan for LakeSoulCommitExec {
                     metadata_client,
                     primary_keys,
                     object_store_options,
-                    insert_only_snapshot,
+                    cas_commit,
                     attempted_files,
                     remote_write_id,
                     cancelled,
@@ -1489,7 +1505,7 @@ async fn commit_reports(
     metadata_client: MetaDataClientRef,
     primary_keys: Vec<String>,
     object_store_options: SecretMap,
-    insert_only_snapshot: Option<Vec<PartitionInfo>>,
+    cas_commit: Option<CommitSnapshot>,
     attempted_files: Arc<Mutex<Vec<String>>>,
     remote_write_id: Option<String>,
     cancelled: Arc<AtomicBool>,
@@ -1554,11 +1570,11 @@ async fn commit_reports(
         return Err(error.into());
     }
 
-    let keep_files = insert_only_snapshot
+    let keep_files = cas_commit
         .as_ref()
         .map(|_| Arc::new(AtomicBool::new(false)));
-    let commit_guard = match &insert_only_snapshot {
-        Some(snapshot) => Some(CommitGuard::InsertOnly {
+    let commit_guard = match &cas_commit {
+        Some(snapshot) => Some(CommitGuard::Cas {
             table_info: Arc::clone(&table_info),
             snapshot: snapshot.clone(),
             keep_files: Arc::clone(keep_files.as_ref().expect("keep_files")),
@@ -1592,9 +1608,9 @@ async fn commit_reports(
 
 /// How the commit node cleans up a failed statement.
 enum CommitGuard {
-    InsertOnly {
+    Cas {
         table_info: Arc<TableInfo>,
-        snapshot: Vec<PartitionInfo>,
+        snapshot: CommitSnapshot,
         keep_files: Arc<AtomicBool>,
     },
     Streamed {
@@ -1629,7 +1645,7 @@ async fn wait_for_commit(
             remove_files(context, &files).await?;
         }
         return Err(DataFusionError::Execution(format!(
-            "INSERT into {table_name} was cancelled before its metadata commit"
+            "write into {table_name} was cancelled before its metadata commit"
         ))
         .into());
     }
@@ -1645,7 +1661,7 @@ async fn wait_for_commit(
     commit_metrics.record_partitions(partitioned_file_path_and_row_count.len() as u64);
 
     let commit_started = std::time::Instant::now();
-    if let Some(CommitGuard::InsertOnly {
+    if let Some(CommitGuard::Cas {
         table_info,
         snapshot,
         keep_files,
@@ -1664,10 +1680,19 @@ async fn wait_for_commit(
                 });
             }
         }
-        match client
-            .commit_insert_only(table_info, snapshot, data_files)
-            .await
-        {
+        let publication = match snapshot {
+            CommitSnapshot::InsertOnly(partitions) => {
+                client
+                    .commit_insert_only(table_info, partitions, data_files)
+                    .await
+            }
+            CommitSnapshot::Update(partitions) => {
+                client
+                    .commit_update(table_info, partitions.as_slice(), data_files)
+                    .await
+            }
+        };
+        match publication {
             Ok(_) => keep_files.store(true, Ordering::Release),
             Err(error) => {
                 if matches!(error, LakeSoulMetaDataError::InsertCommitOutcomeUnknown(_)) {

@@ -165,3 +165,162 @@ impl fmt::Display for WriteConflict {
 }
 
 impl std::error::Error for WriteConflict {}
+
+/// Why a SQL `UPDATE` cannot run against a table.
+///
+/// A read-modify-write statement needs one live row per primary key and
+/// overwrite-style merge semantics; these table kinds express changes another
+/// way, so the front end refuses the statement instead of bypassing the table's
+/// write contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateUnsupported {
+    /// No primary key: a row has no identity inside a partition.
+    NoPrimaryKey,
+    /// CDC table: changes are written as change events, not as new row values.
+    Cdc,
+    /// `appendOnly` table: updates would violate its write contract.
+    AppendOnly,
+    /// A non-overwrite merge operator changes what an updated row means.
+    CustomMergeOperator,
+}
+
+impl fmt::Display for UpdateUnsupported {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoPrimaryKey => {
+                write!(
+                    f,
+                    "UPDATE requires a primary key: LakeSoul has no row identity in this table"
+                )
+            }
+            Self::Cdc => write!(
+                f,
+                "UPDATE is not supported on a CDC LakeSoul table: changes are written as CDC events"
+            ),
+            Self::AppendOnly => {
+                write!(f, "UPDATE is not supported on an appendOnly LakeSoul table")
+            }
+            Self::CustomMergeOperator => write!(
+                f,
+                "UPDATE is not supported on a table with a non-overwrite merge operator"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for UpdateUnsupported {}
+
+/// The primary-metadata snapshot one statement is planned against.
+///
+/// It carries the table identity the snapshot belongs to, so a scan can bind
+/// to it only for that table and a same-name table created after a DROP is
+/// never read through it.
+#[derive(Debug, Clone)]
+pub struct FixedSnapshot {
+    pub table_id: String,
+    pub table_namespace: String,
+    pub table_name: String,
+    /// The durable definition the statement was analysed against. Scans and
+    /// the writer require the table they run against to match it exactly, so a
+    /// same-`table_id` schema/property change cannot be committed against a
+    /// different definition than the rows were computed from.
+    pub table_info: std::sync::Arc<lakesoul_metadata_proto::entity::TableInfo>,
+    /// Latest published version of every partition, as read from the primary.
+    /// Shared, not copied: every scan of the target table replays the same
+    /// partition list.
+    pub partitions: std::sync::Arc<Vec<lakesoul_metadata_proto::entity::PartitionInfo>>,
+}
+
+/// Whether two table definitions describe the same analysed table.
+pub fn same_table_definition(
+    left: &lakesoul_metadata_proto::entity::TableInfo,
+    right: &lakesoul_metadata_proto::entity::TableInfo,
+) -> bool {
+    left.table_id == right.table_id
+        && left.table_name == right.table_name
+        && left.table_namespace == right.table_namespace
+        && left.table_schema == right.table_schema
+        && left.partitions == right.partitions
+        && left.properties == right.properties
+        && left.table_schema_arrow_ipc_json_hash == right.table_schema_arrow_ipc_json_hash
+}
+
+/// Per-statement handle to the snapshot a read-modify-write statement must
+/// use for every scan of its target table.
+///
+/// A session installs one handle in its config. It is connection-local: a
+/// front end creates a fresh handle for each connection, and the handle is
+/// never shared between sessions. [`Self::set`] returns a guard that clears
+/// the snapshot when the statement finishes, so a cancelled or failed
+/// statement cannot leak it into the next one.
+#[derive(Debug, Clone, Default)]
+pub struct LakeSoulFixedSnapshot {
+    snapshot: Arc<std::sync::RwLock<Option<Arc<FixedSnapshot>>>>,
+}
+
+impl LakeSoulFixedSnapshot {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get(&self) -> Option<Arc<FixedSnapshot>> {
+        self.snapshot
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Install `snapshot` until the returned guard is dropped.
+    pub fn set(&self, snapshot: FixedSnapshot) -> LakeSoulSnapshotGuard {
+        let snapshot = Arc::new(snapshot);
+        *self
+            .snapshot
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(Arc::clone(&snapshot));
+        LakeSoulSnapshotGuard {
+            handle: self.clone(),
+            installed: snapshot,
+        }
+    }
+
+    pub fn clear(&self) {
+        *self
+            .snapshot
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    /// The snapshot installed in `session`, if any.
+    pub fn from_session(
+        session: &dyn datafusion::catalog::Session,
+    ) -> Option<Arc<FixedSnapshot>> {
+        session
+            .config()
+            .get_extension::<Self>()
+            .and_then(|handle| handle.get())
+    }
+}
+
+/// Clears the snapshot installed by [`LakeSoulFixedSnapshot::set`] on drop.
+#[derive(Debug)]
+pub struct LakeSoulSnapshotGuard {
+    handle: LakeSoulFixedSnapshot,
+    installed: Arc<FixedSnapshot>,
+}
+
+impl Drop for LakeSoulSnapshotGuard {
+    fn drop(&mut self) {
+        let mut current = self
+            .handle
+            .snapshot
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current
+            .as_ref()
+            .is_some_and(|snapshot| Arc::ptr_eq(snapshot, &self.installed))
+        {
+            *current = None;
+        }
+    }
+}

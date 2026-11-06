@@ -23,6 +23,7 @@ mod error;
 pub mod index;
 pub mod index_maintenance;
 pub mod lakesoul_table;
+pub mod pg_assignment;
 pub mod planner;
 pub mod session;
 pub mod text_index;

@@ -153,15 +153,25 @@ fn map_statement_error(error: PgWireError) -> PgWireError {
     let PgWireError::ApiError(source) = &error else {
         return error;
     };
-    let Some(datafusion_error) = source.downcast_ref::<DataFusionError>() else {
-        return error;
-    };
-    if matches!(
-        datafusion_error.find_root(),
-        DataFusionError::External(inner)
-            if inner.is::<ScalarSubqueryCardinalityError>()
-    ) {
-        return cardinality_violation_error();
+    // Native repartition/write operators may add rootcause wrappers between
+    // DataFusion errors. Follow the typed source chain, not only DataFusion's
+    // Context/SharedResult variants or the displayed error text.
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(source.as_ref());
+    while let Some(cause) = current {
+        if cause.is::<ScalarSubqueryCardinalityError>()
+            || cause
+                .downcast_ref::<DataFusionError>()
+                .is_some_and(|error| {
+                    matches!(
+                        error.find_root(),
+                        DataFusionError::External(inner)
+                            if inner.is::<ScalarSubqueryCardinalityError>()
+                    )
+                })
+        {
+            return cardinality_violation_error();
+        }
+        current = cause.source();
     }
     error
 }
@@ -263,9 +273,13 @@ impl LakeSoulQueryRouter {
             // Refused at the INSERT itself so statements before it still run
             // and stream their rows, as PostgreSQL does before the failure.
             let insert_position = crate::insert::first_insert_in_batch(&statements);
+            let update_position = crate::update::first_update_in_batch(&statements);
             for (index, statement) in statements.into_iter().enumerate() {
                 if insert_position == Some(index) {
                     return Err(crate::insert::refuse_insert_in_batch());
+                }
+                if update_position == Some(index) {
+                    return Err(crate::update::refuse_update_in_batch());
                 }
                 if is_empty_query(&statement) {
                     client
@@ -634,6 +648,7 @@ pub(crate) fn connection_statement_hooks(
             ),
         ));
     }
+    hooks.push(Arc::new(crate::update::UpdateStatementHook));
     statement_hooks_with(hooks)
 }
 
