@@ -99,7 +99,7 @@ jobs:
         ports:
           - 5432:5432
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
@@ -251,7 +251,7 @@ jobs:
                 sleep 2
               done
             '
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:

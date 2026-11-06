@@ -62,7 +62,7 @@ jobs:
           # Maps tcp port 5432 on service container to the host
           - 5432:5432
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
         with:

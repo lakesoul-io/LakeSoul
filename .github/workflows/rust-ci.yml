@@ -119,7 +119,7 @@ jobs:
 
               echo "RustFS Configuration Complete!"
             '
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Strict TPC-H driver boundary regressions
         env:
           PYTHONPATH: rust/postgres-lakesoul/benchmark/driver
@@ -181,7 +181,7 @@ jobs:
       # Make sure CI fails on all warnings, including Clippy lints.
       RUSTFLAGS: "-Dwarnings"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable

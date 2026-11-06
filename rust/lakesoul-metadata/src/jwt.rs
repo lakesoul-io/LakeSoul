@@ -104,7 +104,10 @@ mod tests {
             .decode_token(&token)
             .expect_err("an expired token must be rejected");
         assert!(
-            matches!(error.kind(), jsonwebtoken::errors::ErrorKind::ExpiredSignature),
+            matches!(
+                error.kind(),
+                jsonwebtoken::errors::ErrorKind::ExpiredSignature
+            ),
             "an expired token must be rejected for its expiry, got {error}"
         );
     }
