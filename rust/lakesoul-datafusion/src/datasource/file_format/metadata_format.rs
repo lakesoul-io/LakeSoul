@@ -1505,7 +1505,8 @@ impl ExecutionPlan for LakeSoulHashSinkExec {
         let dispatch = tracing::dispatcher::get_default(|dispatch| dispatch.clone());
         // Resolve the parent and create the span through that same subscriber;
         // see `create_sink_span`.
-        let span = Self::create_sink_span(&dispatch, self.table_info().as_ref(), partition);
+        let span =
+            Self::create_sink_span(&dispatch, self.table_info().as_ref(), partition);
         let entered = span.enter();
 
         if partition != 0 {
@@ -1925,7 +1926,8 @@ mod span_tests {
         let owner_spans = CapturedSpans::default();
         let owner = tracing::Dispatch::new(Registry::default().with(owner_spans.clone()));
         let foreign_spans = CapturedSpans::default();
-        let foreign = tracing::Dispatch::new(Registry::default().with(foreign_spans.clone()));
+        let foreign =
+            tracing::Dispatch::new(Registry::default().with(foreign_spans.clone()));
 
         // The caller's statement span belongs to `owner` and is current on this
         // thread, while the ambient dispatcher below is `foreign`.
