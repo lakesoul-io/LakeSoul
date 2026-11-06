@@ -213,3 +213,57 @@ pk_locator: keys=200 files=1 pruned=0 rows=200 cache=31.3µs take=22.5ms total=2
 `block_in_place` runtime 交接（≈2×2.6 ms）等**固定成本**。下一步方向见日志第 4 节：
 先把 setup 移入返回的 stream 以去掉交接，再按阶段 B 做同 snapshot 批次 API 摊薄固定成本，
 并用“同样 4 shard 的 Rust matched control”做同口径对比。
+
+## 11. 端到端 vs 纯 Rust：CPU 与并发口径（实测）
+
+用 bench 新增的 `--concurrency` 与 `/proc/self/stat` CPU 统计（GloVe-200，index-only，
+4 bucket，nprobe 16，200 query，locator on）：
+
+| 口径 | QPS | p50 | 每 query CPU |
+|---|---:|---:|---:|
+| 串行 1 query 在飞（当前基准） | 60.2–61.6 | 15.9–16.6 ms | **42–43 ms** |
+| 2 并发 | 95.1–95.5 | 19.8–20.1 ms | — |
+| 4 并发 | 120.9–125.3 | 29.0–30.0 ms | — |
+| 8 并发 | 129.4–133.5 | 51.8–52.6 ms | 50.8–51.1 ms |
+| 纯 Rust core（1 线程 / 16 线程） | 1604 / 16239 | 0.62 ms | 0.62 ms |
+
+结论：
+
+1. **每条 e2e query 消耗约 42 ms CPU**，而纯 Rust 的内存索引 ANN 只要 0.62 ms ——
+   e2e 的 CPU 成本是 ANN 的 ~68 倍；ANN 在 e2e 里只占 0.6–2 ms 延迟（nprobe 扫描已证明）。
+   这 42 ms = SQL/物理计划（~2.6 ms 单线程）+ 4 个 bucket reader 的构建/ANN/取行/合并
+   （4 线程并行，每桶 start 4.8 + scan 1.0 ms）+ 索引读取与 locator 开销。
+2. **并发只到 ~2.1×（61 → 130 QPS）就饱和**，而 8 并发时 CPU 利用率只有约 43%
+   （131 QPS × 51 ms ≈ 6.9/16 核）：瓶颈不是 CPU 饱和，而是每 query 的多线程 reader
+   结构与运行时/锁的争用（`LAKESOUL_IO_WORKER_THREADS=16` 与 `RAYON=1` 均无改善）。
+3. 所以单 query 路径已经接近它自己的天花板；要“逼近 Rust”必须**把固定成本按批摊薄**，
+   这正是阶段 B 的批处理入口。
+
+## 12. 阶段 B 细化：同 snapshot 的多 query 批量入口
+
+**语义契约**：一个批次里的所有 query 共享**同一个 snapshot 与 index commit**；结果带
+`query_index` 列。批次之间不承诺一致性；不改变表/事务/snapshot/MOR 任何语义，不绕过
+delete/CDC/ACL。批次入口是新增 API，现有单 query SQL 路径保持不变。
+
+**实现路径**（按依赖顺序）：
+
+1. `lakesoul-vector` core：`search_batch(queries: &[Vec<f32>], nprobe, k)` —— 逐 query 扫同一批
+   已解码的 list/codes（后续可做多 query SIMD 距离），返回 `[Vec<VectorHit>]`；
+2. `lakesoul-io` reader：`OPTION_KEY_VECTOR_SEARCH_QUERIES`（N 条 query）+ 输出
+   `query_index` 列；merge-on-read、PK locator 批量取行（N×200 key 一次 take）、
+   每 query 分组 top-k；
+3. `lakesoul-datafusion`：`VectorSearchRequest` 增加多 query 字段，exec 每批次每桶只做一次
+   解析/租约/reader 构建；批次输出按 `query_index` 分组；
+4. API 入口：先做 Rust/Python 的 `table.batch_vector_search(queries, column, top_k, nprobe)`，
+   SQL 侧的表函数后续再加；
+5. 验证：同一 GloVe-200 与单 query 结果逐 query 比对 ID/顺序；QPS/CPU/RSS 对比
+   单 query（61 QPS）与 8 并发（130 QPS）。
+
+**成本模型（按当前实测推算）**：每批次固定 ≈ 2.6（计划）+ 5（4 桶 reader 构建）+
+1（resolve/lease）≈ 9 ms；每 query 边际 ≈ ANN 0.6 + 批量取行 1–2.4 + 排序 0.2 ≈
+**1.8–3 ms**。N=16 批次 ≈ 9+16×2.4 ≈ 47 ms ⇒ **≈2.9 ms/query（≈340 QPS，单 worker）**；
+取行批量化到 1.2 ms/query 时 ≈1.8 ms/query（≈560 QPS）；多 worker 并发批次可再约 2×
+（受 CPU/HT 与内存带宽限制）⇒ 目标 **700–1000 QPS**，即纯 Rust 16-worker 量级的 5–6%。
+
+**回滚门槛**：Recall/ID 与单 query 完全一致、RSS 不升、QPS 提升可重复；任一条不满足即回滚
+该路径，保留已提交的单 query 优化。
