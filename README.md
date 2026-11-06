@@ -73,8 +73,10 @@ WITH (
 ```
 
 The source needs logical WAL, a publication, and `REPLICA IDENTITY FULL`; the
-target is a pre-created, empty LakeSoul CDC table. `ALTER SUBSCRIPTION ...
-DISABLE/ENABLE` and `DROP SUBSCRIPTION` control the process. See
+target is a pre-created, empty LakeSoul CDC table. The initial copy runs in
+parallel across CTID ranges (`snapshot_parallelism`, `snapshot_memory_bytes`).
+`ALTER SUBSCRIPTION ... DISABLE/ENABLE` and `DROP SUBSCRIPTION` control the
+process. See
 [PostgreSQL subscriptions](https://lakesoul-io.github.io/docs/engine/postgres/subscription)
 for the full setup and SQL reference.
 

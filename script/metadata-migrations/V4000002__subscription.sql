@@ -30,6 +30,8 @@ create table if not exists subscription.subscriptions
     commit_interval_ms    bigint not null default 1000,
     snapshot_batch_rows   bigint not null default 50000,
     snapshot_batch_bytes  bigint not null default 67108864,
+    snapshot_parallelism  bigint not null default 4,
+    snapshot_memory_bytes bigint not null default 1073741824,
     supervisor_pid        integer,
     log_path              text,
     last_error            text,

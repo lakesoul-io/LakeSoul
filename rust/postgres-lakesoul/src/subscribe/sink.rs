@@ -6,10 +6,12 @@
 //! initial snapshot.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use datafusion::common::ScalarValue;
+use datafusion::execution::memory_pool::MemoryPool;
 use lakesoul_common::misc::SecretMap;
 use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
 use lakesoul_io::writer::async_writer::FlushOutput;
@@ -23,13 +25,15 @@ use crate::Result;
 pub struct TableSink {
     pub plan: TablePlan,
     rows: HashMap<Vec<KeyValue>, RowState>,
+    memory_pool: Arc<dyn MemoryPool>,
 }
 
 impl TableSink {
-    pub fn new(plan: TablePlan) -> Self {
+    pub fn new(plan: TablePlan, memory_pool: Arc<dyn MemoryPool>) -> Self {
         Self {
             plan,
             rows: HashMap::new(),
+            memory_pool,
         }
     }
 
@@ -54,8 +58,13 @@ impl TableSink {
         let row_count = self.rows.len();
         let states: Vec<&RowState> = self.rows.values().collect();
         let batch = build_batch(&self.plan.schema, self.plan.cdc_index, &states)?;
-        let outputs =
-            write_files(&self.plan.table, &self.plan.target_table, batch).await?;
+        let outputs = write_files(
+            &self.plan.table,
+            &self.plan.target_table,
+            batch,
+            &self.memory_pool,
+        )
+        .await?;
         commit_outputs(
             &self.plan.table,
             &self.plan.target_table,
@@ -100,9 +109,10 @@ pub(crate) async fn write_files(
     table: &LakeSoulTable,
     target_table: &str,
     batch: RecordBatch,
+    memory_pool: &Arc<dyn MemoryPool>,
 ) -> Result<Vec<FlushOutput>> {
     let mut writer = table
-        .get_writer(SecretMap::new())
+        .get_writer_with_memory_pool(SecretMap::new(), Arc::clone(memory_pool))
         .await
         .map_err(|error| report!("create LakeSoul writer for {target_table}: {error}"))?;
     const CHUNK_ROWS: usize = 8192;

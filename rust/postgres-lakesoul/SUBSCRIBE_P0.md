@@ -114,7 +114,9 @@ postgres-lakesoul --subscribe \
   --commit-interval-ms 1000 \
   --snapshot auto \
   --snapshot-batch-rows 50000 \
-  --snapshot-batch-bytes 67108864
+  --snapshot-batch-bytes 67108864 \
+  --snapshot-parallelism 4 \
+  --snapshot-memory-bytes 1073741824
 ```
 
 `--dry-run` validates the source, target and types and prints the plan without
@@ -142,7 +144,9 @@ WITH (
   commit_rows         = 50000,
   commit_interval_ms  = 1000,
   snapshot_batch_rows = 50000,
-  snapshot_batch_bytes = 67108864
+  snapshot_batch_bytes = 67108864,
+  snapshot_parallelism = 4,
+  snapshot_memory_bytes = 1073741824
 );
 
 ALTER SUBSCRIPTION sub_users DISABLE;
@@ -196,12 +200,16 @@ protect the metadata database accordingly.
 The managed snapshot uses pg-walstream's exported snapshot:
 
 1. create the slot with `EXPORT_SNAPSHOT` and get the consistent point `S`;
-2. `COPY` the published table and parse rows into the same Arrow schema;
-3. write files in batches (`--snapshot-batch-rows`, default 50,000, or
-   `--snapshot-batch-bytes`, default 64MB) but do **not** commit them;
-4. after the copy is complete, hand the stream back and commit every snapshot
+2. split the table into `--snapshot-parallelism` CTID ranges (TID Range Scans
+   on PostgreSQL 14+); every reader imports the same exported snapshot;
+3. each reader runs `COPY`, parses rows into the same Arrow schema, and writes
+   files in batches (`--snapshot-batch-rows`, default 50,000, or
+   `--snapshot-batch-bytes`, default 64MB), but does **not** commit them;
+4. all writers share one DataFusion memory pool bounded by
+   `--snapshot-memory-bytes` (default 1 GiB; 0 is unbounded);
+5. after every reader is done, hand the stream back and commit every snapshot
    file with one `commit_data_commit_infos` call and `commit_id(S)`;
-5. update `data_lsn = S`, `processed_lsn = S`, `snapshot_state = done`, then
+6. update `data_lsn = S`, `processed_lsn = S`, `snapshot_state = done`, then
    start streaming from `S`.
 
 The target table is therefore empty to readers until the final commit, and a
@@ -216,7 +224,7 @@ The source's COPY holds an exported REPEATABLE READ snapshot: it pins `xmin`
 and holds `ACCESS SHARE` locks for the duration. Run large snapshots off-peak
 and set `max_slot_wal_keep_size` high enough for the WAL generated during the
 copy. Source session settings `statement_timeout=0`, `DateStyle=ISO`,
-`TimeZone=UTC` and `bytea_output=hex` are currently operator requirements.
+`TimeZone=UTC` and `bytea_output=hex` are set by each snapshot reader.
 
 ## Subscription state
 
@@ -224,9 +232,9 @@ The definition and progress live in the metadata PostgreSQL under the
 `subscription` schema. Production deployments apply
 `script/metadata-migrations/V4000002__subscription.sql`; the worker also runs
 the same idempotent DDL at startup for local development and tests. This is a
-pre-release schema: a database created before the SQL-supervisor columns were
-added must drop and recreate the `subscription` schema; no migration
-compatibility is provided.
+pre-release schema: a database created before the latest columns were added
+must drop and recreate the `subscription` schema; no migration compatibility is
+provided.
 
 | Table | Purpose |
 | --- | --- |
@@ -309,7 +317,8 @@ The local PostgreSQL 14 smoke test covered:
 - Only one source table per process; the publication may contain other tables,
   whose events are ignored.
 - pgdump mode is reserved but not implemented; the managed snapshot is
-  single-threaded and holds the exported snapshot (xmin and ACCESS SHARE locks).
+  parallel across CTID ranges but still holds one exported snapshot (xmin and
+  ACCESS SHARE locks) for the duration.
 - SQL-created subscriptions are one source table per child and assume one
   server instance; there is no cross-node lease. The source URL is plaintext in
   the metadata database.

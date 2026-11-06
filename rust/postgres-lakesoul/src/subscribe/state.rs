@@ -42,6 +42,8 @@ do $$ begin
         commit_interval_ms    bigint not null default 1000,
         snapshot_batch_rows   bigint not null default 50000,
         snapshot_batch_bytes  bigint not null default 67108864,
+        snapshot_parallelism  bigint not null default 4,
+        snapshot_memory_bytes bigint not null default 1073741824,
         supervisor_pid        integer,
         log_path              text,
         last_error            text,
@@ -111,6 +113,8 @@ pub struct SubscriptionDefinition {
     pub commit_interval_ms: u64,
     pub snapshot_batch_rows: usize,
     pub snapshot_batch_bytes: usize,
+    pub snapshot_parallelism: usize,
+    pub snapshot_memory_bytes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +149,8 @@ pub struct SubscriptionRecord {
     pub commit_interval_ms: u64,
     pub snapshot_batch_rows: usize,
     pub snapshot_batch_bytes: usize,
+    pub snapshot_parallelism: usize,
+    pub snapshot_memory_bytes: usize,
     pub supervisor_pid: Option<i32>,
     pub log_path: Option<String>,
     pub last_error: Option<String>,
@@ -264,7 +270,8 @@ impl SubscriptionMetadata {
         let query = format!(
             "select subscription_id, slot_name, publication, source_url, state, \
                     enabled, supervised, commit_rows, commit_interval_ms, \
-                    snapshot_batch_rows, snapshot_batch_bytes, supervisor_pid, \
+                    snapshot_batch_rows, snapshot_batch_bytes, \
+                    snapshot_parallelism, snapshot_memory_bytes, supervisor_pid, \
                     log_path, last_error \
              from subscription.subscriptions where {predicate}"
         );
@@ -287,9 +294,11 @@ impl SubscriptionMetadata {
         let commit_interval_ms: i64 = subscription.get(8);
         let snapshot_batch_rows: i64 = subscription.get(9);
         let snapshot_batch_bytes: i64 = subscription.get(10);
-        let supervisor_pid: Option<i32> = subscription.get(11);
-        let log_path: Option<String> = subscription.get(12);
-        let last_error: Option<String> = subscription.get(13);
+        let snapshot_parallelism: i64 = subscription.get(11);
+        let snapshot_memory_bytes: i64 = subscription.get(12);
+        let supervisor_pid: Option<i32> = subscription.get(13);
+        let log_path: Option<String> = subscription.get(14);
+        let last_error: Option<String> = subscription.get(15);
 
         let table_rows = self
             .client
@@ -372,6 +381,12 @@ impl SubscriptionMetadata {
             snapshot_batch_bytes: usize::try_from(snapshot_batch_bytes).map_err(
                 |_| report!("invalid snapshot_batch_bytes {snapshot_batch_bytes}"),
             )?,
+            snapshot_parallelism: usize::try_from(snapshot_parallelism).map_err(
+                |_| report!("invalid snapshot_parallelism {snapshot_parallelism}"),
+            )?,
+            snapshot_memory_bytes: usize::try_from(snapshot_memory_bytes).map_err(
+                |_| report!("invalid snapshot_memory_bytes {snapshot_memory_bytes}"),
+            )?,
             supervisor_pid,
             log_path,
             last_error,
@@ -408,15 +423,20 @@ impl SubscriptionMetadata {
             .map_err(|_| report!("snapshot_batch_rows is too large"))?;
         let snapshot_batch_bytes = i64::try_from(definition.snapshot_batch_bytes)
             .map_err(|_| report!("snapshot_batch_bytes is too large"))?;
+        let snapshot_parallelism = i64::try_from(definition.snapshot_parallelism)
+            .map_err(|_| report!("snapshot_parallelism is too large"))?;
+        let snapshot_memory_bytes = i64::try_from(definition.snapshot_memory_bytes)
+            .map_err(|_| report!("snapshot_memory_bytes is too large"))?;
         let inserted = transaction
             .execute(
                 "insert into subscription.subscriptions \
                      (subscription_id, slot_name, publication, source_url, state, \
                       enabled, supervised, commit_rows, commit_interval_ms, \
                       snapshot_batch_rows, snapshot_batch_bytes, \
+                      snapshot_parallelism, snapshot_memory_bytes, \
                       supervisor_pid, log_path, last_error, created_at, updated_at) \
                  values ($1, $2, $3, $4, 'starting', true, $5, $6, $7, $8, $9, \
-                         null, null, null, $10, $10) \
+                         $10, $11, null, null, null, $12, $12) \
                  on conflict (subscription_id) do nothing",
                 &[
                     &definition.subscription_id,
@@ -428,6 +448,8 @@ impl SubscriptionMetadata {
                     &commit_interval_ms,
                     &snapshot_batch_rows,
                     &snapshot_batch_bytes,
+                    &snapshot_parallelism,
+                    &snapshot_memory_bytes,
                     &now,
                 ],
             )
@@ -884,6 +906,8 @@ mod tests {
             commit_interval_ms: 1_000,
             snapshot_batch_rows: 50_000,
             snapshot_batch_bytes: 64 * 1024 * 1024,
+            snapshot_parallelism: 4,
+            snapshot_memory_bytes: 1024 * 1024 * 1024,
         }
     }
 
@@ -900,6 +924,8 @@ mod tests {
             commit_interval_ms: 1_000,
             snapshot_batch_rows: 50_000,
             snapshot_batch_bytes: 64 * 1024 * 1024,
+            snapshot_parallelism: 4,
+            snapshot_memory_bytes: 1024 * 1024 * 1024,
             supervisor_pid: None,
             log_path: None,
             last_error: None,

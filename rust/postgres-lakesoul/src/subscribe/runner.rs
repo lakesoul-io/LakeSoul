@@ -4,6 +4,7 @@
 
 //! The P0 replication event loop.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -44,7 +45,7 @@ pub async fn run(
     let source_name = plan.qualified_source_name();
     let target_name = format!("{}.{}", config.target_namespace, config.target_table);
     let subscription_id = record.subscription_id.clone();
-    let mut sink = TableSink::new(plan);
+    let mut sink = TableSink::new(plan, Arc::clone(&config.memory_pool));
 
     let mut stream = match stream {
         Some(stream) => stream,

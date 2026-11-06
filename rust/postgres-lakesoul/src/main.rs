@@ -314,9 +314,21 @@ async fn shutdown_signal() {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let subscriber = cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some();
+    let worker_threads = if subscriber {
+        // The initial snapshot decodes N COPY streams and builds Arrow batches
+        // on the async runtime; the default server thread count would leave
+        // most of the parallelism waiting on two cores.
+        cli.core
+            .worker_threads
+            .max(cli.subscribe.snapshot_parallelism)
+            .max(2)
+    } else {
+        cli.core.worker_threads.max(2)
+    };
     let rt = runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(cli.core.worker_threads.max(2))
+        .worker_threads(worker_threads)
         .thread_name("pg-lakesoul")
         .thread_stack_size(3 * 1024 * 1024) // 3MB
         .build()?;
