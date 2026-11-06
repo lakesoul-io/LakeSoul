@@ -154,10 +154,12 @@ matrix and the upgrade boundary.
 ### Vortex: random access and multimodal data
 
 Vortex is a compressed columnar format that operates directly on encoded arrays,
-with projection and predicate pushdown. LakeSoul writes it with small row blocks
-(1024 rows) and a 128 KiB data-block target, so a scattered set of rows reads a
-small fraction of a wide column instead of one large block per row. That layout is
-what makes vector-search payload reads and primary-key lookups cheap.
+with projection and predicate pushdown. Ordinary Vortex tables keep the Vortex
+writer defaults: 8192-row blocks and a 1 MiB data-block target, which preserves
+compression. The columns declared in a table's `vector_index_columns` property
+instead default to 1024-row blocks and a 128 KiB target, because a vector search
+fetches a scattered candidate set from those wide columns. That layout is per
+column and configurable per table; the other columns keep the writer defaults.
 
 Vortex also carries large binary payloads. Video frames, robot episodes and
 tensors live as blob columns beside their metadata; `BlobRef` and

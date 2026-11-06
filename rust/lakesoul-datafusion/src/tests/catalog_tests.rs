@@ -816,8 +816,8 @@ fn data_commit_timestamp_is_in_milliseconds() {
     });
 }
 
-/// The vortex write layout table properties reach the io config the writer
-/// is built from, so a table can restore or tune the block sizes.
+/// The vortex vector-layout table properties reach the io config the writer
+/// is built from, so a table can tune the block sizes of its vector columns.
 #[test]
 fn vortex_write_layout_properties_reach_the_io_config() {
     let rt = Runtime::new().unwrap();
@@ -848,6 +848,9 @@ fn vortex_write_layout_properties_reach_the_io_config() {
                 properties: serde_json::to_string(&LakeSoulTableProperty {
                     hash_bucket_num: Some("1".to_string()),
                     file_format: Some("vortex".to_string()),
+                    vector_index_columns: Some(
+                        r#"[{"column":"value","dim":8}]"#.to_string(),
+                    ),
                     vortex_row_block_size: Some("8192".to_string()),
                     vortex_data_block_target_bytes: Some("1048576".to_string()),
                     ..Default::default()
@@ -868,8 +871,13 @@ fn vortex_write_layout_properties_reach_the_io_config() {
             )
             .unwrap()
             .build();
-        assert_eq!(config.vortex_row_block_size(), Some(8192));
-        assert_eq!(config.vortex_data_block_target_bytes(), Some(1_048_576));
+        assert_eq!(config.vortex_vector_row_block_size(), Some(8192));
+        assert_eq!(
+            config.vortex_vector_data_block_target_bytes(),
+            Some(1_048_576)
+        );
+        assert_eq!(config.vortex_row_block_size(), None);
+        assert_eq!(config.vortex_data_block_target_bytes(), None);
 
         let _ = client.drop_table(table_name, "default").await;
     });

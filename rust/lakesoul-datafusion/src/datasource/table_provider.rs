@@ -40,7 +40,10 @@ use futures::StreamExt;
 use futures::TryStreamExt;
 use futures::stream::FuturesUnordered;
 
-use lakesoul_io::config::LakeSoulIOConfig;
+use lakesoul_io::config::{
+    DEFAULT_VECTOR_DATA_BLOCK_TARGET_BYTES, DEFAULT_VECTOR_ROW_BLOCK_SIZE,
+    LakeSoulIOConfig,
+};
 use lakesoul_io::file_format::{LakeSoulFormatRegistry, compute_project_column_indices};
 use lakesoul_io::physical_plan::lakesoul_scan::{
     LakeSoulScanConfig, LakeSoulScanExec, ScanFile, ScanWorkUnit,
@@ -773,6 +776,53 @@ impl LakeSoulTableProvider {
                 })?;
         }
 
+        // Optional Vortex layout for the columns declared in
+        // `vector_index_columns`. The values are stored as table properties and
+        // applied to those columns only; a vector table without them gets the
+        // small random-access layout that keeps candidate reads cheap.
+        let has_vector_index = vector_index_columns.is_some();
+        let vortex_row_block_size = cmd
+            .options
+            .get("format.vortex_row_block_size")
+            .or_else(|| cmd.options.get("vortex_row_block_size"))
+            .cloned()
+            .or_else(|| {
+                has_vector_index.then(|| DEFAULT_VECTOR_ROW_BLOCK_SIZE.to_string())
+            });
+        if let Some(value) = &vortex_row_block_size {
+            value
+                .parse::<usize>()
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    report!(
+                        "invalid vortex_row_block_size option '{value}': \
+                         expects a positive integer"
+                    )
+                })?;
+        }
+        let vortex_data_block_target_bytes = cmd
+            .options
+            .get("format.vortex_data_block_target_bytes")
+            .or_else(|| cmd.options.get("vortex_data_block_target_bytes"))
+            .cloned()
+            .or_else(|| {
+                has_vector_index
+                    .then(|| DEFAULT_VECTOR_DATA_BLOCK_TARGET_BYTES.to_string())
+            });
+        if let Some(value) = &vortex_data_block_target_bytes {
+            value
+                .parse::<u64>()
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    report!(
+                        "invalid vortex_data_block_target_bytes option '{value}': \
+                         expects a positive integer"
+                    )
+                })?;
+        }
+
         // `appendOnly` (the Spark/Flink table property). Persisted as-is so
         // an engine that enforces append-only semantics reads the same value;
         // the PG layer only stores it.
@@ -816,6 +866,8 @@ impl LakeSoulTableProvider {
                 vector_index_columns,
                 text_index_columns,
                 file_format,
+                vortex_row_block_size,
+                vortex_data_block_target_bytes,
                 ..Default::default()
             })
             .unwrap(),

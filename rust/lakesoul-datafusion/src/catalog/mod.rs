@@ -120,18 +120,19 @@ pub struct LakeSoulTableProperty {
         skip_serializing_if = "Option::is_none"
     )]
     pub text_index_columns: Option<String>,
-    /// Vortex write layout: rows per row block
-    /// (write option `vortex_row_block_size`). Unset means the small
-    /// LakeSoul default; the Vortex writer default is 8192.
+    /// Vortex write layout for the columns declared in `vector_index_columns`:
+    /// rows per row block (write option `vortex_row_block_size`). Unset uses
+    /// 1024 for vector columns; other columns keep the Vortex default 8192.
     #[serde(
         rename = "vortex_row_block_size",
         default,
         skip_serializing_if = "Option::is_none"
     )]
     pub vortex_row_block_size: Option<String>,
-    /// Vortex write layout: target uncompressed bytes per data block
-    /// (write option `vortex_data_block_target_bytes`). Unset means the small
-    /// LakeSoul default; the Vortex writer default is 1 MiB.
+    /// Vortex write layout for the columns declared in `vector_index_columns`:
+    /// target uncompressed bytes per data block (write option
+    /// `vortex_data_block_target_bytes`). Unset uses 128 KiB for vector
+    /// columns; other columns keep the Vortex default 1 MiB.
     #[serde(
         rename = "vortex_data_block_target_bytes",
         default,

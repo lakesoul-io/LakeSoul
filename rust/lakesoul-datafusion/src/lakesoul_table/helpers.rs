@@ -34,7 +34,8 @@ use url::Url;
 use crate::Result;
 use lakesoul_common::ser::arrow_java::schema_from_table_info_metadata;
 use lakesoul_io::config::{
-    OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES, OPTION_KEY_VORTEX_ROW_BLOCK_SIZE,
+    OPTION_KEY_VORTEX_VECTOR_DATA_BLOCK_TARGET_BYTES,
+    OPTION_KEY_VORTEX_VECTOR_ROW_BLOCK_SIZE,
 };
 
 use crate::catalog::{LakeSoulTableProperty, parse_table_info_partitions};
@@ -102,6 +103,7 @@ pub(crate) fn create_io_config_builder_from_table_info(
     .into_iter()
     .map(|config| config.column)
     .collect::<Vec<_>>();
+    let has_vector_columns = !vector_columns.is_empty();
     let mut builder = LakeSoulIOConfigBuilder::new()
         .with_schema(Arc::new(schema_from_table_info_metadata(
             &table_info.table_schema,
@@ -119,14 +121,20 @@ pub(crate) fn create_io_config_builder_from_table_info(
         .with_option(OPTION_KEY_STABLE_SORT, use_cdc)
         .with_option(OPTION_KEY_CDC_COLUMN, cdc_column);
 
-    // Vortex files default to small row blocks so random row access stays
-    // cheap; a table can override the layout per column or as a whole.
-    if let Some(value) = &properties.vortex_row_block_size {
-        builder = builder.with_option(OPTION_KEY_VORTEX_ROW_BLOCK_SIZE, value.clone());
-    }
-    if let Some(value) = &properties.vortex_data_block_target_bytes {
-        builder =
-            builder.with_option(OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES, value.clone());
+    // Vector columns default to the small Vortex layout (1024-row blocks,
+    // 128 KiB data blocks) so candidate reads stay cheap; a table property
+    // overrides it for the vector columns only.
+    if has_vector_columns {
+        if let Some(value) = &properties.vortex_row_block_size {
+            builder = builder
+                .with_option(OPTION_KEY_VORTEX_VECTOR_ROW_BLOCK_SIZE, value.clone());
+        }
+        if let Some(value) = &properties.vortex_data_block_target_bytes {
+            builder = builder.with_option(
+                OPTION_KEY_VORTEX_VECTOR_DATA_BLOCK_TARGET_BYTES,
+                value.clone(),
+            );
+        }
     }
 
     for (key, value) in options {
