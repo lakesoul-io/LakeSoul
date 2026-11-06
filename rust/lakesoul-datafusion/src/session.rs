@@ -421,6 +421,11 @@ pub struct LakeSoulSessionFactory {
     catalog_snapshot: Arc<CatalogSnapshot>,
 }
 
+/// Whether literal query vectors are folded before analysis.
+fn fold_vector_literals() -> bool {
+    !std::env::var("LAKESOUL_FOLD_VECTOR_LITERALS").is_ok_and(|value| value == "0")
+}
+
 impl LakeSoulSessionFactory {
     pub fn new(meta_client: crate::MetaDataClientRef, args: &CoreArgs) -> Result<Self> {
         Self::new_with_memory_pool(
@@ -552,10 +557,22 @@ impl LakeSoulSessionFactory {
         // `with_distributed_planner()`: the latter wraps the planner already
         // present on the builder, and the reverse order would let the
         // LakeSoul planner overwrite the distributed one.
+        // Fold literal query vectors before the analyzer coerces them: the
+        // per-dimension array nodes otherwise cost ~1.1 ms of the ~2.4 ms a
+        // single-query statement spends planning (see the rule's docs).
+        // `LAKESOUL_FOLD_VECTOR_LITERALS=0` restores the plain analyzer order.
+        let mut analyzer_rules = datafusion::optimizer::analyzer::Analyzer::new().rules;
+        if fold_vector_literals() {
+            analyzer_rules.insert(
+                1,
+                Arc::new(crate::planner::fold_vector_literals::FoldVectorQueryLiterals),
+            );
+        }
         let mut builder = SessionStateBuilder::new()
             .with_config(session_config)
             .with_runtime_env(runtime)
             .with_default_features()
+            .with_analyzer_rules(analyzer_rules)
             .with_query_planner(Arc::clone(&self.planner))
             .with_optimizer_rule(Arc::new(
                 crate::planner::vector_search_rule::VectorSearchPushdownRule,

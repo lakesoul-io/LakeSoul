@@ -568,3 +568,20 @@ physical planner，并对比 200 维向量、2 维向量与普通 limit 三种�
   marker 只携带 query 句柄（0.810 ms）；pushdown 规则本身每条语句仅 ~11 µs。
 - 下一步方向：在 analyzer 阶段把全字面量 `ARRAY[...]` 折叠成单个 `List` 字面量（自定义
   coercion），或提供"固定快照 + 多次查询"入口。
+
+## 28. analyzer 前折叠向量字面量（单查询 +26%）
+
+R29 的 `plan-probe` 显示：对改写后的小 plan 再 optimize 只需 0.03 ms，而第一次 optimize 要
+0.82 ms —— 成本在**第一遍遍历 analyzer 产出的 200 节点数组表达式**。DF55 里 `ARRAY[…]` 是
+`make_array(...)`，所以新增 analyzer 规则 `FoldVectorQueryLiterals`（插在 `TypeCoercion` 之前）：
+把距离函数第二个参数里的「全数值字面量数组」折叠成**一个同元素类型的 list 字面量**，后续
+analyzer/optimizer 不再逐维遍历；精度不变（Float64 仍 Float64），非常量数组原样保留，
+`LAKESOUL_FOLD_VECTOR_LITERALS=0` 可关。
+
+| 配置（bits=1、200 query、各 6 次） | 单 query QPS 中位 | p50 | physical plan | Recall | RSS |
+|---|---:|---:|---:|---:|---:|
+| 关闭折叠 | 388 | 2.43 ms | 1.06 ms | 0.42035 | 233–234 MB |
+| **开启折叠** | **488** | **1.91 ms** | **0.55 ms** | 0.42035 | 232–233 MB |
+
+单查询 **+26%**，planning 从 1.90 → 1.35 ms（logical optimizer 0.82 → 0.31 ms）；批量路径不变。
+累计：相对 R25（349 QPS / 2.70 ms）+40%，相对最初 reader 路径（61.3 QPS / 16.0 ms）**8.0×**。

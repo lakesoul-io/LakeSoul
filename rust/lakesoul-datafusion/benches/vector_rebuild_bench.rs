@@ -1693,9 +1693,11 @@ async fn run_plan_probe(args: &Args, dataset: &Dataset) -> Result<Value, String>
             .await
             .map_err(|e| format!("{e}"))?;
     }
-    let mut stages: Vec<(&str, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)> = vec![
+    let probe_logs = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+    let mut stages: Vec<(&str, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)> = vec![
         (
             "vector_index_only",
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -1707,9 +1709,11 @@ async fn run_plan_probe(args: &Args, dataset: &Dataset) -> Result<Value, String>
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         ),
         (
             "trivial_limit",
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -1735,6 +1739,16 @@ async fn run_plan_probe(args: &Args, dataset: &Dataset) -> Result<Value, String>
                 .optimize(&logical)
                 .map_err(|e| format!("optimize: {e}"))?;
             let optimize_ms = t.elapsed().as_secs_f64() * 1000.0;
+            // Second optimization of the already-optimized plan: separates the
+            // per-call setup/checks from the first pass over the raw plan.
+            let t = Instant::now();
+            let _again = state
+                .optimize(&optimized)
+                .map_err(|e| format!("optimize: {e}"))?;
+            let optimize_again_ms = t.elapsed().as_secs_f64() * 1000.0;
+            if name == "vector_index_only" && probe_logs {
+                println!("optimized plan:\n{}", optimized.display_indent());
+            }
             let t = Instant::now();
             let physical = state
                 .create_physical_plan(&optimized)
@@ -1743,12 +1757,13 @@ async fn run_plan_probe(args: &Args, dataset: &Dataset) -> Result<Value, String>
             let physical_ms = t.elapsed().as_secs_f64() * 1000.0;
             let stages_entry = stages
                 .iter_mut()
-                .find(|(entry, _, _, _, _)| *entry == name)
+                .find(|(entry, _, _, _, _, _)| *entry == name)
                 .expect("stage entry");
             stages_entry.1.push(parse_ms);
             stages_entry.2.push(plan_ms);
             stages_entry.3.push(optimize_ms);
-            stages_entry.4.push(physical_ms);
+            stages_entry.4.push(optimize_again_ms);
+            stages_entry.5.push(physical_ms);
             std::hint::black_box(&physical);
         }
     }
@@ -1761,7 +1776,7 @@ async fn run_plan_probe(args: &Args, dataset: &Dataset) -> Result<Value, String>
         json!({"mean_ms": mean, "p50_ms": p50, "min_ms": sorted.first().copied().unwrap_or(0.0)})
     }
     let mut result = serde_json::Map::new();
-    for (name, parse, plan, optimize, physical) in &stages {
+    for (name, parse, plan, optimize, optimize_again, physical) in &stages {
         result.insert(
             name.to_string(),
             json!({
@@ -1774,6 +1789,7 @@ async fn run_plan_probe(args: &Args, dataset: &Dataset) -> Result<Value, String>
                         .collect::<Vec<_>>()
                 ),
                 "logical_optimizer": summary(optimize),
+                "logical_optimizer_again": summary(optimize_again),
                 "physical_planner": summary(physical),
                 "total_ms": summary(
                     &plan.iter()
