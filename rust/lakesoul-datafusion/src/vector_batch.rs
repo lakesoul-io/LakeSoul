@@ -117,31 +117,114 @@ fn merge_query(
 /// several segments) and the newest/minimum distance is kept.  `live` filters
 /// the candidates to the rows the verification read found in the snapshot;
 /// `None` means the coverage proof already guarantees every candidate is live.
+/// Rank one query's candidates and decode the surviving primary keys.
+///
+/// Candidate keys are deduplicated (the index may hold a key in several
+/// segments) and the smallest index distance is kept.  `live` filters the
+/// candidates to the rows the verification read found in the snapshot;
+/// `None` means the coverage proof already guarantees every candidate is live.
+fn rank_query(
+    codec: &KeyCodec,
+    per_query_hits: &[VectorHit],
+    live: Option<&HashSet<IndexKey>>,
+) -> DFResult<Vec<(f32, i64)>> {
+    let mut best: BTreeMap<&IndexKey, f32> = BTreeMap::new();
+    for hit in per_query_hits {
+        if live.is_some_and(|live| !live.contains(&hit.key)) {
+            continue;
+        }
+        best.entry(&hit.key)
+            .and_modify(|score| *score = score.min(hit.score))
+            .or_insert(hit.score);
+    }
+    if best.is_empty() {
+        return Ok(Vec::new());
+    }
+    let keys: Vec<IndexKey> = best.keys().map(|key| (*key).clone()).collect();
+    let ids = decode_ids(codec, &keys)?;
+    Ok(best.values().copied().zip(ids).collect())
+}
+
+/// Rank one bucket's candidates for every query, single-threaded.
 fn rank_bucket(
     codec: &KeyCodec,
     hits: &[Vec<VectorHit>],
     live: Option<&HashSet<IndexKey>>,
 ) -> DFResult<Vec<Vec<(f32, i64)>>> {
-    let mut per_query: Vec<Vec<(f32, i64)>> = Vec::with_capacity(hits.len());
-    for per_query_hits in hits {
-        let mut best: BTreeMap<&IndexKey, f32> = BTreeMap::new();
-        for hit in per_query_hits {
-            if live.is_some_and(|live| !live.contains(&hit.key)) {
-                continue;
-            }
-            best.entry(&hit.key)
-                .and_modify(|score| *score = score.min(hit.score))
-                .or_insert(hit.score);
+    hits.iter()
+        .map(|per_query_hits| rank_query(codec, per_query_hits, live))
+        .collect()
+}
+
+/// Rank every bucket's candidates, spreading the per-query work over all
+/// cores.
+///
+/// The index probe fills the rayon pool by itself, but the ranking that
+/// follows it (dedupe, key decode) is per query and would otherwise run on
+/// only one thread per bucket: with four buckets that leaves three quarters of
+/// the machine idle for the whole ranking stage.
+fn rank_buckets(
+    codec: &KeyCodec,
+    bucket_hits: &[Vec<Vec<VectorHit>>],
+) -> DFResult<Vec<Vec<Vec<(f32, i64)>>>> {
+    let total: usize = bucket_hits.iter().map(|hits| hits.len()).sum();
+    let threads = std::thread::available_parallelism()
+        .map(std::num::NonZero::get)
+        .unwrap_or(1)
+        .min(total.max(1));
+    let mut ranked: Vec<Vec<Vec<(f32, i64)>>> = bucket_hits
+        .iter()
+        .map(|hits| Vec::with_capacity(hits.len()))
+        .collect();
+    if threads <= 1 || total <= threads {
+        for (bucket, hits) in bucket_hits.iter().enumerate() {
+            ranked[bucket] = rank_bucket(codec, hits, None)?;
         }
-        if best.is_empty() {
-            per_query.push(Vec::new());
-            continue;
-        }
-        let keys: Vec<IndexKey> = best.keys().map(|key| (*key).clone()).collect();
-        let ids = decode_ids(codec, &keys)?;
-        per_query.push(best.values().copied().zip(ids).collect());
+        return Ok(ranked);
     }
-    Ok(per_query)
+    // Flat index -> (bucket, query) mapping for an even split.
+    let mut offsets = Vec::with_capacity(bucket_hits.len() + 1);
+    offsets.push(0);
+    for hits in bucket_hits {
+        offsets.push(offsets.last().copied().unwrap_or(0) + hits.len());
+    }
+    let locate = |flat: usize| -> (usize, usize) {
+        let bucket = offsets
+            .partition_point(|offset| *offset <= flat)
+            .saturating_sub(1)
+            .min(bucket_hits.len().saturating_sub(1));
+        (bucket, flat - offsets[bucket])
+    };
+    let per_thread = total.div_ceil(threads).max(1);
+    let mut parts: Vec<(usize, usize, DFResult<Vec<(f32, i64)>>)> = Vec::new();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..total)
+            .step_by(per_thread)
+            .map(|start| {
+                let end = (start + per_thread).min(total);
+                scope.spawn(move || {
+                    let mut rows = Vec::with_capacity(end - start);
+                    for flat in start..end {
+                        let (bucket, query) = locate(flat);
+                        rows.push((
+                            bucket,
+                            query,
+                            rank_query(codec, &bucket_hits[bucket][query], None),
+                        ));
+                    }
+                    rows
+                })
+            })
+            .collect();
+        for handle in handles {
+            parts.extend(handle.join().expect("vector batch rank thread"));
+        }
+    });
+    parts.sort_by_key(|(bucket, query, _)| (*bucket, *query));
+    for (bucket, _, row) in parts {
+        ranked[bucket].push(row?);
+    }
+    Ok(ranked)
 }
 
 fn bucket_files_by_prefix(
@@ -418,18 +501,16 @@ async fn search_vector_batch_chunk(
         // Index-only ordering: with the coverage proof every candidate is a
         // live row, so the buckets are independent.  The index call is
         // synchronous CPU work (rayon inside), so probing the buckets from
-        // one task would serialize them and leave most of the machine idle:
-        // each bucket gets its own thread.
-        let codec = &codec;
+        // one task would serialize them: each bucket gets its own thread.
         let refs = &refs;
         let shards = &shards;
-        tokio::task::block_in_place(|| {
+        let bucket_hits: Vec<Vec<Vec<VectorHit>>> = tokio::task::block_in_place(|| {
             std::thread::scope(|scope| {
                 let handles: Vec<_> = shards
                     .iter()
                     .enumerate()
                     .map(|(shard_index, shard)| {
-                        scope.spawn(move || -> DFResult<Vec<Vec<(f32, i64)>>> {
+                        scope.spawn(move || -> DFResult<Vec<Vec<VectorHit>>> {
                             let t_search = std::time::Instant::now();
                             let hits = shard
                                 .search_batch(
@@ -441,33 +522,41 @@ async fn search_vector_batch_chunk(
                                 .map_err(|error| {
                                     DataFusionError::External(error.into_boxed_error())
                                 })?;
-                            let search_ms = t_search.elapsed().as_secs_f64() * 1000.0;
-                            let t_rank = std::time::Instant::now();
-                            let ranked = rank_bucket(codec, &hits, None);
                             if profile {
                                 tracing::debug!(
                                     shard = shard_index,
                                     queries = hits.len(),
-                                    search_ms,
-                                    rank_ms = t_rank.elapsed().as_secs_f64() * 1000.0,
+                                    search_ms = t_search.elapsed().as_secs_f64() * 1000.0,
                                     "profiled vector batch shard"
                                 );
                             }
-                            ranked
+                            Ok(hits)
                         })
                     })
                     .collect();
-                let mut ranked = Vec::with_capacity(handles.len());
+                let mut probed = Vec::with_capacity(handles.len());
                 for handle in handles {
-                    ranked.push(handle.join().map_err(|_| {
+                    probed.push(handle.join().map_err(|_| {
                         DataFusionError::Execution(
                             "vector batch bucket probe panicked".to_string(),
                         )
                     })??);
                 }
-                Ok::<_, DataFusionError>(ranked)
+                Ok::<_, DataFusionError>(probed)
             })
-        })?
+        })?;
+        let t_rank = std::time::Instant::now();
+        // Ranking is per query and fills every core, unlike the probe stage
+        // which is limited by the number of buckets.
+        let ranked = rank_buckets(&codec, &bucket_hits)?;
+        if profile {
+            tracing::debug!(
+                rows = bucket_hits.iter().map(|hits| hits.len()).sum::<usize>(),
+                rank_ms = t_rank.elapsed().as_secs_f64() * 1000.0,
+                "profiled vector batch ranking"
+            );
+        }
+        ranked
     } else {
         // Anything unproven falls back to the verification read: one native
         // reader pass per bucket over that bucket's candidate union.
