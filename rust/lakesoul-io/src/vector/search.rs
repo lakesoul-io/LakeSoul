@@ -439,6 +439,12 @@ impl LoadedShard {
     }
 
     /// Search several queries against this shard (rayon parallel inside).
+    ///
+    /// A single query does not enter the rayon pool: the batch entry point
+    /// hands one query to a pool that only has that one item to run, so the
+    /// pool's workers add scheduling and spin-wait cost without any
+    /// parallelism to win.  The interactive path (one query, four shards in
+    /// parallel one level up) is where that shows up.
     pub fn search_batch(
         &self,
         queries: &[&[f32]],
@@ -447,6 +453,17 @@ impl LoadedShard {
         parallelism: usize,
     ) -> IoResult<Vec<Vec<VectorHit>>> {
         let params = SearchParams::new(top_k, nprobe).with_parallelism(parallelism);
+        let direct = !std::env::var("LAKESOUL_VECTOR_PROBE_DIRECT")
+            .is_ok_and(|value| value == "0");
+        if direct && queries.len() == 1 {
+            let results = self
+                .inner
+                .cached
+                .index
+                .search(queries[0], params)
+                .map_err(|e| rootcause::report!("vector search failed: {:?}", e))?;
+            return Ok(vec![results.into_iter().map(vector_hit).collect()]);
+        }
         let mut per_query = Vec::with_capacity(queries.len());
         for result in self.inner.cached.index.batch_search(queries, params) {
             let results = result

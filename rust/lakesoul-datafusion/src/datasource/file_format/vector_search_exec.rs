@@ -1212,22 +1212,28 @@ impl LakeSoulVectorSearchExec {
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         let t_inner = std::time::Instant::now();
         let column = &self.vector_search.columns[0];
+        let t_layout = std::time::Instant::now();
         let layout = KeyLayout::from_schema(self.file_schema.as_ref(), &self.primary_keys)
             .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
         let expected_key_kind = layout.kind_hash();
         let codec = KeyCodec::new(layout)
             .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let codec_ms = t_layout.elapsed().as_secs_f64() * 1000.0;
+        let t_query = std::time::Instant::now();
         let query = lakesoul_io::vector::search::parse_query_vector(
             &column.query_csv,
             None,
         )
         .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let query_ms = t_query.elapsed().as_secs_f64() * 1000.0;
         let top_k = self.vector_search.candidates_per_bucket();
+        let t_groups = std::time::Instant::now();
         let groups = self
             .file_groups
             .iter()
             .map(|group| self.group_files(group))
             .collect::<DFResult<Vec<_>>>()?;
+        let groups_ms = t_groups.elapsed().as_secs_f64() * 1000.0;
         let (snapshot, resolve_ms, snapshot_cached) =
             match self.expected_snapshot(store, &groups, expected_key_kind).await? {
                 Some(resolved) => resolved,
@@ -1482,6 +1488,9 @@ impl LakeSoulVectorSearchExec {
                 snapshot_cached,
                 fetch_ms,
                 rank_ms,
+                codec_ms,
+                query_ms,
+                groups_ms,
                 candidates = keys.len(),
                 kept = kept_keys.len(),
                 buckets = bucket_arrays.len(),
