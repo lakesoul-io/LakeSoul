@@ -2177,7 +2177,97 @@ pub struct VectorPayloadSource {
     vector_field: FieldRef,
 }
 
+/// Opened payload sources, by data file and column layout.
+///
+/// Every query of a table opens the same few sources (one per hash bucket);
+/// the entry and payload view themselves are already cached, so this only
+/// saves the per-query cache lookups (~0.08 ms for four buckets).  Data files
+/// are immutable and the key includes the location, the key columns/types and
+/// the vector field, so a compaction (new file names) simply misses.
+/// `LAKESOUL_PAYLOAD_SOURCE_CACHE=0` disables it.
+/// Cached [`VectorPayloadSource`]s plus their insertion order.  The cap keeps
+/// the pinned key-index mappings of very wide tables bounded: a source is
+/// only useful while its table is being queried, so evicting the oldest entry
+/// costs one re-open.
+static PAYLOAD_SOURCES: LazyLock<
+    std::sync::Mutex<SourceCache>,
+> = LazyLock::new(|| std::sync::Mutex::new(SourceCache::default()));
+
+/// Maximum number of cached sources (one per data file and column layout).
+const PAYLOAD_SOURCE_CACHE_ENTRIES: usize = 16;
+
+#[derive(Default)]
+struct SourceCache {
+    entries: std::collections::HashMap<String, Arc<VectorPayloadSource>>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl SourceCache {
+    fn get(&self, key: &str) -> Option<Arc<VectorPayloadSource>> {
+        self.entries.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: String, source: Arc<VectorPayloadSource>) {
+        while self.entries.len() >= PAYLOAD_SOURCE_CACHE_ENTRIES {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+        if self.entries.insert(key.clone(), source).is_none() {
+            self.order.push_back(key);
+        }
+    }
+}
+
+fn payload_source_cache_enabled() -> bool {
+    !std::env::var("LAKESOUL_PAYLOAD_SOURCE_CACHE")
+        .is_ok_and(|value| value == "0")
+}
+
 impl VectorPayloadSource {
+    /// Cached variant of [`Self::open`]: the same data file and column layout
+    /// resolves to the same source for the life of the process.
+    pub async fn open_cached(
+        store: Arc<dyn ObjectStore>,
+        location: &StorePath,
+        format: PhysicalFormat,
+        key_columns: &[String],
+        key_types: &[DataType],
+        vector_field: &FieldRef,
+    ) -> Option<Arc<Self>> {
+        if !payload_source_cache_enabled() {
+            return Self::open(store, location, format, key_columns, key_types, vector_field)
+                .await
+                .map(Arc::new);
+        }
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            location.as_ref().hash(&mut hasher);
+            key_columns.hash(&mut hasher);
+            for data_type in key_types {
+                data_type.hash(&mut hasher);
+            }
+            vector_field.name().hash(&mut hasher);
+            vector_field.data_type().hash(&mut hasher);
+            format!("{:016x}", hasher.finish())
+        };
+        if let Ok(cache) = PAYLOAD_SOURCES.lock()
+            && let Some(source) = cache.get(&key)
+        {
+            return Some(source);
+        }
+        let source = Arc::new(
+            Self::open(store, location, format, key_columns, key_types, vector_field)
+                .await?,
+        );
+        if let Ok(mut cache) = PAYLOAD_SOURCES.lock() {
+            cache.insert(key, Arc::clone(&source));
+        }
+        Some(source)
+    }
+
     /// Open the key index and the stored-vector payload of one data file.
     pub async fn open(
         store: Arc<dyn ObjectStore>,

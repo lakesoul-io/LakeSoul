@@ -878,7 +878,7 @@ async fn exact_rank_and_merge(
         let key_columns = primary_keys.to_vec();
         let key_types = key_types.clone();
         opens.push(async move {
-            VectorPayloadSource::open(
+            VectorPayloadSource::open_cached(
                 store,
                 &location,
                 format,

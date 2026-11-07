@@ -1273,7 +1273,7 @@ impl LakeSoulVectorSearchExec {
             let field = Arc::clone(&vector_field);
             async move {
                 let format = PhysicalFormat::from_extension(location.as_ref()).ok()?;
-                lakesoul_io::pk_locator::VectorPayloadSource::open(
+                lakesoul_io::pk_locator::VectorPayloadSource::open_cached(
                     store,
                     &location,
                     format,
