@@ -19,14 +19,14 @@ SPDX-License-Identifier: Apache-2.0
 
 | 项目 | 行为 |
 | --- | --- |
-| 源库 | PostgreSQL 14+、logical WAL、一张 `public` 表、`REPLICA IDENTITY FULL`、主键匹配 |
-| 目标 | 当前连接 database 下预先创建的 LakeSoul CDC 表，不分区，创建订阅时必须为空 |
-| 初始数据 | 受管快照；在最终一次原子提交发布快照之前，目标表保持为空 |
+| 源库 | PostgreSQL 14+、logical WAL、一张或多张 `public` 表、`REPLICA IDENTITY FULL`、主键匹配 |
+| 目标 | 预先创建的 LakeSoul CDC 表，不分区；未指定 namespace 时使用当前连接 database |
+| 初始数据 | 单表 managed 快照；多表流式目前要求 `snapshot = none` |
 | 变更 | `INSERT`、`UPDATE`、`DELETE`；完整行加 CDC 变更列 |
 | 生命周期 | `CREATE`、`ALTER ... ENABLE/DISABLE`、`DROP`；SQL 创建的订阅会在端点重启后恢复 |
 | 状态 | 订阅定义和进度在元数据 PostgreSQL；数据进度记录在目标表 commit id 中 |
 
-一个订阅对应一张源表和一张目标表。一张目标表只能被一个订阅使用。
+每张源表对应一张目标表，一张目标表只能被一个订阅使用。多表订阅共享一个 publication、一个 replication slot 和一个订阅进程。
 
 ## 源库配置
 
@@ -81,7 +81,7 @@ CREATE TABLE users (
 );
 ```
 
-目标表的非 CDC 列要和源列同名、类型兼容，主键要和源表一致，且不能是 range partition 表。SQL 创建订阅时目标表必须为空。CDC 列不需要出现在源表中，由订阅端填写。
+目标表的非 CDC 列要和源列同名、类型兼容，主键要和源表一致，且不能是 range partition 表。SQL 创建 managed 快照订阅时目标表必须为空；`snapshot = none` 允许使用已初始化的目标表。CDC 列不需要出现在源表中，由订阅端填写。
 
 ## 创建订阅
 
@@ -107,7 +107,7 @@ WITH (
 | 选项 | 默认值 | 含义 |
 | --- | --- | --- |
 | `source_table` | 必填 | 源表，`public.users` 或 `users` |
-| `target_table` | 必填 | 当前 database 下的裸表名 |
+| `target_table` | 必填 | 目标表，`table` 或 `namespace.table`；未指定 namespace 时使用当前 database |
 | `snapshot` | `auto` | `auto`、`managed` 会拷贝初始表；`none` 跳过拷贝，从 slot 当前位点开始 |
 | `slot_name` | 订阅名 | replication slot 名称，不能已存在 |
 | `primary_key` | 自动推断 | 源/目标主键列；省略时从目标表推断 |
@@ -122,9 +122,47 @@ WITH (
 
 初始快照按 CTID 把源表切成多个范围，每个范围一个 COPY reader，每个 reader 自己写文件。所有 reader 导入同一个 exported snapshot，因此并行拷贝仍然只有一个一致点。writer 共享 `snapshot_memory_bytes`，而不是各自占用一份预算。目标表在所有 reader 完成、一次 commit 发布完整快照之前保持为空。
 
-`CREATE SUBSCRIPTION` 会先校验源库和目标表，再写元数据。命令在本地订阅进程启动后返回，初始快照在后台继续。SQL 创建的订阅在任何 snapshot 模式下都要求目标表为空；空目标上的 `snapshot = none` 从 slot 当前位点开始，只应用后续变更。
+`CREATE SUBSCRIPTION` 会先校验源库和目标表，再写元数据。命令在本地订阅进程启动后返回，初始快照在后台继续。managed 快照要求目标表为空；`snapshot = none` 允许使用已初始化的目标表，从 slot 当前位点开始，只应用后续变更。
 
-目标 namespace 就是连接使用的 database，目标表固定是 `public.<table>`。
+目标 namespace 默认是连接使用的 database；也可以在 `target_table` 或 `TABLES` 中写成 `namespace.table`。多表可以分布在不同的 LakeSoul namespace。
+
+## 多表订阅
+
+一个订阅可以把同一 publication 中的多张源表映射到多张 LakeSoul 目标表。所有表共享一个 replication slot 和一个订阅进程；每张表仍然有独立的 LakeSoul commit 和进度。
+
+```sql
+CREATE SUBSCRIPTION app_all
+CONNECTION 'postgresql://user:pass@source:5432/app'
+PUBLICATION app_pub
+TABLES (
+  public.users    TO users,
+  public.orders   TO analytics.orders,
+  public.payments TO billing.payments
+)
+WITH (
+  snapshot = 'none',
+  commit_rows = 50000
+);
+```
+
+`TO` 后面没有 namespace 时使用当前端点 database；写成 `analytics.orders` 时使用对应的 LakeSoul namespace。每张目标表都必须预先创建、schema/主键匹配，并且只能属于一个订阅。
+
+多表流式已经支持；多表 managed 快照暂未实现，因此 `TABLES` 目前要求 `snapshot = 'none'`，需要先初始化目标表。单表订阅仍然可以使用 `auto` 或 `managed` 快照。
+
+每张表独立 commit，没有跨表原子性。`processed_lsn` 只有在批次内所有表都 commit 成功后才推进。
+
+CLI 可以用重复的 `--table` 指定映射：
+
+```bash
+postgres-lakesoul --subscribe \
+  --source-url 'postgresql://user:pass@source:5432/app' \
+  --publication app_pub \
+  --slot app_all \
+  --target-namespace default \
+  --table public.users=users \
+  --table public.orders=analytics.orders \
+  --snapshot none
+```
 
 ## 查看进度
 

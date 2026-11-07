@@ -23,15 +23,16 @@ separate CDC cluster.
 
 | Piece | Behaviour |
 | --- | --- |
-| Source | PostgreSQL 14+, logical WAL, one `public` table, `REPLICA IDENTITY FULL`, matching primary key |
-| Target | Pre-created LakeSoul CDC table in the connection's database, unpartitioned, empty when the subscription is created |
-| Initial data | Managed snapshot; the target stays empty until one atomic commit publishes the snapshot |
+| Source | PostgreSQL 14+, logical WAL, one or more `public` tables, `REPLICA IDENTITY FULL`, matching primary keys |
+| Target | Pre-created LakeSoul CDC tables, unpartitioned; each target defaults to the connection's database |
+| Initial data | Managed snapshot for a single table; multi-table streaming currently requires `snapshot = none` |
 | Changes | `INSERT`, `UPDATE` and `DELETE`; full rows plus the CDC change column |
 | Lifecycle | `CREATE`, `ALTER ... ENABLE/DISABLE`, `DROP`; SQL-created subscriptions resume after an endpoint restart |
 | State | Subscription metadata and progress in the metadata PostgreSQL; data progress in target commit ids |
 
-One subscription maps one source table to one target table. A target table is
-reserved to one subscription.
+Each source table maps to one target table, and a target table is reserved to
+one subscription. A multi-table subscription uses one publication, one
+replication slot and one subscriber process for all of its tables.
 
 ## Source setup
 
@@ -128,7 +129,7 @@ WITH (
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `source_table` | required | Source table, `public.users` or `users` |
-| `target_table` | required | Bare target table name in the current database |
+| `target_table` | required | Target table, `table` or `namespace.table`; defaults to the current database |
 | `snapshot` | `auto` | `auto` and `managed` copy the initial table; `none` skips the copy and starts from the slot's current position |
 | `slot_name` | subscription name | Replication slot name; must not already exist |
 | `primary_key` | inferred | Source/target primary-key columns; inferred from the target table when omitted |
@@ -151,12 +152,59 @@ the complete snapshot.
 
 `CREATE SUBSCRIPTION` validates the source and target before writing metadata. It
 returns after the local subscriber process has started; the initial snapshot
-continues in the background. A SQL-created subscription requires an empty target
-for every snapshot mode. `snapshot = none` on an empty target starts from the
-slot's current position and only applies subsequent changes.
+continues in the background. A managed SQL snapshot requires an empty target.
+`snapshot = none` accepts a pre-initialized target and starts from the slot's
+current position, applying only subsequent changes.
 
-The target namespace is the database in the connection, and the target table is
-always `public.<table>`.
+The target namespace is the database in the connection unless `namespace.table`
+is used. Target tables may live in different LakeSoul namespaces.
+
+## Multi-table subscriptions
+
+A subscription can map several source tables from one publication to several
+LakeSoul targets. The tables share one logical replication slot and one
+subscriber process; each table still has its own LakeSoul commit and progress.
+
+```sql
+CREATE SUBSCRIPTION app_all
+CONNECTION 'postgresql://user:pass@source:5432/app'
+PUBLICATION app_pub
+TABLES (
+  public.users    TO users,
+  public.orders   TO analytics.orders,
+  public.payments TO billing.payments
+)
+WITH (
+  snapshot = 'none',
+  commit_rows = 50000
+);
+```
+
+A target without a namespace uses the endpoint database. An explicit
+`namespace.table` target is opened in that LakeSoul namespace. Every target
+must already exist, match its source schema and primary key, and be reserved to
+one subscription.
+
+Multi-table streaming is supported now. Multi-table managed snapshots are not:
+`TABLES` currently requires `snapshot = 'none'`, so initialize the targets
+before creating the subscription. Single-table subscriptions can still use
+`auto` or `managed` snapshots.
+
+Each table commits independently; there is no cross-table atomic commit.
+`processed_lsn` advances only after every table in the batch has committed.
+
+The CLI equivalent uses repeated `--table` mappings:
+
+```bash
+postgres-lakesoul --subscribe \
+  --source-url 'postgresql://user:pass@source:5432/app' \
+  --publication app_pub \
+  --slot app_all \
+  --target-namespace default \
+  --table public.users=users \
+  --table public.orders=analytics.orders \
+  --snapshot none
+```
 
 ## Check progress
 

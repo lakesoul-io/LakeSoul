@@ -15,17 +15,17 @@ PostgreSQL subscription implementation.
 
 | Dimension | P0 behaviour |
 | --- | --- |
-| Process | One subscriber process, one source table per process |
+| Process | One subscriber process per subscription; a subscription maps one or more source tables |
 | Source | PostgreSQL 14, `public` schema only |
-| Target | Pre-created LakeSoul table; no auto-create, no schema evolution |
+| Target | Pre-created LakeSoul tables; no auto-create, no schema evolution; namespace defaults to the session database |
 | Target partitioning | Unpartitioned (hash buckets only) |
 | Replica identity | `REPLICA IDENTITY FULL` required |
 | Writes | INSERT / UPDATE / DELETE; full rows plus `rowKinds` |
 | TOAST | Supported; unchanged values in an UPDATE are filled from the full old tuple |
-| Initial load | Managed snapshot; target stays empty until one atomic final commit |
+| Initial load | Managed snapshot for one table; multi-table streaming currently requires `snapshot = none` |
 | pg_dump | Next phase; schema fields are reserved, implementation is not present |
 | TRUNCATE | Rejected at startup and at runtime |
-| SQL surface | CLI plus `CREATE/DROP/ALTER SUBSCRIPTION` on the PG wire server |
+| SQL surface | CLI plus `CREATE/DROP/ALTER SUBSCRIPTION` (single `source_table`/`target_table` or `TABLES (...)`) on the PG wire server |
 | Publishing | Not supported |
 | Transactions | One LakeSoul commit per table per batch; no cross-table atomicity |
 | Concurrency | One writer assumed; no lease |
@@ -81,8 +81,9 @@ The source user needs `REPLICATION` plus `SELECT` on the table.
 
 ## Target setup
 
-The target namespace must already exist and the table must be empty when the
-slot is created. Create it through the PostgreSQL front end:
+The target namespace must already exist. A target must be empty for a managed
+snapshot; `snapshot = none` accepts a pre-initialized target. Create it through
+the PostgreSQL front end:
 
 ```sql
 CREATE TABLE users (
@@ -125,6 +126,21 @@ postgres-lakesoul --subscribe \
   --snapshot-memory-bytes 1073741824
 ```
 
+Multi-table streaming uses repeated `--table` mappings. Managed snapshots are
+not implemented for multiple tables yet, so pass `--snapshot none`; the targets
+must already be initialized:
+
+```bash
+postgres-lakesoul --subscribe \
+  --source-url 'postgresql://lakesoul_test:lakesoul_test@127.0.0.1:5432/pg_source' \
+  --publication lakesoul_pub \
+  --slot lakesoul_multi \
+  --target-namespace pg_source \
+  --table public.users=users \
+  --table public.orders=analytics.orders \
+  --snapshot none
+```
+
 `--dry-run` validates the source, target and types and prints the plan without
 creating a slot or touching the subscription metadata. `--max-transactions N`
 stops after N new source transactions (useful for tests). When running next to
@@ -133,9 +149,9 @@ default to `127.0.0.1:19090`.
 
 ## SQL-managed subscriptions
 
-The wire server can own the subscriber process. The target namespace is the
-database the client connected to; the target table must already exist and be
-empty.
+The wire server can own the subscriber process. A target namespace defaults to
+the database the client connected to; `namespace.table` selects another
+LakeSoul namespace. Target tables must already exist.
 
 ```sql
 CREATE SUBSCRIPTION sub_users
@@ -160,11 +176,29 @@ ALTER SUBSCRIPTION sub_users ENABLE;
 DROP SUBSCRIPTION [IF EXISTS] sub_users;
 ```
 
-`source_table`, `target_table`, `publication` and `CONNECTION` are required.
-`snapshot` defaults to `auto`; a SQL-created subscription requires an empty
-target for every snapshot mode. The server validates the source, target,
-primary key, publication and source slot before writing metadata. It then
-starts a child process:
+`source_table`, `target_table`, `publication` and `CONNECTION` are required for
+the single-table form. `snapshot` defaults to `auto`; a managed snapshot
+requires an empty target. Multi-table form:
+
+```sql
+CREATE SUBSCRIPTION app_all
+CONNECTION 'postgresql://user:pass@source:5432/app'
+PUBLICATION app_pub
+TABLES (
+  public.users    TO users,
+  public.orders   TO analytics.orders
+)
+WITH (
+  snapshot = 'none',
+  commit_rows = 50000
+);
+```
+
+Multi-table streaming uses one slot and one process. Each table commits
+independently; there is no cross-table atomicity. Multi-table managed snapshots
+are not implemented yet, so `TABLES` currently requires `snapshot = 'none'`.
+The server validates every source, target, primary key, publication and source
+slot before writing metadata. It then starts a child process:
 
 ```text
 postgres-lakesoul --subscribe --subscription-id <name> --no-metrics
@@ -324,15 +358,16 @@ The local PostgreSQL 14 smoke test covered:
 - `pg_walstream` is pinned to `0.10.0`; minor releases have changed public APIs.
   tokio is 1.54.1 and pingora is 0.9.1, which contains the zero-capacity
   `BufReader` fix for tokio 1.54.
-- Only one source table per process; the publication may contain other tables,
-  whose events are ignored.
+- A subscription can map multiple source tables (one slot/process), but multi-table
+  managed snapshots are not implemented yet; use `snapshot = none` with
+  pre-initialized targets. The publication may contain unmapped tables, whose
+  events are ignored.
 - pgdump mode is reserved but not implemented; the managed snapshot is
   parallel across CTID ranges but still holds one exported snapshot (xmin and
   ACCESS SHARE locks) for the duration.
-- SQL-created subscriptions are one source table per child and assume one
-  server instance; there is no cross-node lease. The source URL is plaintext in
-  the metadata database.
-- No DDL/schema evolution, no truncate, no range partitioning, no multi-table
-  coordination, no HA lease.
+- SQL-created subscriptions assume one server instance; there is no cross-node
+  lease. The source URL is plaintext in the metadata database.
+- No DDL/schema evolution, no truncate, no range partitioning, no cross-table
+  atomic commit, no HA lease.
 - Binary pgoutput, arrays/enums/domains/intervals, and PG 15+ column lists/row
   filters are not covered.
