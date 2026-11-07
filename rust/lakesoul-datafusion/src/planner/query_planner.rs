@@ -5,12 +5,20 @@
 use std::sync::Arc;
 
 use datafusion::catalog::Session;
+use arrow::compute::SortOptions;
 use datafusion::common::ScalarValue;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
 use datafusion::execution::context::QueryPlanner;
+use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion::logical_expr::{Expr, LogicalPlan};
+use datafusion::physical_expr::{
+    LexOrdering, PhysicalSortExpr, create_physical_expr,
+};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::limit::GlobalLimitExec;
+use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_planner::PhysicalPlanner;
 
 use crate::planner::physical_planner::LakeSoulPhysicalPlanner;
@@ -64,6 +72,17 @@ async fn build_fast_plan(
     if !fast_plan_enabled() {
         return Ok(None);
     }
+    if let Some(plan) = build_fast_plan_index_only(logical_plan, session_state).await? {
+        return Ok(Some(plan));
+    }
+    build_fast_plan_exact(logical_plan, session_state).await
+}
+
+/// Fast physical plan for the index-only statement shape.
+async fn build_fast_plan_index_only(
+    logical_plan: &LogicalPlan,
+    session_state: &dyn Session,
+) -> Result<Option<Arc<dyn ExecutionPlan>>> {
     // Shape: Limit(fetch) on the table scan.
     let LogicalPlan::Limit(limit) = logical_plan else {
         return Ok(None);
@@ -113,6 +132,149 @@ async fn build_fast_plan(
     let expected = logical_plan.schema().as_arrow().clone();
     let plan_schema = plan.schema();
     if plan_schema.as_ref() != &expected {
+        return Ok(None);
+    }
+    Ok(Some(plan))
+}
+
+/// Fast physical plan for the exact re-rank statement shape.
+///
+/// The optimized logical plan is
+/// `[Limit] -> [Projection]* -> Sort(distance, fetch) -> TableScan(marker)`:
+/// the limit is folded into the sort's fetch and the select list is a plain
+/// column projection above the sort.  The physical optimizer cannot improve
+/// this shape (the scan already builds the vector-search exec), so building
+/// `scan -> SortExec(fetch) -> ProjectionExec` directly avoids the default
+/// planner and its optimizer.  Every mismatch falls back to the default
+/// planner.
+async fn build_fast_plan_exact(
+    logical_plan: &LogicalPlan,
+    session_state: &dyn Session,
+) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+    let mut node = logical_plan;
+    let mut limit_fetch = None;
+    let mut has_limit = false;
+    if let LogicalPlan::Limit(limit) = node {
+        if let Some(skip) = limit.skip.as_deref()
+            && limit_literal(skip) != Some(0)
+        {
+            return Ok(None);
+        }
+        if let Some(expr) = limit.fetch.as_deref() {
+            match limit_literal(expr) {
+                Some(value) => limit_fetch = Some(value),
+                None => return Ok(None),
+            }
+        }
+        has_limit = true;
+        node = limit.input.as_ref();
+    }
+    // Plain column projections above the sort.
+    let mut projections: Vec<&datafusion::logical_expr::Projection> = Vec::new();
+    loop {
+        match node {
+            LogicalPlan::Projection(projection) => {
+                if projection
+                    .expr
+                    .iter()
+                    .any(|expr| !matches!(expr, Expr::Column(_)))
+                {
+                    return Ok(None);
+                }
+                projections.push(projection);
+                node = projection.input.as_ref();
+            }
+            _ => break,
+        }
+    }
+    let LogicalPlan::Sort(sort) = node else {
+        return Ok(None);
+    };
+    let Some(fetch) = sort.fetch.or(limit_fetch) else {
+        return Ok(None);
+    };
+    if fetch == 0 || sort.expr.is_empty() {
+        return Ok(None);
+    }
+    let LogicalPlan::TableScan(scan) = sort.input.as_ref() else {
+        return Ok(None);
+    };
+    let Some(request) =
+        crate::udf::vector_search_marker::parse_vector_search_request(&scan.filters)
+    else {
+        return Ok(None);
+    };
+    // The index-only ordering is served by that shortcut above.
+    if request.order_by {
+        return Ok(None);
+    }
+    let Ok(source) = datafusion::datasource::source_as_provider(&scan.source) else {
+        return Ok(None);
+    };
+    let Some(provider) =
+        source.downcast_ref::<crate::datasource::table_provider::LakeSoulTableProvider>()
+    else {
+        return Ok(None);
+    };
+    let mut plan: Arc<dyn ExecutionPlan> = provider
+        .scan(
+            session_state,
+            scan.projection.as_ref(),
+            &scan.filters,
+            Some(fetch),
+        )
+        .await?;
+    if !contains_vector_search_exec(plan.as_ref()) {
+        return Ok(None);
+    }
+    // The exact re-rank: the scan returns the candidate rows and the sort
+    // keeps the global top-k.
+    let input_schema = sort.input.schema();
+    let mut sort_exprs = Vec::with_capacity(sort.expr.len());
+    for sort_expr in &sort.expr {
+        let physical = create_physical_expr(
+            sort_expr.expr.as_ref(),
+            input_schema,
+            session_state.execution_props(),
+            &PhysicalPlanningContext::default(),
+        )?;
+        sort_exprs.push(PhysicalSortExpr {
+            expr: physical,
+            options: SortOptions {
+                descending: !sort_expr.asc,
+                nulls_first: sort_expr.nulls_first,
+            },
+        });
+    }
+    let Some(ordering) = LexOrdering::new(sort_exprs) else {
+        return Ok(None);
+    };
+    plan = Arc::new(SortExec::new(ordering, plan).with_fetch(Some(fetch)));
+    // The projections run above the sort, innermost first.
+    for projection in projections.into_iter().rev() {
+        let input_schema = projection.input.schema();
+        let mut exprs = Vec::with_capacity(projection.expr.len());
+        for expr in &projection.expr {
+            let Expr::Column(column) = expr else {
+                return Ok(None);
+            };
+            let physical = create_physical_expr(
+                expr,
+                input_schema,
+                session_state.execution_props(),
+                &PhysicalPlanningContext::default(),
+            )?;
+            exprs.push((physical, column.name.clone()));
+        }
+        plan = Arc::new(ProjectionExec::try_new(exprs, plan)?);
+    }
+    if has_limit && limit_fetch.is_some() {
+        plan = Arc::new(GlobalLimitExec::new(plan, 0, limit_fetch));
+    }
+    // Hand over only when the shortcut plan agrees with the logical plan's
+    // output schema.
+    let expected = logical_plan.schema().as_arrow().clone();
+    if plan.schema().as_ref() != &expected {
         return Ok(None);
     }
     Ok(Some(plan))
