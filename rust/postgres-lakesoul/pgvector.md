@@ -766,19 +766,25 @@ LIMIT 100`；客户端为 libpq（psql 单连接顺序 / 8 个并行连接），
 `postgres-lakesoul --worker-threads 16`，且进程环境开启 payload 缓存
 （`LAKESOUL_VECTOR_RERANK_CACHE=1` + `LAKESOUL_VECTOR_RERANK_CACHE_DIR`）。
 
-| 会话配置 | c=1 QPS | c=8 QPS | Recall@100（20 条抽样） | 备注 |
-|---|---:|---:|---:|---|
-| 默认（exact、nprobe=64、of=10） | 182–194 | — | — | 服务不设任何 `SET` 时的开箱值 |
-| `rerank='index'; nprobe=16` | 490–495 | 1,962–1,985 | 0.435 | 只按索引距离排序，不读向量列 |
-| `rerank='exact'; nprobe=32; overfetch=1` | 303–318 | 1,202–1,227（c=16: 944–1,029） | 0.637 | 精确重排，推荐工作点 |
-| `rerank='exact'; nprobe=64; overfetch=10` | 185–193 | — | — | 高召回档 |
-| **payload 缓存关闭**：exact np32/of1 | **10.0** | — | — | 回退 reader 路径 |
-| **payload 缓存关闭**：默认 np64/of10 | **0.5** | — | — | 每查询约 2 s |
+实测（R58 镜像；服务端 `LAKESOUL_METADATA_TTL_MS=200` + payload/source 缓存开启，单 psql 连接
+顺序执行 200 条 query，每个配置前先做一次 exact 预热；200 条全量 recall 见括号）：
 
-对照 datafusion SQL 路径（同表、同参数）：index-only 单查询 519–554 QPS、exact np32/of1
-316–337 QPS（c=8 时 1,039–1,045）；即 **PG wire 层对 index-only 有 ~5–7% 开销，对 exact 基本
-没有额外开销**（两端都是 CPU 密集型）。召回与 datafusion 逐位同源（抽样 0.435 / 0.637 vs
-200 条全量 0.4204 / 0.6419，差异来自抽样）。
+| 会话配置 | c=1 QPS | c=8 QPS | Recall@100 | 备注 |
+|---|---:|---:|---:|---|
+| 默认（exact、nprobe=64、of=10） | 439–448 | — | 0.6756 | 服务不设任何 `SET` 时的开箱值 |
+| `rerank='index'; nprobe=16` | 562–572 | 2,418 | 0.4204 | 只按索引距离排序，不读向量列 |
+| `rerank='exact'; nprobe=32; overfetch=1` | **450–462** | **~1,950** | 0.6419 | 精确重排，推荐工作点 |
+| **payload 缓存关闭**：exact np32/of1 | 10.0（R49） | — | — | 回退 reader 路径 |
+| **payload 缓存关闭**：默认 np64/of10 | 0.5（R49） | — | — | 每查询约 2 s |
+
+历史（R49 镜像，供对比）：默认 182–194、index-only 490–495（c=8 1,962–1,985）、exact 303–318
+（c=8 1,202–1,227）；R51（元数据 TTL）、R52（融合排序）、R54（payload source 缓存）、R57（单查询
+probe 直连）、R58（pgvector list 字面量折叠）叠加后达到上表工作点。
+
+对照 datafusion SQL 路径（同表、同参数，R57 镜像）：index-only 单查询 693 QPS、exact np32/of1
+535 QPS（c=8 2,246）；即 PG wire + psql 文本协议端到端多 **15–19%** 开销（每语句约 0.1–0.2 ms），
+服务端 exec 本身与进程内一致（0.65–0.90 ms）。召回与 datafusion 逐位同源（200 条全量
+0.4204 / 0.6419 / 0.6756）。
 
 其它观测：
 - 服务进程 RSS ≈ 504 MB（index cache 15 MB；payload 目录 903 MB 在 tmpfs 上，走 pread，不映射进 RSS）；
