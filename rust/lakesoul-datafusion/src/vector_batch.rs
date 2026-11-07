@@ -893,72 +893,106 @@ async fn exact_rank_and_merge(
     let candidates = request.candidates_per_bucket();
     let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
     let t_fetch = std::time::Instant::now();
-    // Candidate keys per (bucket, query) chunk are read on the blocking pool:
-    // every read is a pread per candidate, and the buckets and chunks fill the
-    // cores even when one bucket would serialize them.
-    let chunk = 32.max(queries.div_ceil(32));
-    let mut tasks = Vec::new();
-    for (bucket, hits_per_query) in bucket_hits.iter().enumerate() {
-        let Some(source) = sources.get(bucket) else {
-            return Err(DataFusionError::Execution(
-                "exact batch search lost a bucket source".to_string(),
-            ));
-        };
-        let Some(source) = source else {
-            return Err(DataFusionError::NotImplemented(format!(
-                "exact batch search cannot read the stored vectors of bucket \
-                 {bucket}: enable LAKESOUL_VECTOR_RERANK_CACHE and use a \
-                 single-file bucket"
-            )));
-        };
-        let source = Arc::new(source.clone());
+    // Candidate rows are read on scoped worker threads: every read is a pread
+    // per candidate, and both the buckets and the query ranges inside a bucket
+    // are independent.  One task per core is the measured optimum - enough to
+    // balance the pread latency, few enough that each task builds the next
+    // query's candidate keys on the fly instead of holding a whole chunk of
+    // them.  `LAKESOUL_VECTOR_EXACT_CHUNK` overrides the task size for tuning.
+    let cores = std::thread::available_parallelism()
+        .map(std::num::NonZero::get)
+        .unwrap_or(1);
+    let chunk = std::env::var("LAKESOUL_VECTOR_EXACT_CHUNK")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| {
+            (queries.saturating_mul(bucket_hits.len()) / cores.max(1))
+                .clamp(32, 320)
+        })
+        .min(queries.max(1));
+    let mut descriptors: Vec<(usize, usize, usize)> = Vec::new();
+    for bucket in 0..bucket_hits.len() {
         let mut start = 0;
         while start < queries {
             let end = (start + chunk).min(queries);
-            let keys: Vec<Vec<IndexKey>> = hits_per_query[start..end]
-                .iter()
-                .map(|hits| {
-                    hits.iter()
-                        .take(candidates)
-                        .map(|hit| hit.key.clone())
-                        .collect()
-                })
-                .collect();
-            let query_vectors: Vec<Vec<f32>> = request.queries[start..end].to_vec();
-            let source = Arc::clone(&source);
-            tasks.push(lakesoul_io::session::GLOBAL_RUNTIME.spawn_blocking(
-                move || -> DFResult<Vec<(usize, Vec<(f32, IndexKey)>)>> {
-                    let mut rows = Vec::with_capacity(keys.len());
-                    for (offset, keys) in keys.iter().enumerate() {
-                        let Some(scores) =
-                            source.score_keys(keys, &query_vectors[offset], true)
-                        else {
-                            return Err(DataFusionError::Execution(
-                                "stored-vector payload read failed".to_string(),
-                            ));
-                        };
-                        let scored: Vec<(f32, IndexKey)> = keys
-                            .iter()
-                            .cloned()
-                            .zip(scores)
-                            .map(|(key, score)| (score, key))
-                            .collect();
-                        rows.push((start + offset, scored));
-                    }
-                    Ok(rows)
-                },
-            ));
+            descriptors.push((bucket, start, end));
             start = end;
         }
     }
+    let workers = cores.min(descriptors.len()).max(1);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let collected = tokio::task::block_in_place(|| {
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(workers);
+            for _ in 0..workers {
+                let sources = sources.clone();
+                let descriptors = &descriptors;
+                let bucket_hits = bucket_hits;
+                let query_vectors = &request.queries;
+                let next = &next;
+                handles.push(scope.spawn(
+                    move || -> DFResult<Vec<(usize, Vec<(f32, IndexKey)>)>> {
+                        let mut rows = Vec::new();
+                        loop {
+                            let index =
+                                next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if index >= descriptors.len() {
+                                break;
+                            }
+                            let (bucket, start, end) = descriptors[index];
+                            let Some(source) =
+                                sources.get(bucket).and_then(Option::as_ref)
+                            else {
+                                return Err(DataFusionError::Execution(
+                                    "exact batch search lost a bucket source"
+                                        .to_string(),
+                                ));
+                            };
+                            for query in start..end {
+                                let keys: Vec<IndexKey> = bucket_hits[bucket][query]
+                                    .iter()
+                                    .take(candidates)
+                                    .map(|hit| hit.key.clone())
+                                    .collect();
+                                let Some(scores) = source.score_keys(
+                                    &keys,
+                                    &query_vectors[query],
+                                    true,
+                                ) else {
+                                    return Err(DataFusionError::Execution(
+                                        "stored-vector payload read failed"
+                                            .to_string(),
+                                    ));
+                                };
+                                rows.push((
+                                    query,
+                                    keys.into_iter()
+                                        .zip(scores)
+                                        .map(|(key, score)| (score, key))
+                                        .collect(),
+                                ));
+                            }
+                        }
+                        Ok(rows)
+                    },
+                ));
+            }
+            let mut collected: Vec<(usize, Vec<(f32, IndexKey)>)> =
+                Vec::with_capacity(queries);
+            for handle in handles {
+                collected.extend(handle.join().map_err(|_| {
+                    DataFusionError::Execution(
+                        "exact batch fetch thread panicked".to_string(),
+                    )
+                })??);
+            }
+            Ok::<_, DataFusionError>(collected)
+        })
+    })?;
     let mut per_query: Vec<Vec<(f32, IndexKey)>> = vec![Vec::new(); queries];
-    for task in tasks {
-        let rows = task.await.map_err(|error| {
-            DataFusionError::Execution(format!("exact batch vector read failed: {error}"))
-        })??;
-        for (query, scored) in rows {
-            per_query[query].extend(scored);
-        }
+    for (query, scored) in collected {
+        per_query[query].extend(scored);
     }
     let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
     let t_merge = std::time::Instant::now();
