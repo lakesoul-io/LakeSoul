@@ -87,6 +87,11 @@ use crate::config::LakeSoulIOConfig;
 use crate::file_format::{PhysicalFormat, vortex_scan_session};
 use crate::helpers::transform::make_default_array;
 
+/// Stored-vector payload cache for exact re-ranking (opt-in, see the module
+/// documentation).  It serves candidate rows without decoding the vector
+/// column of the data file.
+mod payload;
+
 /// Above this many candidate keys the locator is not worth it: the caller
 /// is better off scanning.
 pub const MAX_PK_CANDIDATES: usize = 10_000;
@@ -2228,15 +2233,35 @@ async fn build_key_inputs(
         let t = std::time::Instant::now();
         let batches = match &entry.source {
             FileSource::Vortex { file, session } => {
-                take_rows(
-                    file,
+                // Exact re-rank reads the stored vector of every candidate
+                // row.  With the payload cache enabled and a projection made
+                // of keys plus stored vectors only, the rows come from the
+                // cached payload and the mmapped key index instead of a scan
+                // that decodes the file's whole vector column per query.
+                match payload::try_take_rows(
+                    &entry,
                     &location,
-                    session,
                     &indices,
                     &projected_schema,
                     &projection_names,
+                    columns,
+                    types,
                 )
                 .await
+                {
+                    Some(batches) => Ok(batches),
+                    None => {
+                        take_rows(
+                            file,
+                            &location,
+                            session,
+                            &indices,
+                            &projected_schema,
+                            &projection_names,
+                        )
+                        .await
+                    }
+                }
             }
             FileSource::Parquet {
                 store,
@@ -2263,15 +2288,18 @@ async fn build_key_inputs(
         inputs.push(exec as Arc<dyn ExecutionPlan>);
     }
     if profile {
+        let (payload_hits, payload_builds) = payload::stats();
         eprintln!(
-            "pk_locator: keys={} files={} pruned={} rows={} cache={:?} take={:?} total={:?}",
+            "pk_locator: keys={} files={} pruned={} rows={} cache={:?} take={:?} total={:?} payload_hits={} payload_builds={}",
             key_count,
             n_files,
             n_pruned,
             n_rows,
             t_cache,
             t_take,
-            t_total.elapsed()
+            t_total.elapsed(),
+            payload_hits,
+            payload_builds,
         );
     }
     Some(inputs)
