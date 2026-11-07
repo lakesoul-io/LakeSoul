@@ -1241,9 +1241,6 @@ impl LakeSoulVectorSearchExec {
         if shards.len() != groups.len() {
             return Ok(None);
         }
-        let t_probe = std::time::Instant::now();
-        let per_bucket = probe_shards(&shards, &query, top_k, nprobe, parallelism).await?;
-        let probe_ms = t_probe.elapsed().as_secs_f64() * 1000.0;
         let Ok(vector_field) = self.file_schema.field_with_name(&column.column) else {
             return Ok(None);
         };
@@ -1264,84 +1261,108 @@ impl LakeSoulVectorSearchExec {
             })?;
         let ascending = column.metric.eq_ignore_ascii_case("L2");
         let t_fetch = std::time::Instant::now();
-        // Candidate keys of every bucket, in approximate-distance order.
-        let mut bucket_keys: Vec<Vec<IndexKey>> = Vec::with_capacity(per_bucket.len());
-        for hits in &per_bucket {
-            let mut best: std::collections::HashMap<IndexKey, f32> =
-                std::collections::HashMap::with_capacity(hits.len());
-            for hit in hits {
-                best.entry(hit.key.clone())
-                    .and_modify(|score| *score = score.min(hit.score))
-                    .or_insert(hit.score);
+        let profile_fetch = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        // Open every bucket's payload first (page cache and key index are
+        // already warm after the first query); `open` is async and the buckets
+        // are independent files.
+        let opens = self.file_groups.iter().map(|files| {
+            let store = Arc::clone(store);
+            let location = files[0].object_meta.location.clone();
+            let key_types = key_types.clone();
+            let key_columns = self.primary_keys.clone();
+            let field = Arc::clone(&vector_field);
+            async move {
+                let format = PhysicalFormat::from_extension(location.as_ref()).ok()?;
+                lakesoul_io::pk_locator::VectorPayloadSource::open(
+                    store,
+                    &location,
+                    format,
+                    &key_columns,
+                    &key_types,
+                    &field,
+                )
+                .await
             }
-            let mut ranked: Vec<(f32, IndexKey)> =
-                best.into_iter().map(|(key, score)| (score, key)).collect();
-            ranked.sort_by(|left, right| {
-                left.0
-                    .partial_cmp(&right.0)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            ranked.truncate(top_k);
-            bucket_keys.push(ranked.into_iter().map(|(_, key)| key).collect());
-        }
-        // Open every bucket's payload (page cache and index are already warm
-        // after the first query) and then read the candidate vectors in
-        // parallel: each bucket is an independent file.
-        let opens = self
-            .file_groups
-            .iter()
-            .zip(&bucket_keys)
-            .map(|(files, keys)| {
-                let store = Arc::clone(store);
-                let location = files[0].object_meta.location.clone();
-                let key_types = key_types.clone();
-                let key_columns = self.primary_keys.clone();
-                let field = Arc::clone(&vector_field);
-                let keys = keys.clone();
-                async move {
-                    let format =
-                        PhysicalFormat::from_extension(location.as_ref()).ok()?;
-                    let source = lakesoul_io::pk_locator::VectorPayloadSource::open(
-                        store,
-                        &location,
-                        format,
-                        &key_columns,
-                        &key_types,
-                        &field,
-                    )
-                    .await?;
-                    Some((source, keys))
-                }
-            });
+        });
         let sources = futures::future::join_all(opens).await;
-        let mut tasks = Vec::with_capacity(sources.len());
-        for source in sources {
-            let Some((source, keys)) = source else {
+        let query = Arc::new(query);
+        // One thread per bucket: probe the bucket's shard and read that
+        // bucket's candidate vectors in the same thread.  Fusing the two
+        // phases lets a bucket start its preads as soon as its own probe is
+        // done instead of waiting for the slowest shard.
+        let mut tasks = Vec::with_capacity(shards.len());
+        for (bucket, shard) in shards.iter().enumerate() {
+            let shard = shard.clone();
+            let query = Arc::clone(&query);
+            let source = sources.get(bucket).cloned().flatten();
+            tasks.push(lakesoul_io::session::GLOBAL_RUNTIME.spawn_blocking(
+                move || -> DFResult<Option<(arrow::array::ArrayRef, Vec<IndexKey>)>> {
+                        let Some(source) = source else {
+                            return Ok(None);
+                        };
+                        let query_ref: [&[f32]; 1] = [query.as_slice()];
+                        let probed = shard
+                            .search_batch(&query_ref, top_k, nprobe, parallelism)
+                            .map_err(|error| {
+                                DataFusionError::External(error.into_boxed_error())
+                            })?;
+                        let hits = probed.into_iter().next().unwrap_or_default();
+                        // Dedupe the shard's hits by key (keeping the best
+                        // approximate score) and keep the bucket's top-k.
+                        let mut best: std::collections::HashMap<IndexKey, f32> =
+                            std::collections::HashMap::with_capacity(hits.len());
+                        for hit in hits {
+                            best.entry(hit.key)
+                                .and_modify(|score| *score = score.min(hit.score))
+                                .or_insert(hit.score);
+                        }
+                        let mut ranked: Vec<(f32, IndexKey)> = best
+                            .into_iter()
+                            .map(|(key, score)| (score, key))
+                            .collect();
+                        ranked.sort_by(|left, right| {
+                            left.0
+                                .partial_cmp(&right.0)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        ranked.truncate(top_k);
+                        let keys: Vec<IndexKey> =
+                            ranked.into_iter().map(|(_, key)| key).collect();
+                        let Some(array) = source.take(&keys) else {
+                            return Ok(None);
+                        };
+                        Ok(Some((array, keys)))
+                },
+            ));
+        }
+        let mut fetched = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let taken = task.await.map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "vector exact probe/read task failed: {error}"
+                ))
+            })??;
+            let Some(taken) = taken else {
                 return Ok(None);
             };
-            tasks.push(lakesoul_io::session::GLOBAL_RUNTIME.spawn_blocking(
-                move || source.take(&keys).map(|array| (array, keys)),
-            ));
+            fetched.push(taken);
         }
         let mut keys: Vec<IndexKey> = Vec::new();
         let mut bucket_arrays: Vec<arrow::array::ArrayRef> = Vec::new();
         let mut bucket_of_row: Vec<u32> = Vec::new();
         let mut scores: Vec<f64> = Vec::new();
-        for task in tasks {
-            let taken = task.await.map_err(|error| {
-                DataFusionError::Execution(format!(
-                    "vector payload read failed: {error}"
-                ))
-            })?;
-            let Some((array, bucket_keys)) = taken else {
-                return Ok(None);
-            };
+        for (array, bucket_keys) in fetched {
             if array.len() != bucket_keys.len() {
                 return Ok(None);
             }
             let base = keys.len();
             scores.resize(base + bucket_keys.len(), 0.0);
-            accumulate_exact_scores(&array, &query, ascending, &mut scores[base..])?;
+            accumulate_exact_scores(
+                &array,
+                query.as_slice(),
+                ascending,
+                &mut scores[base..],
+            )?;
             bucket_of_row.extend(std::iter::repeat_n(
                 bucket_arrays.len() as u32,
                 bucket_keys.len(),
@@ -1350,6 +1371,14 @@ impl LakeSoulVectorSearchExec {
             bucket_arrays.push(array);
         }
         let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
+        if profile_fetch {
+            println!(
+                "vector exact fused probe+read profile fused_ms={fetch_ms:.3} \
+                 candidates={} buckets={}",
+                keys.len(),
+                bucket_arrays.len()
+            );
+        }
         if keys.is_empty() {
             return Ok(Some(Vec::new()));
         }
@@ -1436,7 +1465,6 @@ impl LakeSoulVectorSearchExec {
             debug!(
                 resolve_ms,
                 snapshot_cached,
-                probe_ms,
                 fetch_ms,
                 rank_ms,
                 candidates = keys.len(),
