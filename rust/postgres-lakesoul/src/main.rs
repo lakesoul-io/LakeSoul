@@ -134,19 +134,22 @@ async fn main_inner(cli: Cli) -> Result<()> {
     // payload cache: without it every candidate row is read through the
     // vectorized reader, which measured 30-370x slower on the GloVe corpus
     // (10 QPS at nprobe=32/overfetch=1, 0.5 QPS at the session defaults).
-    let payload_cache_enabled = std::env::var("LAKESOUL_VECTOR_RERANK_CACHE")
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false);
+    // Keep in step with `lakesoul_io::pk_locator::payload`: an explicit flag
+    // decides, and naming the cache directory without the flag is an opt-in of
+    // its own.
+    let payload_cache_enabled = match std::env::var("LAKESOUL_VECTOR_RERANK_CACHE") {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => std::env::var("LAKESOUL_VECTOR_RERANK_CACHE_DIR")
+            .is_ok_and(|dir| !dir.trim().is_empty()),
+    };
     if !payload_cache_enabled {
         warn!(
             "vector re-rank payload cache is disabled; exact rerank queries \
              (the default candidate ordering) fall back to the slow reader \
-             path.  Set LAKESOUL_VECTOR_RERANK_CACHE=1 (and optionally \
+             path.  Set LAKESOUL_VECTOR_RERANK_CACHE=1 (or name a \
              LAKESOUL_VECTOR_RERANK_CACHE_DIR) to enable it"
         );
     }

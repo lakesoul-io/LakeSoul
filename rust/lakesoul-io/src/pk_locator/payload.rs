@@ -32,7 +32,9 @@
 //!
 //! Environment:
 //!
-//! * `LAKESOUL_VECTOR_RERANK_CACHE` - `1`/`true`/`yes`/`on` enables the cache.
+//! * `LAKESOUL_VECTOR_RERANK_CACHE` - `1`/`true`/`yes`/`on` enables the cache,
+//!   anything else disables it.  Unset means "enabled when
+//!   `LAKESOUL_VECTOR_RERANK_CACHE_DIR` names a directory".
 //!   Disabled by default: the first exact re-rank of a file then pays for one
 //!   full read of its vector columns and writes the payload to local disk.
 //! * `LAKESOUL_VECTOR_RERANK_CACHE_DIR` - cache directory.  Defaults to
@@ -175,18 +177,26 @@ struct PayloadConfig {
     budget_bytes: u64,
 }
 
-fn env_enabled(name: &str) -> bool {
-    match std::env::var(name) {
+/// Whether the payload cache is enabled.
+///
+/// An explicit `LAKESOUL_VECTOR_RERANK_CACHE` decides; without it, setting
+/// `LAKESOUL_VECTOR_RERANK_CACHE_DIR` is an explicit opt-in of its own (a
+/// deployment that names the directory clearly wants the cache, and forgetting
+/// the flag costs 30-370x on exact re-rank queries).  No other environment
+/// variable enables it: the payload of a large table is a real disk footprint,
+/// so it is only written where someone asked for it.
+fn enabled_by_env() -> bool {
+    match std::env::var(ENV_ENABLED) {
         Ok(value) => matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"
         ),
-        Err(_) => false,
+        Err(_) => std::env::var(ENV_DIR).is_ok_and(|dir| !dir.trim().is_empty()),
     }
 }
 
 fn payload_config() -> Option<PayloadConfig> {
-    if !env_enabled(ENV_ENABLED) {
+    if !enabled_by_env() {
         return None;
     }
     let root = match std::env::var(ENV_DIR) {
