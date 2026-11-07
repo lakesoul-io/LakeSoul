@@ -22,7 +22,7 @@ PostgreSQL subscription implementation.
 | Replica identity | `REPLICA IDENTITY FULL` required |
 | Writes | INSERT / UPDATE / DELETE; full rows plus `rowKinds` |
 | TOAST | Supported; unchanged values in an UPDATE are filled from the full old tuple |
-| Initial load | Managed snapshot for one table; multi-table streaming currently requires `snapshot = none` |
+| Initial load | Managed snapshot per table; each table commits independently |
 | pg_dump | Next phase; schema fields are reserved, implementation is not present |
 | TRUNCATE | Rejected at startup and at runtime |
 | SQL surface | CLI plus `CREATE/DROP/ALTER SUBSCRIPTION` (single `source_table`/`target_table` or `TABLES (...)`) on the PG wire server |
@@ -127,8 +127,7 @@ postgres-lakesoul --subscribe \
 ```
 
 Multi-table streaming uses repeated `--table` mappings. Managed snapshots are
-not implemented for multiple tables yet, so pass `--snapshot none`; the targets
-must already be initialized:
+supported per table; all targets must be empty when the snapshot starts:
 
 ```bash
 postgres-lakesoul --subscribe \
@@ -138,7 +137,7 @@ postgres-lakesoul --subscribe \
   --target-namespace pg_source \
   --table public.users=users \
   --table public.orders=analytics.orders \
-  --snapshot none
+  --snapshot managed
 ```
 
 `--dry-run` validates the source, target and types and prints the plan without
@@ -189,16 +188,18 @@ TABLES (
   public.orders   TO analytics.orders
 )
 WITH (
-  snapshot = 'none',
+  snapshot = 'managed',
   commit_rows = 50000
 );
 ```
 
 Multi-table streaming uses one slot and one process. Each table commits
-independently; there is no cross-table atomicity. Multi-table managed snapshots
-are not implemented yet, so `TABLES` currently requires `snapshot = 'none'`.
-The server validates every source, target, primary key, publication and source
-slot before writing metadata. It then starts a child process:
+independently; there is no cross-table atomicity. Managed snapshots run per
+table from a temporary slot, so each table has its own snapshot LSN and a
+completed table is not copied again after a restart. Leave one extra slot in
+`max_replication_slots` for the per-table temporary slot. The server validates
+every source, target, primary key, publication and source slot before writing
+metadata. It then starts a child process:
 
 ```text
 postgres-lakesoul --subscribe --subscription-id <name> --no-metrics
@@ -358,10 +359,9 @@ The local PostgreSQL 14 smoke test covered:
 - `pg_walstream` is pinned to `0.10.0`; minor releases have changed public APIs.
   tokio is 1.54.1 and pingora is 0.9.1, which contains the zero-capacity
   `BufReader` fix for tokio 1.54.
-- A subscription can map multiple source tables (one slot/process), but multi-table
-  managed snapshots are not implemented yet; use `snapshot = none` with
-  pre-initialized targets. The publication may contain unmapped tables, whose
-  events are ignored.
+- A subscription can map multiple source tables (one slot/process). Each table
+  has its own snapshot/commit; there is no cross-table atomicity. The publication
+  may contain unmapped tables, whose events are ignored.
 - pgdump mode is reserved but not implemented; the managed snapshot is
   parallel across CTID ranges but still holds one exported snapshot (xmin and
   ACCESS SHARE locks) for the duration.

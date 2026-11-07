@@ -166,13 +166,6 @@ impl SubscriptionStatementHook {
             )));
         }
 
-        if create.tables.len() > 1 && create.snapshot != SnapshotMode::None {
-            return Err(feature_not_supported(
-                "multi-table managed snapshots are not implemented yet; use \
-                 snapshot = 'none' with pre-initialized target tables"
-                    .to_string(),
-            ));
-        }
         ensure_slot_absent(&ordinary_url(&create.connection), &create.slot_name)
             .await
             .map_err(|error| {

@@ -21,7 +21,7 @@ SPDX-License-Identifier: Apache-2.0
 | --- | --- |
 | 源库 | PostgreSQL 14+、logical WAL、一张或多张 `public` 表、`REPLICA IDENTITY FULL`、主键匹配 |
 | 目标 | 预先创建的 LakeSoul CDC 表，不分区；未指定 namespace 时使用当前连接 database |
-| 初始数据 | 单表 managed 快照；多表流式目前要求 `snapshot = none` |
+| 初始数据 | 每张表独立 managed 快照；每张表分别提交 |
 | 变更 | `INSERT`、`UPDATE`、`DELETE`；完整行加 CDC 变更列 |
 | 生命周期 | `CREATE`、`ALTER ... ENABLE/DISABLE`、`DROP`；SQL 创建的订阅会在端点重启后恢复 |
 | 状态 | 订阅定义和进度在元数据 PostgreSQL；数据进度记录在目标表 commit id 中 |
@@ -140,14 +140,14 @@ TABLES (
   public.payments TO billing.payments
 )
 WITH (
-  snapshot = 'none',
+  snapshot = 'managed',
   commit_rows = 50000
 );
 ```
 
 `TO` 后面没有 namespace 时使用当前端点 database；写成 `analytics.orders` 时使用对应的 LakeSoul namespace。每张目标表都必须预先创建、schema/主键匹配，并且只能属于一个订阅。
 
-多表流式已经支持；多表 managed 快照暂未实现，因此 `TABLES` 目前要求 `snapshot = 'none'`，需要先初始化目标表。单表订阅仍然可以使用 `auto` 或 `managed` 快照。
+多表 managed 快照按表执行。每张表使用自己的临时 slot 和 snapshot LSN，完成一张就提交一张；没有跨表快照原子性。`max_replication_slots` 需要为这张临时 slot 留出余量。`snapshot = 'none'` 仍然表示使用已初始化的目标表。
 
 每张表独立 commit，没有跨表原子性。`processed_lsn` 只有在批次内所有表都 commit 成功后才推进。
 
@@ -161,7 +161,7 @@ postgres-lakesoul --subscribe \
   --target-namespace default \
   --table public.users=users \
   --table public.orders=analytics.orders \
-  --snapshot none
+  --snapshot managed
 ```
 
 ## 查看进度

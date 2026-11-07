@@ -14,12 +14,14 @@
 //! the final commit is still a single metadata operation.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use datafusion::common::ScalarValue;
 use futures::StreamExt;
 use futures::future::try_join_all;
 use pg_walstream::{
-    ColumnValue, LogicalReplicationStream, RowData, Snapshot, SnapshotOutcome,
+    ColumnValue, LogicalReplicationStream, ReplicationSlotOptions,
+    ReplicationStreamConfig, RowData, Snapshot, SnapshotOutcome, StreamingMode,
 };
 use rootcause::{bail, report};
 use tokio_postgres::{Client, NoTls};
@@ -96,55 +98,9 @@ pub async fn run_managed_snapshot(
         "starting initial snapshot"
     );
 
-    // Open every reader first and take an ACCESS SHARE lock on the table, so
-    // VACUUM FULL/CLUSTER cannot rewrite CTIDs between range planning and the
-    // COPYs. The last range is deliberately unbounded: any page allocated after
-    // this query is not visible in the exported snapshot, so including it is
-    // harmless and avoids a gap if the relation grew concurrently.
-    let table = format!(
-        "{}.{}",
-        quote_ident(&plan.source.schema),
-        quote_ident(&plan.source.name)
-    );
-    let all_clients = open_readers(
-        &source_url,
-        &snapshot_name,
-        config.snapshot_parallelism.max(1),
-        &table,
-    )
-    .await?;
-    let pages = relation_pages(&all_clients[0], plan.source.relation_oid).await?;
-    let reader_count = reader_count(pages, config.snapshot_parallelism);
-    let clients = all_clients
-        .into_iter()
-        .take(reader_count)
-        .collect::<Vec<_>>();
-    let ranges = ctid_ranges(pages, reader_count);
-    if clients.len() != ranges.len() {
-        bail!(
-            "snapshot planner produced {} ranges for {} readers",
-            ranges.len(),
-            clients.len()
-        );
-    }
-
-    let tasks = clients.into_iter().zip(ranges).enumerate().map(
-        |(reader_index, (client, range))| {
-            let sql = copy_sql(plan, range);
-            async move { copy_range(client, sql, reader_index, config, plan).await }
-        },
-    );
-    let results = try_join_all(tasks)
-        .await
-        .map_err(|error| report!("read initial snapshot: {error}"))?;
-
-    let mut outputs = Vec::new();
-    let mut total_rows = 0usize;
-    for (reader_outputs, rows) in results {
-        outputs.extend(reader_outputs);
-        total_rows += rows;
-    }
-
+    let table = qualified_table(plan);
+    let (outputs, total_rows, reader_count) =
+        copy_table(config, plan, &snapshot_name, &table).await?;
     let file_count = outputs.len();
     if outputs.is_empty() {
         tracing::info!(
@@ -200,6 +156,301 @@ pub async fn run_managed_snapshot(
         "initial snapshot committed; switching to streaming"
     );
     Ok((stream, consistent_point))
+}
+
+/// Ensure the persistent slot used by the streaming phase exists and return
+/// its consistent point. The slot is created with an exported snapshot only
+/// because that is the public way to make the slot at a known LSN; the export
+/// is abandoned immediately. Each table then uses its own temporary slot for
+/// an exact snapshot LSN.
+pub(crate) async fn ensure_primary_slot(config: &SubscribeConfig) -> Result<u64> {
+    let source_url = ordinary_url(&config.source_url);
+    let stream = runner::create_stream(config).await?;
+    let outcome = stream
+        .snapshot()
+        .await
+        .map_err(|error| report!("create primary replication slot: {error}"))?;
+    match outcome {
+        SnapshotOutcome::Available(snapshot) => {
+            let lsn = snapshot.consistent_point().value();
+            let stream = snapshot
+                .abandon()
+                .await
+                .map_err(|error| report!("release primary snapshot export: {error}"))?;
+            drop(stream);
+            Ok(lsn)
+        }
+        SnapshotOutcome::Unavailable(stream) => {
+            drop(stream);
+            primary_slot_lsn(&source_url, &config.slot).await
+        }
+    }
+}
+
+pub(crate) async fn primary_slot_exists(url: &str, slot: &str) -> Result<bool> {
+    let (client, connection) = tokio_postgres::connect(url, NoTls)
+        .await
+        .map_err(|error| report!("connect to source PostgreSQL: {error}"))?;
+    let handle = tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let result = client
+        .query_opt(
+            "select 1 from pg_replication_slots \
+             where slot_name = $1 and database = current_database()",
+            &[&slot],
+        )
+        .await
+        .map_err(|error| report!("read replication slot {slot}: {error}"))
+        .map(|row| row.is_some());
+    drop(client);
+    handle.abort();
+    result
+}
+
+async fn primary_slot_lsn(url: &str, slot: &str) -> Result<u64> {
+    let (client, connection) = tokio_postgres::connect(url, NoTls)
+        .await
+        .map_err(|error| report!("connect to source PostgreSQL: {error}"))?;
+    let handle = tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let result = async {
+        let row = client
+            .query_opt(
+                "select confirmed_flush_lsn::text, restart_lsn::text, active \
+                 from pg_replication_slots \
+                 where slot_name = $1 and database = current_database()",
+                &[&slot],
+            )
+            .await
+            .map_err(|error| report!("read replication slot {slot}: {error}"))?
+            .ok_or_else(|| report!("replication slot {slot} does not exist"))?;
+        let active: bool = row.get(2);
+        if active {
+            bail!("replication slot {slot} is active; another subscriber is running");
+        }
+        let confirmed: Option<String> = row.get(0);
+        let restart: Option<String> = row.get(1);
+        let text = confirmed.or(restart).ok_or_else(|| {
+            report!("replication slot {slot} has no confirmed_flush_lsn or restart_lsn")
+        })?;
+        super::source::parse_lsn(&text)
+    }
+    .await;
+    drop(client);
+    handle.abort();
+    result
+}
+
+/// Snapshot one table from its own temporary slot, commit it at that slot's
+/// exact consistent point, and mark the table done. Other tables are not
+/// touched.
+pub(crate) async fn run_table_snapshot(
+    config: &SubscribeConfig,
+    plan: &TablePlan,
+    table_index: usize,
+    metadata: &SubscriptionMetadata,
+    subscription_id: &str,
+) -> Result<u64> {
+    let source_url = ordinary_url(&config.source_url);
+    let temp_slot = table_slot_name(&config.slot, table_index);
+    drop_slot_if_exists(&source_url, &temp_slot).await?;
+
+    let stream_config = ReplicationStreamConfig::builder(&temp_slot, &config.publication)
+        .with_protocol_version(1)
+        .with_streaming_mode(StreamingMode::Off)
+        .with_feedback_interval(Duration::from_secs(1))
+        // A PostgreSQL temporary slot cannot be combined with
+        // EXPORT_SNAPSHOT: a reconnect would recreate it at a later LSN.
+        // Use a uniquely named persistent slot and drop it immediately after
+        // this table's snapshot. A crash leaves it for cleanup.
+        .with_slot_options(ReplicationSlotOptions {
+            temporary: false,
+            snapshot: Some("export".to_string()),
+            ..Default::default()
+        });
+    let stream = LogicalReplicationStream::new(
+        &super::replication_url(&config.source_url),
+        stream_config,
+    )
+    .await
+    .map_err(|error| report!("create temporary snapshot stream: {error}"))?;
+    let outcome = stream
+        .snapshot()
+        .await
+        .map_err(|error| report!("create temporary snapshot: {error}"))?;
+    let mut snapshot = match outcome {
+        SnapshotOutcome::Available(snapshot) => snapshot,
+        SnapshotOutcome::Unavailable(_) => {
+            bail!(
+                "temporary snapshot slot {temp_slot} exists without an exported snapshot"
+            )
+        }
+    };
+
+    let target = plan.qualified_source_name();
+    snapshot.retain_tables(|table| table.qualified_name() == target);
+    validate_snapshot_table(&snapshot, plan)?;
+    let snapshot_name = snapshot
+        .stream()
+        .exported_snapshot_name()
+        .ok_or_else(|| report!("temporary snapshot has no exported snapshot name"))?
+        .to_string();
+    let consistent_point = snapshot.consistent_point().value();
+    metadata
+        .set_snapshot_started(
+            subscription_id,
+            &plan.source.schema,
+            &plan.source.name,
+            consistent_point,
+        )
+        .await?;
+    tracing::info!(
+        slot = %temp_slot,
+        lsn = consistent_point,
+        table = %target,
+        parallelism = config.snapshot_parallelism,
+        "starting table snapshot"
+    );
+
+    let table = qualified_table(plan);
+    let (outputs, total_rows, reader_count) =
+        copy_table(config, plan, &snapshot_name, &table).await?;
+    let file_count = outputs.len();
+    if outputs.is_empty() {
+        tracing::info!(
+            lsn = consistent_point,
+            table = %target,
+            "table snapshot has no rows; skipping the data commit"
+        );
+    } else {
+        commit_outputs(
+            &plan.table,
+            &plan.target_table,
+            outputs,
+            consistent_point,
+            total_rows,
+        )
+        .await?;
+    }
+
+    let stream = snapshot
+        .abandon()
+        .await
+        .map_err(|error| report!("finish table snapshot: {error}"))?;
+    drop(stream);
+    let _ = drop_slot_if_exists(&source_url, &temp_slot).await;
+
+    metadata
+        .set_snapshot_done(
+            subscription_id,
+            &plan.source.schema,
+            &plan.source.name,
+            consistent_point,
+        )
+        .await?;
+    metadata
+        .update_table_data_lsn(
+            subscription_id,
+            &plan.source.schema,
+            &plan.source.name,
+            consistent_point,
+        )
+        .await?;
+    tracing::info!(
+        slot = %temp_slot,
+        lsn = consistent_point,
+        table = %target,
+        readers = reader_count,
+        rows = total_rows,
+        files = file_count,
+        "table snapshot committed"
+    );
+    Ok(consistent_point)
+}
+
+fn table_slot_name(base: &str, index: usize) -> String {
+    let suffix = format!("_s{index}");
+    let max_prefix = 63usize.saturating_sub(suffix.len());
+    let prefix = base.chars().take(max_prefix).collect::<String>();
+    format!("{prefix}{suffix}")
+}
+
+pub(crate) async fn drop_table_slot_if_exists(
+    config: &SubscribeConfig,
+    index: usize,
+) -> Result<()> {
+    drop_slot_if_exists(
+        &ordinary_url(&config.source_url),
+        &table_slot_name(&config.slot, index),
+    )
+    .await
+}
+
+fn qualified_table(plan: &TablePlan) -> String {
+    format!(
+        "{}.{}",
+        quote_ident(&plan.source.schema),
+        quote_ident(&plan.source.name)
+    )
+}
+
+async fn copy_table(
+    config: &SubscribeConfig,
+    plan: &TablePlan,
+    snapshot_name: &str,
+    table: &str,
+) -> Result<(
+    Vec<lakesoul_io::writer::async_writer::FlushOutput>,
+    usize,
+    usize,
+)> {
+    let source_url = ordinary_url(&config.source_url);
+    // Open every reader first and take an ACCESS SHARE lock on the table, so
+    // VACUUM FULL/CLUSTER cannot rewrite CTIDs between range planning and the
+    // COPYs. The last range is deliberately unbounded: any page allocated after
+    // this query is not visible in the exported snapshot, so including it is
+    // harmless and avoids a gap if the relation grew concurrently.
+    let all_clients = open_readers(
+        &source_url,
+        snapshot_name,
+        config.snapshot_parallelism.max(1),
+        table,
+    )
+    .await?;
+    let pages = relation_pages(&all_clients[0], plan.source.relation_oid).await?;
+    let reader_count = reader_count(pages, config.snapshot_parallelism);
+    let clients = all_clients
+        .into_iter()
+        .take(reader_count)
+        .collect::<Vec<_>>();
+    let ranges = ctid_ranges(pages, reader_count);
+    if clients.len() != ranges.len() {
+        bail!(
+            "snapshot planner produced {} ranges for {} readers",
+            ranges.len(),
+            clients.len()
+        );
+    }
+
+    let tasks = clients.into_iter().zip(ranges).enumerate().map(
+        |(reader_index, (client, range))| {
+            let sql = copy_sql(plan, range);
+            async move { copy_range(client, sql, reader_index, config, plan).await }
+        },
+    );
+    let results = try_join_all(tasks)
+        .await
+        .map_err(|error| report!("read initial snapshot: {error}"))?;
+
+    let mut outputs = Vec::new();
+    let mut total_rows = 0usize;
+    for (reader_outputs, rows) in results {
+        outputs.extend(reader_outputs);
+        total_rows += rows;
+    }
+    Ok((outputs, total_rows, reader_count))
 }
 
 fn validate_snapshot_table(snapshot: &Snapshot, plan: &TablePlan) -> Result<()> {

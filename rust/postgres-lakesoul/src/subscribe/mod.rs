@@ -228,12 +228,6 @@ impl SubscribeConfig {
                      --primary-key"
                 );
             }
-            if args.snapshot != SnapshotMode::None {
-                bail!(
-                    "multi-table managed snapshots are not implemented yet; use \
-                     --snapshot none"
-                );
-            }
             let mut tables = Vec::with_capacity(args.tables.len());
             let mut sources = HashSet::new();
             let mut targets = HashSet::new();

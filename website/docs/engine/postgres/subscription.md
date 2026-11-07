@@ -25,7 +25,7 @@ separate CDC cluster.
 | --- | --- |
 | Source | PostgreSQL 14+, logical WAL, one or more `public` tables, `REPLICA IDENTITY FULL`, matching primary keys |
 | Target | Pre-created LakeSoul CDC tables, unpartitioned; each target defaults to the connection's database |
-| Initial data | Managed snapshot for a single table; multi-table streaming currently requires `snapshot = none` |
+| Initial data | Managed snapshot per table; each table commits independently |
 | Changes | `INSERT`, `UPDATE` and `DELETE`; full rows plus the CDC change column |
 | Lifecycle | `CREATE`, `ALTER ... ENABLE/DISABLE`, `DROP`; SQL-created subscriptions resume after an endpoint restart |
 | State | Subscription metadata and progress in the metadata PostgreSQL; data progress in target commit ids |
@@ -175,7 +175,7 @@ TABLES (
   public.payments TO billing.payments
 )
 WITH (
-  snapshot = 'none',
+  snapshot = 'managed',
   commit_rows = 50000
 );
 ```
@@ -185,10 +185,12 @@ A target without a namespace uses the endpoint database. An explicit
 must already exist, match its source schema and primary key, and be reserved to
 one subscription.
 
-Multi-table streaming is supported now. Multi-table managed snapshots are not:
-`TABLES` currently requires `snapshot = 'none'`, so initialize the targets
-before creating the subscription. Single-table subscriptions can still use
-`auto` or `managed` snapshots.
+Managed snapshots are supported per table. Each table is copied from its own
+slot (created for that table and dropped afterward) at its own snapshot LSN and
+committed as soon as that table is complete; there is no cross-table snapshot
+atomicity. Keep one extra replication-slot slot available in
+`max_replication_slots`. `snapshot = 'none'` continues to accept pre-initialized
+targets.
 
 Each table commits independently; there is no cross-table atomic commit.
 `processed_lsn` advances only after every table in the batch has committed.
@@ -203,7 +205,7 @@ postgres-lakesoul --subscribe \
   --target-namespace default \
   --table public.users=users \
   --table public.orders=analytics.orders \
-  --snapshot none
+  --snapshot managed
 ```
 
 ## Check progress

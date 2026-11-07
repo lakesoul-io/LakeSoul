@@ -76,8 +76,8 @@ The source needs logical WAL, a publication, and `REPLICA IDENTITY FULL`; the
 target is a pre-created LakeSoul CDC table; a managed snapshot requires it to
 be empty. The initial copy runs in parallel across CTID ranges (`snapshot_parallelism`, `snapshot_memory_bytes`).
 `ALTER SUBSCRIPTION ... DISABLE/ENABLE` and `DROP SUBSCRIPTION` control the
-process. A subscription can map one or more source tables; multi-table streaming
-currently uses `snapshot = 'none'` with pre-initialized targets. See
+process. A subscription can map one or more source tables; each table snapshots
+and commits independently. See
 [PostgreSQL subscriptions](https://lakesoul-io.github.io/docs/engine/postgres/subscription)
 for the full setup and SQL reference.
 

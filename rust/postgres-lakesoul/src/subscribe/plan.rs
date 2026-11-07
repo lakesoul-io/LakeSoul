@@ -265,6 +265,32 @@ impl TablePlan {
         self.source.qualified_name()
     }
 
+    /// Re-read the target's current commit watermark. A table snapshot changes
+    /// the target between plan construction and streaming startup; refresh the
+    /// watermark/has_commits fields rather than rebuilding the whole plan.
+    pub async fn refresh_commit_state(&mut self) -> Result<()> {
+        let info = self.table.table_info();
+        let partitions = self
+            .table
+            .client()
+            .get_all_partition_info_as_of(
+                &info.table_id,
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .await
+            .map_err(|error| {
+                report!(
+                    "read target table watermark for {}: {error}",
+                    self.target_table
+                )
+            })?;
+        self.commit_watermark = decode_watermark(&partitions);
+        self.has_commits = partitions
+            .iter()
+            .any(|partition| !partition.snapshot.is_empty());
+        Ok(())
+    }
+
     /// The RELATION message must describe exactly the schema validated at
     /// startup. P0 has no schema evolution: a mismatch stops the worker.
     pub fn check_relation(
