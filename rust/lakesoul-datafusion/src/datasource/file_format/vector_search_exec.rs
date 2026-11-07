@@ -518,11 +518,19 @@ impl LakeSoulVectorSearchExec {
     /// limit the pushdown rule matched) plus a margin for ties and float
     /// differences between the ranking here and the sort above.
     fn keep_rows(&self) -> usize {
-        self.fetch_limit
+        let target = self
+            .fetch_limit
             .unwrap_or(0)
-            .max(self.vector_search.top_k)
-            .saturating_mul(2)
-            .saturating_add(16)
+            .max(self.vector_search.top_k);
+        // `narrow` is the rule's guarantee that nothing filters rows between
+        // this scan and the sort/limit above it, and the exact paths rank
+        // every candidate by its exact distance before keeping any, so the
+        // target rows are already the answer.  Only a non-narrow plan needs
+        // the margin for rows a filter above may still drop.
+        if self.vector_search.narrow {
+            return target;
+        }
+        target.saturating_mul(2).saturating_add(16)
     }
 
     /// True when the payload columns can be fetched after ranking: a limit is
