@@ -5,11 +5,13 @@
 //! Native PostgreSQL logical-replication subscriber (P0).
 //!
 //! The subscriber intentionally stays narrow: one publication, one or more
-//! ordinary `public` tables, `REPLICA IDENTITY FULL`, no schema evolution, no
-//! truncate, no target range partitioning. Unchanged TOAST columns in an UPDATE
-//! are recovered from the complete old tuple. Multi-table subscriptions use one
-//! slot and one process; each table commits independently. The goal is the
-//! WAL -> Arrow -> LakeSoul CDC batch path and its replay semantics.
+//! ordinary `public` tables, `REPLICA IDENTITY FULL`, no truncate, no target
+//! range partitioning. Targets can be created on demand and evolve forward
+//! (nullable columns, safe type widening, relaxed nullability). Unchanged TOAST
+//! columns in an UPDATE are recovered from the complete old tuple. Multi-table
+//! subscriptions use one slot and one process; each table commits
+//! independently. The goal is the WAL -> Arrow -> LakeSoul CDC batch path and
+//! its replay semantics.
 //!
 //! The subscription definition and progress live in the metadata PostgreSQL
 //! (`subscription` schema); the target table's commit ids remain the
@@ -20,6 +22,7 @@ mod decode;
 mod multi;
 mod plan;
 mod runner;
+mod schema;
 mod sink;
 mod snapshot;
 mod source;
@@ -49,6 +52,15 @@ pub enum SnapshotMode {
     Auto,
     Managed,
     None,
+}
+
+/// How the subscriber reacts when the source table schema changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SchemaEvolution {
+    /// Never change the target schema; a mismatch stops the subscriber.
+    None,
+    /// Add nullable columns, widen safe types and relax NOT NULL.
+    Auto,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +102,29 @@ pub struct SubscribeArgs {
     /// Target LakeSoul namespace (the PG database name).
     #[clap(long, env = "LAKESOUL_PG_SUBSCRIBE_TARGET_NAMESPACE")]
     pub target_namespace: Option<String>,
+
+    /// Create missing target tables from the source schema. Requires a
+    /// warehouse prefix.
+    #[clap(long, env = "LAKESOUL_PG_SUBSCRIBE_AUTO_CREATE")]
+    pub auto_create: bool,
+
+    /// Target schema change policy: auto adds nullable columns, widens safe
+    /// types and relaxes NOT NULL; none stops on any mismatch.
+    #[clap(
+        long,
+        value_enum,
+        default_value = "auto",
+        env = "LAKESOUL_PG_SUBSCRIBE_SCHEMA_EVOLUTION"
+    )]
+    pub schema_evolution: SchemaEvolution,
+
+    /// LakeSoul CDC change column used when creating a target table.
+    #[clap(
+        long,
+        default_value = "rowKinds",
+        env = "LAKESOUL_PG_SUBSCRIBE_CDC_COLUMN"
+    )]
+    pub cdc_column: String,
 
     /// Multi-table mapping, `source_table=target_table` or
     /// `source_table=namespace.target_table`. Repeat for each table. The
@@ -165,6 +200,10 @@ pub struct SubscribeConfig {
     pub target_table: String,
     pub primary_key: Vec<String>,
     pub tables: Vec<TableMapping>,
+    pub auto_create: bool,
+    pub schema_evolution: SchemaEvolution,
+    pub warehouse_prefix: Option<String>,
+    pub cdc_column: String,
     pub commit_rows: usize,
     pub commit_interval: Duration,
     pub max_transactions: u64,
@@ -181,7 +220,7 @@ pub struct SubscribeConfig {
 }
 
 impl SubscribeConfig {
-    fn from_args(args: SubscribeArgs) -> Result<Self> {
+    fn from_args(args: SubscribeArgs, warehouse_prefix: Option<String>) -> Result<Self> {
         let source_url = required(args.source_url, "--source-url")?;
         let publication = required(args.publication, "--publication")?;
         let slot = required(args.slot, "--slot")?;
@@ -279,6 +318,10 @@ impl SubscribeConfig {
         if args.snapshot_parallelism == 0 {
             bail!("--snapshot-parallelism must be greater than zero");
         }
+        let cdc_column = args.cdc_column.trim();
+        if cdc_column.is_empty() {
+            bail!("--cdc-column must not be empty");
+        }
 
         Ok(Self {
             subscription_id: slot.clone(),
@@ -291,6 +334,10 @@ impl SubscribeConfig {
             target_table,
             primary_key,
             tables,
+            auto_create: args.auto_create,
+            schema_evolution: args.schema_evolution,
+            warehouse_prefix,
+            cdc_column: cdc_column.to_string(),
             commit_rows: args.commit_rows,
             commit_interval: Duration::from_millis(args.commit_interval_ms),
             max_transactions: args.max_transactions,
@@ -402,14 +449,18 @@ pub fn replication_url(url: &str) -> String {
     }
 }
 
-pub async fn run(args: SubscribeArgs, meta: MetaDataClientRef) -> Result<()> {
+pub async fn run(
+    args: SubscribeArgs,
+    meta: MetaDataClientRef,
+    warehouse_prefix: Option<String>,
+) -> Result<()> {
     if let Some(subscription_id) = args.subscription_id.clone() {
         if args.dry_run {
             bail!("--dry-run cannot be combined with --subscription-id");
         }
         return run_from_metadata(&subscription_id, meta).await;
     }
-    let config = SubscribeConfig::from_args(args)?;
+    let config = SubscribeConfig::from_args(args, warehouse_prefix)?;
     run_config(config, meta).await
 }
 
@@ -441,6 +492,11 @@ async fn run_from_metadata(subscription_id: &str, meta: MetaDataClientRef) -> Re
         "managed" => SnapshotMode::Managed,
         other => bail!("subscription has unknown snapshot mode {other:?}"),
     };
+    let schema_evolution = match record.schema_evolution.as_str() {
+        "none" => SchemaEvolution::None,
+        "auto" => SchemaEvolution::Auto,
+        other => bail!("subscription has unknown schema_evolution {other:?}"),
+    };
     let snapshot_mode = table.snapshot_mode.clone();
     if record
         .tables
@@ -471,6 +527,10 @@ async fn run_from_metadata(subscription_id: &str, meta: MetaDataClientRef) -> Re
         target_table: table.target_table.clone(),
         primary_key: table.primary_key.clone(),
         tables,
+        auto_create: record.auto_create,
+        schema_evolution,
+        warehouse_prefix: record.warehouse_prefix.clone(),
+        cdc_column: record.cdc_column.clone(),
         commit_rows: record.commit_rows,
         commit_interval: Duration::from_millis(record.commit_interval_ms),
         max_transactions: 0,
@@ -505,11 +565,52 @@ async fn run_config(config: SubscribeConfig, meta: MetaDataClientRef) -> Result<
     if config.tables.len() > 1 {
         return multi::run(config, meta).await;
     }
+    let metadata = if config.dry_run {
+        None
+    } else {
+        let pool = meta.pooled_client();
+        let pool = pool.lock().await.clone();
+        let metadata = SubscriptionMetadata::from_pool(pool);
+        metadata.init_schema().await?;
+        Some(metadata)
+    };
+    let subscription_exists = match &metadata {
+        Some(metadata) => metadata.exists(&config.subscription_id).await?,
+        None => false,
+    };
+    if !subscription_exists
+        && let Some(metadata) = &metadata
+        && metadata
+            .target_in_use(&config.target_namespace, &config.target_table)
+            .await?
+    {
+        bail!(
+            "target table {}.{} is already used by another subscription",
+            config.target_namespace,
+            config.target_table
+        );
+    }
     let source = source::inspect_source(
         &ordinary_url(&config.source_url),
         &config.publication,
         &config.source_schema,
         &config.source_table,
+    )
+    .await?;
+    let mut target_options = schema::TargetOptions::from_config(&config);
+    if config.dry_run {
+        // Validate only: never create or evolve target metadata.
+        target_options.auto_create = false;
+        target_options.schema_evolution = SchemaEvolution::None;
+    }
+    schema::ensure_target(
+        &meta,
+        &source,
+        &config.target_namespace,
+        &config.target_table,
+        &target_options,
+        config.auto_create && !config.require_existing && !subscription_exists,
+        !config.dry_run,
     )
     .await?;
     let plan = plan::TablePlan::new(
@@ -528,10 +629,7 @@ async fn run_config(config: SubscribeConfig, meta: MetaDataClientRef) -> Result<
         return Ok(());
     }
 
-    let pool = meta.pooled_client();
-    let pool = pool.lock().await.clone();
-    let metadata = SubscriptionMetadata::from_pool(pool);
-    metadata.init_schema().await?;
+    let metadata = metadata.expect("metadata was initialized for a non-dry-run");
     let record = match register_or_validate(&config, &plan, &metadata).await {
         Ok(record) => record,
         Err(error) => {
@@ -713,6 +811,7 @@ async fn run_config(config: SubscribeConfig, meta: MetaDataClientRef) -> Result<
             plan,
             record,
             metadata.clone(),
+            meta.clone(),
             consistent_point,
             Some(stream),
         )
@@ -822,6 +921,7 @@ async fn run_config(config: SubscribeConfig, meta: MetaDataClientRef) -> Result<
         plan,
         record,
         metadata.clone(),
+        meta.clone(),
         processed_watermark,
         None,
     )
@@ -863,6 +963,14 @@ async fn register_or_validate(
         publication: config.publication.clone(),
         source_url: config.source_url.clone(),
         snapshot_mode: snapshot_mode.to_string(),
+        auto_create: config.auto_create,
+        schema_evolution: match config.schema_evolution {
+            SchemaEvolution::None => "none",
+            SchemaEvolution::Auto => "auto",
+        }
+        .to_string(),
+        warehouse_prefix: config.warehouse_prefix.clone(),
+        cdc_column: config.cdc_column.clone(),
         supervised: config.require_existing,
         commit_rows: config.commit_rows,
         commit_interval_ms: config.commit_interval.as_millis() as u64,

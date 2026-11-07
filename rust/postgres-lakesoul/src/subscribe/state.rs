@@ -46,6 +46,10 @@ do $$ begin
         snapshot_batch_bytes  bigint not null default 67108864,
         snapshot_parallelism  bigint not null default 4,
         snapshot_memory_bytes bigint not null default 1073741824,
+        auto_create           boolean not null default false,
+        schema_evolution      text not null default 'auto',
+        warehouse_prefix      text,
+        cdc_column            text not null default 'rowKinds',
         supervisor_pid        integer,
         log_path              text,
         last_error            text,
@@ -94,6 +98,17 @@ do $$ begin
     );
 exception when duplicate_table or unique_violation then null;
 end $$;
+
+-- Pre-release databases created before these options existed. Fresh tables
+-- already have the columns, so these are no-ops there.
+alter table if exists subscription.subscriptions
+    add column if not exists auto_create boolean not null default false;
+alter table if exists subscription.subscriptions
+    add column if not exists schema_evolution text not null default 'auto';
+alter table if exists subscription.subscriptions
+    add column if not exists warehouse_prefix text;
+alter table if exists subscription.subscriptions
+    add column if not exists cdc_column text not null default 'rowKinds';
 "#;
 
 #[derive(Debug, Clone)]
@@ -114,6 +129,10 @@ pub struct SubscriptionDefinition {
     pub publication: String,
     pub source_url: String,
     pub snapshot_mode: String,
+    pub auto_create: bool,
+    pub schema_evolution: String,
+    pub warehouse_prefix: Option<String>,
+    pub cdc_column: String,
     pub supervised: bool,
     pub commit_rows: usize,
     pub commit_interval_ms: u64,
@@ -151,6 +170,10 @@ pub struct SubscriptionRecord {
     pub source_url: String,
     pub state: String,
     pub enabled: bool,
+    pub auto_create: bool,
+    pub schema_evolution: String,
+    pub warehouse_prefix: Option<String>,
+    pub cdc_column: String,
     pub supervised: bool,
     pub commit_rows: usize,
     pub commit_interval_ms: u64,
@@ -199,6 +222,21 @@ impl SubscriptionRecord {
                 definition.snapshot_mode
             );
         }
+        if self.schema_evolution != definition.schema_evolution {
+            bail!(
+                "subscription state has schema_evolution={:?}, not {:?}",
+                self.schema_evolution,
+                definition.schema_evolution
+            );
+        }
+        if self.cdc_column != definition.cdc_column {
+            bail!(
+                "subscription state has cdc_column={:?}, not {:?}",
+                self.cdc_column,
+                definition.cdc_column
+            );
+        }
+
         for expected in &definition.tables {
             let table = self
                 .tables
@@ -295,7 +333,8 @@ impl SubscriptionMetadata {
             "select subscription_id, slot_name, publication, source_url, state, \
                     enabled, supervised, commit_rows, commit_interval_ms, \
                     snapshot_batch_rows, snapshot_batch_bytes, \
-                    snapshot_parallelism, snapshot_memory_bytes, supervisor_pid, \
+                    snapshot_parallelism, snapshot_memory_bytes, auto_create, \
+                    schema_evolution, warehouse_prefix, cdc_column, supervisor_pid, \
                     log_path, last_error \
              from subscription.subscriptions where {predicate}"
         );
@@ -320,9 +359,13 @@ impl SubscriptionMetadata {
         let snapshot_batch_bytes: i64 = subscription.get(10);
         let snapshot_parallelism: i64 = subscription.get(11);
         let snapshot_memory_bytes: i64 = subscription.get(12);
-        let supervisor_pid: Option<i32> = subscription.get(13);
-        let log_path: Option<String> = subscription.get(14);
-        let last_error: Option<String> = subscription.get(15);
+        let auto_create: bool = subscription.get(13);
+        let schema_evolution: String = subscription.get(14);
+        let warehouse_prefix: Option<String> = subscription.get(15);
+        let cdc_column: String = subscription.get(16);
+        let supervisor_pid: Option<i32> = subscription.get(17);
+        let log_path: Option<String> = subscription.get(18);
+        let last_error: Option<String> = subscription.get(19);
 
         let table_rows = self
             .client
@@ -393,6 +436,10 @@ impl SubscriptionMetadata {
             source_url,
             state,
             enabled,
+            auto_create,
+            schema_evolution,
+            warehouse_prefix,
+            cdc_column,
             supervised,
             commit_rows: usize::try_from(commit_rows)
                 .map_err(|_| report!("invalid commit_rows {commit_rows}"))?,
@@ -476,12 +523,13 @@ impl SubscriptionMetadata {
             .execute(
                 "insert into subscription.subscriptions \
                      (subscription_id, slot_name, publication, source_url, state, \
-                      enabled, supervised, commit_rows, commit_interval_ms, \
+                      enabled, supervised, auto_create, schema_evolution, \
+                      warehouse_prefix, cdc_column, commit_rows, commit_interval_ms, \
                       snapshot_batch_rows, snapshot_batch_bytes, \
                       snapshot_parallelism, snapshot_memory_bytes, \
                       supervisor_pid, log_path, last_error, created_at, updated_at) \
                  values ($1, $2, $3, $4, 'starting', true, $5, $6, $7, $8, $9, \
-                         $10, $11, null, null, null, $12, $12) \
+                         $10, $11, $12, $13, $14, $15, null, null, null, $16, $16) \
                  on conflict (subscription_id) do nothing",
                 &[
                     &definition.subscription_id,
@@ -489,6 +537,10 @@ impl SubscriptionMetadata {
                     &definition.publication,
                     &definition.source_url,
                     &definition.supervised,
+                    &definition.auto_create,
+                    &definition.schema_evolution,
+                    &definition.warehouse_prefix,
+                    &definition.cdc_column,
                     &commit_rows,
                     &commit_interval_ms,
                     &snapshot_batch_rows,
@@ -942,6 +994,10 @@ mod tests {
             publication: "pub".to_string(),
             source_url: "postgresql://source/db".to_string(),
             snapshot_mode: "managed".to_string(),
+            auto_create: false,
+            schema_evolution: "auto".to_string(),
+            warehouse_prefix: None,
+            cdc_column: "rowKinds".to_string(),
             supervised: true,
             commit_rows: 50_000,
             commit_interval_ms: 1_000,
@@ -969,6 +1025,10 @@ mod tests {
             source_url: "postgresql://source/db".to_string(),
             state: "streaming".to_string(),
             enabled: true,
+            auto_create: false,
+            schema_evolution: "auto".to_string(),
+            warehouse_prefix: None,
+            cdc_column: "rowKinds".to_string(),
             supervised: true,
             commit_rows: 50_000,
             commit_interval_ms: 1_000,

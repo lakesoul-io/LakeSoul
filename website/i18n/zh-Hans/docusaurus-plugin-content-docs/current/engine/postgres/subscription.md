@@ -11,7 +11,7 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-`postgres-lakesoul` 可以消费 PostgreSQL 逻辑复制 publication，把变更写入预先创建的 LakeSoul CDC 表。订阅通过 PostgreSQL 端点定义：`CREATE SUBSCRIPTION` 校验源库和目标表，把定义和进度写入元数据 PostgreSQL，并拉起受监管的本地订阅进程。
+`postgres-lakesoul` 可以消费 PostgreSQL 逻辑复制 publication，把变更写入 LakeSoul CDC 表。订阅通过 PostgreSQL 端点定义：`CREATE SUBSCRIPTION` 校验源库和目标表，把定义和进度写入元数据 PostgreSQL，并拉起受监管的本地订阅进程。
 
 这是把逻辑复制写入 LakeSoul，不是 PostgreSQL 扩展，也不是另一套 CDC 集群。
 
@@ -20,7 +20,7 @@ SPDX-License-Identifier: Apache-2.0
 | 项目 | 行为 |
 | --- | --- |
 | 源库 | PostgreSQL 14+、logical WAL、一张或多张 `public` 表、`REPLICA IDENTITY FULL`、主键匹配 |
-| 目标 | 预先创建的 LakeSoul CDC 表，不分区；未指定 namespace 时使用当前连接 database |
+| 目标 | 可按需自动创建或预先创建的 LakeSoul CDC 表，不分区；支持安全 schema 演进；未指定 namespace 时使用当前连接 database |
 | 初始数据 | 每张表独立 managed 快照；每张表分别提交 |
 | 变更 | `INSERT`、`UPDATE`、`DELETE`；完整行加 CDC 变更列 |
 | 生命周期 | `CREATE`、`ALTER ... ENABLE/DISABLE`、`DROP`；SQL 创建的订阅会在端点重启后恢复 |
@@ -65,7 +65,20 @@ CREATE PUBLICATION app_pub
 
 ## 目标表配置
 
-通过 PostgreSQL 端点创建目标表。连接使用的 database 就是目标 LakeSoul namespace：
+目标表可以自动创建。设置 `auto_create = true` 后，缺失的目标表会创建在服务器 warehouse 下：
+
+```text
+<warehouse>/<target_namespace>/<target_table>
+```
+
+自动创建的表使用源列名和类型、源主键，并带有 `hash_bucket_num = 4`、
+`file_format = vortex-compact` 和 `rowKinds text` CDC 列。源表本身不能已经有与
+`cdc_column` 同名的列。
+
+SQL 服务器使用自己的 `--warehouse-prefix`；CLI 订阅需要传 `--warehouse-prefix`
+（或 `LAKESOUL_WAREHOUSE`）。`DROP SUBSCRIPTION` 不会删除自动创建的目标表。
+
+也可以通过 PostgreSQL 端点手工创建目标表。连接使用的 database 就是目标 LakeSoul namespace：
 
 ```sql
 CREATE TABLE users (
@@ -81,7 +94,35 @@ CREATE TABLE users (
 );
 ```
 
-目标表的非 CDC 列要和源列同名、类型兼容，主键要和源表一致，且不能是 range partition 表。SQL 创建 managed 快照订阅时目标表必须为空；`snapshot = none` 允许使用已初始化的目标表。CDC 列不需要出现在源表中，由订阅端填写。
+目标表的非 CDC 列要和源列同名、类型兼容，主键要和源表一致，且不能是 range partition 表。managed 快照要求目标表为空；`snapshot = none` 允许使用已初始化的目标表。CDC 列不需要出现在源表中，由订阅端填写。
+
+### Schema 演进
+
+`schema_evolution = 'auto'` 是默认值。目标 schema 只会向前演进：
+
+- 源端新增列时，目标追加 nullable 列；已有目标行读到 `NULL`；
+- `smallint → integer → bigint`、`real → double precision` 以及 decimal
+  精度/scale 放宽会更新目标类型；旧数据文件在读取时 cast；
+- 源端 `DROP NOT NULL` 会把目标列放宽为 nullable；
+- text/varchar/char、json/jsonb、uuid/text 等 Arrow 表示都是 `Utf8` 的变化不需要改目标；
+- 源端类型变窄时，保留已经更宽的目标类型。
+
+订阅端在下一次 pgoutput `Relation` 消息（该表下一次被使用时）获知 schema
+变化。订阅停止期间发生的 DDL 会在启动时通过源 catalog 对齐。读取旧 WAL 时仍按
+当时的 `Relation` 版本解析：后来新增的列填 `NULL`，旧类型 cast 到新目标类型。
+
+以下变化会直接报错，不做猜测：
+
+- `DROP COLUMN` 和 `RENAME COLUMN`；
+- 主键名称或类型变化；
+- 目标类型无法容纳源类型时继续变窄；
+- `integer → text` 等跨类型族变化；
+- `timestamp` ↔ `timestamptz`；
+- 带默认值的新增列（无法回填已有目标行）；
+- 自动创建无精度 `numeric` 的表（请手工创建并指定
+  `numeric(precision, scale)`）。
+
+设置 `schema_evolution = 'none'` 可以在任何 schema 不匹配时停止订阅，而不修改目标表。
 
 ## 创建订阅
 
@@ -93,6 +134,9 @@ WITH (
   source_table         = 'public.users',
   target_table         = 'users',
   snapshot             = 'managed',
+  auto_create          = true,
+  schema_evolution     = 'auto',
+  cdc_column           = 'rowKinds',
   slot_name            = 'users_from_app',
   primary_key          = 'id',
   commit_rows          = 50000,
@@ -109,6 +153,9 @@ WITH (
 | `source_table` | 必填 | 源表，`public.users` 或 `users` |
 | `target_table` | 必填 | 目标表，`table` 或 `namespace.table`；未指定 namespace 时使用当前 database |
 | `snapshot` | `auto` | `auto`、`managed` 会拷贝初始表；`none` 跳过拷贝，从 slot 当前位点开始 |
+| `auto_create` | `false` | 目标不存在时按源 schema 自动创建；需要 warehouse |
+| `schema_evolution` | `auto` | `auto` 自动加 nullable 列、放宽安全类型、放宽 `NOT NULL`；`none` 遇到不匹配直接报错 |
+| `cdc_column` | `rowKinds` | 自动创建目标时使用的 CDC 变更列 |
 | `slot_name` | 订阅名 | replication slot 名称，不能已存在 |
 | `primary_key` | 自动推断 | 源/目标主键列；省略时从目标表推断 |
 | `commit_rows` | `50000` | 流式批次达到多少个不同 key 后提交 |
@@ -145,7 +192,7 @@ WITH (
 );
 ```
 
-`TO` 后面没有 namespace 时使用当前端点 database；写成 `analytics.orders` 时使用对应的 LakeSoul namespace。每张目标表都必须预先创建、schema/主键匹配，并且只能属于一个订阅。
+`TO` 后面没有 namespace 时使用当前端点 database；写成 `analytics.orders` 时使用对应的 LakeSoul namespace。目标表可以预先创建，也可以在 `auto_create = true` 时自动创建；每张表独立演进，并且只能属于一个订阅。
 
 多表 managed 快照按表执行。每张表使用自己的临时 slot 和 snapshot LSN，完成一张就提交一张；没有跨表快照原子性。`max_replication_slots` 需要为这张临时 slot 留出余量。`snapshot = 'none'` 仍然表示使用已初始化的目标表。
 
@@ -161,7 +208,10 @@ postgres-lakesoul --subscribe \
   --target-namespace default \
   --table public.users=users \
   --table public.orders=analytics.orders \
-  --snapshot managed
+  --snapshot managed \
+  --auto-create \
+  --schema-evolution auto \
+  --warehouse-prefix file:///data/lakesoul
 ```
 
 ## 查看进度
@@ -219,7 +269,7 @@ DROP SUBSCRIPTION IF EXISTS users_from_app;
 
 `boolean`、`smallint`、`integer`、`bigint`、`real`、`double precision`、`numeric(p,s)`、`text`、`varchar`、`char`、`name`、`bytea`、`date`、`time`、`timestamp`、`timestamptz`、`uuid`、`json` 和 `jsonb`。
 
-目标列使用对应的 LakeSoul/Arrow 类型和相同列名；CDC 变更列是目标表额外的一列。
+目标列使用对应的 LakeSoul/Arrow 类型和相同列名；CDC 变更列是目标表额外的一列。设置 `schema_evolution = 'auto'` 后，源端新增 nullable 列和安全类型放宽会自动应用到目标表。
 
 ## CLI 模式
 

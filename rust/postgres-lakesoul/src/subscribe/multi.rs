@@ -16,20 +16,65 @@ use lakesoul_metadata::MetaDataClientRef;
 use rootcause::{bail, report};
 
 use super::plan::TablePlan;
+use super::schema::{self, TargetOptions};
 use super::state::{
     SubscriptionDefinition, SubscriptionMetadata, SubscriptionRecord, TableDefinition,
 };
-use super::{SnapshotMode, SubscribeConfig, ordinary_url, snapshot, source};
+use super::{
+    SchemaEvolution, SnapshotMode, SubscribeConfig, ordinary_url, snapshot, source,
+};
 use crate::Result;
 
 pub(crate) async fn run(config: SubscribeConfig, meta: MetaDataClientRef) -> Result<()> {
+    let metadata = if config.dry_run {
+        None
+    } else {
+        let pool = meta.pooled_client();
+        let pool = pool.lock().await.clone();
+        let metadata = SubscriptionMetadata::from_pool(pool);
+        metadata.init_schema().await?;
+        Some(metadata)
+    };
+    let subscription_exists = match &metadata {
+        Some(metadata) => metadata.exists(&config.subscription_id).await?,
+        None => false,
+    };
+    let mut target_options = TargetOptions::from_config(&config);
+    if config.dry_run {
+        target_options.auto_create = false;
+        target_options.schema_evolution = SchemaEvolution::None;
+    }
+    let allow_create =
+        config.auto_create && !config.require_existing && !subscription_exists;
     let mut plans = Vec::with_capacity(config.tables.len());
     for mapping in &config.tables {
+        if !subscription_exists
+            && let Some(metadata) = &metadata
+            && metadata
+                .target_in_use(&mapping.target_namespace, &mapping.target_table)
+                .await?
+        {
+            bail!(
+                "target table {}.{} is already used by another subscription",
+                mapping.target_namespace,
+                mapping.target_table
+            );
+        }
         let source = source::inspect_source(
             &ordinary_url(&config.source_url),
             &config.publication,
             &mapping.source_schema,
             &mapping.source_table,
+        )
+        .await?;
+        schema::ensure_target(
+            &meta,
+            &source,
+            &mapping.target_namespace,
+            &mapping.target_table,
+            &target_options,
+            allow_create,
+            !config.dry_run,
         )
         .await?;
         let primary_key = if mapping.primary_key.is_empty() {
@@ -66,10 +111,7 @@ pub(crate) async fn run(config: SubscribeConfig, meta: MetaDataClientRef) -> Res
         return Ok(());
     }
 
-    let pool = meta.pooled_client();
-    let pool = pool.lock().await.clone();
-    let metadata = SubscriptionMetadata::from_pool(pool);
-    metadata.init_schema().await?;
+    let metadata = metadata.expect("metadata was initialized for a non-dry-run");
     let snapshot_mode = match config.snapshot {
         SnapshotMode::None => "none",
         SnapshotMode::Auto | SnapshotMode::Managed => "managed",
@@ -211,6 +253,7 @@ pub(crate) async fn run(config: SubscribeConfig, meta: MetaDataClientRef) -> Res
         plans,
         record,
         metadata.clone(),
+        meta.clone(),
         processed_watermark,
         None,
     )
@@ -242,9 +285,15 @@ async fn prepare_managed_snapshots(
         );
     }
 
-    // The persistent slot is the common streaming start point. Each table's
-    // temporary slot supplies its own exact snapshot LSN.
-    let base_lsn = snapshot::ensure_primary_slot(config).await?;
+    // The persistent slot is the common streaming start point. It is created
+    // only when missing: on a restart its confirmed_flush_lsn has already
+    // advanced past the table snapshot LSNs and must not be compared with
+    // them. Each table's temporary slot supplies its own exact snapshot LSN.
+    let base_lsn = if slot_exists {
+        None
+    } else {
+        Some(snapshot::ensure_primary_slot(config).await?)
+    };
 
     for (index, plan) in plans.iter().enumerate() {
         let table = record
@@ -265,7 +314,9 @@ async fn prepare_managed_snapshots(
         match table.snapshot_state.as_str() {
             "done" => {
                 if let Some(snapshot_lsn) = table.snapshot_lsn {
-                    if base_lsn > snapshot_lsn {
+                    if let Some(base_lsn) = base_lsn
+                        && base_lsn > snapshot_lsn
+                    {
                         bail!(
                             "table {}.{} snapshot LSN {} is older than the slot base \
                              LSN {}; resnapshot is required",
@@ -357,7 +408,9 @@ async fn prepare_managed_snapshots(
         .load_by_id(&config.subscription_id)
         .await?
         .ok_or_else(|| report!("subscription {} disappeared", config.subscription_id))?;
-    if base_lsn > record.processed_lsn {
+    if let Some(base_lsn) = base_lsn
+        && base_lsn > record.processed_lsn
+    {
         metadata
             .update_progress(&config.subscription_id, base_lsn)
             .await?;
@@ -377,6 +430,14 @@ fn definition(
         publication: config.publication.clone(),
         source_url: config.source_url.clone(),
         snapshot_mode: snapshot_mode.to_string(),
+        auto_create: config.auto_create,
+        schema_evolution: match config.schema_evolution {
+            SchemaEvolution::None => "none",
+            SchemaEvolution::Auto => "auto",
+        }
+        .to_string(),
+        warehouse_prefix: config.warehouse_prefix.clone(),
+        cdc_column: config.cdc_column.clone(),
         supervised: config.require_existing,
         commit_rows: config.commit_rows,
         commit_interval_ms: config.commit_interval.as_millis() as u64,

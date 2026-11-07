@@ -38,6 +38,23 @@ pub fn parse_value(
     target: &DataType,
     value: &ColumnValue,
 ) -> Result<ScalarValue> {
+    let scalar = parse_value_raw(column, target, value)?;
+    if scalar.data_type() == *target {
+        return Ok(scalar);
+    }
+    scalar.cast_to(target).map_err(|error| {
+        report!(
+            "column {} cannot be represented as {target}: {error}",
+            column.name
+        )
+    })
+}
+
+fn parse_value_raw(
+    column: &SourceColumn,
+    target: &DataType,
+    value: &ColumnValue,
+) -> Result<ScalarValue> {
     let ColumnValue::Text(bytes) = value else {
         return match value {
             ColumnValue::Null => null_scalar(target),
@@ -311,6 +328,7 @@ mod tests {
             pg_type,
             type_name: String::new(),
             not_null: true,
+            has_default: false,
             toastable: false,
         }
     }

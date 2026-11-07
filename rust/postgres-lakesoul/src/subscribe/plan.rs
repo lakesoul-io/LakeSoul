@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use arrow_schema::{DataType, SchemaRef, TimeUnit};
+use arrow_schema::SchemaRef;
 use datafusion::common::ScalarValue;
 use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
 use lakesoul_metadata::MetaDataClientRef;
@@ -16,7 +16,8 @@ use rootcause::{bail, report};
 use serde_json::Value;
 
 use super::decode::{KeyValue, key_of, null_scalar, parse_value};
-use super::source::{PgType, SourceColumn, SourceTable};
+use super::schema;
+use super::source::{SourceColumn, SourceTable};
 use crate::Result;
 
 /// `high` of every commit written by the subscriber. `low` carries the source
@@ -85,6 +86,10 @@ pub struct TablePlan {
     pub schema: SchemaRef,
     pub cdc_column: String,
     pub cdc_index: usize,
+    /// The source columns of the active pgoutput `Relation` version. It can be
+    /// older than [`TablePlan::source`] when WAL from before a schema change is
+    /// replayed after a restart.
+    pub active_columns: Vec<SourceColumn>,
     pub mappings: Vec<ColumnMapping>,
     pub key_columns: Vec<KeyColumn>,
     pub commit_watermark: u64,
@@ -180,58 +185,7 @@ impl TablePlan {
             }
         }
 
-        let mut mappings = Vec::with_capacity(source.columns.len());
-        for (target_index, field) in schema.fields().iter().enumerate() {
-            if target_index == cdc_index {
-                continue;
-            }
-            let source_index = source
-                .columns
-                .iter()
-                .position(|column| column.name == *field.name())
-                .ok_or_else(|| {
-                    report!(
-                        "target column {} has no source column with the same name",
-                        field.name()
-                    )
-                })?;
-            let source_column = &source.columns[source_index];
-            check_type(source_column, field.data_type())?;
-            if !source_column.not_null && !field.is_nullable() {
-                bail!(
-                    "target column {} is NOT NULL but source column {} is nullable",
-                    field.name(),
-                    source_column.name
-                );
-            }
-            mappings.push(ColumnMapping {
-                target_index,
-                source_index,
-            });
-        }
-        if mappings.len() != source.columns.len() {
-            bail!(
-                "target table {target_namespace}.{target_table} does not expose every \
-                 source column: target has {} user columns, source has {}",
-                mappings.len(),
-                source.columns.len()
-            );
-        }
-
-        let mut key_columns = Vec::with_capacity(target_pk.len());
-        for key in &target_pk {
-            let mapping = mappings
-                .iter()
-                .find(|mapping| schema.field(mapping.target_index).name() == key)
-                .ok_or_else(|| {
-                    report!("target primary key column {key} is not a user column")
-                })?;
-            key_columns.push(KeyColumn {
-                target_index: mapping.target_index,
-                source: source.columns[mapping.source_index].clone(),
-            });
-        }
-
+        let active_columns = source.columns.clone();
         let partitions = table
             .client()
             .get_all_partition_info_as_of(
@@ -247,18 +201,22 @@ impl TablePlan {
             .iter()
             .any(|partition| !partition.snapshot.is_empty());
 
-        Ok(Self {
+        let mut plan = Self {
             source,
             target_table: target_table.to_string(),
             table,
             schema,
             cdc_column,
             cdc_index,
-            mappings,
-            key_columns,
+            active_columns,
+            mappings: Vec::new(),
+            key_columns: Vec::new(),
             commit_watermark,
             has_commits,
-        })
+        };
+        let active = plan.active_columns.clone();
+        plan.rebuild_active(active, true)?;
+        Ok(plan)
     }
 
     pub fn qualified_source_name(&self) -> String {
@@ -291,13 +249,9 @@ impl TablePlan {
         Ok(())
     }
 
-    /// The RELATION message must describe exactly the schema validated at
-    /// startup. P0 has no schema evolution: a mismatch stops the worker.
-    pub fn check_relation(
-        &self,
-        relation_id: u32,
-        columns: &[RelationColumn],
-    ) -> Result<()> {
+    /// Verify the relation identity. A new OID means the table was dropped and
+    /// recreated; the subscription's merge key and history no longer apply.
+    pub fn check_relation_id(&self, relation_id: u32) -> Result<()> {
         if relation_id != self.source.relation_oid {
             bail!(
                 "source relation oid changed from {} to {relation_id} for {}; \
@@ -306,32 +260,119 @@ impl TablePlan {
                 self.qualified_source_name()
             );
         }
-        if columns.len() != self.source.columns.len() {
-            bail!(
-                "source schema of {} changed: RELATION has {} columns, startup had {}; \
-                 P0 does not support schema evolution",
-                self.qualified_source_name(),
-                columns.len(),
-                self.source.columns.len()
-            );
-        }
-        for (actual, expected) in columns.iter().zip(&self.source.columns) {
-            if actual.name.as_ref() != expected.name
-                || actual.type_id != expected.type_id
-                || actual.type_modifier != expected.type_modifier
-            {
+        Ok(())
+    }
+
+    /// Whether the RELATION columns are exactly the active relation version.
+    /// Unchanged repeats are deduplicated by pg_walstream, but a replayed
+    /// historical version still has to be compared explicitly.
+    pub fn relation_matches(&self, columns: &[RelationColumn]) -> bool {
+        columns.len() == self.active_columns.len()
+            && columns
+                .iter()
+                .zip(&self.active_columns)
+                .all(|(actual, expected)| {
+                    actual.name.as_ref() == expected.name
+                        && actual.type_id == expected.type_id
+                        && actual.type_modifier == expected.type_modifier
+                })
+    }
+
+    /// Switch row parsing to the schema carried by a RELATION message. The
+    /// target schema can be newer: columns that do not exist in this
+    /// historical version are filled with NULL by [`parse_row`].
+    pub fn set_active_relation(&mut self, columns: &[RelationColumn]) -> Result<()> {
+        let active = schema::relation_columns(columns, &self.source)?;
+        self.rebuild_active(active, false)
+    }
+
+    fn rebuild_active(
+        &mut self,
+        active: Vec<SourceColumn>,
+        require_all_target: bool,
+    ) -> Result<()> {
+        let mut mappings = Vec::with_capacity(active.len());
+        for (target_index, field) in self.schema.fields().iter().enumerate() {
+            if target_index == self.cdc_index {
+                continue;
+            }
+            let Some(source_index) = active
+                .iter()
+                .position(|column| column.name == *field.name())
+            else {
+                if require_all_target {
+                    bail!(
+                        "target table {} has column {} that the source does not \
+                         expose; dropping or renaming is not supported",
+                        self.target_table,
+                        field.name()
+                    );
+                }
+                continue;
+            };
+            let source_column = &active[source_index];
+            schema::check_target_type(source_column, field.data_type())?;
+            if !source_column.not_null && !field.is_nullable() {
                 bail!(
-                    "source schema of {} changed at column {:?} (type_id {} -> {}, \
-                     typmod {} -> {}); P0 does not support schema evolution",
-                    self.qualified_source_name(),
-                    expected.name,
-                    expected.type_id,
-                    actual.type_id,
-                    expected.type_modifier,
-                    actual.type_modifier
+                    "target column {} is NOT NULL but source column {} is nullable",
+                    field.name(),
+                    source_column.name
                 );
             }
+            mappings.push(ColumnMapping {
+                target_index,
+                source_index,
+            });
         }
+        if mappings.len() != active.len() {
+            let missing = active
+                .iter()
+                .find(|column| {
+                    !mappings
+                        .iter()
+                        .any(|mapping| active[mapping.source_index].name == column.name)
+                })
+                .map(|column| column.name.clone())
+                .unwrap_or_default();
+            bail!(
+                "target table {} does not expose source column {}",
+                self.target_table,
+                missing
+            );
+        }
+
+        let target_pk = self.table.primary_keys().clone();
+        let mut key_columns = Vec::with_capacity(target_pk.len());
+        for key in &target_pk {
+            let mapping = mappings
+                .iter()
+                .find(|mapping| self.schema.field(mapping.target_index).name() == key)
+                .ok_or_else(|| {
+                    report!(
+                        "target primary key column {key} is not present in the \
+                         active source relation"
+                    )
+                })?;
+            let source = &active[mapping.source_index];
+            let target_type = self.schema.field(mapping.target_index).data_type();
+            if !schema::pk_type_matches(source, target_type) {
+                bail!(
+                    "primary key column {} has source type {} but target type {}; \
+                     primary-key type changes are not supported",
+                    source.name,
+                    source.type_name,
+                    target_type
+                );
+            }
+            key_columns.push(KeyColumn {
+                target_index: mapping.target_index,
+                source: source.clone(),
+            });
+        }
+
+        self.active_columns = active;
+        self.mappings = mappings;
+        self.key_columns = key_columns;
         Ok(())
     }
 
@@ -340,7 +381,7 @@ impl TablePlan {
     /// is the signal. An UPDATE *new* tuple is handled by [`parse_update`],
     /// which fills unchanged TOASTable columns from the complete old tuple.
     pub fn check_full_row(&self, data: &RowData, context: &str) -> Result<()> {
-        for column in &self.source.columns {
+        for column in &self.active_columns {
             if data.get(&column.name).is_none() {
                 bail!(
                     "column {} is missing from {context}: expected a full tuple, but \
@@ -362,7 +403,7 @@ impl TablePlan {
             .map(|field| null_scalar(field.data_type()))
             .collect::<Result<Vec<_>>>()?;
         for mapping in &self.mappings {
-            let source = &self.source.columns[mapping.source_index];
+            let source = &self.active_columns[mapping.source_index];
             let target = self.schema.field(mapping.target_index).data_type();
             let value = data.get(&source.name).ok_or_else(|| {
                 report!("column {} disappeared while planning a row", source.name)
@@ -411,7 +452,7 @@ impl TablePlan {
         let old_state = self.parse_row(old_data, Op::Delete, "UPDATE old tuple")?;
         let values = merge_update_values(
             &self.schema,
-            &self.source,
+            &self.active_columns,
             &self.mappings,
             &old_state.values,
             new_data,
@@ -441,14 +482,14 @@ impl TablePlan {
 /// only legal for a TOASTable source column.
 fn merge_update_values(
     schema: &SchemaRef,
-    source: &super::source::SourceTable,
+    active: &[SourceColumn],
     mappings: &[ColumnMapping],
     old_values: &[ScalarValue],
     new_data: &RowData,
 ) -> Result<Vec<ScalarValue>> {
     let mut values = old_values.to_vec();
     for mapping in mappings {
-        let source_column = &source.columns[mapping.source_index];
+        let source_column = &active[mapping.source_index];
         let Some(value) = new_data.get(&source_column.name) else {
             if source_column.toastable {
                 // Unchanged TOAST: keep the old tuple's value.
@@ -474,48 +515,6 @@ fn property_string(properties: &Value, key: &str) -> Option<String> {
             .map(ToString::to_string)
             .or_else(|| value.as_bool().map(|value| value.to_string()))
     })
-}
-
-fn check_type(source: &SourceColumn, target: &DataType) -> Result<()> {
-    let compatible = match &source.pg_type {
-        PgType::Bool => matches!(target, DataType::Boolean),
-        PgType::Int2 => matches!(target, DataType::Int16),
-        PgType::Int4 => matches!(target, DataType::Int32),
-        PgType::Int8 => matches!(target, DataType::Int64),
-        PgType::Float4 => matches!(target, DataType::Float32),
-        PgType::Float8 => matches!(target, DataType::Float64),
-        PgType::Numeric { precision, scale } => match target {
-            DataType::Decimal128(target_precision, target_scale) => {
-                let scale_ok = scale.is_none_or(|scale| *target_scale == scale);
-                let precision_ok =
-                    precision.is_none_or(|precision| *target_precision >= precision);
-                scale_ok && precision_ok
-            }
-            _ => false,
-        },
-        PgType::Text | PgType::Uuid | PgType::Json | PgType::Jsonb => {
-            matches!(target, DataType::Utf8)
-        }
-        PgType::Bytea => matches!(target, DataType::Binary),
-        PgType::Date => matches!(target, DataType::Date32),
-        PgType::Time => matches!(target, DataType::Time64(TimeUnit::Microsecond)),
-        PgType::Timestamp => {
-            matches!(target, DataType::Timestamp(TimeUnit::Microsecond, None))
-        }
-        PgType::TimestampTz => {
-            matches!(target, DataType::Timestamp(TimeUnit::Microsecond, Some(_)))
-        }
-    };
-    if compatible {
-        Ok(())
-    } else {
-        bail!(
-            "column {} has source type {} but target type {target}; P0 requires an \
-             exact type match",
-            source.name,
-            source.type_name
-        )
-    }
 }
 
 #[cfg(test)]
@@ -577,6 +576,7 @@ mod tests {
                     pg_type: crate::subscribe::source::PgType::Int8,
                     type_name: "int8".to_string(),
                     not_null: true,
+                    has_default: false,
                     toastable: false,
                 },
                 SourceColumn {
@@ -586,6 +586,7 @@ mod tests {
                     pg_type: crate::subscribe::source::PgType::Text,
                     type_name: "text".to_string(),
                     not_null: false,
+                    has_default: false,
                     toastable: true,
                 },
                 SourceColumn {
@@ -595,6 +596,7 @@ mod tests {
                     pg_type: crate::subscribe::source::PgType::Text,
                     type_name: "text".to_string(),
                     not_null: false,
+                    has_default: false,
                     toastable: true,
                 },
             ],
@@ -639,9 +641,14 @@ mod tests {
         new_data.push(Arc::from("name"), ColumnValue::text("Alice updated"));
         // payload is deliberately absent: pgoutput sent `u`.
 
-        let values =
-            merge_update_values(&schema, &source, &mappings, &old_values, &new_data)
-                .unwrap();
+        let values = merge_update_values(
+            &schema,
+            &source.columns,
+            &mappings,
+            &old_values,
+            &new_data,
+        )
+        .unwrap();
         assert_eq!(
             values[2],
             ScalarValue::Utf8(Some("large payload".to_string()))
@@ -669,10 +676,15 @@ mod tests {
         let mut new_data = RowData::new();
         new_data.push(Arc::from("id"), ColumnValue::text("1"));
 
-        let error =
-            merge_update_values(&schema, &source, &mappings, &old_values, &new_data)
-                .unwrap_err()
-                .to_string();
+        let error = merge_update_values(
+            &schema,
+            &source.columns,
+            &mappings,
+            &old_values,
+            &new_data,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("not TOASTable"), "{error}");
     }
 }

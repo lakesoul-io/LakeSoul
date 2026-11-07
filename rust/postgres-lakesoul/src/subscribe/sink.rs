@@ -53,6 +53,13 @@ impl TableSink {
         self.rows.is_empty()
     }
 
+    /// Replace the plan after a target schema change. The caller must flush
+    /// the sink first so no row state still references the old field layout.
+    pub fn replace_plan(&mut self, plan: TablePlan) {
+        debug_assert!(self.rows.is_empty());
+        self.plan = plan;
+    }
+
     pub fn pending_rows(&self) -> usize {
         self.rows.len()
     }

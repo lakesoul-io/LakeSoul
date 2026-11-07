@@ -32,12 +32,15 @@ use lakesoul_metadata::MetaDataClientRef;
 use rootcause::report;
 
 use super::plan::TablePlan;
+use super::schema::{self, TargetOptions};
 use super::source;
 use super::state::{
     SubscriptionDefinition, SubscriptionMetadata, SubscriptionRecord, TableDefinition,
 };
 use super::supervisor::{SubscriptionSupervisor, drop_replication_slot};
-use super::{SnapshotMode, ordinary_url, parse_source_table, sanitized_error};
+use super::{
+    SchemaEvolution, SnapshotMode, ordinary_url, parse_source_table, sanitized_error,
+};
 use crate::Result;
 
 const SENTINEL_FUNCTION: &str = "lakesoul_subscription_ddl";
@@ -102,6 +105,9 @@ struct CreateSubscription {
     slot_name: String,
     snapshot: SnapshotMode,
     tables: Vec<ParsedTable>,
+    auto_create: bool,
+    schema_evolution: SchemaEvolution,
+    cdc_column: String,
     commit_rows: usize,
     commit_interval_ms: u64,
     snapshot_batch_rows: usize,
@@ -113,6 +119,7 @@ struct CreateSubscription {
 pub(crate) struct SubscriptionStatementHook {
     meta: MetaDataClientRef,
     database: String,
+    warehouse: Option<String>,
     supervisor: Arc<SubscriptionSupervisor>,
 }
 
@@ -120,11 +127,13 @@ impl SubscriptionStatementHook {
     pub(crate) fn new(
         meta: MetaDataClientRef,
         database: String,
+        warehouse: Option<String>,
         supervisor: Arc<SubscriptionSupervisor>,
     ) -> Self {
         Self {
             meta,
             database,
+            warehouse,
             supervisor,
         }
     }
@@ -180,6 +189,12 @@ impl SubscriptionStatementHook {
                 )
             })?;
 
+        let target_options = TargetOptions {
+            auto_create: create.auto_create,
+            schema_evolution: create.schema_evolution,
+            warehouse_prefix: self.warehouse.clone(),
+            cdc_column: create.cdc_column.clone(),
+        };
         let mut table_definitions = Vec::with_capacity(create.tables.len());
         let mut sources = HashSet::new();
         let mut targets = HashSet::new();
@@ -219,6 +234,27 @@ impl SubscriptionStatementHook {
                     text,
                 )
             })?;
+            if metadata
+                .target_in_use(&target_namespace, &table.target_table)
+                .await
+                .map_err(internal)?
+            {
+                return Err(feature_not_supported(format!(
+                    "target table {}.{} is already used by another subscription",
+                    target_namespace, table.target_table
+                )));
+            }
+            schema::ensure_target(
+                &self.meta,
+                &source,
+                &target_namespace,
+                &table.target_table,
+                &target_options,
+                true,
+                true,
+            )
+            .await
+            .map_err(|error| user_error("0A000", error.to_string()))?;
             let plan = TablePlan::new(
                 source,
                 &target_namespace,
@@ -237,16 +273,6 @@ impl SubscriptionStatementHook {
                         target_namespace, table.target_table
                     ),
                 ));
-            }
-            if metadata
-                .target_in_use(&target_namespace, &table.target_table)
-                .await
-                .map_err(internal)?
-            {
-                return Err(feature_not_supported(format!(
-                    "target table {}.{} is already used by another subscription",
-                    target_namespace, table.target_table
-                )));
             }
             let primary_key = if let Some(primary_key) = &table.primary_key {
                 primary_key.clone()
@@ -282,6 +308,14 @@ impl SubscriptionStatementHook {
                 SnapshotMode::Auto | SnapshotMode::Managed => "managed",
             }
             .to_string(),
+            auto_create: create.auto_create,
+            schema_evolution: match create.schema_evolution {
+                SchemaEvolution::None => "none",
+                SchemaEvolution::Auto => "auto",
+            }
+            .to_string(),
+            warehouse_prefix: self.warehouse.clone(),
+            cdc_column: create.cdc_column.clone(),
             supervised: true,
             commit_rows: create.commit_rows,
             commit_interval_ms: create.commit_interval_ms,
@@ -624,6 +658,9 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
         "snapshot_batch_bytes",
         "snapshot_parallelism",
         "snapshot_memory_bytes",
+        "auto_create",
+        "schema_evolution",
+        "cdc_column",
     ];
     for key in options.keys() {
         if !allowed.contains(&key.as_str()) {
@@ -697,6 +734,24 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
         parse_option_usize(&mut options, "snapshot_parallelism", 4)?;
     let snapshot_memory_bytes =
         parse_option_memory(&mut options, "snapshot_memory_bytes", 1024 * 1024 * 1024)?;
+    let auto_create = parse_option_bool(&mut options, "auto_create", false)?;
+    let schema_evolution = match options
+        .remove("schema_evolution")
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("auto") => SchemaEvolution::Auto,
+        Some("none") => SchemaEvolution::None,
+        Some(other) => {
+            return Err(invalid_parameter(format!(
+                "schema_evolution must be auto or none, got {other:?}"
+            )));
+        }
+    };
+    let cdc_column = options
+        .remove("cdc_column")
+        .unwrap_or_else(|| "rowKinds".to_string());
+    validate_identifier("cdc column", &cdc_column, false)?;
 
     Ok(CreateSubscription {
         name,
@@ -705,6 +760,9 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
         slot_name,
         snapshot,
         tables,
+        auto_create,
+        schema_evolution,
+        cdc_column,
         commit_rows,
         commit_interval_ms,
         snapshot_batch_rows,
@@ -778,6 +836,21 @@ fn parse_option_memory(
     };
     parse_memory_limit(&value)
         .map_err(|error| invalid_parameter(format!("{key}: {error}")))
+}
+
+fn parse_option_bool(
+    options: &mut BTreeMap<String, String>,
+    key: &str,
+    default: bool,
+) -> PgWireResult<bool> {
+    let Some(value) = options.remove(key) else {
+        return Ok(default);
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "on" | "yes" | "1" => Ok(true),
+        "false" | "off" | "no" | "0" => Ok(false),
+        _ => Err(invalid_parameter(format!("{key} must be true or false"))),
+    }
 }
 
 fn parse_option_u64(
@@ -1185,12 +1258,38 @@ mod tests {
         assert_eq!(create.snapshot_parallelism, 3);
         assert_eq!(create.snapshot_memory_bytes, 2048);
         assert_eq!(create.snapshot, SnapshotMode::Auto);
+        assert!(!create.auto_create);
+        assert_eq!(create.schema_evolution, SchemaEvolution::Auto);
+        assert_eq!(create.cdc_column, "rowKinds");
         assert_eq!(create.tables.len(), 1);
         assert_eq!(create.tables[0].source_schema, "public");
         assert_eq!(create.tables[0].source_table, "users");
         assert_eq!(create.tables[0].target_namespace, None);
         assert_eq!(create.tables[0].target_table, "users");
         assert!(create.tables[0].primary_key.is_none());
+    }
+
+    #[test]
+    fn parses_target_ddl_options() {
+        let statement = parse_statement(
+            "CREATE SUBSCRIPTION s
+             CONNECTION 'postgresql://user:pass@source/db'
+             PUBLICATION p
+             WITH (
+               source_table = 'public.users',
+               target_table = 'users',
+               auto_create = true,
+               schema_evolution = 'none',
+               cdc_column = 'change_kind'
+             )",
+        )
+        .unwrap();
+        let SubscriptionStatement::Create(create) = statement else {
+            panic!("expected CREATE");
+        };
+        assert!(create.auto_create);
+        assert_eq!(create.schema_evolution, SchemaEvolution::None);
+        assert_eq!(create.cdc_column, "change_kind");
     }
 
     #[test]
