@@ -551,6 +551,13 @@ impl LakeSoulVectorSearchExec {
         // The exact ranking happens in this process and must agree with the
         // sort above; anything it cannot compute exactly keeps the
         // single-read path.
+        self.exact_ranking_matches_sort()
+    }
+
+    /// True when the exact re-rank the sort above performs can be computed
+    /// here instead: one L2 or IP metric for every searched column, and every
+    /// searched column stored as a float list.
+    fn exact_ranking_matches_sort(&self) -> bool {
         let metric = self.vector_search.columns[0].metric.as_str();
         if !(metric.eq_ignore_ascii_case("L2") || metric.eq_ignore_ascii_case("IP")) {
             return false;
@@ -569,6 +576,21 @@ impl LakeSoulVectorSearchExec {
                 .map(|field| is_float_list(field.data_type()))
                 .unwrap_or(false)
         })
+    }
+
+    /// True when the candidates can be ranked and cut down to the rows the
+    /// plan's limit may return, even without payload columns to fetch.
+    ///
+    /// The distance computed here is the same L2/IP distance as the sort
+    /// expression above, and [`Self::exact_ranking_matches_sort`] has ruled
+    /// out every case where the two could disagree; nothing filters rows
+    /// between this scan and that sort (`narrow`), so the kept subset is the
+    /// subset the sort would keep anyway.
+    fn trims_exact_candidates(&self) -> bool {
+        !self.vector_search.order_by
+            && self.vector_search.narrow
+            && self.keep_rows() > 0
+            && self.exact_ranking_matches_sort()
     }
 
     /// Build one reader config per bucket group.
@@ -1453,6 +1475,28 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
                 profile,
                 partition,
             )?
+        } else if self.trims_exact_candidates() {
+            // Exact re-rank: rank the candidates here and hand only the rows
+            // the limit may return to the sort above.  Every candidate's
+            // stored vector is already in this batch, so the sort above would
+            // evaluate the same distances again over the full candidate set.
+            let t_rank = std::time::Instant::now();
+            let ranked =
+                rank_by_exact_distance(&self.vector_search, primary_metric, candidates)?;
+            let kept = if ranked.is_empty() {
+                Vec::new()
+            } else {
+                vec![take_first_rows(&ranked, self.keep_rows())?]
+            };
+            if profile {
+                debug!(
+                    rank_ms = t_rank.elapsed().as_secs_f64() * 1000.0,
+                    ranked_rows = ranked.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+                    kept_rows = kept.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+                    "vector search exact rank profile"
+                );
+            }
+            kept
         } else if self.vector_search.order_by {
             order_by_index_distance(candidates, &schema, primary_metric)?
         } else {
