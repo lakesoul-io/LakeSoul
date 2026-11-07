@@ -771,15 +771,17 @@ LIMIT 100`；客户端为 libpq（psql 单连接顺序 / 8 个并行连接），
 
 | 会话配置 | c=1 QPS | c=8 QPS | Recall@100 | 备注 |
 |---|---:|---:|---:|---|
-| 默认（exact、nprobe=64、of=10） | 439–448 | — | 0.6756 | 服务不设任何 `SET` 时的开箱值 |
-| `rerank='index'; nprobe=16` | 562–572 | 2,418 | 0.4204 | 只按索引距离排序，不读向量列 |
-| `rerank='exact'; nprobe=32; overfetch=1` | **450–462** | **~1,950** | 0.6419 | 精确重排，推荐工作点 |
+| 默认（exact、nprobe=64、of=10） | 261–271 | — | 0.7743 | 服务不设任何 `SET` 时的开箱值 |
+| `rerank='index'; nprobe=16` | **781–791** | **2,827–2,931** | 0.4204 | 只按索引距离排序，不读向量列 |
+| `rerank='exact'; nprobe=32; overfetch=1` | **591–598** | **2,161–2,385** | 0.6419 | 精确重排，推荐工作点 |
+| `rerank='exact'; nprobe=64; overfetch=1` | 584 | — | 0.6419 | 更高召回档 |
 | **payload 缓存关闭**：exact np32/of1 | 10.0（R49） | — | — | 回退 reader 路径 |
 | **payload 缓存关闭**：默认 np64/of10 | 0.5（R49） | — | — | 每查询约 2 s |
 
 历史（R49 镜像，供对比）：默认 182–194、index-only 490–495（c=8 1,962–1,985）、exact 303–318
 （c=8 1,202–1,227）；R51（元数据 TTL）、R52（融合排序）、R54（payload source 缓存）、R57（单查询
-probe 直连）、R58（pgvector list 字面量折叠）叠加后达到上表工作点。
+probe 直连）、R58（pgvector list 字面量折叠）、R61（每语句 SQL 兼容解析器改为进程级复用，服务端
+exact +31%、index-only +39%）叠加后达到上表工作点。
 
 对照 datafusion SQL 路径（同表、同参数，R57 镜像）：index-only 单查询 693 QPS、exact np32/of1
 535 QPS（c=8 2,246）；即 PG wire + psql 文本协议端到端多 **15–19%** 开销（每语句约 0.1–0.2 ms），
