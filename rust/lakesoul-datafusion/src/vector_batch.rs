@@ -589,8 +589,11 @@ async fn search_vector_batch_chunk(
     let bucket_ranked: Vec<Vec<Vec<(f32, i64)>>> = if skip_all {
         // Index-only ordering: with the coverage proof every candidate is a
         // live row, so the buckets are independent.  The index call is
-        // synchronous CPU work (rayon inside), so probing the buckets from
-        // one task would serialize them: each bucket gets its own thread.
+        // synchronous CPU work (its own pool parallelises the queries inside a
+        // shard), so probing the buckets from one task would serialize them:
+        // each bucket gets its own thread.  Splitting a shard's queries into
+        // extra ranges was measured and did not help - the call already fills
+        // the cores - so one call per shard stays.
         let refs = &refs;
         let shards = &shards;
         let bucket_hits: Vec<Vec<Vec<VectorHit>>> = tokio::task::block_in_place(|| {
@@ -812,8 +815,6 @@ async fn exact_rank_and_merge(
     request: &VectorBatchRequest,
     codec: &KeyCodec,
 ) -> DFResult<Vec<Vec<i64>>> {
-    use crate::datasource::file_format::vector_search_exec::accumulate_exact_scores;
-
     let queries = request.queries.len();
     if queries == 0 {
         return Ok(Vec::new());
@@ -929,22 +930,17 @@ async fn exact_rank_and_merge(
                 move || -> DFResult<Vec<(usize, Vec<(f32, IndexKey)>)>> {
                     let mut rows = Vec::with_capacity(keys.len());
                     for (offset, keys) in keys.iter().enumerate() {
-                        let Some(array) = source.take(keys) else {
+                        let Some(scores) =
+                            source.score_keys(keys, &query_vectors[offset], true)
+                        else {
                             return Err(DataFusionError::Execution(
                                 "stored-vector payload read failed".to_string(),
                             ));
                         };
-                        let mut scores = vec![0.0f64; keys.len()];
-                        accumulate_exact_scores(
-                            &array,
-                            &query_vectors[offset],
-                            true,
-                            &mut scores,
-                        )?;
                         let scored: Vec<(f32, IndexKey)> = keys
                             .iter()
                             .cloned()
-                            .zip(scores.into_iter().map(|score| score as f32))
+                            .zip(scores)
                             .map(|(key, score)| (score, key))
                             .collect();
                         rows.push((start + offset, scored));
@@ -966,15 +962,63 @@ async fn exact_rank_and_merge(
     }
     let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
     let t_merge = std::time::Instant::now();
-    // Cross-bucket top-k per query, then decode only the winning keys.
-    let mut results = Vec::with_capacity(queries);
-    for scored in per_query.iter_mut() {
+    // Cross-bucket top-k per query, then decode only the winning keys.  The
+    // per-query work is independent, so it fills the cores of a large batch.
+    let merge_one = |scored: &mut Vec<(f32, IndexKey)>| -> DFResult<Vec<i64>> {
         scored.sort_by(|left, right| left.0.total_cmp(&right.0));
         if scored.len() > request.top_k {
             scored.truncate(request.top_k);
         }
         let keys: Vec<&IndexKey> = scored.iter().map(|(_, key)| key).collect();
-        results.push(decode_ids_refs(codec, &keys)?);
+        decode_ids_refs(codec, &keys)
+    };
+    let threads = std::thread::available_parallelism()
+        .map(std::num::NonZero::get)
+        .unwrap_or(1)
+        .min(queries)
+        .min(8);
+    let mut results: Vec<Vec<i64>> = vec![Vec::new(); queries];
+    if threads <= 1 {
+        for (query, scored) in per_query.iter_mut().enumerate() {
+            results[query] = merge_one(scored)?;
+        }
+    } else {
+        let per_thread = queries.div_ceil(threads).max(1);
+        let mut parts: Vec<(usize, Vec<DFResult<Vec<i64>>>)> =
+            Vec::with_capacity(threads);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = per_query
+                .chunks_mut(per_thread)
+                .enumerate()
+                .map(|(chunk_index, chunk)| {
+                    let merge_one = &merge_one;
+                    scope.spawn(move || {
+                        let rows: Vec<DFResult<Vec<i64>>> = chunk
+                            .iter_mut()
+                            .map(|scored| merge_one(scored))
+                            .collect();
+                        (chunk_index, rows)
+                    })
+                })
+                .collect();
+            for handle in handles {
+                let (chunk_index, rows) = handle.join().map_err(|_| {
+                    DataFusionError::Execution(
+                        "vector batch merge thread panicked".to_string(),
+                    )
+                })?;
+                parts.push((chunk_index, rows));
+            }
+            Ok::<_, DataFusionError>(())
+        })?;
+        parts.sort_by_key(|(chunk_index, _)| *chunk_index);
+        let mut position = 0;
+        for (_, rows) in parts {
+            for row in rows {
+                results[position] = row?;
+                position += 1;
+            }
+        }
     }
     if profile {
         tracing::debug!(

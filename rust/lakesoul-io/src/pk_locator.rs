@@ -2242,6 +2242,37 @@ impl VectorPayloadSource {
             .take(&indices, std::slice::from_ref(&self.vector_field))?;
         (arrays.len() == 1).then(|| arrays.remove(0))
     }
+
+    /// Exact L2/IP scores of the given keys' stored vectors.
+    ///
+    /// Same lookup as [`Self::take`] but without building an Arrow array per
+    /// query: the batch re-rank only needs the scores, so the rows are read and
+    /// reduced in place.  `None` when a key does not resolve to exactly one row
+    /// (the merge path has to decide versions) or the payload cannot serve it.
+    pub fn score_keys(
+        &self,
+        keys: &[IndexKey],
+        query: &[f32],
+        ascending: bool,
+    ) -> Option<Vec<f32>> {
+        if keys.is_empty() {
+            return Some(Vec::new());
+        }
+        let mut order: Vec<u32> = (0..keys.len() as u32).collect();
+        order.sort_unstable_by(|left, right| {
+            keys[*left as usize].as_bytes().cmp(keys[*right as usize].as_bytes())
+        });
+        let sorted: Vec<&[u8]> = order
+            .iter()
+            .map(|position| keys[*position as usize].as_bytes())
+            .collect();
+        let rows = self.entry.index.one_row_per_prefix(&sorted)?;
+        let mut indices = vec![0u64; keys.len()];
+        for (slot, position) in order.iter().enumerate() {
+            indices[*position as usize] = u64::from(rows[slot]);
+        }
+        self.view.score_rows(&indices, query, ascending)
+    }
 }
 
 /// Shared tail of both key-input builders: opens each file's mmapped key/// Shared tail of both key-input builders: opens each file's mmapped key

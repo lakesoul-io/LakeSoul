@@ -399,6 +399,50 @@ fn take_vectors(
     }
 }
 
+/// Squared L2 distance of two stored vectors, eight lanes at a time.
+fn squared_distance_f32(stored: &[f32], query: &[f32]) -> f32 {
+    if stored.len() != query.len() {
+        return f32::INFINITY;
+    }
+    let mut lanes = [0.0f32; 8];
+    let mut index = 0;
+    while index + 8 <= stored.len() {
+        for lane in 0..8 {
+            let delta = stored[index + lane] - query[index + lane];
+            lanes[lane] += delta * delta;
+        }
+        index += 8;
+    }
+    let mut sum: f32 = lanes.iter().sum();
+    while index < stored.len() {
+        let delta = stored[index] - query[index];
+        sum += delta * delta;
+        index += 1;
+    }
+    sum
+}
+
+/// Negated inner product, eight lanes at a time.
+fn negated_dot_f32(stored: &[f32], query: &[f32]) -> f32 {
+    if stored.len() != query.len() {
+        return f32::NEG_INFINITY;
+    }
+    let mut lanes = [0.0f32; 8];
+    let mut index = 0;
+    while index + 8 <= stored.len() {
+        for lane in 0..8 {
+            lanes[lane] += stored[index + lane] * query[index + lane];
+        }
+        index += 8;
+    }
+    let mut sum: f32 = lanes.iter().sum();
+    while index < stored.len() {
+        sum += stored[index] * query[index];
+        index += 1;
+    }
+    -sum
+}
+
 /// A payload file: the stored vectors of one data file, in row order.
 pub(crate) struct PayloadView {
     file: Arc<std::fs::File>,
@@ -468,6 +512,67 @@ impl PayloadView {
             dims,
             offsets,
         })
+    }
+
+    /// Exact L2/IP score of the given rows, read straight from the payload
+    /// bytes.
+    ///
+    /// The batch re-rank reads hundreds of thousands of candidate rows; going
+    /// through an Arrow array per take would allocate and copy one list buffer
+    /// per query.  This scores the rows in place instead: one `pread` of the
+    /// row's `dim` floats into a reusable buffer, then an eight-lane reduction.
+    /// `None` when the payload cannot reproduce the row exactly.
+    pub(crate) fn score_rows(
+        &self,
+        indices: &[u64],
+        query: &[f32],
+        ascending: bool,
+    ) -> Option<Vec<f32>> {
+        if self.columns.len() != 1 {
+            return None;
+        }
+        let column = &self.columns[0];
+        let dim = self.dims[0];
+        if dim != query.len() {
+            return None;
+        }
+        let row_bytes = dim * column.elem.size();
+        let offset = self.offsets[0];
+        let mut scores = Vec::with_capacity(indices.len());
+        let mut buffer = vec![0u8; row_bytes];
+        let mut stored: Vec<f32> = Vec::with_capacity(dim);
+        for index in indices {
+            let index = *index as usize;
+            if index >= self.rows {
+                return None;
+            }
+            let at = offset + (index * row_bytes) as u64;
+            self.file.read_exact_at(&mut buffer, at).ok()?;
+            stored.clear();
+            match column.elem {
+                PayloadElem::F32 => {
+                    for value in buffer.chunks_exact(4) {
+                        stored.push(f32::from_le_bytes([
+                            value[0], value[1], value[2], value[3],
+                        ]));
+                    }
+                }
+                PayloadElem::F64 => {
+                    for value in buffer.chunks_exact(8) {
+                        stored.push(f64::from_le_bytes([
+                            value[0], value[1], value[2], value[3], value[4],
+                            value[5], value[6], value[7],
+                        ]) as f32);
+                    }
+                }
+            }
+            scores.push(if ascending {
+                squared_distance_f32(&stored, query)
+            } else {
+                negated_dot_f32(&stored, query)
+            });
+        }
+        Some(scores)
     }
 
     pub(crate) fn take(
