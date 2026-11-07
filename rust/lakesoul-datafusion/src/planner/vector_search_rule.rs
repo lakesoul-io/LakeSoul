@@ -40,6 +40,10 @@ use crate::udf::vector_search_marker::{
     marker_expr, multi_marker_expr,
 };
 
+/// Candidates per bucket in exact mode when the session does not say
+/// otherwise (`top_k * this`); the historical value.
+pub const DEFAULT_EXACT_OVERFETCH: usize = 10;
+
 /// Logical optimizer rule for the vector-search pushdown (see module docs).
 #[derive(Debug, Default)]
 pub struct VectorSearchPushdownRule;
@@ -90,12 +94,23 @@ impl OptimizerRule for VectorSearchPushdownRule {
     ) -> DFResult<Transformed<LogicalPlan>> {
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         let started = std::time::Instant::now();
-        let index_only = config
+        let (index_only, exact_overfetch) = match config
             .options()
             .extensions
             .get::<LakeSoulVectorSearchConfig>()
-            .is_some_and(|options| options.rerank_mode() == RerankMode::Index);
-        let result = match detect(&plan, index_only) {
+        {
+            Some(options) => (
+                options.rerank_mode() == RerankMode::Index,
+                std::env::var("LAKESOUL_VECTOR_EXACT_OVERFETCH")
+                    .ok()
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(options.exact_overfetch)
+                    .max(1),
+            ),
+            None => (false, DEFAULT_EXACT_OVERFETCH),
+        };
+        let result = match detect(&plan, index_only, exact_overfetch) {
             Some((spec, target)) => {
                 let rewritten = rewrite_chain(plan, &spec, &target, true)
                     .expect("matching plan must be rewritable");
@@ -120,6 +135,7 @@ impl OptimizerRule for VectorSearchPushdownRule {
 fn detect(
     plan: &LogicalPlan,
     index_only: bool,
+    exact_overfetch: usize,
 ) -> Option<(VectorSearchSpec, Arc<LogicalPlan>)> {
     let limit = match plan {
         LogicalPlan::Limit(limit) => limit,
@@ -193,7 +209,11 @@ fn detect(
                 // A filter between the scan and the sort can drop candidates,
                 // so it keeps the exact-mode margin; the exact re-rank itself
                 // needs the margin for the sort above the scan.
-                let overfetch = if order_by && !saw_filter { 2 } else { 10 };
+                let overfetch = if order_by && !saw_filter {
+                    2
+                } else {
+                    exact_overfetch
+                };
                 // A filter above the scan can drop rows the scan kept, so
                 // the scan cannot reduce its result to the sort's top-k and
                 // must read every candidate's payload.

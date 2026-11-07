@@ -69,12 +69,14 @@ pub struct VectorSearchRequest {
 
 impl VectorSearchRequest {
     /// The number of candidates requested per bucket.
+    ///
+    /// The pushdown rule chooses the multiplier: `2` for index-only ordering
+    /// (each bucket's top-k is all a global top-k needs) and
+    /// [`exact_overfetch`](crate::udf::vector_search_marker::LakeSoulVectorSearchConfig::exact_overfetch)
+    /// for the exact re-rank, which reads the stored vectors of every
+    /// candidate.
     pub fn candidates_per_bucket(&self) -> usize {
-        if self.order_by {
-            self.top_k.saturating_mul(self.overfetch.max(1))
-        } else {
-            self.top_k.saturating_mul(10).max(100)
-        }
+        self.top_k.saturating_mul(self.overfetch.max(1)).max(1)
     }
 
     /// True when the request searches a single column.
@@ -460,6 +462,15 @@ datafusion::common::extensions_options! {
         /// keeps the top ones and fetches their payload in a second pass.
         /// Disable to trade IO for a single read.
         pub deferred_payload: bool, default = true
+        /// Candidates fetched per bucket in `exact` mode (`top_k * this`).
+        ///
+        /// The exact re-rank reads the stored vectors of every candidate, and
+        /// on a cold (not column-cached) table that read dominates: each
+        /// candidate row is a random access into the vector column, so the
+        /// candidates are effectively spread over every compression chunk.
+        /// A smaller factor is proportionally faster with lower recall;
+        /// `LAKESOUL_VECTOR_EXACT_OVERFETCH` overrides it per process.
+        pub exact_overfetch: usize, default = 10
     }
 }
 

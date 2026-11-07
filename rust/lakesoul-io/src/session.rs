@@ -869,16 +869,21 @@ impl LakeSoulIOSession {
         filters: Vec<Expr>,
         key_candidates: Option<&[lakesoul_vector::IndexKey]>,
     ) -> Result<Arc<dyn ExecutionPlan>, Report> {
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_phase = std::time::Instant::now();
         let listing_metas = self.io_listing_metas().await?;
+        let listing_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
 
         if listing_metas.table_paths.is_empty() {
             debug!("empty exec");
             return Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))));
         }
 
+        let t_phase = std::time::Instant::now();
         let format_registry = self.io_file_format().await?;
         let format_groups = self.format_scan_groups(listing_metas, format_registry)?;
         let table_schema = self.io_table_schema().await?;
+        let schema_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
         let statistics = Statistics::new_unknown(table_schema.table_schema());
 
         // Explicit IVM contribution keys encode a prefix of the primary key;
@@ -1015,6 +1020,7 @@ impl LakeSoulIOSession {
         };
 
         // 5. Build scan configs for every physical format group.
+        let t_flatten = std::time::Instant::now();
         let mut flatten_configs = vec![];
         for group in format_groups {
             let file_format = format_registry.file_format(group.physical_format);
@@ -1070,6 +1076,8 @@ impl LakeSoulIOSession {
         // from `pk = v` / `pk IN (...)` predicates replace the per-file scans
         // with row-level candidate inputs (vortex only; otherwise the regular
         // scan path is kept).
+        let flatten_ms = t_flatten.elapsed().as_secs_f64() * 1000.0;
+        let t_keys = std::time::Instant::now();
         let encoded_inputs = match key_candidates {
             Some(keys) if !keys.is_empty() => {
                 pk_locator::try_build_key_inputs_encoded(
@@ -1099,6 +1107,8 @@ impl LakeSoulIOSession {
                 None => None,
             },
         };
+        let keys_ms = t_keys.elapsed().as_secs_f64() * 1000.0;
+        let t_merge = std::time::Instant::now();
         let merge_exec = Arc::new(match candidate_inputs {
             Some(inputs) => MergeParquetExec::new_with_inputs(
                 merged_schema.clone(),
@@ -1112,6 +1122,18 @@ impl LakeSoulIOSession {
                 self.io_config.clone(),
             )?,
         });
+        let merge_ms = t_merge.elapsed().as_secs_f64() * 1000.0;
+        if profile {
+            tracing::debug!(
+                listing_ms,
+                schema_ms,
+                flatten_ms,
+                keys_ms,
+                merge_ms,
+                key_candidates = key_candidates.map(|keys| keys.len()).unwrap_or(0),
+                "lake_soul io plan profile"
+            );
+        }
         let exec: Arc<dyn ExecutionPlan> =
             if scan_schema.fields().len() < merged_schema.fields().len() {
                 let mut projection_expr = vec![];
