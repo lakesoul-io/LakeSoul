@@ -102,6 +102,33 @@ fn fold(expr: Expr) -> Result<Transformed<Expr>> {
     ))
 }
 
+/// The values of a query vector already folded into one list literal.
+fn literal_list_vector(
+    list: &datafusion::arrow::array::GenericListArray<i32>,
+) -> Option<(Vec<f32>, datafusion::arrow::datatypes::DataType)> {
+    use datafusion::arrow::array::{Array, Float32Array, Float64Array};
+    let values = list.values();
+    match values.data_type() {
+        datafusion::arrow::datatypes::DataType::Float32 => {
+            let values = values.as_any().downcast_ref::<Float32Array>()?;
+            Some((
+                (0..values.len()).map(|row| values.value(row)).collect(),
+                datafusion::arrow::datatypes::DataType::Float32,
+            ))
+        }
+        datafusion::arrow::datatypes::DataType::Float64 => {
+            let values = values.as_any().downcast_ref::<Float64Array>()?;
+            Some((
+                (0..values.len())
+                    .map(|row| values.value(row) as f32)
+                    .collect(),
+                datafusion::arrow::datatypes::DataType::Float64,
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// The literal values of an all-literal query vector, with their element type.
 fn literal_query_vector(
     expr: &Expr,
@@ -111,6 +138,22 @@ fn literal_query_vector(
     let elements: &[Expr] = match expr {
         Expr::ScalarFunction(call) if call.func.name() == "make_array" => {
             call.args.as_slice()
+        }
+        // pgvector-compatible operators (`<->`, `<#>`, `<=>`) reach the
+        // analyzer with the query already parsed into one list literal, so
+        // there are no per-dimension nodes to fold — but the vector still has
+        // to leave the plan (a 200-element list literal otherwise costs the
+        // analyzer and the pre-rewrite optimizer passes ~1.3 ms per
+        // statement, the same reason the `ARRAY[…]` form is folded).
+        Expr::Literal(ScalarValue::List(values), _) => {
+            // `LAKESOUL_FOLD_LIST_LITERALS=0` keeps the pgvector form's list
+            // literal inline for A/B runs.
+            if std::env::var("LAKESOUL_FOLD_LIST_LITERALS")
+                .is_ok_and(|value| value == "0")
+            {
+                return None;
+            }
+            return literal_list_vector(values.as_ref());
         }
         _ => return None,
     };
