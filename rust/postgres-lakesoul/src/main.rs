@@ -129,6 +129,27 @@ async fn main_inner(cli: Cli) -> Result<()> {
         profile = lakesoul_build_info::PROFILE,
         "postgres-lakesoul build identity"
     );
+    // Exact re-rank is the default candidate ordering of the pgvector path
+    // (`ORDER BY vec <-> '[...]' LIMIT k`), and it needs the stored-vector
+    // payload cache: without it every candidate row is read through the
+    // vectorized reader, which measured 30-370x slower on the GloVe corpus
+    // (10 QPS at nprobe=32/overfetch=1, 0.5 QPS at the session defaults).
+    let payload_cache_enabled = std::env::var("LAKESOUL_VECTOR_RERANK_CACHE")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false);
+    if !payload_cache_enabled {
+        warn!(
+            "vector re-rank payload cache is disabled; exact rerank queries \
+             (the default candidate ordering) fall back to the slow reader \
+             path.  Set LAKESOUL_VECTOR_RERANK_CACHE=1 (and optionally \
+             LAKESOUL_VECTOR_RERANK_CACHE_DIR) to enable it"
+        );
+    }
     if let Some(endpoint) = tracing.otlp_endpoint() {
         info!(endpoint, "OTLP trace exporter enabled");
     }

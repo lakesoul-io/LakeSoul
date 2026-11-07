@@ -755,3 +755,42 @@ VectorTopKOptimizerRule
 推荐下一步直接做 **PR 1。它能先确定 parser、类型、UDF、prepared parameter 和 PG wire 的边界，再接 ANN；反过来先接索引，会把语法问题和 snapshot 正确性问题混在一起。
 
 参考：[pgvector 官方语法与操作符](https://github.com/pgvector/pgvector#querying)。
+---
+
+# 九、实测：pgvector 查询 QPS（GloVe-1.18M × 200d）
+
+测试环境与 datafusion 侧完全一致：8 物理核/16 逻辑核 KVM、AVX-512；表
+`vec_glove_pg`（vortex、4 个 hash bucket、`vector_index_columns` = `{"column":"vec","dim":200,
+"nlist":1024,"total_bits":1,"metric":"L2"}`）；200 条真实 GloVe query；`ORDER BY vec <-> '[…]'
+LIMIT 100`；客户端为 libpq（psql 单连接顺序 / 8 个并行连接），服务端
+`postgres-lakesoul --worker-threads 16`，且进程环境开启 payload 缓存
+（`LAKESOUL_VECTOR_RERANK_CACHE=1` + `LAKESOUL_VECTOR_RERANK_CACHE_DIR`）。
+
+| 会话配置 | c=1 QPS | c=8 QPS | Recall@100（20 条抽样） | 备注 |
+|---|---:|---:|---:|---|
+| 默认（exact、nprobe=64、of=10） | 182–194 | — | — | 服务不设任何 `SET` 时的开箱值 |
+| `rerank='index'; nprobe=16` | 490–495 | 1,962–1,985 | 0.435 | 只按索引距离排序，不读向量列 |
+| `rerank='exact'; nprobe=32; overfetch=1` | 303–318 | 1,202–1,227（c=16: 944–1,029） | 0.637 | 精确重排，推荐工作点 |
+| `rerank='exact'; nprobe=64; overfetch=10` | 185–193 | — | — | 高召回档 |
+| **payload 缓存关闭**：exact np32/of1 | **10.0** | — | — | 回退 reader 路径 |
+| **payload 缓存关闭**：默认 np64/of10 | **0.5** | — | — | 每查询约 2 s |
+
+对照 datafusion SQL 路径（同表、同参数）：index-only 单查询 519–554 QPS、exact np32/of1
+316–337 QPS（c=8 时 1,039–1,045）；即 **PG wire 层对 index-only 有 ~5–7% 开销，对 exact 基本
+没有额外开销**（两端都是 CPU 密集型）。召回与 datafusion 逐位同源（抽样 0.435 / 0.637 vs
+200 条全量 0.4204 / 0.6419，差异来自抽样）。
+
+其它观测：
+- 服务进程 RSS ≈ 504 MB（index cache 15 MB；payload 目录 903 MB 在 tmpfs 上，走 pread，不映射进 RSS）；
+- payload 冷构建：4 个文件共 903 MB，首个 exact 查询 **0.96 s**；之后单查询端到端 28–39 ms
+  （含连接、planning、3.3 ms 级 exec）；
+- 结果正确性：`<->` 返回的距离与 datafusion 精确路径一致（crate 内 192 项测试已覆盖）。
+
+**结论与建议**：
+1. **P0：服务进程必须开启 payload 缓存**。pgvector 的 `<->` 默认走 exact 重排，缓存关闭时会回退到
+   reader 路径，QPS 从 185–318 掉到 0.5–10（30–370×）。本提交在启动时打印 WARN 提示
+   （`LAKESOUL_VECTOR_RERANK_CACHE=1`，可选 `..._CACHE_DIR`）。
+2. PG wire 不是瓶颈，**不建议**为此改协议层；需要更高 QPS 时应调会话参数（见上表）或等待
+   datafusion 侧 SQL 前端优化（与 `ORDER BY ... LIMIT` 的规划路径共用）。
+3. 若要对齐原生 pgvector 语义（按索引距离返回近似序、不读向量列），把
+   `lakesoul_vector_search.rerank` 默认设为 `index` 更贴切——这是行为/召回取舍，需产品决策。
