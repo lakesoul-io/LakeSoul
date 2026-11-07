@@ -823,16 +823,20 @@ impl LakeSoulTableProvider {
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         let t_listing = std::time::Instant::now();
         let t_phase = std::time::Instant::now();
-        let all_partition_info = self
-            .client
-            .get_all_partition_info(self.table_id())
-            .await
-            .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
+        let all_partition_info = crate::catalog::metadata_cache::partition_info(
+            crate::catalog::metadata_cache::partition_key(
+                &self.client,
+                self.table_id(),
+            ),
+            self.client.get_all_partition_info(self.table_id()),
+        )
+        .await
+        .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
         let meta_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
         let t_phase = std::time::Instant::now();
         let total_partition_count = all_partition_info.len();
         let prune_partition_info = prune_partitions(
-            all_partition_info,
+            (*all_partition_info).clone(),
             partition_filters,
             self.table_partition_cols(),
         )
@@ -920,11 +924,16 @@ impl LakeSoulTableProvider {
             .runtime_env()
             .object_store(url)
             .attach(format!("{:?}", ctx.runtime_env().object_store_registry))?;
-        let all_partition_info = self
-            .client
-            .get_all_partition_info(self.table_id())
-            .await
-            .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
+        let all_partition_info = crate::catalog::metadata_cache::partition_info(
+            crate::catalog::metadata_cache::partition_key(
+                &self.client,
+                self.table_id(),
+            ),
+            self.client.get_all_partition_info(self.table_id()),
+        )
+        .await
+        .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
+        let all_partition_info = (*all_partition_info).clone();
         let prune_partition_info = prune_partitions(
             all_partition_info,
             partition_filters,

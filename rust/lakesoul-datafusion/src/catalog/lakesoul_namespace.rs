@@ -221,10 +221,17 @@ impl SchemaProvider for LakeSoulNamespace {
         let name = case_fold_table_name(name);
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         let t_lookup = std::time::Instant::now();
-        let table = match LakeSoulTable::for_namespace_and_name(
-            &self.namespace,
-            &name,
-            Some(self.metadata_client()),
+        let table = match super::metadata_cache::table(
+            super::metadata_cache::table_key(
+                &self.metadata_client(),
+                &self.namespace,
+                &name,
+            ),
+            LakeSoulTable::for_namespace_and_name(
+                &self.namespace,
+                &name,
+                Some(self.metadata_client()),
+            ),
         )
         .await
         {
