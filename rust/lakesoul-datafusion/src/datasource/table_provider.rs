@@ -1035,6 +1035,23 @@ impl LakeSoulTableProvider {
         };
         let table_prefix =
             crate::datasource::file_format::vector_search_exec::derive_prefix(first);
+        // Exact re-rank computes the distance itself; it currently knows the
+        // L2 metric only.  An IP index would be re-ranked with the wrong
+        // distance, so refuse instead of returning different results.
+        if request.exact {
+            let metric = self
+                .vector_index_configs
+                .iter()
+                .find(|config| config.column == request.column)
+                .map(|config| config.params.metric.to_uppercase());
+            if metric.as_deref() != Some("L2") {
+                return Err(DataFusionError::NotImplemented(format!(
+                    "exact batch search supports the L2 metric only, the index of \
+                     column '{}' uses {:?}",
+                    request.column, metric
+                )));
+            }
+        }
         let results = crate::vector_batch::search_vector_batch(
             &self.client.vector_index_catalog(),
             &store,
