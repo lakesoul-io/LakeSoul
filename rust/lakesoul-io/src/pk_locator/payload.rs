@@ -400,7 +400,7 @@ fn take_vectors(
 }
 
 /// A payload file: the stored vectors of one data file, in row order.
-struct PayloadView {
+pub(crate) struct PayloadView {
     file: Arc<std::fs::File>,
     rows: usize,
     columns: Vec<ColSpec>,
@@ -470,7 +470,11 @@ impl PayloadView {
         })
     }
 
-    fn take(&self, indices: &[u64], fields: &[FieldRef]) -> Option<Vec<ArrayRef>> {
+    pub(crate) fn take(
+        &self,
+        indices: &[u64],
+        fields: &[FieldRef],
+    ) -> Option<Vec<ArrayRef>> {
         if fields.len() != self.columns.len() {
             return None;
         }
@@ -866,7 +870,44 @@ fn decode_keys(
     converter.convert_rows(rows).ok()
 }
 
-#[cfg(test)]
+/// Whether the stored-vector payload cache is enabled.
+pub fn enabled() -> bool {
+    payload_config().is_some()
+}
+
+/// Open (build once) one vector column's payload for a data file.
+///
+/// The returned view serves rows by data-file row id, so a caller that reads
+/// several candidate sets from one file only pays the open once.
+pub(crate) async fn open_view(
+    entry: &CachedFile,
+    location: &StorePath,
+    field: &FieldRef,
+) -> Option<Arc<PayloadView>> {
+    let config = payload_config()?;
+    let FileSource::Vortex { file, session } = &entry.source else {
+        return None;
+    };
+    if entry.index.has_row_ids() {
+        return None;
+    }
+    let elem = payload_elem(field.data_type())?;
+    let columns = vec![ColSpec {
+        name: field.name().clone(),
+        elem,
+    }];
+    load_or_build(
+        &config,
+        file,
+        session,
+        location,
+        &columns,
+        file.row_count() as usize,
+    )
+    .await
+}
+
+#[cfg(test)]#[cfg(test)]
 mod tests {
     use super::*;
 

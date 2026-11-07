@@ -47,7 +47,7 @@ use std::sync::{Arc, LazyLock};
 
 use arrow::array::{Array, ArrayRef, AsArray};
 use arrow::compute::{SortColumn, cast, lexsort_to_indices, take};
-use arrow::datatypes::{DataType, Schema, SchemaRef, TimeUnit};
+use arrow::datatypes::{DataType, FieldRef, Schema, SchemaRef, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
 use datafusion::catalog::Session;
@@ -335,6 +335,55 @@ impl MmapIndex {
             }
         }
         (start..low).map(|index| self.row_id(index)).collect()
+    }
+
+    /// Exactly one row per prefix, for prefixes sorted ascending.
+    ///
+    /// `rows_with_prefix` per key costs `log(rows)` random accesses across the
+    /// whole index; a candidate batch asks for hundreds of keys, and the index
+    /// is sorted, so each search can start where the previous one stopped.  An
+    /// exponential probe covers the gap and the binary search then only runs
+    /// inside that window, which keeps consecutive keys inside a few cache
+    /// lines.  Returns `None` when a prefix matches zero or several rows: the
+    /// caller then has to let the merge path decide.
+    fn one_row_per_prefix(&self, prefixes: &[&[u8]]) -> Option<Vec<u32>> {
+        let mut rows = Vec::with_capacity(prefixes.len());
+        let mut cursor = 0usize;
+        for prefix in prefixes {
+            let mut low = cursor;
+            let mut high = self.rows;
+            let mut step = 1usize;
+            loop {
+                let probe = low.saturating_add(step);
+                if probe >= self.rows {
+                    break;
+                }
+                if self.row(probe) >= *prefix {
+                    high = probe;
+                    break;
+                }
+                low = probe;
+                step = step.saturating_mul(2).min(self.rows);
+            }
+            while low < high {
+                let mid = low + (high - low) / 2;
+                if self.row(mid) < *prefix {
+                    low = mid + 1;
+                } else {
+                    high = mid;
+                }
+            }
+            let start = low;
+            if start >= self.rows || !self.row(start).starts_with(prefix) {
+                return None;
+            }
+            if start + 1 < self.rows && self.row(start + 1).starts_with(prefix) {
+                return None;
+            }
+            rows.push(self.row_id(start));
+            cursor = start;
+        }
+        Some(rows)
     }
 
     /// The rows whose key starts with any of `prefixes`, in row order.
@@ -2107,7 +2156,94 @@ pub async fn try_build_key_inputs_encoded(
     .await
 }
 
-/// Shared tail of both key-input builders: opens each file's mmapped key
+/// Whether exact re-rank can read stored vectors from the payload cache.
+pub fn vector_payload_cache_enabled() -> bool {
+    payload::enabled()
+}
+
+/// One data file's stored-vector payload, opened once for a candidate batch.
+///
+/// This is the direct exact-re-rank entry: [`Self::open`] resolves the key
+/// index and the payload of one data file, and [`Self::take`] serves the
+/// stored vectors of encoded keys without decoding any primary-key value and
+/// without touching the merge path.  Both steps refuse what they cannot
+/// reproduce exactly (no payload cache, a file with explicit row ids, or a key
+/// that does not resolve to exactly one row), so callers can fall back to the
+/// reader path on `None`.
+pub struct VectorPayloadSource {
+    entry: Arc<CachedFile>,
+    view: Arc<payload::PayloadView>,
+    vector_field: FieldRef,
+}
+
+impl VectorPayloadSource {
+    /// Open the key index and the stored-vector payload of one data file.
+    pub async fn open(
+        store: Arc<dyn ObjectStore>,
+        location: &StorePath,
+        format: PhysicalFormat,
+        key_columns: &[String],
+        key_types: &[DataType],
+        vector_field: &FieldRef,
+    ) -> Option<Self> {
+        if !payload::enabled() {
+            return None;
+        }
+        let mut session: Option<VortexSession> = None;
+        let entry = get_or_load_file(
+            store,
+            location.clone(),
+            format,
+            key_columns,
+            key_types,
+            &HashMap::new(),
+            &mut session,
+        )
+        .await?;
+        if entry.index.has_row_ids() {
+            return None;
+        }
+        let view = payload::open_view(&entry, location, vector_field).await?;
+        Some(Self {
+            entry,
+            view,
+            vector_field: Arc::clone(vector_field),
+        })
+    }
+
+    /// The stored vector of every key, in input order.
+    ///
+    /// `None` when any key does not resolve to exactly one row of the file:
+    /// more than one row means several versions the merge path has to decide,
+    /// none means the index and the data file disagree.
+    pub fn take(&self, keys: &[IndexKey]) -> Option<arrow::array::ArrayRef> {
+        if keys.is_empty() {
+            return None;
+        }
+        // The candidate keys are not sorted (they arrive in index-distance
+        // order); the locator's monotonic search needs them sorted, and the
+        // payload read has to answer in the original order.
+        let mut order: Vec<u32> = (0..keys.len() as u32).collect();
+        order.sort_unstable_by(|left, right| {
+            keys[*left as usize].as_bytes().cmp(keys[*right as usize].as_bytes())
+        });
+        let sorted: Vec<&[u8]> = order
+            .iter()
+            .map(|position| keys[*position as usize].as_bytes())
+            .collect();
+        let rows = self.entry.index.one_row_per_prefix(&sorted)?;
+        let mut indices = vec![0u64; keys.len()];
+        for (slot, position) in order.iter().enumerate() {
+            indices[*position as usize] = u64::from(rows[slot]);
+        }
+        let mut arrays = self
+            .view
+            .take(&indices, std::slice::from_ref(&self.vector_field))?;
+        (arrays.len() == 1).then(|| arrays.remove(0))
+    }
+}
+
+/// Shared tail of both key-input builders: opens each file's mmapped key/// Shared tail of both key-input builders: opens each file's mmapped key
 /// index, looks the encoded keys up and fetches the matching rows.
 #[allow(clippy::too_many_arguments)]
 async fn build_key_inputs(

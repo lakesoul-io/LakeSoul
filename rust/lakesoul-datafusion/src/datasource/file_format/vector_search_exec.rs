@@ -47,6 +47,7 @@ use lakesoul_io::config::{
     OPTION_KEY_VECTOR_SEARCH_TOP_K,
 };
 use lakesoul_io::execution_trace::instrument_record_batch_stream;
+use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_io::index::IndexLease;
 use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::index::key::{KeyCodec, KeyLayout};
@@ -881,17 +882,6 @@ impl LakeSoulVectorSearchExec {
             .iter()
             .map(|group| self.group_files(group))
             .collect::<DFResult<Vec<_>>>()?;
-        let mut prefixes: Vec<String> = groups
-            .iter()
-            .flat_map(|group| {
-                group
-                    .index_prefixes
-                    .iter()
-                    .map(|(prefix, _)| prefix.clone())
-            })
-            .collect();
-        prefixes.sort_unstable();
-        prefixes.dedup();
         let column = &self.vector_search.columns[0];
         let query =
             lakesoul_io::vector::search::parse_query_vector(&column.query_csv, None)
@@ -899,143 +889,14 @@ impl LakeSoulVectorSearchExec {
         let top_k = self.vector_search.candidates_per_bucket();
 
         // A repeat query on the same file set reuses the shards the previous
-        // one resolved: the plan is built from the snapshot's file groups and
-        // data files are immutable, so the same file set reads the same rows.
-        // The coverage proof re-runs below, so an unproven entry falls back.
+        // one resolved; the coverage proof re-runs, so an unproven entry falls
+        // back below.
         let t_search = std::time::Instant::now();
-        let mut resolve_ms = 0.0_f64;
-        let cache_key = self.snapshot_key(expected_key_kind);
-        let expected_prefixes: Vec<String> = groups
-            .iter()
-            .flat_map(|group| {
-                group
-                    .index_prefixes
-                    .iter()
-                    .map(|(prefix, _)| prefix.clone())
-            })
-            .collect();
-        let cached_snapshot = if snapshot_cache_enabled() {
-            snapshot_cache_get(&cache_key)
-                .filter(|entry| self.snapshot_covered(entry, &expected_prefixes))
-        } else {
-            None
-        };
-        let snapshot_cached = cached_snapshot.is_some();
-        let snapshot = match cached_snapshot {
-            Some(entry) => entry,
-            None => {
-                let t_resolve = std::time::Instant::now();
-                let views = self.catalog.resolve_cached_many(&prefixes).await.map_err(
-                    |error| {
-                        DataFusionError::External(
-                            rootcause::report!(
-                                "failed to resolve vector index shards: {}",
-                                error
-                            )
-                            .into_boxed_error(),
-                        )
-                    },
-                )?;
-                resolve_ms = t_resolve.elapsed().as_secs_f64() * 1000.0;
-                // Prove that the resolved commits cover this snapshot before
-                // touching any shard.
-                let mut requested: Vec<(
-                    String,
-                    Vec<String>,
-                    Arc<IndexCommitView<VectorSegmentEntry>>,
-                )> = Vec::with_capacity(groups.len());
-                for group in &groups {
-                    for (prefix, _bucket) in &group.index_prefixes {
-                        let Some(view) = views.get(prefix).and_then(Option::as_ref)
-                        else {
-                            return Ok(None);
-                        };
-                        let covered: Vec<&str> = view
-                            .segments
-                            .iter()
-                            .flat_map(|segment| {
-                                segment.data_files.iter().map(String::as_str)
-                            })
-                            .collect();
-                        if !crate::vector_batch::can_skip_verification(
-                            &self.cdc_column,
-                            view.mutation_head.is_none(),
-                            view.mutation_records,
-                            &group.file_uris,
-                            &covered,
-                        ) {
-                            return Ok(None);
-                        }
-                        requested.push((
-                            prefix.clone(),
-                            group.file_uris.clone(),
-                            Arc::clone(view),
-                        ));
-                    }
-                }
-                // A hot shard comes straight from the index cache; four
-                // lookups overlap instead of queuing.
-                let lookups = requested.iter().map(|(prefix, _, view)| {
-                    cached_typed_shard(prefix, view.commit_id, expected_key_kind)
-                });
-                let cached = futures::future::join_all(lookups).await;
-                let mut shards: Vec<CachedSnapshotShard> =
-                    Vec::with_capacity(requested.len());
-                for ((prefix, files, view), cached_shard) in
-                    requested.into_iter().zip(cached)
-                {
-                    let shard = match cached_shard {
-                        Some(shard) => shard,
-                        None => {
-                            // A cold shard loads from its commit; the catalog
-                            // view already holds the parsed segment list, so
-                            // hand it over instead of rebuilding the serialized
-                            // transport form.
-                            let segments =
-                                crate::vector_batch::segment_entries(view.as_ref());
-                            let Some(shard) = load_typed_shard(
-                                store,
-                                &prefix,
-                                view.commit_id,
-                                view.version,
-                                &view.header,
-                                &segments,
-                                view.mutation_head.as_deref(),
-                                view.mutation_records,
-                                expected_key_kind,
-                            )
-                            .await
-                            .map_err(|error| {
-                                DataFusionError::External(error.into_boxed_error())
-                            })?
-                            else {
-                                // The shard was written for another key
-                                // layout; the reader path reports that the
-                                // same way.
-                                return Ok(None);
-                            };
-                            shard
-                        }
-                    };
-                    let covered = covered_file_names(view.as_ref());
-                    shards.push(CachedSnapshotShard {
-                        prefix,
-                        files,
-                        covered,
-                        view,
-                        shard,
-                    });
-                }
-                let bytes = shards.iter().map(|slot| slot.shard.memory_bytes()).sum();
-                let entry = Arc::new(CachedSnapshot {
-                    key: cache_key.clone(),
-                    shards,
-                    bytes,
-                });
-                snapshot_cache_put(Arc::clone(&entry));
-                entry
-            }
-        };
+        let (snapshot, resolve_ms, snapshot_cached) =
+            match self.expected_snapshot(store, &groups, expected_key_kind).await? {
+                Some(resolved) => resolved,
+                None => return Ok(None),
+            };
         let shards: Vec<LoadedShard> = snapshot
             .shards
             .iter()
@@ -1043,36 +904,12 @@ impl LakeSoulVectorSearchExec {
             .collect();
         let load_ms = t_search.elapsed().as_secs_f64() * 1000.0;
         let t_probe = std::time::Instant::now();
-        // Probe the shards on the shared blocking pool: a query does not
-        // warrant four fresh OS threads, and the pool threads are already warm.
-        let query = Arc::new(query);
-        let mut tasks = Vec::with_capacity(shards.len());
-        for shard in &shards {
-            let shard = shard.clone();
-            let query = Arc::clone(&query);
-            tasks.push(
-                lakesoul_io::session::GLOBAL_RUNTIME.spawn_blocking(move || {
-                    let query_ref: [&[f32]; 1] = [query.as_slice()];
-                    shard.search_batch(&query_ref, top_k, nprobe, parallelism)
-                }),
-            );
-        }
-        let mut per_shard: Vec<Vec<Vec<VectorHit>>> = Vec::with_capacity(tasks.len());
-        for task in tasks {
-            let probed = task.await.map_err(|error| {
-                DataFusionError::Execution(format!("vector shard probe failed: {error}"))
-            })?;
-            per_shard.push(
-                probed.map_err(|error| {
-                    DataFusionError::External(error.into_boxed_error())
-                })?,
-            );
-        }
+        let per_shard = probe_shards(&shards, &query, top_k, nprobe, parallelism).await?;
         let probe_ms = t_probe.elapsed().as_secs_f64() * 1000.0;
         let candidates_total = per_shard.iter().map(|hits| hits.len()).sum::<usize>();
         let mut best: std::collections::HashMap<IndexKey, f32> =
             std::collections::HashMap::with_capacity(candidates_total);
-        for hits in per_shard.into_iter().flatten().flatten() {
+        for hits in per_shard.into_iter().flatten() {
             best.entry(hits.key)
                 .and_modify(|score| *score = score.min(hits.score))
                 .or_insert(hits.score);
@@ -1135,6 +972,478 @@ impl LakeSoulVectorSearchExec {
                 snapshot_cached,
                 total_ms = t_inner.elapsed().as_secs_f64() * 1000.0,
                 "vector index-only inner profile"
+            );
+        }
+        Ok(Some(vec![arrow::record_batch::RecordBatch::try_new(
+            Arc::clone(&self.schema),
+            columns,
+        )?]))
+    }
+
+    /// Resolve (or reuse) the index shards that cover this scan's snapshot.
+    ///
+    /// Returns the snapshot, the time spent resolving it and whether it came
+    /// from the per-file-set cache.  `None` means the resolved commits cannot
+    /// be proven to cover exactly the files the plan reads (or carry a
+    /// mutation/CDC chain), so the caller has to use the reader path.
+    async fn expected_snapshot(
+        &self,
+        store: &Arc<dyn object_store::ObjectStore>,
+        groups: &[GroupFiles],
+        expected_key_kind: u64,
+    ) -> DFResult<Option<(Arc<CachedSnapshot>, f64, bool)>> {
+        let cache_key = self.snapshot_key(expected_key_kind);
+        let expected_prefixes: Vec<String> = groups
+            .iter()
+            .flat_map(|group| {
+                group
+                    .index_prefixes
+                    .iter()
+                    .map(|(prefix, _)| prefix.clone())
+            })
+            .collect();
+        if snapshot_cache_enabled()
+            && let Some(entry) = snapshot_cache_get(&cache_key)
+                .filter(|entry| self.snapshot_covered(entry, &expected_prefixes))
+        {
+            return Ok(Some((entry, 0.0, true)));
+        }
+        let mut prefixes: Vec<String> = expected_prefixes.clone();
+        prefixes.sort_unstable();
+        prefixes.dedup();
+        let t_resolve = std::time::Instant::now();
+        let views = self.catalog.resolve_cached_many(&prefixes).await.map_err(
+            |error| {
+                DataFusionError::External(
+                    rootcause::report!(
+                        "failed to resolve vector index shards: {}",
+                        error
+                    )
+                    .into_boxed_error(),
+                )
+            },
+        )?;
+        let resolve_ms = t_resolve.elapsed().as_secs_f64() * 1000.0;
+        // Prove that the resolved commits cover this snapshot before touching
+        // any shard.
+        let mut requested: Vec<(
+            String,
+            Vec<String>,
+            Arc<IndexCommitView<VectorSegmentEntry>>,
+        )> = Vec::with_capacity(groups.len());
+        for group in groups {
+            for (prefix, _bucket) in &group.index_prefixes {
+                let Some(view) = views.get(prefix).and_then(Option::as_ref) else {
+                    return Ok(None);
+                };
+                let covered: Vec<&str> = view
+                    .segments
+                    .iter()
+                    .flat_map(|segment| segment.data_files.iter().map(String::as_str))
+                    .collect();
+                if !crate::vector_batch::can_skip_verification(
+                    &self.cdc_column,
+                    view.mutation_head.is_none(),
+                    view.mutation_records,
+                    &group.file_uris,
+                    &covered,
+                ) {
+                    return Ok(None);
+                }
+                requested.push((
+                    prefix.clone(),
+                    group.file_uris.clone(),
+                    Arc::clone(view),
+                ));
+            }
+        }
+        // A hot shard comes straight from the index cache; the lookups
+        // overlap instead of queuing.
+        let lookups = requested.iter().map(|(prefix, _, view)| {
+            cached_typed_shard(prefix, view.commit_id, expected_key_kind)
+        });
+        let cached = futures::future::join_all(lookups).await;
+        let mut shards: Vec<CachedSnapshotShard> = Vec::with_capacity(requested.len());
+        for ((prefix, files, view), cached_shard) in requested.into_iter().zip(cached) {
+            let shard = match cached_shard {
+                Some(shard) => shard,
+                None => {
+                    // A cold shard loads from its commit; the catalog view
+                    // already holds the parsed segment list.
+                    let segments = crate::vector_batch::segment_entries(view.as_ref());
+                    let Some(shard) = load_typed_shard(
+                        store,
+                        &prefix,
+                        view.commit_id,
+                        view.version,
+                        &view.header,
+                        &segments,
+                        view.mutation_head.as_deref(),
+                        view.mutation_records,
+                        expected_key_kind,
+                    )
+                    .await
+                    .map_err(|error| {
+                        DataFusionError::External(error.into_boxed_error())
+                    })?
+                    else {
+                        // The shard was written for another key layout; the
+                        // reader path reports that the same way.
+                        return Ok(None);
+                    };
+                    shard
+                }
+            };
+            let covered = covered_file_names(view.as_ref());
+            shards.push(CachedSnapshotShard {
+                prefix,
+                files,
+                covered,
+                view,
+                shard,
+            });
+        }
+        let bytes = shards.iter().map(|slot| slot.shard.memory_bytes()).sum();
+        let entry = Arc::new(CachedSnapshot {
+            key: cache_key,
+            shards,
+            bytes,
+        });
+        snapshot_cache_put(Arc::clone(&entry));
+        Ok(Some((entry, resolve_ms, false)))
+    }
+
+    /// True when the exact re-rank can run directly on the index and the
+    /// stored-vector payload cache, without the per-bucket readers.
+    ///
+    /// The scan must be a single-column exact search with no filter between
+    /// the scan and the sort, the projection must be primary keys plus the
+    /// searched column, every bucket must be one data file and the payload
+    /// cache must be on.  The snapshot coverage proof still runs per query, so
+    /// an unproven commit falls back to the reader path.
+    fn exact_fast_path_eligible(&self) -> bool {
+        // Escape hatch for A/B runs against the reader path.
+        if std::env::var("LAKESOUL_VECTOR_EXACT_DIRECT").is_ok_and(|value| value == "0") {
+            return false;
+        }
+        if !lakesoul_io::pk_locator::vector_payload_cache_enabled() {
+            return false;
+        }
+        if self.vector_search.order_by
+            || !self.vector_search.is_single()
+            || !self.vector_search.narrow
+            || !self.cdc_column.is_empty()
+            || !self.partition_cols.is_empty()
+            || !self.exact_ranking_matches_sort()
+            || self.keep_rows() == 0
+            || self.file_groups.iter().any(|group| group.len() != 1)
+        {
+            return false;
+        }
+        let column = self.vector_search.columns[0].column.as_str();
+        let Ok(vector_field) = self.file_schema.field_with_name(column) else {
+            return false;
+        };
+        // The single-precision scorer covers stored 32-bit float lists.
+        let stored_f32 = match vector_field.data_type() {
+            DataType::FixedSizeList(field, _) | DataType::List(field) => {
+                field.data_type() == &DataType::Float32
+            }
+            _ => false,
+        };
+        if !stored_f32 || self.schema.field_with_name(column).is_err() {
+            return false;
+        }
+        self.schema.fields().iter().all(|field| {
+            self.primary_keys.iter().any(|key| key == field.name())
+                || field.name() == column
+        })
+    }
+
+    /// Serve an exact re-rank from the index keys and the payload cache.
+    ///
+    /// Returns `None` whenever a condition cannot be proven; the caller then
+    /// runs the per-bucket reader path.
+    fn try_exact_batches(
+        &self,
+        context: &TaskContext,
+        nprobe: usize,
+        parallelism: usize,
+    ) -> DFResult<Option<Vec<arrow::record_batch::RecordBatch>>> {
+        if !self.exact_fast_path_eligible() {
+            return Ok(None);
+        }
+        let store = context
+            .runtime_env()
+            .object_store(self.object_store_url.clone())
+            .map_err(|error| {
+                DataFusionError::External(
+                    rootcause::report!("failed to get object store: {}", error)
+                        .into_boxed_error(),
+                )
+            })?;
+        let t_handoff = std::time::Instant::now();
+        let mut handoff_ms = 0.0_f64;
+        let batches = tokio::task::block_in_place(|| {
+            handoff_ms = t_handoff.elapsed().as_secs_f64() * 1000.0;
+            lakesoul_io::session::GLOBAL_RUNTIME.block_on(
+                self.exact_batches_inner(&store, nprobe, parallelism),
+            )
+        });
+        if std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok() {
+            debug!(
+                handoff_ms,
+                total_ms = t_handoff.elapsed().as_secs_f64() * 1000.0,
+                "vector exact direct profile"
+            );
+        }
+        batches
+    }
+
+    /// Probe the shards directly, load the candidates' stored vectors from the
+    /// payload cache, rank them with the exact distance and return the rows the
+    /// plan's limit may return.
+    async fn exact_batches_inner(
+        &self,
+        store: &Arc<dyn object_store::ObjectStore>,
+        nprobe: usize,
+        parallelism: usize,
+    ) -> DFResult<Option<Vec<arrow::record_batch::RecordBatch>>> {
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_inner = std::time::Instant::now();
+        let column = &self.vector_search.columns[0];
+        let layout = KeyLayout::from_schema(self.file_schema.as_ref(), &self.primary_keys)
+            .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let expected_key_kind = layout.kind_hash();
+        let codec = KeyCodec::new(layout)
+            .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let query = lakesoul_io::vector::search::parse_query_vector(
+            &column.query_csv,
+            None,
+        )
+        .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let top_k = self.vector_search.candidates_per_bucket();
+        let groups = self
+            .file_groups
+            .iter()
+            .map(|group| self.group_files(group))
+            .collect::<DFResult<Vec<_>>>()?;
+        let (snapshot, resolve_ms, snapshot_cached) =
+            match self.expected_snapshot(store, &groups, expected_key_kind).await? {
+                Some(resolved) => resolved,
+                None => return Ok(None),
+            };
+        let shards: Vec<LoadedShard> = snapshot
+            .shards
+            .iter()
+            .map(|slot| slot.shard.clone())
+            .collect();
+        if shards.len() != groups.len() {
+            return Ok(None);
+        }
+        let t_probe = std::time::Instant::now();
+        let per_bucket = probe_shards(&shards, &query, top_k, nprobe, parallelism).await?;
+        let probe_ms = t_probe.elapsed().as_secs_f64() * 1000.0;
+        let Ok(vector_field) = self.file_schema.field_with_name(&column.column) else {
+            return Ok(None);
+        };
+        let vector_field: arrow::datatypes::FieldRef = Arc::new(vector_field.clone());
+        let key_types = self
+            .primary_keys
+            .iter()
+            .map(|key| {
+                self.file_schema
+                    .field_with_name(key)
+                    .map(|field| field.data_type().clone())
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "primary key is missing from the file schema: {error}"
+                ))
+            })?;
+        let ascending = column.metric.eq_ignore_ascii_case("L2");
+        let t_fetch = std::time::Instant::now();
+        // Candidate keys of every bucket, in approximate-distance order.
+        let mut bucket_keys: Vec<Vec<IndexKey>> = Vec::with_capacity(per_bucket.len());
+        for hits in &per_bucket {
+            let mut best: std::collections::HashMap<IndexKey, f32> =
+                std::collections::HashMap::with_capacity(hits.len());
+            for hit in hits {
+                best.entry(hit.key.clone())
+                    .and_modify(|score| *score = score.min(hit.score))
+                    .or_insert(hit.score);
+            }
+            let mut ranked: Vec<(f32, IndexKey)> =
+                best.into_iter().map(|(key, score)| (score, key)).collect();
+            ranked.sort_by(|left, right| {
+                left.0
+                    .partial_cmp(&right.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            ranked.truncate(top_k);
+            bucket_keys.push(ranked.into_iter().map(|(_, key)| key).collect());
+        }
+        // Open every bucket's payload (page cache and index are already warm
+        // after the first query) and then read the candidate vectors in
+        // parallel: each bucket is an independent file.
+        let opens = self
+            .file_groups
+            .iter()
+            .zip(&bucket_keys)
+            .map(|(files, keys)| {
+                let store = Arc::clone(store);
+                let location = files[0].object_meta.location.clone();
+                let key_types = key_types.clone();
+                let key_columns = self.primary_keys.clone();
+                let field = Arc::clone(&vector_field);
+                let keys = keys.clone();
+                async move {
+                    let format =
+                        PhysicalFormat::from_extension(location.as_ref()).ok()?;
+                    let source = lakesoul_io::pk_locator::VectorPayloadSource::open(
+                        store,
+                        &location,
+                        format,
+                        &key_columns,
+                        &key_types,
+                        &field,
+                    )
+                    .await?;
+                    Some((source, keys))
+                }
+            });
+        let sources = futures::future::join_all(opens).await;
+        let mut tasks = Vec::with_capacity(sources.len());
+        for source in sources {
+            let Some((source, keys)) = source else {
+                return Ok(None);
+            };
+            tasks.push(lakesoul_io::session::GLOBAL_RUNTIME.spawn_blocking(
+                move || source.take(&keys).map(|array| (array, keys)),
+            ));
+        }
+        let mut keys: Vec<IndexKey> = Vec::new();
+        let mut bucket_arrays: Vec<arrow::array::ArrayRef> = Vec::new();
+        let mut bucket_of_row: Vec<u32> = Vec::new();
+        let mut scores: Vec<f64> = Vec::new();
+        for task in tasks {
+            let taken = task.await.map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "vector payload read failed: {error}"
+                ))
+            })?;
+            let Some((array, bucket_keys)) = taken else {
+                return Ok(None);
+            };
+            if array.len() != bucket_keys.len() {
+                return Ok(None);
+            }
+            let base = keys.len();
+            scores.resize(base + bucket_keys.len(), 0.0);
+            accumulate_exact_scores(&array, &query, ascending, &mut scores[base..])?;
+            bucket_of_row.extend(std::iter::repeat_n(
+                bucket_arrays.len() as u32,
+                bucket_keys.len(),
+            ));
+            keys.extend(bucket_keys);
+            bucket_arrays.push(array);
+        }
+        let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
+        if keys.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let keep = self.keep_rows().min(keys.len());
+        let t_rank = std::time::Instant::now();
+        let mut order: Vec<u32> = (0..keys.len() as u32).collect();
+        if keep < order.len() {
+            order.select_nth_unstable_by(keep - 1, |left, right| {
+                scores[*left as usize].total_cmp(&scores[*right as usize])
+            });
+            order.truncate(keep);
+        }
+        // Gather the kept rows bucket by bucket: one `take` per bucket instead
+        // of one per candidate.  The sort above decides the final order, so
+        // returning them grouped by bucket is fine.
+        let mut offsets = Vec::with_capacity(bucket_arrays.len());
+        let mut start = 0usize;
+        for array in &bucket_arrays {
+            offsets.push(start);
+            start += array.len();
+        }
+        let mut per_bucket_rows: Vec<Vec<u32>> = vec![Vec::new(); bucket_arrays.len()];
+        for position in &order {
+            let position = *position as usize;
+            let bucket = bucket_of_row[position] as usize;
+            per_bucket_rows[bucket].push((position - offsets[bucket]) as u32);
+        }
+        let mut kept_keys: Vec<IndexKey> = Vec::with_capacity(keep);
+        let mut kept_vectors: Vec<arrow::array::ArrayRef> = Vec::new();
+        for (bucket, rows) in per_bucket_rows.iter().enumerate() {
+            if rows.is_empty() {
+                continue;
+            }
+            for row in rows {
+                kept_keys.push(keys[offsets[bucket] + *row as usize].clone());
+            }
+            let indices = arrow::array::UInt32Array::from(rows.clone());
+            let taken = arrow::compute::take(&bucket_arrays[bucket], &indices, None)
+                .map_err(|error| {
+                    DataFusionError::Execution(format!(
+                        "failed to gather the kept candidate vectors: {error}"
+                    ))
+                })?;
+            kept_vectors.push(taken);
+        }
+        let vector_column = if kept_vectors.len() == 1 {
+            kept_vectors.pop().expect("one bucket")
+        } else {
+            let refs: Vec<&dyn arrow::array::Array> = kept_vectors
+                .iter()
+                .map(|array| array.as_ref())
+                .collect();
+            arrow::compute::concat(&refs).map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "failed to merge the kept candidate vectors: {error}"
+                ))
+            })?
+        };
+        let decoded = codec.decode(&kept_keys).map_err(|error| {
+            DataFusionError::External(error.into_boxed_error())
+        })?;
+        let mut columns: Vec<arrow::array::ArrayRef> =
+            Vec::with_capacity(self.schema.fields().len());
+        for field in self.schema.fields() {
+            if let Some(position) =
+                self.primary_keys.iter().position(|key| key == field.name())
+            {
+                let array = &decoded[position];
+                if array.data_type() != field.data_type() {
+                    return Ok(None);
+                }
+                columns.push(Arc::clone(array));
+            } else if field.name() == &column.column {
+                if vector_column.data_type() != field.data_type() {
+                    return Ok(None);
+                }
+                columns.push(Arc::clone(&vector_column));
+            } else {
+                return Ok(None);
+            }
+        }
+        let rank_ms = t_rank.elapsed().as_secs_f64() * 1000.0;
+        if profile {
+            debug!(
+                resolve_ms,
+                snapshot_cached,
+                probe_ms,
+                fetch_ms,
+                rank_ms,
+                candidates = keys.len(),
+                kept = kept_keys.len(),
+                buckets = bucket_arrays.len(),
+                total_ms = t_inner.elapsed().as_secs_f64() * 1000.0,
+                "vector exact direct inner profile"
             );
         }
         Ok(Some(vec![arrow::record_batch::RecordBatch::try_new(
@@ -1448,6 +1757,28 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
                 "vector_search",
             ));
         }
+        // Exact re-rank directly on the index keys and the stored-vector
+        // payload cache: no per-bucket reader and no merge plan.
+        if let Some(batches) = self.try_exact_batches(&context, nprobe, parallelism)? {
+            if profile {
+                debug!(
+                    batches = batches.len(),
+                    rows = batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+                    "vector search served from the index and the payload cache"
+                );
+            }
+            let stream = futures::stream::iter(batches.into_iter().map(Ok));
+            let stream = Box::pin(RecordBatchStreamAdapter::new(
+                Arc::clone(&self.schema),
+                stream,
+            )) as SendableRecordBatchStream;
+            drop(entered);
+            return Ok(instrument_record_batch_stream(
+                stream,
+                span,
+                "vector_search",
+            ));
+        }
         let t_phase = std::time::Instant::now();
         let configs =
             self.build_configs(&ranking_schema, Vec::new(), nprobe, parallelism)?;
@@ -1676,6 +2007,181 @@ impl VectorSearchCounters {
 
 /// True for `FixedSizeList`/`List` columns of 32/64-bit floats, the vector
 /// types the exact ranking can read.
+/// Squared L2 distance of two stored vectors, eight lanes at a time.
+fn row_squared_distance(stored: &[f32], query: &[f32]) -> f32 {
+    if stored.len() != query.len() {
+        return f32::INFINITY;
+    }
+    let mut lanes = [0.0f32; 8];
+    let mut index = 0;
+    while index + 8 <= stored.len() {
+        for lane in 0..8 {
+            let delta = stored[index + lane] - query[index + lane];
+            lanes[lane] += delta * delta;
+        }
+        index += 8;
+    }
+    let mut sum: f32 = lanes.iter().sum();
+    while index < stored.len() {
+        let delta = stored[index] - query[index];
+        sum += delta * delta;
+        index += 1;
+    }
+    sum
+}
+
+/// Inner product of two stored vectors, eight lanes at a time.
+fn row_dot(stored: &[f32], query: &[f32]) -> f32 {
+    if stored.len() != query.len() {
+        return f32::NEG_INFINITY;
+    }
+    let mut lanes = [0.0f32; 8];
+    let mut index = 0;
+    while index + 8 <= stored.len() {
+        for lane in 0..8 {
+            lanes[lane] += stored[index + lane] * query[index + lane];
+        }
+        index += 8;
+    }
+    let mut sum: f32 = lanes.iter().sum();
+    while index < stored.len() {
+        sum += stored[index] * query[index];
+        index += 1;
+    }
+    sum
+}
+
+/// Add one row's exact distance to its score.
+fn accumulate_exact_row(
+    stored: &[f32],
+    query: &[f32],
+    ascending: bool,
+    scores: &mut [f64],
+    row: usize,
+) {
+    let value = if ascending {
+        row_squared_distance(stored, query)
+    } else {
+        -row_dot(stored, query)
+    };
+    scores[row] += f64::from(value);
+}
+
+/// Accumulate the exact distance of every row of one stored vector column.
+///
+/// Only the ordering is needed here: the sort above evaluates the same
+/// distance again on the rows this scan returns, and `keep_rows` keeps a margin
+/// of twice the limit, so this single-precision accumulation cannot change the
+/// result.  Null and malformed rows are ranked worst, like the reader path.
+fn accumulate_exact_scores(
+    array: &arrow::array::ArrayRef,
+    query: &[f32],
+    ascending: bool,
+    scores: &mut [f64],
+) -> DFResult<()> {
+    use arrow::array::{Array, FixedSizeListArray, Float32Array, ListArray};
+    let unsupported = || {
+        DataFusionError::Execution(format!(
+            "exact re-rank does not support stored column type {}",
+            array.data_type()
+        ))
+    };
+    match array.data_type() {
+        DataType::FixedSizeList(_, width) => {
+            let width = *width as usize;
+            let list = array
+                .as_any()
+                .downcast_ref::<FixedSizeListArray>()
+                .ok_or_else(unsupported)?;
+            let values = list.values();
+            let values = values
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .ok_or_else(unsupported)?;
+            let raw = values.values();
+            for row in 0..list.len() {
+                if list.is_null(row) || width != query.len() {
+                    scores[row] = f64::INFINITY;
+                    continue;
+                }
+                let start = list.value_offset(row) as usize;
+                accumulate_exact_row(
+                    &raw[start..start + width],
+                    query,
+                    ascending,
+                    scores,
+                    row,
+                );
+            }
+        }
+        DataType::List(_) => {
+            let list = array
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .ok_or_else(unsupported)?;
+            let values = list.values();
+            let values = values
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .ok_or_else(unsupported)?;
+            let raw = values.values();
+            let offsets = list.value_offsets();
+            for row in 0..list.len() {
+                if list.is_null(row) {
+                    scores[row] = f64::INFINITY;
+                    continue;
+                }
+                let start = offsets[row] as usize;
+                let end = offsets[row + 1] as usize;
+                accumulate_exact_row(
+                    &raw[start..end],
+                    query,
+                    ascending,
+                    scores,
+                    row,
+                );
+            }
+        }
+        _ => return Err(unsupported()),
+    }
+    Ok(())
+}
+
+/// Probe every loaded shard of one scan for one query, in parallel.
+///
+/// The shard probe runs on the shared blocking pool: a query does not warrant
+/// four fresh OS threads, and the pool threads are already warm.
+async fn probe_shards(
+    shards: &[LoadedShard],
+    query: &[f32],
+    top_k: usize,
+    nprobe: usize,
+    parallelism: usize,
+) -> DFResult<Vec<Vec<VectorHit>>> {
+    let query = Arc::new(query.to_vec());
+    let mut tasks = Vec::with_capacity(shards.len());
+    for shard in shards {
+        let shard = shard.clone();
+        let query = Arc::clone(&query);
+        tasks.push(
+            lakesoul_io::session::GLOBAL_RUNTIME.spawn_blocking(move || {
+                let query_ref: [&[f32]; 1] = [query.as_slice()];
+                shard.search_batch(&query_ref, top_k, nprobe, parallelism)
+            }),
+        );
+    }
+    let mut per_shard = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        let probed = task.await.map_err(|error| {
+            DataFusionError::Execution(format!("vector shard probe failed: {error}"))
+        })?;
+        let per_query = probed
+            .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        per_shard.push(per_query.into_iter().next().unwrap_or_default());
+    }
+    Ok(per_shard)
+}
+
 fn is_float_list(data_type: &DataType) -> bool {
     match data_type {
         DataType::FixedSizeList(field, _) | DataType::List(field) => {
