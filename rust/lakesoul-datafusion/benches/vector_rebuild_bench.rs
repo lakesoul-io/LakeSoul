@@ -3252,6 +3252,12 @@ async fn run_batch_probe(
         } else {
             args.batch_size
         },
+        // `--rerank exact` also applies to the snapshot batch entry.
+        exact: args.rerank == "exact",
+        exact_overfetch: std::env::var("LAKESOUL_VECTOR_EXACT_OVERFETCH")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1),
     };
     let batch_size = request.batch_size();
     let t = Instant::now();

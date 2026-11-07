@@ -23,14 +23,16 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use arrow::datatypes::{Schema, SchemaRef};
+use arrow::datatypes::{FieldRef, Schema, SchemaRef};
 use datafusion::common::{Column, ScalarValue};
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::logical_expr::Expr;
 use futures::{StreamExt, TryStreamExt};
 use lakesoul_common::IndexKind;
 use lakesoul_io::config::{LakeSoulIOConfigBuilder, OPTION_KEY_FILE_FILTER_PUSHDOWN};
+use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_io::index::key::{KeyCodec, KeyLayout};
+use lakesoul_io::pk_locator::VectorPayloadSource;
 use lakesoul_io::index::prefix::derive_index_prefixes;
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::vector::search::{
@@ -41,6 +43,7 @@ use lakesoul_metadata::index_catalog::{
 };
 use lakesoul_vector::{IndexKey, SegmentEntry};
 use object_store::ObjectStore;
+use object_store::path::Path as StorePath;
 use rootcause::compat::boxed_error::IntoBoxedError;
 
 /// Queries per snapshot-batch search.
@@ -100,9 +103,31 @@ pub struct VectorBatchRequest {
     pub parallelism: usize,
     /// Queries per snapshot batch; `0` uses [`DEFAULT_BATCH_SIZE`].
     pub batch_size: usize,
+    /// Re-rank each query's candidates by the exact distance of their stored
+    /// vectors instead of the index estimate.
+    ///
+    /// The batch entry only computes the exact distance for an L2 index whose
+    /// coverage proof holds and whose buckets are single data files, read
+    /// through the stored-vector payload cache
+    /// (`LAKESOUL_VECTOR_RERANK_CACHE`); any other table gets a clear error
+    /// instead of silently approximate results.
+    pub exact: bool,
+    /// Candidates per bucket re-ranked in exact mode (`top_k * overfetch`).
+    /// Exact mode needs a wider net than index-only ordering: the index
+    /// estimate only has to *find* the neighbours, not order them.
+    pub exact_overfetch: usize,
 }
 
 impl VectorBatchRequest {
+    /// Candidates per bucket the index probe has to return.
+    pub fn candidates_per_bucket(&self) -> usize {
+        if self.exact {
+            self.top_k.saturating_mul(self.exact_overfetch.max(1))
+        } else {
+            self.top_k
+        }
+    }
+
     /// Queries per snapshot batch actually used.
     pub fn batch_size(&self) -> usize {
         if self.batch_size == 0 {
@@ -342,6 +367,7 @@ pub async fn search_vector_batch(
     store: &Arc<dyn ObjectStore>,
     table_prefix: &str,
     files: &[String],
+    locations: &[StorePath],
     schema: &SchemaRef,
     primary_keys: &[String],
     cdc_column: &str,
@@ -354,6 +380,14 @@ pub async fn search_vector_batch(
     // decision and every chunk read the same views.  Resolving per chunk used
     // to cost one catalog round trip per chunk.
     let buckets = bucket_files_by_prefix(table_prefix, files, &request.column);
+    // Exact re-rank reads the stored vectors straight from the data files, so
+    // it needs the object-store location of each file (the URIs are only used
+    // for the index prefixes).
+    let file_locations: std::collections::HashMap<String, StorePath> = files
+        .iter()
+        .cloned()
+        .zip(locations.iter().cloned())
+        .collect();
     if buckets.is_empty() {
         return Err(DataFusionError::Internal(
             "no data files for the vector batch search".to_string(),
@@ -406,6 +440,7 @@ pub async fn search_vector_batch(
                 .map(|(index, chunk)| {
                     let mut chunk_request = request.clone();
                     chunk_request.queries = chunk.to_vec();
+                    let file_locations = file_locations.clone();
                     async move {
                         let rows = search_vector_batch_chunk(
                             views,
@@ -415,6 +450,7 @@ pub async fn search_vector_batch(
                             schema,
                             primary_keys,
                             cdc_column,
+                            &file_locations,
                             &chunk_request,
                         )
                         .await?;
@@ -447,6 +483,7 @@ pub async fn search_vector_batch(
         schema,
         primary_keys,
         cdc_column,
+        &file_locations,
         request,
     )
     .await
@@ -465,6 +502,7 @@ async fn search_vector_batch_chunk(
     schema: &SchemaRef,
     primary_keys: &[String],
     cdc_column: &str,
+    file_locations: &std::collections::HashMap<String, StorePath>,
     request: &VectorBatchRequest,
 ) -> DFResult<Vec<Vec<i64>>> {
     // The index stores arrow-Row encoded primary keys; the codec must match
@@ -566,7 +604,7 @@ async fn search_vector_batch_chunk(
                             let hits = shard
                                 .search_batch(
                                     refs,
-                                    request.top_k,
+                                    request.candidates_per_bucket(),
                                     request.nprobe,
                                     request.parallelism,
                                 )
@@ -598,6 +636,31 @@ async fn search_vector_batch_chunk(
         })?;
         let probe_ms = t_probe.elapsed().as_secs_f64() * 1000.0;
         let t_rank = std::time::Instant::now();
+        if request.exact {
+            let results = exact_rank_and_merge(
+                store,
+                buckets,
+                &bucket_hits,
+                file_locations,
+                schema,
+                primary_keys,
+                request,
+                &codec,
+            )
+            .await?;
+            if profile {
+                tracing::debug!(
+                    queries = request.queries.len(),
+                    shards = shards.len(),
+                    load_ms,
+                    probe_ms,
+                    rank_merge_ms = t_rank.elapsed().as_secs_f64() * 1000.0,
+                    total_ms = t_chunk.elapsed().as_secs_f64() * 1000.0,
+                    "profiled vector batch chunk (exact)"
+                );
+            }
+            return Ok(results);
+        }
         // Ranking and the cross-bucket top-k are per query, so they fill every
         // core even though the probe stage is limited to the bucket count.
         let results = rank_and_merge(&codec, &bucket_hits, request.top_k)?;
@@ -615,12 +678,25 @@ async fn search_vector_batch_chunk(
         }
         return Ok(results);
     } else {
+        if request.exact {
+            return Err(DataFusionError::NotImplemented(
+                "exact batch search needs a proven snapshot coverage: the \
+                 index commit must cover every data file, the table must have \
+                 no CDC change column and no mutation chain"
+                    .to_string(),
+            ));
+        }
         // Anything unproven falls back to the verification read: one native
         // reader pass per bucket over that bucket's candidate union.
         let mut ranked = Vec::with_capacity(shards.len());
         for (index, shard) in shards.iter().enumerate() {
             let hits = shard
-                .search_batch(&refs, request.top_k, request.nprobe, request.parallelism)
+                .search_batch(
+                    &refs,
+                    request.candidates_per_bucket(),
+                    request.nprobe,
+                    request.parallelism,
+                )
                 .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
             let live = if shard_skip[index] {
                 None
@@ -713,6 +789,201 @@ async fn search_vector_batch_chunk(
             chunk_ms = t_chunk.elapsed().as_secs_f64() * 1000.0,
             skipped_verification = skip_all,
             "profiled vector batch chunk"
+        );
+    }
+    Ok(results)
+}
+
+/// Exact re-rank of a snapshot batch from the stored-vector payload cache.
+///
+/// Every bucket's candidates are read from the payload cache (one data file per
+/// bucket, one shared `pread` source), scored with the exact L2 distance and
+/// merged across buckets per query.  Primary keys are decoded only for the
+/// candidates that win the top-k, so no key value is materialised for the
+/// losers.
+#[allow(clippy::too_many_arguments)]
+async fn exact_rank_and_merge(
+    store: &Arc<dyn ObjectStore>,
+    buckets: &[(String, Vec<String>)],
+    bucket_hits: &[Vec<Vec<VectorHit>>],
+    file_locations: &std::collections::HashMap<String, StorePath>,
+    schema: &SchemaRef,
+    primary_keys: &[String],
+    request: &VectorBatchRequest,
+    codec: &KeyCodec,
+) -> DFResult<Vec<Vec<i64>>> {
+    use crate::datasource::file_format::vector_search_exec::accumulate_exact_scores;
+
+    let queries = request.queries.len();
+    if queries == 0 {
+        return Ok(Vec::new());
+    }
+    if primary_keys.len() != 1 || primary_keys[0] != "id" {
+        return Err(DataFusionError::NotImplemented(format!(
+            "exact batch search currently supports a single Int64 primary key \
+             named 'id', got {primary_keys:?}"
+        )));
+    }
+    let column = &request.column;
+    let vector_field: FieldRef = Arc::new(
+        schema
+            .field_with_name(column)
+            .map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "vector column '{column}' is missing from the table schema: {error}"
+                ))
+            })?
+            .clone(),
+    );
+    let key_types = vec![
+        schema
+            .field_with_name(&primary_keys[0])
+            .map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "primary key is missing from the table schema: {error}"
+                ))
+            })?
+            .data_type()
+            .clone(),
+    ];
+    // One payload source per bucket: opening resolves the key index and the
+    // cached payload view, and every row read below shares them.
+    let mut opens = Vec::with_capacity(buckets.len());
+    for (prefix, bucket_files) in buckets {
+        if bucket_files.len() != 1 {
+            return Err(DataFusionError::NotImplemented(format!(
+                "exact batch search needs exactly one data file per hash \
+                 bucket, bucket '{prefix}' has {}",
+                bucket_files.len()
+            )));
+        }
+        let location = file_locations
+            .get(&bucket_files[0])
+            .cloned()
+            .ok_or_else(|| {
+                DataFusionError::Execution(format!(
+                    "no object-store location for data file {}",
+                    bucket_files[0]
+                ))
+            })?;
+        let format =
+            PhysicalFormat::from_extension(location.as_ref()).map_err(|error| {
+                DataFusionError::NotImplemented(format!(
+                    "exact batch search does not support {location}: {error}"
+                ))
+            })?;
+        let store = Arc::clone(store);
+        let field = Arc::clone(&vector_field);
+        let key_columns = primary_keys.to_vec();
+        let key_types = key_types.clone();
+        opens.push(async move {
+            VectorPayloadSource::open(
+                store,
+                &location,
+                format,
+                &key_columns,
+                &key_types,
+                &field,
+            )
+            .await
+        });
+    }
+    let sources = futures::future::join_all(opens).await;
+    let candidates = request.candidates_per_bucket();
+    let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+    let t_fetch = std::time::Instant::now();
+    // Candidate keys per (bucket, query) chunk are read on the blocking pool:
+    // every read is a pread per candidate, and the buckets and chunks fill the
+    // cores even when one bucket would serialize them.
+    let chunk = 32.max(queries.div_ceil(32));
+    let mut tasks = Vec::new();
+    for (bucket, hits_per_query) in bucket_hits.iter().enumerate() {
+        let Some(source) = sources.get(bucket) else {
+            return Err(DataFusionError::Execution(
+                "exact batch search lost a bucket source".to_string(),
+            ));
+        };
+        let Some(source) = source else {
+            return Err(DataFusionError::NotImplemented(format!(
+                "exact batch search cannot read the stored vectors of bucket \
+                 {bucket}: enable LAKESOUL_VECTOR_RERANK_CACHE and use a \
+                 single-file bucket"
+            )));
+        };
+        let source = Arc::new(source.clone());
+        let mut start = 0;
+        while start < queries {
+            let end = (start + chunk).min(queries);
+            let keys: Vec<Vec<IndexKey>> = hits_per_query[start..end]
+                .iter()
+                .map(|hits| {
+                    hits.iter()
+                        .take(candidates)
+                        .map(|hit| hit.key.clone())
+                        .collect()
+                })
+                .collect();
+            let query_vectors: Vec<Vec<f32>> = request.queries[start..end].to_vec();
+            let source = Arc::clone(&source);
+            tasks.push(lakesoul_io::session::GLOBAL_RUNTIME.spawn_blocking(
+                move || -> DFResult<Vec<(usize, Vec<(f32, IndexKey)>)>> {
+                    let mut rows = Vec::with_capacity(keys.len());
+                    for (offset, keys) in keys.iter().enumerate() {
+                        let Some(array) = source.take(keys) else {
+                            return Err(DataFusionError::Execution(
+                                "stored-vector payload read failed".to_string(),
+                            ));
+                        };
+                        let mut scores = vec![0.0f64; keys.len()];
+                        accumulate_exact_scores(
+                            &array,
+                            &query_vectors[offset],
+                            true,
+                            &mut scores,
+                        )?;
+                        let scored: Vec<(f32, IndexKey)> = keys
+                            .iter()
+                            .cloned()
+                            .zip(scores.into_iter().map(|score| score as f32))
+                            .map(|(key, score)| (score, key))
+                            .collect();
+                        rows.push((start + offset, scored));
+                    }
+                    Ok(rows)
+                },
+            ));
+            start = end;
+        }
+    }
+    let mut per_query: Vec<Vec<(f32, IndexKey)>> = vec![Vec::new(); queries];
+    for task in tasks {
+        let rows = task.await.map_err(|error| {
+            DataFusionError::Execution(format!("exact batch vector read failed: {error}"))
+        })??;
+        for (query, scored) in rows {
+            per_query[query].extend(scored);
+        }
+    }
+    let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
+    let t_merge = std::time::Instant::now();
+    // Cross-bucket top-k per query, then decode only the winning keys.
+    let mut results = Vec::with_capacity(queries);
+    for scored in per_query.iter_mut() {
+        scored.sort_by(|left, right| left.0.total_cmp(&right.0));
+        if scored.len() > request.top_k {
+            scored.truncate(request.top_k);
+        }
+        let keys: Vec<&IndexKey> = scored.iter().map(|(_, key)| key).collect();
+        results.push(decode_ids_refs(codec, &keys)?);
+    }
+    if profile {
+        tracing::debug!(
+            queries,
+            buckets = buckets.len(),
+            candidates,
+            fetch_ms,
+            merge_ms = t_merge.elapsed().as_secs_f64() * 1000.0,
+            "profiled exact batch rank"
         );
     }
     Ok(results)

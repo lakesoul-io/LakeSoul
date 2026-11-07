@@ -1020,6 +1020,14 @@ impl LakeSoulTableProvider {
                 )
             })
             .collect();
+        // The exact batch re-rank reads the stored vectors straight from the
+        // data files, so the object-store location of every file is passed
+        // along with its URI.
+        let locations: Vec<object_store::path::Path> = file_groups
+            .iter()
+            .flatten()
+            .map(|file| file.object_meta.location.clone())
+            .collect();
         let Some(first) = files.first() else {
             return Err(DataFusionError::Execution(
                 "no data files for a vector batch search".to_string(),
@@ -1032,6 +1040,7 @@ impl LakeSoulTableProvider {
             &store,
             &table_prefix,
             &files,
+            &locations,
             &self.file_schema(),
             &self.primary_keys,
             &self.io_config.cdc_column(),

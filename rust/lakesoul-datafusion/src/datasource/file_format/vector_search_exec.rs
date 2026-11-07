@@ -2073,7 +2073,7 @@ fn accumulate_exact_row(
 /// distance again on the rows this scan returns, and `keep_rows` keeps a margin
 /// of twice the limit, so this single-precision accumulation cannot change the
 /// result.  Null and malformed rows are ranked worst, like the reader path.
-fn accumulate_exact_scores(
+pub(crate) fn accumulate_exact_scores(
     array: &arrow::array::ArrayRef,
     query: &[f32],
     ascending: bool,

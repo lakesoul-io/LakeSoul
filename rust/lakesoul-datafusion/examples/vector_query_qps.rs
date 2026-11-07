@@ -515,6 +515,11 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         nprobe: args.nprobe,
         parallelism: args.parallelism,
         batch_size: args.batch_size,
+        exact: args.rerank.eq_ignore_ascii_case("exact"),
+        exact_overfetch: std::env::var("LAKESOUL_VECTOR_EXACT_OVERFETCH")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1),
     };
     for _ in 0..2 {
         let _ = provider.vector_batch_search(&state, &request).await?;

@@ -99,6 +99,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         nprobe: 4,
         parallelism: 1,
         batch_size: 0,
+        exact: false,
+        exact_overfetch: 1,
     };
     let results = provider.vector_batch_search(&state, &request).await?;
     for (query, ids) in results.iter().enumerate() {

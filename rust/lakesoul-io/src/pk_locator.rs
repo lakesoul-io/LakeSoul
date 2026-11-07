@@ -2170,6 +2170,7 @@ pub fn vector_payload_cache_enabled() -> bool {
 /// reproduce exactly (no payload cache, a file with explicit row ids, or a key
 /// that does not resolve to exactly one row), so callers can fall back to the
 /// reader path on `None`.
+#[derive(Clone)]
 pub struct VectorPayloadSource {
     entry: Arc<CachedFile>,
     view: Arc<payload::PayloadView>,
