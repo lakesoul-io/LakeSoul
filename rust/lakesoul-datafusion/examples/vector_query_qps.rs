@@ -55,6 +55,14 @@ struct Args {
     /// How many query vectors to load (single runs `single_rounds` of them,
     /// the batch runs all of them).
     query_limit: usize,
+    /// Also measure the whole query set as plain SQL statements ("just use SQL
+    /// for a batch") with this many statements in flight (`--sql-batch`).
+    sql_batch: bool,
+    sql_concurrency: usize,
+    /// Print whether a multi-query single-statement SQL pushes down.
+    explain_multi: bool,
+    /// Pack this many queries into one `UNION ALL` statement (`0` = off).
+    union_batch: usize,
 }
 
 fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
@@ -70,6 +78,10 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
         batch_rounds: 5,
         batch_size: 0,
         query_limit: 10_000,
+        sql_batch: false,
+        sql_concurrency: 1,
+        explain_multi: false,
+        union_batch: 0,
     };
     let mut iterator = std::env::args().skip(1);
     while let Some(flag) = iterator.next() {
@@ -90,6 +102,13 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
             "--batch-rounds" => args.batch_rounds = value()?.parse()?,
             "--batch-size" => args.batch_size = value()?.parse()?,
             "--query-limit" => args.query_limit = value()?.parse()?,
+            "--sql-batch" => args.sql_batch = true,
+            "--sql-concurrency" => {
+                args.sql_concurrency = value()?.parse()?;
+                args.sql_batch = true;
+            }
+            "--explain-multi" => args.explain_multi = true,
+            "--union-batch" => args.union_batch = value()?.parse()?,
             other => return Err(format!("unknown flag: {other}").into()),
         }
     }
@@ -257,6 +276,56 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         args.table, args.rerank, args.nprobe, args.top_k
     );
 
+    // ---- 多 query 的单条 SQL（JOIN / UNION ALL）是否能下推？----
+    if args.explain_multi {
+        let q0 = queries[0]
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let q1 = queries[1.min(queries.len() - 1)]
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let multi_union = format!(
+            "(select id from \"lakesoul\".default.{table} \
+              order by array_distance(vec, ARRAY[{q0}]) limit {k}) \
+             union all \
+             (select id from \"lakesoul\".default.{table} \
+              order by array_distance(vec, ARRAY[{q1}]) limit {k})",
+            table = args.table,
+            k = args.top_k
+        );
+        let multi_join = format!(
+            "select id from \"lakesoul\".default.{table} t, \
+             (values (ARRAY[{q0}]), (ARRAY[{q1}])) as q(qv) \
+             order by array_distance(t.vec, q.qv) limit {k}",
+            table = args.table,
+            k = args.top_k
+        );
+        for (name, sql) in [("union_all", multi_union), ("cross_join_values", multi_join)] {
+            let explain = format!("EXPLAIN VERBOSE {sql}");
+            let mut text = String::new();
+            for batch in ctx.sql(&explain).await?.collect().await? {
+                for column in batch.columns() {
+                    if let Some(array) =
+                        column.as_any().downcast_ref::<arrow::array::StringArray>()
+                    {
+                        for value in array.iter().flatten() {
+                            text.push_str(value);
+                            text.push('\n');
+                        }
+                    }
+                }
+            }
+            println!(
+                "multi_query_sql[{name}]: vector_exec={} (单条语句里带多个 query 向量时不会下推)",
+                text.contains("LakeSoulVectorSearchExec")
+            );
+        }
+    }
+
     // ---- single-query SQL ----
     let rss_before = rss_mb();
     for index in 0..3.min(single_queries) {
@@ -290,6 +359,143 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         rss_before.max(rss_mb()),
         k = args.top_k
     );
+
+    // ---- one statement with several queries: `UNION ALL` of per-query SELECTs ----
+    if args.union_batch > 0 {
+        let per_statement = args.union_batch;
+        let started = Instant::now();
+        let mut recall_sum = 0.0;
+        let mut compared = 0usize;
+        let mut statements = 0usize;
+        for chunk in queries.chunks(per_statement) {
+            let mut branches = Vec::with_capacity(chunk.len());
+            for query in chunk {
+                let literal = query
+                    .iter()
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                branches.push(format!(
+                    "(select id from \"lakesoul\".default.{table} \
+                      order by array_distance(vec, ARRAY[{literal}]) limit {k})",
+                    table = args.table,
+                    k = args.top_k
+                ));
+            }
+            let sql = branches.join(" union all ");
+            let mut ids = Vec::new();
+            for batch in ctx.sql(&sql).await?.collect().await? {
+                let column = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .ok_or("expected an Int64 id column")?;
+                ids.extend(column.iter().flatten());
+            }
+            if statements == 0 {
+                println!(
+                    "union_batch debug: first statement returned {} rows for {} branches \
+                     (top_k={})",
+                    ids.len(),
+                    chunk.len(),
+                    args.top_k
+                );
+            }
+            // 每个分支返回 top_k 行，按分支顺序拼接。
+            for (offset, query_index) in chunk
+                .iter()
+                .enumerate()
+                .map(|(offset, _)| (offset, statements * per_statement + offset))
+            {
+                let begin = offset * args.top_k;
+                let end = (begin + args.top_k).min(ids.len());
+                if begin >= end {
+                    break;
+                }
+                if let Some(truth) = ground_truth.get(query_index) {
+                    recall_sum += recall_at_k(&ids[begin..end], truth, args.top_k);
+                    compared += 1;
+                }
+            }
+            statements += 1;
+        }
+        let wall = started.elapsed().as_secs_f64();
+        let n = statements * per_statement;
+        println!(
+            "union_batch (queries per statement={per_statement}): n={n} \
+             statements={statements} qps={:.1} recall@{k}={:.5} rss_mb={:.1}",
+            n as f64 / wall,
+            if compared == 0 { 0.0 } else { recall_sum / compared as f64 },
+            rss_mb(),
+            k = args.top_k
+        );
+    }
+
+    // ---- "just use SQL" batch: the whole set as plain SQL statements ----
+    if args.sql_batch {
+        let concurrency = args.sql_concurrency.max(1);
+        let queries = std::sync::Arc::new(queries.clone());
+        let ground_truth = std::sync::Arc::new(ground_truth.clone());
+        let next = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let latencies = std::sync::Arc::new(std::sync::Mutex::new(Vec::<f64>::new()));
+        let recall_sum = std::sync::Arc::new(std::sync::Mutex::new(0.0f64));
+        let started = Instant::now();
+        let mut workers = Vec::with_capacity(concurrency);
+        for _ in 0..concurrency {
+            let ctx = ctx.clone();
+            let queries = std::sync::Arc::clone(&queries);
+            let ground_truth = std::sync::Arc::clone(&ground_truth);
+            let next = std::sync::Arc::clone(&next);
+            let latencies = std::sync::Arc::clone(&latencies);
+            let recall_sum = std::sync::Arc::clone(&recall_sum);
+            let table = args.table.clone();
+            let top_k = args.top_k;
+            workers.push(tokio::spawn(async move {
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if index >= queries.len() {
+                        break;
+                    }
+                    let t = Instant::now();
+                    match single_query(&ctx, &table, &queries[index], top_k).await {
+                        Ok(ids) => {
+                            latencies
+                                .lock()
+                                .unwrap()
+                                .push(t.elapsed().as_secs_f64() * 1000.0);
+                            if let Some(truth) = ground_truth.get(index) {
+                                *recall_sum.lock().unwrap() +=
+                                    recall_at_k(&ids, truth, top_k);
+                            }
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    }
+                }
+                Ok::<(), String>(())
+            }));
+        }
+        for worker in workers {
+            worker
+                .await
+                .map_err(|error| format!("sql worker panicked: {error}"))??;
+        }
+        let wall = started.elapsed().as_secs_f64();
+        let n = queries.len();
+        let values = latencies.lock().unwrap().clone();
+        let p50 = percentile(&mut values.clone(), 0.5);
+        let recall = if ground_truth.is_empty() {
+            0.0
+        } else {
+            *recall_sum.lock().unwrap() / n.min(ground_truth.len()) as f64
+        };
+        println!(
+            "sql_batch (plain SQL statements): n={n} concurrency={concurrency} \
+             qps={:.1} p50_ms={p50:.3} recall@{k}={recall:.5} rss_mb={:.1}",
+            n as f64 / wall,
+            rss_mb(),
+            k = args.top_k
+        );
+    }
 
     // ---- snapshot batch ----
     let state = ctx.state();
