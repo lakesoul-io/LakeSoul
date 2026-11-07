@@ -153,7 +153,6 @@ async fn build_fast_plan_exact(
 ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
     let mut node = logical_plan;
     let mut limit_fetch = None;
-    let mut has_limit = false;
     if let LogicalPlan::Limit(limit) = node {
         if let Some(skip) = limit.skip.as_deref()
             && limit_literal(skip) != Some(0)
@@ -166,7 +165,6 @@ async fn build_fast_plan_exact(
                 None => return Ok(None),
             }
         }
-        has_limit = true;
         node = limit.input.as_ref();
     }
     // Plain column projections above the sort.
@@ -246,10 +244,16 @@ async fn build_fast_plan_exact(
             },
         });
     }
-    let Some(ordering) = LexOrdering::new(sort_exprs) else {
-        return Ok(None);
-    };
-    plan = Arc::new(SortExec::new(ordering, plan).with_fetch(Some(fetch)));
+    // The vector-search exec returns exact mode rows already ordered by their
+    // exact distance (the same f32 accumulation the sort expression above
+    // evaluates), so this statement shape needs no Sort at all: the scan is
+    // the ordered source and only the limit remains.
+    if !fused_exact_order_enabled() {
+        let Some(ordering) = LexOrdering::new(sort_exprs) else {
+            return Ok(None);
+        };
+        plan = Arc::new(SortExec::new(ordering, plan).with_fetch(Some(fetch)));
+    }
     // The projections run above the sort, innermost first.
     for projection in projections.into_iter().rev() {
         let input_schema = projection.input.schema();
@@ -268,9 +272,9 @@ async fn build_fast_plan_exact(
         }
         plan = Arc::new(ProjectionExec::try_new(exprs, plan)?);
     }
-    if has_limit && limit_fetch.is_some() {
-        plan = Arc::new(GlobalLimitExec::new(plan, 0, limit_fetch));
-    }
+    // Without the Sort the scan's fetch is not enforced by a top-k node, so
+    // the limit always keeps only the first `fetch` ordered rows.
+    plan = Arc::new(GlobalLimitExec::new(plan, 0, Some(fetch)));
     // Hand over only when the shortcut plan agrees with the logical plan's
     // output schema.
     let expected = logical_plan.schema().as_arrow().clone();
@@ -278,6 +282,17 @@ async fn build_fast_plan_exact(
         return Ok(None);
     }
     Ok(Some(plan))
+}
+
+/// Whether the exact statement can rely on the vector-search exec's ordering
+/// instead of a `SortExec` above it (`LAKESOUL_VECTOR_FUSED_EXACT_ORDER=0`
+/// restores the sort for A/B runs).
+fn fused_exact_order_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !std::env::var("LAKESOUL_VECTOR_FUSED_EXACT_ORDER")
+            .is_ok_and(|value| value == "0")
+    })
 }
 
 /// The `fetch` value of a literal limit, when it is a non-negative integer.

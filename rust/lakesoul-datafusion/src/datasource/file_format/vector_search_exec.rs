@@ -1391,6 +1391,13 @@ impl LakeSoulVectorSearchExec {
             });
             order.truncate(keep);
         }
+        // The rows leave this scan ordered by their exact distance: the
+        // `exact` statement's Sort above the scan only re-establishes that
+        // order, so the fast physical plan drops the Sort and the distance
+        // expression is never evaluated a second time.
+        order.sort_unstable_by(|left, right| {
+            scores[*left as usize].total_cmp(&scores[*right as usize])
+        });
         // Gather the kept rows bucket by bucket: one `take` per bucket instead
         // of one per candidate.  The sort above decides the final order, so
         // returning them grouped by bucket is fine.
@@ -1407,13 +1414,10 @@ impl LakeSoulVectorSearchExec {
             per_bucket_rows[bucket].push((position - offsets[bucket]) as u32);
         }
         let mut kept_keys: Vec<IndexKey> = Vec::with_capacity(keep);
-        let mut kept_vectors: Vec<arrow::array::ArrayRef> = Vec::new();
+        let mut taken_vectors: Vec<arrow::array::ArrayRef> = Vec::new();
         for (bucket, rows) in per_bucket_rows.iter().enumerate() {
             if rows.is_empty() {
                 continue;
-            }
-            for row in rows {
-                kept_keys.push(keys[offsets[bucket] + *row as usize].clone());
             }
             let indices = arrow::array::UInt32Array::from(rows.clone());
             let taken = arrow::compute::take(&bucket_arrays[bucket], &indices, None)
@@ -1422,16 +1426,27 @@ impl LakeSoulVectorSearchExec {
                         "failed to gather the kept candidate vectors: {error}"
                     ))
                 })?;
-            kept_vectors.push(taken);
+            taken_vectors.push(taken);
         }
-        let vector_column = if kept_vectors.len() == 1 {
-            kept_vectors.pop().expect("one bucket")
+        // `order` is sorted by distance; `taken_vectors[bucket]` follows the
+        // per-bucket rows, so put the kept rows back into that order.
+        let mut per_bucket_cursor = vec![0usize; bucket_arrays.len()];
+        let mut gathered: Vec<(usize, usize)> = Vec::with_capacity(order.len());
+        for position in &order {
+            let position = *position as usize;
+            kept_keys.push(keys[position].clone());
+            let bucket = bucket_of_row[position] as usize;
+            gathered.push((bucket, per_bucket_cursor[bucket]));
+            per_bucket_cursor[bucket] += 1;
+        }
+        let vector_column = if taken_vectors.len() == 1 {
+            taken_vectors.pop().expect("one bucket")
         } else {
-            let refs: Vec<&dyn arrow::array::Array> = kept_vectors
+            let refs: Vec<&dyn arrow::array::Array> = taken_vectors
                 .iter()
                 .map(|array| array.as_ref())
                 .collect();
-            arrow::compute::concat(&refs).map_err(|error| {
+            arrow::compute::interleave(&refs, &gathered).map_err(|error| {
                 DataFusionError::Execution(format!(
                     "failed to merge the kept candidate vectors: {error}"
                 ))
