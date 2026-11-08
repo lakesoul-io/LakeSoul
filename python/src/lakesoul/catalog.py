@@ -28,6 +28,7 @@ from lakesoul.metadata import (
 )
 
 from . import index as _index
+from .session import LakeSoulSession
 from .vacuum import maybe_vacuum_after_commit
 
 if TYPE_CHECKING:
@@ -212,6 +213,12 @@ class LakeSoulCatalog:
             )
 
         self._client = client
+        # The native query session takes the same connection string; `None`
+        # means "use the LAKESOUL_* environment variables".
+        self._metadata_config: str | None = (
+            metadata_config.primary_config() if metadata_config is not None else None
+        )
+        self._session: LakeSoulSession | None = None
         self._namespace = namespace
         self._object_store_options = MappingProxyType(
             _validate_string_mapping("object_store_options", object_store_options or {})
@@ -229,6 +236,27 @@ class LakeSoulCatalog:
             object_store_options=object_store_options,
             _client=NativeMetadataClient.from_env(),
         )
+
+    def session(self, *, reuse: bool = True, **kwargs: Any) -> LakeSoulSession:
+        """Return a :class:`LakeSoulSession` over this catalog's connection.
+
+        The session is a read-only DataFusion engine that runs lakehouse SQL and
+        all vector-search entry points (``LakeSoulTable.search`` uses it).  It
+        is created once and reused by default: the metadata, index and payload
+        caches stay warm across queries.
+
+        Args:
+            reuse: Return the catalog's cached session instead of a new one.
+            **kwargs: Forwarded to :class:`LakeSoulSession` (``vector_search``,
+                ``target_partitions``, ``object_store_options``, ...).
+        """
+        if reuse and self._session is not None and not kwargs:
+            return self._session
+        metadata_config = kwargs.pop("metadata_config", self._metadata_config)
+        session = LakeSoulSession(metadata_config=metadata_config, **kwargs)
+        if reuse and not kwargs:
+            self._session = session
+        return session
 
     @property
     def namespace(self) -> str:
@@ -818,6 +846,244 @@ class LakeSoulTable:
         if "vector_index_columns" not in self.properties:
             return ()
         return tuple(str(config["column"]) for config in self._vector_configs())
+
+    # -- vector search -------------------------------------------------------
+
+    def _search_session(self, session: LakeSoulSession | None) -> LakeSoulSession:
+        if session is not None:
+            if not isinstance(session, LakeSoulSession):
+                raise TypeError("session must be a LakesoulSession")
+            return session
+        return self.catalog.session()
+
+    @staticmethod
+    def _sql_identifier(name: str) -> str:
+        return '"' + str(name).replace('"', '""') + '"'
+
+    def _vector_search_sql(
+        self,
+        query: Sequence[float],
+        *,
+        column: str | None = None,
+        top_k: int = 10,
+        metric: str | None = None,
+        filter: str | None = None,
+        columns: Sequence[str] | None = None,
+        with_distance: bool = False,
+    ) -> tuple[str, str, str]:
+        """Build the vector-search SQL and return ``(sql, column, metric)``.
+
+        The statement is exactly what a user would write by hand:
+
+        ``SELECT <columns> FROM <table> [WHERE <filter>]
+        ORDER BY <distance>(<column>, ARRAY[...]) <ASC|DESC> LIMIT <top_k>``
+
+        so it runs through the regular pushdown rule and vector-index scan.
+        """
+        configs = self._vector_configs()
+        if not configs:
+            raise ValueError(
+                "the table has no vector_index_columns property; create the "
+                "table with vector_index=[...] to enable vector search"
+            )
+        if column is None:
+            if len(configs) != 1:
+                raise ValueError(
+                    "the table declares several vector columns; pass 'column' "
+                    f"explicitly (declared: {[c['column'] for c in configs]})"
+                )
+            column = str(configs[0]["column"])
+        config = next((c for c in configs if c["column"] == column), None)
+        if config is None:
+            raise ValueError(
+                f"column {column!r} is not declared in vector_index_columns"
+            )
+        resolved_metric = metric if metric is not None else config.get("metric", "L2")
+        resolved_metric = (
+            "IP"
+            if str(resolved_metric).upper() in ("IP", "INNERPRODUCT")
+            else "L2"
+        )
+        if int(top_k) < 1:
+            raise ValueError("top_k must be >= 1")
+        values = [float(value) for value in query]
+        if not values:
+            raise ValueError("query must not be empty")
+        expected_dim = config.get("dim")
+        if expected_dim is not None and len(values) != int(expected_dim):
+            raise ValueError(
+                f"query dimension {len(values)} does not match the index "
+                f"dimension {int(expected_dim)}"
+            )
+        if filter is not None and not isinstance(filter, str):
+            raise TypeError(
+                "filter must be a SQL predicate string, e.g. \"lang = 'zh'\""
+            )
+
+        literal = "ARRAY[" + ", ".join(f"{value:.9g}" for value in values) + "]"
+        quoted_column = self._sql_identifier(column)
+        distance = (
+            f"array_distance({quoted_column}, {literal})"
+            if resolved_metric == "L2"
+            else f"inner_product({quoted_column}, {literal})"
+        )
+        order = "ASC" if resolved_metric == "L2" else "DESC"
+
+        table_schema_names = [field.name for field in self.schema]
+        if columns is None:
+            selected = [name for name in table_schema_names if name != column]
+        else:
+            selected = [str(name) for name in columns]
+            unknown = [name for name in selected if name not in table_schema_names]
+            if unknown:
+                raise ValueError(
+                    f"unknown column(s) in columns: {unknown}; the table has "
+                    f"{table_schema_names}"
+                )
+        select_list = ", ".join(self._sql_identifier(name) for name in selected)
+        if with_distance:
+            select_list += f", {distance} AS {self._sql_identifier(VECTOR_DISTANCE_COLUMN)}"
+        table_ref = (
+            f'"lakesoul".{self._sql_identifier(self.namespace)}.'
+            f"{self._sql_identifier(self.name)}"
+        )
+        where = f" WHERE ({filter})" if filter is not None else ""
+        sql = (
+            f"SELECT {select_list} FROM {table_ref}{where} "
+            f"ORDER BY {distance} {order} LIMIT {int(top_k)}"
+        )
+        return sql, column, resolved_metric
+
+    def to_sql(
+        self,
+        query: Sequence[float],
+        *,
+        column: str | None = None,
+        top_k: int = 10,
+        metric: str | None = None,
+        filter: str | None = None,
+        columns: Sequence[str] | None = None,
+        with_distance: bool = False,
+    ) -> str:
+        """Return the SQL that :meth:`search` would execute.
+
+        Useful for auditing a search and for running it through another
+        DataFusion frontend.
+        """
+        sql, _, _ = self._vector_search_sql(
+            query,
+            column=column,
+            top_k=top_k,
+            metric=metric,
+            filter=filter,
+            columns=columns,
+            with_distance=with_distance,
+        )
+        return sql
+
+    def search(
+        self,
+        query: Sequence[float],
+        *,
+        column: str | None = None,
+        top_k: int = 10,
+        metric: str | None = None,
+        rerank: str = "auto",
+        nprobe: int | None = None,
+        exact_overfetch: int | None = None,
+        filter: str | None = None,
+        columns: Sequence[str] | None = None,
+        with_distance: bool = False,
+        session: LakeSoulSession | None = None,
+        snapshot: int | None = None,
+        tag: str | None = None,
+    ) -> pa.Table:
+        """Run a vector search and return the nearest rows as an Arrow table.
+
+        The search is a lakehouse query: it runs on the session's DataFusion
+        engine, so it follows the table's snapshot and merge-on-read semantics
+        (latest version per primary key, CDC delete tombstones removed,
+        range-partition pruning) and uses the vector-index fast paths when the
+        index can serve it.  Results are ordered by distance: L2 ascending, IP
+        descending.
+
+        Args:
+            query: Query vector (sequence of floats; dimension must match the
+                index).
+            column: Vector column to search.  Defaults to the only declared
+                column; required when the table declares several.
+            top_k: Number of rows to return.
+            metric: ``"L2"`` or ``"IP"``.  Defaults to the index metric.  A
+                metric that differs from the index falls back to a plain scan
+                (same as the SQL path) instead of failing.
+            rerank: ``"auto"`` keeps the session default; ``"exact"`` re-ranks
+                candidates against the stored vectors; ``"index"`` orders by
+                the index distance and does not read the vector column
+                (approximate, faster).
+            nprobe: IVFFlat clusters probed per bucket (session option; set to
+                trade recall for latency).
+            exact_overfetch: Candidates per bucket in exact mode
+                (``top_k * this``).
+            filter: SQL predicate (e.g. ``"lang = 'zh'"``) pushed down with
+                the scan; partition columns prune files, other predicates are
+                evaluated on the candidates (with iterative widening).
+            columns: Projection; defaults to every non-vector column.  Extra
+                columns stay on the fast path: only the kept rows are read.
+            with_distance: Also return the distance in
+                ``__lakesoul_vector_distance``.
+            session: Session to query; defaults to the catalog's session.
+            snapshot: Reserved for time travel (not supported by the native
+                scanner yet; passing it raises ``NotImplementedError``).
+            tag: Reserved for time travel (same as ``snapshot``).
+
+        Returns:
+            A :class:`pyarrow.Table` ordered by distance.
+        """
+        if snapshot is not None or tag is not None:
+            raise NotImplementedError(
+                "snapshot/tag pinned reads need the native scanner's "
+                "snapshot support, which is not available yet; omit the "
+                "argument to read the latest snapshot"
+            )
+        if rerank not in ("auto", "exact", "index"):
+            raise ValueError(
+                f"rerank must be 'auto', 'exact' or 'index', got {rerank!r}"
+            )
+        query_session = self._search_session(session)
+        sql, _, _ = self._vector_search_sql(
+            query,
+            column=column,
+            top_k=top_k,
+            metric=metric,
+            filter=filter,
+            columns=columns,
+            with_distance=with_distance,
+        )
+        options: dict[str, object] = {}
+        if rerank != "auto":
+            options["rerank"] = rerank
+        if nprobe is not None:
+            options["nprobe"] = int(nprobe)
+        if exact_overfetch is not None:
+            options["exact_overfetch"] = int(exact_overfetch)
+        if options:
+            query_session.set_vector_search(**options)
+        return query_session.sql(sql)
+
+    def sql(self, sql: str, *, session: LakeSoulSession | None = None) -> pa.Table:
+        """Run an arbitrary lakehouse SQL query against this table's catalog.
+
+        Vector search is one shape of such a query::
+
+            table.sql(
+                'SELECT id FROM "lakesoul".default.docs '
+                "ORDER BY array_distance(embedding, ARRAY[0.1, 0.2]) LIMIT 10"
+            )
+
+        The statement may join other LakeSoul tables, aggregate, filter and
+        project freely; it runs on the same engine as :meth:`search`.
+        """
+        return self._search_session(session).sql(sql)
 
     def scan(
         self,

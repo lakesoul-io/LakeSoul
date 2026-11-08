@@ -90,7 +90,11 @@ build-backend = "maturin"
 [tool.maturin]
 python-source = "src"
 module-name = "lakesoul._lib"
-features = ["pyo3/extension-module"]
+# `ci-unify` links lakesoul-datafusion, which provides the in-process LakeSoul
+# query session (``LakeSoulSession``) and with it ``LakeSoulTable.search``.
+# Drop it from this list (and build with ``--features ci-unify`` explicitly)
+# if a smaller wheel matters more than the query session.
+features = ["pyo3/extension-module", "ci-unify"]
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
