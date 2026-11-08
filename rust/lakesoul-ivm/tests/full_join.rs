@@ -601,3 +601,67 @@ async fn both_sided_window_matches_a_full_recompute() {
         sql_full_join_rows(runtime, left, right, "l.jk = r.jk").await
     );
 }
+
+/// High-cardinality both-sided window: a deleted left row makes its right
+/// partner right-only, a right insert with no left match stays right-only,
+/// and the result still matches the direct SQL FULL JOIN reference.
+#[test_log::test(tokio::test)]
+async fn both_sided_high_cardinality_matches_sql_reference() {
+    let fixture = setup().await;
+    let runtime = &fixture.runtime;
+    let (left, right, output, view) = (
+        &fixture.left,
+        &fixture.right,
+        &fixture.output,
+        &fixture.view,
+    );
+    let left_owned = (1..=10_000i64)
+        .map(|key| (key, Some(format!("g{key}")), format!("L{key}"), "insert"))
+        .collect::<Vec<_>>();
+    let left_rows = left_owned
+        .iter()
+        .map(|(key, group, value, op)| (*key, group.as_deref(), value.as_str(), *op))
+        .collect::<Vec<_>>();
+    left.append_batch(runtime.client(), left_batch(&left_rows))
+        .await
+        .unwrap();
+    let right_owned = (1..=1_000i64)
+        .map(|key| (key, Some(format!("g{key}")), key * 10, "insert"))
+        .collect::<Vec<_>>();
+    let right_rows = right_owned
+        .iter()
+        .map(|(key, group, value, op)| (*key, group.as_deref(), *value, *op))
+        .collect::<Vec<_>>();
+    right
+        .append_batch(runtime.client(), right_batch(&right_rows))
+        .await
+        .unwrap();
+    runtime.refresh_full_join(view).await.unwrap().unwrap();
+
+    // Both sides change in one window.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[
+            (1, Some("g1"), "L1", "delete"),
+            (10_001, Some("g10001"), "L10001", "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[
+                (2, Some("g2"), 20, "insert"),
+                (3, Some("g3"), 30, "delete"),
+                (1_001, Some("g1001"), 10_010, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_full_join(view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, "l.jk = r.jk").await
+    );
+}
