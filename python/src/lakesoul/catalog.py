@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -28,7 +29,8 @@ from lakesoul.metadata import (
 )
 
 from . import index as _index
-from .session import LakeSoulSession
+from .adapters import OutputFormat, convert
+from .session import BatchSearchResult, LakeSoulQueryError, LakeSoulSession
 from .vacuum import maybe_vacuum_after_commit
 
 if TYPE_CHECKING:
@@ -343,6 +345,31 @@ class LakeSoulCatalog:
             retain_partition_columns=retain_partition_columns,
             object_store_options=object_store_options,
         ).to_arrow_dataset()
+
+    def search(
+        self,
+        name: str,
+        query: Sequence[float],
+        *,
+        namespace: str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Vector search on a named table (see :meth:`LakeSoulTable.search`)."""
+        return self.table(name, namespace).search(query, **kwargs)
+
+    def search_batch(
+        self,
+        name: str,
+        queries: Sequence[Sequence[float]],
+        *,
+        namespace: str | None = None,
+        **kwargs: Any,
+    ) -> BatchSearchResult:
+        """Batch vector search on a named table.
+
+        See :meth:`LakeSoulTable.search_batch`.
+        """
+        return self.table(name, namespace).search_batch(queries, **kwargs)
 
     def create_table(
         self,
@@ -997,7 +1024,8 @@ class LakeSoulTable:
         session: LakeSoulSession | None = None,
         snapshot: int | None = None,
         tag: str | None = None,
-    ) -> pa.Table:
+        to: OutputFormat | None = None,
+    ) -> Any:
         """Run a vector search and return the nearest rows as an Arrow table.
 
         The search is a lakehouse query: it runs on the session's DataFusion
@@ -1068,9 +1096,15 @@ class LakeSoulTable:
             options["exact_overfetch"] = int(exact_overfetch)
         if options:
             query_session.set_vector_search(**options)
-        return query_session.sql(sql)
+        return convert(query_session.sql(sql), to)
 
-    def sql(self, sql: str, *, session: LakeSoulSession | None = None) -> pa.Table:
+    def sql(
+        self,
+        sql: str,
+        *,
+        session: LakeSoulSession | None = None,
+        to: OutputFormat | None = None,
+    ) -> Any:
         """Run an arbitrary lakehouse SQL query against this table's catalog.
 
         Vector search is one shape of such a query::
@@ -1083,7 +1117,190 @@ class LakeSoulTable:
         The statement may join other LakeSoul tables, aggregate, filter and
         project freely; it runs on the same engine as :meth:`search`.
         """
-        return self._search_session(session).sql(sql)
+        return self._search_session(session).sql(sql, to=to)
+
+    def search_batch(
+        self,
+        queries: Sequence[Sequence[float]],
+        *,
+        column: str | None = None,
+        top_k: int = 10,
+        metric: str | None = None,
+        rerank: str = "exact",
+        nprobe: int | None = None,
+        exact_overfetch: int | None = None,
+        batch_size: int = 1024,
+        parallelism: int = 1,
+        session: LakeSoulSession | None = None,
+    ) -> BatchSearchResult:
+        """Run a batch of vector queries and return one primary-key list each.
+
+        Prefers the native snapshot batch entry (one shard resolution and one
+        ranking pass for the whole call, same semantics as the SQL path).  When
+        the table cannot use it - the native entry requires a single Int64
+        primary key named ``id``, and exact mode also requires the stored-vector
+        payload cache - the batch falls back to one SQL search per query.  The
+        fallback gives identical results, just slower, and fills
+        :attr:`BatchSearchResult.distances` when the metric expression is
+        available.
+
+        Args:
+            queries: Query vectors (``(nq, dim)``); all must have the same
+                dimension.
+            column: Vector column; defaults to the only declared column.
+            top_k: Neighbours returned per query.
+            metric: ``"L2"`` or ``"IP"``; defaults to the index metric.
+            rerank: ``"exact"`` (default), ``"index"`` (index ordering, no
+                vector-column reads, approximate) or ``"auto"`` (exact).
+            nprobe: Clusters probed per bucket; defaults to the session's
+                ``nprobe``.
+            exact_overfetch: Candidates per bucket in exact mode
+                (``top_k * this``); defaults to the native entry's 10.
+            batch_size: Queries per snapshot batch (``0`` = the API default).
+            parallelism: Cluster-probe parallelism inside one shard.
+            session: Session to query; defaults to the catalog's session.
+
+        Returns:
+            :class:`lakesoul.session.BatchSearchResult`; use
+            ``result.ids`` or ``result.to_arrow()``.
+        """
+        if rerank not in ("auto", "exact", "index"):
+            raise ValueError(
+                f"rerank must be 'auto', 'exact' or 'index', got {rerank!r}"
+            )
+        if queries is None or len(queries) == 0:
+            return BatchSearchResult(ids=[])
+        values = [[float(value) for value in query] for query in queries]
+        dimensions = {len(query) for query in values}
+        if len(dimensions) > 1:
+            raise ValueError(
+                f"all queries must have the same dimension, got {sorted(dimensions)}"
+            )
+        if not values[0]:
+            raise ValueError("query must not be empty")
+        query_session = self._search_session(session)
+        # Validate column/metric/dimension and reuse the resolved values.
+        _, resolved_column, resolved_metric = self._vector_search_sql(
+            values[0], column=column, top_k=10, metric=metric
+        )
+        config = next(
+            (c for c in self._vector_configs() if c["column"] == resolved_column),
+            None,
+        )
+        expected_dim = config.get("dim") if config is not None else None
+        if expected_dim is not None:
+            for index, query in enumerate(values):
+                if len(query) != int(expected_dim):
+                    raise ValueError(
+                        f"query {index} dimension {len(query)} does not match "
+                        f"the index dimension {int(expected_dim)}"
+                    )
+        requested_nprobe = nprobe if nprobe is not None else query_session.nprobe
+        exact = rerank != "index"
+        overfetch = 10 if exact_overfetch is None else int(exact_overfetch)
+        if overfetch < 1:
+            raise ValueError("exact_overfetch must be >= 1")
+        if batch_size < 0:
+            raise ValueError("batch_size must be >= 0")
+
+        native_supported = (
+            self.primary_keys == ("id",)
+            and "id" in self.schema.names
+            and pa.types.is_int64(self.schema.field("id").type)
+        )
+        if native_supported:
+            try:
+                return query_session.batch_search(
+                    self.name,
+                    values,
+                    namespace=self.namespace,
+                    column=resolved_column,
+                    top_k=top_k,
+                    nprobe=int(requested_nprobe),
+                    parallelism=int(parallelism),
+                    batch_size=int(batch_size),
+                    exact=exact,
+                    exact_overfetch=overfetch,
+                    metric=resolved_metric,
+                )
+            except LakeSoulQueryError as error:
+                # The native snapshot batch cannot serve this table; keep the
+                # result identical with the per-query SQL fallback.
+                fallback_error = error
+        else:
+            fallback_error = None
+        try:
+            return self._search_batch_via_sql(
+                values,
+                column=resolved_column,
+                metric=resolved_metric,
+                top_k=top_k,
+                rerank=rerank,
+                nprobe=requested_nprobe,
+                exact_overfetch=exact_overfetch,
+                session=query_session,
+            )
+        except Exception as error:  # noqa: BLE001 - surface both failures
+            if fallback_error is not None:
+                raise LakeSoulQueryError(
+                    f"native batch search failed ({fallback_error}); the SQL "
+                    f"fallback failed too: {error}"
+                ) from error
+            raise
+
+    def _search_batch_via_sql(
+        self,
+        queries: list[list[float]],
+        *,
+        column: str,
+        metric: str,
+        top_k: int,
+        rerank: str,
+        nprobe: int | None,
+        exact_overfetch: int | None,
+        session: LakeSoulSession,
+    ) -> BatchSearchResult:
+        """Per-query SQL fallback used when the native batch cannot run."""
+        primary_key = self.primary_keys[0] if self.primary_keys else "id"
+        effective_rerank = "exact" if rerank == "auto" else rerank
+        ids: list[list[int]] = []
+        distances: list[list[float]] = []
+        for query in queries:
+            rows = self.search(
+                query,
+                column=column,
+                top_k=top_k,
+                metric=metric,
+                rerank=effective_rerank,
+                nprobe=nprobe,
+                exact_overfetch=exact_overfetch,
+                columns=[primary_key],
+                with_distance=True,
+                session=session,
+            )
+            ids.append([int(value) for value in rows.column(primary_key).to_pylist()])
+            if VECTOR_DISTANCE_COLUMN in rows.column_names:
+                distances.append(
+                    [float(value) for value in rows.column(VECTOR_DISTANCE_COLUMN).to_pylist()]
+                )
+        return BatchSearchResult(
+            ids=ids,
+            distances=distances if len(distances) == len(ids) else None,
+        )
+
+    def _native_batch_supported(self) -> bool:
+        """True when the native snapshot batch entry can serve this table."""
+        return (
+            self.primary_keys == ("id",)
+            and "id" in self.schema.names
+            and pa.types.is_int64(self.schema.field("id").type)
+        )
+
+    def _payload_cache_enabled(self) -> bool:
+        flag = os.environ.get("LAKESOUL_VECTOR_RERANK_CACHE", "").strip().lower()
+        if flag:
+            return flag in ("1", "true", "yes", "on")
+        return bool(os.environ.get("LAKESOUL_VECTOR_RERANK_CACHE_DIR", "").strip())
 
     def scan(
         self,

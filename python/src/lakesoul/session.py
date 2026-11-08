@@ -21,11 +21,13 @@ keeps working.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import pyarrow as pa
 
+from lakesoul.adapters import OutputFormat, convert
 from lakesoul.exceptions import LakeSoulError
 
 try:  # pragma: no cover - exercised by the feature-on build
@@ -49,10 +51,66 @@ class LakeSoulQueryError(LakeSoulError):
     """A query failed to plan or execute."""
 
 
+@dataclass
+class BatchSearchResult:
+    """Result of :meth:`LakeSoulTable.search_batch`.
+
+    Attributes:
+        ids: One list of primary keys per query, nearest first.
+        distances: Optional per-query distances (only filled by the SQL
+            fallback; the native batch entry returns keys only).
+    """
+
+    ids: list[list[int]]
+    distances: list[list[float]] | None = None
+
+    def __len__(self) -> int:
+        return len(self.ids)
+
+    def to_arrow(self) -> pa.Table:
+        """Return the result as ``(query_id, rank, id[, distance])`` rows."""
+        query_ids: list[int] = []
+        ranks: list[int] = []
+        keys: list[int] = []
+        scores: list[float] = []
+        with_distance = self.distances is not None
+        for query_id, query_ids_list in enumerate(self.ids):
+            for rank, key in enumerate(query_ids_list):
+                query_ids.append(query_id)
+                ranks.append(rank)
+                keys.append(int(key))
+                if with_distance:
+                    assert self.distances is not None
+                    scores.append(float(self.distances[query_id][rank]))
+        columns: dict[str, pa.Array] = {
+            "query_id": pa.array(query_ids, type=pa.int64()),
+            "rank": pa.array(ranks, type=pa.int64()),
+            "id": pa.array(keys, type=pa.int64()),
+        }
+        if with_distance:
+            columns["distance"] = pa.array(scores, type=pa.float32())
+        return pa.table(columns)
+
+
 def _require_binding() -> type:
     if _NativeSession is None:  # pragma: no cover - feature-off build
         raise ImportError(_BUILD_HINT)
     return _NativeSession
+
+
+def _normalize_queries(queries: Sequence[Sequence[float]]) -> list[list[float]]:
+    normalized: list[list[float]] = []
+    for index, query in enumerate(queries):
+        values = [float(value) for value in query]
+        if not values:
+            raise ValueError(f"query {index} is empty")
+        normalized.append(values)
+    dimensions = {len(query) for query in normalized}
+    if len(dimensions) > 1:
+        raise ValueError(
+            f"all queries must have the same dimension, got {sorted(dimensions)}"
+        )
+    return normalized
 
 
 class LakeSoulSession:
@@ -144,8 +202,9 @@ class LakeSoulSession:
 
     # -- query surface --------------------------------------------------------
 
-    def sql(self, sql: str) -> pa.Table:
-        """Execute one SQL statement and return a :class:`pyarrow.Table`.
+    def sql(self, sql: str, *, to: OutputFormat | None = None) -> Any:
+        """Execute one SQL statement and return the result.
+        
 
         The statement runs on the LakeSoul-enabled DataFusion engine, so the
         full lakehouse query surface is available: filters, projections, joins,
@@ -164,7 +223,55 @@ class LakeSoulSession:
             batches = self._inner.sql(sql)
         except Exception as error:  # noqa: BLE001
             raise LakeSoulQueryError(str(error)) from error
-        return pa.Table.from_batches(batches)
+        return convert(pa.Table.from_batches(batches), to)
+
+    def batch_search(
+        self,
+        table: str,
+        queries: Sequence[Sequence[float]],
+        *,
+        namespace: str = "default",
+        column: str,
+        top_k: int = 10,
+        nprobe: int = 64,
+        parallelism: int = 1,
+        batch_size: int = 0,
+        exact: bool = True,
+        exact_overfetch: int = 10,
+        metric: str = "L2",
+    ) -> BatchSearchResult:
+        """Run the native snapshot batch entry: many queries, one snapshot.
+
+        This is the fast batch path: every bucket's index shard is resolved
+        once for the whole call and the ranking runs natively, with the same
+        snapshot and merge-on-read semantics as the SQL path.  It returns one
+        list of primary keys per query.
+
+        The native entry supports a single Int64 primary key named ``id`` and
+        requires the stored-vector payload cache for ``exact=True``;
+        :meth:`lakesoul.catalog.LakeSoulTable.search_batch` checks both and
+        falls back to per-query SQL otherwise, so prefer the table method.
+        """
+        if queries is None or len(queries) == 0:
+            return BatchSearchResult(ids=[])
+        normalized = _normalize_queries(queries)
+        try:
+            ids = self._inner.vector_batch_search(
+                str(table),
+                str(namespace),
+                str(column),
+                normalized,
+                int(top_k),
+                int(nprobe),
+                int(parallelism),
+                int(batch_size),
+                bool(exact),
+                int(exact_overfetch),
+                str(metric),
+            )
+        except Exception as error:  # noqa: BLE001
+            raise LakeSoulQueryError(str(error)) from error
+        return BatchSearchResult(ids=ids)
 
     def explain(
         self, sql: str, *, verbose: bool = True, analyze: bool = False

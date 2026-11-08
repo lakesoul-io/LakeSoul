@@ -22,9 +22,13 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_pyarrow::PyArrowType;
 use datafusion::arrow::util::pretty::pretty_format_batches;
+use datafusion::catalog::{CatalogProvider, SchemaProvider};
+use datafusion::datasource::TableProvider;
 use datafusion::execution::context::SessionContext;
 use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::create_lakesoul_session_config;
+use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
+use lakesoul_datafusion::vector_batch::VectorBatchRequest;
 use lakesoul_datafusion::create_lakesoul_session_ctx_with_config;
 use lakesoul_datafusion::udf::vector_search_marker::LakeSoulVectorSearchConfig;
 use lakesoul_io::session::GLOBAL_RUNTIME;
@@ -288,6 +292,111 @@ impl NativeSession {
             .get::<LakeSoulVectorSearchConfig>()
             .map(|options| options.nprobe)
             .unwrap_or(64)
+    }
+
+    /// Run the snapshot batch entry: many query vectors, one snapshot.
+    ///
+    /// Returns one list of primary keys per query.  This is the fast batch
+    /// path (it resolves each bucket's index shard once for the whole call and
+    /// runs the index-only or exact ranking natively).  It follows the same
+    /// snapshot and merge-on-read semantics as the SQL path.
+    ///
+    /// The native batch entry supports a single Int64 primary key named
+    /// ``id``; the Python wrapper falls back to per-query SQL for other key
+    /// layouts.  A query vector may be any length the index accepts (the
+    /// index dimension is enforced by the engine).
+    #[pyo3(signature = (
+        table,
+        namespace,
+        column,
+        queries,
+        top_k = 10,
+        nprobe = 64,
+        parallelism = 1,
+        batch_size = 0,
+        exact = true,
+        exact_overfetch = 10,
+        metric = "L2".to_string()
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn vector_batch_search(
+        &self,
+        py: Python<'_>,
+        table: String,
+        namespace: String,
+        column: String,
+        queries: Vec<Vec<f32>>,
+        top_k: usize,
+        nprobe: usize,
+        parallelism: usize,
+        batch_size: usize,
+        exact: bool,
+        exact_overfetch: usize,
+        metric: String,
+    ) -> PyResult<Vec<Vec<i64>>> {
+        if top_k == 0 {
+            return Err(PyValueError::new_err("top_k must be >= 1"));
+        }
+        if queries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let metric = if metric.eq_ignore_ascii_case("L2")
+            || metric.eq_ignore_ascii_case("IP")
+            || metric.eq_ignore_ascii_case("INNERPRODUCT")
+        {
+            if metric.eq_ignore_ascii_case("L2") {
+                "L2".to_string()
+            } else {
+                "IP".to_string()
+            }
+        } else {
+            return Err(PyValueError::new_err(format!(
+                "metric must be 'L2' or 'IP', got {metric:?}"
+            )));
+        };
+        let ctx = Arc::clone(&self.ctx);
+        py.detach(move || {
+            GLOBAL_RUNTIME.block_on(async move {
+                let catalog = ctx
+                    .catalog("lakesoul")
+                    .ok_or_else(|| "the lakesoul catalog is not registered".to_string())?;
+                let schema = catalog.schema(&namespace).ok_or_else(|| {
+                    format!("the namespace {namespace:?} is not registered")
+                })?;
+                let provider = schema
+                    .table(&table)
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "failed to resolve the table {namespace}.{table}: {error}"
+                        )
+                    })?
+                    .ok_or_else(|| {
+                        format!("the table {namespace}.{table} is not registered")
+                    })?;
+                let provider = provider
+                    .downcast_ref::<LakeSoulTableProvider>()
+                    .ok_or_else(|| {
+                        format!("{namespace}.{table} is not a LakeSoul table")
+                    })?;
+                let request = VectorBatchRequest {
+                    column,
+                    queries,
+                    top_k,
+                    nprobe: nprobe.max(1),
+                    parallelism: parallelism.max(1),
+                    batch_size,
+                    exact,
+                    exact_overfetch: exact_overfetch.max(1),
+                    metric,
+                };
+                provider
+                    .vector_batch_search(&ctx.state(), &request)
+                    .await
+                    .map_err(|error| format!("batch vector search failed: {error}"))
+            })
+        })
+        .map_err(PyRuntimeError::new_err)
     }
 
     /// Release the session (the underlying context is dropped when Python

@@ -29,6 +29,16 @@ pytest.importorskip(
 
 from lakesoul import LakeSoulCatalog  # noqa: E402
 
+# The exact direct path (and the native batch entry in exact mode) reads the
+# stored vectors through the payload cache, which in turn needs the local
+# object-store cache for the persistent key index.
+os.environ.setdefault("LAKESOUL_CACHE", "1")
+os.environ.setdefault("LAKESOUL_CACHE_PATH", "/tmp/lakesoul_session_cache")
+os.environ.setdefault("LAKESOUL_VECTOR_RERANK_CACHE", "1")
+os.environ.setdefault(
+    "LAKESOUL_VECTOR_RERANK_CACHE_DIR", "/tmp/lakesoul_session_payload"
+)
+
 DIM = 8
 N = 200
 DISTANCE_COLUMN = "__lakesoul_vector_distance"
@@ -49,9 +59,13 @@ def _vectors(seed: int = 7) -> np.ndarray:
     return np.random.default_rng(seed).normal(size=(N, DIM)).astype(np.float32)
 
 
-def _batch(vectors: np.ndarray, *, titles: bool = True) -> pa.Table:
+def _batch(
+    vectors: np.ndarray, *, titles: bool = True, uint64_ids: bool = False
+) -> pa.Table:
     columns: dict[str, pa.Array] = {
-        "id": pa.array(range(N), type=pa.int64()),
+        "id": pa.array(
+            range(N), type=pa.uint64() if uint64_ids else pa.int64()
+        ),
         "vec": pa.FixedSizeListArray.from_arrays(
             pa.array(vectors.reshape(-1), type=pa.float32()), DIM
         ),
@@ -67,6 +81,7 @@ def _create_table(
     metric: str = "L2",
     titles: bool = True,
     vectors: np.ndarray | None = None,
+    uint64_ids: bool = False,
 ) -> tuple[LakeSoulCatalog, object, str]:
     catalog = _catalog()
     table_path = f"/tmp/lakesoul_test/{table_name}"
@@ -76,7 +91,7 @@ def _create_table(
         pass
     shutil.rmtree(table_path, ignore_errors=True)
     vectors = _vectors() if vectors is None else vectors
-    schema = _batch(vectors, titles=titles).schema
+    schema = _batch(vectors, titles=titles, uint64_ids=uint64_ids).schema
     table = catalog.create_table(
         table_name,
         path=f"file://{table_path}",
@@ -93,7 +108,7 @@ def _create_table(
             }
         ],
     )
-    table.write_arrow(_batch(vectors, titles=titles))
+    table.write_arrow(_batch(vectors, titles=titles, uint64_ids=uint64_ids))
     return catalog, table, table_path
 
 
@@ -246,5 +261,101 @@ def test_search_unknown_column_and_bad_dimension() -> None:
             table.search(query, filter=42)  # type: ignore[arg-type]
         with pytest.raises(NotImplementedError):
             table.search(query, snapshot=1)
+    finally:
+        _drop(catalog, table_name, table_path)
+
+
+def test_search_batch_matches_brute_force() -> None:
+    """The native batch entry ranks like the per-query SQL path."""
+    table_name = "py_session_batch"
+    vectors = _vectors()
+    catalog, table, table_path = _create_table(table_name, vectors=vectors)
+    try:
+        generator = np.random.default_rng(29)
+        queries = generator.normal(size=(6, DIM)).astype(np.float32)
+        session = catalog.session(vector_search={"nprobe": 4})
+        result = table.search_batch(
+            queries, top_k=5, exact_overfetch=30, session=session
+        )
+        assert len(result.ids) == 6
+        for index, query in enumerate(queries):
+            assert len(result.ids[index]) == 5
+            expected = _top_k(vectors, query, 5, metric="L2")
+            hits = len(set(result.ids[index]) & set(expected))
+            assert hits >= 4, (index, result.ids[index], expected)
+        arrow = result.to_arrow()
+        assert arrow.num_rows == 30
+        assert arrow.column_names == ["query_id", "rank", "id"]
+
+        # The catalog convenience method delegates to the table method.
+        via_catalog = catalog.search_batch(
+            table_name, queries[:2], top_k=5, exact_overfetch=30, session=session
+        )
+        assert via_catalog.ids == result.ids[:2]
+    finally:
+        _drop(catalog, table_name, table_path)
+
+
+def test_search_batch_falls_back_for_non_native_primary_key() -> None:
+    """A non-Int64-`id` table falls back to per-query SQL, same results."""
+    table_name = "py_session_batch_fallback"
+    vectors = _vectors()
+    catalog, table, table_path = _create_table(
+        table_name, vectors=vectors, uint64_ids=True
+    )
+    try:
+        generator = np.random.default_rng(31)
+        queries = generator.normal(size=(3, DIM)).astype(np.float32)
+        session = catalog.session(vector_search={"nprobe": 4, "exact_overfetch": 30})
+        result = table.search_batch(queries, top_k=5, session=session)
+        assert len(result.ids) == 3
+        assert result.distances is not None
+        for index, query in enumerate(queries):
+            expected = _top_k(vectors, query, 5, metric="L2")
+            hits = len(set(result.ids[index]) & set(expected))
+            assert hits >= 4, (index, result.ids[index], expected)
+    finally:
+        _drop(catalog, table_name, table_path)
+
+
+def test_output_adapters() -> None:
+    """``to=`` wraps the Arrow result without rescanning the table."""
+    pytest.importorskip("daft", reason="daft extra not installed")
+    table_name = "py_session_adapters"
+    catalog, table, table_path = _create_table(table_name)
+    try:
+        query = np.random.default_rng(37).normal(size=DIM).astype(np.float32)
+        session = catalog.session(vector_search={"nprobe": 4, "exact_overfetch": 20})
+        daft_frame = table.search(query, top_k=5, session=session, to="daft")
+        collected = daft_frame.collect().to_arrow()
+        assert collected.num_rows == 5
+        assert "id" in collected.column_names
+
+        daft_sql = session.sql(
+            f'SELECT count(*) AS cnt FROM "lakesoul".default.{table_name}',
+            to="daft",
+        )
+        assert daft_sql.collect().to_arrow().num_rows == 1
+
+        with pytest.raises(ValueError):
+            session.sql("SELECT 1", to="not-a-format")  # type: ignore[arg-type]
+    finally:
+        _drop(catalog, table_name, table_path)
+
+
+def test_search_batch_validation() -> None:
+    """Batch parameter validation happens before any query runs."""
+    table_name = "py_session_batch_validation"
+    catalog, table, table_path = _create_table(table_name)
+    try:
+        query = np.zeros(DIM, dtype=np.float32)
+        with pytest.raises(ValueError):
+            table.search_batch([query, query[:-1]])
+        with pytest.raises(ValueError):
+            table.search_batch([query], rerank="unknown")
+        with pytest.raises(ValueError):
+            table.search_batch([query], exact_overfetch=0)
+        with pytest.raises(ValueError):
+            table.search_batch([np.array([], dtype=np.float32)])
     finally:
         _drop(catalog, table_name, table_path)
