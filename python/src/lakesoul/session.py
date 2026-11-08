@@ -92,6 +92,11 @@ class BatchSearchResult:
         return pa.table(columns)
 
 
+def native_session_available() -> bool:
+    """True when the extension was built with the query session."""
+    return _NativeSession is not None
+
+
 def _require_binding() -> type:
     if _NativeSession is None:  # pragma: no cover - feature-off build
         raise ImportError(_BUILD_HINT)

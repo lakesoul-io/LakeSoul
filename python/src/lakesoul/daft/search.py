@@ -32,6 +32,143 @@ if TYPE_CHECKING:
 _DISTANCE_COLUMN = "vector_distance"
 
 
+def _native_session_engine() -> tuple[Any, Any] | None:
+    """Return ``(class, table-type)`` when the native session is available."""
+    try:
+        from lakesoul.session import LakeSoulSession, native_session_available
+    except ImportError:  # pragma: no cover - feature-off build
+        return None
+    if not native_session_available():
+        return None
+    return LakeSoulSession, lakesoul_table_type()
+
+
+def lakesoul_table_type() -> Any:
+    from lakesoul.catalog import LakeSoulTable
+
+    return LakeSoulTable
+
+
+def _native_vector_search_frame(
+    source: Any,
+    table: Any,
+    query: list[float],
+    *,
+    top_k: int,
+    column: str,
+    metric: str,
+    rerank: str,
+    nprobe: int,
+    extra_columns: Sequence[str],
+    parallelism: int,
+    with_distance: bool,
+) -> Any | None:
+    """Run the search through the native query session, or return None.
+
+    The legacy Daft path computes distances inside Daft; the native engine runs
+    the same SQL statement on the DataFusion session and returns the Arrow
+    result as a Daft DataFrame.  ``with_distance`` keeps the legacy path (its
+    exact-distance semantics differ from the SQL expression).
+    """
+    engine = _native_session_engine()
+    if engine is None or with_distance:
+        return None
+    session_class, table_type = engine
+    if not isinstance(source, table_type):
+        # A LakeSoulScan carries partition/projection state; the legacy reader
+        # path honours it directly.
+        return None
+    try:
+        session = table.catalog.session()
+        options: dict[str, Any] = {"rerank": rerank if rerank in ("exact", "index") else "exact"}
+        if nprobe:
+            options["nprobe"] = int(nprobe)
+        if parallelism > 1:
+            options["parallelism"] = int(parallelism)
+        session.set_vector_search(**options)
+        primary_keys = table.primary_keys
+        if not primary_keys:
+            return None
+        pk_column = primary_keys[0]
+        if rerank == "index":
+            columns = _dedup_columns((pk_column, *extra_columns))
+        else:
+            columns = _dedup_columns((pk_column, column, *extra_columns))
+        rows = table.search(
+            query,
+            column=column,
+            top_k=top_k,
+            metric=metric,
+            rerank=rerank if rerank in ("exact", "index") else "exact",
+            nprobe=nprobe,
+            columns=columns,
+            with_distance=False,
+            session=session,
+        )
+        return _to_daft(rows)
+    except Exception:  # noqa: BLE001 - the legacy path is the fallback
+        return None
+
+
+def _native_multi_search_frame(
+    table: Any,
+    resolved: Sequence[tuple[str, list[float], float]],
+    *,
+    top_k: int,
+    pk_column: str,
+    extra_columns: Sequence[str],
+    rerank: str,
+    nprobe: int,
+    parallelism: int,
+    with_distance: bool,
+) -> Any | None:
+    """Weighted multi-column fusion through the native session, or None."""
+    engine = _native_session_engine()
+    if engine is None or with_distance:
+        return None
+    session_class, table_type = engine
+    if not isinstance(table, table_type):
+        return None
+    try:
+        session = table.catalog.session()
+        options: dict[str, Any] = {"rerank": rerank if rerank in ("exact", "index") else "exact"}
+        if nprobe:
+            options["nprobe"] = int(nprobe)
+        if parallelism > 1:
+            options["parallelism"] = int(parallelism)
+        session.set_vector_search(**options)
+        terms = []
+        for column, query, weight in resolved:
+            literal = "ARRAY[" + ", ".join(f"{value:.9g}" for value in query) + "]"
+            terms.append(
+                f"{weight:.9g} * array_distance({table._sql_identifier(column)}, {literal})"
+            )
+        expr = " + ".join(terms)
+        if rerank == "index":
+            selected = _dedup_columns((pk_column, *extra_columns))
+        else:
+            selected = _dedup_columns(
+                (pk_column, *[column for column, _, _ in resolved], *extra_columns)
+            )
+        select_list = ", ".join(table._sql_identifier(name) for name in selected)
+        table_ref = (
+            f'"lakesoul".{table._sql_identifier(table.namespace)}.'
+            f"{table._sql_identifier(table.name)}"
+        )
+        sql = (
+            f"SELECT {select_list} FROM {table_ref} "
+            f"ORDER BY {expr} ASC LIMIT {int(top_k)}"
+        )
+        return _to_daft(session.sql(sql))
+    except Exception:  # noqa: BLE001 - the legacy path is the fallback
+        return None
+
+
+def _to_daft(rows: Any) -> Any:
+    """Wrap an Arrow table in a Daft DataFrame without rescanning."""
+    return daft.from_arrow(rows)
+
+
 def vector_search(
     source: LakeSoulTable | LakeSoulScan,
     query: Sequence[float],
@@ -149,8 +286,27 @@ def vector_search(
         raise ValueError(f"rerank must be 'exact' or 'index', got {rerank!r}")
     if parallelism < 1:
         raise ValueError("parallelism must be >= 1")
-    # Index-distance ordering is only comparable with L2 for now; IP keeps
-    # the exact rerank.
+    # Prefer the native query session: it runs the same statement on the
+    # DataFusion engine (all vector-index fast paths, filter pushdown and
+    # lakehouse semantics), and the legacy Daft path below stays as fallback.
+    native = _native_vector_search_frame(
+        source,
+        table,
+        query,
+        top_k=top_k,
+        column=column,
+        metric=metric,
+        rerank=rerank,
+        nprobe=nprobe,
+        extra_columns=extra_columns,
+        parallelism=parallelism,
+        with_distance=with_distance,
+    )
+    if native is not None:
+        return native
+
+    # Index-distance ordering is only comparable with L2 in the legacy Daft
+    # path; IP keeps the exact rerank there.
     index_only = rerank == "index" and metric == "L2"
 
     if index_only:
@@ -320,6 +476,22 @@ def multi_vector_search(
     if not primary_keys:
         raise ValueError("a vector index requires a table with a primary key")
     pk_column = primary_keys[0]
+
+    # Prefer the native query session (same fusion SQL, all fast paths); the
+    # legacy Daft fusion below stays as fallback.
+    native = _native_multi_search_frame(
+        table,
+        resolved,
+        top_k=top_k,
+        pk_column=pk_column,
+        extra_columns=extra_columns,
+        rerank=rerank,
+        nprobe=nprobe,
+        parallelism=parallelism,
+        with_distance=with_distance,
+    )
+    if native is not None:
+        return native
 
     index_only = rerank == "index"
     candidates_per_shard = max(top_k * 2, top_k + 8) if index_only else top_k
