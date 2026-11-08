@@ -1300,37 +1300,82 @@ impl LakeSoulVectorSearchExec {
         // Open every bucket's payload first (page cache and key index are
         // already warm after the first query); `open` is async and the buckets
         // are independent files.
-        let opens = self.file_groups.iter().map(|files| {
-            let store = Arc::clone(store);
-            let locations: Vec<object_store::path::Path> = files
-                .iter()
-                .map(|file| file.object_meta.location.clone())
-                .collect();
-            let key_types = key_types.clone();
-            let key_columns = self.primary_keys.clone();
-            let field = Arc::clone(&vector_field);
-            async move {
-                // One source per data file: a bucket may hold several
-                // append-only files, and the resolver below picks the file
-                // that owns each candidate key.
-                let mut sources = Vec::with_capacity(locations.len());
-                for location in locations {
-                    let format = PhysicalFormat::from_extension(location.as_ref()).ok()?;
-                    sources.push(
-                        lakesoul_io::pk_locator::VectorPayloadSource::open_cached(
-                            Arc::clone(&store),
-                            &location,
-                            format,
-                            &key_columns,
-                            &key_types,
-                            &field,
-                        )
-                        .await?,
-                    );
+        // File age per bucket: the catalog revision of the newest index
+        // segment that covers the file.  The resolver reads a candidate key
+        // from the newest file that holds it, which is the row the
+        // merge-on-read view shows for a key written more than once.
+        let mut file_age: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        for slot in &snapshot.shards {
+            for segment in &slot.view.segments {
+                for file in &segment.data_files {
+                    let name = file.rsplit('/').next().unwrap_or(file.as_str());
+                    let age = file_age.entry(name.to_string()).or_insert(0);
+                    *age = (*age).max(segment.birth_version);
                 }
-                Some(sources)
             }
-        });
+        }
+        let bucket_ranks: Vec<Vec<u64>> = self
+            .file_groups
+            .iter()
+            .map(|files| {
+                files
+                    .iter()
+                    .map(|file| {
+                        let name = file
+                            .object_meta
+                            .location
+                            .as_ref()
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or_default();
+                        file_age.get(name).copied().unwrap_or(0)
+                    })
+                    .collect()
+            })
+            .collect();
+        let opens = self
+            .file_groups
+            .iter()
+            .zip(bucket_ranks.iter())
+            .map(|(files, ranks)| {
+                let store = Arc::clone(store);
+                // Oldest file first, so the payload reads follow the write
+                // order and a key present in several files picks the newest.
+                let mut order: Vec<usize> = (0..files.len()).collect();
+                order.sort_by_key(|position| (ranks[*position], *position));
+                let locations: Vec<object_store::path::Path> = order
+                    .iter()
+                    .map(|position| files[*position].object_meta.location.clone())
+                    .collect();
+                let ordered_ranks: Vec<u64> =
+                    order.iter().map(|position| ranks[*position]).collect();
+                let key_types = key_types.clone();
+                let key_columns = self.primary_keys.clone();
+                let field = Arc::clone(&vector_field);
+                async move {
+                    // One source per data file: a bucket may hold several
+                    // append-only files, and the resolver below picks the file
+                    // that owns each candidate key.
+                    let mut sources = Vec::with_capacity(locations.len());
+                    for location in locations {
+                        let format =
+                            PhysicalFormat::from_extension(location.as_ref()).ok()?;
+                        sources.push(
+                            lakesoul_io::pk_locator::VectorPayloadSource::open_cached(
+                                Arc::clone(&store),
+                                &location,
+                                format,
+                                &key_columns,
+                                &key_types,
+                                &field,
+                            )
+                            .await?,
+                        );
+                    }
+                    Some((sources, ordered_ranks))
+                }
+            });
         let sources = futures::future::join_all(opens).await;
         let query = Arc::new(query);
         // One thread per bucket: probe the bucket's shard and read that
@@ -1344,7 +1389,7 @@ impl LakeSoulVectorSearchExec {
             let source = sources.get(bucket).cloned().flatten();
             tasks.push(lakesoul_io::session::GLOBAL_RUNTIME.spawn_blocking(
                 move || -> DFResult<Option<(arrow::array::ArrayRef, Vec<IndexKey>)>> {
-                        let Some(sources) = source else {
+                        let Some((sources, ranks)) = source else {
                             return Ok(None);
                         };
                         let query_ref: [&[f32]; 1] = [query.as_slice()];
@@ -1388,12 +1433,14 @@ impl LakeSoulVectorSearchExec {
                         ranked.truncate(top_k);
                         let keys: Vec<IndexKey> =
                             ranked.into_iter().map(|(_, key)| key).collect();
-                        // Every candidate must live in exactly one file of
-                        // this bucket; a key with several versions is left to
-                        // the merge-on-read reader path.
-                        let Some(array) =
-                            lakesoul_io::pk_locator::take_multi_file(&sources, &keys)
-                        else {
+                        // Resolve every candidate key across this bucket's
+                        // files: a key unique to one file is read from it, and
+                        // a key written more than once is read from the newest
+                        // version's file (a tie, i.e. an unknown age order,
+                        // falls back to the merge-on-read reader path).
+                        let Some(array) = lakesoul_io::pk_locator::take_multi_file_ranked(
+                            &sources, &ranks, &keys,
+                        ) else {
                             return Ok(None);
                         };
                         Ok(Some((array, keys)))

@@ -2447,12 +2447,15 @@ async fn sql_vector_search_multi_file_bucket() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sql_vector_search_multi_file_upsert_falls_back() {
+async fn sql_vector_search_multi_file_upsert_uses_newest_version() {
     enable_direct_exact_path();
-    // The same keys written twice: the direct read cannot decide which
-    // version is visible, so the query must fall back to the merge-on-read
-    // reader path - and still return the newest versions' neighbours.
+    // The same keys written twice: the direct read resolves each candidate to
+    // the newest file that holds it (the row the merge-on-read view shows), so
+    // the fast path still serves the query and returns the newest vectors'
+    // neighbours.
+    use crate::datasource::file_format::vector_search_exec::EXACT_DIRECT_RUNS;
     use crate::tests::create_table_with_vector_index;
+    use std::sync::atomic::Ordering;
 
     let client = Arc::new(MetaDataClient::from_env().await.unwrap());
     let table_name = "vec_search_sql_multi_file_upsert";
@@ -2507,7 +2510,13 @@ async fn sql_vector_search_multi_file_upsert_falls_back() {
         "select id from \"lakesoul\".default.{table_name} \
          order by array_distance(vec, ARRAY[{q}]) limit 10"
     );
+    let before = EXACT_DIRECT_RUNS.load(Ordering::Relaxed);
     let returned = collect_ids(&ctx, &sql).await;
+    let after = EXACT_DIRECT_RUNS.load(Ordering::Relaxed);
+    assert!(
+        after > before,
+        "a key with several versions must still be served by the direct read"
+    );
     let expected = brute_force_topk(&updated, &query, 10);
     let hits = returned.iter().filter(|id| expected.contains(id)).count();
     assert!(

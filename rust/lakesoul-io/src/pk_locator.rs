@@ -2415,7 +2415,29 @@ pub fn take_multi_file(
     sources: &[std::sync::Arc<VectorPayloadSource>],
     keys: &[IndexKey],
 ) -> Option<arrow::array::ArrayRef> {
+    take_multi_file_ranked(sources, &[], keys)
+}
+
+/// Like [`take_multi_file`], but a key that several files hold is read from
+/// the file with the strictly greatest rank.
+///
+/// `ranks` (one per source, e.g. the catalog revision of the newest index
+/// segment covering that file) order the bucket's files by commit age: the
+/// newest version of a key shadows the older ones in the merge-on-read view,
+/// so reading the greatest rank reproduces the visible row without touching
+/// the reader path.  A tie for the greatest rank means the age order is
+/// unknown and the call returns `None` (the caller falls back).  An empty
+/// `ranks` keeps the conservative behaviour: only keys unique to one file
+/// resolve.
+pub fn take_multi_file_ranked(
+    sources: &[std::sync::Arc<VectorPayloadSource>],
+    ranks: &[u64],
+    keys: &[IndexKey],
+) -> Option<arrow::array::ArrayRef> {
     if keys.is_empty() || sources.is_empty() {
+        return None;
+    }
+    if !ranks.is_empty() && ranks.len() != sources.len() {
         return None;
     }
     if sources.len() == 1 {
@@ -2431,18 +2453,37 @@ pub fn take_multi_file(
         .iter()
         .map(|position| keys[*position as usize].as_bytes())
         .collect();
-    // Which file owns each candidate.  A second owner means several versions,
-    // which only the merge path may resolve.
+    // Which file owns each candidate.  Several owners mean several versions:
+    // without ranks only the merge path may resolve them; with ranks the
+    // strictly newest one wins and a tie falls back.
     let mut owner: Vec<Option<(usize, u32)>> = vec![None; keys.len()];
+    let mut owner_rank: Vec<u64> = vec![0; keys.len()];
+    let mut tied: Vec<bool> = vec![false; keys.len()];
     for (source_index, source) in sources.iter().enumerate() {
+        let rank = ranks.get(source_index).copied().unwrap_or(0);
         for (slot, row) in source.lookup_rows(&sorted).into_iter().enumerate() {
             let Some(row) = row else { continue };
             let position = order[slot] as usize;
-            if owner[position].is_some() {
-                return None;
+            match owner[position] {
+                None => {
+                    owner[position] = Some((source_index, row));
+                    owner_rank[position] = rank;
+                }
+                Some(_) if !ranks.is_empty() => {
+                    if rank > owner_rank[position] {
+                        owner[position] = Some((source_index, row));
+                        owner_rank[position] = rank;
+                        tied[position] = false;
+                    } else if rank == owner_rank[position] {
+                        tied[position] = true;
+                    }
+                }
+                Some(_) => return None,
             }
-            owner[position] = Some((source_index, row));
         }
+    }
+    if tied.iter().any(|is_tied| *is_tied) {
+        return None;
     }
     // One payload read per file, in the caller's key order.
     let mut per_source: Vec<Vec<u32>> = vec![Vec::new(); sources.len()];
