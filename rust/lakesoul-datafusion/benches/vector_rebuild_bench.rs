@@ -1676,8 +1676,8 @@ async fn run_plan_probe(args: &Args, dataset: &Dataset) -> Result<Value, String>
     }
     let vector_sql = format!(
         "select id from \"lakesoul\".default.{table_name} \
-         order by array_distance(vec, ARRAY[{}]) limit {}",
-        query_literal(dataset, 0),
+         {}limit {}",
+        metric_order_by(args.metric, &query_literal(dataset, 0)),
         args.top_k
     );
     let trivial_sql = format!(
@@ -1689,7 +1689,8 @@ async fn run_plan_probe(args: &Args, dataset: &Dataset) -> Result<Value, String>
     // from the per-dimension literal instead of the query shape.
     let short_vector_sql = format!(
         "select id from \"lakesoul\".default.{table_name} \
-         order by array_distance(vec, ARRAY[0.1,0.2]) limit {}",
+         {}limit {}",
+        metric_order_by(args.metric, "0.1,0.2"),
         args.top_k
     );
 
@@ -2693,6 +2694,21 @@ async fn create_sql_table(
         .map_err(|e| format!("create table: {e}"))
 }
 
+/// `ORDER BY <distance expression>` for the benchmark's metric.
+///
+/// The expression has to match the index metric: a table indexed with IP only
+/// pushes down an `inner_product(..) DESC` sort, and an L2 `array_distance`
+/// over an IP index falls back to a full scan (which would make EXPLAIN
+/// ANALYZE read the whole vector column and dominate the run).
+fn metric_order_by(metric: Metric, query_literal: &str) -> String {
+    match metric {
+        Metric::L2 => format!("order by array_distance(vec, ARRAY[{query_literal}]) "),
+        Metric::InnerProduct => {
+            format!("order by inner_product(vec, ARRAY[{query_literal}]) desc ")
+        }
+    }
+}
+
 fn query_literal(dataset: &Dataset, i: usize) -> String {
     dataset
         .queries
@@ -2974,8 +2990,8 @@ async fn run_sql_search(
     // 6. EXPLAIN must show the index-candidate + exact-rerank exec node.
     let explain_sql = format!(
         "EXPLAIN VERBOSE select id from \"lakesoul\".default.{table_name} \
-         order by array_distance(vec, ARRAY[{}]) limit {}",
-        query_literal(dataset, 0),
+         {}limit {}",
+        metric_order_by(args.metric, &query_literal(dataset, 0)),
         args.top_k
     );
     let explain = explain_text(&search_ctx, &explain_sql).await?;
@@ -2983,8 +2999,8 @@ async fn run_sql_search(
     // Per-operator timings for the same query (diagnostic).
     let analyze_sql = format!(
         "EXPLAIN ANALYZE select id from \"lakesoul\".default.{table_name} \
-         order by array_distance(vec, ARRAY[{}]) limit {}",
-        query_literal(dataset, 0),
+         {}limit {}",
+        metric_order_by(args.metric, &query_literal(dataset, 0)),
         args.top_k
     );
     let explain_analyze = explain_text(&search_ctx, &analyze_sql).await?;
@@ -3019,8 +3035,8 @@ async fn run_sql_search(
         for qi in 0..nq {
             let sql = format!(
                 "select id from \"lakesoul\".default.{table_name} \
-                 order by array_distance(vec, ARRAY[{}]) limit {}",
-                query_literal(dataset, qi),
+                 {}limit {}",
+                metric_order_by(args.metric, &query_literal(dataset, qi)),
                 args.top_k
             );
             let cpu0 = process_cpu_ms();
@@ -3073,8 +3089,8 @@ async fn run_sql_search(
                 let ctx = search_ctx.clone();
                 let sql = format!(
                     "select id from \"lakesoul\".default.{table_name} \
-                     order by array_distance(vec, ARRAY[{}]) limit {}",
-                    query_literal(dataset, qi),
+                     {}limit {}",
+                    metric_order_by(args.metric, &query_literal(dataset, qi)),
                     args.top_k
                 );
                 tasks.spawn(async move {
@@ -3233,6 +3249,35 @@ async fn run_batch_probe(
     let queries: Vec<Vec<f32>> = (0..nq)
         .map(|query| dataset.queries.query(query).to_vec())
         .collect();
+    // Warm the batch entry's shared caches (index shards, payload views) with
+    // a small batch.  The SQL warm-up above only exercises the SQL path, whose
+    // pushdown depends on the metric (a table whose index uses IP falls back
+    // to a full scan there), so without this the measured batch would pay the
+    // first-load cost that the L2 table already paid during its warm-up.
+    {
+        let metric = match args.metric {
+            Metric::L2 => "L2".to_string(),
+            Metric::InnerProduct => "IP".to_string(),
+        };
+        let warm = lakesoul_datafusion::vector_batch::VectorBatchRequest {
+            column: VEC_COLUMN.to_string(),
+            queries: queries.iter().take(64).cloned().collect(),
+            top_k: args.top_k,
+            nprobe: args.nprobe,
+            parallelism: args.search_parallelism,
+            batch_size: 0,
+            exact: args.rerank == "exact",
+            exact_overfetch: std::env::var("LAKESOUL_VECTOR_EXACT_OVERFETCH")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(1),
+            metric,
+        };
+        let _ = provider
+            .vector_batch_search(&state, &warm)
+            .await
+            .map_err(|error| format!("batch warmup: {error}"))?;
+    }
     let cpu_before = process_cpu_ms();
     let rss_before = process_rss_mb();
     let mut query_rss_peak_mb = rss_before.unwrap_or(0.0);
