@@ -65,6 +65,13 @@ json = "0.12"
 # tpch
 tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs.git", rev = "46f3dca" }
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs.git", rev = "46f3dca" }
+# federation
+datafusion-table-providers-adbc = { version = "=0.14.0", default-features = false }
+datafusion-table-providers-common = { version = "=0.14.0", default-features = false }
+adbc_core = "0.24"
+adbc_driver_manager = "0.24"
+r2d2 = "0.8"
+r2d2_adbc = "0.3.0"
 # observability
 metrics = { workspace = true }
 opentelemetry = { version = "0.32.0", default-features = false, features = [

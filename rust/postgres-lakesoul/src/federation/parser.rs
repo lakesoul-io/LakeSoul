@@ -145,7 +145,7 @@ impl FederationStatementHook {
                 let driver = options
                     .get("driver")
                     .cloned()
-                    .unwrap_or_else(|| "adbc_driver_postgresql".to_string());
+                    .unwrap_or_else(|| "postgresql".to_string());
                 let created = self
                     .runtime
                     .metadata()

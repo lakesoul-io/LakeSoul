@@ -15,16 +15,14 @@ use std::sync::Arc;
 use adbc_core::options::{AdbcVersion, OptionDatabase};
 use adbc_core::{Driver, LOAD_FLAG_DEFAULT};
 use adbc_driver_manager::{ManagedDatabase, ManagedDriver};
-use arrow_array::RecordBatch;
 use datafusion::catalog::TableProvider;
 use datafusion::common::TableReference;
-use datafusion::sql::unparser::dialect::PostgreSqlDialect;
 use datafusion_table_providers_adbc::pool::ADBCPool;
-use datafusion_table_providers_common::sql::db_connection_pool::DbConnectionPool;
-use datafusion_table_providers_common::sql::sql_provider_datafusion::SqlTable;
+use lakesoul_datafusion::federation::{
+    FederationPool, clear_pools, register_pool, table_provider,
+};
 use lakesoul_metadata::MetaDataClientRef;
 use parking_lot::RwLock;
-use r2d2_adbc::AdbcConnectionManager;
 use rootcause::{bail, report};
 use url::Url;
 
@@ -34,11 +32,6 @@ use metadata::{
 };
 
 type AdbcPool = ADBCPool<ManagedDatabase>;
-type AdbcPoolDyn = dyn DbConnectionPool<
-        r2d2::PooledConnection<AdbcConnectionManager<ManagedDatabase>>,
-        RecordBatch,
-    > + Send
-    + Sync;
 
 #[derive(Default)]
 struct RuntimeState {
@@ -85,6 +78,8 @@ impl FederationRuntime {
         let mut state = self.state.write();
         state.data = data;
         state.pools.clear();
+        drop(state);
+        clear_pools();
         Ok(())
     }
 
@@ -150,16 +145,16 @@ impl FederationRuntime {
             mapping.as_ref(),
             user,
         )?;
-        let pool: Arc<AdbcPoolDyn> = pool;
+        let server_key = format!("{}:{}", server.name, user);
+        let pool: FederationPool = pool;
+        register_pool(&server_key, Arc::clone(&pool));
         let remote = format!("{}.{}", table.remote_schema, table.remote_table);
-        let sql_table = SqlTable::new_with_schema(
-            "federation",
-            &pool,
+        Ok(Some(table_provider(
+            server_key,
+            pool,
             Arc::clone(&table.schema),
             TableReference::from(remote.as_str()),
-        )
-        .with_dialect(Arc::new(PostgreSqlDialect {}));
-        Ok(Some(Arc::new(sql_table)))
+        )))
     }
 
     fn pool_for(

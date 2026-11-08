@@ -31,7 +31,7 @@ create schema if not exists federation;
 create table if not exists federation.servers
 (
     server_name text primary key,
-    driver      text not null default 'adbc_driver_postgresql',
+    driver      text not null default 'postgresql',
     options     text not null default '{}',
     created_at  bigint not null,
     updated_at  bigint not null

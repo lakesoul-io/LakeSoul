@@ -124,6 +124,23 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let pool = Arc::clone(&memory_pool);
                 memory_sampling.spawn(allocator::stats_reader(), move || pool.reserved())?;
             }
+            // A worker has no catalog session, so it registers the ADBC pools
+            // that serialized federation plans resolve by server key.
+            if std::env::var_os("LAKESOUL_PG_URL").is_some() {
+                let meta = Arc::new(
+                    lakesoul_datafusion::MetaDataClient::from_env()
+                        .await
+                        .map_err(|error| {
+                            std::io::Error::other(error.to_string())
+                        })?,
+                );
+                lakesoul_datafusion::federation::load_pools_from_metadata(&meta)
+                    .await
+                    .map_err(|error| {
+                        std::io::Error::other(error.to_string())
+                    })?;
+                info!("federation ADBC pools registered");
+            }
             let options = LakeSoulWorkerOptions {
                 core_args: core,
                 memory_pool,
