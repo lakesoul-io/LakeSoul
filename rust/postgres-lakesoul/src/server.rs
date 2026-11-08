@@ -644,6 +644,7 @@ pub(crate) fn connection_statement_hooks(
             crate::subscribe::sql::SubscriptionStatementHook::new(
                 Arc::clone(factory.meta_client()),
                 database.to_string(),
+                factory.warehouse().map(str::to_owned),
                 Arc::clone(supervisor),
             ),
         ));

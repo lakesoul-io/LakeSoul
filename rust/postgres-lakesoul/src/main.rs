@@ -152,7 +152,12 @@ async fn main_inner(cli: Cli) -> Result<()> {
     cancel::register_query_metrics();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
     if cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some() {
-        return subscribe::run(cli.subscribe, Arc::clone(&meta_client)).await;
+        return subscribe::run(
+            cli.subscribe,
+            Arc::clone(&meta_client),
+            cli.core.warehouse_prefix.clone(),
+        )
+        .await;
     }
 
     let program = match std::env::current_exe() {

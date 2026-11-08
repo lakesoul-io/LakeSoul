@@ -7,25 +7,25 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 `postgres-lakesoul --subscribe` consumes a PostgreSQL publication and writes
-the changes into a pre-created LakeSoul CDC table. This is a P0 for validating
-the WAL → Arrow → LakeSoul batch path and its replay semantics, not a complete
+the changes into a LakeSoul CDC table. This is a P0 for validating the
+WAL → Arrow → LakeSoul batch path and its replay semantics, not a complete
 PostgreSQL subscription implementation.
 
 ## Scope
 
 | Dimension | P0 behaviour |
 | --- | --- |
-| Process | One subscriber process, one source table per process |
+| Process | One subscriber process per subscription; a subscription maps one or more source tables |
 | Source | PostgreSQL 14, `public` schema only |
-| Target | Pre-created LakeSoul table; no auto-create, no schema evolution |
+| Target | Auto-created on demand, or pre-created LakeSoul tables; safe schema evolution; namespace defaults to the session database |
 | Target partitioning | Unpartitioned (hash buckets only) |
 | Replica identity | `REPLICA IDENTITY FULL` required |
 | Writes | INSERT / UPDATE / DELETE; full rows plus `rowKinds` |
 | TOAST | Supported; unchanged values in an UPDATE are filled from the full old tuple |
-| Initial load | Managed snapshot; target stays empty until one atomic final commit |
+| Initial load | Managed snapshot per table; each table commits independently |
 | pg_dump | Next phase; schema fields are reserved, implementation is not present |
 | TRUNCATE | Rejected at startup and at runtime |
-| SQL surface | CLI plus `CREATE/DROP/ALTER SUBSCRIPTION` on the PG wire server |
+| SQL surface | CLI plus `CREATE/DROP/ALTER SUBSCRIPTION` (single `source_table`/`target_table` or `TABLES (...)`) on the PG wire server |
 | Publishing | Not supported |
 | Transactions | One LakeSoul commit per table per batch; no cross-table atomicity |
 | Concurrency | One writer assumed; no lease |
@@ -81,8 +81,23 @@ The source user needs `REPLICATION` plus `SELECT` on the table.
 
 ## Target setup
 
-The target namespace must already exist and the table must be empty when the
-slot is created. Create it through the PostgreSQL front end:
+Targets can be created automatically. With `auto_create = true`, the subscriber
+creates a missing target under the configured warehouse:
+
+```text
+<warehouse>/<target_namespace>/<target_table>
+```
+
+The created table uses the source column names and types, the source primary
+key, `hash_bucket_num = 4`, `file_format = vortex-compact`, and a
+`rowKinds text` CDC column. The source must not already have a column with the
+configured `cdc_column` name.
+
+The SQL server uses its `--warehouse-prefix`; CLI subscriptions pass
+`--warehouse-prefix` (or `LAKESOUL_WAREHOUSE`). A target created this way is
+left in place by `DROP SUBSCRIPTION`.
+
+A pre-created target is still accepted:
 
 ```sql
 CREATE TABLE users (
@@ -100,6 +115,44 @@ CREATE TABLE users (
 
 The target's non-CDC columns must match the source by name and compatible
 type, the primary key must match, and the table must not be range-partitioned.
+A target must be empty for a managed snapshot; `snapshot = none` accepts a
+pre-initialized target.
+
+### Schema evolution
+
+`schema_evolution = 'auto'` is the default. The target schema only moves
+forward:
+
+- a new source column is appended as nullable; existing target rows read
+  `NULL` for it;
+- `smallint → integer → bigint`, `real → double precision`, and decimal
+  precision/scale widening update the target type; old data files are cast at
+  read time;
+- `DROP NOT NULL` relaxes the target column to nullable;
+- text/varchar/char, json/jsonb and uuid/text changes that share the Arrow
+  `Utf8` representation need no target change;
+- a source type that becomes narrower keeps the already wider target type.
+
+The subscriber learns about a schema change from the next pgoutput `Relation`
+message, which is sent when the table is next used. A change made while the
+subscriber is stopped is reconciled from the source catalog at startup, before
+streaming resumes. Historical WAL rows from an older `Relation` version are
+still decoded: columns added later are filled with `NULL` and old types are
+cast to the newer target type.
+
+The following are rejected rather than guessed:
+
+- `DROP COLUMN` and `RENAME COLUMN`;
+- primary-key name or type changes;
+- narrowing a target that cannot store the source type;
+- cross-family changes such as `integer → text`;
+- `timestamp` ↔ `timestamptz`;
+- adding a column with a default (existing target rows cannot be backfilled);
+- auto-creating a table with an unconstrained `numeric` (give the target an
+  explicit `numeric(precision, scale)`).
+
+Set `schema_evolution = 'none'` to stop the subscriber on any mismatch instead
+of changing the target.
 
 ## Run
 
@@ -119,10 +172,27 @@ postgres-lakesoul --subscribe \
   --commit-rows 50000 \
   --commit-interval-ms 1000 \
   --snapshot auto \
+  --auto-create \
+  --schema-evolution auto \
+  --warehouse-prefix file:///data/lakesoul \
   --snapshot-batch-rows 50000 \
   --snapshot-batch-bytes 67108864 \
   --snapshot-parallelism 4 \
   --snapshot-memory-bytes 1073741824
+```
+
+Multi-table streaming uses repeated `--table` mappings. Managed snapshots are
+supported per table; all targets must be empty when the snapshot starts:
+
+```bash
+postgres-lakesoul --subscribe \
+  --source-url 'postgresql://lakesoul_test:lakesoul_test@127.0.0.1:5432/pg_source' \
+  --publication lakesoul_pub \
+  --slot lakesoul_multi \
+  --target-namespace pg_source \
+  --table public.users=users \
+  --table public.orders=analytics.orders \
+  --snapshot managed
 ```
 
 `--dry-run` validates the source, target and types and prints the plan without
@@ -133,9 +203,10 @@ default to `127.0.0.1:19090`.
 
 ## SQL-managed subscriptions
 
-The wire server can own the subscriber process. The target namespace is the
-database the client connected to; the target table must already exist and be
-empty.
+The wire server can own the subscriber process. A target namespace defaults to
+the database the client connected to; `namespace.table` selects another
+LakeSoul namespace. Target tables may be auto-created when the server has a
+warehouse; otherwise create them first.
 
 ```sql
 CREATE SUBSCRIPTION sub_users
@@ -145,6 +216,9 @@ WITH (
   source_table        = 'public.users',
   target_table        = 'users',
   snapshot            = 'managed',   -- auto | managed | none
+  auto_create         = true,        -- create a missing target
+  schema_evolution    = 'auto',      -- auto | none
+  cdc_column          = 'rowKinds',  -- only used when creating the target
   slot_name           = 'sub_users', -- optional, defaults to the subscription name
   primary_key         = 'id',        -- optional, inferred from the target table
   commit_rows         = 50000,
@@ -160,11 +234,32 @@ ALTER SUBSCRIPTION sub_users ENABLE;
 DROP SUBSCRIPTION [IF EXISTS] sub_users;
 ```
 
-`source_table`, `target_table`, `publication` and `CONNECTION` are required.
-`snapshot` defaults to `auto`; a SQL-created subscription requires an empty
-target for every snapshot mode. The server validates the source, target,
-primary key, publication and source slot before writing metadata. It then
-starts a child process:
+`source_table`, `target_table`, `publication` and `CONNECTION` are required for
+the single-table form. `snapshot` defaults to `auto`; a managed snapshot
+requires an empty target. Multi-table form:
+
+```sql
+CREATE SUBSCRIPTION app_all
+CONNECTION 'postgresql://user:pass@source:5432/app'
+PUBLICATION app_pub
+TABLES (
+  public.users    TO users,
+  public.orders   TO analytics.orders
+)
+WITH (
+  snapshot = 'managed',
+  commit_rows = 50000
+);
+```
+
+Multi-table streaming uses one slot and one process. Each table commits
+independently; there is no cross-table atomicity. Managed snapshots run per
+table from a temporary slot, so each table has its own snapshot LSN and a
+completed table is not copied again after a restart. Leave one extra slot in
+`max_replication_slots` for the per-table temporary slot. Target tables may be
+pre-created or auto-created; each table evolves independently. The server
+validates every source, target, primary key, publication and source slot before
+writing metadata. It then starts a child process:
 
 ```text
 postgres-lakesoul --subscribe --subscription-id <name> --no-metrics
@@ -237,14 +332,12 @@ copy. Source session settings `statement_timeout=0`, `DateStyle=ISO`,
 The definition and progress live in the metadata PostgreSQL under the
 `subscription` schema. Production deployments apply
 `script/metadata-migrations/V4000002__subscription.sql`; the worker also runs
-the same idempotent DDL at startup for local development and tests. This is a
-pre-release schema: a database created before the latest columns were added
-must drop and recreate the `subscription` schema; no migration compatibility is
-provided.
+the same idempotent DDL at startup for local development and tests, including
+`ADD COLUMN IF NOT EXISTS` upgrades for pre-release databases.
 
 | Table | Purpose |
 | --- | --- |
-| `subscription.subscriptions` | slot, publication, source URL, state (`starting`/`snapshotting`/`streaming`/`stopped`/`disabled`/`error`), `enabled`, batch settings, supervisor pid/log, last error |
+| `subscription.subscriptions` | slot, publication, source URL, state (`starting`/`snapshotting`/`streaming`/`stopped`/`disabled`/`error`), `enabled`, batch settings, target DDL options (`auto_create`, `schema_evolution`, `warehouse_prefix`, `cdc_column`), supervisor pid/log, last error |
 | `subscription.tables` | source table + relation OID, target namespace/table + table id, primary key, `data_lsn`, `snapshot_state`, `snapshot_mode`, `snapshot_lsn`, snapshot timestamps |
 | `subscription.progress` | subscription-level `processed_lsn`, including transactions that touched no mapped table |
 
@@ -306,6 +399,16 @@ The local PostgreSQL 14 smoke test covered:
   subsequent changes;
 - `CREATE SUBSCRIPTION` through psql (simple query) and psycopg (extended
   query), including the managed snapshot, metadata row and child process;
+- `auto_create = true` created missing targets in the server warehouse, with
+  the source schema, primary key, `rowKinds` and CDC properties;
+- adding a nullable column, widening `int4 → int8` and
+  `numeric(10,2) → numeric(12,4)`, and `DROP NOT NULL` evolved the target while
+  old data files remained readable;
+- a schema change made while the subscription was disabled was reconciled on
+  restart, including WAL rows written before the DDL;
+- multi-table auto-create and per-table schema change left the other table
+  untouched;
+- dropping a source column was rejected and recorded as a subscription error;
 - `ALTER SUBSCRIPTION DISABLE/ENABLE` stopped and restarted the child without
   losing the watermark, and a server SIGTERM stopped the child cleanly;
 - `DROP SUBSCRIPTION` stopped the child, dropped the slot and removed the
@@ -324,15 +427,19 @@ The local PostgreSQL 14 smoke test covered:
 - `pg_walstream` is pinned to `0.10.0`; minor releases have changed public APIs.
   tokio is 1.54.1 and pingora is 0.9.1, which contains the zero-capacity
   `BufReader` fix for tokio 1.54.
-- Only one source table per process; the publication may contain other tables,
-  whose events are ignored.
+- A subscription can map multiple source tables (one slot/process). Each table
+  has its own snapshot/commit; there is no cross-table atomicity. The publication
+  may contain unmapped tables, whose events are ignored.
 - pgdump mode is reserved but not implemented; the managed snapshot is
   parallel across CTID ranges but still holds one exported snapshot (xmin and
   ACCESS SHARE locks) for the duration.
-- SQL-created subscriptions are one source table per child and assume one
-  server instance; there is no cross-node lease. The source URL is plaintext in
-  the metadata database.
-- No DDL/schema evolution, no truncate, no range partitioning, no multi-table
-  coordination, no HA lease.
+- SQL-created subscriptions assume one server instance; there is no cross-node
+  lease. The source URL is plaintext in the metadata database.
+- Schema evolution covers additive nullable columns, safe widening and
+  `DROP NOT NULL`. It does not cover column drops/renames, primary-key changes,
+  defaults/backfills, cross-family casts, or `timestamp`/`timestamptz` changes.
+  A DDL that changes a table in the same transaction that already contains
+  changes for that table stops the subscriber with a restart-required error.
+- No truncate, no range partitioning, no cross-table atomic commit, no HA lease.
 - Binary pgoutput, arrays/enums/domains/intervals, and PG 15+ column lists/row
   filters are not covered.

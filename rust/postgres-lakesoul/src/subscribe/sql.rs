@@ -10,7 +10,7 @@
 //! sentinel in both the simple and extended query paths. The client still sees
 //! the PostgreSQL syntax and tag.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -32,10 +32,15 @@ use lakesoul_metadata::MetaDataClientRef;
 use rootcause::report;
 
 use super::plan::TablePlan;
+use super::schema::{self, TargetOptions};
 use super::source;
-use super::state::{SubscriptionDefinition, SubscriptionMetadata, SubscriptionRecord};
+use super::state::{
+    SubscriptionDefinition, SubscriptionMetadata, SubscriptionRecord, TableDefinition,
+};
 use super::supervisor::{SubscriptionSupervisor, drop_replication_slot};
-use super::{SnapshotMode, ordinary_url, parse_source_table, sanitized_error};
+use super::{
+    SchemaEvolution, SnapshotMode, ordinary_url, parse_source_table, sanitized_error,
+};
 use crate::Result;
 
 const SENTINEL_FUNCTION: &str = "lakesoul_subscription_ddl";
@@ -84,16 +89,25 @@ enum SubscriptionStatement {
 }
 
 #[derive(Debug)]
+struct ParsedTable {
+    source_schema: String,
+    source_table: String,
+    target_namespace: Option<String>,
+    target_table: String,
+    primary_key: Option<Vec<String>>,
+}
+
+#[derive(Debug)]
 struct CreateSubscription {
     name: String,
     connection: String,
     publication: String,
-    source_schema: String,
-    source_table: String,
-    target_table: String,
     slot_name: String,
     snapshot: SnapshotMode,
-    primary_key: Option<Vec<String>>,
+    tables: Vec<ParsedTable>,
+    auto_create: bool,
+    schema_evolution: SchemaEvolution,
+    cdc_column: String,
     commit_rows: usize,
     commit_interval_ms: u64,
     snapshot_batch_rows: usize,
@@ -105,6 +119,7 @@ struct CreateSubscription {
 pub(crate) struct SubscriptionStatementHook {
     meta: MetaDataClientRef,
     database: String,
+    warehouse: Option<String>,
     supervisor: Arc<SubscriptionSupervisor>,
 }
 
@@ -112,11 +127,13 @@ impl SubscriptionStatementHook {
     pub(crate) fn new(
         meta: MetaDataClientRef,
         database: String,
+        warehouse: Option<String>,
         supervisor: Arc<SubscriptionSupervisor>,
     ) -> Self {
         Self {
             meta,
             database,
+            warehouse,
             supervisor,
         }
     }
@@ -158,54 +175,6 @@ impl SubscriptionStatementHook {
             )));
         }
 
-        let source = source::inspect_source(
-            &ordinary_url(&create.connection),
-            &create.publication,
-            &create.source_schema,
-            &create.source_table,
-        )
-        .await
-        .map_err(|error| {
-            let text = sanitized_error(&error, &create.connection);
-            user_error(
-                if text.contains("connect to source PostgreSQL") {
-                    "08006"
-                } else {
-                    "0A000"
-                },
-                text,
-            )
-        })?;
-        let plan = TablePlan::new(
-            source,
-            &self.database,
-            &create.target_table,
-            create.primary_key.as_deref(),
-            self.meta.clone(),
-        )
-        .await
-        .map_err(|error| user_error("0A000", error.to_string()))?;
-
-        if plan.has_commits {
-            return Err(user_error(
-                "55000",
-                format!(
-                    "target table {}.{} is not empty; a SQL subscription requires \
-                     an empty target",
-                    self.database, create.target_table
-                ),
-            ));
-        }
-        if metadata
-            .target_in_use(&self.database, &create.target_table)
-            .await
-            .map_err(internal)?
-        {
-            return Err(feature_not_supported(format!(
-                "target table {}.{} is already used by another subscription",
-                self.database, create.target_table
-            )));
-        }
         ensure_slot_absent(&ordinary_url(&create.connection), &create.slot_name)
             .await
             .map_err(|error| {
@@ -220,33 +189,133 @@ impl SubscriptionStatementHook {
                 )
             })?;
 
-        let primary_key = plan.table.primary_keys().clone();
-        if primary_key.is_empty() {
-            return Err(user_error(
-                "0A000",
-                format!(
-                    "target table {}.{} has no primary key",
-                    self.database, create.target_table
-                ),
-            ));
+        let target_options = TargetOptions {
+            auto_create: create.auto_create,
+            schema_evolution: create.schema_evolution,
+            warehouse_prefix: self.warehouse.clone(),
+            cdc_column: create.cdc_column.clone(),
+        };
+        let mut table_definitions = Vec::with_capacity(create.tables.len());
+        let mut sources = HashSet::new();
+        let mut targets = HashSet::new();
+        for table in &create.tables {
+            if !sources.insert((table.source_schema.clone(), table.source_table.clone()))
+            {
+                return Err(invalid_parameter(format!(
+                    "source table {}.{} is listed twice",
+                    table.source_schema, table.source_table
+                )));
+            }
+            let target_namespace = table
+                .target_namespace
+                .clone()
+                .unwrap_or_else(|| self.database.clone());
+            if !targets.insert((target_namespace.clone(), table.target_table.clone())) {
+                return Err(invalid_parameter(format!(
+                    "target table {}.{} is listed twice",
+                    target_namespace, table.target_table
+                )));
+            }
+            let source = source::inspect_source(
+                &ordinary_url(&create.connection),
+                &create.publication,
+                &table.source_schema,
+                &table.source_table,
+            )
+            .await
+            .map_err(|error| {
+                let text = sanitized_error(&error, &create.connection);
+                user_error(
+                    if text.contains("connect to source PostgreSQL") {
+                        "08006"
+                    } else {
+                        "0A000"
+                    },
+                    text,
+                )
+            })?;
+            if metadata
+                .target_in_use(&target_namespace, &table.target_table)
+                .await
+                .map_err(internal)?
+            {
+                return Err(feature_not_supported(format!(
+                    "target table {}.{} is already used by another subscription",
+                    target_namespace, table.target_table
+                )));
+            }
+            schema::ensure_target(
+                &self.meta,
+                &source,
+                &target_namespace,
+                &table.target_table,
+                &target_options,
+                true,
+                true,
+            )
+            .await
+            .map_err(|error| user_error("0A000", error.to_string()))?;
+            let plan = TablePlan::new(
+                source,
+                &target_namespace,
+                &table.target_table,
+                table.primary_key.as_deref(),
+                self.meta.clone(),
+            )
+            .await
+            .map_err(|error| user_error("0A000", error.to_string()))?;
+            if create.snapshot != SnapshotMode::None && plan.has_commits {
+                return Err(user_error(
+                    "55000",
+                    format!(
+                        "target table {}.{} is not empty; a managed SQL snapshot \
+                         requires an empty target",
+                        target_namespace, table.target_table
+                    ),
+                ));
+            }
+            let primary_key = if let Some(primary_key) = &table.primary_key {
+                primary_key.clone()
+            } else {
+                plan.table.primary_keys().clone()
+            };
+            if primary_key.is_empty() {
+                return Err(user_error(
+                    "0A000",
+                    format!(
+                        "target table {}.{} has no primary key",
+                        target_namespace, table.target_table
+                    ),
+                ));
+            }
+            table_definitions.push(TableDefinition {
+                source_schema: plan.source.schema.clone(),
+                source_table: plan.source.name.clone(),
+                source_relation_oid: plan.source.relation_oid,
+                target_namespace,
+                target_table: table.target_table.clone(),
+                target_table_id: plan.table.table_info().table_id.clone(),
+                primary_key,
+            });
         }
         let definition = SubscriptionDefinition {
             subscription_id: create.name.clone(),
             slot: create.slot_name.clone(),
             publication: create.publication.clone(),
             source_url: create.connection.clone(),
-            source_schema: create.source_schema.clone(),
-            source_table: create.source_table.clone(),
-            source_relation_oid: plan.source.relation_oid,
-            target_namespace: self.database.clone(),
-            target_table: create.target_table.clone(),
-            target_table_id: plan.table.table_info().table_id.clone(),
-            primary_key,
             snapshot_mode: match create.snapshot {
                 SnapshotMode::None => "none",
                 SnapshotMode::Auto | SnapshotMode::Managed => "managed",
             }
             .to_string(),
+            auto_create: create.auto_create,
+            schema_evolution: match create.schema_evolution {
+                SchemaEvolution::None => "none",
+                SchemaEvolution::Auto => "auto",
+            }
+            .to_string(),
+            warehouse_prefix: self.warehouse.clone(),
+            cdc_column: create.cdc_column.clone(),
             supervised: true,
             commit_rows: create.commit_rows,
             commit_interval_ms: create.commit_interval_ms,
@@ -254,6 +323,7 @@ impl SubscriptionStatementHook {
             snapshot_batch_bytes: create.snapshot_batch_bytes,
             snapshot_parallelism: create.snapshot_parallelism,
             snapshot_memory_bytes: create.snapshot_memory_bytes,
+            tables: table_definitions,
         };
         if !metadata.register(&definition).await.map_err(internal)? {
             return Err(duplicate_subscription(&create.name));
@@ -498,6 +568,54 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
         ));
     }
 
+    let mut parsed_tables = Vec::new();
+    if cursor.eat_word("TABLES") {
+        cursor.expect_lparen()?;
+        if cursor.eat_rparen() {
+            return Err(invalid_parameter("TABLES must list at least one table"));
+        }
+        loop {
+            let first = cursor.identifier()?;
+            let (source_schema, source_table) = if cursor.eat_period() {
+                (first, cursor.identifier()?)
+            } else {
+                ("public".to_string(), first)
+            };
+            if source_schema != "public" {
+                return Err(feature_not_supported(format!(
+                    "source table {source_schema}.{source_table} is not in the \
+                     public schema"
+                )));
+            }
+            cursor.expect_word("TO")?;
+            let target_first = cursor.identifier()?;
+            let (target_namespace, target_table) = if cursor.eat_period() {
+                (Some(target_first), cursor.identifier()?)
+            } else {
+                (None, target_first)
+            };
+            validate_identifier("target table", &target_table, false)?;
+            if let Some(namespace) = &target_namespace {
+                validate_identifier("target namespace", namespace, false)?;
+            }
+            parsed_tables.push(ParsedTable {
+                source_schema,
+                source_table,
+                target_namespace,
+                target_table,
+                primary_key: None,
+            });
+            if cursor.eat_comma() {
+                if cursor.eat_rparen() {
+                    break;
+                }
+                continue;
+            }
+            cursor.expect_rparen()?;
+            break;
+        }
+    }
+
     let mut options = BTreeMap::new();
     if cursor.eat_word("WITH") {
         cursor.expect_lparen()?;
@@ -540,6 +658,9 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
         "snapshot_batch_bytes",
         "snapshot_parallelism",
         "snapshot_memory_bytes",
+        "auto_create",
+        "schema_evolution",
+        "cdc_column",
     ];
     for key in options.keys() {
         if !allowed.contains(&key.as_str()) {
@@ -549,17 +670,43 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
         }
     }
 
-    let source_table_option = take_required(&mut options, "source_table")?;
-    let (source_schema, source_table) = parse_source_table(&source_table_option)
-        .map_err(|error| invalid_parameter(error.to_string()))?;
-    let target_table = take_required(&mut options, "target_table")?;
-    if target_table.contains('.') {
-        return Err(invalid_parameter(
-            "target_table must be a bare table name; the target namespace is \
-             the connection's database",
-        ));
-    }
-    validate_identifier("target table", &target_table, false)?;
+    let primary_key = options
+        .remove("primary_key")
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|columns| !columns.is_empty());
+
+    let tables = if parsed_tables.is_empty() {
+        let source_table_option = take_required(&mut options, "source_table")?;
+        let (source_schema, source_table) = parse_source_table(&source_table_option)
+            .map_err(|error| invalid_parameter(error.to_string()))?;
+        let target_table = take_required(&mut options, "target_table")?;
+        let (target_namespace, target_table) = parse_target_option(&target_table)?;
+        vec![ParsedTable {
+            source_schema,
+            source_table,
+            target_namespace,
+            target_table,
+            primary_key,
+        }]
+    } else {
+        if options.contains_key("source_table")
+            || options.contains_key("target_table")
+            || primary_key.is_some()
+        {
+            return Err(invalid_parameter(
+                "TABLES cannot be combined with source_table, target_table or \
+                 primary_key",
+            ));
+        }
+        parsed_tables
+    };
 
     let slot_name = options.remove("slot_name").unwrap_or_else(|| name.clone());
     validate_identifier("slot name", &slot_name, true)?;
@@ -577,18 +724,6 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
             )));
         }
     };
-    let primary_key = options
-        .remove("primary_key")
-        .map(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .filter(|part| !part.is_empty())
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
-        .filter(|columns| !columns.is_empty());
-
     let commit_rows = parse_option_usize(&mut options, "commit_rows", 50_000)?;
     let commit_interval_ms = parse_option_u64(&mut options, "commit_interval_ms", 1_000)?;
     let snapshot_batch_rows =
@@ -599,17 +734,35 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
         parse_option_usize(&mut options, "snapshot_parallelism", 4)?;
     let snapshot_memory_bytes =
         parse_option_memory(&mut options, "snapshot_memory_bytes", 1024 * 1024 * 1024)?;
+    let auto_create = parse_option_bool(&mut options, "auto_create", false)?;
+    let schema_evolution = match options
+        .remove("schema_evolution")
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("auto") => SchemaEvolution::Auto,
+        Some("none") => SchemaEvolution::None,
+        Some(other) => {
+            return Err(invalid_parameter(format!(
+                "schema_evolution must be auto or none, got {other:?}"
+            )));
+        }
+    };
+    let cdc_column = options
+        .remove("cdc_column")
+        .unwrap_or_else(|| "rowKinds".to_string());
+    validate_identifier("cdc column", &cdc_column, false)?;
 
     Ok(CreateSubscription {
         name,
         connection,
         publication,
-        source_schema,
-        source_table,
-        target_table,
         slot_name,
         snapshot,
-        primary_key,
+        tables,
+        auto_create,
+        schema_evolution,
+        cdc_column,
         commit_rows,
         commit_interval_ms,
         snapshot_batch_rows,
@@ -617,6 +770,29 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
         snapshot_parallelism,
         snapshot_memory_bytes,
     })
+}
+
+fn parse_target_option(value: &str) -> PgWireResult<(Option<String>, String)> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(invalid_parameter("target table must not be empty"));
+    }
+    let (namespace, table) = match value.split_once('.') {
+        Some((namespace, table)) => {
+            if namespace.is_empty() || table.is_empty() || table.contains('.') {
+                return Err(invalid_parameter(
+                    "target table must be table or namespace.table",
+                ));
+            }
+            (Some(namespace.to_string()), table.to_string())
+        }
+        None => (None, value.to_string()),
+    };
+    validate_identifier("target table", &table, false)?;
+    if let Some(namespace) = &namespace {
+        validate_identifier("target namespace", namespace, false)?;
+    }
+    Ok((namespace, table))
 }
 
 fn take_required(
@@ -660,6 +836,21 @@ fn parse_option_memory(
     };
     parse_memory_limit(&value)
         .map_err(|error| invalid_parameter(format!("{key}: {error}")))
+}
+
+fn parse_option_bool(
+    options: &mut BTreeMap<String, String>,
+    key: &str,
+    default: bool,
+) -> PgWireResult<bool> {
+    let Some(value) = options.remove(key) else {
+        return Ok(default);
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "on" | "yes" | "1" => Ok(true),
+        "false" | "off" | "no" | "0" => Ok(false),
+        _ => Err(invalid_parameter(format!("{key} must be true or false"))),
+    }
 }
 
 fn parse_option_u64(
@@ -844,6 +1035,15 @@ impl Cursor {
 
     fn eat_eq(&mut self) -> bool {
         if matches!(self.peek(), Some(Token::Eq)) {
+            self.position += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn eat_period(&mut self) -> bool {
+        if matches!(self.peek(), Some(Token::Period)) {
             self.position += 1;
             true
         } else {
@@ -1049,9 +1249,6 @@ mod tests {
             panic!("expected CREATE");
         };
         assert_eq!(create.name, "sub_users");
-        assert_eq!(create.source_schema, "public");
-        assert_eq!(create.source_table, "users");
-        assert_eq!(create.target_table, "users");
         assert_eq!(create.slot_name, "sub_users");
         assert_eq!(create.publication, "app_pub");
         assert_eq!(create.commit_rows, 100);
@@ -1061,7 +1258,89 @@ mod tests {
         assert_eq!(create.snapshot_parallelism, 3);
         assert_eq!(create.snapshot_memory_bytes, 2048);
         assert_eq!(create.snapshot, SnapshotMode::Auto);
-        assert!(create.primary_key.is_none());
+        assert!(!create.auto_create);
+        assert_eq!(create.schema_evolution, SchemaEvolution::Auto);
+        assert_eq!(create.cdc_column, "rowKinds");
+        assert_eq!(create.tables.len(), 1);
+        assert_eq!(create.tables[0].source_schema, "public");
+        assert_eq!(create.tables[0].source_table, "users");
+        assert_eq!(create.tables[0].target_namespace, None);
+        assert_eq!(create.tables[0].target_table, "users");
+        assert!(create.tables[0].primary_key.is_none());
+    }
+
+    #[test]
+    fn parses_target_ddl_options() {
+        let statement = parse_statement(
+            "CREATE SUBSCRIPTION s
+             CONNECTION 'postgresql://user:pass@source/db'
+             PUBLICATION p
+             WITH (
+               source_table = 'public.users',
+               target_table = 'users',
+               auto_create = true,
+               schema_evolution = 'none',
+               cdc_column = 'change_kind'
+             )",
+        )
+        .unwrap();
+        let SubscriptionStatement::Create(create) = statement else {
+            panic!("expected CREATE");
+        };
+        assert!(create.auto_create);
+        assert_eq!(create.schema_evolution, SchemaEvolution::None);
+        assert_eq!(create.cdc_column, "change_kind");
+    }
+
+    #[test]
+    fn parses_multi_table_mappings() {
+        let statement = parse_statement(
+            "CREATE SUBSCRIPTION s
+             CONNECTION 'postgresql://user:pass@source/db'
+             PUBLICATION p
+             TABLES (
+               public.users TO users,
+               public.orders TO analytics.orders
+             )
+             WITH (snapshot = 'none')",
+        )
+        .unwrap();
+        let SubscriptionStatement::Create(create) = statement else {
+            panic!("expected CREATE");
+        };
+        assert_eq!(create.tables.len(), 2);
+        assert_eq!(create.tables[0].source_schema, "public");
+        assert_eq!(create.tables[0].source_table, "users");
+        assert_eq!(create.tables[0].target_namespace, None);
+        assert_eq!(create.tables[0].target_table, "users");
+        assert_eq!(
+            create.tables[1].target_namespace.as_deref(),
+            Some("analytics")
+        );
+        assert_eq!(create.tables[1].target_table, "orders");
+        assert_eq!(create.snapshot, SnapshotMode::None);
+    }
+
+    #[test]
+    fn parses_qualified_single_target() {
+        let statement = parse_statement(
+            "CREATE SUBSCRIPTION s
+             CONNECTION 'postgresql://user:pass@source/db'
+             PUBLICATION p
+             WITH (
+               source_table = 'public.users',
+               target_table = 'analytics.users'
+             )",
+        )
+        .unwrap();
+        let SubscriptionStatement::Create(create) = statement else {
+            panic!("expected CREATE");
+        };
+        assert_eq!(
+            create.tables[0].target_namespace.as_deref(),
+            Some("analytics")
+        );
+        assert_eq!(create.tables[0].target_table, "users");
     }
 
     #[test]
@@ -1113,14 +1392,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_foreign_target_schema() {
-        let error = parse_statement(
+    fn accepts_qualified_single_target() {
+        let statement = parse_statement(
             "CREATE SUBSCRIPTION s CONNECTION 'postgresql://source/db'
              PUBLICATION p
              WITH (source_table = 'public.t', target_table = 'other.t')",
         )
-        .unwrap_err();
-        assert!(format!("{error}").contains("bare table name"));
+        .unwrap();
+        let SubscriptionStatement::Create(create) = statement else {
+            panic!("expected CREATE");
+        };
+        assert_eq!(create.tables[0].target_namespace.as_deref(), Some("other"));
+        assert_eq!(create.tables[0].target_table, "t");
     }
 
     #[test]

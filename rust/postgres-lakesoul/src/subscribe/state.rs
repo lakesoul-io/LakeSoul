@@ -12,6 +12,8 @@
 //! * `processed_lsn`, which also records transactions that touched no mapped
 //!   table and therefore produced no target commit.
 
+use std::collections::HashSet;
+
 use chrono::Utc;
 use lakesoul_metadata::{PooledClient, QueryType};
 use rootcause::{bail, report};
@@ -44,6 +46,10 @@ do $$ begin
         snapshot_batch_bytes  bigint not null default 67108864,
         snapshot_parallelism  bigint not null default 4,
         snapshot_memory_bytes bigint not null default 1073741824,
+        auto_create           boolean not null default false,
+        schema_evolution      text not null default 'auto',
+        warehouse_prefix      text,
+        cdc_column            text not null default 'rowKinds',
         supervisor_pid        integer,
         log_path              text,
         last_error            text,
@@ -92,14 +98,21 @@ do $$ begin
     );
 exception when duplicate_table or unique_violation then null;
 end $$;
+
+-- Pre-release databases created before these options existed. Fresh tables
+-- already have the columns, so these are no-ops there.
+alter table if exists subscription.subscriptions
+    add column if not exists auto_create boolean not null default false;
+alter table if exists subscription.subscriptions
+    add column if not exists schema_evolution text not null default 'auto';
+alter table if exists subscription.subscriptions
+    add column if not exists warehouse_prefix text;
+alter table if exists subscription.subscriptions
+    add column if not exists cdc_column text not null default 'rowKinds';
 "#;
 
 #[derive(Debug, Clone)]
-pub struct SubscriptionDefinition {
-    pub subscription_id: String,
-    pub slot: String,
-    pub publication: String,
-    pub source_url: String,
+pub struct TableDefinition {
     pub source_schema: String,
     pub source_table: String,
     pub source_relation_oid: u32,
@@ -107,7 +120,19 @@ pub struct SubscriptionDefinition {
     pub target_table: String,
     pub target_table_id: String,
     pub primary_key: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubscriptionDefinition {
+    pub subscription_id: String,
+    pub slot: String,
+    pub publication: String,
+    pub source_url: String,
     pub snapshot_mode: String,
+    pub auto_create: bool,
+    pub schema_evolution: String,
+    pub warehouse_prefix: Option<String>,
+    pub cdc_column: String,
     pub supervised: bool,
     pub commit_rows: usize,
     pub commit_interval_ms: u64,
@@ -115,6 +140,7 @@ pub struct SubscriptionDefinition {
     pub snapshot_batch_bytes: usize,
     pub snapshot_parallelism: usize,
     pub snapshot_memory_bytes: usize,
+    pub tables: Vec<TableDefinition>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +170,10 @@ pub struct SubscriptionRecord {
     pub source_url: String,
     pub state: String,
     pub enabled: bool,
+    pub auto_create: bool,
+    pub schema_evolution: String,
+    pub warehouse_prefix: Option<String>,
+    pub cdc_column: String,
     pub supervised: bool,
     pub commit_rows: usize,
     pub commit_interval_ms: u64,
@@ -172,62 +202,94 @@ impl SubscriptionRecord {
                 definition.publication
             );
         }
-        if self.tables.len() != 1 {
+        if definition.tables.is_empty() {
+            bail!("subscription definition has no table mappings");
+        }
+        if self.tables.len() != definition.tables.len() {
             bail!(
-                "P0 supports exactly one source table per subscription, but the metadata \
-                 has {} table mappings",
-                self.tables.len()
+                "subscription state has {} table mappings, but the definition has {}",
+                self.tables.len(),
+                definition.tables.len()
             );
         }
-        let table = &self.tables[0];
-        if table.source_schema != definition.source_schema
-            || table.source_table != definition.source_table
+        if self
+            .tables
+            .iter()
+            .any(|table| table.snapshot_mode != definition.snapshot_mode)
         {
             bail!(
-                "subscription state maps {}.{}, not {}.{}",
-                table.source_schema,
-                table.source_table,
-                definition.source_schema,
-                definition.source_table
+                "subscription state has a snapshot mode that does not match {:?}",
+                definition.snapshot_mode
             );
         }
-        if table.source_relation_oid != definition.source_relation_oid {
+        if self.schema_evolution != definition.schema_evolution {
             bail!(
-                "source table {}.{} was recreated (relation oid {} -> {}); \
-                 resnapshot is required",
-                definition.source_schema,
-                definition.source_table,
-                table.source_relation_oid,
-                definition.source_relation_oid
+                "subscription state has schema_evolution={:?}, not {:?}",
+                self.schema_evolution,
+                definition.schema_evolution
             );
         }
-        if table.target_namespace != definition.target_namespace
-            || table.target_table != definition.target_table
-        {
+        if self.cdc_column != definition.cdc_column {
             bail!(
-                "subscription state targets {}.{}, not {}.{}",
-                table.target_namespace,
-                table.target_table,
-                definition.target_namespace,
-                definition.target_table
+                "subscription state has cdc_column={:?}, not {:?}",
+                self.cdc_column,
+                definition.cdc_column
             );
         }
-        if table.target_table_id != definition.target_table_id {
-            bail!(
-                "target table {}.{} was recreated (table id {} -> {}); \
-                 resnapshot is required",
-                definition.target_namespace,
-                definition.target_table,
-                table.target_table_id,
-                definition.target_table_id
-            );
-        }
-        if table.primary_key != definition.primary_key {
-            bail!(
-                "subscription state primary key {:?} does not match {:?}",
-                table.primary_key,
-                definition.primary_key
-            );
+
+        for expected in &definition.tables {
+            let table = self
+                .tables
+                .iter()
+                .find(|table| {
+                    table.source_schema == expected.source_schema
+                        && table.source_table == expected.source_table
+                })
+                .ok_or_else(|| {
+                    report!(
+                        "subscription state has no mapping for {}.{}",
+                        expected.source_schema,
+                        expected.source_table
+                    )
+                })?;
+            if table.source_relation_oid != expected.source_relation_oid {
+                bail!(
+                    "source table {}.{} was recreated (relation oid {} -> {}); \
+                     resnapshot is required",
+                    expected.source_schema,
+                    expected.source_table,
+                    table.source_relation_oid,
+                    expected.source_relation_oid
+                );
+            }
+            if table.target_namespace != expected.target_namespace
+                || table.target_table != expected.target_table
+            {
+                bail!(
+                    "subscription state targets {}.{}, not {}.{}",
+                    table.target_namespace,
+                    table.target_table,
+                    expected.target_namespace,
+                    expected.target_table
+                );
+            }
+            if table.target_table_id != expected.target_table_id {
+                bail!(
+                    "target table {}.{} was recreated (table id {} -> {}); \
+                     resnapshot is required",
+                    expected.target_namespace,
+                    expected.target_table,
+                    table.target_table_id,
+                    expected.target_table_id
+                );
+            }
+            if table.primary_key != expected.primary_key {
+                bail!(
+                    "subscription state primary key {:?} does not match {:?}",
+                    table.primary_key,
+                    expected.primary_key
+                );
+            }
         }
         Ok(())
     }
@@ -271,7 +333,8 @@ impl SubscriptionMetadata {
             "select subscription_id, slot_name, publication, source_url, state, \
                     enabled, supervised, commit_rows, commit_interval_ms, \
                     snapshot_batch_rows, snapshot_batch_bytes, \
-                    snapshot_parallelism, snapshot_memory_bytes, supervisor_pid, \
+                    snapshot_parallelism, snapshot_memory_bytes, auto_create, \
+                    schema_evolution, warehouse_prefix, cdc_column, supervisor_pid, \
                     log_path, last_error \
              from subscription.subscriptions where {predicate}"
         );
@@ -296,9 +359,13 @@ impl SubscriptionMetadata {
         let snapshot_batch_bytes: i64 = subscription.get(10);
         let snapshot_parallelism: i64 = subscription.get(11);
         let snapshot_memory_bytes: i64 = subscription.get(12);
-        let supervisor_pid: Option<i32> = subscription.get(13);
-        let log_path: Option<String> = subscription.get(14);
-        let last_error: Option<String> = subscription.get(15);
+        let auto_create: bool = subscription.get(13);
+        let schema_evolution: String = subscription.get(14);
+        let warehouse_prefix: Option<String> = subscription.get(15);
+        let cdc_column: String = subscription.get(16);
+        let supervisor_pid: Option<i32> = subscription.get(17);
+        let log_path: Option<String> = subscription.get(18);
+        let last_error: Option<String> = subscription.get(19);
 
         let table_rows = self
             .client
@@ -369,6 +436,10 @@ impl SubscriptionMetadata {
             source_url,
             state,
             enabled,
+            auto_create,
+            schema_evolution,
+            warehouse_prefix,
+            cdc_column,
             supervised,
             commit_rows: usize::try_from(commit_rows)
                 .map_err(|_| report!("invalid commit_rows {commit_rows}"))?,
@@ -400,12 +471,33 @@ impl SubscriptionMetadata {
     /// Returns whether the subscription row itself was inserted.
     pub async fn register(&self, definition: &SubscriptionDefinition) -> Result<bool> {
         let now = now_ms();
-        let primary_key = definition.primary_key.join(",");
         let snapshot_state = if definition.snapshot_mode == "none" {
             "done"
         } else {
             "pending"
         };
+        let mut sources = HashSet::new();
+        let mut targets = HashSet::new();
+        for table in &definition.tables {
+            if !sources
+                .insert((table.source_schema.as_str(), table.source_table.as_str()))
+            {
+                bail!(
+                    "duplicate source table {}.{} in subscription definition",
+                    table.source_schema,
+                    table.source_table
+                );
+            }
+            if !targets
+                .insert((table.target_namespace.as_str(), table.target_table.as_str()))
+            {
+                bail!(
+                    "duplicate target table {}.{} in subscription definition",
+                    table.target_namespace,
+                    table.target_table
+                );
+            }
+        }
         let mut connection = self
             .client
             .get(QueryType::RW)
@@ -431,12 +523,13 @@ impl SubscriptionMetadata {
             .execute(
                 "insert into subscription.subscriptions \
                      (subscription_id, slot_name, publication, source_url, state, \
-                      enabled, supervised, commit_rows, commit_interval_ms, \
+                      enabled, supervised, auto_create, schema_evolution, \
+                      warehouse_prefix, cdc_column, commit_rows, commit_interval_ms, \
                       snapshot_batch_rows, snapshot_batch_bytes, \
                       snapshot_parallelism, snapshot_memory_bytes, \
                       supervisor_pid, log_path, last_error, created_at, updated_at) \
                  values ($1, $2, $3, $4, 'starting', true, $5, $6, $7, $8, $9, \
-                         $10, $11, null, null, null, $12, $12) \
+                         $10, $11, $12, $13, $14, $15, null, null, null, $16, $16) \
                  on conflict (subscription_id) do nothing",
                 &[
                     &definition.subscription_id,
@@ -444,6 +537,10 @@ impl SubscriptionMetadata {
                     &definition.publication,
                     &definition.source_url,
                     &definition.supervised,
+                    &definition.auto_create,
+                    &definition.schema_evolution,
+                    &definition.warehouse_prefix,
+                    &definition.cdc_column,
                     &commit_rows,
                     &commit_interval_ms,
                     &snapshot_batch_rows,
@@ -463,33 +560,36 @@ impl SubscriptionMetadata {
                 .map_err(|error| report!("rollback duplicate subscription: {error}"))?;
             return Ok(false);
         }
-        transaction
-            .execute(
-                "insert into subscription.tables \
-                     (subscription_id, source_schema, source_table, source_relation_oid, \
-                      target_namespace, target_table, target_table_id, primary_key, \
-                      data_lsn, state, snapshot_state, snapshot_mode, \
-                      snapshot_lsn, snapshot_started_at, snapshot_completed_at, \
-                      snapshot_dump_path, last_error, created_at, updated_at) \
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, 0, 'init', $9, $10, \
-                         null, null, null, null, null, $11, $11) \
-                 on conflict (subscription_id, source_schema, source_table) do nothing",
-                &[
-                    &definition.subscription_id,
-                    &definition.source_schema,
-                    &definition.source_table,
-                    &i64::from(definition.source_relation_oid),
-                    &definition.target_namespace,
-                    &definition.target_table,
-                    &definition.target_table_id,
-                    &primary_key,
-                    &snapshot_state,
-                    &definition.snapshot_mode,
-                    &now,
-                ],
-            )
-            .await
-            .map_err(|error| report!("insert subscription table definition: {error}"))?;
+        for table in &definition.tables {
+            let primary_key = table.primary_key.join(",");
+            transaction
+                .execute(
+                    "insert into subscription.tables \
+                         (subscription_id, source_schema, source_table, source_relation_oid, \
+                          target_namespace, target_table, target_table_id, primary_key, \
+                          data_lsn, state, snapshot_state, snapshot_mode, \
+                          snapshot_lsn, snapshot_started_at, snapshot_completed_at, \
+                          snapshot_dump_path, last_error, created_at, updated_at) \
+                     values ($1, $2, $3, $4, $5, $6, $7, $8, 0, 'init', $9, $10, \
+                             null, null, null, null, null, $11, $11) \
+                     on conflict (subscription_id, source_schema, source_table) do nothing",
+                    &[
+                        &definition.subscription_id,
+                        &table.source_schema,
+                        &table.source_table,
+                        &i64::from(table.source_relation_oid),
+                        &table.target_namespace,
+                        &table.target_table,
+                        &table.target_table_id,
+                        &primary_key,
+                        &snapshot_state,
+                        &definition.snapshot_mode,
+                        &now,
+                    ],
+                )
+                .await
+                .map_err(|error| report!("insert subscription table definition: {error}"))?;
+        }
         transaction
             .execute(
                 "insert into subscription.progress \
@@ -893,14 +993,11 @@ mod tests {
             slot: "slot".to_string(),
             publication: "pub".to_string(),
             source_url: "postgresql://source/db".to_string(),
-            source_schema: "public".to_string(),
-            source_table: "users".to_string(),
-            source_relation_oid: 42,
-            target_namespace: "ns".to_string(),
-            target_table: "users".to_string(),
-            target_table_id: "table-1".to_string(),
-            primary_key: vec!["id".to_string()],
             snapshot_mode: "managed".to_string(),
+            auto_create: false,
+            schema_evolution: "auto".to_string(),
+            warehouse_prefix: None,
+            cdc_column: "rowKinds".to_string(),
             supervised: true,
             commit_rows: 50_000,
             commit_interval_ms: 1_000,
@@ -908,6 +1005,15 @@ mod tests {
             snapshot_batch_bytes: 64 * 1024 * 1024,
             snapshot_parallelism: 4,
             snapshot_memory_bytes: 1024 * 1024 * 1024,
+            tables: vec![TableDefinition {
+                source_schema: "public".to_string(),
+                source_table: "users".to_string(),
+                source_relation_oid: 42,
+                target_namespace: "ns".to_string(),
+                target_table: "users".to_string(),
+                target_table_id: "table-1".to_string(),
+                primary_key: vec!["id".to_string()],
+            }],
         }
     }
 
@@ -919,6 +1025,10 @@ mod tests {
             source_url: "postgresql://source/db".to_string(),
             state: "streaming".to_string(),
             enabled: true,
+            auto_create: false,
+            schema_evolution: "auto".to_string(),
+            warehouse_prefix: None,
+            cdc_column: "rowKinds".to_string(),
             supervised: true,
             commit_rows: 50_000,
             commit_interval_ms: 1_000,

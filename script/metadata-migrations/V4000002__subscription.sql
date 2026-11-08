@@ -32,6 +32,13 @@ create table if not exists subscription.subscriptions
     snapshot_batch_bytes  bigint not null default 67108864,
     snapshot_parallelism  bigint not null default 4,
     snapshot_memory_bytes bigint not null default 1073741824,
+    -- Target DDL options. auto_create creates a missing target from the
+    -- source schema; schema_evolution=auto adds nullable columns, widens safe
+    -- types and relaxes NOT NULL. warehouse_prefix is used only for creation.
+    auto_create           boolean not null default false,
+    schema_evolution      text not null default 'auto',
+    warehouse_prefix      text,
+    cdc_column            text not null default 'rowKinds',
     supervisor_pid        integer,
     log_path              text,
     last_error            text,

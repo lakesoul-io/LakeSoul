@@ -56,13 +56,15 @@ CREATE SUBSCRIPTION users_from_app
 CONNECTION 'postgresql://user:pass@source:5432/app'
 PUBLICATION app_pub
 WITH (
-  source_table = 'public.users',
-  target_table = 'users',
-  snapshot     = 'managed'
+  source_table     = 'public.users',
+  target_table     = 'users',
+  snapshot         = 'managed',
+  auto_create      = true,
+  schema_evolution = 'auto'
 );
 ```
 
-源库需要开启 logical WAL、创建 publication，并设置 `REPLICA IDENTITY FULL`；目标端是预先创建且为空的 LakeSoul CDC 表。初始拷贝按 CTID 范围并行执行（`snapshot_parallelism`、`snapshot_memory_bytes`）。用 `ALTER SUBSCRIPTION ... DISABLE/ENABLE` 和 `DROP SUBSCRIPTION` 管理进程。完整配置和 SQL 参考见 [PostgreSQL 订阅](https://lakesoul-io.github.io/zh-Hans/docs/engine/postgres/subscription)。
+源库需要开启 logical WAL、创建 publication，并设置 `REPLICA IDENTITY FULL`；目标端是可以按源 schema 自动创建或预先创建的 LakeSoul CDC 表；managed 快照要求目标表为空。源端 schema 变化时，订阅端会自动追加 nullable 列并安全放宽类型。初始拷贝按 CTID 范围并行执行（`snapshot_parallelism`、`snapshot_memory_bytes`）。用 `ALTER SUBSCRIPTION ... DISABLE/ENABLE` 和 `DROP SUBSCRIPTION` 管理进程。一个订阅可以映射多张源表；每张表独立 snapshot 和 commit。完整配置和 SQL 参考见 [PostgreSQL 订阅](https://lakesoul-io.github.io/zh-Hans/docs/engine/postgres/subscription)。
 
 ## 高效的 SQL 增量计算
 

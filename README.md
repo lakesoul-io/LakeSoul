@@ -66,17 +66,22 @@ CREATE SUBSCRIPTION users_from_app
 CONNECTION 'postgresql://user:pass@source:5432/app'
 PUBLICATION app_pub
 WITH (
-  source_table = 'public.users',
-  target_table = 'users',
-  snapshot     = 'managed'
+  source_table     = 'public.users',
+  target_table     = 'users',
+  snapshot         = 'managed',
+  auto_create      = true,
+  schema_evolution = 'auto'
 );
 ```
 
 The source needs logical WAL, a publication, and `REPLICA IDENTITY FULL`; the
-target is a pre-created, empty LakeSoul CDC table. The initial copy runs in
-parallel across CTID ranges (`snapshot_parallelism`, `snapshot_memory_bytes`).
+target is a LakeSoul CDC table that can be created automatically from the source
+schema or pre-created; a managed snapshot requires it to be empty. The
+subscriber adds nullable columns and widens safe types when the source schema
+changes. The initial copy runs in parallel across CTID ranges (`snapshot_parallelism`, `snapshot_memory_bytes`).
 `ALTER SUBSCRIPTION ... DISABLE/ENABLE` and `DROP SUBSCRIPTION` control the
-process. See
+process. A subscription can map one or more source tables; each table snapshots
+and commits independently. See
 [PostgreSQL subscriptions](https://lakesoul-io.github.io/docs/engine/postgres/subscription)
 for the full setup and SQL reference.
 

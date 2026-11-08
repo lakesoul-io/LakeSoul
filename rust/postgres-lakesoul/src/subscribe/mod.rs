@@ -4,11 +4,14 @@
 
 //! Native PostgreSQL logical-replication subscriber (P0).
 //!
-//! P0 is intentionally narrow: one publication, one table, ordinary `public`
-//! tables, `REPLICA IDENTITY FULL`, no schema evolution, no truncate, no target
-//! range partitioning. Unchanged TOAST columns in an UPDATE are recovered from
-//! the complete old tuple. The goal is to prove the WAL -> Arrow -> LakeSoul CDC
-//! batch path and its replay semantics before broadening the surface.
+//! The subscriber intentionally stays narrow: one publication, one or more
+//! ordinary `public` tables, `REPLICA IDENTITY FULL`, no truncate, no target
+//! range partitioning. Targets can be created on demand and evolve forward
+//! (nullable columns, safe type widening, relaxed nullability). Unchanged TOAST
+//! columns in an UPDATE are recovered from the complete old tuple. Multi-table
+//! subscriptions use one slot and one process; each table commits
+//! independently. The goal is the WAL -> Arrow -> LakeSoul CDC batch path and
+//! its replay semantics.
 //!
 //! The subscription definition and progress live in the metadata PostgreSQL
 //! (`subscription` schema); the target table's commit ids remain the
@@ -16,8 +19,10 @@
 
 mod copy_text;
 mod decode;
+mod multi;
 mod plan;
 mod runner;
+mod schema;
 mod sink;
 mod snapshot;
 mod source;
@@ -25,6 +30,7 @@ pub(crate) mod sql;
 mod state;
 pub(crate) mod supervisor;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,13 +43,34 @@ use rootcause::{bail, report};
 use tokio_postgres::NoTls;
 
 use crate::Result;
-use state::{SubscriptionDefinition, SubscriptionMetadata, SubscriptionRecord};
+use state::{
+    SubscriptionDefinition, SubscriptionMetadata, SubscriptionRecord, TableDefinition,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SnapshotMode {
     Auto,
     Managed,
     None,
+}
+
+/// How the subscriber reacts when the source table schema changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SchemaEvolution {
+    /// Never change the target schema; a mismatch stops the subscriber.
+    None,
+    /// Add nullable columns, widen safe types and relax NOT NULL.
+    Auto,
+}
+
+#[derive(Debug, Clone)]
+pub struct TableMapping {
+    pub source_schema: String,
+    pub source_table: String,
+    pub target_namespace: String,
+    pub target_table: String,
+    /// Empty means "infer from the target table".
+    pub primary_key: Vec<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -76,7 +103,38 @@ pub struct SubscribeArgs {
     #[clap(long, env = "LAKESOUL_PG_SUBSCRIBE_TARGET_NAMESPACE")]
     pub target_namespace: Option<String>,
 
-    /// Comma-separated source/target primary key columns.
+    /// Create missing target tables from the source schema. Requires a
+    /// warehouse prefix.
+    #[clap(long, env = "LAKESOUL_PG_SUBSCRIBE_AUTO_CREATE")]
+    pub auto_create: bool,
+
+    /// Target schema change policy: auto adds nullable columns, widens safe
+    /// types and relaxes NOT NULL; none stops on any mismatch.
+    #[clap(
+        long,
+        value_enum,
+        default_value = "auto",
+        env = "LAKESOUL_PG_SUBSCRIBE_SCHEMA_EVOLUTION"
+    )]
+    pub schema_evolution: SchemaEvolution,
+
+    /// LakeSoul CDC change column used when creating a target table.
+    #[clap(
+        long,
+        default_value = "rowKinds",
+        env = "LAKESOUL_PG_SUBSCRIBE_CDC_COLUMN"
+    )]
+    pub cdc_column: String,
+
+    /// Multi-table mapping, `source_table=target_table` or
+    /// `source_table=namespace.target_table`. Repeat for each table. The
+    /// namespace defaults to `--target-namespace`.
+    #[clap(long = "table", value_name = "SOURCE=TARGET")]
+    pub tables: Vec<String>,
+
+    /// Comma-separated source/target primary key columns. Only valid for a
+    /// single `--source-table`; multi-table subscriptions infer each key from
+    /// the target table.
     #[clap(long, env = "LAKESOUL_PG_SUBSCRIBE_PRIMARY_KEY")]
     pub primary_key: Option<String>,
 
@@ -141,6 +199,11 @@ pub struct SubscribeConfig {
     pub target_namespace: String,
     pub target_table: String,
     pub primary_key: Vec<String>,
+    pub tables: Vec<TableMapping>,
+    pub auto_create: bool,
+    pub schema_evolution: SchemaEvolution,
+    pub warehouse_prefix: Option<String>,
+    pub cdc_column: String,
     pub commit_rows: usize,
     pub commit_interval: Duration,
     pub max_transactions: u64,
@@ -157,22 +220,89 @@ pub struct SubscribeConfig {
 }
 
 impl SubscribeConfig {
-    fn from_args(args: SubscribeArgs) -> Result<Self> {
+    fn from_args(args: SubscribeArgs, warehouse_prefix: Option<String>) -> Result<Self> {
         let source_url = required(args.source_url, "--source-url")?;
         let publication = required(args.publication, "--publication")?;
         let slot = required(args.slot, "--slot")?;
-        let source_table = required(args.source_table, "--source-table")?;
         let target_namespace = required(args.target_namespace, "--target-namespace")?;
-        let target_table = required(args.target_table, "--target-table")?;
-        let primary_key = required(args.primary_key, "--primary-key")?
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        if primary_key.is_empty() {
-            bail!("--primary-key must name at least one column");
-        }
+        let tables = if args.tables.is_empty() {
+            if args.source_table.is_none() || args.target_table.is_none() {
+                bail!(
+                    "--source-table and --target-table are required unless --table is used"
+                );
+            }
+            if args.primary_key.is_none() {
+                bail!("--primary-key is required with --source-table");
+            }
+            let source_table = args.source_table.unwrap();
+            let target_table = args.target_table.unwrap();
+            let primary_key = args
+                .primary_key
+                .unwrap()
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            if primary_key.is_empty() {
+                bail!("--primary-key must name at least one column");
+            }
+            let (source_schema, source_table) = parse_source_table(&source_table)?;
+            let (target_namespace, target_table) =
+                parse_target_table(&target_table, &target_namespace)?;
+            vec![TableMapping {
+                source_schema,
+                source_table,
+                target_namespace,
+                target_table,
+                primary_key,
+            }]
+        } else {
+            if args.source_table.is_some()
+                || args.target_table.is_some()
+                || args.primary_key.is_some()
+            {
+                bail!(
+                    "--table cannot be combined with --source-table, --target-table or \
+                     --primary-key"
+                );
+            }
+            let mut tables = Vec::with_capacity(args.tables.len());
+            let mut sources = HashSet::new();
+            let mut targets = HashSet::new();
+            for spec in &args.tables {
+                let (source, target) = spec.split_once('=').ok_or_else(|| {
+                    report!("--table {spec:?} must be SOURCE_TABLE=TARGET_TABLE")
+                })?;
+                let (source_schema, source_table) = parse_source_table(source.trim())?;
+                let (target_namespace, target_table) =
+                    parse_target_table(target.trim(), &target_namespace)?;
+                if !sources.insert((source_schema.clone(), source_table.clone())) {
+                    bail!("source table {source_schema}.{source_table} is listed twice");
+                }
+                if !targets.insert((target_namespace.clone(), target_table.clone())) {
+                    bail!(
+                        "target table {target_namespace}.{target_table} is listed twice"
+                    );
+                }
+                tables.push(TableMapping {
+                    source_schema,
+                    source_table,
+                    target_namespace,
+                    target_table,
+                    primary_key: Vec::new(),
+                });
+            }
+            tables
+        };
+        let first = tables
+            .first()
+            .ok_or_else(|| report!("at least one table mapping is required"))?;
+        let source_schema = first.source_schema.clone();
+        let source_table = first.source_table.clone();
+        let target_namespace = first.target_namespace.clone();
+        let target_table = first.target_table.clone();
+        let primary_key = first.primary_key.clone();
         if args.commit_rows == 0 {
             bail!("--commit-rows must be greater than zero");
         }
@@ -188,8 +318,10 @@ impl SubscribeConfig {
         if args.snapshot_parallelism == 0 {
             bail!("--snapshot-parallelism must be greater than zero");
         }
-
-        let (source_schema, source_table) = parse_source_table(&source_table)?;
+        let cdc_column = args.cdc_column.trim();
+        if cdc_column.is_empty() {
+            bail!("--cdc-column must not be empty");
+        }
 
         Ok(Self {
             subscription_id: slot.clone(),
@@ -201,6 +333,11 @@ impl SubscribeConfig {
             target_namespace,
             target_table,
             primary_key,
+            tables,
+            auto_create: args.auto_create,
+            schema_evolution: args.schema_evolution,
+            warehouse_prefix,
+            cdc_column: cdc_column.to_string(),
             commit_rows: args.commit_rows,
             commit_interval: Duration::from_millis(args.commit_interval_ms),
             max_transactions: args.max_transactions,
@@ -253,6 +390,28 @@ pub(crate) fn parse_source_table(source_table: &str) -> Result<(String, String)>
     Ok((source_schema, source_table))
 }
 
+/// Parse an optional `namespace.table` target reference. A bare table uses
+/// `default_namespace` (the endpoint database, or `--target-namespace`).
+pub(crate) fn parse_target_table(
+    target: &str,
+    default_namespace: &str,
+) -> Result<(String, String)> {
+    let target = target.trim();
+    if target.is_empty() {
+        bail!("target table must not be empty");
+    }
+    let (namespace, table) = match target.split_once('.') {
+        Some((namespace, table)) => {
+            if namespace.is_empty() || table.is_empty() || table.contains('.') {
+                bail!("target table {target:?} must be table or namespace.table");
+            }
+            (namespace.to_string(), table.to_string())
+        }
+        None => (default_namespace.to_string(), target.to_string()),
+    };
+    Ok((namespace, table))
+}
+
 /// The validation connection must be an ordinary SQL connection. Strip a
 /// `replication` parameter if the caller included it; the streaming URL gets
 /// it back in `runner`.
@@ -290,14 +449,18 @@ pub fn replication_url(url: &str) -> String {
     }
 }
 
-pub async fn run(args: SubscribeArgs, meta: MetaDataClientRef) -> Result<()> {
+pub async fn run(
+    args: SubscribeArgs,
+    meta: MetaDataClientRef,
+    warehouse_prefix: Option<String>,
+) -> Result<()> {
     if let Some(subscription_id) = args.subscription_id.clone() {
         if args.dry_run {
             bail!("--dry-run cannot be combined with --subscription-id");
         }
         return run_from_metadata(&subscription_id, meta).await;
     }
-    let config = SubscribeConfig::from_args(args)?;
+    let config = SubscribeConfig::from_args(args, warehouse_prefix)?;
     run_config(config, meta).await
 }
 
@@ -329,6 +492,30 @@ async fn run_from_metadata(subscription_id: &str, meta: MetaDataClientRef) -> Re
         "managed" => SnapshotMode::Managed,
         other => bail!("subscription has unknown snapshot mode {other:?}"),
     };
+    let schema_evolution = match record.schema_evolution.as_str() {
+        "none" => SchemaEvolution::None,
+        "auto" => SchemaEvolution::Auto,
+        other => bail!("subscription has unknown schema_evolution {other:?}"),
+    };
+    let snapshot_mode = table.snapshot_mode.clone();
+    if record
+        .tables
+        .iter()
+        .any(|table| table.snapshot_mode != snapshot_mode)
+    {
+        bail!("subscription {subscription_id} has mixed snapshot modes");
+    }
+    let tables = record
+        .tables
+        .iter()
+        .map(|table| TableMapping {
+            source_schema: table.source_schema.clone(),
+            source_table: table.source_table.clone(),
+            target_namespace: table.target_namespace.clone(),
+            target_table: table.target_table.clone(),
+            primary_key: table.primary_key.clone(),
+        })
+        .collect::<Vec<_>>();
     let config = SubscribeConfig {
         subscription_id: record.subscription_id.clone(),
         source_url: record.source_url.clone(),
@@ -339,6 +526,11 @@ async fn run_from_metadata(subscription_id: &str, meta: MetaDataClientRef) -> Re
         target_namespace: table.target_namespace.clone(),
         target_table: table.target_table.clone(),
         primary_key: table.primary_key.clone(),
+        tables,
+        auto_create: record.auto_create,
+        schema_evolution,
+        warehouse_prefix: record.warehouse_prefix.clone(),
+        cdc_column: record.cdc_column.clone(),
         commit_rows: record.commit_rows,
         commit_interval: Duration::from_millis(record.commit_interval_ms),
         max_transactions: 0,
@@ -370,11 +562,55 @@ async fn run_from_metadata(subscription_id: &str, meta: MetaDataClientRef) -> Re
 }
 
 async fn run_config(config: SubscribeConfig, meta: MetaDataClientRef) -> Result<()> {
+    if config.tables.len() > 1 {
+        return multi::run(config, meta).await;
+    }
+    let metadata = if config.dry_run {
+        None
+    } else {
+        let pool = meta.pooled_client();
+        let pool = pool.lock().await.clone();
+        let metadata = SubscriptionMetadata::from_pool(pool);
+        metadata.init_schema().await?;
+        Some(metadata)
+    };
+    let subscription_exists = match &metadata {
+        Some(metadata) => metadata.exists(&config.subscription_id).await?,
+        None => false,
+    };
+    if !subscription_exists
+        && let Some(metadata) = &metadata
+        && metadata
+            .target_in_use(&config.target_namespace, &config.target_table)
+            .await?
+    {
+        bail!(
+            "target table {}.{} is already used by another subscription",
+            config.target_namespace,
+            config.target_table
+        );
+    }
     let source = source::inspect_source(
         &ordinary_url(&config.source_url),
         &config.publication,
         &config.source_schema,
         &config.source_table,
+    )
+    .await?;
+    let mut target_options = schema::TargetOptions::from_config(&config);
+    if config.dry_run {
+        // Validate only: never create or evolve target metadata.
+        target_options.auto_create = false;
+        target_options.schema_evolution = SchemaEvolution::None;
+    }
+    schema::ensure_target(
+        &meta,
+        &source,
+        &config.target_namespace,
+        &config.target_table,
+        &target_options,
+        config.auto_create && !config.require_existing && !subscription_exists,
+        !config.dry_run,
     )
     .await?;
     let plan = plan::TablePlan::new(
@@ -393,10 +629,7 @@ async fn run_config(config: SubscribeConfig, meta: MetaDataClientRef) -> Result<
         return Ok(());
     }
 
-    let pool = meta.pooled_client();
-    let pool = pool.lock().await.clone();
-    let metadata = SubscriptionMetadata::from_pool(pool);
-    metadata.init_schema().await?;
+    let metadata = metadata.expect("metadata was initialized for a non-dry-run");
     let record = match register_or_validate(&config, &plan, &metadata).await {
         Ok(record) => record,
         Err(error) => {
@@ -578,6 +811,7 @@ async fn run_config(config: SubscribeConfig, meta: MetaDataClientRef) -> Result<
             plan,
             record,
             metadata.clone(),
+            meta.clone(),
             consistent_point,
             Some(stream),
         )
@@ -687,6 +921,7 @@ async fn run_config(config: SubscribeConfig, meta: MetaDataClientRef) -> Result<
         plan,
         record,
         metadata.clone(),
+        meta.clone(),
         processed_watermark,
         None,
     )
@@ -727,14 +962,15 @@ async fn register_or_validate(
         slot: config.slot.clone(),
         publication: config.publication.clone(),
         source_url: config.source_url.clone(),
-        source_schema: config.source_schema.clone(),
-        source_table: config.source_table.clone(),
-        source_relation_oid: plan.source.relation_oid,
-        target_namespace: config.target_namespace.clone(),
-        target_table: config.target_table.clone(),
-        target_table_id: plan.table.table_info().table_id.clone(),
-        primary_key: config.primary_key.clone(),
         snapshot_mode: snapshot_mode.to_string(),
+        auto_create: config.auto_create,
+        schema_evolution: match config.schema_evolution {
+            SchemaEvolution::None => "none",
+            SchemaEvolution::Auto => "auto",
+        }
+        .to_string(),
+        warehouse_prefix: config.warehouse_prefix.clone(),
+        cdc_column: config.cdc_column.clone(),
         supervised: config.require_existing,
         commit_rows: config.commit_rows,
         commit_interval_ms: config.commit_interval.as_millis() as u64,
@@ -742,6 +978,15 @@ async fn register_or_validate(
         snapshot_batch_bytes: config.snapshot_batch_bytes,
         snapshot_parallelism: config.snapshot_parallelism,
         snapshot_memory_bytes: config.snapshot_memory_bytes,
+        tables: vec![TableDefinition {
+            source_schema: plan.source.schema.clone(),
+            source_table: plan.source.name.clone(),
+            source_relation_oid: plan.source.relation_oid,
+            target_namespace: plan.table.table_namespace().to_string(),
+            target_table: plan.target_table.clone(),
+            target_table_id: plan.table.table_info().table_id.clone(),
+            primary_key: plan.source.primary_key.clone(),
+        }],
     };
     match metadata.load_by_id(&config.subscription_id).await? {
         Some(record) => {
@@ -768,7 +1013,7 @@ async fn register_or_validate(
     }
 }
 
-async fn record_state_error(
+pub(crate) async fn record_state_error(
     metadata: &SubscriptionMetadata,
     subscription_id: &str,
     source_url: &str,
@@ -803,7 +1048,7 @@ pub(crate) fn sanitized_error(error: &rootcause::Report, source_url: &str) -> St
     text
 }
 
-async fn check_slot(
+pub(crate) async fn check_slot(
     url: &str,
     slot: &str,
     data_watermark: u64,
@@ -850,10 +1095,11 @@ async fn check_slot_inner(
         .map_err(|error| report!("read replication slot {slot}: {error}"))?;
 
     let Some(row) = row else {
-        if data_watermark > 0 {
+        if data_watermark > 0 || processed_watermark > 0 {
             bail!(
-                "replication slot {slot} does not exist but the target data watermark is \
-                 {data_watermark}; create the slot before writing or resnapshot"
+                "replication slot {slot} does not exist but the subscription watermark is \
+                 data={data_watermark}, processed={processed_watermark}; create the slot \
+                 before writing or resnapshot"
             );
         }
         if target_has_commits {

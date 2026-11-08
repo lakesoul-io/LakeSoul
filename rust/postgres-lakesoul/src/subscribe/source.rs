@@ -89,6 +89,10 @@ pub struct SourceColumn {
     pub pg_type: PgType,
     pub type_name: String,
     pub not_null: bool,
+    /// Whether the source column has a default expression. Schema evolution
+    /// refuses to add a column with a default because old target rows cannot
+    /// be backfilled from the WAL.
+    pub has_default: bool,
     /// Whether PostgreSQL may store this column out of line in a TOAST table.
     /// `pgoutput` sends `u` for an unchanged TOASTable value in an UPDATE's
     /// new tuple; with REPLICA IDENTITY FULL the old tuple carries the value
@@ -235,7 +239,8 @@ async fn inspect(
     let rows = client
         .query(
             "select a.attname, a.atttypid::int8, a.atttypmod, a.attnotnull, \
-                    a.attgenerated::text, t.typname, a.attstorage::text, a.attlen \
+                    a.attgenerated::text, t.typname, a.attstorage::text, a.attlen, \
+                    a.atthasdef \
              from pg_attribute a \
              join pg_class c on c.oid = a.attrelid \
              join pg_namespace n on n.oid = c.relnamespace \
@@ -258,6 +263,7 @@ async fn inspect(
         let type_name: String = row.get(5);
         let storage: String = row.get(6);
         let attlen: i16 = row.get(7);
+        let has_default: bool = row.get(8);
         if !generated.is_empty() {
             bail!(
                 "column {name} of {schema}.{table} is generated; P0 does not support \
@@ -281,6 +287,7 @@ async fn inspect(
             pg_type,
             type_name,
             not_null,
+            has_default,
             toastable: attlen == -1 && matches!(storage.as_str(), "e" | "m" | "x"),
         });
     }

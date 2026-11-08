@@ -11,7 +11,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 `postgres-lakesoul` can consume a PostgreSQL logical replication publication and
-write the changes into a pre-created LakeSoul CDC table. The subscription is
+write the changes into a LakeSoul CDC table. The subscription is
 defined from the PostgreSQL endpoint: `CREATE SUBSCRIPTION` validates the source
 and target, stores the definition and progress in the metadata PostgreSQL, and
 starts a supervised local subscriber process.
@@ -23,15 +23,16 @@ separate CDC cluster.
 
 | Piece | Behaviour |
 | --- | --- |
-| Source | PostgreSQL 14+, logical WAL, one `public` table, `REPLICA IDENTITY FULL`, matching primary key |
-| Target | Pre-created LakeSoul CDC table in the connection's database, unpartitioned, empty when the subscription is created |
-| Initial data | Managed snapshot; the target stays empty until one atomic commit publishes the snapshot |
+| Source | PostgreSQL 14+, logical WAL, one or more `public` tables, `REPLICA IDENTITY FULL`, matching primary keys |
+| Target | Auto-created on demand or pre-created LakeSoul CDC tables, unpartitioned; safe schema evolution; each target defaults to the connection's database |
+| Initial data | Managed snapshot per table; each table commits independently |
 | Changes | `INSERT`, `UPDATE` and `DELETE`; full rows plus the CDC change column |
 | Lifecycle | `CREATE`, `ALTER ... ENABLE/DISABLE`, `DROP`; SQL-created subscriptions resume after an endpoint restart |
 | State | Subscription metadata and progress in the metadata PostgreSQL; data progress in target commit ids |
 
-One subscription maps one source table to one target table. A target table is
-reserved to one subscription.
+Each source table maps to one target table, and a target table is reserved to
+one subscription. A multi-table subscription uses one publication, one
+replication slot and one subscriber process for all of its tables.
 
 ## Source setup
 
@@ -82,8 +83,19 @@ set `statement_timeout = 0`, `DateStyle = ISO`, `TimeZone = UTC` and
 
 ## Target setup
 
-Create the target table through the PostgreSQL endpoint. The database you
-connect to is the target LakeSoul namespace:
+Targets can be created automatically. With `auto_create = true`, a missing
+target is created under the server's warehouse as
+`<warehouse>/<target_namespace>/<target_table>`. The table gets the source
+column names and types, the source primary key, `hash_bucket_num = 4`,
+`file_format = vortex-compact`, and a `rowKinds text` CDC column. The source
+must not already have a column with the configured `cdc_column` name.
+
+The SQL server uses its `--warehouse-prefix`; CLI subscriptions pass
+`--warehouse-prefix` (or `LAKESOUL_WAREHOUSE`). `DROP SUBSCRIPTION` does not
+drop a target that was created automatically.
+
+A target can still be created manually through the PostgreSQL endpoint. The
+database you connect to is the target LakeSoul namespace:
 
 ```sql
 CREATE TABLE users (
@@ -101,8 +113,43 @@ CREATE TABLE users (
 
 The target's non-CDC columns must match the source columns by name and compatible
 type, the primary key must match, and the table must not be range-partitioned.
-The table must be empty when a SQL-created subscription is created. Keep the CDC
-column out of the source; the subscriber fills it.
+The table must be empty when a managed snapshot is created. Keep the CDC column
+out of the source; the subscriber fills it.
+
+### Schema evolution
+
+`schema_evolution = 'auto'` is the default. The target schema only moves
+forward:
+
+- a new source column is appended as nullable; existing target rows read
+  `NULL` for it;
+- `smallint → integer → bigint`, `real → double precision`, and decimal
+  precision/scale widening update the target type; old data files are cast at
+  read time;
+- `DROP NOT NULL` relaxes the target column to nullable;
+- text/varchar/char, json/jsonb and uuid/text changes that share Arrow `Utf8`
+  need no target change;
+- a source type that becomes narrower keeps the already wider target type.
+
+The subscriber learns about a change from the next pgoutput `Relation` message,
+which PostgreSQL sends when the table is next used. A change made while the
+subscriber is stopped is reconciled from the source catalog at startup. WAL
+rows from an older `Relation` version are still decoded: columns added later
+are filled with `NULL`, and old types are cast to the newer target type.
+
+The following are rejected instead of guessed:
+
+- `DROP COLUMN` and `RENAME COLUMN`;
+- primary-key name or type changes;
+- narrowing a target that cannot store the source type;
+- cross-family changes such as `integer → text`;
+- `timestamp` ↔ `timestamptz`;
+- adding a column with a default (existing target rows cannot be backfilled);
+- auto-creating a table with an unconstrained `numeric` (create it explicitly
+  with `numeric(precision, scale)`).
+
+Set `schema_evolution = 'none'` to stop on any mismatch instead of changing the
+target.
 
 ## Create a subscription
 
@@ -114,6 +161,9 @@ WITH (
   source_table         = 'public.users',
   target_table         = 'users',
   snapshot             = 'managed',
+  auto_create          = true,
+  schema_evolution     = 'auto',
+  cdc_column           = 'rowKinds',
   slot_name            = 'users_from_app',
   primary_key          = 'id',
   commit_rows          = 50000,
@@ -128,8 +178,11 @@ WITH (
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `source_table` | required | Source table, `public.users` or `users` |
-| `target_table` | required | Bare target table name in the current database |
+| `target_table` | required | Target table, `table` or `namespace.table`; defaults to the current database |
 | `snapshot` | `auto` | `auto` and `managed` copy the initial table; `none` skips the copy and starts from the slot's current position |
+| `auto_create` | `false` | Create a missing target from the source schema; requires a warehouse |
+| `schema_evolution` | `auto` | `auto` adds nullable columns, widens safe types and relaxes `NOT NULL`; `none` stops on a mismatch |
+| `cdc_column` | `rowKinds` | CDC change column used when creating a target |
 | `slot_name` | subscription name | Replication slot name; must not already exist |
 | `primary_key` | inferred | Source/target primary-key columns; inferred from the target table when omitted |
 | `commit_rows` | `50000` | Flush a streaming batch after this many distinct keys |
@@ -151,12 +204,64 @@ the complete snapshot.
 
 `CREATE SUBSCRIPTION` validates the source and target before writing metadata. It
 returns after the local subscriber process has started; the initial snapshot
-continues in the background. A SQL-created subscription requires an empty target
-for every snapshot mode. `snapshot = none` on an empty target starts from the
-slot's current position and only applies subsequent changes.
+continues in the background. A managed SQL snapshot requires an empty target.
+`snapshot = none` accepts a pre-initialized target and starts from the slot's
+current position, applying only subsequent changes.
 
-The target namespace is the database in the connection, and the target table is
-always `public.<table>`.
+The target namespace is the database in the connection unless `namespace.table`
+is used. Target tables may live in different LakeSoul namespaces.
+
+## Multi-table subscriptions
+
+A subscription can map several source tables from one publication to several
+LakeSoul targets. The tables share one logical replication slot and one
+subscriber process; each table still has its own LakeSoul commit and progress.
+
+```sql
+CREATE SUBSCRIPTION app_all
+CONNECTION 'postgresql://user:pass@source:5432/app'
+PUBLICATION app_pub
+TABLES (
+  public.users    TO users,
+  public.orders   TO analytics.orders,
+  public.payments TO billing.payments
+)
+WITH (
+  snapshot = 'managed',
+  commit_rows = 50000
+);
+```
+
+A target without a namespace uses the endpoint database. An explicit
+`namespace.table` target is opened in that LakeSoul namespace. Targets may be
+pre-created or auto-created, and each table evolves independently. A target is
+reserved to one subscription.
+
+Managed snapshots are supported per table. Each table is copied from its own
+slot (created for that table and dropped afterward) at its own snapshot LSN and
+committed as soon as that table is complete; there is no cross-table snapshot
+atomicity. Keep one extra replication-slot slot available in
+`max_replication_slots`. `snapshot = 'none'` continues to accept pre-initialized
+targets.
+
+Each table commits independently; there is no cross-table atomic commit.
+`processed_lsn` advances only after every table in the batch has committed.
+
+The CLI equivalent uses repeated `--table` mappings:
+
+```bash
+postgres-lakesoul --subscribe \
+  --source-url 'postgresql://user:pass@source:5432/app' \
+  --publication app_pub \
+  --slot app_all \
+  --target-namespace default \
+  --table public.users=users \
+  --table public.orders=analytics.orders \
+  --snapshot managed \
+  --auto-create \
+  --schema-evolution auto \
+  --warehouse-prefix file:///data/lakesoul
+```
 
 ## Check progress
 
@@ -239,7 +344,9 @@ The subscriber supports these PostgreSQL source types:
 `timestamp`, `timestamptz`, `uuid`, `json` and `jsonb`.
 
 Target columns use the matching LakeSoul/Arrow types and the same column names.
-The CDC change column is an extra target column.
+The CDC change column is an extra target column. With
+`schema_evolution = 'auto'`, new nullable columns and safe type widenings are
+applied to the target as the source evolves.
 
 ## CLI mode
 
@@ -255,11 +362,16 @@ postgres-lakesoul --subscribe \
   --target-namespace default \
   --primary-key id \
   --snapshot managed \
+  --auto-create \
+  --schema-evolution auto \
+  --warehouse-prefix file:///data/lakesoul \
   --snapshot-parallelism 4 \
   --snapshot-memory-bytes 1073741824
 ```
 
-`--snapshot` accepts `auto`, `managed` and `none`. `--snapshot-parallelism`
+`--snapshot` accepts `auto`, `managed` and `none`. `--schema-evolution` accepts
+`auto` and `none`; `--auto-create` requires `--warehouse-prefix` when the target
+is missing. `--snapshot-parallelism`
 sets the number of COPY readers, and `--snapshot-memory-bytes` bounds the
 DataFusion pool shared by their writers (`0` is unbounded). `--dry-run` validates the
 source, target and types without creating a slot or writing subscription
