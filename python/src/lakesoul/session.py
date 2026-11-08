@@ -334,6 +334,51 @@ class LakeSoulSession:
             raise LakeSoulQueryError(str(error)) from error
         return BatchSearchResult(ids=ids)
 
+    def register_snapshot(
+        self,
+        table: str,
+        *,
+        namespace: str = "default",
+        snapshot: int | None = None,
+        tag: str | None = None,
+        as_of: int | None = None,
+    ) -> str:
+        """Register a pinned (time-travel) view of a table and return its alias.
+
+        Exactly one of ``snapshot`` (id from
+        :meth:`lakesoul.catalog.LakeSoulCatalog.create_snapshot`), ``tag`` or
+        ``as_of`` (Unix milliseconds) selects the point in time.  The alias is
+        a queryable table name in this session::
+
+            alias = session.register_snapshot("docs", snapshot=snapshot_id)
+            try:
+                session.sql(f"SELECT count(*) FROM {alias}")
+            finally:
+                session.unregister(alias)
+
+        The view reads the partition versions frozen at that point with the
+        regular merge-on-read semantics.  Its vector/text indexes are not used
+        (they describe the latest files), so a vector ordering is still exact
+        but runs as a plain scan.
+        """
+        try:
+            return self._inner.register_snapshot_table(
+                str(table),
+                str(namespace),
+                None if snapshot is None else int(snapshot),
+                None if tag is None else str(tag),
+                None if as_of is None else int(as_of),
+            )
+        except Exception as error:  # noqa: BLE001
+            raise LakeSoulQueryError(str(error)) from error
+
+    def unregister(self, name: str) -> None:
+        """Drop a view registered by :meth:`register_snapshot`."""
+        try:
+            self._inner.unregister_table(str(name))
+        except Exception as error:  # noqa: BLE001
+            raise LakeSoulQueryError(str(error)) from error
+
     def explain(
         self, sql: str, *, verbose: bool = True, analyze: bool = False
     ) -> str:

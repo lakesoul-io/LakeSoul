@@ -259,8 +259,8 @@ def test_search_unknown_column_and_bad_dimension() -> None:
             table.search(query, top_k=0)
         with pytest.raises(TypeError):
             table.search(query, filter=42)  # type: ignore[arg-type]
-        with pytest.raises(NotImplementedError):
-            table.search(query, snapshot=1)
+        with pytest.raises(ValueError):
+            table.search(query, snapshot=1, tag="v1")
     finally:
         _drop(catalog, table_name, table_path)
 
@@ -529,3 +529,110 @@ def test_distributed_session_configuration() -> None:
         assert session.sql("SELECT 1 AS one").to_pydict() == {"one": [1]}
     finally:
         session.close()
+
+
+def test_search_pinned_snapshot_tag_and_as_of() -> None:
+    """Time travel: snapshot, tag and as-of reads see the frozen rows."""
+    table_name = "py_session_time_travel"
+    vectors = _vectors()
+    catalog, table, table_path = _create_table(table_name, vectors=vectors)
+    try:
+        session = catalog.session(vector_search={"nprobe": 4, "exact_overfetch": 20})
+        latest_before = session.sql(
+            f'SELECT count(*) AS cnt FROM "lakesoul".default.{table_name}'
+        )
+        assert latest_before.column("cnt").to_pylist() == [N]
+
+        snapshot_id = catalog.create_snapshot(table)
+        catalog.create_tag(table, "v1", snapshot_id)
+        snapshot = next(
+            info
+            for info in catalog.list_snapshots(table)
+            if info.snapshot_id == snapshot_id
+        )
+
+        # Append rows *after* the snapshot: the pinned views must not see them.
+        extra_rows = 50
+        rng = np.random.default_rng(53)
+        extra_vectors = rng.normal(size=(extra_rows, DIM)).astype(np.float32)
+        table.write_arrow(
+            pa.table(
+                {
+                    "id": pa.array(range(N, N + extra_rows), type=pa.int64()),
+                    "title": pa.array(
+                        [f"extra-{index}" for index in range(extra_rows)]
+                    ),
+                    "vec": pa.FixedSizeListArray.from_arrays(
+                        pa.array(
+                            extra_vectors.reshape(-1), type=pa.float32()
+                        ),
+                        DIM,
+                    ),
+                }
+            )
+        )
+        latest_after = session.sql(
+            f'SELECT count(*) AS cnt FROM "lakesoul".default.{table_name}'
+        )
+        assert latest_after.column("cnt").to_pylist() == [N + extra_rows]
+
+        query = np.random.default_rng(59).normal(size=DIM).astype(np.float32)
+        frozen_ids = {int(value) for value in table.search(
+            query, top_k=50, snapshot=snapshot_id, session=session
+        ).column("id").to_pylist()}
+        assert frozen_ids
+        assert max(frozen_ids) < N, sorted(frozen_ids)[-3:]
+        latest_ids = table.search(query, top_k=50, session=session).column(
+            "id"
+        ).to_pylist()
+        assert latest_ids and max(latest_ids) >= N, latest_ids[-3:]
+
+        tag_ids = {int(value) for value in table.search(
+            query, top_k=50, tag="v1", session=session
+        ).column("id").to_pylist()}
+        assert tag_ids == frozen_ids
+
+        as_of_ids = {int(value) for value in table.search(
+            query, top_k=50, as_of=int(snapshot.created_at), session=session
+        ).column("id").to_pylist()}
+        assert as_of_ids == frozen_ids
+
+        frozen_count = table.sql(
+            f'SELECT count(*) AS cnt FROM "lakesoul".default.{table_name}',
+            snapshot=snapshot_id,
+            session=session,
+        )
+        assert frozen_count.column("cnt").to_pylist() == [N]
+        latest_count = table.sql(
+            f'SELECT count(*) AS cnt FROM "lakesoul".default.{table_name}',
+            session=session,
+        )
+        assert latest_count.column("cnt").to_pylist() == [N + extra_rows]
+
+        # The index describes the latest files, so a pinned plan is a plain
+        # merge-on-read scan with an exact Sort above it.
+        alias = session.register_snapshot(
+            table_name, snapshot=snapshot_id
+        )
+        try:
+            plan = session.explain(
+                f'SELECT id FROM {alias} ORDER BY array_distance(vec, '
+                f"ARRAY[{', '.join('0.0' for _ in range(DIM))}]) LIMIT 5"
+            )
+        finally:
+            session.unregister(alias)
+        assert "LakeSoulVectorSearchExec" not in plan, plan
+        assert "SortExec" in plan, plan
+
+        # A pinned scan with an extra filter keeps the filter semantics.
+        filtered = table.search(
+            query, top_k=10, filter="id < 50", snapshot=snapshot_id, session=session
+        )
+        assert filtered.num_rows == 10
+        assert all(value < 50 for value in filtered.column("id").to_pylist())
+
+        with pytest.raises(ValueError):
+            table.search(query, snapshot=snapshot_id, tag="v1")
+    finally:
+        catalog.drop_tag(table, "v1")
+        _drop(catalog, table_name, table_path)

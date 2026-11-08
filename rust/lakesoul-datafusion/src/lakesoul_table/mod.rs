@@ -372,6 +372,7 @@ impl LakeSoulTable {
                 )
                 .unwrap_or_default(),
             format_registry,
+            read_snapshot: None,
         }))
     }
 

@@ -18,16 +18,21 @@
 //! name is planned; the code is identical.)
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use arrow_array::RecordBatch;
 use arrow_pyarrow::PyArrowType;
 use datafusion::arrow::util::pretty::pretty_format_batches;
-use datafusion::catalog::{CatalogProvider, SchemaProvider};
+use datafusion::catalog::{
+    CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
+};
 use datafusion::datasource::TableProvider;
 use datafusion::execution::context::SessionContext;
 use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::create_lakesoul_session_config;
-use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
+use lakesoul_datafusion::datasource::table_provider::{
+    LakeSoulTableProvider, TableReadSnapshot,
+};
 use lakesoul_datafusion::distributed::{DistributedOptions, WorkerDiscovery};
 use lakesoul_datafusion::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
 use lakesoul_datafusion::vector_batch::VectorBatchRequest;
@@ -74,9 +79,15 @@ use crate::install_module;
 ///         - ``vector_search`` (dict): defaults for
 ///           ``lakesoul_vector_search.*`` (``nprobe``, ``rerank``,
 ///           ``parallelism``, ``deferred_payload``, ``exact_overfetch``).
+static SNAPSHOT_ALIAS: AtomicU64 = AtomicU64::new(0);
+const SNAPSHOT_CATALOG: &str = "__lakesoul_snapshots";
+const SNAPSHOT_SCHEMA: &str = "public";
+
 #[pyclass(module = "lakesoul._lib._session", name = "NativeSession")]
 pub struct NativeSession {
     ctx: Arc<SessionContext>,
+    /// In-memory schema where pinned (time-travel) table views are registered.
+    snapshot_schema: Arc<MemorySchemaProvider>,
 }
 
 #[pymethods]
@@ -259,7 +270,27 @@ impl NativeSession {
                     "failed to create the LakeSoul query session: {error}"
                 ))
             })?;
-        Ok(Self { ctx })
+        // Pinned snapshot views live in their own in-memory catalog: they are
+        // per-session query artifacts, not catalog tables, and registering
+        // them next to the LakeSoul catalog would hit the metadata write path.
+        let snapshot_schema = Arc::new(MemorySchemaProvider::new());
+        let snapshot_catalog = Arc::new(MemoryCatalogProvider::new());
+        let schema_provider: Arc<dyn SchemaProvider> = snapshot_schema.clone();
+        snapshot_catalog
+            .register_schema(SNAPSHOT_SCHEMA, schema_provider)
+            .map_err(|error| {
+                PyValueError::new_err(format!(
+                    "failed to create the snapshot schema: {error}"
+                ))
+            })?;
+        ctx.register_catalog(
+            SNAPSHOT_CATALOG,
+            snapshot_catalog as Arc<dyn CatalogProvider>,
+        );
+        Ok(Self {
+            ctx,
+            snapshot_schema,
+        })
     }
 
     /// Execute one SQL statement and return the result as pyarrow record batches.
@@ -452,6 +483,129 @@ impl NativeSession {
             })
         })
         .map_err(PyRuntimeError::new_err)
+    }
+
+    /// Register a pinned (time-travel) view of a table for SQL queries.
+    ///
+    /// Exactly one of ``snapshot`` (a snapshot id from
+    /// ``LakeSoulCatalog.create_snapshot``), ``tag`` or ``as_of`` (Unix
+    /// milliseconds) must be given.  The view is registered under a unique
+    /// alias and is readable as an unqualified table name (or via the alias);
+    /// the query sees the partition versions frozen at that point, with the
+    /// regular merge-on-read semantics.  The vector/text index pushdowns are
+    /// disabled for pinned reads because those indexes describe the latest
+    /// files; the distance ordering is still exact.
+    ///
+    /// Drop the alias with :meth:`unregister_table` when done (the Python
+    /// wrapper does this automatically).
+    #[pyo3(signature = (table, namespace = "default".to_string(), snapshot = None, tag = None, as_of = None))]
+    fn register_snapshot_table(
+        &self,
+        py: Python<'_>,
+        table: String,
+        namespace: String,
+        snapshot: Option<i64>,
+        tag: Option<String>,
+        as_of: Option<i64>,
+    ) -> PyResult<String> {
+        let requested = [snapshot.is_some(), tag.is_some(), as_of.is_some()]
+            .into_iter()
+            .filter(|given| *given)
+            .count();
+        if requested != 1 {
+            return Err(PyValueError::new_err(
+                "exactly one of snapshot, tag or as_of must be given",
+            ));
+        }
+        let spec = match (snapshot, tag, as_of) {
+            (Some(snapshot_id), None, None) => {
+                if snapshot_id < 0 {
+                    return Err(PyValueError::new_err(
+                        "snapshot must be a non-negative id",
+                    ));
+                }
+                TableReadSnapshot::SnapshotId(snapshot_id)
+            }
+            (None, Some(tag), None) => {
+                if tag.trim().is_empty() {
+                    return Err(PyValueError::new_err("tag must not be empty"));
+                }
+                TableReadSnapshot::Tag(tag)
+            }
+            (None, None, Some(as_of_ms)) => {
+                if as_of_ms < 0 {
+                    return Err(PyValueError::new_err(
+                        "as_of must be a Unix millisecond timestamp",
+                    ));
+                }
+                TableReadSnapshot::AsOfMs(as_of_ms)
+            }
+            _ => unreachable!("exactly one snapshot selector is validated above"),
+        };
+        let alias = format!(
+            "__lakesoul_snapshot_{}",
+            SNAPSHOT_ALIAS.fetch_add(1, Ordering::Relaxed)
+        );
+        let ctx = Arc::clone(&self.ctx);
+        let snapshot_schema = Arc::clone(&self.snapshot_schema);
+        let alias_for_task = alias.clone();
+        py.detach(move || {
+            GLOBAL_RUNTIME.block_on(async move {
+                let catalog = ctx
+                    .catalog("lakesoul")
+                    .ok_or_else(|| "the lakesoul catalog is not registered".to_string())?;
+                let schema = catalog.schema(&namespace).ok_or_else(|| {
+                    format!("the namespace {namespace:?} is not registered")
+                })?;
+                let provider = schema
+                    .table(&table)
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "failed to resolve the table {namespace}.{table}: {error}"
+                        )
+                    })?
+                    .ok_or_else(|| {
+                        format!("the table {namespace}.{table} is not registered")
+                    })?;
+                let provider = provider
+                    .downcast_ref::<LakeSoulTableProvider>()
+                    .ok_or_else(|| {
+                        format!("{namespace}.{table} is not a LakeSoul table")
+                    })?;
+                let view: Arc<dyn TableProvider> =
+                    Arc::new(provider.snapshot_view(spec));
+                snapshot_schema
+                    .register_table(alias_for_task.clone(), view)
+                    .map_err(|error| {
+                        format!("failed to register the snapshot view: {error}")
+                    })?;
+                Ok::<String, String>(format!(
+                    "\"{SNAPSHOT_CATALOG}\".\"{SNAPSHOT_SCHEMA}\".\"{alias_for_task}\""
+                ))
+            })
+        })
+        .map_err(PyRuntimeError::new_err)
+    }
+
+    /// Remove a view registered by :meth:`register_snapshot_table`.
+    ///
+    /// Accepts either the returned qualified reference or the bare alias.
+    fn unregister_table(&self, name: String) -> PyResult<()> {
+        let alias = name
+            .rsplit('.')
+            .next()
+            .unwrap_or(name.as_str())
+            .trim_matches('"')
+            .to_string();
+        self.snapshot_schema
+            .deregister_table(alias.as_str())
+            .map_err(|error| {
+                PyRuntimeError::new_err(format!(
+                    "failed to unregister the table view: {error}"
+                ))
+            })?;
+        Ok(())
     }
 
     /// Release the session (the underlying context is dropped when Python

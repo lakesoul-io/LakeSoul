@@ -897,6 +897,7 @@ class LakeSoulTable:
         filter: str | None = None,
         columns: Sequence[str] | None = None,
         with_distance: bool = False,
+        table_ref: str | None = None,
     ) -> tuple[str, str, str]:
         """Build the vector-search SQL and return ``(sql, column, metric)``.
 
@@ -970,13 +971,13 @@ class LakeSoulTable:
         select_list = ", ".join(self._sql_identifier(name) for name in selected)
         if with_distance:
             select_list += f", {distance} AS {self._sql_identifier(VECTOR_DISTANCE_COLUMN)}"
-        table_ref = (
+        where = f" WHERE ({filter})" if filter is not None else ""
+        resolved_table_ref = table_ref if table_ref is not None else (
             f'"lakesoul".{self._sql_identifier(self.namespace)}.'
             f"{self._sql_identifier(self.name)}"
         )
-        where = f" WHERE ({filter})" if filter is not None else ""
         sql = (
-            f"SELECT {select_list} FROM {table_ref}{where} "
+            f"SELECT {select_list} FROM {resolved_table_ref}{where} "
             f"ORDER BY {distance} {order} LIMIT {int(top_k)}"
         )
         return sql, column, resolved_metric
@@ -1024,6 +1025,7 @@ class LakeSoulTable:
         session: LakeSoulSession | None = None,
         snapshot: int | None = None,
         tag: str | None = None,
+        as_of: int | None = None,
         to: OutputFormat | None = None,
     ) -> Any:
         """Run a vector search and return the nearest rows as an Arrow table.
@@ -1060,49 +1062,91 @@ class LakeSoulTable:
             with_distance: Also return the distance in
                 ``__lakesoul_vector_distance``.
             session: Session to query; defaults to the catalog's session.
-            snapshot: Reserved for time travel (not supported by the native
-                scanner yet; passing it raises ``NotImplementedError``).
-            tag: Reserved for time travel (same as ``snapshot``).
+            snapshot: Read a pinned snapshot (id from
+                :meth:`LakeSoulCatalog.create_snapshot`) instead of the latest
+                version.  Pinned reads skip the vector index (it describes the
+                latest files) but keep the distance ordering exact.
+            tag: Read the snapshot pinned by a tag.
+            as_of: Read the latest versions committed at or before this Unix
+                millisecond timestamp.
 
         Returns:
             A :class:`pyarrow.Table` ordered by distance.
         """
-        if snapshot is not None or tag is not None:
-            raise NotImplementedError(
-                "snapshot/tag pinned reads need the native scanner's "
-                "snapshot support, which is not available yet; omit the "
-                "argument to read the latest snapshot"
+        selectors = [snapshot is not None, tag is not None, as_of is not None]
+        if sum(selectors) > 1:
+            raise ValueError(
+                "pass at most one of snapshot, tag or as_of"
             )
         if rerank not in ("auto", "exact", "index"):
             raise ValueError(
                 f"rerank must be 'auto', 'exact' or 'index', got {rerank!r}"
             )
         query_session = self._search_session(session)
-        sql, _, _ = self._vector_search_sql(
-            query,
-            column=column,
-            top_k=top_k,
-            metric=metric,
-            filter=filter,
-            columns=columns,
-            with_distance=with_distance,
+        pinned = snapshot is not None or tag is not None or as_of is not None
+        alias: str | None = None
+        if pinned:
+            alias = query_session.register_snapshot(
+                self.name,
+                namespace=self.namespace,
+                snapshot=snapshot,
+                tag=tag,
+                as_of=as_of,
+            )
+        try:
+            sql, _, _ = self._vector_search_sql(
+                query,
+                column=column,
+                top_k=top_k,
+                metric=metric,
+                filter=filter,
+                columns=columns,
+                with_distance=with_distance,
+                table_ref=alias,
+            )
+            options: dict[str, object] = {}
+            if rerank != "auto":
+                options["rerank"] = rerank
+            if nprobe is not None:
+                options["nprobe"] = int(nprobe)
+            if exact_overfetch is not None:
+                options["exact_overfetch"] = int(exact_overfetch)
+            if options:
+                query_session.set_vector_search(**options)
+            return convert(query_session.sql(sql), to)
+        finally:
+            if alias is not None:
+                query_session.unregister(alias)
+
+    @staticmethod
+    def _identifier_pattern(name: str) -> str:
+        escaped = re.escape(str(name))
+        return f'(?:"{escaped}"|{escaped})'
+
+    def _rewrite_table_reference(self, sql: str, alias: str) -> str:
+        """Point this table's references in ``sql`` at a pinned view.
+
+        Both forms are accepted: the fully-qualified quoted name produced by
+        :meth:`to_sql` and a plain ``lakesoul.<namespace>.<table>`` spelling.
+        """
+        pattern = re.compile(
+            self._identifier_pattern("lakesoul")
+            + r"\s*\.\s*"
+            + self._identifier_pattern(self.namespace)
+            + r"\s*\.\s*"
+            + self._identifier_pattern(self.name),
+            re.IGNORECASE,
         )
-        options: dict[str, object] = {}
-        if rerank != "auto":
-            options["rerank"] = rerank
-        if nprobe is not None:
-            options["nprobe"] = int(nprobe)
-        if exact_overfetch is not None:
-            options["exact_overfetch"] = int(exact_overfetch)
-        if options:
-            query_session.set_vector_search(**options)
-        return convert(query_session.sql(sql), to)
+        return pattern.sub(lambda _match: alias, sql)
 
     def sql(
         self,
         sql: str,
         *,
         session: LakeSoulSession | None = None,
+        snapshot: int | None = None,
+        tag: str | None = None,
+        as_of: int | None = None,
         to: OutputFormat | None = None,
     ) -> Any:
         """Run an arbitrary lakehouse SQL query against this table's catalog.
@@ -1115,9 +1159,27 @@ class LakeSoulTable:
             )
 
         The statement may join other LakeSoul tables, aggregate, filter and
-        project freely; it runs on the same engine as :meth:`search`.
+        project freely; it runs on the same engine as :meth:`search`.  Pass
+        ``snapshot``/``tag``/``as_of`` to run the statement against a pinned
+        version of this table: every occurrence of this table's name is
+        rewritten to a time-travel view for the duration of the query.
         """
-        return self._search_session(session).sql(sql, to=to)
+        query_session = self._search_session(session)
+        if snapshot is not None or tag is not None or as_of is not None:
+            alias = query_session.register_snapshot(
+                self.name,
+                namespace=self.namespace,
+                snapshot=snapshot,
+                tag=tag,
+                as_of=as_of,
+            )
+            try:
+                return query_session.sql(
+                    self._rewrite_table_reference(sql, alias), to=to
+                )
+            finally:
+                query_session.unregister(alias)
+        return query_session.sql(sql, to=to)
 
     def search_batch(
         self,

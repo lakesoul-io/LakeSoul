@@ -20,7 +20,7 @@ use url::Url;
 
 use lakesoul_metadata_proto::entity::{
     self, CommitOp, DataCommitInfo, JniWrapper, MetaInfo, Namespace, PartitionInfo,
-    TableInfo, TableNameId, TablePathId,
+    SnapshotCommitInfo, SnapshotTagInfo, TableInfo, TableNameId, TablePathId,
 };
 
 use crate::error::{LakeSoulMetaDataError, Result};
@@ -1894,6 +1894,95 @@ impl MetaDataClient {
             Ok(wrapper) => Ok(wrapper.partition_info.into_iter().next()),
             Err(e) => Err(e),
         }
+    }
+
+    /// Read the partition commits frozen into a snapshot.
+    ///
+    /// A snapshot stores `(partition_desc, version, commit_id)` rows; reading
+    /// that version of every partition gives the table as it was when the
+    /// snapshot was created (see [`Self::get_partition_infos_at_snapshot`]).
+    pub async fn get_snapshot_commits(
+        &self,
+        table_id: &str,
+        snapshot_id: i64,
+    ) -> Result<Vec<SnapshotCommitInfo>> {
+        match self
+            .execute_query(
+                DaoType::ListSnapshotCommitsBySnapshot as i32,
+                [table_id, &snapshot_id.to_string()].join(PARAM_DELIM),
+            )
+            .await
+        {
+            Ok(wrapper) => Ok(wrapper.snapshot_commit_info),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Resolve a tag to the snapshot id it pins.
+    pub async fn get_tag_snapshot_id(
+        &self,
+        table_id: &str,
+        tag: &str,
+    ) -> Result<Option<i64>> {
+        match self
+            .execute_query(
+                DaoType::SelectTagByTableIdAndTag as i32,
+                [table_id, tag].join(PARAM_DELIM),
+            )
+            .await
+        {
+            Ok(wrapper) => Ok(wrapper
+                .snapshot_tag_info
+                .into_iter()
+                .next()
+                .map(|info: SnapshotTagInfo| info.snapshot_id)),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Partition versions frozen into a snapshot.
+    ///
+    /// The returned [`PartitionInfo`] rows are the historical rows of that
+    /// exact version, so a reader built from them sees the table as of the
+    /// snapshot instead of the latest commit.
+    pub async fn get_partition_infos_at_snapshot(
+        &self,
+        table_id: &str,
+        snapshot_id: i64,
+    ) -> Result<Vec<PartitionInfo>> {
+        let commits = self.get_snapshot_commits(table_id, snapshot_id).await?;
+        let mut partitions = Vec::with_capacity(commits.len());
+        for commit in commits {
+            if let Some(info) = self
+                .get_partition_info_by_version(
+                    table_id,
+                    &commit.partition_desc,
+                    commit.version,
+                )
+                .await?
+            {
+                partitions.push(info);
+            }
+        }
+        Ok(partitions)
+    }
+
+    /// Partition versions pinned by a tag's snapshot.
+    pub async fn get_partition_infos_by_tag(
+        &self,
+        table_id: &str,
+        tag: &str,
+    ) -> Result<Vec<PartitionInfo>> {
+        let snapshot_id = self
+            .get_tag_snapshot_id(table_id, tag)
+            .await?
+            .ok_or_else(|| {
+                LakeSoulMetaDataError::NotFound(format!(
+                    "tag '{tag}' does not exist for table '{table_id}'"
+                ))
+            })?;
+        self.get_partition_infos_at_snapshot(table_id, snapshot_id)
+            .await
     }
 
     async fn get_partition_versions_in_range(

@@ -59,7 +59,7 @@ use lakesoul_io::helpers::{
 };
 use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata::utils::qualify_path;
-use lakesoul_metadata_proto::entity::TableInfo;
+use lakesoul_metadata_proto::entity::{PartitionInfo, TableInfo};
 use rootcause::compat::boxed_error::IntoBoxedError;
 use rootcause::prelude::ResultExt;
 use rootcause::report;
@@ -197,6 +197,25 @@ struct FormatScanGroup {
 ///
 /// 3. Projection pushdown for formats that support
 ///
+/// A pinned read view of a LakeSoul table.
+///
+/// A plain provider always reads the latest committed partition versions.  A
+/// provider built with a `TableReadSnapshot` resolves the partition versions
+/// from that snapshot (or tag, or wall-clock timestamp) instead, so scans see
+/// the table as it was at that point.  Pinned reads intentionally skip the
+/// vector/text index pushdowns: those indexes describe the latest files, not
+/// the pinned ones, so the scan falls back to the regular merge-on-read path.
+#[derive(Clone, Debug)]
+pub enum TableReadSnapshot {
+    /// A snapshot id created by `table_snapshot` / `create_snapshot`.
+    SnapshotId(i64),
+    /// A tag that pins a snapshot id.
+    Tag(String),
+    /// The latest partition versions committed at or before this Unix
+    /// millisecond timestamp.
+    AsOfMs(i64),
+}
+
 #[derive(Debug)]
 pub struct LakeSoulTableProvider {
     pub(crate) listing_options: ListingOptions,
@@ -222,8 +241,75 @@ pub struct LakeSoulTableProvider {
     /// `text_index_columns` property (empty when the table has none).
     pub(crate) text_index_configs: Vec<crate::text_index::TextIndexTableConfig>,
     pub(crate) format_registry: Arc<LakeSoulFormatRegistry>,
+    /// `Some` for a pinned read view (snapshot / tag / as-of timestamp).
+    pub(crate) read_snapshot: Option<TableReadSnapshot>,
 }
 impl LakeSoulTableProvider {
+    /// Build a copy of this provider that reads a pinned snapshot.
+    ///
+    /// The copy shares the table metadata, options and index configuration;
+    /// only the partition-version resolution changes.  Use it for time travel:
+    /// returning a copy keeps the provider in the catalog (latest) untouched.
+    pub fn snapshot_view(&self, snapshot: TableReadSnapshot) -> Self {
+        Self {
+            listing_options: self.listing_options.clone(),
+            listing_table_paths: self.listing_table_paths.clone(),
+            client: Arc::clone(&self.client),
+            table_info: Arc::clone(&self.table_info),
+            logical_schema: Arc::clone(&self.logical_schema),
+            scan_schema: Arc::clone(&self.scan_schema),
+            file_schema: Arc::clone(&self.file_schema),
+            primary_keys: self.primary_keys.clone(),
+            range_partitions: self.range_partitions.clone(),
+            pushdown_filters: self.pushdown_filters,
+            io_config: self.io_config.clone(),
+            vector_index_configs: self.vector_index_configs.clone(),
+            text_index_configs: self.text_index_configs.clone(),
+            format_registry: Arc::clone(&self.format_registry),
+            read_snapshot: Some(snapshot),
+        }
+    }
+
+    /// Partition versions this provider reads: pinned snapshot or latest.
+    async fn read_partition_info(
+        &self,
+    ) -> std::result::Result<
+        Arc<Vec<PartitionInfo>>,
+        lakesoul_metadata::LakeSoulMetaDataError,
+    > {
+        let Some(snapshot) = &self.read_snapshot else {
+            return crate::catalog::metadata_cache::partition_info(
+                crate::catalog::metadata_cache::partition_key(
+                    &self.client,
+                    self.table_id(),
+                ),
+                self.client.get_all_partition_info(self.table_id()),
+            )
+            .await;
+        };
+        let infos = match snapshot {
+            TableReadSnapshot::AsOfMs(as_of_ms) => {
+                let as_of_ms = *as_of_ms;
+                self.client
+                    .get_all_partition_info_as_of(self.table_id(), as_of_ms)
+                    .await?
+            }
+            TableReadSnapshot::SnapshotId(snapshot_id) => {
+                let snapshot_id = *snapshot_id;
+                self.client
+                    .get_partition_infos_at_snapshot(self.table_id(), snapshot_id)
+                    .await?
+            }
+            TableReadSnapshot::Tag(tag) => {
+                let tag = tag.clone();
+                self.client
+                    .get_partition_infos_by_tag(self.table_id(), &tag)
+                    .await?
+            }
+        };
+        Ok(Arc::new(infos))
+    }
+
     fn needs_output_projection(
         target_schema: &SchemaRef,
         merged_schema: &SchemaRef,
@@ -462,6 +548,7 @@ impl LakeSoulTableProvider {
             vector_index_configs,
             text_index_configs,
             format_registry,
+            read_snapshot: None,
         })
     }
 
@@ -705,6 +792,7 @@ impl LakeSoulTableProvider {
             vector_index_configs,
             text_index_configs,
             format_registry,
+            read_snapshot: None,
         })
     }
 
@@ -823,15 +911,10 @@ impl LakeSoulTableProvider {
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         let t_listing = std::time::Instant::now();
         let t_phase = std::time::Instant::now();
-        let all_partition_info = crate::catalog::metadata_cache::partition_info(
-            crate::catalog::metadata_cache::partition_key(
-                &self.client,
-                self.table_id(),
-            ),
-            self.client.get_all_partition_info(self.table_id()),
-        )
-        .await
-        .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
+        let all_partition_info = self
+            .read_partition_info()
+            .await
+            .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
         let meta_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
         let t_phase = std::time::Instant::now();
         let total_partition_count = all_partition_info.len();
@@ -924,15 +1007,10 @@ impl LakeSoulTableProvider {
             .runtime_env()
             .object_store(url)
             .attach(format!("{:?}", ctx.runtime_env().object_store_registry))?;
-        let all_partition_info = crate::catalog::metadata_cache::partition_info(
-            crate::catalog::metadata_cache::partition_key(
-                &self.client,
-                self.table_id(),
-            ),
-            self.client.get_all_partition_info(self.table_id()),
-        )
-        .await
-        .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
+        let all_partition_info = self
+            .read_partition_info()
+            .await
+            .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
         let all_partition_info = (*all_partition_info).clone();
         let prune_partition_info = prune_partitions(
             all_partition_info,
@@ -1855,15 +1933,25 @@ impl TableProvider for LakeSoulTableProvider {
         // Both index pushdowns are optimizations: they only need the
         // partition-pruning half of the filters to enumerate candidate work
         // units, so they receive `classified.partition_pruning` below.
-        let vector_search =
-            crate::udf::vector_search_marker::parse_vector_search_request(filters);
+        // The vector/text indexes describe the latest files; a pinned read
+        // view must not use them, or it could return rows that only exist in
+        // a newer version.  The scan then falls back to merge-on-read.
+        let index_pushdown_allowed = self.read_snapshot.is_none();
+        let vector_search = if index_pushdown_allowed {
+            crate::udf::vector_search_marker::parse_vector_search_request(filters)
+        } else {
+            None
+        };
         let filters: Vec<Expr> = filters
             .iter()
             .filter(|f| !crate::udf::vector_search_marker::is_marker_expr(f))
             .cloned()
             .collect();
-        let text_search =
-            crate::udf::text_search_marker::parse_text_search_request(&filters);
+        let text_search = if index_pushdown_allowed {
+            crate::udf::text_search_marker::parse_text_search_request(&filters)
+        } else {
+            None
+        };
         let filters: Vec<Expr> = filters
             .iter()
             .filter(|f| !crate::udf::text_search_marker::is_marker_expr(f))
