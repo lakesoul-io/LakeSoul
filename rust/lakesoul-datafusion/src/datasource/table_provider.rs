@@ -1248,6 +1248,34 @@ impl LakeSoulTableProvider {
             self.file_schema.metadata().clone(),
         ));
 
+        // The pushdown rule matched a `Filter` between this scan and the
+        // distance sort; compile its predicate here so the scan can evaluate
+        // it on its candidates and widen the probe until enough rows match.
+        // A predicate that cannot be compiled over the data columns (for
+        // example one touching a partition column) leaves the reader path in
+        // charge.
+        let filter = match request.filter.as_ref() {
+            Some(predicate) => {
+                let df_schema = datafusion::common::DFSchema::try_from(
+                    Arc::clone(&projected_file_schema),
+                )
+                .map_err(DataFusionError::from)
+                .or_else(|_| {
+                    datafusion::common::DFSchema::try_from(Arc::clone(&merged_schema))
+                        .map_err(DataFusionError::from)
+                });
+                df_schema.ok().and_then(|schema| {
+                    datafusion::physical_expr::create_physical_expr(
+                        predicate,
+                        &schema,
+                        session_state.execution_props(),
+                        &PhysicalPlanningContext::default(),
+                    )
+                    .ok()
+                })
+            }
+            None => None,
+        };
         let exec = crate::datasource::file_format::LakeSoulVectorSearchExec::try_new(
             merged_schema.clone(),
             projected_file_schema,
@@ -1259,6 +1287,7 @@ impl LakeSoulTableProvider {
             self.io_config.object_store_options().clone(),
             self.io_config.cdc_column(),
             request,
+            filter,
             limit,
             self.client.vector_index_catalog(),
         )?;

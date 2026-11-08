@@ -78,6 +78,10 @@ pub(crate) struct VectorSearchSpec {
     /// negated inner product, which ranks in the canonical order while the
     /// expression sorts ascending.
     pub plan_sort_asc: bool,
+    /// Predicate of the `Filter` node(s) between the scan and the sort, when
+    /// the plan has any.  The scan evaluates it on its candidates so it can
+    /// widen the probe until it found enough matching rows.
+    pub filter: Option<Expr>,
 }
 
 /// One weighted column of a detected vector search.
@@ -188,6 +192,7 @@ fn detect(
 
     let mut current = Arc::clone(&sort.input);
     let mut saw_filter = false;
+    let mut filter_predicate: Option<Expr> = None;
     loop {
         match current.as_ref() {
             LogicalPlan::Projection(projection) => {
@@ -195,6 +200,16 @@ fn detect(
             }
             LogicalPlan::Filter(filter) => {
                 saw_filter = true;
+                filter_predicate = Some(match filter_predicate {
+                    Some(previous) => Expr::BinaryExpr(
+                        datafusion::logical_expr::BinaryExpr::new(
+                            Box::new(previous),
+                            datafusion::logical_expr::Operator::And,
+                            Box::new(filter.predicate.clone()),
+                        ),
+                    ),
+                    None => filter.predicate.clone(),
+                });
                 current = Arc::clone(&filter.input);
             }
             LogicalPlan::TableScan(ts) => {
@@ -253,6 +268,7 @@ fn detect(
                         narrow,
                         sort_key,
                         plan_sort_asc: sort_expr.asc,
+                        filter: filter_predicate,
                     },
                     current,
                 ));
@@ -633,6 +649,7 @@ fn rewrite_scan(scan: &LogicalPlan, spec: &VectorSearchSpec) -> LogicalPlan {
             spec.order_by,
             spec.overfetch,
             spec.narrow,
+            spec.filter.as_ref(),
         )
     } else {
         // Several columns travel as one JSON payload; the reader intersects
@@ -659,6 +676,7 @@ fn rewrite_scan(scan: &LogicalPlan, spec: &VectorSearchSpec) -> LogicalPlan {
             spec.order_by,
             spec.overfetch,
             spec.narrow,
+            spec.filter.as_ref(),
         )
     };
     filters.push(marker);

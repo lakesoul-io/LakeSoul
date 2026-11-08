@@ -2687,6 +2687,145 @@ async fn sql_vector_search_projects_extra_columns() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_filter_narrows_probe() {
+    // A `WHERE` between the scan and the distance sort must not fall back to
+    // the reader's candidate scan: the scan evaluates the predicate on its
+    // candidates and widens the probe until it found enough matching rows, so
+    // a selective filter still returns the full limit.
+    use crate::datasource::file_format::vector_search_exec::FILTERED_CANDIDATE_RUNS;
+    use crate::tests::create_table_with_vector_index;
+    use std::sync::atomic::Ordering;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_filtered_probe";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema_with_tag())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    let n = 400u64;
+    let ids: Vec<u64> = (0..n).collect();
+    let vectors = seeded_vectors(n as usize, 7);
+    let tags: Vec<i64> = ids.iter().map(|id| *id as i64 * 7 + 1).collect();
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(make_batch_with_tag(&ids, &vectors, &tags))
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let ctx =
+        crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    ctx.sql("SET lakesoul_vector_search.nprobe = 4")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    ctx.sql("SET lakesoul_vector_search.exact_overfetch = 1")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // ~28% selectivity: the filter keeps 114 of the 400 rows.
+    let sql = format!(
+        "select id, tag from \"lakesoul\".default.{table_name} \
+         where tag > 2000 order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let before = FILTERED_CANDIDATE_RUNS.load(Ordering::Relaxed);
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let after = FILTERED_CANDIDATE_RUNS.load(Ordering::Relaxed);
+    assert!(
+        after > before,
+        "a filtered exact query must take the candidate-probe path"
+    );
+    let mut returned: Vec<(u64, i64)> = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .expect("id column");
+        let tags = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .expect("tag column");
+        for (id, tag) in ids.values().iter().zip(tags.values().iter()) {
+            assert_eq!(*tag, *id as i64 * 7 + 1);
+            assert!(*tag > 2000, "filter was not applied to id {id}");
+            returned.push((*id, *tag));
+        }
+    }
+    assert_eq!(returned.len(), 10, "the filter must not shrink the limit");
+    let filtered: Vec<(u64, &Vec<f32>)> = ids
+        .iter()
+        .zip(vectors.iter())
+        .filter(|(id, _)| **id as i64 * 7 + 1 > 2000)
+        .map(|(id, vector)| (*id, vector))
+        .collect();
+    let expected: Vec<u64> = {
+        let vectors_only: Vec<Vec<f32>> =
+            filtered.iter().map(|(_, vector)| (*vector).clone()).collect();
+        let top = brute_force_topk(&vectors_only, &query, 10);
+        top.iter()
+            .map(|position| filtered[*position as usize].0)
+            .collect()
+    };
+    let hits = returned
+        .iter()
+        .filter(|(id, _)| expected.contains(id))
+        .count();
+    assert!(
+        hits >= 8,
+        "filtered recall {hits}/10, returned={returned:?} expected={expected:?}"
+    );
+
+    // Very selective filter (14 matching rows): the probe has to widen until
+    // it finds them instead of returning a short page.
+    let sql = format!(
+        "select id, tag from \"lakesoul\".default.{table_name} \
+         where tag > 2700 order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+    assert_eq!(
+        rows, 10,
+        "a 3.5% selective filter must still fill the limit"
+    );
+
+    // A filter that matches nothing returns nothing.
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         where tag < 0 order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+    assert_eq!(rows, 0, "a filter matching no row must return no row");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_vector_batch_ip_metric() {
     // The snapshot batch entry must support the inner-product metric in both
     // its index-only and its exact mode, with the same ranking direction as

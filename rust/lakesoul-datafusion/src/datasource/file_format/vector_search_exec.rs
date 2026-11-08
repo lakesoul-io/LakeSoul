@@ -125,6 +125,13 @@ static SNAPSHOT_CACHE: LazyLock<Mutex<Vec<Arc<CachedSnapshot>>>> =
 pub(crate) static EXACT_DIRECT_RUNS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// Number of filtered queries served by the candidate probe (test only):
+/// tests assert that a `WHERE` between the scan and the sort takes this path
+/// instead of the reader's candidate scan.
+#[cfg(test)]
+pub(crate) static FILTERED_CANDIDATE_RUNS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 fn snapshot_cache_enabled() -> bool {
     !std::env::var("LAKESOUL_VECTOR_SNAPSHOT_CACHE").is_ok_and(|value| value == "0")
 }
@@ -181,6 +188,12 @@ pub struct LakeSoulVectorSearchExec {
     cdc_column: String,
     /// Vector search parameters.
     vector_search: VectorSearchRequest,
+    /// Physical form of the `Filter` predicate the plan has between this scan
+    /// and the sort, when the pushdown rule matched one.  The filtered fast
+    /// path evaluates it on its candidates to widen the probe until it found
+    /// enough matching rows; the plan's own filter above then passes them
+    /// through.
+    filter: Option<Arc<dyn PhysicalExpr>>,
     /// `LIMIT` of the plan above, when it has one: the scan may then keep only
     /// the rows that limit can return and defer the payload columns of the
     /// rest (`vector_search.deferred_payload`).
@@ -232,6 +245,7 @@ impl LakeSoulVectorSearchExec {
         object_store_options: SecretMap,
         cdc_column: String,
         vector_search: VectorSearchRequest,
+        filter: Option<Arc<dyn PhysicalExpr>>,
         fetch_limit: Option<usize>,
         catalog: VectorCatalog,
     ) -> DFResult<Self> {
@@ -246,6 +260,7 @@ impl LakeSoulVectorSearchExec {
             object_store_options,
             cdc_column,
             vector_search,
+            filter,
             fetch_limit,
             catalog,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -305,6 +320,7 @@ impl LakeSoulVectorSearchExec {
         parallelism: usize,
         read_schema: &SchemaRef,
         filters: Vec<Expr>,
+        search: bool,
     ) -> DFResult<LakeSoulIOConfig> {
         let GroupFiles {
             file_uris,
@@ -320,6 +336,9 @@ impl LakeSoulVectorSearchExec {
         let table_prefix = table_prefix.clone();
         let mut seen_prefixes: std::collections::HashSet<&str> =
             std::collections::HashSet::new();
+        // A pure payload read (`search = false`) skips the shard wiring below:
+        // the caller pinned the rows with primary-key filters, so the reader
+        // must not restrict them to its own vector-search candidates again.
         let mut resolved_shards = Vec::with_capacity(index_prefixes.len());
         let mut leases = Vec::with_capacity(index_prefixes.len());
         for (index_prefix, _bucket) in index_prefixes {
@@ -417,6 +436,7 @@ impl LakeSoulVectorSearchExec {
             );
         }
 
+        if search {
         // Exact mode fetches extra candidates per bucket so the global sort
         // above has margin against the approximate within-shard ranking;
         // index-only mode needs each bucket's top-k only (with a small margin
@@ -478,6 +498,7 @@ impl LakeSoulVectorSearchExec {
             // candidate row and the vector column drops out of the scan.
             builder = builder
                 .with_option(OPTION_KEY_VECTOR_SEARCH_ORDER_BY, "true".to_string());
+        }
         }
         Ok(builder.build())
     }
@@ -623,6 +644,20 @@ impl LakeSoulVectorSearchExec {
         nprobe: usize,
         parallelism: usize,
     ) -> DFResult<Vec<LakeSoulIOConfig>> {
+        self.build_configs_with(read_schema, filters, nprobe, parallelism, true)
+    }
+
+    /// [`Self::build_configs`] with control over whether the reader searches
+    /// the vector index (`search = false` reads exactly the rows the filters
+    /// selected, for the filtered fast path).
+    fn build_configs_with(
+        &self,
+        read_schema: &SchemaRef,
+        filters: Vec<datafusion::logical_expr::Expr>,
+        nprobe: usize,
+        parallelism: usize,
+        search: bool,
+    ) -> DFResult<Vec<LakeSoulIOConfig>> {
         let groups = self
             .file_groups
             .iter()
@@ -719,6 +754,7 @@ impl LakeSoulVectorSearchExec {
                 parallelism,
                 read_schema,
                 filters.clone(),
+                search,
             )?;
             configs.push(config);
         }
@@ -1236,6 +1272,228 @@ impl LakeSoulVectorSearchExec {
             );
         }
         batches
+    }
+
+    /// True when the filtered fast path can run: the plan has a filter, the
+    /// search is a single-column exact re-rank and the scan's rows can be
+    /// re-read by primary key (no CDC tombstones, no partition columns whose
+    /// values the predicate might reference).
+    fn filtered_fast_path_eligible(&self) -> bool {
+        if std::env::var("LAKESOUL_VECTOR_FILTER_EXACT").is_ok_and(|value| value == "0") {
+            return false;
+        }
+        let Some(column) = self.vector_search.columns.first() else {
+            return false;
+        };
+        let stored_f32 = self
+            .file_schema
+            .field_with_name(&column.column)
+            .map(|field| is_float_list(field.data_type()))
+            .unwrap_or(false);
+        self.filter.is_some()
+            && self.vector_search.is_single()
+            && !self.vector_search.order_by
+            && self.cdc_column.is_empty()
+            && self.partition_cols.is_empty()
+            && self.exact_ranking_matches_sort()
+            && self.keep_rows() > 0
+            && stored_f32
+    }
+
+    /// Serve a filtered exact query from the index candidates.
+    ///
+    /// Returns `None` whenever the candidates cannot be re-read (no coverage
+    /// proof) or the predicate cannot be evaluated here; the caller then runs
+    /// the regular reader path.
+    fn try_filtered_batches(
+        &self,
+        context: &TaskContext,
+        nprobe: usize,
+        parallelism: usize,
+    ) -> DFResult<Option<Vec<arrow::record_batch::RecordBatch>>> {
+        if !self.filtered_fast_path_eligible() {
+            return Ok(None);
+        }
+        let store = context
+            .runtime_env()
+            .object_store(self.object_store_url.clone())
+            .map_err(|error| {
+                DataFusionError::External(
+                    rootcause::report!("failed to get object store: {}", error)
+                        .into_boxed_error(),
+                )
+            })?;
+        tokio::task::block_in_place(|| {
+            lakesoul_io::session::GLOBAL_RUNTIME
+                .block_on(self.filtered_batches_inner(&store, nprobe, parallelism))
+        })
+    }
+
+    /// Async body of [`Self::try_filtered_batches`].
+    ///
+    /// The plan asks for `limit` rows but the filter sits above the scan, so
+    /// the candidate set has to yield at least `keep_rows` *matching* rows.
+    /// Probe the candidates, read their rows through the reader, evaluate the
+    /// predicate here and widen the probe (×4 candidates per round) until
+    /// enough rows match or the env-configured cap is reached.
+    async fn filtered_batches_inner(
+        &self,
+        store: &Arc<dyn object_store::ObjectStore>,
+        nprobe: usize,
+        parallelism: usize,
+    ) -> DFResult<Option<Vec<arrow::record_batch::RecordBatch>>> {
+        let Some(filter) = self.filter.as_ref() else {
+            return Ok(None);
+        };
+        #[cfg(test)]
+        FILTERED_CANDIDATE_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
+        let t_inner = std::time::Instant::now();
+        let column = &self.vector_search.columns[0];
+        let metric = column.metric.clone();
+        let layout = KeyLayout::from_schema(self.file_schema.as_ref(), &self.primary_keys)
+            .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let codec = KeyCodec::new(layout.clone())
+            .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let expected_key_kind = layout.kind_hash();
+        let query = lakesoul_io::vector::search::parse_query_vector(
+            &column.query_csv,
+            None,
+        )
+        .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let groups = self
+            .file_groups
+            .iter()
+            .map(|group| self.group_files(group))
+            .collect::<DFResult<Vec<_>>>()?;
+        let (snapshot, _, _) =
+            match self.expected_snapshot(store, &groups, expected_key_kind).await? {
+                Some(resolved) => resolved,
+                None => return Ok(None),
+            };
+        let shards: Vec<LoadedShard> =
+            snapshot.shards.iter().map(|slot| slot.shard.clone()).collect();
+        let target = self.keep_rows().max(1);
+        let mut overfetch = std::env::var("LAKESOUL_VECTOR_FILTER_OVERFETCH")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(4)
+            .max(1);
+        let max_overfetch = std::env::var("LAKESOUL_VECTOR_FILTER_MAX_OVERFETCH")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(64)
+            .max(overfetch);
+        let span = tracing::Span::current();
+        loop {
+            let candidates_per_bucket = self.vector_search.top_k.max(1) * overfetch;
+            let per_shard =
+                probe_shards(&shards, &query, candidates_per_bucket, nprobe, parallelism)
+                    .await?;
+            let descending = !metric.eq_ignore_ascii_case("L2");
+            let mut best: std::collections::HashMap<IndexKey, f32> =
+                std::collections::HashMap::new();
+            for hits in per_shard.into_iter().flatten() {
+                best.entry(hits.key)
+                    .and_modify(|score| {
+                        *score = if descending {
+                            score.max(hits.score)
+                        } else {
+                            score.min(hits.score)
+                        }
+                    })
+                    .or_insert(hits.score);
+            }
+            if best.is_empty() {
+                return Ok(Some(Vec::new()));
+            }
+            let mut keys: Vec<IndexKey> = best.into_keys().collect();
+            keys.sort();
+            let decoded = codec
+                .decode(&keys)
+                .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+            // The predicate is evaluated on rows read from the files, so the
+            // filters are the candidates' primary keys.
+            let mut pk_fields = Vec::with_capacity(self.primary_keys.len());
+            let mut pk_columns = Vec::with_capacity(self.primary_keys.len());
+            for key in &self.primary_keys {
+                let position = self
+                    .primary_keys
+                    .iter()
+                    .position(|candidate| candidate == key)
+                    .unwrap_or(0);
+                let field = self.file_schema.field_with_name(key)?;
+                pk_fields.push(field.clone());
+                pk_columns.push(Arc::clone(&decoded[position]));
+            }
+            let pk_batch = arrow::record_batch::RecordBatch::try_new(
+                Arc::new(Schema::new(pk_fields)),
+                pk_columns,
+            )?;
+            let filters = self.pk_filters(&pk_batch)?;
+            let configs = self.build_configs_with(
+                &self.file_schema,
+                filters,
+                nprobe,
+                parallelism,
+                false,
+            )?;
+            let rows = self.read_configs(configs, &span, profile)?;
+            let mut passing: Vec<arrow::record_batch::RecordBatch> = Vec::new();
+            let mut passing_rows = 0usize;
+            for batch in rows {
+                if batch.num_rows() == 0 {
+                    continue;
+                }
+                let predicate = match filter.evaluate(&batch) {
+                    Ok(value) => value.into_array(batch.num_rows())?,
+                    // A predicate the scan cannot evaluate here (e.g. one
+                    // referencing a partition column): use the reader path.
+                    Err(_) => return Ok(None),
+                };
+                let Some(predicate) = predicate
+                    .as_any()
+                    .downcast_ref::<arrow::array::BooleanArray>()
+                else {
+                    return Ok(None);
+                };
+                let kept = arrow::compute::filter_record_batch(&batch, predicate)?;
+                passing_rows += kept.num_rows();
+                if kept.num_rows() > 0 {
+                    passing.push(kept);
+                }
+            }
+            let exhausted = overfetch >= max_overfetch;
+            if passing_rows >= target || exhausted {
+                let ranked = if passing.is_empty() {
+                    Vec::new()
+                } else {
+                    rank_by_exact_distance(&self.vector_search, &metric, passing)?
+                };
+                let kept = if ranked.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![take_first_rows(&ranked, target)?]
+                };
+                if profile {
+                    debug!(
+                        overfetch,
+                        candidates = keys.len(),
+                        passing_rows,
+                        kept_rows =
+                            kept.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+                        total_ms = t_inner.elapsed().as_secs_f64() * 1000.0,
+                        "vector filtered exact profile"
+                    );
+                }
+                return kept
+                    .iter()
+                    .map(|batch| project_batch(batch, &self.schema))
+                    .collect::<DFResult<Vec<_>>>()
+                    .map(Some);
+            }
+            overfetch = overfetch.saturating_mul(4).min(max_overfetch);
+        }
     }
 
     /// Probe the shards directly, load the candidates' stored vectors from the
@@ -1976,6 +2234,30 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
                     batches = batches.len(),
                     rows = batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
                     "vector search served from the index keys"
+                );
+            }
+            let stream = futures::stream::iter(batches.into_iter().map(Ok));
+            let stream = Box::pin(RecordBatchStreamAdapter::new(
+                Arc::clone(&self.schema),
+                stream,
+            )) as SendableRecordBatchStream;
+            drop(entered);
+            return Ok(instrument_record_batch_stream(
+                stream,
+                span,
+                "vector_search",
+            ));
+        }
+        // A filter between the scan and the sort: probe the candidates, apply
+        // the predicate here and widen the probe until enough rows match, so
+        // the plan above sees the top-k matches instead of the top-k
+        // candidates that happen to match.
+        if let Some(batches) = self.try_filtered_batches(&context, nprobe, parallelism)? {
+            if profile {
+                debug!(
+                    batches = batches.len(),
+                    rows = batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+                    "vector search served from the filtered candidate probe"
                 );
             }
             let stream = futures::stream::iter(batches.into_iter().map(Ok));

@@ -65,6 +65,11 @@ pub struct VectorSearchRequest {
     /// The scan can then read the payload columns for those rows only
     /// (deferred payload read).
     pub narrow: bool,
+    /// Predicate of the `Filter` node between the scan and the sort, when the
+    /// pushdown rule matched one.  The scan evaluates it on its candidates so
+    /// it can widen the probe until enough *matching* rows were found; the
+    /// plan's own `FilterExec` above then passes them through unchanged.
+    pub filter: Option<Expr>,
 }
 
 impl VectorSearchRequest {
@@ -86,6 +91,7 @@ impl VectorSearchRequest {
 }
 
 /// Build the marker expression appended to a `TableScan.filters` list.
+#[allow(clippy::too_many_arguments)]
 pub fn marker_expr(
     vec_column: &str,
     query: &[f32],
@@ -94,6 +100,7 @@ pub fn marker_expr(
     order_by: bool,
     overfetch: usize,
     narrow: bool,
+    filter: Option<&Expr>,
 ) -> Expr {
     let query_csv = query
         .iter()
@@ -124,7 +131,10 @@ pub fn marker_expr(
                 None,
             ),
             Expr::Literal(datafusion::common::ScalarValue::Boolean(Some(narrow)), None),
-        ],
+        ]
+        .into_iter()
+        .chain(filter.cloned())
+        .collect(),
     ))
 }
 
@@ -136,6 +146,7 @@ pub fn multi_marker_expr(
     order_by: bool,
     overfetch: usize,
     narrow: bool,
+    filter: Option<&Expr>,
 ) -> Expr {
     let payload = serde_json::to_string(columns).unwrap_or_else(|_| "[]".to_string());
     Expr::ScalarFunction(ScalarFunction::new_udf(
@@ -155,7 +166,10 @@ pub fn multi_marker_expr(
                 None,
             ),
             Expr::Literal(datafusion::common::ScalarValue::Boolean(Some(narrow)), None),
-        ],
+        ]
+        .into_iter()
+        .chain(filter.cloned())
+        .collect(),
     ))
 }
 
@@ -182,7 +196,7 @@ pub fn parse_vector_search_request(filters: &[Expr]) -> Option<VectorSearchReque
             if call.func.name() == VECTOR_SEARCH_MULTI_MARKER {
                 return parse_multi_marker(call);
             }
-            if call.args.len() != 7 {
+            if call.args.len() != 7 && call.args.len() != 8 {
                 return None;
             }
             let vec_column = match &call.args[0] {
@@ -238,13 +252,14 @@ pub fn parse_vector_search_request(filters: &[Expr]) -> Option<VectorSearchReque
                 order_by,
                 overfetch,
                 narrow,
+                filter: call.args.get(7).cloned(),
             })
         })
 }
 
 /// Parse the JSON payload of the multi-column marker.
 fn parse_multi_marker(call: &ScalarFunction) -> Option<VectorSearchRequest> {
-    if call.args.len() != 5 {
+    if call.args.len() != 5 && call.args.len() != 6 {
         return None;
     }
     let payload = match &call.args[0] {
@@ -281,6 +296,7 @@ fn parse_multi_marker(call: &ScalarFunction) -> Option<VectorSearchRequest> {
         order_by,
         overfetch,
         narrow,
+        filter: call.args.get(5).cloned(),
     })
 }
 
