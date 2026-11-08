@@ -1147,7 +1147,10 @@ impl LakeSoulVectorSearchExec {
     /// searched column, every bucket must be one data file and the payload
     /// cache must be on.  The snapshot coverage proof still runs per query, so
     /// an unproven commit falls back to the reader path.
-    fn exact_fast_path_eligible(&self) -> bool {
+    fn exact_fast_path_eligible(
+        &self,
+        session_config: &datafusion::execution::config::SessionConfig,
+    ) -> bool {
         // Escape hatch for A/B runs against the reader path.
         if std::env::var("LAKESOUL_VECTOR_EXACT_DIRECT").is_ok_and(|value| value == "0") {
             return false;
@@ -1178,13 +1181,21 @@ impl LakeSoulVectorSearchExec {
             }
             _ => false,
         };
-        if !stored_f32 || self.schema.field_with_name(column).is_err() {
+        if !stored_f32 || self.file_schema.field_with_name(column).is_err() {
             return false;
         }
-        self.schema.fields().iter().all(|field| {
-            self.primary_keys.iter().any(|key| key == field.name())
-                || field.name() == column
-        })
+        // The direct read produces the ranking columns (primary keys and the
+        // searched vector column) in exact-distance order.  A projection with
+        // more columns keeps the fast path: those columns are fetched in the
+        // deferred payload pass over the kept rows, which needs a known limit
+        // and `narrow` (both already required above).
+        let ranking = self.ranking_columns();
+        let has_extra_projection = self
+            .schema
+            .fields()
+            .iter()
+            .any(|field| !ranking.contains(field.name()));
+        !has_extra_projection || self.defers_payload(session_config)
     }
 
     /// Serve an exact re-rank from the index keys and the payload cache.
@@ -1197,7 +1208,7 @@ impl LakeSoulVectorSearchExec {
         nprobe: usize,
         parallelism: usize,
     ) -> DFResult<Option<Vec<arrow::record_batch::RecordBatch>>> {
-        if !self.exact_fast_path_eligible() {
+        if !self.exact_fast_path_eligible(context.session_config()) {
             return Ok(None);
         }
         let store = context
@@ -1585,9 +1596,12 @@ impl LakeSoulVectorSearchExec {
         let decoded = codec.decode(&kept_keys).map_err(|error| {
             DataFusionError::External(error.into_boxed_error())
         })?;
+        // Emit the ranking columns only; a projection with extra columns is
+        // completed by the deferred payload pass in `execute`.
+        let output_schema = self.ranking_schema();
         let mut columns: Vec<arrow::array::ArrayRef> =
-            Vec::with_capacity(self.schema.fields().len());
-        for field in self.schema.fields() {
+            Vec::with_capacity(output_schema.fields().len());
+        for field in output_schema.fields() {
             if let Some(position) =
                 self.primary_keys.iter().position(|key| key == field.name())
             {
@@ -1623,7 +1637,7 @@ impl LakeSoulVectorSearchExec {
             );
         }
         Ok(Some(vec![arrow::record_batch::RecordBatch::try_new(
-            Arc::clone(&self.schema),
+            output_schema,
             columns,
         )?]))
     }
@@ -1750,6 +1764,49 @@ impl LakeSoulVectorSearchExec {
             return Ok(Vec::new());
         }
 
+        let counters = VectorSearchCounters::new(&self.metrics, partition);
+        counters.ranked.add(kept.num_rows());
+        let filters = self.pk_filters(&kept)?;
+        let configs =
+            self.build_configs(&self.file_schema, filters, nprobe, parallelism)?;
+        let payload = self.read_configs(configs, span, profile)?;
+        let payload_rows: usize = payload.iter().map(|batch| batch.num_rows()).sum();
+        counters.payload_rows.add(payload_rows);
+        let ordered = order_payload_by_keys(&kept, payload, &self.primary_keys)?;
+        ordered
+            .iter()
+            .map(|batch| project_batch(batch, &self.schema))
+            .collect()
+    }
+
+    /// Read the projected payload columns of the rows a direct exact read kept.
+    ///
+    /// The direct path ranks in the process and returns the ranking columns
+    /// (primary keys plus the searched vector column); a projection that asks
+    /// for anything else fetches those columns in a second pass over the same
+    /// files, filtered to the kept primary keys.  That keeps arbitrary
+    /// projections on the fast path instead of falling back to the reader's
+    /// candidate scan.
+    fn payload_columns_for_ranked(
+        &self,
+        ranked: Vec<arrow::record_batch::RecordBatch>,
+        nprobe: usize,
+        parallelism: usize,
+        span: &tracing::Span,
+        profile: bool,
+        partition: usize,
+    ) -> DFResult<Vec<arrow::record_batch::RecordBatch>> {
+        let ranked: Vec<_> = ranked
+            .into_iter()
+            .filter(|batch| batch.num_rows() > 0)
+            .collect();
+        if ranked.is_empty() {
+            return Ok(Vec::new());
+        }
+        let kept = take_first_rows(&ranked, self.keep_rows())?;
+        if kept.num_rows() == 0 {
+            return Ok(Vec::new());
+        }
         let counters = VectorSearchCounters::new(&self.metrics, partition);
         counters.ranked.add(kept.num_rows());
         let filters = self.pk_filters(&kept)?;
@@ -1943,6 +2000,25 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
                     "vector search served from the index and the payload cache"
                 );
             }
+            // The direct read returns the ranking columns; a projection with
+            // more columns is completed by reading those columns for the kept
+            // rows only (the same second pass the reader path defers).
+            let ranking = self.ranking_columns();
+            let batches = if self
+                .schema
+                .fields()
+                .iter()
+                .any(|field| !ranking.contains(field.name()))
+            {
+                self.payload_columns_for_ranked(
+                    batches, nprobe, parallelism, &span, profile, partition,
+                )?
+            } else {
+                batches
+                    .iter()
+                    .map(|batch| project_batch(batch, &self.schema))
+                    .collect::<DFResult<Vec<_>>>()?
+            };
             let stream = futures::stream::iter(batches.into_iter().map(Ok));
             let stream = Box::pin(RecordBatchStreamAdapter::new(
                 Arc::clone(&self.schema),

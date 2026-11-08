@@ -631,6 +631,44 @@ fn make_batch_int64(ids: &[i64], vectors: &[Vec<f32>]) -> RecordBatch {
     .unwrap()
 }
 
+/// `id`, `vec`, `tag` - the projection-generalization tests read `tag`, a
+/// column the ranking never touches.
+fn vector_schema_with_tag() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::UInt64, false),
+        Field::new(
+            "vec",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIM as i32,
+            ),
+            false,
+        ),
+        Field::new("tag", DataType::Int64, false),
+    ]))
+}
+
+fn make_batch_with_tag(ids: &[u64], vectors: &[Vec<f32>], tags: &[i64]) -> RecordBatch {
+    let id_array = arrow::array::UInt64Array::from(ids.to_vec());
+    let tag_array = arrow::array::Int64Array::from(tags.to_vec());
+    let mut builder = arrow::array::FixedSizeListBuilder::new(
+        arrow::array::Float32Builder::new(),
+        DIM as i32,
+    );
+    for vector in vectors {
+        for value in vector {
+            builder.values().append_value(*value);
+        }
+        builder.append(true);
+    }
+    let vec_array = builder.finish();
+    RecordBatch::try_new(
+        vector_schema_with_tag(),
+        vec![Arc::new(id_array), Arc::new(vec_array), Arc::new(tag_array)],
+    )
+    .unwrap()
+}
+
 /// The direct exact re-rank needs the stored-vector payload cache; these
 /// tests set it once before the first query so the multi-file resolution is
 /// actually exercised (the reader path would also return correct rows, which
@@ -2523,6 +2561,129 @@ async fn sql_vector_search_multi_file_upsert_uses_newest_version() {
         hits >= 8,
         "upserted multi-file recall {hits}/10, returned={returned:?} expected={expected:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_projects_extra_columns() {
+    // A projection with columns the ranking does not need keeps the direct
+    // exact path: the kept rows' payload columns are fetched in a second pass.
+    use crate::datasource::file_format::vector_search_exec::EXACT_DIRECT_RUNS;
+    use crate::tests::create_table_with_vector_index;
+    use std::sync::atomic::Ordering;
+
+    enable_direct_exact_path();
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_extra_projection";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema_with_tag())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    let n = 400u64;
+    let vectors = seeded_vectors(n as usize, 7);
+    let ids: Vec<u64> = (0..n).collect();
+    let tags: Vec<i64> = ids.iter().map(|id| *id as i64 * 7 + 1).collect();
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(make_batch_with_tag(&ids, &vectors, &tags))
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let ctx =
+        crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    ctx.sql("SET lakesoul_vector_search.nprobe = 4")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    ctx.sql("SET lakesoul_vector_search.exact_overfetch = 1")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let expected = brute_force_topk(&vectors, &query, 10);
+
+    // Project the pk plus an extra column the ranking does not need.
+    let sql = format!(
+        "select id, tag from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let before = EXACT_DIRECT_RUNS.load(Ordering::Relaxed);
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let after = EXACT_DIRECT_RUNS.load(Ordering::Relaxed);
+    assert!(
+        after > before,
+        "an extra projected column must keep the direct payload read"
+    );
+    let mut returned = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .expect("id column");
+        let tags = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .expect("tag column");
+        for (id, tag) in ids.values().iter().zip(tags.values().iter()) {
+            assert_eq!(
+                *tag,
+                *id as i64 * 7 + 1,
+                "payload column {tag} does not belong to id {id}"
+            );
+            returned.push(*id);
+        }
+    }
+    let hits = returned.iter().filter(|id| expected.contains(id)).count();
+    assert!(
+        hits >= 8,
+        "extra-projection recall {hits}/10, returned={returned:?} expected={expected:?}"
+    );
+
+    // A projection that drops the pk and the vector column still works.
+    let sql = format!(
+        "select tag from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let mut seen = 0usize;
+    for batch in &batches {
+        let tags = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .expect("tag column");
+        seen += tags.len();
+        for tag in tags.values().iter() {
+            assert_eq!((tag - 1) % 7, 0, "unexpected payload value {tag}");
+        }
+    }
+    assert_eq!(seen, 10, "the bare projection must still return the limit");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
