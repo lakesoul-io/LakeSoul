@@ -1288,6 +1288,31 @@ class LakeSoulTable:
             distances=distances if len(distances) == len(ids) else None,
         )
 
+    def distributed(
+        self,
+        *,
+        engine: str = "threads",
+        num_workers: int = 4,
+        session: LakeSoulSession | None = None,
+    ) -> Any:
+        """Return a distributed search driver for this table.
+
+        Range partitions are searched in parallel by several workers and their
+        local top-k is merged on the driver.  ``engine="threads"`` needs no
+        extra dependency; ``"ray"``/``"dask"`` run each worker in the
+        respective framework.  Tables without range partitions fall back to a
+        single-node search (the fan-out unit is a partition).
+
+        Example:
+            >>> dist = table.distributed(engine="threads", num_workers=8)
+            >>> rows = dist.search(query, top_k=10, filter="lang = 'zh'")
+        """
+        from .distributed import DistributedSearch
+
+        return DistributedSearch(
+            self, engine=engine, num_workers=num_workers, session=session
+        )
+
     def _native_batch_supported(self) -> bool:
         """True when the native snapshot batch entry can serve this table."""
         return (

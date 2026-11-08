@@ -27,7 +27,7 @@ pytest.importorskip(
     reason="extension built without --features ci-unify",
 )
 
-from lakesoul import LakeSoulCatalog  # noqa: E402
+from lakesoul import LakeSoulCatalog, LakeSoulSession  # noqa: E402
 
 # The exact direct path (and the native batch entry in exact mode) reads the
 # stored vectors through the payload cache, which in turn needs the local
@@ -359,3 +359,173 @@ def test_search_batch_validation() -> None:
             table.search_batch([np.array([], dtype=np.float32)])
     finally:
         _drop(catalog, table_name, table_path)
+
+
+def _create_partitioned_table(
+    table_name: str, *, metric: str = "L2"
+) -> tuple[LakeSoulCatalog, object, str]:
+    """Partitioned vector table: three ``dt`` partitions of 40 rows each."""
+    catalog = _catalog()
+    table_path = f"/tmp/lakesoul_test/{table_name}"
+    try:
+        catalog.drop_table(table_name, if_exists=True)
+    except Exception:
+        pass
+    shutil.rmtree(table_path, ignore_errors=True)
+    vectors = _vectors()
+    days = ["2026-01-01", "2026-01-02", "2026-01-03"]
+    day_values = [days[index % len(days)] for index in range(N)]
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), False),
+            pa.field("dt", pa.string(), False),
+            pa.field(
+                "vec",
+                pa.list_(pa.field("item", pa.float32()), DIM),
+                False,
+            ),
+        ]
+    )
+    batch = pa.table(
+        {
+            "id": pa.array(range(N), type=pa.int64()),
+            "dt": pa.array(day_values),
+            "vec": pa.FixedSizeListArray.from_arrays(
+                pa.array(vectors.reshape(-1), type=pa.float32()), DIM
+            ),
+        }
+    )
+    table = catalog.create_table(
+        table_name,
+        path=f"file://{table_path}",
+        schema=schema,
+        primary_keys=["id"],
+        partition_by=["dt"],
+        hash_bucket_num=1,
+        vector_index=[
+            {
+                "column": "vec",
+                "dim": DIM,
+                "nlist": 4,
+                "total_bits": 1,
+                "metric": metric,
+            }
+        ],
+    )
+    table.write_arrow(batch)
+    return catalog, table, table_path
+
+
+def test_distributed_search_over_partitions() -> None:
+    """Partitions are searched by several workers and merged on the driver."""
+    table_name = "py_session_distributed"
+    vectors = _vectors()
+    catalog, table, table_path = _create_partitioned_table(table_name)
+    try:
+        query = np.random.default_rng(41).normal(size=DIM).astype(np.float32)
+        expected = _top_k(vectors, query, 5, metric="L2")
+
+        distributed = table.distributed(engine="threads", num_workers=3)
+        assert distributed.is_distributed
+        assert distributed.partition_columns == ("dt",)
+
+        rows = distributed.search(query, top_k=5)
+        returned = rows.column("id").to_pylist()
+        assert len(returned) == 5, returned
+        hits = len(set(returned) & set(expected))
+        assert hits >= 4, (returned, expected)
+        assert "dt" in rows.column_names
+
+        with_distance = distributed.search(
+            query, top_k=5, with_distance=True
+        )
+        distances = with_distance.column("__lakesoul_vector_distance").to_pylist()
+        assert distances == sorted(distances), distances
+
+        filtered = distributed.search(
+            query, top_k=5, filter="id < 100", columns=["id", "dt"]
+        )
+        assert filtered.column_names == ["id", "dt"]
+        assert all(value < 100 for value in filtered.column("id").to_pylist())
+        assert filtered.num_rows == 5
+
+        count = distributed.sql(
+            f'SELECT count(*) AS cnt FROM "lakesoul".default.{table_name}'
+        )
+        assert count.column("cnt").to_pylist() == [N]
+    finally:
+        _drop(catalog, table_name, table_path)
+
+
+def test_distributed_single_node_fallback_and_validation() -> None:
+    """An unpartitioned table keeps the single-node result; bad engines fail."""
+    table_name = "py_session_distributed_plain"
+    catalog, table, table_path = _create_table(table_name)
+    try:
+        query = np.random.default_rng(43).normal(size=DIM).astype(np.float32)
+        distributed = table.distributed(engine="threads", num_workers=2)
+        assert not distributed.is_distributed
+        via_distributed = distributed.search(query, top_k=5)
+        single = table.search(query, top_k=5)
+        assert via_distributed.column("id").to_pylist() == single.column("id").to_pylist()
+
+        with pytest.raises(ValueError):
+            table.distributed(engine="unknown")
+        with pytest.raises(ValueError):
+            table.distributed(num_workers=0)
+    finally:
+        _drop(catalog, table_name, table_path)
+
+
+def test_distributed_ray_engine_import_error() -> None:
+    """engine='ray' without ray installed raises an actionable ImportError."""
+    try:
+        import ray  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        pytest.skip("ray is installed in this environment")
+    table_name = "py_session_distributed_ray"
+    catalog, table, table_path = _create_partitioned_table(table_name)
+    try:
+        query = np.random.default_rng(47).normal(size=DIM).astype(np.float32)
+        with pytest.raises(ImportError):
+            table.distributed(engine="ray").search(query, top_k=5)
+    finally:
+        _drop(catalog, table_name, table_path)
+
+
+def test_distributed_session_configuration() -> None:
+    """The coordinator session validates its worker configuration.
+
+    Without a reachable worker fleet the session stays usable: the distributed
+    planner keeps such queries on the coordinator, which is exactly the
+    single-node behaviour (results unchanged).
+    """
+    with pytest.raises(ValueError):
+        LakeSoulSession(distributed={"worker_urls": []})
+    with pytest.raises(ValueError):
+        LakeSoulSession(
+            distributed={"worker_urls": ["grpc://127.0.0.1:59999"], "target_partitions": 1}
+        )
+    with pytest.raises(ValueError):
+        LakeSoulSession(
+            distributed={
+                "worker_urls": ["grpc://127.0.0.1:59999"],
+                "unknown_option": True,
+            }
+        )
+    with pytest.raises(ValueError):
+        LakeSoulSession(distributed={"worker_urls": "grpc://127.0.0.1:59999"})
+
+    session = LakeSoulSession(
+        distributed={
+            "worker_urls": ["grpc://127.0.0.1:59999"],
+            "target_partitions": 4,
+            "fallback_to_local": True,
+        }
+    )
+    try:
+        assert session.sql("SELECT 1 AS one").to_pydict() == {"one": [1]}
+    finally:
+        session.close()

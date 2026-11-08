@@ -28,6 +28,8 @@ use datafusion::execution::context::SessionContext;
 use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::create_lakesoul_session_config;
 use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
+use lakesoul_datafusion::distributed::{DistributedOptions, WorkerDiscovery};
+use lakesoul_datafusion::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
 use lakesoul_datafusion::vector_batch::VectorBatchRequest;
 use lakesoul_datafusion::create_lakesoul_session_ctx_with_config;
 use lakesoul_datafusion::udf::vector_search_marker::LakeSoulVectorSearchConfig;
@@ -118,6 +120,7 @@ impl NativeSession {
         let mut args = CoreArgs::from_env();
         let mut vector_search = LakeSoulVectorSearchConfig::default();
         let mut target_partitions: Option<usize> = None;
+        let mut distributed: Option<DistributedOptions> = None;
         if let Some(config) = config.as_ref() {
             if let Some(value) = config_string(config, "warehouse_prefix")? {
                 args.warehouse_prefix = Some(value);
@@ -153,6 +156,46 @@ impl NativeSession {
                         _ => {}
                     }
                 }
+            }
+            if let Some(options) = config.get_item("distributed")? {
+                let options = options.downcast::<PyDict>().map_err(|_| {
+                    PyValueError::new_err("distributed must be a dict")
+                })?;
+                let worker_urls: Vec<String> = options
+                    .get_item("worker_urls")?
+                    .ok_or_else(|| {
+                        PyValueError::new_err(
+                            "distributed.worker_urls is required for a distributed session",
+                        )
+                    })?
+                    .extract()
+                    .map_err(|_| {
+                        PyValueError::new_err(
+                            "distributed.worker_urls must be a list of URL strings",
+                        )
+                    })?;
+                if worker_urls.is_empty() {
+                    return Err(PyValueError::new_err(
+                        "distributed.worker_urls must not be empty",
+                    ));
+                }
+                let distributed_partitions = config_usize(&options, "target_partitions")?
+                    .unwrap_or(8);
+                if distributed_partitions < 2 {
+                    return Err(PyValueError::new_err(
+                        "distributed.target_partitions must be >= 2",
+                    ));
+                }
+                let fallback_to_local = config_bool(&options, "fallback_to_local")?
+                    .unwrap_or(false);
+                let bytes_per_partition =
+                    config_usize(&options, "bytes_per_partition")?;
+                distributed = Some(DistributedOptions {
+                    discovery: WorkerDiscovery::Static(worker_urls),
+                    fallback_to_local,
+                    target_partitions: distributed_partitions,
+                    bytes_per_partition,
+                });
             }
             if let Some(options) = config.get_item("vector_search")? {
                 let options = options
@@ -194,16 +237,28 @@ impl NativeSession {
         if let Some(partitions) = target_partitions {
             session_config = session_config.with_target_partitions(partitions);
         }
-        let ctx = create_lakesoul_session_ctx_with_config(
-            Arc::new(meta_client),
-            &args,
-            session_config,
-        )
-        .map_err(|error| {
-            PyRuntimeError::new_err(format!(
-                "failed to create the LakeSoul query session: {error}"
-            ))
-        })?;
+        let factory = LakeSoulSessionFactory::new(Arc::new(meta_client), &args)
+            .map_err(|error| {
+                PyRuntimeError::new_err(format!(
+                    "failed to create the LakeSoul session factory: {error}"
+                ))
+            })?;
+        let factory = match distributed {
+            Some(options) => factory.with_distributed(options),
+            None => factory,
+        };
+        let factory = match target_partitions {
+            Some(partitions) => factory.with_target_partitions(partitions),
+            None => factory,
+        };
+        let ctx = factory
+            .with_session_template(session_config)
+            .create_session(&LakeSoulSessionOptions::default())
+            .map_err(|error| {
+                PyRuntimeError::new_err(format!(
+                    "failed to create the LakeSoul query session: {error}"
+                ))
+            })?;
         Ok(Self { ctx })
     }
 
@@ -446,6 +501,17 @@ fn config_string(config: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<Strin
             value
                 .extract::<String>()
                 .map_err(|_| PyValueError::new_err(format!("{key} must be a string")))
+        })
+        .transpose()
+}
+
+fn config_bool(config: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<bool>> {
+    config
+        .get_item(key)?
+        .map(|value| {
+            value
+                .extract::<bool>()
+                .map_err(|_| PyValueError::new_err(format!("{key} must be a boolean")))
         })
         .transpose()
 }

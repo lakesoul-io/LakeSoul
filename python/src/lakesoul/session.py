@@ -133,6 +133,15 @@ class LakeSoulSession:
         vector_search: Defaults for ``lakesoul_vector_search.*``:
             ``nprobe``, ``rerank`` (``"exact"``/``"index"``),
             ``parallelism``, ``deferred_payload``, ``exact_overfetch``.
+        distributed: Optional coordinator settings that route queries through
+            the Rust distributed planner and its ``lakesoul-worker`` fleet:
+            ``worker_urls`` (required list of ``grpc://host:port`` strings),
+            ``target_partitions`` (default 8, must be >= 2),
+            ``fallback_to_local`` (default ``False``) and
+            ``bytes_per_partition``.  Without it the session plans every query
+            single-node.  The worker processes must run the matching
+            ``lakesoul-worker`` build (the protocol version is checked when the
+            session is created).
 
     Example:
         >>> from lakesoul import LakeSoulSession
@@ -153,6 +162,7 @@ class LakeSoulSession:
         target_partitions: int | None = None,
         object_store_options: Mapping[str, str] | None = None,
         vector_search: Mapping[str, Any] | None = None,
+        distributed: Mapping[str, Any] | None = None,
     ) -> None:
         binding = _require_binding()
         config: dict[str, Any] = {}
@@ -167,6 +177,8 @@ class LakeSoulSession:
         if vector_search:
             self._validate_vector_search(vector_search)
             config["vector_search"] = dict(vector_search)
+        if distributed is not None:
+            config["distributed"] = self._validate_distributed(distributed)
         try:
             self._inner = binding(
                 metadata_config,
@@ -185,6 +197,50 @@ class LakeSoulSession:
     def from_env(cls, **kwargs: Any) -> "LakeSoulSession":
         """Create a session from the ``LAKESOUL_*`` environment variables."""
         return cls(**kwargs)
+
+    @staticmethod
+    def _validate_distributed(options: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(options, Mapping):
+            raise TypeError("distributed must be a mapping")
+        allowed = {
+            "worker_urls",
+            "target_partitions",
+            "fallback_to_local",
+            "bytes_per_partition",
+        }
+        unknown = set(options) - allowed
+        if unknown:
+            raise ValueError(
+                f"unknown distributed option(s) {sorted(unknown)}; "
+                f"expected a subset of {sorted(allowed)}"
+            )
+        worker_urls = options.get("worker_urls")
+        if (
+            not isinstance(worker_urls, (list, tuple))
+            or not worker_urls
+            or not all(isinstance(url, str) and url for url in worker_urls)
+        ):
+            raise ValueError(
+                "distributed.worker_urls must be a non-empty list of URL strings "
+                "(for example 'grpc://worker1:50051')"
+            )
+        normalized: dict[str, Any] = {"worker_urls": [str(url) for url in worker_urls]}
+        if "target_partitions" in options:
+            target_partitions = int(options["target_partitions"])
+            if target_partitions < 2:
+                raise ValueError(
+                    "distributed.target_partitions must be >= 2 "
+                    "(a distributed session cannot run with one partition)"
+                )
+            normalized["target_partitions"] = target_partitions
+        if "fallback_to_local" in options:
+            normalized["fallback_to_local"] = bool(options["fallback_to_local"])
+        if "bytes_per_partition" in options:
+            bytes_per_partition = int(options["bytes_per_partition"])
+            if bytes_per_partition <= 0:
+                raise ValueError("distributed.bytes_per_partition must be > 0")
+            normalized["bytes_per_partition"] = bytes_per_partition
+        return normalized
 
     @staticmethod
     def _validate_vector_search(options: Mapping[str, Any]) -> None:
