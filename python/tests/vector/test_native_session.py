@@ -309,7 +309,7 @@ def test_search_batch_falls_back_for_non_native_primary_key() -> None:
         session = catalog.session(vector_search={"nprobe": 4, "exact_overfetch": 30})
         result = table.search_batch(queries, top_k=5, session=session)
         assert len(result.ids) == 3
-        assert result.distances is not None
+        assert result.distances is None
         for index, query in enumerate(queries):
             expected = _top_k(vectors, query, 5, metric="L2")
             hits = len(set(result.ids[index]) & set(expected))

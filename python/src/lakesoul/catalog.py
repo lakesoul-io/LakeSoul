@@ -1200,11 +1200,10 @@ class LakeSoulTable:
         Prefers the native snapshot batch entry (one shard resolution and one
         ranking pass for the whole call, same semantics as the SQL path).  When
         the table cannot use it - the native entry requires a single Int64
-        primary key named ``id``, and exact mode also requires the stored-vector
-        payload cache - the batch falls back to one SQL search per query.  The
-        fallback gives identical results, just slower, and fills
-        :attr:`BatchSearchResult.distances` when the metric expression is
-        available.
+        primary key named ``id``, one data file per hash bucket, and exact mode
+        also requires the stored-vector payload cache - the batch falls back to
+        one SQL search per query.  The fallback gives identical ids, just
+        slower (it re-plans the search per query).
 
         Args:
             queries: Query vectors (``(nq, dim)``); all must have the same
@@ -1328,6 +1327,10 @@ class LakeSoulTable:
         ids: list[list[int]] = []
         distances: list[list[float]] = []
         for query in queries:
+            # Keys only: asking for the distance column would force the
+            # engine to evaluate the distance expression above the scan, which
+            # disables the candidate/payload fast paths and can re-read the
+            # whole vector column per query.
             rows = self.search(
                 query,
                 column=column,
@@ -1337,18 +1340,11 @@ class LakeSoulTable:
                 nprobe=nprobe,
                 exact_overfetch=exact_overfetch,
                 columns=[primary_key],
-                with_distance=True,
+                with_distance=False,
                 session=session,
             )
             ids.append([int(value) for value in rows.column(primary_key).to_pylist()])
-            if VECTOR_DISTANCE_COLUMN in rows.column_names:
-                distances.append(
-                    [float(value) for value in rows.column(VECTOR_DISTANCE_COLUMN).to_pylist()]
-                )
-        return BatchSearchResult(
-            ids=ids,
-            distances=distances if len(distances) == len(ids) else None,
-        )
+        return BatchSearchResult(ids=ids, distances=None)
 
     def distributed(
         self,

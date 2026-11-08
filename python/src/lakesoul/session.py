@@ -57,8 +57,8 @@ class BatchSearchResult:
 
     Attributes:
         ids: One list of primary keys per query, nearest first.
-        distances: Optional per-query distances (only filled by the SQL
-            fallback; the native batch entry returns keys only).
+        distances: Reserved for per-query distances; the current batch
+            entries return the primary keys only (``None``).
     """
 
     ids: list[list[int]]
