@@ -12,33 +12,26 @@ pub(crate) use parser::{FederationStatementHook, rewrite};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use adbc_core::options::{AdbcVersion, OptionDatabase};
-use adbc_core::{Driver, LOAD_FLAG_DEFAULT};
-use adbc_driver_manager::{ManagedDatabase, ManagedDriver};
 use datafusion::catalog::TableProvider;
 use datafusion::common::TableReference;
-use datafusion_table_providers_adbc::pool::ADBCPool;
 use lakesoul_datafusion::federation::{
-    FederationPool, clear_pools, register_pool, table_provider,
+    FederationPool, clear_pools, open_pool, register_pool, table_provider,
 };
 use lakesoul_metadata::MetaDataClientRef;
 use parking_lot::RwLock;
-use rootcause::{bail, report};
-use url::Url;
+use rootcause::bail;
 
 use crate::Result;
 use metadata::{
     FederationData, FederationMetadata, ServerDefinition, UserMappingDefinition,
 };
 
-type AdbcPool = ADBCPool<ManagedDatabase>;
-
 #[derive(Default)]
 struct RuntimeState {
     data: FederationData,
     /// Pools are keyed by server and PostgreSQL user because the
-    /// user-mapping credentials are part of the ADBC URI.
-    pools: BTreeMap<(String, String), Arc<AdbcPool>>,
+    /// user-mapping credentials are part of the ADBC connection.
+    pools: BTreeMap<(String, String), FederationPool>,
 }
 
 /// Shared federation catalog and ADBC pool cache.
@@ -112,7 +105,7 @@ impl FederationRuntime {
         user: &str,
         name: &str,
     ) -> Result<Option<Arc<dyn TableProvider>>> {
-        let (table, server, mapping) = {
+        let (table, server, mapping, mapping_user) = {
             let state = self.state.read();
             let key = (database.to_string(), "public".to_string(), name.to_string());
             let Some(table) = state.data.tables.get(&key).cloned() else {
@@ -126,130 +119,92 @@ impl FederationRuntime {
                     table.server
                 );
             };
-            let mapping = state
-                .data
-                .mappings
-                .get(&(server.name.clone(), user.to_string()))
-                .or_else(|| {
-                    state
-                        .data
-                        .mappings
-                        .get(&(server.name.clone(), "PUBLIC".to_string()))
-                })
-                .cloned();
-            (table, server, mapping)
+            let (mapping, mapping_user) =
+                match mapping_for_user(&state.data, &server.name, user) {
+                    Some((mapping, key)) => (Some(mapping), key),
+                    None => (None, user.to_string()),
+                };
+            (table, server, mapping, mapping_user)
         };
+        let dialect = server.dialect;
         let pool = Self::pool_for(
             &mut self.state.write().pools,
             &server,
             mapping.as_ref(),
-            user,
+            &mapping_user,
         )?;
-        let server_key = format!("{}:{}", server.name, user);
-        let pool: FederationPool = pool;
+        let server_key = format!("{}:{}", server.name, mapping_user);
         register_pool(&server_key, Arc::clone(&pool));
         let remote = format!("{}.{}", table.remote_schema, table.remote_table);
         Ok(Some(table_provider(
             server_key,
             pool,
+            dialect,
             Arc::clone(&table.schema),
             TableReference::from(remote.as_str()),
         )))
     }
 
     fn pool_for(
-        pools: &mut BTreeMap<(String, String), Arc<AdbcPool>>,
+        pools: &mut BTreeMap<(String, String), FederationPool>,
         server: &ServerDefinition,
         mapping: Option<&UserMappingDefinition>,
-        user: &str,
-    ) -> Result<Arc<AdbcPool>> {
-        let key = (server.name.clone(), user.to_string());
+        mapping_user: &str,
+    ) -> Result<FederationPool> {
+        let key = (server.name.clone(), mapping_user.to_string());
         if let Some(pool) = pools.get(&key) {
             return Ok(Arc::clone(pool));
         }
-        let uri = server_uri(server, mapping)?;
-        if server.driver.contains('/') || server.driver.contains('\\') {
-            bail!(
-                "federation server {:?} has an unsafe driver name {:?}; \
-                 configure the ADBC driver by name, not by path",
-                server.name,
-                server.driver
-            );
-        }
-        let mut driver = ManagedDriver::load_from_name(
+        let pool = open_pool(
+            &server.name,
             &server.driver,
-            None,
-            AdbcVersion::default(),
-            LOAD_FLAG_DEFAULT,
-            None,
-        )
-        .map_err(|error| {
-            report!(
-                "load ADBC driver {} for federation server {}: {error}",
-                server.driver,
-                server.name
-            )
-        })?;
-        let database = driver
-            .new_database_with_opts([(OptionDatabase::Uri, uri.into())])
-            .map_err(|error| {
-                report!(
-                    "open ADBC database for federation server {}: {error}",
-                    server.name
-                )
-            })?;
-        let pool = Arc::new(AdbcPool::new(database, None).map_err(|error| {
-            report!(
-                "create ADBC connection pool for federation server {}: {error}",
-                server.name
-            )
-        })?);
+            &server.options,
+            mapping.map(|mapping| &mapping.options),
+        )?;
         pools.insert(key, Arc::clone(&pool));
         Ok(pool)
     }
 }
 
-fn server_uri(
-    server: &ServerDefinition,
-    mapping: Option<&UserMappingDefinition>,
-) -> Result<String> {
-    let mut options = server.options.clone();
-    if let Some(mapping) = mapping {
-        options.extend(mapping.options.clone());
+/// Find the user mapping that applies to `user`, and the key it is registered
+/// under. `PUBLIC` is a shared mapping, so its key is `PUBLIC` rather than the
+/// query user; workers load pools by exactly the keys found in metadata.
+fn mapping_for_user(
+    data: &FederationData,
+    server: &str,
+    user: &str,
+) -> Option<(UserMappingDefinition, String)> {
+    if let Some(mapping) = data.mappings.get(&(server.to_string(), user.to_string())) {
+        return Some((mapping.clone(), user.to_string()));
     }
-    if let Some(uri) = options.remove("uri") {
-        return Ok(uri);
+    data.mappings
+        .get(&(server.to_string(), "PUBLIC".to_string()))
+        .map(|mapping| (mapping.clone(), "PUBLIC".to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_mapping_uses_its_own_registry_key() {
+        let mut data = FederationData::default();
+        data.mappings.insert(
+            ("app".to_string(), "PUBLIC".to_string()),
+            UserMappingDefinition {
+                options: BTreeMap::new(),
+            },
+        );
+        let (_, key) = mapping_for_user(&data, "app", "alice").expect("public mapping");
+        assert_eq!(key, "PUBLIC");
+
+        data.mappings.insert(
+            ("app".to_string(), "alice".to_string()),
+            UserMappingDefinition {
+                options: BTreeMap::new(),
+            },
+        );
+        let (_, key) = mapping_for_user(&data, "app", "alice").expect("exact mapping");
+        assert_eq!(key, "alice");
     }
-    let host = options
-        .remove("host")
-        .ok_or_else(|| report!("federation server {} has no host option", server.name))?;
-    let dbname = options.remove("dbname").ok_or_else(|| {
-        report!("federation server {} has no dbname option", server.name)
-    })?;
-    let port = options.remove("port").unwrap_or_else(|| "5432".to_string());
-    let port = port.parse::<u16>().map_err(|_| {
-        report!(
-            "federation server {} has invalid port {:?}",
-            server.name,
-            port
-        )
-    })?;
-    let user = options
-        .remove("user")
-        .ok_or_else(|| report!("federation server {} has no user option", server.name))?;
-    let password = options.remove("password");
-    let mut url = Url::parse("postgresql://localhost")
-        .map_err(|error| report!("build federation URI: {error}"))?;
-    url.set_host(Some(&host))
-        .map_err(|error| report!("federation server {} host: {error}", server.name))?;
-    url.set_port(Some(port))
-        .map_err(|_| report!("federation server {} has invalid port", server.name))?;
-    url.set_path(&format!("/{dbname}"));
-    url.set_username(&user)
-        .map_err(|_| report!("federation user mapping has an invalid user"))?;
-    if let Some(password) = password {
-        url.set_password(Some(&password))
-            .map_err(|_| report!("federation user mapping has an invalid password"))?;
-    }
-    Ok(url.to_string())
 }
