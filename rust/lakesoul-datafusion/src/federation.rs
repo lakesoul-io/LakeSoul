@@ -12,28 +12,38 @@
 //! payload carries only that key, SQL and schema, never credentials.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+use std::sync::OnceLock;
 
 use adbc_core::options::{AdbcVersion, OptionDatabase, OptionValue};
-use adbc_core::{Driver, LOAD_FLAG_DEFAULT};
+use adbc_core::{Connection, Driver, LOAD_FLAG_DEFAULT, Statement};
 use adbc_driver_manager::ManagedDriver;
+use datafusion_distributed::DistributedGetterExt;
+use datafusion_table_providers_adbc::ADBC;
 use datafusion_table_providers_adbc::pool::ADBCPool;
 use lakesoul_metadata::{MetaDataClientRef, QueryType};
 use url::Url;
 
 use async_trait::async_trait;
-use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::array::{RecordBatch, UInt64Array};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::Session;
-use datafusion::common::{Result as DFResult, TableReference};
+use datafusion::common::{Result as DFResult, ScalarValue, TableReference};
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
+use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::{Distribution, Partitioning, PhysicalExpr};
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     SendableRecordBatchStream,
 };
+use datafusion::sql::unparser::Unparser;
 use datafusion::sql::unparser::dialect::{
     BigQueryDialect, DefaultDialect, Dialect, DuckDBDialect, MySqlDialect,
     PostgreSqlDialect, SnowflakeDialect, SqliteDialect,
@@ -43,12 +53,14 @@ use datafusion_table_providers_common::sql::db_connection_pool::DbConnectionPool
 use datafusion_table_providers_common::sql::sql_provider_datafusion::{
     SqlExec, SqlTable,
 };
+use futures::StreamExt;
 use lakesoul_common::ser::arrow_java::{
     schema_from_metadata_str, schema_to_metadata_str,
 };
 use parking_lot::RwLock;
 use r2d2_adbc::AdbcConnectionManager;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 type AdbcConnection =
     r2d2::PooledConnection<AdbcConnectionManager<adbc_driver_manager::ManagedDatabase>>;
@@ -141,6 +153,101 @@ impl std::fmt::Display for DialectKind {
     }
 }
 
+/// What an inserted row does when the target already has the same key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FederationConflictMode {
+    /// Plain append. Retrying the same rows inserts them again.
+    Append,
+    /// `ON CONFLICT DO NOTHING`: retries keep the first version.
+    Nothing,
+    /// `ON CONFLICT DO UPDATE`: retries overwrite with the latest version.
+    Update,
+}
+
+impl FederationConflictMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "append" | "none" | "off" => Some(Self::Append),
+            "nothing" | "ignore" | "do_nothing" => Some(Self::Nothing),
+            "update" | "upsert" | "do_update" => Some(Self::Update),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::Nothing => "nothing",
+            Self::Update => "update",
+        }
+    }
+}
+
+/// Write options read from `CREATE FOREIGN TABLE ... OPTIONS (...)`.
+///
+/// `primary_key` (or `conflict_columns`) selects the conflict target;
+/// `on_conflict` is `append`, `nothing` or `update`; `write_batch_size`
+/// bounds one generated INSERT statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationWriteConfig {
+    pub conflict: FederationConflictMode,
+    pub primary_key: Vec<String>,
+    pub batch_size: usize,
+}
+
+impl Default for FederationWriteConfig {
+    fn default() -> Self {
+        Self {
+            conflict: FederationConflictMode::Append,
+            primary_key: Vec::new(),
+            batch_size: 1024,
+        }
+    }
+}
+
+impl FederationWriteConfig {
+    pub fn from_options(options: &BTreeMap<String, String>) -> DFResult<Self> {
+        let conflict = match options.get("on_conflict") {
+            Some(value) => FederationConflictMode::parse(value).ok_or_else(|| {
+                DataFusionError::Plan(format!(
+                    "unknown on_conflict value {value:?}; use append, nothing or update"
+                ))
+            })?,
+            None => FederationConflictMode::Append,
+        };
+        let primary_key = options
+            .get("primary_key")
+            .or_else(|| options.get("conflict_columns"))
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|column| !column.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let batch_size = match options.get("write_batch_size") {
+            Some(value) => value.parse::<usize>().map_err(|_| {
+                DataFusionError::Plan(format!(
+                    "invalid write_batch_size {value:?}; expected a positive integer"
+                ))
+            })?,
+            None => 1024,
+        };
+        if batch_size == 0 {
+            return Err(DataFusionError::Plan(
+                "write_batch_size must be greater than zero".to_string(),
+            ));
+        }
+        Ok(Self {
+            conflict,
+            primary_key,
+            batch_size,
+        })
+    }
+}
+
 static POOLS: OnceLock<RwLock<BTreeMap<String, FederationPool>>> = OnceLock::new();
 
 fn pools() -> &'static RwLock<BTreeMap<String, FederationPool>> {
@@ -162,16 +269,32 @@ fn lookup_pool(server_key: &str) -> Option<FederationPool> {
     pools().read().get(server_key).cloned()
 }
 
-/// A `SqlTable` that emits a wire-encodable `FederationExec` on scan.
+/// A `SqlTable` that emits a wire-encodable `FederationExec` on scan and
+/// writes through a worker-side `FederationWriteExec` on insert.
 #[derive(Debug)]
 pub struct FederationTableProvider {
     server_key: String,
     table: SqlTable<AdbcConnection, RecordBatch>,
+    remote_table: TableReference,
+    dialect: DialectKind,
+    options: BTreeMap<String, String>,
 }
 
 impl FederationTableProvider {
-    pub fn new(server_key: String, table: SqlTable<AdbcConnection, RecordBatch>) -> Self {
-        Self { server_key, table }
+    pub fn new(
+        server_key: String,
+        table: SqlTable<AdbcConnection, RecordBatch>,
+        remote_table: TableReference,
+        dialect: DialectKind,
+        options: BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            server_key,
+            table,
+            remote_table,
+            dialect,
+            options,
+        }
     }
 }
 
@@ -213,6 +336,98 @@ impl TableProvider for FederationTableProvider {
             server_key: self.server_key.clone(),
             inner,
         }))
+    }
+
+    async fn insert_into(
+        &self,
+        state: &dyn Session,
+        input: Arc<dyn ExecutionPlan>,
+        op: InsertOp,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        if op != InsertOp::Append {
+            return Err(DataFusionError::NotImplemented(
+                "foreign tables only support INSERT (append); \
+                 INSERT OVERWRITE and upsert are not implemented"
+                    .to_string(),
+            ));
+        }
+        let config = FederationWriteConfig::from_options(&self.options)?;
+        if config.conflict != FederationConflictMode::Append {
+            if config.primary_key.is_empty() {
+                return Err(DataFusionError::Plan(
+                    "idempotent foreign writes require OPTIONS (primary_key '...') \
+                     on the foreign table"
+                        .to_string(),
+                ));
+            }
+            let fields = self.table.schema();
+            for column in &config.primary_key {
+                if fields.field_with_name(column).is_err() {
+                    return Err(DataFusionError::Plan(format!(
+                        "foreign table conflict column {column:?} is not in the schema"
+                    )));
+                }
+            }
+        }
+
+        // A write stage with N tasks is the only way datafusion-distributed
+        // keeps it on workers: a one-task producer/consumer boundary is
+        // elided and would run the write on the coordinator. Use one task per
+        // registered worker. A single-worker deployment therefore runs the
+        // write locally, matching the coordinator fallback.
+        let workers = state
+            .config()
+            .get_distributed_worker_resolver()
+            .ok()
+            .and_then(|resolver| resolver.get_urls().ok())
+            .map(|urls| urls.len())
+            .unwrap_or(0);
+        let max_tasks = datafusion_distributed::DistributedConfig::from_session_config(
+            state.config(),
+        )
+        .map(|config| config.max_tasks_per_stage)
+        .unwrap_or(0);
+        // The session factory raises max_tasks_per_stage for foreign-write
+        // sessions; this is also how one worker can own two write tasks.
+        let parallelism = if workers == 0 {
+            1
+        } else if max_tasks > 0 {
+            max_tasks
+        } else {
+            workers
+        };
+        let first_field =
+            self.table
+                .schema()
+                .fields()
+                .first()
+                .cloned()
+                .ok_or_else(|| {
+                    DataFusionError::Plan(
+                        "cannot write a foreign table without columns".to_string(),
+                    )
+                })?;
+        let key_expr: Arc<dyn PhysicalExpr> =
+            Arc::new(Column::new(first_field.name(), 0));
+        // A hash repartition is a stage boundary in datafusion-distributed.
+        // The writer is its consumer, so the stage runs on workers while the
+        // coalesce above it returns the row count to the coordinator. A
+        // round-robin repartition is local and would be optimized away.
+        let input = Arc::new(RepartitionExec::try_new(
+            input,
+            Partitioning::Hash(vec![key_expr], parallelism),
+        )?);
+        let write = Arc::new(FederationWriteExec::new(
+            input,
+            self.server_key.clone(),
+            self.table.clone_pool(),
+            self.remote_table.clone(),
+            self.table.schema(),
+            self.dialect,
+            config,
+            parallelism,
+        )?);
+        Ok(Arc::new(CoalescePartitionsExec::new(write)))
     }
 }
 
@@ -310,6 +525,482 @@ impl ExecutionPlan for FederationExec {
     }
 }
 
+fn count_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![Field::new(
+        "count",
+        DataType::UInt64,
+        false,
+    )]))
+}
+
+fn make_count_batch(count: u64) -> DFResult<RecordBatch> {
+    RecordBatch::try_new(
+        count_schema(),
+        vec![Arc::new(UInt64Array::from(vec![count]))],
+    )
+    .map_err(|error| {
+        DataFusionError::Execution(format!("build write count batch: {error}"))
+    })
+}
+
+/// Worker-side half of an idempotent foreign INSERT.
+///
+/// Every task consumes one input partition, batches the rows into SQL
+/// statements and executes them against the target through ADBC. Rows are
+/// committed per statement, so a failed task can leave previously written
+/// batches in the target. With `ON CONFLICT` the whole statement is safe to
+/// retry: already-written keys are ignored or updated instead of duplicated.
+#[derive(Clone)]
+pub struct FederationWriteExec {
+    input: Arc<dyn ExecutionPlan>,
+    server_key: String,
+    pool: FederationPool,
+    table: TableReference,
+    target_schema: SchemaRef,
+    dialect: DialectKind,
+    config: FederationWriteConfig,
+    parallelism: usize,
+    count_schema: SchemaRef,
+    properties: Arc<PlanProperties>,
+}
+
+impl FederationWriteExec {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        input: Arc<dyn ExecutionPlan>,
+        server_key: String,
+        pool: FederationPool,
+        table: TableReference,
+        target_schema: SchemaRef,
+        dialect: DialectKind,
+        config: FederationWriteConfig,
+        parallelism: usize,
+    ) -> DFResult<Self> {
+        if parallelism == 0 {
+            return Err(DataFusionError::Plan(
+                "foreign write parallelism must be greater than zero".to_string(),
+            ));
+        }
+        let count_schema = count_schema();
+        let properties = Arc::new(PlanProperties::new(
+            datafusion::physical_expr::EquivalenceProperties::new(Arc::clone(
+                &count_schema,
+            )),
+            Partitioning::UnknownPartitioning(parallelism),
+            datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+            datafusion::physical_plan::execution_plan::Boundedness::Bounded,
+        ));
+        Ok(Self {
+            input,
+            server_key,
+            pool,
+            table,
+            target_schema,
+            dialect,
+            config,
+            parallelism,
+            count_schema,
+            properties,
+        })
+    }
+
+    pub fn parallelism(&self) -> usize {
+        self.parallelism
+    }
+
+    pub fn config(&self) -> &FederationWriteConfig {
+        &self.config
+    }
+}
+
+impl std::fmt::Debug for FederationWriteExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FederationWriteExec")
+            .field("server_key", &self.server_key)
+            .field("table", &self.table.to_string())
+            .field("parallelism", &self.parallelism)
+            .field("conflict", &self.config.conflict)
+            .finish()
+    }
+}
+
+impl DisplayAs for FederationWriteExec {
+    fn fmt_as(
+        &self,
+        _t: DisplayFormatType,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        write!(
+            f,
+            "FederationWriteExec server={} table={} tasks={} conflict={}",
+            self.server_key,
+            self.table,
+            self.parallelism,
+            self.config.conflict.name()
+        )
+    }
+}
+
+impl ExecutionPlan for FederationWriteExec {
+    fn name(&self) -> &str {
+        "FederationWriteExec"
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.count_schema)
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn required_input_distribution(&self) -> Vec<Distribution> {
+        let Some(field) = self.target_schema.fields().first() else {
+            return vec![Distribution::UnspecifiedDistribution];
+        };
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), 0));
+        vec![Distribution::KeyPartitioned(vec![expr])]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+        )
+            -> DFResult<datafusion::common::tree_node::TreeNodeRecursion>,
+    ) -> DFResult<datafusion::common::tree_node::TreeNodeRecursion> {
+        Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        if children.len() != 1 {
+            return Err(DataFusionError::Internal(
+                "FederationWriteExec expects exactly one child".to_string(),
+            ));
+        }
+        Ok(Arc::new(Self::new(
+            Arc::clone(&children[0]),
+            self.server_key.clone(),
+            Arc::clone(&self.pool),
+            self.table.clone(),
+            Arc::clone(&self.target_schema),
+            self.dialect,
+            self.config.clone(),
+            self.parallelism,
+        )?))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> DFResult<SendableRecordBatchStream> {
+        if partition >= self.parallelism {
+            return Err(DataFusionError::Internal(format!(
+                "FederationWriteExec partition {partition} is outside {} tasks",
+                self.parallelism
+            )));
+        }
+        tracing::debug!(
+            partition,
+            parallelism = self.parallelism,
+            "executing federation write task"
+        );
+        let input = self.input.execute(partition, Arc::clone(&context))?;
+        let pool = Arc::clone(&self.pool);
+        let table = self.table.clone();
+        let schema = Arc::clone(&self.target_schema);
+        let dialect = self.dialect;
+        let config = self.config.clone();
+        let count_schema = Arc::clone(&self.count_schema);
+        let stream = futures::stream::once(async move {
+            let count = write_stream(pool, table, schema, dialect, config, input).await?;
+            make_count_batch(count)
+        });
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            count_schema,
+            stream,
+        )))
+    }
+}
+
+async fn write_stream(
+    pool: FederationPool,
+    table: TableReference,
+    schema: SchemaRef,
+    dialect: DialectKind,
+    config: FederationWriteConfig,
+    mut data: SendableRecordBatchStream,
+) -> DFResult<u64> {
+    let conn = pool.connect().await.map_err(|error| {
+        DataFusionError::Execution(format!(
+            "connect to federation target {}: {error}",
+            table
+        ))
+    })?;
+    let (batch_tx, batch_rx) = mpsc::channel::<RecordBatch>(8);
+    let writer = tokio::task::spawn_blocking(move || {
+        write_batches(conn, batch_rx, table, schema, dialect, config)
+    });
+
+    let mut input_error = None;
+    while let Some(batch) = data.next().await {
+        match batch {
+            Ok(batch) => {
+                if batch_tx.send(batch).await.is_err() {
+                    break;
+                }
+            }
+            Err(error) => {
+                input_error = Some(error);
+                break;
+            }
+        }
+    }
+    drop(batch_tx);
+
+    let write_result = match writer.await {
+        Ok(result) => result,
+        Err(error) => Err(DataFusionError::Execution(format!(
+            "foreign write task join error: {error}"
+        ))),
+    };
+    match input_error {
+        Some(error) => Err(error),
+        None => write_result,
+    }
+}
+
+fn write_batches(
+    mut conn: Box<dyn datafusion_table_providers_common::sql::db_connection_pool::dbconnection::DbConnection<AdbcConnection, RecordBatch>>,
+    mut batch_rx: mpsc::Receiver<RecordBatch>,
+    table: TableReference,
+    schema: SchemaRef,
+    dialect: DialectKind,
+    config: FederationWriteConfig,
+) -> DFResult<u64> {
+    let adbc_conn = ADBC::<adbc_driver_manager::ManagedDatabase>::adbc_conn(&mut conn)
+        .map_err(|error| {
+            DataFusionError::Execution(format!(
+                "downcast federation write connection: {error}"
+            ))
+        })?;
+    let conn_mx = adbc_conn.conn.lock().map_err(|error| {
+        DataFusionError::Execution(format!("lock federation write connection: {error}"))
+    })?;
+    let mut conn = conn_mx.borrow_mut();
+    let mut total = 0u64;
+    while let Some(batch) = batch_rx.blocking_recv() {
+        let mut offset = 0usize;
+        while offset < batch.num_rows() {
+            let length = (batch.num_rows() - offset).min(config.batch_size);
+            let slice = batch.slice(offset, length);
+            let sql = build_insert_sql(&table, &schema, dialect, &config, &slice)?;
+            tracing::debug!(
+                table = %table,
+                rows = length,
+                "executing federation insert"
+            );
+            let mut statement = conn.new_statement().map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "create ADBC insert statement for {table}: {error}"
+                ))
+            })?;
+            statement.set_sql_query(&sql).map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "set federation insert SQL for {table}: {error}"
+                ))
+            })?;
+            let count = statement.execute_update().map_err(|error| {
+                DataFusionError::Execution(format!(
+                    "execute federation insert into {table}: {error}"
+                ))
+            })?;
+            total = total.saturating_add(
+                count
+                    .and_then(|count| u64::try_from(count).ok())
+                    .unwrap_or(0),
+            );
+            offset += length;
+        }
+    }
+    Ok(total)
+}
+
+fn quote_ident(dialect: &dyn Dialect, ident: &str) -> String {
+    match dialect.identifier_quote_style(ident) {
+        Some(quote) => format!(
+            "{quote}{}{quote}",
+            ident.replace(quote, &format!("{quote}{quote}"))
+        ),
+        None => ident.to_string(),
+    }
+}
+
+fn quote_table(dialect: &dyn Dialect, table: &TableReference) -> String {
+    let mut parts = Vec::new();
+    if let Some(catalog) = table.catalog() {
+        parts.push(quote_ident(dialect, catalog));
+    }
+    if let Some(schema) = table.schema() {
+        parts.push(quote_ident(dialect, schema));
+    }
+    parts.push(quote_ident(dialect, table.table()));
+    parts.join(".")
+}
+
+fn build_insert_sql(
+    table: &TableReference,
+    schema: &SchemaRef,
+    dialect: DialectKind,
+    config: &FederationWriteConfig,
+    batch: &RecordBatch,
+) -> DFResult<String> {
+    if batch.num_columns() != schema.fields().len() {
+        return Err(DataFusionError::Internal(format!(
+            "foreign write batch has {} columns but the foreign table has {}",
+            batch.num_columns(),
+            schema.fields().len()
+        )));
+    }
+    let dialect_impl = dialect.dialect();
+    let unparser = Unparser::new(dialect_impl.as_ref());
+    let columns: Vec<String> = schema
+        .fields()
+        .iter()
+        .map(|field| quote_ident(dialect_impl.as_ref(), field.name()))
+        .collect();
+
+    let mut rows = Vec::with_capacity(batch.num_rows());
+    for row in 0..batch.num_rows() {
+        let mut values = Vec::with_capacity(columns.len());
+        for column in 0..columns.len() {
+            let value = ScalarValue::try_from_array(batch.column(column), row).map_err(
+                |error| {
+                    DataFusionError::Execution(format!(
+                        "read foreign write value at row {row}, column {column}: {error}"
+                    ))
+                },
+            )?;
+            let sql = unparser
+                .expr_to_sql(&Expr::Literal(value, None))
+                .map_err(|error| {
+                    DataFusionError::Execution(format!(
+                        "format foreign write value at row {row}, column {column}: {error}"
+                    ))
+                })?;
+            values.push(sql.to_string());
+        }
+        rows.push(format!("({})", values.join(", ")));
+    }
+
+    let mut sql = format!(
+        "INSERT INTO {} ({}) VALUES {}",
+        quote_table(dialect_impl.as_ref(), table),
+        columns.join(", "),
+        rows.join(", ")
+    );
+    sql.push_str(&conflict_clause(dialect, config, schema)?);
+    Ok(sql)
+}
+
+fn conflict_clause(
+    dialect: DialectKind,
+    config: &FederationWriteConfig,
+    schema: &SchemaRef,
+) -> DFResult<String> {
+    if config.conflict == FederationConflictMode::Append {
+        return Ok(String::new());
+    }
+    if config.primary_key.is_empty() {
+        return Err(DataFusionError::Plan(
+            "idempotent foreign writes require a primary_key option".to_string(),
+        ));
+    }
+    let dialect_impl = dialect.dialect();
+    let keys: Vec<String> = config
+        .primary_key
+        .iter()
+        .map(|column| {
+            schema
+                .field_with_name(column)
+                .map(|_| quote_ident(dialect_impl.as_ref(), column))
+                .map_err(|_| {
+                    DataFusionError::Plan(format!(
+                        "foreign table conflict column {column:?} is not in the schema"
+                    ))
+                })
+        })
+        .collect::<DFResult<Vec<_>>>()?;
+
+    match dialect {
+        DialectKind::Postgres | DialectKind::Sqlite | DialectKind::DuckDb => {
+            match config.conflict {
+                FederationConflictMode::Append => Ok(String::new()),
+                FederationConflictMode::Nothing => {
+                    Ok(format!(" ON CONFLICT ({}) DO NOTHING", keys.join(", ")))
+                }
+                FederationConflictMode::Update => {
+                    let updates: Vec<String> = schema
+                        .fields()
+                        .iter()
+                        .filter(|field| {
+                            !config.primary_key.iter().any(|key| key == field.name())
+                        })
+                        .map(|field| {
+                            let column = quote_ident(dialect_impl.as_ref(), field.name());
+                            format!("{column} = EXCLUDED.{column}")
+                        })
+                        .collect();
+                    if updates.is_empty() {
+                        Ok(format!(" ON CONFLICT ({}) DO NOTHING", keys.join(", ")))
+                    } else {
+                        Ok(format!(
+                            " ON CONFLICT ({}) DO UPDATE SET {}",
+                            keys.join(", "),
+                            updates.join(", ")
+                        ))
+                    }
+                }
+            }
+        }
+        DialectKind::MySql => match config.conflict {
+            FederationConflictMode::Append => Ok(String::new()),
+            FederationConflictMode::Nothing => {
+                let key = &keys[0];
+                Ok(format!(" ON DUPLICATE KEY UPDATE {key} = {key}"))
+            }
+            FederationConflictMode::Update => {
+                let updates: Vec<String> = schema
+                    .fields()
+                    .iter()
+                    .map(|field| {
+                        let column = quote_ident(dialect_impl.as_ref(), field.name());
+                        format!("{column} = VALUES({column})")
+                    })
+                    .collect();
+                if updates.is_empty() {
+                    let key = &keys[0];
+                    Ok(format!(" ON DUPLICATE KEY UPDATE {key} = {key}"))
+                } else {
+                    Ok(format!(" ON DUPLICATE KEY UPDATE {}", updates.join(", ")))
+                }
+            }
+        },
+        _ => Err(DataFusionError::NotImplemented(format!(
+            "idempotent foreign writes are not implemented for dialect {}",
+            dialect.name()
+        ))),
+    }
+}
+
 /// Wire representation of a federation scan. It deliberately contains no
 /// credentials: a worker resolves `server_key` in its federation registry.
 #[derive(Debug, Serialize, Deserialize)]
@@ -319,6 +1010,28 @@ struct FederationPlan {
     schema: String,
 }
 
+/// Wire representation of a federation write stage. It carries the server
+/// key, target table, Arrow schema, dialect and conflict policy, never
+/// credentials. `FederationWriteExec` resolves the pool on the worker.
+#[derive(Debug, Serialize, Deserialize)]
+struct FederationWritePlan {
+    server_key: String,
+    table: String,
+    schema: String,
+    dialect: String,
+    conflict: String,
+    primary_key: Vec<String>,
+    batch_size: usize,
+    parallelism: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum FederationWirePlan {
+    Scan(FederationPlan),
+    Write(FederationWritePlan),
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FederationPlanCodec;
 
@@ -326,36 +1039,88 @@ impl PhysicalExtensionCodec for FederationPlanCodec {
     fn try_decode(
         &self,
         buf: &[u8],
-        _inputs: &[Arc<dyn ExecutionPlan>],
+        inputs: &[Arc<dyn ExecutionPlan>],
         _ctx: &TaskContext,
         _proto_converter: &dyn datafusion_proto::physical_plan::PhysicalProtoConverterExtension,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
-        let plan: FederationPlan = serde_json::from_slice(buf).map_err(|error| {
+        let plan: FederationWirePlan = serde_json::from_slice(buf).map_err(|error| {
             DataFusionError::Internal(format!("decode federation plan payload: {error}"))
         })?;
-        let schema = schema_from_metadata_str(&plan.schema).map_err(|error| {
-            DataFusionError::Internal(format!("decode federation plan schema: {error}"))
-        })?;
-        let pool = lookup_pool(&plan.server_key).ok_or_else(|| {
-            DataFusionError::Execution(format!(
-                "federation server key {:?} is not registered on this worker",
-                plan.server_key
-            ))
-        })?;
-        // The SQL text was already generated with the source dialect by the
-        // coordinator. A decoded stage only executes it, so no target-specific
-        // unparsing happens here and the generic dialect is enough.
-        let inner = SqlExec::new(
-            None,
-            &Arc::new(schema),
-            pool,
-            plan.sql,
-            Arc::new(DefaultDialect {}),
-        )?;
-        Ok(Arc::new(FederationExec {
-            server_key: plan.server_key,
-            inner,
-        }))
+        match plan {
+            FederationWirePlan::Scan(plan) => {
+                let schema = schema_from_metadata_str(&plan.schema).map_err(|error| {
+                    DataFusionError::Internal(format!(
+                        "decode federation plan schema: {error}"
+                    ))
+                })?;
+                let pool = lookup_pool(&plan.server_key).ok_or_else(|| {
+                    DataFusionError::Execution(format!(
+                        "federation server key {:?} is not registered on this worker",
+                        plan.server_key
+                    ))
+                })?;
+                // The SQL text was already generated with the source dialect
+                // by the coordinator. A decoded stage only executes it, so no
+                // target-specific unparsing happens here.
+                let inner = SqlExec::new(
+                    None,
+                    &Arc::new(schema),
+                    pool,
+                    plan.sql,
+                    Arc::new(DefaultDialect {}),
+                )?;
+                Ok(Arc::new(FederationExec {
+                    server_key: plan.server_key,
+                    inner,
+                }))
+            }
+            FederationWirePlan::Write(plan) => {
+                let schema = schema_from_metadata_str(&plan.schema).map_err(|error| {
+                    DataFusionError::Internal(format!(
+                        "decode federation write schema: {error}"
+                    ))
+                })?;
+                let pool = lookup_pool(&plan.server_key).ok_or_else(|| {
+                    DataFusionError::Execution(format!(
+                        "federation server key {:?} is not registered on this worker",
+                        plan.server_key
+                    ))
+                })?;
+                let dialect = DialectKind::parse(&plan.dialect).ok_or_else(|| {
+                    DataFusionError::Internal(format!(
+                        "decode federation write dialect {:?}",
+                        plan.dialect
+                    ))
+                })?;
+                let conflict =
+                    FederationConflictMode::parse(&plan.conflict).ok_or_else(|| {
+                        DataFusionError::Internal(format!(
+                            "decode federation conflict mode {:?}",
+                            plan.conflict
+                        ))
+                    })?;
+                let input = inputs.first().ok_or_else(|| {
+                    DataFusionError::Internal(
+                        "federation write stage has no input plan".to_string(),
+                    )
+                })?;
+                let config = FederationWriteConfig {
+                    conflict,
+                    primary_key: plan.primary_key,
+                    batch_size: plan.batch_size,
+                };
+                Ok(Arc::new(FederationWriteExec::new(
+                    Arc::clone(input),
+                    plan.server_key,
+                    pool,
+                    TableReference::parse_str(&plan.table),
+                    Arc::new(schema),
+                    dialect,
+                    config,
+                    plan.parallelism,
+                )?))
+            }
+        }
     }
 
     fn try_encode(
@@ -364,21 +1129,39 @@ impl PhysicalExtensionCodec for FederationPlanCodec {
         buf: &mut Vec<u8>,
         _proto_converter: &dyn datafusion_proto::physical_plan::PhysicalProtoConverterExtension,
     ) -> DFResult<()> {
-        let Some(exec) = node.downcast_ref::<FederationExec>() else {
-            return Err(DataFusionError::NotImplemented(
-                "FederationPlanCodec only encodes FederationExec".to_string(),
-            ));
-        };
-        let plan = FederationPlan {
-            server_key: exec.server_key.clone(),
-            sql: exec.inner.sql().map_err(|error| {
-                DataFusionError::Internal(format!("read federation SQL: {error}"))
-            })?,
-            schema: schema_to_metadata_str(exec.inner.schema().as_ref()),
-        };
-        serde_json::to_writer(buf, &plan).map_err(|error| {
-            DataFusionError::Internal(format!("encode federation plan: {error}"))
-        })
+        if let Some(exec) = node.downcast_ref::<FederationExec>() {
+            let plan = FederationPlan {
+                server_key: exec.server_key.clone(),
+                sql: exec.inner.sql().map_err(|error| {
+                    DataFusionError::Internal(format!("read federation SQL: {error}"))
+                })?,
+                schema: schema_to_metadata_str(exec.inner.schema().as_ref()),
+            };
+            return serde_json::to_writer(buf, &plan).map_err(|error| {
+                DataFusionError::Internal(format!("encode federation plan: {error}"))
+            });
+        }
+        if let Some(exec) = node.downcast_ref::<FederationWriteExec>() {
+            let plan = FederationWritePlan {
+                server_key: exec.server_key.clone(),
+                table: exec.table.to_string(),
+                schema: schema_to_metadata_str(exec.target_schema.as_ref()),
+                dialect: exec.dialect.name().to_string(),
+                conflict: exec.config.conflict.name().to_string(),
+                primary_key: exec.config.primary_key.clone(),
+                batch_size: exec.config.batch_size,
+                parallelism: exec.parallelism,
+            };
+            return serde_json::to_writer(buf, &plan).map_err(|error| {
+                DataFusionError::Internal(format!(
+                    "encode federation write plan: {error}"
+                ))
+            });
+        }
+        Err(DataFusionError::NotImplemented(
+            "FederationPlanCodec only encodes FederationExec and FederationWriteExec"
+                .to_string(),
+        ))
     }
 }
 
@@ -389,10 +1172,18 @@ pub fn table_provider(
     dialect: DialectKind,
     schema: SchemaRef,
     remote_table: TableReference,
+    options: BTreeMap<String, String>,
 ) -> Arc<dyn TableProvider> {
-    let table = SqlTable::new_with_schema("federation", &pool, schema, remote_table)
-        .with_dialect(dialect.dialect());
-    Arc::new(FederationTableProvider::new(server_key, table))
+    let table =
+        SqlTable::new_with_schema("federation", &pool, schema, remote_table.clone())
+            .with_dialect(dialect.dialect());
+    Arc::new(FederationTableProvider::new(
+        server_key,
+        table,
+        remote_table,
+        dialect,
+        options,
+    ))
 }
 
 /// Open an ADBC pool from a foreign-server definition.
@@ -853,5 +1644,183 @@ mod tests {
         )
         .expect("build URI");
         assert_eq!(uri, "postgresql://reader:secret@db.example:5433/app");
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+    use datafusion::arrow::array::{Int64Array, StringArray};
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
+    use datafusion_table_providers_common::sql::db_connection_pool::JoinPushDown;
+    use datafusion_table_providers_common::sql::db_connection_pool::dbconnection::DbConnection;
+
+    struct TestPool;
+
+    #[async_trait]
+    impl DbConnectionPool<AdbcConnection, RecordBatch> for TestPool {
+        async fn connect(
+            &self,
+        ) -> std::result::Result<
+            Box<dyn DbConnection<AdbcConnection, RecordBatch>>,
+            Box<dyn std::error::Error + Send + Sync>,
+        > {
+            unreachable!("the write codec test never opens a connection")
+        }
+
+        fn join_push_down(&self) -> JoinPushDown {
+            JoinPushDown::Disallow
+        }
+    }
+
+    fn write_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+        ]))
+    }
+
+    fn write_batch() -> RecordBatch {
+        RecordBatch::try_new(
+            write_schema(),
+            vec![
+                Arc::new(Int64Array::from(vec![1])),
+                Arc::new(StringArray::from(vec![Some("alice")])),
+            ],
+        )
+        .expect("batch")
+    }
+
+    fn write_config(conflict: FederationConflictMode) -> FederationWriteConfig {
+        FederationWriteConfig {
+            conflict,
+            primary_key: vec!["id".to_string()],
+            batch_size: 1024,
+        }
+    }
+
+    #[test]
+    fn write_config_parses_options() {
+        let mut options = BTreeMap::new();
+        options.insert("on_conflict".to_string(), "update".to_string());
+        options.insert("primary_key".to_string(), "id, tenant".to_string());
+        options.insert("write_batch_size".to_string(), "128".to_string());
+        let config = FederationWriteConfig::from_options(&options).expect("config");
+        assert_eq!(config.conflict, FederationConflictMode::Update);
+        assert_eq!(config.primary_key, vec!["id", "tenant"]);
+        assert_eq!(config.batch_size, 128);
+
+        let mut bad = BTreeMap::new();
+        bad.insert("on_conflict".to_string(), "bogus".to_string());
+        assert!(FederationWriteConfig::from_options(&bad).is_err());
+    }
+
+    #[test]
+    fn builds_append_sql_without_a_conflict_clause() {
+        let sql = build_insert_sql(
+            &TableReference::parse_str("public.remote_users"),
+            &write_schema(),
+            DialectKind::Postgres,
+            &write_config(FederationConflictMode::Append),
+            &write_batch(),
+        )
+        .expect("sql");
+        assert_eq!(
+            sql,
+            "INSERT INTO \"public\".\"remote_users\" (\"id\", \"name\") VALUES (1, 'alice')"
+        );
+    }
+
+    #[test]
+    fn builds_postgres_upsert_sql() {
+        let sql = build_insert_sql(
+            &TableReference::parse_str("public.remote_users"),
+            &write_schema(),
+            DialectKind::Postgres,
+            &write_config(FederationConflictMode::Update),
+            &write_batch(),
+        )
+        .expect("sql");
+        assert_eq!(
+            sql,
+            "INSERT INTO \"public\".\"remote_users\" (\"id\", \"name\") VALUES (1, 'alice') ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\""
+        );
+    }
+
+    #[test]
+    fn builds_mysql_upsert_sql() {
+        let sql = build_insert_sql(
+            &TableReference::parse_str("public.remote_users"),
+            &write_schema(),
+            DialectKind::MySql,
+            &write_config(FederationConflictMode::Update),
+            &write_batch(),
+        )
+        .expect("sql");
+        assert_eq!(
+            sql,
+            "INSERT INTO `public`.`remote_users` (`id`, `name`) VALUES (1, 'alice') ON DUPLICATE KEY UPDATE `id` = VALUES(`id`), `name` = VALUES(`name`)"
+        );
+    }
+
+    #[test]
+    fn builds_sqlite_ignore_sql() {
+        let sql = build_insert_sql(
+            &TableReference::parse_str("public.remote_users"),
+            &write_schema(),
+            DialectKind::Sqlite,
+            &write_config(FederationConflictMode::Nothing),
+            &write_batch(),
+        )
+        .expect("sql");
+        assert_eq!(
+            sql,
+            "INSERT INTO `public`.`remote_users` (`id`, `name`) VALUES (1, 'alice') ON CONFLICT (`id`) DO NOTHING"
+        );
+    }
+
+    #[test]
+    fn write_codec_roundtrips() {
+        let key = "write-codec:reader";
+        let pool: FederationPool = Arc::new(TestPool);
+        register_pool(key, Arc::clone(&pool));
+        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(write_schema()));
+        let write: Arc<dyn ExecutionPlan> = Arc::new(
+            FederationWriteExec::new(
+                Arc::clone(&input),
+                key.to_string(),
+                pool,
+                TableReference::parse_str("public.remote_users"),
+                write_schema(),
+                DialectKind::Postgres,
+                write_config(FederationConflictMode::Update),
+                2,
+            )
+            .expect("write exec"),
+        );
+        let codec = FederationPlanCodec;
+        let mut buf = Vec::new();
+        codec
+            .try_encode(
+                Arc::clone(&write),
+                &mut buf,
+                &DefaultPhysicalProtoConverter {},
+            )
+            .expect("encode");
+        let decoded = codec
+            .try_decode(
+                &buf,
+                &[input],
+                &TaskContext::default(),
+                &DefaultPhysicalProtoConverter {},
+            )
+            .expect("decode");
+        let decoded = decoded
+            .downcast_ref::<FederationWriteExec>()
+            .expect("write exec");
+        assert_eq!(decoded.parallelism(), 2);
+        assert_eq!(decoded.config().conflict, FederationConflictMode::Update);
+        assert_eq!(decoded.config().primary_key, vec!["id"]);
     }
 }

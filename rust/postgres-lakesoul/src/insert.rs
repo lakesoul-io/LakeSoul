@@ -66,6 +66,7 @@ use datafusion_postgres::pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use datafusion_postgres::pgwire::messages::response::TransactionStatus;
 
 use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
+use lakesoul_datafusion::federation::FederationTableProvider;
 use lakesoul_datafusion::pg_assignment::{check_literal, ensure_assignment, literal};
 use lakesoul_datafusion::write_mode::{
     ConflictMode, LakeSoulWriteMode, WriteConflict, WriteViolation,
@@ -140,7 +141,9 @@ impl QueryHook for InsertStatementHook {
                 let target = prepare(insert, session_context, status, &database).await?;
                 // The mode is read while the write plan is built, which happens in
                 // `execute_logical_plan` below.
-                write_mode(session_context)?.set(target.mode);
+                if let TargetKind::LakeSoul(mode) = target.kind {
+                    write_mode(session_context)?.set(mode);
+                }
                 execute_bound(logical_plan, params, session_context).await
             }
             .await,
@@ -157,13 +160,17 @@ pub(crate) fn extract(statement: &Statement) -> Option<&Insert> {
 
 /// Everything the statement's execution depends on, resolved once.
 struct Target {
-    /// What the sink does with a key that is already present.
-    mode: ConflictMode,
+    kind: TargetKind,
     /// The statement to plan: `ON CONFLICT` is dropped (DataFusion refuses
     /// it), `DO UPDATE` selects the replace write operation, and a no-list
     /// `VALUES` source shorter than the table is padded with NULLs, which is
     /// PostgreSQL's default semantics for the unlisted columns.
     statement: Insert,
+}
+
+enum TargetKind {
+    LakeSoul(ConflictMode),
+    Foreign,
 }
 
 /// Connection state a hook may hold across an `await`.
@@ -198,28 +205,47 @@ async fn prepare(
                 format!("relation \"{table_name}\" does not exist: {error}"),
             )
         })?;
-    let provider: &dyn std::any::Any = provider.as_ref();
-    let provider = provider
-        .downcast_ref::<LakeSoulTableProvider>()
-        .ok_or_else(|| {
-            feature_not_supported(format!(
-                "relation \"{table_name}\" is not a LakeSoul table"
-            ))
-        })?;
+    let provider_any: &dyn std::any::Any = provider.as_ref();
+    if let Some(provider) = provider_any.downcast_ref::<LakeSoulTableProvider>() {
+        let table_info = provider.table_info();
+        let (range, primary_keys) = split_partitions(&table_info.partitions);
+        let fields = provider
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().to_lowercase())
+            .collect::<BTreeSet<_>>();
 
-    let table_info = provider.table_info();
-    let (range, primary_keys) = split_partitions(&table_info.partitions);
-    let fields = provider
-        .schema()
-        .fields()
-        .iter()
-        .map(|field| field.name().to_lowercase())
-        .collect::<BTreeSet<_>>();
+        let (replace, mode) = conflict_plan(insert, &fields, &primary_keys, &range)?;
+        let statement =
+            checked_statement(insert, &provider.schema(), session_context, replace)
+                .await?;
+        return Ok(Target {
+            kind: TargetKind::LakeSoul(mode),
+            statement,
+        });
+    }
 
-    let (replace, mode) = conflict_plan(insert, &fields, &primary_keys, &range)?;
-    let statement =
-        checked_statement(insert, &provider.schema(), session_context, replace).await?;
-    Ok(Target { mode, statement })
+    if let Some(provider) = provider_any.downcast_ref::<FederationTableProvider>() {
+        if insert.on.is_some() {
+            return Err(feature_not_supported(
+                "INSERT ... ON CONFLICT is not supported on a foreign table; \
+                 configure the foreign table with \
+                 OPTIONS (primary_key '...', on_conflict 'update'|'nothing')"
+                    .to_string(),
+            ));
+        }
+        let statement =
+            checked_statement(insert, &provider.schema(), session_context, false).await?;
+        return Ok(Target {
+            kind: TargetKind::Foreign,
+            statement,
+        });
+    }
+
+    Err(feature_not_supported(format!(
+        "relation \"{table_name}\" is not a LakeSoul or foreign table"
+    )))
 }
 
 /// PostgreSQL analyses an `INSERT` before planning it: the source must have
@@ -961,7 +987,9 @@ async fn run(
     database: &str,
 ) -> PgWireResult<Response> {
     let target = prepare(insert, session_context, status, database).await?;
-    write_mode(session_context)?.set(target.mode);
+    if let TargetKind::LakeSoul(mode) = target.kind {
+        write_mode(session_context)?.set(mode);
+    }
     let plan = plan_target(&target, session_context).await?;
     reject_duplicate_upsert_rows(&plan, session_context).await?;
     let dataframe = session_context

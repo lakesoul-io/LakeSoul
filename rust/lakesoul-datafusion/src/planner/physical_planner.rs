@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use datafusion::catalog::Session;
 use datafusion::common::{DFSchema, SchemaExt};
+use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion::logical_expr::{Expr, LogicalPlan};
@@ -33,6 +34,7 @@ use rootcause::compat::boxed_error::IntoBoxedError;
 
 use crate::catalog::LakeSoulProviderOptions;
 use crate::datasource::table_provider::LakeSoulTableProvider;
+use crate::federation::FederationTableProvider;
 use crate::lakesoul_table::LakeSoulTable;
 
 /// The LakeSoul provider a DML statement's source was resolved to, if any.
@@ -42,6 +44,15 @@ fn lake_soul_table_source(
     let source = table_source.downcast_ref::<DefaultTableSource>()?;
     let provider: &dyn std::any::Any = source.table_provider.as_ref();
     provider.downcast_ref::<LakeSoulTableProvider>()
+}
+
+/// The ADBC foreign provider a DML statement targets, if any.
+fn federation_table_source(
+    table_source: &Arc<dyn TableSource>,
+) -> Option<&FederationTableProvider> {
+    let source = table_source.downcast_ref::<DefaultTableSource>()?;
+    let provider: &dyn std::any::Any = source.table_provider.as_ref();
+    provider.downcast_ref::<FederationTableProvider>()
 }
 
 pub struct LakeSoulPhysicalPlanner {
@@ -102,6 +113,25 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                 ..
             }) => {
                 debug!("insert into: {}, {}", &table_name, &input);
+                // LakeSoul tables go through the native sink below. An ADBC
+                // foreign table gets its input planned here and then its own
+                // `insert_into`; do not hand the whole DML plan to DataFusion's
+                // physical optimizer, which would remove the hash repartition
+                // that makes the write stage a worker stage. Other writable
+                // providers use the standard DataFusion DML path.
+                if let Some(provider) = federation_table_source(target) {
+                    let physical_input =
+                        self.create_physical_plan(input, session_state).await?;
+                    return provider
+                        .insert_into(session_state, physical_input, *insert_op)
+                        .await;
+                }
+                if lake_soul_table_source(target).is_none() {
+                    return self
+                        .default_planner
+                        .create_physical_plan(logical_plan, session_state)
+                        .await;
+                }
                 let name = table_name.table();
                 // The namespace is the one the catalog resolved while planning,
                 // not the one written in the statement: a PostgreSQL front end

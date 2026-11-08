@@ -92,6 +92,7 @@ fn test_session_initial_values() {
         let options = LakeSoulSessionOptions {
             default_schema: "tenant_a".to_string(),
             time_zone: Some("UTC".to_string()),
+            ..LakeSoulSessionOptions::default()
         };
         let ctx = factory.create_session(&options).unwrap();
 
