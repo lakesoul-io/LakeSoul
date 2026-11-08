@@ -9045,3 +9045,184 @@ mod join_key_identity_tests {
         assert!(!join_keys_are_primary_key(&join, &primary));
     }
 }
+
+#[cfg(test)]
+mod side_state_lookup_tests {
+    use super::*;
+    use crate::metadata::StateRole;
+    use crate::table::IvmTableOptions;
+    use crate::{full_join_view_schema_for, keyed_join_output_primary_keys};
+    use arrow::array::{Int64Array, RecordBatch, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    fn schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("g", DataType::Utf8, false),
+            Field::new("v", DataType::Int64, false),
+            Field::new("op", DataType::Utf8, false),
+        ]))
+    }
+
+    fn batch(rows: &[(i64, String, i64)]) -> RecordBatch {
+        RecordBatch::try_new(
+            schema(),
+            vec![
+                Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.0))),
+                Arc::new(StringArray::from_iter_values(
+                    rows.iter().map(|row| row.1.as_str()),
+                )),
+                Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.2))),
+                Arc::new(StringArray::from_iter_values(rows.iter().map(|_| "insert"))),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// The binary side-state lookup must return every matching left row for a
+    /// high-cardinality join key, including an unsorted contribution.
+    #[test_log::test(tokio::test)]
+    async fn side_state_lookup_returns_every_high_cardinality_key() {
+        let runtime = IvmRuntime::from_env().await.unwrap();
+        runtime.init_schema().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let suffix = uuid::Uuid::new_v4().simple();
+        let base = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_side_lookup_l_{suffix}"),
+                    format!("file://{}/l", dir.path().display()),
+                    schema(),
+                )
+                .with_primary_keys(vec!["k".to_string()])
+                .with_cdc_column("op"),
+            )
+            .await
+            .unwrap();
+        let right = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_side_lookup_r_{suffix}"),
+                    format!("file://{}/r", dir.path().display()),
+                    schema(),
+                )
+                .with_primary_keys(vec!["k".to_string()])
+                .with_cdc_column("op"),
+            )
+            .await
+            .unwrap();
+        let output = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_side_lookup_out_{suffix}"),
+                    format!("file://{}/out", dir.path().display()),
+                    full_join_view_schema_for(
+                        &schema(),
+                        &schema(),
+                        &["k".to_string()],
+                        &["k".to_string()],
+                        &["g".to_string()],
+                        "v",
+                        "v",
+                    )
+                    .unwrap(),
+                )
+                .with_primary_keys(keyed_join_output_primary_keys(
+                    &["k".to_string()],
+                    &["k".to_string()],
+                )),
+            )
+            .await
+            .unwrap();
+
+        let rows = 100_000usize;
+        let mut left_rows = Vec::with_capacity(8192);
+        for key in 1..=rows {
+            left_rows.push((key as i64, format!("g{key}"), key as i64));
+            if left_rows.len() == 8192 || key == rows {
+                base.append_batch(runtime.client(), batch(&left_rows))
+                    .await
+                    .unwrap();
+                left_rows.clear();
+            }
+        }
+        let mut right_rows = Vec::with_capacity(8192);
+        for key in 1..=10_000 {
+            right_rows.push((key as i64, format!("g{key}"), key as i64));
+            if right_rows.len() == 8192 || key == 10_000 {
+                right
+                    .append_batch(runtime.client(), batch(&right_rows))
+                    .await
+                    .unwrap();
+                right_rows.clear();
+            }
+        }
+
+        let view = FullJoinView::new(
+            format!("ivm_side_lookup_{suffix}"),
+            base,
+            right,
+            output,
+            "g",
+            "v",
+            "v",
+        );
+        runtime.refresh_full_join(&view).await.unwrap().unwrap();
+        let state = runtime
+            .metadata()
+            .get_state(&view.view_id, StateRole::JoinLeft)
+            .await
+            .unwrap()
+            .expect("left side state");
+        let state = runtime.open_table_by_id(&state.table_id).await.unwrap();
+
+        // Shuffle so the contribution is not in key order.
+        let mut keys = (1..=10_000)
+            .map(|key| format!("g{key}"))
+            .collect::<Vec<_>>();
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        for index in (1..keys.len()).rev() {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            keys.swap(index, (seed as usize) % (index + 1));
+        }
+        let context = SessionContext::new();
+        let contribution = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("g", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from_iter_values(
+                keys.iter().map(String::as_str),
+            ))],
+        )
+        .unwrap();
+        let contribution = context.read_batches(vec![contribution]).unwrap();
+        let frame = runtime
+            .lookup_left_rows_for_keys(
+                &context,
+                &full_join_probe(&view),
+                Some(&state),
+                contribution,
+                true,
+            )
+            .await
+            .unwrap();
+        let batches = frame.collect().await.unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for batch in &batches {
+            let schema = batch.schema();
+            let column = batch
+                .column(schema.index_of("k").unwrap())
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                seen.insert(column.value(row));
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            keys.len(),
+            "the side-state lookup returned {} of {} keys",
+            seen.len(),
+            keys.len()
+        );
+    }
+}
