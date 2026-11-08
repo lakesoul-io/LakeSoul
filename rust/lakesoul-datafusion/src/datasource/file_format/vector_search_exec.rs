@@ -194,6 +194,10 @@ pub struct LakeSoulVectorSearchExec {
     /// enough matching rows; the plan's own filter above then passes them
     /// through.
     filter: Option<Arc<dyn PhysicalExpr>>,
+    /// `cdc_column != 'delete'`, when the table is CDC-enabled: the candidate
+    /// path reads the rows again (merge-on-read drops the tombstones) and also
+    /// evaluates this predicate so a deleted key can never be ranked.
+    cdc_filter: Option<Arc<dyn PhysicalExpr>>,
     /// `LIMIT` of the plan above, when it has one: the scan may then keep only
     /// the rows that limit can return and defer the payload columns of the
     /// rest (`vector_search.deferred_payload`).
@@ -246,6 +250,7 @@ impl LakeSoulVectorSearchExec {
         cdc_column: String,
         vector_search: VectorSearchRequest,
         filter: Option<Arc<dyn PhysicalExpr>>,
+        cdc_filter: Option<Arc<dyn PhysicalExpr>>,
         fetch_limit: Option<usize>,
         catalog: VectorCatalog,
     ) -> DFResult<Self> {
@@ -261,6 +266,7 @@ impl LakeSoulVectorSearchExec {
             cdc_column,
             vector_search,
             filter,
+            cdc_filter,
             fetch_limit,
             catalog,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -839,6 +845,7 @@ impl LakeSoulVectorSearchExec {
         &self,
         snapshot: &CachedSnapshot,
         expected_prefixes: &[String],
+        cdc_free: bool,
     ) -> bool {
         if snapshot.shards.len() != expected_prefixes.len() {
             return false;
@@ -851,15 +858,24 @@ impl LakeSoulVectorSearchExec {
         {
             return false;
         }
+        // The candidate path reads its rows again, so it only needs the
+        // coverage part of the proof: the loaded shard already masks the
+        // mutation chain (those keys never become candidates) and CDC
+        // tombstones are dropped by the merge-on-read read plus the change
+        // predicate.
         snapshot.shards.iter().all(|slot| {
             let covered: Vec<&str> = slot.covered.iter().map(String::as_str).collect();
-            crate::vector_batch::can_skip_verification(
-                &self.cdc_column,
-                slot.view.mutation_head.is_none(),
-                slot.view.mutation_records,
-                &slot.files,
-                &covered,
-            )
+            if cdc_free {
+                crate::vector_batch::can_skip_verification(
+                    self.cdc_column.as_str(),
+                    slot.view.mutation_head.is_none(),
+                    slot.view.mutation_records,
+                    &slot.files,
+                    &covered,
+                )
+            } else {
+                crate::vector_batch::candidate_files_covered(&slot.files, &covered)
+            }
         })
     }
 
@@ -945,8 +961,9 @@ impl LakeSoulVectorSearchExec {
         // one resolved; the coverage proof re-runs, so an unproven entry falls
         // back below.
         let t_search = std::time::Instant::now();
-        let (snapshot, resolve_ms, snapshot_cached) =
-            match self.expected_snapshot(store, &groups, expected_key_kind).await? {
+        let (snapshot, resolve_ms, snapshot_cached) = match self
+            .expected_snapshot(store, &groups, expected_key_kind, true)
+            .await? {
                 Some(resolved) => resolved,
                 None => return Ok(None),
             };
@@ -1053,6 +1070,7 @@ impl LakeSoulVectorSearchExec {
         store: &Arc<dyn object_store::ObjectStore>,
         groups: &[GroupFiles],
         expected_key_kind: u64,
+        cdc_free: bool,
     ) -> DFResult<Option<(Arc<CachedSnapshot>, f64, bool)>> {
         let cache_key = self.snapshot_key(expected_key_kind);
         let expected_prefixes: Vec<String> = groups
@@ -1066,7 +1084,9 @@ impl LakeSoulVectorSearchExec {
             .collect();
         if snapshot_cache_enabled()
             && let Some(entry) = snapshot_cache_get(&cache_key)
-                .filter(|entry| self.snapshot_covered(entry, &expected_prefixes))
+                .filter(|entry| {
+                    self.snapshot_covered(entry, &expected_prefixes, cdc_free)
+                })
         {
             return Ok(Some((entry, 0.0, true)));
         }
@@ -1103,13 +1123,22 @@ impl LakeSoulVectorSearchExec {
                     .iter()
                     .flat_map(|segment| segment.data_files.iter().map(String::as_str))
                     .collect();
-                if !crate::vector_batch::can_skip_verification(
-                    &self.cdc_column,
-                    view.mutation_head.is_none(),
-                    view.mutation_records,
-                    &group.file_uris,
-                    &covered,
-                ) {
+                let covered_files: Vec<&str> = covered.clone();
+                let proven = if cdc_free {
+                    crate::vector_batch::can_skip_verification(
+                        self.cdc_column.as_str(),
+                        view.mutation_head.is_none(),
+                        view.mutation_records,
+                        &group.file_uris,
+                        &covered_files,
+                    )
+                } else {
+                    crate::vector_batch::candidate_files_covered(
+                        &group.file_uris,
+                        &covered_files,
+                    )
+                };
+                if !proven {
                     return Ok(None);
                 }
                 requested.push((
@@ -1290,10 +1319,9 @@ impl LakeSoulVectorSearchExec {
             .field_with_name(&column.column)
             .map(|field| is_float_list(field.data_type()))
             .unwrap_or(false);
-        self.filter.is_some()
+        (self.filter.is_some() || self.cdc_filter.is_some())
             && self.vector_search.is_single()
             && !self.vector_search.order_by
-            && self.cdc_column.is_empty()
             && self.partition_cols.is_empty()
             && self.exact_ranking_matches_sort()
             && self.keep_rows() > 0
@@ -1342,9 +1370,18 @@ impl LakeSoulVectorSearchExec {
         nprobe: usize,
         parallelism: usize,
     ) -> DFResult<Option<Vec<arrow::record_batch::RecordBatch>>> {
-        let Some(filter) = self.filter.as_ref() else {
+        // Every row read back must satisfy the plan's filter (if any) and, on
+        // a CDC table, must not be a delete tombstone.
+        let mut predicates: Vec<&Arc<dyn PhysicalExpr>> = Vec::new();
+        if let Some(filter) = self.filter.as_ref() {
+            predicates.push(filter);
+        }
+        if let Some(cdc_filter) = self.cdc_filter.as_ref() {
+            predicates.push(cdc_filter);
+        }
+        if predicates.is_empty() {
             return Ok(None);
-        };
+        }
         #[cfg(test)]
         FILTERED_CANDIDATE_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
@@ -1366,11 +1403,13 @@ impl LakeSoulVectorSearchExec {
             .iter()
             .map(|group| self.group_files(group))
             .collect::<DFResult<Vec<_>>>()?;
-        let (snapshot, _, _) =
-            match self.expected_snapshot(store, &groups, expected_key_kind).await? {
-                Some(resolved) => resolved,
-                None => return Ok(None),
-            };
+        let (snapshot, _, _) = match self
+            .expected_snapshot(store, &groups, expected_key_kind, false)
+            .await?
+        {
+            Some(resolved) => resolved,
+            None => return Ok(None),
+        };
         let shards: Vec<LoadedShard> =
             snapshot.shards.iter().map(|slot| slot.shard.clone()).collect();
         let target = self.keep_rows().max(1);
@@ -1445,19 +1484,25 @@ impl LakeSoulVectorSearchExec {
                 if batch.num_rows() == 0 {
                     continue;
                 }
-                let predicate = match filter.evaluate(&batch) {
-                    Ok(value) => value.into_array(batch.num_rows())?,
-                    // A predicate the scan cannot evaluate here (e.g. one
-                    // referencing a partition column): use the reader path.
-                    Err(_) => return Ok(None),
-                };
-                let Some(predicate) = predicate
-                    .as_any()
-                    .downcast_ref::<arrow::array::BooleanArray>()
-                else {
-                    return Ok(None);
-                };
-                let kept = arrow::compute::filter_record_batch(&batch, predicate)?;
+                let mut kept = batch;
+                for predicate_expr in &predicates {
+                    if kept.num_rows() == 0 {
+                        break;
+                    }
+                    let predicate = match predicate_expr.evaluate(&kept) {
+                        Ok(value) => value.into_array(kept.num_rows())?,
+                        // A predicate the scan cannot evaluate here (e.g. one
+                        // referencing a partition column): use the reader path.
+                        Err(_) => return Ok(None),
+                    };
+                    let Some(predicate) = predicate
+                        .as_any()
+                        .downcast_ref::<arrow::array::BooleanArray>()
+                    else {
+                        return Ok(None);
+                    };
+                    kept = arrow::compute::filter_record_batch(&kept, predicate)?;
+                }
                 passing_rows += kept.num_rows();
                 if kept.num_rows() > 0 {
                     passing.push(kept);
@@ -1532,11 +1577,13 @@ impl LakeSoulVectorSearchExec {
             .map(|group| self.group_files(group))
             .collect::<DFResult<Vec<_>>>()?;
         let groups_ms = t_groups.elapsed().as_secs_f64() * 1000.0;
-        let (snapshot, resolve_ms, snapshot_cached) =
-            match self.expected_snapshot(store, &groups, expected_key_kind).await? {
-                Some(resolved) => resolved,
-                None => return Ok(None),
-            };
+        let (snapshot, resolve_ms, snapshot_cached) = match self
+            .expected_snapshot(store, &groups, expected_key_kind, true)
+            .await?
+        {
+            Some(resolved) => resolved,
+            None => return Ok(None),
+        };
         let shards: Vec<LoadedShard> = snapshot
             .shards
             .iter()

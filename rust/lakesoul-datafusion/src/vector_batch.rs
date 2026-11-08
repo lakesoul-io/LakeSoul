@@ -1237,6 +1237,22 @@ async fn read_live_keys(
 /// commit carries no mutation chain, and every active file of the bucket is
 /// listed by the commit — every index key is a live row of the snapshot and
 /// the keys can be trusted as they are.
+/// Coverage proof for a path that **reads its rows again**.
+///
+/// Skipping verification additionally needs "nothing can hide a row" (no CDC
+/// column, no mutation chain).  A path that re-reads every candidate row only
+/// needs the index to know about every data file: the loaded shard already
+/// masks the mutation chain, so mutated keys never become candidates, and a
+/// CDC tombstone is dropped by the merge-on-read read plus the change
+/// predicate.
+pub(crate) fn candidate_files_covered(
+    active_files: &[String],
+    covered_files: &[&str],
+) -> bool {
+    !covered_files.is_empty()
+        && lakesoul_common::index::pending_files(active_files, covered_files).is_empty()
+}
+
 pub(crate) fn can_skip_verification(
     cdc_column: &str,
     mutation_head_absent: bool,

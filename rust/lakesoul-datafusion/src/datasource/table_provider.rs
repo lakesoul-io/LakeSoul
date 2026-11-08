@@ -1276,6 +1276,34 @@ impl LakeSoulTableProvider {
             }
             None => None,
         };
+        // On a CDC table a candidate key can be a delete tombstone: give the
+        // scan the `cdc_column != 'delete'` predicate so the candidate path
+        // drops it before ranking, exactly like the merge-on-read filter above.
+        let cdc_filter = {
+            let cdc_column = self.io_config.cdc_column();
+            if cdc_column.is_empty() {
+                None
+            } else {
+                let predicate = Expr::Column(datafusion::common::Column::new_unqualified(
+                    cdc_column.to_string(),
+                ))
+                .not_eq(Expr::Literal(
+                    datafusion::common::ScalarValue::Utf8(Some("delete".to_string())),
+                    None,
+                ));
+                datafusion::common::DFSchema::try_from(Arc::clone(&projected_file_schema))
+                    .ok()
+                    .and_then(|schema| {
+                        datafusion::physical_expr::create_physical_expr(
+                            &predicate,
+                            &schema,
+                            session_state.execution_props(),
+                            &PhysicalPlanningContext::default(),
+                        )
+                        .ok()
+                    })
+            }
+        };
         let exec = crate::datasource::file_format::LakeSoulVectorSearchExec::try_new(
             merged_schema.clone(),
             projected_file_schema,
@@ -1288,6 +1316,7 @@ impl LakeSoulTableProvider {
             self.io_config.cdc_column(),
             request,
             filter,
+            cdc_filter,
             limit,
             self.client.vector_index_catalog(),
         )?;

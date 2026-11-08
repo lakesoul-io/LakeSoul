@@ -357,6 +357,63 @@ pub(crate) fn cdc_batch(ids: &[i32], scores: &[i32], ops: &[&str]) -> RecordBatc
     .unwrap()
 }
 
+/// CDC-enabled table with a vector index: `op` is the change column and the
+/// vector index is declared through `vector_index_columns`, so writes can
+/// carry delete tombstones and the index still serves the queries.
+pub(crate) async fn create_cdc_vector_table(
+    client: MetaDataClientRef,
+    table_name: &str,
+    schema: SchemaRef,
+    vector_index_configs: &[crate::vector_index::VectorIndexTableConfig],
+) -> Result<()> {
+    let primary_keys = vec!["id".to_string()];
+    crate::vector_index::validate_vector_index_configs(
+        vector_index_configs,
+        schema.as_ref(),
+        &primary_keys,
+    )?;
+    let io_config = LakeSoulIOConfigBuilder::new()
+        .with_schema(schema)
+        .with_primary_keys(primary_keys.clone())
+        .with_option(OPTION_KEY_CDC_COLUMN, "op")
+        .with_option(OPTION_KEY_STABLE_SORT, "true")
+        .build();
+    let target_schema = io_config.target_schema();
+    let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
+        schema_to_metadata_parts(target_schema.as_ref());
+    let vector_index_columns = (!vector_index_configs.is_empty())
+        .then(|| crate::vector_index::vector_index_columns_to_json(vector_index_configs));
+
+    client
+        .create_table(TableInfo {
+            table_id: format!("table_{}", uuid::Uuid::new_v4()),
+            table_name: table_name.to_string(),
+            table_path: format!(
+                "file://{}/default/{}",
+                env::current_dir()
+                    .unwrap()
+                    .to_str()
+                    .ok_or(report!("can not get $TMPDIR"))?,
+                table_name
+            ),
+            table_schema,
+            table_schema_arrow_ipc,
+            table_schema_arrow_ipc_json_hash,
+            table_namespace: "default".to_string(),
+            properties: serde_json::to_string(&LakeSoulTableProperty {
+                hash_bucket_num: Some(String::from("1")),
+                cdc_change_column: Some(String::from("op")),
+                use_cdc: Some(String::from("true")),
+                vector_index_columns,
+                ..Default::default()
+            })?,
+            partitions: format_table_info_partitions(&[], &primary_keys),
+            domain: "public".to_string(),
+        })
+        .await?;
+    Ok(())
+}
+
 /// Creates the CDC table shape LakeSoul's delete tombstones need: a change
 /// column plus the `use_cdc` table property.
 pub(crate) async fn create_cdc_table(

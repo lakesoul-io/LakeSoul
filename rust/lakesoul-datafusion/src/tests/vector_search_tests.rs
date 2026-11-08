@@ -2825,6 +2825,204 @@ async fn sql_vector_search_filter_narrows_probe() {
     assert_eq!(rows, 0, "a filter matching no row must return no row");
 }
 
+fn cdc_vector_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::UInt64, false),
+        Field::new(
+            "vec",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIM as i32,
+            ),
+            false,
+        ),
+        Field::new("op", DataType::Utf8, true),
+    ]))
+}
+
+fn make_cdc_vector_batch(
+    ids: &[u64],
+    vectors: &[Vec<f32>],
+    ops: &[&str],
+) -> RecordBatch {
+    let id_array = arrow::array::UInt64Array::from(ids.to_vec());
+    let op_array =
+        arrow::array::StringArray::from(ops.iter().map(|op| Some(*op)).collect::<Vec<_>>());
+    let mut builder = arrow::array::FixedSizeListBuilder::new(
+        arrow::array::Float32Builder::new(),
+        DIM as i32,
+    );
+    for vector in vectors {
+        for value in vector {
+            builder.values().append_value(*value);
+        }
+        builder.append(true);
+    }
+    let vec_array = builder.finish();
+    RecordBatch::try_new(
+        cdc_vector_schema(),
+        vec![Arc::new(id_array), Arc::new(vec_array), Arc::new(op_array)],
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_cdc_drops_tombstones() {
+    // A CDC table keeps delete tombstones in the data files (the change column
+    // says `delete`).  The candidate path must read the rows again and drop a
+    // tombstoned key before ranking instead of serving its old vector.
+    use crate::datasource::file_format::vector_search_exec::FILTERED_CANDIDATE_RUNS;
+    use crate::tests::create_cdc_vector_table;
+    use std::sync::atomic::Ordering;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_cdc";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    create_cdc_vector_table(
+        client.clone(),
+        table_name,
+        cdc_vector_schema(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    let n = 200u64;
+    let ids: Vec<u64> = (0..n).collect();
+    let vectors = seeded_vectors(n as usize, 7);
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    let ops = vec!["insert"; ids.len()];
+    table
+        .execute_upsert(make_cdc_vector_batch(&ids, &vectors, &ops))
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    // Tombstone every tenth row: their vectors stay in the files and in the
+    // index, but the merge-on-read view no longer holds them.
+    let deleted: Vec<u64> = ids.iter().copied().filter(|id| id % 10 == 0).collect();
+    let deleted_vectors: Vec<Vec<f32>> = deleted
+        .iter()
+        .map(|id| vectors[*id as usize].clone())
+        .collect();
+    let delete_ops = vec!["delete"; deleted.len()];
+    table
+        .execute_upsert(make_cdc_vector_batch(
+            &deleted,
+            &deleted_vectors,
+            &delete_ops,
+        ))
+        .await
+        .unwrap();
+
+    let ctx =
+        crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    ctx.sql("SET lakesoul_vector_search.nprobe = 4")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    ctx.sql("SET lakesoul_vector_search.exact_overfetch = 1")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    // The table itself must show the merge-on-read row count.
+    let count = ctx
+        .sql(&format!("select count(*) as cnt from \"lakesoul\".default.{table_name}"))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let count = count[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow::array::Int64Array>()
+        .expect("count column")
+        .value(0);
+    assert_eq!(count, 180, "CDC deletes must remove 20 rows");
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let visible: Vec<(u64, &Vec<f32>)> = ids
+        .iter()
+        .zip(vectors.iter())
+        .filter(|(id, _)| *id % 10 != 0)
+        .map(|(id, vector)| (*id, vector))
+        .collect();
+    let expected: Vec<u64> = {
+        let vectors_only: Vec<Vec<f32>> =
+            visible.iter().map(|(_, vector)| (*vector).clone()).collect();
+        let top = brute_force_topk(&vectors_only, &query, 10);
+        top.iter()
+            .map(|position| visible[*position as usize].0)
+            .collect()
+    };
+
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let before = FILTERED_CANDIDATE_RUNS.load(Ordering::Relaxed);
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let after = FILTERED_CANDIDATE_RUNS.load(Ordering::Relaxed);
+    assert!(
+        after > before,
+        "a CDC table must take the candidate path that drops tombstones"
+    );
+    let mut returned = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .expect("id column");
+        for id in ids.values().iter() {
+            assert!(id % 10 != 0, "deleted id {id} must not be returned");
+            returned.push(*id);
+        }
+    }
+    assert_eq!(returned.len(), 10, "the result must still fill the limit");
+    let hits = returned.iter().filter(|id| expected.contains(id)).count();
+    assert!(
+        hits >= 8,
+        "CDC recall {hits}/10, returned={returned:?} expected={expected:?}"
+    );
+
+    // The same with a WHERE clause: filter and tombstone checks compose.
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         where id > 100 order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let mut rows = 0usize;
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .expect("id column");
+        for id in ids.values().iter() {
+            assert!(*id > 100, "filter was not applied to id {id}");
+            assert!(id % 10 != 0, "deleted id {id} must not be returned");
+            rows += 1;
+        }
+    }
+    assert_eq!(rows, 10, "filter + CDC path must fill the limit");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_vector_batch_ip_metric() {
     // The snapshot batch entry must support the inner-product metric in both
