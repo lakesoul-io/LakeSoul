@@ -132,9 +132,5 @@ where
 
 type Result<T, E = Report> = std::result::Result<T, E>;
 
-#[cfg(feature = "adbc")]
-#[expect(dead_code)]
-mod adbc;
-
 #[cfg(test)]
 mod tests;

@@ -109,14 +109,20 @@ pub struct ConnectionSession {
 
 /// Resolve the connection-local session state from pgwire's
 /// `SessionExtensions`.
-fn connection_session<C>(client: &C) -> PgWireResult<Arc<ConnectionSession>>
+pub(crate) fn connection_session<C>(client: &C) -> PgWireResult<Arc<ConnectionSession>>
 where
-    C: ClientInfo,
+    C: ClientInfo + ?Sized,
 {
     client
         .session_extensions()
         .get::<ConnectionSession>()
         .ok_or_else(session_not_initialized)
+}
+
+/// Rewrite DDL sqlparser cannot parse to the sentinel SELECT its hook claims.
+fn rewrite_special_statements(sql: &str) -> PgWireResult<String> {
+    let sql = crate::federation::rewrite(sql)?.unwrap_or_else(|| sql.to_string());
+    crate::subscribe::sql::rewrite(&sql).map(|rewritten| rewritten.unwrap_or(sql))
 }
 
 pub(crate) fn session_not_initialized() -> PgWireError {
@@ -253,11 +259,10 @@ impl LakeSoulQueryRouter {
             let query_text =
                 crate::session_settings::rewrite_reset_time_zone(&query_text)
                     .unwrap_or(query_text);
-            // Subscription DDL is not in sqlparser. Rewrite a single
-            // subscription statement to the internal sentinel SELECT the
-            // subscription hook claims; a mixed batch is rejected here.
-            let query_text =
-                crate::subscribe::sql::rewrite(&query_text)?.unwrap_or(query_text);
+            // Subscription and federation DDL are not in sqlparser. Rewrite a
+            // single such statement to the internal sentinel SELECT its hook
+            // claims; a mixed batch is rejected here.
+            let query_text = rewrite_special_statements(&query_text)?;
             let statements =
                 split_statements(&query_text).unwrap_or_else(|| vec![query_text.clone()]);
             if statements.is_empty() {
@@ -631,6 +636,12 @@ pub(crate) fn connection_statement_hooks(
     database: &str,
 ) -> Vec<Arc<dyn datafusion_postgres::QueryHook>> {
     let mut hooks = crate::pg_vector::statement_hooks();
+    if let Some(federation) = factory.federation() {
+        hooks.push(Arc::new(crate::federation::FederationStatementHook::new(
+            Arc::clone(federation),
+            database.to_string(),
+        )));
+    }
     hooks.push(Arc::new(crate::ddl::DdlStatementHook::new(
         Arc::clone(factory.meta_client()),
         database.to_string(),
@@ -682,7 +693,9 @@ impl QueryParser for __ConnectionParser {
     {
         let rewritten = crate::session_settings::rewrite_reset_time_zone(sql);
         let sql = rewritten.as_deref().unwrap_or(sql);
-        let sql = crate::subscribe::sql::rewrite(sql)?.unwrap_or_else(|| sql.to_string());
+        let sql = crate::federation::rewrite(sql)?.unwrap_or_else(|| sql.to_string());
+        let sql =
+            crate::subscribe::sql::rewrite(&sql)?.unwrap_or_else(|| sql.to_string());
         let state = connection_session(client)?;
         let parser = state.service.query_parser();
         parser.parse_sql(client, &sql, types).await
@@ -877,8 +890,7 @@ impl SimpleQueryHandler for LakeSoulQueryRouter {
         let state = connection_session(client)?;
         // `on_query` rewrites the batch before splitting; this direct entry
         // point (used by tests and embedded callers) does the same.
-        let query =
-            crate::subscribe::sql::rewrite(query)?.unwrap_or_else(|| query.to_string());
+        let query = rewrite_special_statements(query)?;
         let query = query.as_str();
         // The whole text in one call: `on_query` hands a statement of a batch
         // - or a single statement - to every bounded execution, and this call
@@ -991,12 +1003,11 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
         {
             message.query = rewritten;
         }
-        let rewrite = match crate::subscribe::sql::rewrite(&message.query) {
-            Ok(Some(rewritten)) => {
+        let rewrite = match rewrite_special_statements(&message.query) {
+            Ok(rewritten) => {
                 message.query = rewritten;
                 Ok(())
             }
-            Ok(None) => Ok(()),
             Err(error) => Err(error),
         };
         let result = match rewrite {

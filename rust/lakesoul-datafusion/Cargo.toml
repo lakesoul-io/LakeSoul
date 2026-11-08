@@ -65,9 +65,6 @@ json = "0.12"
 # tpch
 tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs.git", rev = "46f3dca" }
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs.git", rev = "46f3dca" }
-# adbc
-adbc_core = { version = "0.23.0", optional = true }
-adbc_driver_manager = { version = "0.23.0", optional = true }
 # observability
 metrics = { workspace = true }
 opentelemetry = { version = "0.32.0", default-features = false, features = [
@@ -107,7 +104,6 @@ harness = false
 
 [features]
 ci = []
-adbc = ["dep:adbc_core", "dep:adbc_driver_manager"]
 
 [lints]
 workspace = true

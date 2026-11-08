@@ -621,7 +621,7 @@ fn partition_columns(
 /// columns and repeated key columns are rejected, and conflicting
 /// `NULL`/`NOT NULL` declarations are refused instead of letting the last one
 /// win: the metadata written here outlives the statement.
-fn build_schema(
+pub(crate) fn build_schema(
     columns: &[ColumnDef],
     constraints: &[TableConstraint],
 ) -> PgWireResult<(Schema, Option<Vec<usize>>)> {
