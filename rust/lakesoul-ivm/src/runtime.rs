@@ -12,6 +12,7 @@
 //! committed.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use arrow::array::{ArrayRef, BinaryArray, BinaryBuilder};
@@ -2979,6 +2980,22 @@ pub(crate) fn cast_frame_columns(
     frame.select(exprs).map_err(Into::into)
 }
 
+tokio::task_local! {
+    /// Epoch of the incremental window the current refresh is applying.
+    /// Writes outside a window (a direct rebuild, for example) leave it unset.
+    static CURRENT_REFRESH_EPOCH: Arc<AtomicI64>;
+}
+
+pub(crate) fn current_refresh_epoch() -> Option<i64> {
+    CURRENT_REFRESH_EPOCH
+        .try_with(|epoch| {
+            let epoch = epoch.load(Ordering::Relaxed);
+            (epoch >= 0).then_some(epoch)
+        })
+        .ok()
+        .flatten()
+}
+
 /// The session used by full and incremental refreshes.  Keep the partition
 /// count identical on both paths so a bootstrap and its first incremental
 /// windows run with the same parallelism.
@@ -3378,9 +3395,14 @@ async fn write_dataframe_distributed(
 ) -> Result<WrittenFiles> {
     use futures::StreamExt;
 
+    let expected_epoch = if table.schema.field_with_name(IVM_EPOCH_COLUMN).is_ok() {
+        current_refresh_epoch()
+    } else {
+        None
+    };
     let sink_spec = crate::distributed::IvmSinkSpec {
         table: table.clone(),
-        epoch: None,
+        epoch: expected_epoch,
     };
     let plan = crate::distributed::IVM_SINK_SPEC
         .scope(sink_spec, async { frame.create_physical_plan().await })
@@ -3406,6 +3428,7 @@ async fn write_dataframe_distributed(
         let schema = batch.schema();
         let task_index = schema.index_of("task_id")?;
         let table_index = schema.index_of("table_id")?;
+        let epoch_index = schema.index_of("epoch")?;
         let files_index = schema.index_of("files")?;
         let rows_index = schema.index_of("rows")?;
         let inserts_index = schema.index_of("inserts")?;
@@ -3420,6 +3443,11 @@ async fn write_dataframe_distributed(
             .as_any()
             .downcast_ref::<arrow_array::StringArray>()
             .ok_or_else(|| rootcause::report!("IVM task output has no table_id"))?;
+        let epochs = batch
+            .column(epoch_index)
+            .as_any()
+            .downcast_ref::<arrow_array::Int64Array>()
+            .ok_or_else(|| rootcause::report!("IVM task output has no epoch"))?;
         let encoded_files = batch
             .column(files_index)
             .as_any()
@@ -3447,6 +3475,14 @@ async fn write_dataframe_distributed(
                 return Err(rootcause::report!(
                     "IVM task {task_id} wrote table {output_table}, expected {}",
                     table.table_id
+                ));
+            }
+            if let Some(expected) = expected_epoch
+                && epochs.value(row) != expected
+            {
+                return Err(rootcause::report!(
+                    "IVM task {task_id} wrote epoch {}, expected {expected}",
+                    epochs.value(row)
                 ));
             }
             let task_files: Vec<DataFileInfo> =
@@ -4748,64 +4784,91 @@ impl IvmRuntime {
         .await?;
         let (result, io) = crate::observability::scope_refresh_io(
             kind,
-            TARGET_WRITE.scope(Arc::new(Mutex::new(scope)), async {
-                match self.spec_view(spec).await {
-                    Ok(SpecView::SumCount(view)) => self.refresh_sum_count(&view).await,
-                    Ok(SpecView::Variance(view)) => self.refresh_variance(&view).await,
-                    Ok(SpecView::Median(view)) => self.refresh_median(&view).await,
-                    Ok(SpecView::BoolAgg(view)) => self.refresh_bool_agg(&view).await,
-                    Ok(SpecView::ApproxDistinct(view)) => {
-                        self.refresh_approx_distinct(&view).await
+            CURRENT_REFRESH_EPOCH.scope(
+                Arc::new(AtomicI64::new(-1)),
+                TARGET_WRITE.scope(Arc::new(Mutex::new(scope)), async {
+                    match self.spec_view(spec).await {
+                        Ok(SpecView::SumCount(view)) => {
+                            self.refresh_sum_count(&view).await
+                        }
+                        Ok(SpecView::Variance(view)) => {
+                            self.refresh_variance(&view).await
+                        }
+                        Ok(SpecView::Median(view)) => self.refresh_median(&view).await,
+                        Ok(SpecView::BoolAgg(view)) => self.refresh_bool_agg(&view).await,
+                        Ok(SpecView::ApproxDistinct(view)) => {
+                            self.refresh_approx_distinct(&view).await
+                        }
+                        Ok(SpecView::ApproxPercentile(view)) => {
+                            self.refresh_approx_percentile(&view).await
+                        }
+                        Ok(SpecView::ComputedAgg(view)) => {
+                            self.refresh_computed_agg(&view).await
+                        }
+                        Ok(SpecView::StringAgg(view)) => {
+                            self.refresh_string_agg(&view).await
+                        }
+                        Ok(SpecView::ArrayAgg(view)) => {
+                            self.refresh_array_agg(&view).await
+                        }
+                        Ok(SpecView::Join(view)) => self.refresh_join(&view).await,
+                        Ok(SpecView::MultiJoin(view)) => {
+                            self.refresh_multi_join(&view).await
+                        }
+                        Ok(SpecView::MultiAgg(view)) => {
+                            self.refresh_multi_agg(&view).await
+                        }
+                        Ok(SpecView::LookupJoin(view)) => {
+                            self.refresh_lookup_join(&view).await
+                        }
+                        Ok(SpecView::MultiLookupJoin(view)) => {
+                            self.refresh_multi_lookup_join(&view).await
+                        }
+                        Ok(SpecView::LeftJoin(view)) => {
+                            self.refresh_left_join(&view).await
+                        }
+                        Ok(SpecView::FullJoin(view)) => {
+                            self.refresh_full_join(&view).await
+                        }
+                        Ok(SpecView::CrossJoin(view)) => {
+                            self.refresh_cross_join(&view).await
+                        }
+                        Ok(SpecView::MinMax(view)) => self.refresh_min_max(&view).await,
+                        Ok(SpecView::DistinctAgg(view)) => {
+                            self.refresh_distinct_agg(&view).await
+                        }
+                        Ok(SpecView::Window(view)) => self.refresh_window(&view).await,
+                        Ok(SpecView::SemiAnti(view)) => {
+                            self.refresh_semi_anti(&view).await
+                        }
+                        Ok(SpecView::LeftAggregate(view)) => {
+                            self.refresh_left_aggregate(&view).await
+                        }
+                        Ok(SpecView::LookupChain(view)) => {
+                            self.refresh_lookup_chain(&view).await
+                        }
+                        Ok(SpecView::GroupingSets(view)) => {
+                            self.refresh_grouping_sets(&view).await
+                        }
+                        Ok(SpecView::Row(view)) => self.refresh_row(&view).await,
+                        Ok(SpecView::UnionAll(view)) => {
+                            self.refresh_union_all(&view).await
+                        }
+                        Ok(SpecView::UnionDistinct(view)) => {
+                            self.refresh_union_distinct(&view).await
+                        }
+                        Ok(SpecView::TopK(view)) => self.refresh_top_k(&view).await,
+                        Ok(SpecView::MultiWindow(view)) => {
+                            self.refresh_multi_window(&view).await
+                        }
+                        Ok(SpecView::Fallback(view)) => {
+                            self.refresh_fallback(&view).await
+                        }
+                        Ok(SpecView::Sink(view)) => self.refresh_sink(&view).await,
+                        Err(error) => Err(error),
                     }
-                    Ok(SpecView::ApproxPercentile(view)) => {
-                        self.refresh_approx_percentile(&view).await
-                    }
-                    Ok(SpecView::ComputedAgg(view)) => {
-                        self.refresh_computed_agg(&view).await
-                    }
-                    Ok(SpecView::StringAgg(view)) => self.refresh_string_agg(&view).await,
-                    Ok(SpecView::ArrayAgg(view)) => self.refresh_array_agg(&view).await,
-                    Ok(SpecView::Join(view)) => self.refresh_join(&view).await,
-                    Ok(SpecView::MultiJoin(view)) => self.refresh_multi_join(&view).await,
-                    Ok(SpecView::MultiAgg(view)) => self.refresh_multi_agg(&view).await,
-                    Ok(SpecView::LookupJoin(view)) => {
-                        self.refresh_lookup_join(&view).await
-                    }
-                    Ok(SpecView::MultiLookupJoin(view)) => {
-                        self.refresh_multi_lookup_join(&view).await
-                    }
-                    Ok(SpecView::LeftJoin(view)) => self.refresh_left_join(&view).await,
-                    Ok(SpecView::FullJoin(view)) => self.refresh_full_join(&view).await,
-                    Ok(SpecView::CrossJoin(view)) => self.refresh_cross_join(&view).await,
-                    Ok(SpecView::MinMax(view)) => self.refresh_min_max(&view).await,
-                    Ok(SpecView::DistinctAgg(view)) => {
-                        self.refresh_distinct_agg(&view).await
-                    }
-                    Ok(SpecView::Window(view)) => self.refresh_window(&view).await,
-                    Ok(SpecView::SemiAnti(view)) => self.refresh_semi_anti(&view).await,
-                    Ok(SpecView::LeftAggregate(view)) => {
-                        self.refresh_left_aggregate(&view).await
-                    }
-                    Ok(SpecView::LookupChain(view)) => {
-                        self.refresh_lookup_chain(&view).await
-                    }
-                    Ok(SpecView::GroupingSets(view)) => {
-                        self.refresh_grouping_sets(&view).await
-                    }
-                    Ok(SpecView::Row(view)) => self.refresh_row(&view).await,
-                    Ok(SpecView::UnionAll(view)) => self.refresh_union_all(&view).await,
-                    Ok(SpecView::UnionDistinct(view)) => {
-                        self.refresh_union_distinct(&view).await
-                    }
-                    Ok(SpecView::TopK(view)) => self.refresh_top_k(&view).await,
-                    Ok(SpecView::MultiWindow(view)) => {
-                        self.refresh_multi_window(&view).await
-                    }
-                    Ok(SpecView::Fallback(view)) => self.refresh_fallback(&view).await,
-                    Ok(SpecView::Sink(view)) => self.refresh_sink(&view).await,
-                    Err(error) => Err(error),
-                }
-            }),
+                }),
+            ),
         )
         .await;
         crate::observability::record_refresh(
@@ -5833,6 +5896,9 @@ impl IvmRuntime {
             }
         }
 
+        let _ = CURRENT_REFRESH_EPOCH.try_with(|epoch| {
+            epoch.store(record.epoch, Ordering::Relaxed);
+        });
         Ok(WindowStart::Apply(Box::new(record)))
     }
 

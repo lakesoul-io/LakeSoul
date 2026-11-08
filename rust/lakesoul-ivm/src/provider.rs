@@ -294,13 +294,51 @@ impl IvmTableProvider {
         split
     }
 
+    /// Split an append-only scan's files into independent groups so the
+    /// distributed planner can spread them over tasks.  A merge-on-read table
+    /// must keep all versions of a bucket together and never takes this path.
+    fn split_append_only_files(groups: Vec<PartitionFiles>) -> Vec<PartitionFiles> {
+        let mut split = Vec::with_capacity(groups.len());
+        for group in groups {
+            if group.files.len() <= 1 {
+                split.push(group);
+                continue;
+            }
+            for file in group.files {
+                split.push(PartitionFiles {
+                    partition_desc: group.partition_desc.clone(),
+                    files: vec![file],
+                });
+            }
+        }
+        split
+    }
+
+    fn distributed_scan_split() -> bool {
+        #[cfg(feature = "distributed")]
+        {
+            return crate::config::session_factory().is_some();
+        }
+        #[cfg(not(feature = "distributed"))]
+        {
+            false
+        }
+    }
+
     pub(crate) fn stream_plan_groups(
         &self,
         groups: Vec<PartitionFiles>,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let groups = self.split_bucket_groups(groups);
+        let groups = if !self.merge
+            && self.table.primary_keys.is_empty()
+            && Self::distributed_scan_split()
+        {
+            Self::split_append_only_files(groups)
+        } else {
+            self.split_bucket_groups(groups)
+        };
         let (reader_projection, out_schema) = self
             .reader_projection(projection)
             .map_err(|error| DataFusionError::Execution(error.to_string()))?;
@@ -866,6 +904,18 @@ mod tests {
             file_format: lakesoul_io::file_format::PhysicalFormat::Vortex,
             allow_fallback: true,
         }
+    }
+
+    #[test]
+    fn append_only_files_become_independent_groups() {
+        let groups = vec![PartitionFiles {
+            partition_desc: "-5".to_string(),
+            files: vec!["a.parquet".to_string(), "b.parquet".to_string()],
+        }];
+        let split = IvmTableProvider::split_append_only_files(groups);
+        assert_eq!(split.len(), 2);
+        assert_eq!(split[0].files, vec!["a.parquet"]);
+        assert_eq!(split[1].files, vec!["b.parquet"]);
     }
 
     #[test]
