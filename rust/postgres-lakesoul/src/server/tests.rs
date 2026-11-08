@@ -2391,6 +2391,103 @@ async fn run_prepared_vector_query(
         .collect()
 }
 
+/// Run one prepared statement with one text parameter, the way a driver's
+/// type introspection does (`SELECT ... WHERE oid = to_regtype($1)`), and
+/// return the rows it produced.
+async fn run_prepared_text_query(
+    router: &LakeSoulQueryRouter,
+    client: &mut MockClient,
+    sql: &str,
+    parameter: &str,
+) -> Vec<Vec<Option<String>>> {
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_parse(
+        router,
+        client,
+        Parse::new(None, sql.to_string(), vec![25]), // 25 = text
+    )
+    .await
+    .expect("on_parse");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_bind(
+        router,
+        client,
+        Bind::new(
+            None,
+            None,
+            vec![0],
+            vec![Some(bytes::Bytes::from(parameter.as_bytes().to_vec()))],
+            vec![],
+        ),
+    )
+    .await
+    .expect("on_bind");
+    let before = client
+        .sent_messages()
+        .iter()
+        .filter(|message| matches!(message, PgWireBackendMessage::DataRow(_)))
+        .count();
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_execute(
+        router,
+        client,
+        Execute::new(None, 0),
+    )
+    .await
+    .expect("on_execute");
+    client
+        .sent_messages()
+        .iter()
+        .filter_map(|message| match message {
+            PgWireBackendMessage::DataRow(row) => Some(decode_text_row(row)),
+            _ => None,
+        })
+        .skip(before)
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn to_regtype_resolves_pgvector_type_for_drivers() {
+    let factory = test_factory().await;
+    let mut client = MockClient::new();
+    attach_session(&factory, &mut client, "user_a").await;
+    let router = LakeSoulQueryRouter::new();
+
+    // The pgvector psycopg driver resolves the extension type before it can
+    // register its numpy adapters (psycopg's `TypeInfo.fetch('vector')`).
+    let rows = run_query(
+        &router,
+        &mut client,
+        "SELECT to_regtype('vector'), to_regtype('bit'), to_regtype('no_such_type')",
+    )
+    .await;
+    let vector_oid = datafusion_postgres::arrow_pg::datatypes::PG_VECTOR_TYPE_OID as f64;
+    assert_eq!(rows[0].1.len(), 1, "{rows:?}");
+    assert_eq!(as_f64(&rows[0].1[0][0]), vector_oid, "{rows:?}");
+    assert_eq!(as_f64(&rows[0].1[0][1]), 1560.0, "{rows:?}");
+    assert_eq!(rows[0].1[0][2], None, "{rows:?}");
+
+    // The exact lookup shape psycopg builds around to_regtype().
+    let rows = run_query(
+        &router,
+        &mut client,
+        "SELECT typname, oid FROM pg_type WHERE oid = to_regtype('vector')",
+    )
+    .await;
+    assert_eq!(rows[0].1.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].1[0][0].as_deref(), Some("vector"), "{rows:?}");
+    assert_eq!(as_f64(&rows[0].1[0][1]), vector_oid, "{rows:?}");
+
+    // ... and through the extended protocol, with the name bound as $1
+    // exactly like the client sends it.
+    let rows = run_prepared_text_query(
+        &router,
+        &mut client,
+        "SELECT oid FROM pg_type WHERE oid = to_regtype($1)",
+        "vector",
+    )
+    .await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(as_f64(&rows[0][0]), vector_oid, "{rows:?}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pgvector_prepared_parameter_binds_a_vector() {
     let table = "pgvector_prepared";

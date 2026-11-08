@@ -821,3 +821,41 @@ exact +31%、index-only +39%）叠加后达到上表工作点。
    datafusion 侧 SQL 前端优化（与 `ORDER BY ... LIMIT` 的规划路径共用）。
 3. 若要对齐原生 pgvector 语义（按索引距离返回近似序、不读向量列），把
    `lakesoul_vector_search.rerank` 默认设为 `index` 更贴切——这是行为/召回取舍，需产品决策。
+
+---
+
+# 三、实现状态补充（driver 类型探测 / pgvector 零改造）
+
+`postgres-lakesoul` 已经支持 pgvector 客户端"零改造"所需的类型探测：
+
+- **`to_regtype(text)`**（`src/pg_compat.rs`）：把类型名解析为 OID，返回
+  `Int32`（与 `pg_type.oid` 同类型），未知名字返回 `NULL`（PostgreSQL 语义）。
+  覆盖 `vector`（16385，即 `PG_VECTOR_TYPE_OID`）、`bit`（1560，pgvector 的
+  `register_vector` 也会探测它）以及常见内置类型。
+  这样 `pgvector.psycopg.register_vector()` 里 psycopg 的
+  `TypeInfo.fetch('vector')`（其内部 SQL 是
+  `... WHERE t.oid = to_regtype($1)`）可以正常返回 type info。
+- **RowDescription / pg_type 的 vector 类型**：LakeSoul 会话通过
+  `LakeSoulVectorFieldMetadata` 给声明了向量索引的列打 `pg.vector` 标记，
+  `datafusion-postgres` 据此在 `pg_catalog.pg_type` 中暴露 `vector` 行，
+  并在查询结果的 RowDescription 中返回 vector OID（16385）；text/binary
+  编解码由 `arrow-pg` 的 pgvector 特性完成。
+- **参数化**：extended protocol 的 `$n::vector(n)` / 裸 `$n` 参数按 vector
+  类型绑定并解码；numpy 数组、`pgvector.Vector` 均可直接作为查询参数，
+  查询结果向量列也会被 pgvector 的 loader 解码为 `Vector` 对象。
+
+验证（2026-11，本机实测）：
+
+```text
+psycopg + pgvector.psycopg.register_vector() → PASS
+SELECT id FROM docs ORDER BY embedding <-> %s LIMIT 3   (numpy 参数) → [(1,), (2,), (6,)]
+SELECT embedding FROM docs WHERE id = 1 → pgvector.Vector([1.0, 0.0, ...])
+SELECT %s::vector(8) <-> %s::vector(8) → 0.0
+```
+
+Rust 测试：`to_regtype_resolves_pgvector_type_for_drivers`（simple + extended
+protocol）、`pgvector_prepared_parameter_binds_a_vector`、
+`pgvector_results_report_the_vector_type` 等，共 7 个 pgvector 相关用例通过。
+
+仍未覆盖（保持只读设计）：SQL 级 `PREPARE/EXECUTE`、`hnsw.ef_search` 的实际
+语义、多语句事务快照（`BEGIN` pin LakeSoul snapshot）、生产级认证/TLS。
