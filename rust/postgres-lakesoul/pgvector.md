@@ -156,6 +156,25 @@ pgvector 的 `<->` 返回欧氏距离，即需要开平方。排序顺序相同�
 
 因此索引只应用来选候选集。最终 SQL 仍应在候选行上精确计算 pgvector distance、排序并执行 LIMIT。
 
+> **已实现（R68）**：`<#>` 现在可以完整走索引，包括 index-only 排序。
+> - `datafusion-postgres` 把 `<#>` 重写成 `-inner_product(vec, q)` ASC；下推规则
+>   （`vector_search_rule.rs`）识别 `Expr::Negative`，把它归一化为"正权重 + IP 降序"的规范形式，
+>   于是"删掉 Sort、扫描按索引顺序直出"的融合物理计划对 IP 同样成立；
+> - 单列 IP 允许 index-only（多列融合排序仍只支持 L2，因为多列融合距离目前只对 L2 定义）；
+> - `exact` 模式按 `-dot` 精确重排（`accumulate_exact_row` 的 IP 分支），结果与 `inner_product` 一致。
+>
+> 实测（GloVe-1.18M×200d、4 bucket、bits=1、top_k=100、200 条真实 query、TTL=200ms，IP 索引）：
+>
+> | 查询写法 | 模式 | QPS | Recall@100 |
+> |---|---|---:|---:|
+> | `ORDER BY vec <#> '[...]'` | exact | **590.8** | 0.7006 |
+> | 同上 | index-only（np16） | **779.1** | 0.4395 |
+> | `ORDER BY inner_product(vec, ARRAY[...]) DESC` | exact / index-only | 341.4 / 398.2 | 0.7006 / 0.4395 |
+>
+> 两种写法的结果**逐条一致**（200/200 查询 id 列表相同）；`<#>` 走字符串字面量，比 `ARRAY[...]`
+> 少 200 个 SQL token，所以吞吐更高。剩余限制：批量入口（`vector_batch.rs`）的 exact 仍只支持 L2；
+> 多列融合的 index-only 仍只支持 L2。
+
 ---
 
 # 二、推荐架构
