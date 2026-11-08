@@ -32,6 +32,7 @@ mod cancel;
 mod catalog;
 mod ddl;
 mod failed_transaction;
+mod federation;
 mod insert;
 mod ivm;
 mod limits;
@@ -196,13 +197,15 @@ async fn main_inner(cli: Cli) -> Result<()> {
         cli.memory_sampling
             .spawn(allocator::stats_reader(), move || pool.reserved())?;
     }
+    let federation = Arc::new(federation::FederationRuntime::new(&meta_client).await?);
     let session_factory = PgSessionFactory::new_with_memory_pool(
         Arc::clone(&meta_client),
         &cli.core,
         Arc::clone(&auth_manager),
         memory_pool,
     )?
-    .with_subscriptions(Arc::clone(&subscriptions));
+    .with_subscriptions(Arc::clone(&subscriptions))
+    .with_federation(federation);
     info!(
         version = lakesoul_build_info::VERSION,
         commit = lakesoul_build_info::GIT_COMMIT,

@@ -293,7 +293,7 @@ WITH (hash_bucket_num = 4);
 - 网络 hash 负责同键同 worker；worker 再排序并用 LakeSoul 原有 hash 生成持久化 bucket。不能把 DataFusion 网络分区号当作 LakeSoul bucket。写 task 数不要求等于 `hashBucketNum`：每个 task 可写多个持久化 bucket；多 task 文件名包含 task 后缀以避免覆盖。
 - worker 用报告保留唯一键／NOT NULL 的 typed 错误，由 coordinator 恢复 `23505`／`23502`；主键发布时输掉快照竞争仍为 `40001`。`n` 为所有成功文件报告的行数之和，Skip 只计实际插入行。
 - 任一报告流失败则不发布；coordinator drain 其余报告后清理本语句文件，并按 statement id 查找尚未报告的文件。健康 worker 的提交前取消同样清理；报告通道断开时由写任务停止所有 writer 后自行清理。worker／coordinator 进程崩溃仍可能留孤儿文件，由 GC 处理。提交结果不确定（连接中断）时只在主库按 commit id 判定是否已发布；查询失败按“可能已发布”保留文件。
-- 当前未发布协议保持 codec `2`／`lakesoul-distributed/2`。coordinator 与 worker 必须使用一致构建并一起更新重启；discovery 不能区分不同开发构建的 `/2`。
+- 当前未发布协议保持 codec `3`／`lakesoul-distributed/3`。coordinator 与 worker 必须使用一致构建并一起更新重启；discovery 不能区分不同开发构建的 `/3`。
 
 ### 阶段九：UPDATE
 

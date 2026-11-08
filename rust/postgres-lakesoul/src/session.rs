@@ -31,7 +31,9 @@ use lakesoul_metadata::MetaDataClientRef;
 use rootcause::Report;
 use tracing::{info, instrument};
 
-use crate::catalog::{PUBLIC_SCHEMA, PgDatabaseCatalogList, pg_lakesoul_catalog};
+use crate::catalog::{
+    PUBLIC_SCHEMA, PgDatabaseCatalogList, pg_lakesoul_catalog_with_federation,
+};
 
 /// Identity resolved for one PostgreSQL connection during startup.
 #[derive(Debug, Clone, Default)]
@@ -162,6 +164,8 @@ pub struct PgSessionFactory {
     /// Supervises SQL-created subscription processes. `None` in tests and in
     /// embeddings that do not enable subscriptions.
     subscriptions: Option<Arc<crate::subscribe::supervisor::SubscriptionSupervisor>>,
+    /// Shared foreign-server registry. `None` disables federation.
+    federation: Option<Arc<crate::federation::FederationRuntime>>,
 }
 
 impl PgSessionFactory {
@@ -203,7 +207,20 @@ impl PgSessionFactory {
             },
             warehouse: args.warehouse_prefix.clone(),
             subscriptions: None,
+            federation: None,
         })
+    }
+
+    pub fn with_federation(
+        mut self,
+        federation: Arc<crate::federation::FederationRuntime>,
+    ) -> Self {
+        self.federation = Some(federation);
+        self
+    }
+
+    pub fn federation(&self) -> Option<&Arc<crate::federation::FederationRuntime>> {
+        self.federation.as_ref()
     }
 
     pub fn with_subscriptions(
@@ -343,11 +360,13 @@ impl PgSessionFactory {
         let state = SessionStateBuilder::new_from_existing(state)
             .with_config(config)
             .build();
-        let catalog = pg_lakesoul_catalog(
+        let catalog = pg_lakesoul_catalog_with_federation(
             Arc::clone(&self.meta_client),
             LakeSoulProviderOptions::from_session(&state),
             &identity.database,
             Arc::clone(self.base.catalog_snapshot()),
+            self.federation.clone(),
+            &identity.user,
         );
         let catalog_list = Arc::new(PgDatabaseCatalogList::new(
             identity.database.clone(),

@@ -20,6 +20,7 @@ pub mod cli;
 pub mod datasource;
 pub mod distributed;
 mod error;
+pub mod federation;
 pub mod index;
 pub mod index_maintenance;
 pub mod lakesoul_table;
@@ -131,10 +132,6 @@ where
 }
 
 type Result<T, E = Report> = std::result::Result<T, E>;
-
-#[cfg(feature = "adbc")]
-#[expect(dead_code)]
-mod adbc;
 
 #[cfg(test)]
 mod tests;

@@ -93,14 +93,12 @@ use crate::write_mode::ConflictMode;
 /// The generation also covers the *list* of codecs (see [`user_codecs`]): its
 /// order decides which codec reads an extension payload, so registering a
 /// codec a worker does not know is a protocol change even when no existing
-/// message layout moved. Generation 2 registers [`VortexScanCodec`] at position
-/// 1, [`LakeSoulScanCodec`] at position 2 and [`LakeSoulWriteCodec`] at
-/// position 3; all of them ride the first versioned generation because no
-/// payload has been released on its own. Split them the moment one ships alone.
-/// The merge-on-read payload that `/1` implied lost its codec, which is the same
-/// kind of list change: it kept the generation number only because `/2` was
-/// never released either.
-pub const CODEC_VERSION: u32 = 2;
+/// message layout moved. Generation 3 adds the ADBC foreign-scan codec at
+/// position 4 after [`VortexScanCodec`], [`LakeSoulScanCodec`] and
+/// [`LakeSoulWriteCodec`]. Split them the moment one ships alone. The
+/// merge-on-read payload that `/1` implied lost its codec, which is the same
+/// kind of list change.
+pub const CODEC_VERSION: u32 = 3;
 
 /// Wire format for the metadata-only [`LakeSoulScanExec`].
 ///
@@ -375,7 +373,8 @@ const MAX_WRITE_ID_LEN: usize = 64;
 /// one function so the positions an extension payload refers to cannot drift:
 /// position 0 is always the distributed codec itself, position 1 the vortex
 /// scan codec, position 2 [`LakeSoulScanCodec`] (metadata-only lazy scans) and
-/// position 3 [`LakeSoulWriteCodec`] (distributed write stages). A worker that
+/// position 3 [`LakeSoulWriteCodec`] (distributed write stages) and position 4
+/// [`crate::federation::FederationPlanCodec`] (ADBC foreign scans). A worker that
 /// registers a different list either fails to decode a stage or would hand a
 /// payload to the wrong codec, so the list is part of the wire generation
 /// ([`CODEC_VERSION`]).
@@ -388,6 +387,7 @@ pub fn user_codecs() -> Vec<Arc<dyn PhysicalExtensionCodec>> {
         Arc::new(VortexScanCodec::new(vortex_scan_session())),
         Arc::new(LakeSoulScanCodec),
         Arc::new(LakeSoulWriteCodec),
+        Arc::new(crate::federation::FederationPlanCodec),
     ]
 }
 

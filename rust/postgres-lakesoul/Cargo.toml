@@ -44,6 +44,15 @@ chrono.workspace = true
 serde_json.workspace = true
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
 uuid.workspace = true
+# ADBC federation. Keep the exact versions: 0.15 moved adbc_core to Arrow 60,
+# while 0.14 uses adbc_core 0.24 and the workspace's Arrow 59.
+datafusion-table-providers-adbc = { version = "=0.14.0", default-features = false }
+datafusion-table-providers-common = { version = "=0.14.0", default-features = false }
+adbc_core = "0.24"
+adbc_driver_manager = "0.24"
+r2d2 = "0.8"
+r2d2_adbc = "0.3.0"
+url.workspace = true
 libc = "0.2"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
