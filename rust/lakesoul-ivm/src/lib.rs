@@ -76,6 +76,8 @@
 //! follow-up.
 
 pub mod config;
+#[cfg(feature = "distributed")]
+pub mod distributed;
 pub mod error;
 pub mod executor;
 pub mod metadata;

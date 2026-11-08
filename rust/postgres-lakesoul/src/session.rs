@@ -262,6 +262,11 @@ impl PgSessionFactory {
         self.base.create_session(&LakeSoulSessionOptions::default())
     }
 
+    /// A cloneable factory for isolated IVM refresh sessions.
+    pub fn refresh_session_factory(&self) -> LakeSoulSessionFactory {
+        self.base.clone()
+    }
+
     /// The metadata client `CREATE TABLE`/`DROP TABLE` write through.
     pub fn meta_client(&self) -> &MetaDataClientRef {
         &self.meta_client

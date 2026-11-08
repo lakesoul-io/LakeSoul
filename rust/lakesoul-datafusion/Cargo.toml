@@ -17,6 +17,9 @@ lakesoul-common = { path = "../lakesoul-common" }
 lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
 lakesoul-vector = { path = "../lakesoul-vector" }
 lakesoul-text = { path = "../lakesoul-text" }
+lakesoul-ivm = { path = "../lakesoul-ivm", optional = true, features = [
+  "distributed",
+] }
 # datafusion
 datafusion = { workspace = true }
 datafusion-expr = { workspace = true }
@@ -111,6 +114,8 @@ harness = false
 
 [features]
 ci = []
+# Distributed IVM scan/lookup codecs and planner handlers.
+ivm = ["dep:lakesoul-ivm"]
 
 [lints]
 workspace = true

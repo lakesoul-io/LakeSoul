@@ -5228,3 +5228,100 @@ fn test_a_session_builder_failure_is_not_rerun_locally() {
         Ok(())
     });
 }
+
+/// End-to-end IVM refresh over the distributed worker cluster.
+///
+/// The refresh session is built by `IvmRefreshSessionFactory`, so the IVM
+/// scan and write sink cross the real worker wire.  The coordinator commits
+/// the files the workers wrote; the test then reads the materialized view back
+/// and compares it with the source.
+#[cfg(feature = "ivm")]
+#[test]
+fn test_distributed_ivm_refresh_writes_and_commits_on_the_coordinator() {
+    use datafusion::arrow::array::{Int64Array, RecordBatch, StringArray};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use lakesoul_ivm::{
+        IvmRuntime, IvmRuntimeConfig, IvmSqlExecutor, IvmTableOptions, row_mv_schema_for,
+    };
+
+    run_distributed_test(async {
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        let (urls, mut workers) = spawn_workers(2).await;
+        let factory = distributed_factory(Arc::clone(&client), urls, false)?;
+        let template = factory.create_session(&LakeSoulSessionOptions::default())?;
+        let config = IvmRuntimeConfig::from_session(&template).with_session_factory(
+            Arc::new(crate::session::IvmRefreshSessionFactory::new(factory)),
+        );
+        let runtime = IvmRuntime::from_env_with_config(config).await?;
+        runtime.init_schema().await?;
+        let suffix = uuid::Uuid::new_v4().simple();
+        let dir = std::env::temp_dir().join(format!("lakesoul-ivm-dist-{suffix}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("v", DataType::Int64, true),
+            Field::new("op", DataType::Utf8, false),
+        ]));
+        let source = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_dist_src_{suffix}"),
+                    format!("file://{}", dir.join("src").display()),
+                    schema.clone(),
+                )
+                .with_primary_keys(vec!["k".to_string()])
+                .with_cdc_column("op"),
+            )
+            .await?;
+        let mv = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_dist_mv_{suffix}"),
+                    format!("file://{}", dir.join("mv").display()),
+                    row_mv_schema_for(&source.schema, &[])?,
+                )
+                .with_primary_keys(vec!["k".to_string()]),
+            )
+            .await?;
+        source
+            .append_batch(
+                runtime.client(),
+                RecordBatch::try_new(
+                    schema,
+                    vec![
+                        Arc::new(Int64Array::from(vec![1, 2, 3])),
+                        Arc::new(Int64Array::from(vec![10, 20, 30])),
+                        Arc::new(StringArray::from(vec!["insert", "insert", "insert"])),
+                    ],
+                )
+                .unwrap(),
+            )
+            .await?;
+        let context = SessionContext::new();
+        context.register_table(
+            source.table_name.as_str(),
+            Arc::new(runtime.table_provider(&source)),
+        )?;
+        context.register_table(
+            mv.table_name.as_str(),
+            Arc::new(runtime.table_provider(&mv)),
+        )?;
+        let executor =
+            IvmSqlExecutor::with_shared_runtime(Arc::new(runtime)).with_session(context);
+        executor
+            .execute(&format!(
+                "INSERT INTO {} SELECT k, v, op FROM {}",
+                mv.table_name, source.table_name
+            ))
+            .await?;
+        let rows = mv
+            .read_current(executor.runtime().client())
+            .await?
+            .iter()
+            .map(|batch| batch.num_rows())
+            .sum::<usize>();
+        assert_eq!(rows, 3);
+        workers.shutdown().await;
+        Ok(())
+    });
+}

@@ -17,7 +17,7 @@ lakesoul-build-info = { path = "../lakesoul-build-info" }
 lakesoul-common = { path = "../lakesoul-common" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
-lakesoul-datafusion = { path = "../lakesoul-datafusion" }
+lakesoul-datafusion = { path = "../lakesoul-datafusion", features = ["ivm"] }
 lakesoul-io = { path = "../lakesoul-io" }
 lakesoul-ivm = { path = "../lakesoul-ivm" }
 lakesoul-observability = { path = "../lakesoul-observability" }

@@ -2620,17 +2620,18 @@ impl std::fmt::Display for PartitionDropped {
 }
 
 /// The changelog window of every partition of one source.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SourceWindow {
-    added_files: Vec<PartitionFiles>,
-    cursors: Vec<Cursor>,
+    pub(crate) added_files: Vec<PartitionFiles>,
+    pub(crate) cursors: Vec<Cursor>,
     /// `(source_table_id, partition_desc, from_version, to_version)` of every
     /// consumed partition; this is the window identity the epoch is keyed by.
-    identity: Vec<(String, String, i64, i64)>,
-    before_timestamp: i64,
+    pub(crate) identity: Vec<(String, String, i64, i64)>,
+    pub(crate) before_timestamp: i64,
     /// `partition_desc -> last consumed version before this window`, for every
     /// partition the window touched (`None` = the partition is first consumed
     /// by this window). Used to read the before state per partition.
-    before_versions: HashMap<String, Option<i64>>,
+    pub(crate) before_versions: HashMap<String, Option<i64>>,
 }
 
 /// The full current state of one source, as read by a rebuild.
@@ -2986,6 +2987,18 @@ pub(crate) fn cast_frame_columns(
 /// the embedder, so every refresh shares the caller's memory pool and spill
 /// manager instead of creating a second IVM-private runtime.
 pub(crate) fn refresh_session() -> SessionContext {
+    if let Some(factory) = crate::config::session_factory() {
+        match factory.create() {
+            Ok(context) => return context,
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "could not create the configured refresh session; \
+                     falling back to the local session template"
+                );
+            }
+        }
+    }
     let (config, runtime) = crate::config::session();
     SessionContext::new_with_config_rt(config, runtime)
 }
@@ -3294,6 +3307,18 @@ pub(crate) async fn write_dataframe(
     table: &IvmTable,
     frame: DataFrame,
 ) -> Result<WrittenFiles> {
+    #[cfg(feature = "distributed")]
+    if crate::config::session_factory().is_some() {
+        return write_dataframe_distributed(table, frame).await;
+    }
+    write_dataframe_local(table, frame).await
+}
+
+/// Execute a refresh plan on the coordinator and write its batches locally.
+async fn write_dataframe_local(
+    table: &IvmTable,
+    frame: DataFrame,
+) -> Result<WrittenFiles> {
     use futures::StreamExt;
     let mut stream = frame.execute_stream().await?;
     let mut writer = table.writer().await?;
@@ -3335,6 +3360,108 @@ pub(crate) async fn write_dataframe(
     Ok(WrittenFiles {
         files,
         rows: inserts + deletes,
+        inserts,
+        deletes,
+    })
+}
+
+/// Execute a refresh output plan and collect the worker file descriptors.
+///
+/// The physical optimizer rule wraps the plan with `IvmRefreshSinkExec`; the
+/// output is then one small `TaskOutput` row per worker partition instead of
+/// the table rows.  The coordinator commits the returned files through the
+/// normal `append_dataframe` path.
+#[cfg(feature = "distributed")]
+async fn write_dataframe_distributed(
+    table: &IvmTable,
+    frame: DataFrame,
+) -> Result<WrittenFiles> {
+    use futures::StreamExt;
+
+    let sink_spec = crate::distributed::IvmSinkSpec {
+        table: table.clone(),
+        epoch: None,
+    };
+    let plan = crate::distributed::IVM_SINK_SPEC
+        .scope(sink_spec, async { frame.create_physical_plan().await })
+        .await?;
+    let sink_applied = plan
+        .schema()
+        .metadata()
+        .get(crate::distributed::IVM_TASK_OUTPUT_SCHEMA_MARKER)
+        .map(String::as_str)
+        == Some("true");
+    if !sink_applied {
+        return write_dataframe_local(table, frame).await;
+    }
+
+    let mut stream =
+        datafusion::physical_plan::execute_stream(plan, frame.task_ctx().into())?;
+    let mut files = Vec::new();
+    let mut rows = 0u64;
+    let mut inserts = 0u64;
+    let mut deletes = 0u64;
+    while let Some(batch) = stream.next().await {
+        let batch = batch?;
+        let schema = batch.schema();
+        let task_index = schema.index_of("task_id")?;
+        let table_index = schema.index_of("table_id")?;
+        let files_index = schema.index_of("files")?;
+        let rows_index = schema.index_of("rows")?;
+        let inserts_index = schema.index_of("inserts")?;
+        let deletes_index = schema.index_of("deletes")?;
+        let task_ids = batch
+            .column(task_index)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt32Array>()
+            .ok_or_else(|| rootcause::report!("IVM task output has no task_id"))?;
+        let table_ids = batch
+            .column(table_index)
+            .as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| rootcause::report!("IVM task output has no table_id"))?;
+        let encoded_files = batch
+            .column(files_index)
+            .as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| rootcause::report!("IVM task output has no files"))?;
+        let task_rows = batch
+            .column(rows_index)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .ok_or_else(|| rootcause::report!("IVM task output has no rows"))?;
+        let task_inserts = batch
+            .column(inserts_index)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .ok_or_else(|| rootcause::report!("IVM task output has no inserts"))?;
+        let task_deletes = batch
+            .column(deletes_index)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .ok_or_else(|| rootcause::report!("IVM task output has no deletes"))?;
+        for row in 0..batch.num_rows() {
+            let task_id = task_ids.value(row);
+            let output_table = table_ids.value(row);
+            if output_table != table.table_id {
+                return Err(rootcause::report!(
+                    "IVM task {task_id} wrote table {output_table}, expected {}",
+                    table.table_id
+                ));
+            }
+            let task_files: Vec<DataFileInfo> =
+                serde_json::from_str(encoded_files.value(row)).map_err(|error| {
+                    rootcause::report!("decode IVM task {task_id} file list: {error}")
+                })?;
+            files.extend(task_files);
+            rows += task_rows.value(row);
+            inserts += task_inserts.value(row);
+            deletes += task_deletes.value(row);
+        }
+    }
+    Ok(WrittenFiles {
+        files,
+        rows,
         inserts,
         deletes,
     })

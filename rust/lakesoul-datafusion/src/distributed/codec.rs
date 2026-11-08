@@ -96,8 +96,13 @@ use crate::write_mode::ConflictMode;
 /// message layout moved. Generation 4 extends the ADBC foreign codec at
 /// position 4 with the write stage (`FederationWriteExec`) after
 /// [`VortexScanCodec`], [`LakeSoulScanCodec`] and [`LakeSoulWriteCodec`].
-/// Split them the moment one ships alone. The merge-on-read payload that `/1`
-/// implied lost its codec, which is the same kind of list change.
+/// Generation 5 appends the IVM refresh codec at position 5 when the `ivm`
+/// feature is enabled. Split them the moment one ships alone. The
+/// merge-on-read payload that `/1` implied lost its codec, which is the same
+/// kind of list change.
+#[cfg(feature = "ivm")]
+pub const CODEC_VERSION: u32 = 5;
+#[cfg(not(feature = "ivm"))]
 pub const CODEC_VERSION: u32 = 4;
 
 /// Wire format for the metadata-only [`LakeSoulScanExec`].
@@ -384,12 +389,16 @@ const MAX_WRITE_ID_LEN: usize = 64;
 /// [`lakesoul_io::file_format::LakeSoulFormatRegistry`] plans scans with, so a
 /// rebuilt worker-side scan decodes files exactly like the coordinator's.
 pub fn user_codecs() -> Vec<Arc<dyn PhysicalExtensionCodec>> {
-    vec![
+    #[allow(unused_mut)]
+    let mut codecs: Vec<Arc<dyn PhysicalExtensionCodec>> = vec![
         Arc::new(VortexScanCodec::new(vortex_scan_session())),
         Arc::new(LakeSoulScanCodec),
         Arc::new(LakeSoulWriteCodec),
         Arc::new(crate::federation::FederationPlanCodec),
-    ]
+    ];
+    #[cfg(feature = "ivm")]
+    codecs.push(Arc::new(lakesoul_ivm::distributed::IvmRefreshCodec));
+    codecs
 }
 
 /// Composed codec used to (de)serialize worker stage plans: the distributed
@@ -1387,8 +1396,14 @@ mod tests {
     fn protocol_version_matches_codec_version() {
         let protocol = crate::distributed::DISTRIBUTED_PROTOCOL_VERSION;
         let suffix = protocol.rsplit('/').next().expect("version suffix");
+        let generation = suffix
+            .split('-')
+            .next()
+            .expect("numeric protocol generation");
         assert_eq!(
-            suffix.parse::<u32>().expect("numeric protocol version"),
+            generation
+                .parse::<u32>()
+                .expect("numeric protocol generation"),
             CODEC_VERSION,
             "bump DISTRIBUTED_PROTOCOL_VERSION together with CODEC_VERSION ({protocol})"
         );

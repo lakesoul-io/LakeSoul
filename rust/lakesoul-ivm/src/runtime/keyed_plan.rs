@@ -63,6 +63,7 @@ use lakesoul_io::physical_plan::merge::MergeParquetExec;
 use lakesoul_io::pk_locator::LookupSource;
 use lakesoul_vector::IndexKey;
 use rootcause::compat::boxed_error::IntoBoxedError;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
 use super::{
@@ -289,19 +290,14 @@ pub(crate) fn bucket_repartition(
         .map(|bucket| SplitPoint::new(vec![ScalarValue::UInt32(Some(bucket as u32))]))
         .collect();
     let range = RangePartitioning::try_new(ordering, split_points)?;
-    let repartitioned = Arc::new(RepartitionExec::try_new(
+    // Keep `__ivm_bucket` in the stream: a distributed planner may scale this
+    // range partition to the worker count, and the downstream lookup derives
+    // its contiguous bucket range from the partitioning metadata.  The lookup
+    // drops the helper column from its output.
+    Ok(Arc::new(RepartitionExec::try_new(
         with_bucket,
         Partitioning::Range(range),
-    )?);
-
-    let mut out = Vec::with_capacity(input_schema.fields().len());
-    for (index, field) in input_schema.fields().iter().enumerate() {
-        out.push((
-            Arc::new(PhysicalColumn::new(field.name(), index)) as Arc<dyn PhysicalExpr>,
-            field.name().clone(),
-        ));
-    }
-    Ok(Arc::new(ProjectionExec::try_new(out, repartitioned)?))
+    )?))
 }
 
 /// Bucket-repartition contribution rows by one or more real key columns using
@@ -359,19 +355,10 @@ fn bucket_repartition_with_expr(
         .map(|bucket| SplitPoint::new(vec![ScalarValue::UInt32(Some(bucket as u32))]))
         .collect();
     let range = RangePartitioning::try_new(ordering, split_points)?;
-    let repartitioned = Arc::new(RepartitionExec::try_new(
+    Ok(Arc::new(RepartitionExec::try_new(
         with_bucket,
         Partitioning::Range(range),
-    )?);
-
-    let mut out = Vec::with_capacity(input_schema.fields().len());
-    for (index, field) in input_schema.fields().iter().enumerate() {
-        out.push((
-            Arc::new(PhysicalColumn::new(field.name(), index)) as Arc<dyn PhysicalExpr>,
-            field.name().clone(),
-        ));
-    }
-    Ok(Arc::new(ProjectionExec::try_new(out, repartitioned)?))
+    )?))
 }
 
 // ---------------------------------------------------------------------------
@@ -566,7 +553,7 @@ pub(crate) fn groups_by_bucket(
 /// `BinaryRow` is used by side/aggregate state tables, whose hidden key is an
 /// `arrow::Row` encoding. `Columns` is used by source and MV tables, where the
 /// lookup key is one or more real primary-key columns.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum PkLookupKey {
     BinaryRow {
         column: String,
@@ -626,6 +613,19 @@ fn state_key_filter(
         Ok(Vec::new())
     } else {
         Ok(vec![col(key_column).in_list(list, false)])
+    }
+}
+
+/// Drop the hidden bucket column from one lookup output batch.
+fn project_lookup_output(
+    batch: RecordBatch,
+    projection: Option<&[usize]>,
+) -> DataFusionResult<RecordBatch> {
+    match projection {
+        Some(indices) => batch.project(indices).map_err(|error| {
+            DataFusionError::Execution(format!("project keyed lookup output: {error}"))
+        }),
+        None => Ok(batch),
     }
 }
 
@@ -1469,10 +1469,18 @@ pub(crate) struct IvmPkLookupExec {
     gate: Arc<Semaphore>,
     multi_match: bool,
     emit_unmatched: bool,
+    /// The hidden bucket column kept in the input stream so a distributed
+    /// range shuffle can be scaled without losing the bucket-to-partition map.
+    bucket_column: Option<String>,
+    /// Full lookup output, including the hidden bucket column.
+    full_schema: SchemaRef,
+    /// Projection that drops the hidden bucket column from the output.
+    output_projection: Option<Arc<Vec<usize>>>,
     profile_io: Option<crate::observability::ProfileHandle>,
     properties: Arc<PlanProperties>,
 }
 
+#[allow(dead_code)]
 impl IvmPkLookupExec {
     pub(crate) fn new(
         input: Arc<dyn ExecutionPlan>,
@@ -1514,7 +1522,7 @@ impl IvmPkLookupExec {
         )
     }
 
-    fn new_with_key(
+    pub(crate) fn new_with_key(
         input: Arc<dyn ExecutionPlan>,
         table: IvmTable,
         groups_by_bucket: Vec<Vec<PartitionFiles>>,
@@ -1524,19 +1532,34 @@ impl IvmPkLookupExec {
         let input = sort_lookup_input(input, &key)?;
         let bucket_count = bucket_count.max(1);
         let input_partitions = input.output_partitioning().partition_count();
-        if bucket_count > 1 && input_partitions != bucket_count {
+        let bucket_column = input
+            .schema()
+            .field_with_name(IVM_BUCKET_COLUMN)
+            .ok()
+            .map(|_| IVM_BUCKET_COLUMN.to_string());
+        if bucket_count > 1 && bucket_column.is_none() && input_partitions != bucket_count
+        {
             return Err(DataFusionError::Internal(format!(
                 "PK lookup needs {bucket_count} input partitions, got {input_partitions}"
             )));
         }
-        // An unbucketed table is read by every contribution partition; its
-        // one group is shared rather than duplicated.
-        let output_partitions = if bucket_count == 1 {
-            input_partitions
-        } else {
-            bucket_count
+        let output_partitions = input_partitions;
+        let full_schema = state_output_schema(&input.schema(), &table.schema);
+        let (schema, output_projection) = match bucket_column.as_ref() {
+            Some(column) => {
+                let bucket_index = full_schema.index_of(column)?;
+                let keep = (0..full_schema.fields().len())
+                    .filter(|index| *index != bucket_index)
+                    .collect::<Vec<_>>();
+                let schema = Arc::new(Schema::new(
+                    keep.iter()
+                        .map(|index| Arc::new(full_schema.field(*index).clone()))
+                        .collect::<Vec<_>>(),
+                ));
+                (schema, Some(Arc::new(keep)))
+            }
+            None => (full_schema.clone(), None),
         };
-        let schema = state_output_schema(&input.schema(), &table.schema);
         let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(schema.clone()),
             Partitioning::UnknownPartitioning(output_partitions),
@@ -1549,6 +1572,9 @@ impl IvmPkLookupExec {
             groups_by_bucket: Arc::new(groups_by_bucket),
             key,
             bucket_count,
+            bucket_column,
+            full_schema,
+            output_projection,
             schema,
             gate: Arc::new(Semaphore::new(max_active_tasks())),
             multi_match: false,
@@ -1556,6 +1582,36 @@ impl IvmPkLookupExec {
             profile_io: None,
             properties,
         })
+    }
+
+    pub(crate) fn table(&self) -> &IvmTable {
+        &self.table
+    }
+
+    pub(crate) fn groups_by_bucket(&self) -> &[Vec<PartitionFiles>] {
+        &self.groups_by_bucket
+    }
+
+    pub(crate) fn key(&self) -> &PkLookupKey {
+        &self.key
+    }
+
+    pub(crate) fn bucket_count(&self) -> usize {
+        self.bucket_count
+    }
+
+    pub(crate) fn multi_match(&self) -> bool {
+        self.multi_match
+    }
+
+    pub(crate) fn emit_unmatched(&self) -> bool {
+        self.emit_unmatched
+    }
+
+    pub(crate) fn with_flags(mut self, multi_match: bool, emit_unmatched: bool) -> Self {
+        self.multi_match = multi_match;
+        self.emit_unmatched = emit_unmatched;
+        self
     }
 
     pub(crate) fn with_profile(
@@ -1618,6 +1674,58 @@ impl ExecutionPlanProperties for IvmPkLookupExec {
 }
 
 impl IvmPkLookupExec {
+    /// The contiguous state-bucket range this execution partition owns.
+    ///
+    /// `bucket_repartition` keeps the hidden bucket column, so the input
+    /// partitioning still names the range boundaries after a distributed
+    /// planner merges adjacent buckets for a smaller worker set.  The lookup
+    /// opens only the buckets in that range; it never probes a bucket based on
+    /// the rows it happens to see.
+    fn bucket_range(&self, partition: usize) -> (usize, usize) {
+        let buckets = self.groups_by_bucket.len().max(1);
+        if self.bucket_count <= 1 {
+            return (0, buckets);
+        }
+        if self.bucket_column.is_some()
+            && let Partitioning::Range(range) = self.input.output_partitioning()
+        {
+            let split_points = range.split_points();
+            let value = |index: usize| {
+                split_points
+                    .get(index)
+                    .and_then(|point| point.values().first())
+                    .and_then(|value| match value {
+                        ScalarValue::UInt32(Some(value)) => Some(*value as usize),
+                        _ => None,
+                    })
+            };
+            let lower = if partition == 0 {
+                0
+            } else {
+                value(partition - 1).unwrap_or(partition)
+            };
+            let upper = if partition >= split_points.len() {
+                buckets
+            } else {
+                value(partition).unwrap_or(partition + 1)
+            };
+            if lower <= upper && upper <= buckets {
+                return (lower, upper);
+            }
+        }
+        (partition, (partition + 1).min(buckets))
+    }
+
+    fn groups_for_partition(&self, partition: usize) -> Vec<PartitionFiles> {
+        let (lower, upper) = self.bucket_range(partition);
+        let buckets = self.groups_by_bucket.len();
+        self.groups_by_bucket[lower.min(buckets)..upper.min(buckets)]
+            .iter()
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
     /// Resolve one bucket through persistent per-file lookup sources.
     ///
     /// The first contribution batch opens every state file and PK index once;
@@ -1630,18 +1738,12 @@ impl IvmPkLookupExec {
         context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
         let input = self.input.execute(partition, context.clone())?;
-        let groups = Arc::new(if self.bucket_count == 1 {
-            self.groups_by_bucket.first().cloned().unwrap_or_default()
-        } else {
-            self.groups_by_bucket
-                .get(partition)
-                .cloned()
-                .unwrap_or_default()
-        });
+        let groups = Arc::new(self.groups_for_partition(partition));
         let table = self.table.clone();
         let key = self.key.clone();
         let state_schema = self.table.schema.clone();
-        let out_schema = self.schema.clone();
+        let out_schema = self.full_schema.clone();
+        let output_projection = self.output_projection.clone();
         let gate = self.gate.clone();
         let multi_match = self.multi_match;
         let emit_unmatched = self.emit_unmatched;
@@ -1654,6 +1756,7 @@ impl IvmPkLookupExec {
                 let out_schema = out_schema.clone();
                 let gate = gate.clone();
                 let groups = groups.clone();
+                let output_projection = output_projection.clone();
                 let context = context.clone();
                 async move {
                     loop {
@@ -1695,6 +1798,12 @@ impl IvmPkLookupExec {
                                     None => return Ok(None),
                                     Some(Err(error)) => return Err(error),
                                     Some(Ok(batch)) => {
+                                        let batch = project_lookup_output(
+                                            batch,
+                                            output_projection
+                                                .as_deref()
+                                                .map(Vec::as_slice),
+                                        )?;
                                         state = PersistentLookupState::Joined(joined);
                                         return Ok(Some((batch, (input, state))));
                                     }
@@ -1739,6 +1848,10 @@ impl IvmPkLookupExec {
                                     elapsed = ?started.elapsed(),
                                     "keyed state lookup fallback finished"
                                 );
+                                let output = project_lookup_output(
+                                    output,
+                                    output_projection.as_deref().map(Vec::as_slice),
+                                )?;
                                 return Ok(Some((
                                     output,
                                     (input, PersistentLookupState::Fallback),
@@ -2092,6 +2205,11 @@ impl IvmLookupTable {
             self.groups_by_bucket.iter().flatten().count(),
             groups_by_bucket.iter().flatten().count(),
         );
+        #[cfg(feature = "distributed")]
+        let plan =
+            crate::distributed::without_sink(self.contribution.create_physical_plan())
+                .await?;
+        #[cfg(not(feature = "distributed"))]
         let plan = self.contribution.create_physical_plan().await?;
         let plan = if let Some(columns) = self.route_columns.as_deref() {
             bucket_repartition_by_columns(plan, columns, self.bucket_count)
@@ -2934,6 +3052,89 @@ mod tests {
             }
         }
         assert_eq!(seen, 5);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod bucket_range_tests {
+    use std::sync::Arc;
+
+    use arrow::array::{Int64Array, UInt32Array};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use datafusion::common::ScalarValue;
+    use datafusion::physical_expr::expressions::Column as PhysicalColumn;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+    use datafusion::physical_plan::repartition::RepartitionExec;
+    use datafusion::physical_plan::{Partitioning, RangePartitioning, SplitPoint};
+    use datafusion::prelude::SessionContext;
+
+    use super::*;
+
+    fn table() -> IvmTable {
+        IvmTable {
+            table_id: "state".to_string(),
+            table_name: "state".to_string(),
+            namespace: "default".to_string(),
+            table_path: "file:///tmp/state".to_string(),
+            schema: Arc::new(Schema::new(vec![
+                Field::new("k", DataType::Int64, false),
+                Field::new("v", DataType::Int64, true),
+            ])),
+            primary_keys: vec!["k".to_string()],
+            range_partition_columns: Vec::new(),
+            internal_columns: Vec::new(),
+            bucket_columns: vec!["k".to_string()],
+            hash_bucket_num: "4".to_string(),
+            cdc_column: None,
+            file_format: lakesoul_io::file_format::PhysicalFormat::Vortex,
+            allow_fallback: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_scaled_range_maps_each_task_to_contiguous_buckets() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new(IVM_BUCKET_COLUMN, DataType::UInt32, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+                Arc::new(UInt32Array::from(vec![0, 1, 2, 3])),
+            ],
+        )?;
+        let context = SessionContext::new();
+        let input = context.read_batch(batch)?.create_physical_plan().await?;
+        let ordered = bucket_repartition(input, "k", 4)?;
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new(
+            Arc::new(PhysicalColumn::new(IVM_BUCKET_COLUMN, 1)),
+            SortOptions::default(),
+        )])
+        .unwrap();
+        let range = RangePartitioning::try_new(
+            ordering,
+            vec![SplitPoint::new(vec![ScalarValue::UInt32(Some(2))])],
+        )?;
+        let scaled = Arc::new(RepartitionExec::try_new(
+            ordered,
+            Partitioning::Range(range),
+        )?);
+        let groups = (0..4)
+            .map(|bucket| {
+                vec![PartitionFiles {
+                    partition_desc: "-5".to_string(),
+                    files: vec![format!("bucket-{bucket}.vortex")],
+                }]
+            })
+            .collect();
+        let lookup = IvmPkLookupExec::new(scaled, table(), groups, "k", 4)?;
+        assert_eq!(lookup.bucket_range(0), (0, 2));
+        assert_eq!(lookup.bucket_range(1), (2, 4));
+        assert_eq!(lookup.groups_for_partition(0).len(), 2);
+        assert_eq!(lookup.groups_for_partition(1).len(), 2);
         Ok(())
     }
 }

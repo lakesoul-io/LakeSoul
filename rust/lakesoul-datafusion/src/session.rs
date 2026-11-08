@@ -482,6 +482,55 @@ fn lazy_scan_scale_up_leaf_node(
     )
 }
 
+/// Asks for one distributed task per bucket group of an IVM scan.
+///
+/// The IVM provider already splits a range partition into one group per
+/// LakeSoul hash bucket; an `IvmStreamExec` is therefore one merge-on-read unit
+/// per partition and can be scaled without splitting a bucket's version files.
+#[cfg(feature = "ivm")]
+fn ivm_scan_desired_task_count(
+    ev: DesiredTaskCountEvent<'_>,
+) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
+    let groups = lakesoul_ivm::distributed::stream_scan_task_count(ev.plan)?;
+    (groups > 1).then(|| Ok(DesiredTaskCountEventResponse::desired(groups)))
+}
+
+/// Caps a keyed IVM lookup stage at the number of state buckets.
+#[cfg(feature = "ivm")]
+fn ivm_lookup_desired_task_count(
+    ev: DesiredTaskCountEvent<'_>,
+) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
+    let buckets = lakesoul_ivm::distributed::lookup_task_count(ev.plan)?;
+    (buckets > 1).then(|| Ok(DesiredTaskCountEventResponse::desired(buckets)))
+}
+
+/// Splits an IVM scan into disjoint task variants.
+#[cfg(feature = "ivm")]
+fn ivm_scan_scale_up_leaf_node(
+    ev: ScaleUpLeafNodeEvent<'_>,
+) -> Option<DataFusionResult<ScaleUpLeafNodeEventResponse>> {
+    if ev.task_count <= 1 {
+        return None;
+    }
+    let variants =
+        match lakesoul_ivm::distributed::split_stream_scan(ev.plan, ev.task_count) {
+            Ok(Some(variants)) => variants,
+            Ok(None) => return None,
+            Err(error) => return Some(Err(error)),
+        };
+    if variants.len() != ev.task_count {
+        return Some(datafusion::common::internal_err!(
+            "split an IVM scan over {} tasks into {} variants",
+            ev.task_count,
+            variants.len()
+        ));
+    }
+    Some(
+        DistributedLeafExec::try_new(Arc::clone(ev.plan), variants)
+            .map(|leaf| ScaleUpLeafNodeEventResponse::new(Arc::new(leaf))),
+    )
+}
+
 /// Whether `plan` reaches a leaf without crossing a stage boundary of the
 /// distributed planner.
 fn reaches_leaf_within_stage(plan: &Arc<dyn ExecutionPlan>) -> bool {
@@ -548,6 +597,7 @@ fn align_repartition_file_min_size(
 /// pool, and wires the LakeSoul planner, table factory and catalog into a fresh
 /// context. Object-store registries and TMPDIR-backed spill managers remain
 /// independent per session.
+#[derive(Clone)]
 pub struct LakeSoulSessionFactory {
     meta_client: crate::MetaDataClientRef,
     session_template: SessionConfig,
@@ -715,6 +765,12 @@ impl LakeSoulSessionFactory {
             .with_physical_optimizer_rule(Arc::new(
                 crate::planner::text_score_rule::TextScoreProjectionRule,
             ));
+        #[cfg(feature = "ivm")]
+        {
+            builder = builder.with_physical_optimizer_rule(Arc::new(
+                lakesoul_ivm::distributed::IvmSinkRule,
+            ));
+        }
         if let (Some(dist), Some(resolver)) = (&distributed, &resolver) {
             // A single-worker deployment should still be able to run a
             // federation write stage away from the coordinator. Two tasks are
@@ -740,6 +796,19 @@ impl LakeSoulSessionFactory {
                 .with_distributed_scale_up_leaf_node_handler(
                     lazy_scan_scale_up_leaf_node,
                 );
+            #[cfg(feature = "ivm")]
+            {
+                builder = builder
+                    .with_distributed_desired_task_count_handler(
+                        ivm_scan_desired_task_count,
+                    )
+                    .with_distributed_desired_task_count_handler(
+                        ivm_lookup_desired_task_count,
+                    )
+                    .with_distributed_scale_up_leaf_node_handler(
+                        ivm_scan_scale_up_leaf_node,
+                    );
+            }
             // The codec list is position-addressed on the wire, so it comes
             // from one function the workers call too; see `codec::user_codecs`.
             for codec in crate::distributed::codec::user_codecs() {
@@ -841,6 +910,34 @@ impl LakeSoulSessionFactory {
     /// Single source of truth: [`crate::create_lakesoul_session_config`].
     fn session_template() -> Result<SessionConfig> {
         crate::create_lakesoul_session_config()
+    }
+}
+
+/// Builds isolated refresh sessions from a LakeSoul factory.
+///
+/// The factory keeps the distributed planner, codecs and task handlers on the
+/// session, while every refresh still gets its own catalog so concurrent views
+/// can register their source views without sharing mutable state.
+#[cfg(feature = "ivm")]
+#[derive(Clone)]
+pub struct IvmRefreshSessionFactory {
+    factory: LakeSoulSessionFactory,
+}
+
+#[cfg(feature = "ivm")]
+impl IvmRefreshSessionFactory {
+    pub fn new(factory: LakeSoulSessionFactory) -> Self {
+        Self { factory }
+    }
+}
+
+#[cfg(feature = "ivm")]
+impl lakesoul_ivm::config::IvmSessionFactory for IvmRefreshSessionFactory {
+    fn create(&self) -> lakesoul_ivm::Result<SessionContext> {
+        self.factory
+            .create_session(&LakeSoulSessionOptions::default())
+            .map(|context| context.as_ref().clone())
+            .map_err(|error| rootcause::report!("create IVM refresh session: {error}"))
     }
 }
 

@@ -15,7 +15,7 @@ publish = false
 [dependencies]
 lakesoul-build-info = { path = "../lakesoul-build-info" }
 lakesoul-common = { path = "../lakesoul-common" }
-lakesoul-datafusion = { path = "../lakesoul-datafusion" }
+lakesoul-datafusion = { path = "../lakesoul-datafusion", features = ["ivm"] }
 lakesoul-observability = { path = "../lakesoul-observability" }
 clap.workspace = true
 tokio.workspace = true

@@ -4270,6 +4270,10 @@ impl IvmRuntime {
         };
         let state_groups_by_bucket =
             super::keyed_plan::groups_by_bucket(state_groups, state_bucket_num);
+        #[cfg(feature = "distributed")]
+        let contrib_plan =
+            crate::distributed::without_sink(contrib.create_physical_plan()).await?;
+        #[cfg(not(feature = "distributed"))]
         let contrib_plan = contrib.create_physical_plan().await?;
         let contrib_plan = if state_bucket_num > 1 {
             super::keyed_plan::bucket_repartition(

@@ -40,6 +40,7 @@ use lakesoul_io::{
 };
 use lakesoul_metadata::{MetaDataClient, transfusion::DataFileInfo};
 use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo, TableInfo};
+use serde::{Deserialize, Serialize};
 
 use crate::config::IvmOptions;
 use crate::error::Result;
@@ -321,7 +322,7 @@ pub struct IvmTable {
 }
 
 /// The data files of one storage partition of a table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartitionFiles {
     /// The `partition_desc` of the group (the LakeSoul default `-5` for an
     /// unpartitioned group).
