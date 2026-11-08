@@ -595,6 +595,26 @@ fn make_batch(ids: &[u64], vectors: &[Vec<f32>]) -> RecordBatch {
     .unwrap()
 }
 
+/// The direct exact re-rank needs the stored-vector payload cache; these
+/// tests set it once before the first query so the multi-file resolution is
+/// actually exercised (the reader path would also return correct rows, which
+/// would hide a regression).
+fn enable_direct_exact_path() {
+    static ENABLE: std::sync::Once = std::sync::Once::new();
+    ENABLE.call_once(|| {
+        let payload_dir = std::env::current_dir()
+            .unwrap()
+            .join("default")
+            .join("vector-rerank-payload");
+        // SAFETY: the test process sets these before any vector query runs.
+        unsafe {
+            std::env::set_var("LAKESOUL_CACHE", "1");
+            std::env::set_var("LAKESOUL_VECTOR_RERANK_CACHE", "1");
+            std::env::set_var("LAKESOUL_VECTOR_RERANK_CACHE_DIR", payload_dir);
+        }
+    });
+}
+
 fn clean_table_dir(table_name: &str) {
     // The native index/files are not removed by drop_table; remove the
     // on-disk state so each run starts from a clean table.
@@ -2300,6 +2320,163 @@ async fn sql_vector_search_ip_index_only_ordering() {
     assert!(
         recall >= 0.5,
         "IP index-only recall {recall}, returned={returned:?} expected={expected:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_multi_file_bucket() {
+    enable_direct_exact_path();
+    // A hash bucket holding several append-only files must still use the
+    // direct payload read: the resolver picks the file that owns each
+    // candidate key instead of requiring one file per bucket (compaction).
+    use crate::datasource::file_format::vector_search_exec::EXACT_DIRECT_RUNS;
+    use crate::tests::create_table_with_vector_index;
+    use std::sync::atomic::Ordering;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_multi_file";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    // Two commits: one data file each, both in the single hash bucket.
+    let first = seeded_vectors(200, 7);
+    let second = seeded_vectors(200, 9);
+    let mut vectors = first.clone();
+    vectors.extend(second.iter().cloned());
+    let ids: Vec<u64> = (0..400).collect();
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    table
+        .execute_upsert(make_batch(&ids[..200], &first))
+        .await
+        .unwrap();
+    table
+        .execute_upsert(make_batch(&ids[200..], &second))
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let ctx =
+        crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    ctx.sql("SET lakesoul_vector_search.nprobe = 4")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    ctx.sql("SET lakesoul_vector_search.exact_overfetch = 1")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let before = EXACT_DIRECT_RUNS.load(Ordering::Relaxed);
+    let returned = collect_ids(&ctx, &sql).await;
+    let after = EXACT_DIRECT_RUNS.load(Ordering::Relaxed);
+    assert!(
+        after > before,
+        "a multi-file bucket must still be served by the direct payload read"
+    );
+    let expected = brute_force_topk(&vectors, &query, 10);
+    let hits = returned.iter().filter(|id| expected.contains(id)).count();
+    assert!(
+        hits >= 8,
+        "multi-file recall {hits}/10, returned={returned:?} expected={expected:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_multi_file_upsert_falls_back() {
+    enable_direct_exact_path();
+    // The same keys written twice: the direct read cannot decide which
+    // version is visible, so the query must fall back to the merge-on-read
+    // reader path - and still return the newest versions' neighbours.
+    use crate::tests::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_multi_file_upsert";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.build(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    let ids: Vec<u64> = (0..200).collect();
+    let original = seeded_vectors(200, 7);
+    let updated = seeded_vectors(200, 13);
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    table
+        .execute_upsert(make_batch(&ids, &original))
+        .await
+        .unwrap();
+    table
+        .execute_upsert(make_batch(&ids, &updated))
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let ctx =
+        crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    ctx.sql("SET lakesoul_vector_search.nprobe = 4")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let returned = collect_ids(&ctx, &sql).await;
+    let expected = brute_force_topk(&updated, &query, 10);
+    let hits = returned.iter().filter(|id| expected.contains(id)).count();
+    assert!(
+        hits >= 8,
+        "upserted multi-file recall {hits}/10, returned={returned:?} expected={expected:?}"
     );
 }
 

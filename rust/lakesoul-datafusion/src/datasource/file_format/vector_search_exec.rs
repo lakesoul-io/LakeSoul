@@ -116,6 +116,15 @@ static SNAPSHOT_CACHE: LazyLock<Mutex<Vec<Arc<CachedSnapshot>>>> =
 
 /// Whether the snapshot shard cache is enabled (`LAKESOUL_VECTOR_SNAPSHOT_CACHE=0`
 /// turns it off for A/B runs).
+/// Number of exact re-ranks served by the direct payload read.
+///
+/// Tests assert that a bucket holding several append-only files still takes
+/// this path (and that an ambiguous key makes the query fall back instead of
+/// returning wrong rows).
+#[cfg(test)]
+pub(crate) static EXACT_DIRECT_RUNS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 fn snapshot_cache_enabled() -> bool {
     !std::env::var("LAKESOUL_VECTOR_SNAPSHOT_CACHE").is_ok_and(|value| value == "0")
 }
@@ -1153,7 +1162,8 @@ impl LakeSoulVectorSearchExec {
             || !self.partition_cols.is_empty()
             || !self.exact_ranking_matches_sort()
             || self.keep_rows() == 0
-            || self.file_groups.iter().any(|group| group.len() != 1)
+            || (std::env::var("LAKESOUL_VECTOR_MULTI_FILE_EXACT").is_ok_and(|value| value == "0")
+                && self.file_groups.iter().any(|group| group.len() != 1))
         {
             return false;
         }
@@ -1226,6 +1236,8 @@ impl LakeSoulVectorSearchExec {
         nprobe: usize,
         parallelism: usize,
     ) -> DFResult<Option<Vec<arrow::record_batch::RecordBatch>>> {
+        #[cfg(test)]
+        EXACT_DIRECT_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         let t_inner = std::time::Instant::now();
         let column = &self.vector_search.columns[0];
@@ -1290,21 +1302,33 @@ impl LakeSoulVectorSearchExec {
         // are independent files.
         let opens = self.file_groups.iter().map(|files| {
             let store = Arc::clone(store);
-            let location = files[0].object_meta.location.clone();
+            let locations: Vec<object_store::path::Path> = files
+                .iter()
+                .map(|file| file.object_meta.location.clone())
+                .collect();
             let key_types = key_types.clone();
             let key_columns = self.primary_keys.clone();
             let field = Arc::clone(&vector_field);
             async move {
-                let format = PhysicalFormat::from_extension(location.as_ref()).ok()?;
-                lakesoul_io::pk_locator::VectorPayloadSource::open_cached(
-                    store,
-                    &location,
-                    format,
-                    &key_columns,
-                    &key_types,
-                    &field,
-                )
-                .await
+                // One source per data file: a bucket may hold several
+                // append-only files, and the resolver below picks the file
+                // that owns each candidate key.
+                let mut sources = Vec::with_capacity(locations.len());
+                for location in locations {
+                    let format = PhysicalFormat::from_extension(location.as_ref()).ok()?;
+                    sources.push(
+                        lakesoul_io::pk_locator::VectorPayloadSource::open_cached(
+                            Arc::clone(&store),
+                            &location,
+                            format,
+                            &key_columns,
+                            &key_types,
+                            &field,
+                        )
+                        .await?,
+                    );
+                }
+                Some(sources)
             }
         });
         let sources = futures::future::join_all(opens).await;
@@ -1320,7 +1344,7 @@ impl LakeSoulVectorSearchExec {
             let source = sources.get(bucket).cloned().flatten();
             tasks.push(lakesoul_io::session::GLOBAL_RUNTIME.spawn_blocking(
                 move || -> DFResult<Option<(arrow::array::ArrayRef, Vec<IndexKey>)>> {
-                        let Some(source) = source else {
+                        let Some(sources) = source else {
                             return Ok(None);
                         };
                         let query_ref: [&[f32]; 1] = [query.as_slice()];
@@ -1364,7 +1388,12 @@ impl LakeSoulVectorSearchExec {
                         ranked.truncate(top_k);
                         let keys: Vec<IndexKey> =
                             ranked.into_iter().map(|(_, key)| key).collect();
-                        let Some(array) = source.take(&keys) else {
+                        // Every candidate must live in exactly one file of
+                        // this bucket; a key with several versions is left to
+                        // the merge-on-read reader path.
+                        let Some(array) =
+                            lakesoul_io::pk_locator::take_multi_file(&sources, &keys)
+                        else {
                             return Ok(None);
                         };
                         Ok(Some((array, keys)))

@@ -347,6 +347,18 @@ impl MmapIndex {
     /// lines.  Returns `None` when a prefix matches zero or several rows: the
     /// caller then has to let the merge path decide.
     fn one_row_per_prefix(&self, prefixes: &[&[u8]]) -> Option<Vec<u32>> {
+        self.rows_per_prefix_lenient(prefixes).into_iter().collect()
+    }
+
+    /// Like [`Self::one_row_per_prefix`], but a prefix that matches zero or
+    /// several rows yields `None` for that prefix instead of failing the whole
+    /// batch.
+    ///
+    /// The multi-file resolver asks every file of a hash bucket the same
+    /// candidate keys and needs to know which keys are unique to which file;
+    /// a key repeated inside one file (several versions in one commit) is
+    /// reported as ambiguous, exactly like a missing one.
+    fn rows_per_prefix_lenient(&self, prefixes: &[&[u8]]) -> Vec<Option<u32>> {
         let mut rows = Vec::with_capacity(prefixes.len());
         let mut cursor = 0usize;
         for prefix in prefixes {
@@ -375,15 +387,15 @@ impl MmapIndex {
             }
             let start = low;
             if start >= self.rows || !self.row(start).starts_with(prefix) {
-                return None;
+                rows.push(None);
+            } else if start + 1 < self.rows && self.row(start + 1).starts_with(prefix) {
+                rows.push(None);
+            } else {
+                rows.push(Some(self.row_id(start)));
             }
-            if start + 1 < self.rows && self.row(start + 1).starts_with(prefix) {
-                return None;
-            }
-            rows.push(self.row_id(start));
             cursor = start;
         }
-        Some(rows)
+        rows
     }
 
     /// The rows whose key starts with any of `prefixes`, in row order.
@@ -2333,6 +2345,28 @@ impl VectorPayloadSource {
         (arrays.len() == 1).then(|| arrays.remove(0))
     }
 
+    /// Which of the given candidate keys resolve to exactly one row of this
+    /// file.
+    ///
+    /// `sorted_keys` must be sorted ascending (the locator walks the index
+    /// monotonically).  `None` per key means zero rows or several rows: the
+    /// merge-on-read path has to decide those.
+    pub fn lookup_rows(&self, sorted_keys: &[&[u8]]) -> Vec<Option<u32>> {
+        self.entry.index.rows_per_prefix_lenient(sorted_keys)
+    }
+
+    /// The stored vector of every given row, in input order.
+    pub fn take_rows(&self, rows: &[u32]) -> Option<arrow::array::ArrayRef> {
+        if rows.is_empty() {
+            return None;
+        }
+        let indices: Vec<u64> = rows.iter().map(|row| u64::from(*row)).collect();
+        let mut arrays = self
+            .view
+            .take(&indices, std::slice::from_ref(&self.vector_field))?;
+        (arrays.len() == 1).then(|| arrays.remove(0))
+    }
+
     /// Exact L2/IP scores of the given keys' stored vectors.
     ///
     /// Same lookup as [`Self::take`] but without building an Arrow array per
@@ -2363,6 +2397,79 @@ impl VectorPayloadSource {
         }
         self.view.score_rows(&indices, query, ascending)
     }
+}
+
+/// Read the stored vectors of candidate keys that live in exactly one file of
+/// their bucket.
+///
+/// `sources` are the bucket's data files.  A candidate key that resolves in
+/// none of them, or in more than one — the key has several versions and the
+/// merge-on-read path has to pick the visible one — makes the whole call return
+/// `None`, so the caller falls back to the reader path.  Buckets that hold
+/// several append-only files therefore use the direct payload read instead of
+/// requiring compaction down to one file per bucket.
+///
+/// A key unique to one file is read from that file's payload; the caller's key
+/// order is preserved so the distances stay aligned with the candidate order.
+pub fn take_multi_file(
+    sources: &[std::sync::Arc<VectorPayloadSource>],
+    keys: &[IndexKey],
+) -> Option<arrow::array::ArrayRef> {
+    if keys.is_empty() || sources.is_empty() {
+        return None;
+    }
+    if sources.len() == 1 {
+        return sources[0].take(keys);
+    }
+    // The locator wants sorted keys; the answer must come back in the caller's
+    // order (the candidates arrive in index-distance order).
+    let mut order: Vec<u32> = (0..keys.len() as u32).collect();
+    order.sort_unstable_by(|left, right| {
+        keys[*left as usize].as_bytes().cmp(keys[*right as usize].as_bytes())
+    });
+    let sorted: Vec<&[u8]> = order
+        .iter()
+        .map(|position| keys[*position as usize].as_bytes())
+        .collect();
+    // Which file owns each candidate.  A second owner means several versions,
+    // which only the merge path may resolve.
+    let mut owner: Vec<Option<(usize, u32)>> = vec![None; keys.len()];
+    for (source_index, source) in sources.iter().enumerate() {
+        for (slot, row) in source.lookup_rows(&sorted).into_iter().enumerate() {
+            let Some(row) = row else { continue };
+            let position = order[slot] as usize;
+            if owner[position].is_some() {
+                return None;
+            }
+            owner[position] = Some((source_index, row));
+        }
+    }
+    // One payload read per file, in the caller's key order.
+    let mut per_source: Vec<Vec<u32>> = vec![Vec::new(); sources.len()];
+    for resolved in &owner {
+        let (source_index, row) = (*resolved)?;
+        per_source[source_index].push(row);
+    }
+    let mut arrays: Vec<arrow::array::ArrayRef> = Vec::new();
+    let mut array_of_source = vec![usize::MAX; sources.len()];
+    for (source_index, rows) in per_source.iter().enumerate() {
+        if rows.is_empty() {
+            continue;
+        }
+        array_of_source[source_index] = arrays.len();
+        arrays.push(sources[source_index].take_rows(rows)?);
+    }
+    let mut cursors = vec![0usize; sources.len()];
+    let mut interleave_indices: Vec<(usize, usize)> = Vec::with_capacity(keys.len());
+    for resolved in &owner {
+        let (source_index, _row) = (*resolved)?;
+        let local = cursors[source_index];
+        cursors[source_index] += 1;
+        interleave_indices.push((array_of_source[source_index], local));
+    }
+    let refs: Vec<&dyn arrow::array::Array> =
+        arrays.iter().map(|array| array.as_ref()).collect();
+    arrow::compute::interleave(&refs, &interleave_indices).ok()
 }
 
 /// Shared tail of both key-input builders: opens each file's mmapped key/// Shared tail of both key-input builders: opens each file's mmapped key
