@@ -783,15 +783,18 @@ fn lookup_chain_dim_frames(
     Ok(frames)
 }
 
-/// Whether every step is a unique lookup whose left keys all come from the
-/// base.  That is the shape where a per-step base join-key index can map a
-/// changed dimension row back to affected base rows without scanning the base.
+/// Whether every step's left keys all come from the base.  That is the shape
+/// where a per-step base join-key index can map a changed dimension row back
+/// to affected base rows without scanning the base.
+///
+/// The index is keyed by `(encoded join key, base primary key)`, so a step
+/// whose key is not unique (a 1:N dimension) still maps one changed dimension
+/// key to every matching base row.  A chained step key (a key produced by an
+/// earlier dimension) is not on the base and stays on the rebuild path.
 fn lookup_chain_indexable(view: &LookupChainView) -> bool {
     !view.steps.is_empty()
         && view.steps.iter().all(|step| {
-            step.unique
-                && !step.keys.is_empty()
-                && step.key_sources.iter().all(|source| *source == 0)
+            !step.keys.is_empty() && step.key_sources.iter().all(|source| *source == 0)
         })
 }
 

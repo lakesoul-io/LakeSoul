@@ -2820,6 +2820,22 @@ impl IvmRuntime {
             && !view.left.primary_keys.is_empty()
             && !view.right.primary_keys.is_empty()
         {
+            // The left-aggregate side states still keep the full source
+            // schema; only the join views narrow theirs.
+            let left_columns = view
+                .left
+                .schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect::<Vec<_>>();
+            let right_columns = view
+                .right
+                .schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect::<Vec<_>>();
             commit_ids.extend(
                 self.sync_full_join_side_states(
                     &view.view_id,
@@ -2829,6 +2845,8 @@ impl IvmRuntime {
                     left_aggregate_right_keys(view),
                     &[],
                     &[],
+                    &left_columns,
+                    &right_columns,
                     false,
                 )
                 .await?,
