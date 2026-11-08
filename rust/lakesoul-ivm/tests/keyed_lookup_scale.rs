@@ -186,3 +186,83 @@ async fn keyed_source_lookup_returns_every_high_cardinality_key() {
         &missing[..missing.len().min(10)]
     );
 }
+
+/// A keyed source lookup must apply merge-on-read: an insert superseded by a
+/// later delete must not be returned, even though the delete row is filtered
+/// out of the final result.
+#[test_log::test(tokio::test)]
+async fn keyed_source_lookup_hides_rows_deleted_after_insert() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_lookup_delete_{suffix}"),
+                table_path(&dir, "source"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                source_schema(),
+                vec![
+                    Arc::new(Int64Array::from_iter_values([1])),
+                    Arc::new(StringArray::from_iter_values(["g1"])),
+                    Arc::new(Int64Array::from_iter_values([10])),
+                    Arc::new(StringArray::from_iter_values(["insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                source_schema(),
+                vec![
+                    Arc::new(Int64Array::from_iter_values([1])),
+                    Arc::new(StringArray::from_iter_values(["g1"])),
+                    Arc::new(Int64Array::from_iter_values([10])),
+                    Arc::new(StringArray::from_iter_values(["delete"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let context = SessionContext::new();
+    let contribution = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("g", DataType::Utf8, false)])),
+        vec![Arc::new(StringArray::from_iter_values(["g1"]))],
+    )
+    .unwrap();
+    let contribution = context.read_batches(vec![contribution]).unwrap();
+    let frame = runtime
+        .lookup_source_by_join_keys(
+            &context,
+            &source,
+            contribution,
+            &["g".to_string()],
+            &["g".to_string()],
+            true,
+        )
+        .await
+        .unwrap();
+    let batches = frame.collect().await.unwrap();
+    let rows = batches.iter().map(|batch| batch.num_rows()).sum::<usize>();
+    assert_eq!(
+        rows, 0,
+        "a deleted key must not be resurrected by the lookup"
+    );
+}
