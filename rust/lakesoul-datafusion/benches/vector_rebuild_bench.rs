@@ -3258,6 +3258,10 @@ async fn run_batch_probe(
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(1),
+        metric: match args.metric {
+            Metric::L2 => "L2".to_string(),
+            Metric::InnerProduct => "IP".to_string(),
+        },
     };
     let batch_size = request.batch_size();
     let t = Instant::now();

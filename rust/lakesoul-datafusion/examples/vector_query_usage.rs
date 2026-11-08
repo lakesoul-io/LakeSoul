@@ -101,6 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         batch_size: 0,
         exact: false,
         exact_overfetch: 1,
+        metric: "L2".to_string(),
     };
     let results = provider.vector_batch_search(&state, &request).await?;
     for (query, ids) in results.iter().enumerate() {

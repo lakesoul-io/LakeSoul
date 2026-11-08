@@ -1480,6 +1480,11 @@ impl LakeSoulVectorSearchExec {
         }
         let mut kept_keys: Vec<IndexKey> = Vec::with_capacity(keep);
         let mut taken_vectors: Vec<arrow::array::ArrayRef> = Vec::new();
+        // Buckets whose kept rows are empty contribute no array: keep the
+        // mapping from a bucket to its index in `taken_vectors` instead of
+        // assuming they line up (a bucket with no row in the final top-k would
+        // otherwise shift every later bucket's array).
+        let mut array_of_bucket = vec![usize::MAX; bucket_arrays.len()];
         for (bucket, rows) in per_bucket_rows.iter().enumerate() {
             if rows.is_empty() {
                 continue;
@@ -1491,18 +1496,31 @@ impl LakeSoulVectorSearchExec {
                         "failed to gather the kept candidate vectors: {error}"
                     ))
                 })?;
+            if taken.len() != rows.len() {
+                return Ok(None);
+            }
+            array_of_bucket[bucket] = taken_vectors.len();
             taken_vectors.push(taken);
         }
-        // `order` is sorted by distance; `taken_vectors[bucket]` follows the
-        // per-bucket rows, so put the kept rows back into that order.
+        // `order` is sorted by distance; `taken_vectors[array_of_bucket]`
+        // follows the per-bucket rows, so put the kept rows back into that
+        // order.
         let mut per_bucket_cursor = vec![0usize; bucket_arrays.len()];
         let mut gathered: Vec<(usize, usize)> = Vec::with_capacity(order.len());
         for position in &order {
             let position = *position as usize;
             kept_keys.push(keys[position].clone());
             let bucket = bucket_of_row[position] as usize;
-            gathered.push((bucket, per_bucket_cursor[bucket]));
+            let array = array_of_bucket[bucket];
+            if array == usize::MAX {
+                return Ok(None);
+            }
+            let local = per_bucket_cursor[bucket];
+            if local >= taken_vectors[array].len() {
+                return Ok(None);
+            }
             per_bucket_cursor[bucket] += 1;
+            gathered.push((array, local));
         }
         let vector_column = if taken_vectors.len() == 1 {
             taken_vectors.pop().expect("one bucket")

@@ -595,6 +595,42 @@ fn make_batch(ids: &[u64], vectors: &[Vec<f32>]) -> RecordBatch {
     .unwrap()
 }
 
+/// The snapshot batch entry decodes the index keys into `Int64` primary
+/// keys, so its tests use a table whose pk column is `Int64`.
+fn int64_vector_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new(
+            "vec",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIM as i32,
+            ),
+            false,
+        ),
+    ]))
+}
+
+fn make_batch_int64(ids: &[i64], vectors: &[Vec<f32>]) -> RecordBatch {
+    let id_array = arrow::array::Int64Array::from(ids.to_vec());
+    let mut builder = arrow::array::FixedSizeListBuilder::new(
+        arrow::array::Float32Builder::new(),
+        DIM as i32,
+    );
+    for vector in vectors {
+        for value in vector {
+            builder.values().append_value(*value);
+        }
+        builder.append(true);
+    }
+    let vec_array = builder.finish();
+    RecordBatch::try_new(
+        int64_vector_schema(),
+        vec![Arc::new(id_array), Arc::new(vec_array)],
+    )
+    .unwrap()
+}
+
 /// The direct exact re-rank needs the stored-vector payload cache; these
 /// tests set it once before the first query so the multi-file resolution is
 /// actually exercised (the reader path would also return correct rows, which
@@ -2478,6 +2514,113 @@ async fn sql_vector_search_multi_file_upsert_falls_back() {
         hits >= 8,
         "upserted multi-file recall {hits}/10, returned={returned:?} expected={expected:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_batch_ip_metric() {
+    // The snapshot batch entry must support the inner-product metric in both
+    // its index-only and its exact mode, with the same ranking direction as
+    // the single-query path.
+    use crate::datasource::table_provider::LakeSoulTableProvider;
+    use crate::tests::create_table_with_vector_index;
+    use crate::vector_batch::VectorBatchRequest;
+
+    enable_direct_exact_path();
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_batch_ip";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(int64_vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    let mut configs = vector_configs();
+    configs[0].params.metric = "IP".to_string();
+    create_table_with_vector_index(client.clone(), table_name, builder.build(), &configs)
+        .await
+        .unwrap();
+
+    let n = 400i64;
+    let vectors = seeded_vectors(n as usize, 7);
+    let ids: Vec<i64> = (0..n).collect();
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(make_batch_int64(&ids, &vectors))
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    let state = ctx.state();
+    let catalog = ctx.catalog("lakesoul").expect("lakesoul catalog");
+    let schema = catalog.schema("default").expect("default schema");
+    let table = schema
+        .table(table_name)
+        .await
+        .unwrap()
+        .expect("table is registered");
+    let provider = table
+        .downcast_ref::<LakeSoulTableProvider>()
+        .expect("vector index table provider");
+
+    let queries = vec![
+        vec![0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8],
+        vec![-0.3f32, 0.2, 0.1, -0.4, 0.5, -0.6, 0.2, 0.1],
+    ];
+    let base = VectorBatchRequest {
+        column: "vec".to_string(),
+        queries: queries.clone(),
+        top_k: 10,
+        nprobe: 4,
+        parallelism: 1,
+        batch_size: 0,
+        exact: false,
+        exact_overfetch: 1,
+        metric: "IP".to_string(),
+    };
+
+    // Index-only mode: the index returns dot-product order.
+    let index_only = provider.vector_batch_search(&state, &base).await.unwrap();
+    assert_eq!(index_only.len(), queries.len());
+    for (query_index, query) in queries.iter().enumerate() {
+        let expected: Vec<i64> =
+            brute_force_topk_ip(&vectors, query, 10).iter().map(|v| *v as i64).collect();
+        let hits = index_only[query_index]
+            .iter()
+            .filter(|id| expected.contains(id))
+            .count();
+        assert!(
+            hits >= 5,
+            "IP index-only batch recall {hits}/10, got={:?} expected={expected:?}",
+            index_only[query_index]
+        );
+    }
+
+    // Exact mode: re-rank the candidates by the stored dot product.
+    let exact_request = VectorBatchRequest {
+        exact: true,
+        ..base.clone()
+    };
+    let exact = provider
+        .vector_batch_search(&state, &exact_request)
+        .await
+        .unwrap();
+    for (query_index, query) in queries.iter().enumerate() {
+        let expected: Vec<i64> =
+            brute_force_topk_ip(&vectors, query, 10).iter().map(|v| *v as i64).collect();
+        let hits = exact[query_index]
+            .iter()
+            .filter(|id| expected.contains(id))
+            .count();
+        assert!(
+            hits >= 8,
+            "IP exact batch recall {hits}/10, got={:?} expected={expected:?}",
+            exact[query_index]
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -106,16 +106,24 @@ pub struct VectorBatchRequest {
     /// Re-rank each query's candidates by the exact distance of their stored
     /// vectors instead of the index estimate.
     ///
-    /// The batch entry only computes the exact distance for an L2 index whose
-    /// coverage proof holds and whose buckets are single data files, read
-    /// through the stored-vector payload cache
-    /// (`LAKESOUL_VECTOR_RERANK_CACHE`); any other table gets a clear error
-    /// instead of silently approximate results.
+    /// The exact re-rank needs the stored-vector payload cache
+    /// (`LAKESOUL_VECTOR_RERANK_CACHE`), a proven snapshot coverage and one
+    /// data file per bucket; any other table gets a clear error instead of
+    /// silently approximate results.  Both L2 and IP indices are supported:
+    /// the scores are the squared distance (L2) or the negated dot product
+    /// (IP), so one ascending sort ranks both.
     pub exact: bool,
     /// Candidates per bucket re-ranked in exact mode (`top_k * overfetch`).
     /// Exact mode needs a wider net than index-only ordering: the index
     /// estimate only has to *find* the neighbours, not order them.
     pub exact_overfetch: usize,
+    /// Distance metric of the searched column's index: `"L2"` or `"IP"`.
+    ///
+    /// The index reports a distance for `L2` (smaller is closer) and the dot
+    /// product for `IP` (larger is closer); the batch ranking follows the
+    /// same direction, and the exact re-rank negates the dot product so one
+    /// ascending sort serves both.
+    pub metric: String,
 }
 
 impl VectorBatchRequest {
@@ -126,6 +134,12 @@ impl VectorBatchRequest {
         } else {
             self.top_k
         }
+    }
+
+    /// True when the index score is a distance (L2); false for the inner
+    /// product, where the larger score is the better one.
+    pub fn ascending(&self) -> bool {
+        self.metric.eq_ignore_ascii_case("L2")
     }
 
     /// Queries per snapshot batch actually used.
@@ -154,17 +168,17 @@ fn merge_query(
     query_index: usize,
     top_k: usize,
     bucket_count: usize,
+    ascending: bool,
 ) -> Vec<i64> {
     let mut ranked: Vec<(f32, i64)> = Vec::with_capacity(bucket_count * top_k);
     for per_bucket in bucket_ranked {
         ranked.extend(per_bucket[query_index].iter().copied());
     }
-    // L2 index distance: smaller is closer, the same ordering the
-    // single-query path uses with `lakesoul_vector_search.rerank=index`.
+    // L2 index distance: smaller is closer; IP dot product: larger is closer.
     ranked.sort_by(|left, right| {
-        left.0
-            .total_cmp(&right.0)
-            .then_with(|| left.1.cmp(&right.1))
+        let order = left.0.total_cmp(&right.0);
+        let order = if ascending { order } else { order.reverse() };
+        order.then_with(|| left.1.cmp(&right.1))
     });
     ranked.truncate(top_k);
     ranked.into_iter().map(|(_, id)| id).collect()
@@ -186,14 +200,23 @@ fn rank_query(
     codec: &KeyCodec,
     per_query_hits: &[VectorHit],
     live: Option<&HashSet<IndexKey>>,
+    ascending: bool,
 ) -> DFResult<Vec<(f32, i64)>> {
     let mut best: BTreeMap<&IndexKey, f32> = BTreeMap::new();
     for hit in per_query_hits {
         if live.is_some_and(|live| !live.contains(&hit.key)) {
             continue;
         }
+        // Several segments may hold the same key: keep the better score, the
+        // smaller distance or the larger dot product.
         best.entry(&hit.key)
-            .and_modify(|score| *score = score.min(hit.score))
+            .and_modify(|score| {
+                *score = if ascending {
+                    score.min(hit.score)
+                } else {
+                    score.max(hit.score)
+                }
+            })
             .or_insert(hit.score);
     }
     if best.is_empty() {
@@ -211,9 +234,10 @@ fn rank_bucket(
     codec: &KeyCodec,
     hits: &[Vec<VectorHit>],
     live: Option<&HashSet<IndexKey>>,
+    ascending: bool,
 ) -> DFResult<Vec<Vec<(f32, i64)>>> {
     hits.iter()
-        .map(|per_query_hits| rank_query(codec, per_query_hits, live))
+        .map(|per_query_hits| rank_query(codec, per_query_hits, live, ascending))
         .collect()
 }
 
@@ -223,17 +247,17 @@ fn merge_one_query(
     bucket_hits: &[Vec<Vec<VectorHit>>],
     query_index: usize,
     top_k: usize,
+    ascending: bool,
 ) -> DFResult<Vec<i64>> {
     let mut ranked: Vec<(f32, i64)> = Vec::with_capacity(bucket_hits.len() * top_k);
     for hits in bucket_hits {
-        ranked.extend(rank_query(codec, &hits[query_index], None)?);
+        ranked.extend(rank_query(codec, &hits[query_index], None, ascending)?);
     }
-    // L2 index distance: smaller is closer, the same ordering the single-query
-    // path uses with `lakesoul_vector_search.rerank=index`.
+    // L2 index distance: smaller is closer; IP dot product: larger is closer.
     ranked.sort_by(|left, right| {
-        left.0
-            .total_cmp(&right.0)
-            .then_with(|| left.1.cmp(&right.1))
+        let order = left.0.total_cmp(&right.0);
+        let order = if ascending { order } else { order.reverse() };
+        order.then_with(|| left.1.cmp(&right.1))
     });
     ranked.truncate(top_k);
     Ok(ranked.into_iter().map(|(_, id)| id).collect())
@@ -249,6 +273,7 @@ fn rank_and_merge(
     codec: &KeyCodec,
     bucket_hits: &[Vec<Vec<VectorHit>>],
     top_k: usize,
+    ascending: bool,
 ) -> DFResult<Vec<Vec<i64>>> {
     let queries = bucket_hits.first().map(|hits| hits.len()).unwrap_or(0);
     if queries == 0 {
@@ -260,7 +285,9 @@ fn rank_and_merge(
         .min(queries);
     if threads <= 1 {
         return (0..queries)
-            .map(|query_index| merge_one_query(codec, bucket_hits, query_index, top_k))
+            .map(|query_index| {
+                merge_one_query(codec, bucket_hits, query_index, top_k, ascending)
+            })
             .collect();
     }
     let per_thread = queries.div_ceil(threads).max(1);
@@ -275,7 +302,13 @@ fn rank_and_merge(
                     for query_index in start..end {
                         rows.push((
                             query_index,
-                            merge_one_query(codec, bucket_hits, query_index, top_k)?,
+                            merge_one_query(
+                                codec,
+                                bucket_hits,
+                                query_index,
+                                top_k,
+                                ascending,
+                            )?,
                         ));
                     }
                     Ok(rows)
@@ -666,7 +699,12 @@ async fn search_vector_batch_chunk(
         }
         // Ranking and the cross-bucket top-k are per query, so they fill every
         // core even though the probe stage is limited to the bucket count.
-        let results = rank_and_merge(&codec, &bucket_hits, request.top_k)?;
+        let results = rank_and_merge(
+            &codec,
+            &bucket_hits,
+            request.top_k,
+            request.ascending(),
+        )?;
         if profile {
             tracing::debug!(
                 queries = request.queries.len(),
@@ -726,7 +764,12 @@ async fn search_vector_batch_chunk(
                     .await?,
                 )
             };
-            ranked.push(rank_bucket(&codec, &hits, live.as_ref())?);
+            ranked.push(rank_bucket(
+                &codec,
+                &hits,
+                live.as_ref(),
+                request.ascending(),
+            )?);
         }
         ranked
     };
@@ -742,10 +785,17 @@ async fn search_vector_batch_chunk(
         .map(std::num::NonZero::get)
         .unwrap_or(1)
         .min(queries.max(1));
+    let ascending = request.ascending();
     let results: Vec<Vec<i64>> = if merge_threads <= 1 {
         (0..queries)
             .map(|query_index| {
-                merge_query(&bucket_ranked, query_index, top_k, bucket_count)
+                merge_query(
+                    &bucket_ranked,
+                    query_index,
+                    top_k,
+                    bucket_count,
+                    ascending,
+                )
             })
             .collect()
     } else {
@@ -765,6 +815,7 @@ async fn search_vector_batch_chunk(
                                     query_index,
                                     top_k,
                                     bucket_count,
+                                    ascending,
                                 )
                             })
                             .collect::<Vec<_>>();
@@ -958,7 +1009,7 @@ async fn exact_rank_and_merge(
                                 let Some(scores) = source.score_keys(
                                     &keys,
                                     &query_vectors[query],
-                                    true,
+                                    request.ascending(),
                                 ) else {
                                     return Err(DataFusionError::Execution(
                                         "stored-vector payload read failed"
@@ -999,6 +1050,8 @@ async fn exact_rank_and_merge(
     // Cross-bucket top-k per query, then decode only the winning keys.  The
     // per-query work is independent, so it fills the cores of a large batch.
     let merge_one = |scored: &mut Vec<(f32, IndexKey)>| -> DFResult<Vec<i64>> {
+        // `score_keys` returns a squared distance for L2 and the negated dot
+        // product for IP, so ascending order is "best first" for both.
         scored.sort_by(|left, right| left.0.total_cmp(&right.0));
         if scored.len() > request.top_k {
             scored.truncate(request.top_k);

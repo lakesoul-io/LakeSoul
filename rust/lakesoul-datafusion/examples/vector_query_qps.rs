@@ -520,6 +520,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(1),
+        metric: "L2".to_string(),
     };
     for _ in 0..2 {
         let _ = provider.vector_batch_search(&state, &request).await?;
