@@ -1257,13 +1257,9 @@ impl LakeSoulTableProvider {
         let filter = match request.filter.as_ref() {
             Some(predicate) => {
                 let df_schema = datafusion::common::DFSchema::try_from(
-                    Arc::clone(&projected_file_schema),
+                    Arc::clone(&merged_schema),
                 )
-                .map_err(DataFusionError::from)
-                .or_else(|_| {
-                    datafusion::common::DFSchema::try_from(Arc::clone(&merged_schema))
-                        .map_err(DataFusionError::from)
-                });
+                .map_err(DataFusionError::from);
                 df_schema.ok().and_then(|schema| {
                     datafusion::physical_expr::create_physical_expr(
                         predicate,
@@ -1291,7 +1287,7 @@ impl LakeSoulTableProvider {
                     datafusion::common::ScalarValue::Utf8(Some("delete".to_string())),
                     None,
                 ));
-                datafusion::common::DFSchema::try_from(Arc::clone(&projected_file_schema))
+                datafusion::common::DFSchema::try_from(Arc::clone(&merged_schema))
                     .ok()
                     .and_then(|schema| {
                         datafusion::physical_expr::create_physical_expr(
@@ -1305,6 +1301,7 @@ impl LakeSoulTableProvider {
             }
         };
         let exec = crate::datasource::file_format::LakeSoulVectorSearchExec::try_new(
+            merged_schema.clone(),
             merged_schema.clone(),
             projected_file_schema,
             self.table_partition_cols().to_vec(),

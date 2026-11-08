@@ -168,6 +168,9 @@ fn snapshot_cache_put(entry: Arc<CachedSnapshot>) {
 pub struct LakeSoulVectorSearchExec {
     /// Output schema: file columns followed by partition columns.
     schema: SchemaRef,
+    /// Read schema of the candidate path: the projected file columns plus the
+    /// partition columns (so a predicate or projection may reference either).
+    candidate_schema: SchemaRef,
     /// File columns (partition columns excluded).
     file_schema: SchemaRef,
     /// (name, type) of the range partition columns.
@@ -240,6 +243,7 @@ impl LakeSoulVectorSearchExec {
     #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         schema: SchemaRef,
+        candidate_schema: SchemaRef,
         file_schema: SchemaRef,
         partition_cols: Vec<(String, DataType)>,
         file_groups: Vec<Vec<PartitionedFile>>,
@@ -256,6 +260,7 @@ impl LakeSoulVectorSearchExec {
     ) -> DFResult<Self> {
         Ok(Self {
             schema: Arc::clone(&schema),
+            candidate_schema,
             file_schema,
             partition_cols,
             file_groups,
@@ -1319,10 +1324,11 @@ impl LakeSoulVectorSearchExec {
             .field_with_name(&column.column)
             .map(|field| is_float_list(field.data_type()))
             .unwrap_or(false);
-        (self.filter.is_some() || self.cdc_filter.is_some())
+        (self.filter.is_some()
+            || self.cdc_filter.is_some()
+            || !self.partition_cols.is_empty())
             && self.vector_search.is_single()
             && !self.vector_search.order_by
-            && self.partition_cols.is_empty()
             && self.exact_ranking_matches_sort()
             && self.keep_rows() > 0
             && stored_f32
@@ -1378,9 +1384,6 @@ impl LakeSoulVectorSearchExec {
         }
         if let Some(cdc_filter) = self.cdc_filter.as_ref() {
             predicates.push(cdc_filter);
-        }
-        if predicates.is_empty() {
-            return Ok(None);
         }
         #[cfg(test)]
         FILTERED_CANDIDATE_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1471,7 +1474,7 @@ impl LakeSoulVectorSearchExec {
             )?;
             let filters = self.pk_filters(&pk_batch)?;
             let configs = self.build_configs_with(
-                &self.file_schema,
+                &self.candidate_schema,
                 filters,
                 nprobe,
                 parallelism,
@@ -2263,11 +2266,18 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
         // (`lakesoul_vector_search.deferred_payload`).
         let schema = Arc::clone(&self.schema);
         let defer_payload = self.defers_payload(context.session_config());
-        let ranking_schema = if defer_payload {
+        let partitioned = !self.partition_cols.is_empty();
+        let mut ranking_schema = if defer_payload {
             self.ranking_schema()
         } else {
             Arc::clone(&self.file_schema)
         };
+        if partitioned {
+            // A range-partitioned read must carry the partition columns (the
+            // reader fills their values from the file group) and the primary
+            // keys the merge needs, so read the whole candidate schema.
+            ranking_schema = Arc::clone(&self.candidate_schema);
+        }
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         let t_exec = std::time::Instant::now();
         // Fast path: for a primary-key-only projection of the index-only
@@ -2413,6 +2423,14 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
             order_by_index_distance(candidates, &schema, primary_metric)?
         } else {
             candidates
+        };
+        let batches = if partitioned {
+            batches
+                .iter()
+                .map(|batch| project_batch(batch, &self.schema))
+                .collect::<DFResult<Vec<_>>>()?
+        } else {
+            batches
         };
         let stream = futures::stream::iter(batches.into_iter().map(Ok));
         let stream = Box::pin(RecordBatchStreamAdapter::new(schema, stream))

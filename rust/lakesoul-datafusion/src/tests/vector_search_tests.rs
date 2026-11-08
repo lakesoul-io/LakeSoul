@@ -3023,6 +3023,190 @@ async fn sql_vector_search_cdc_drops_tombstones() {
     assert_eq!(rows, 10, "filter + CDC path must fill the limit");
 }
 
+fn partitioned_vector_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("part", DataType::Int32, false),
+        Field::new("id", DataType::UInt64, false),
+        Field::new(
+            "vec",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIM as i32,
+            ),
+            false,
+        ),
+    ]))
+}
+
+fn make_partitioned_vector_batch(
+    parts: &[i32],
+    ids: &[u64],
+    vectors: &[Vec<f32>],
+) -> RecordBatch {
+    let part_array = arrow::array::Int32Array::from(parts.to_vec());
+    let id_array = arrow::array::UInt64Array::from(ids.to_vec());
+    let mut builder = arrow::array::FixedSizeListBuilder::new(
+        arrow::array::Float32Builder::new(),
+        DIM as i32,
+    );
+    for vector in vectors {
+        for value in vector {
+            builder.values().append_value(*value);
+        }
+        builder.append(true);
+    }
+    let vec_array = builder.finish();
+    RecordBatch::try_new(
+        partitioned_vector_schema(),
+        vec![Arc::new(part_array), Arc::new(id_array), Arc::new(vec_array)],
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_range_partitioned_table() {
+    // Range partitions are several work units of the same table; the candidate
+    // path must read each partition's rows with its primary-key filters and
+    // merge the rankings, and a partition predicate must prune to one unit.
+    use crate::datasource::file_format::vector_search_exec::FILTERED_CANDIDATE_RUNS;
+    use crate::tests::create_partitioned_vector_table;
+    use std::sync::atomic::Ordering;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_partitioned";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    create_partitioned_vector_table(
+        client.clone(),
+        table_name,
+        partitioned_vector_schema(),
+        &vector_configs(),
+    )
+    .await
+    .unwrap();
+
+    let n = 200u64;
+    let ids: Vec<u64> = (0..n).collect();
+    let parts: Vec<i32> = ids.iter().map(|id| (*id % 2) as i32).collect();
+    let vectors = seeded_vectors(n as usize, 7);
+    crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap()
+        .execute_upsert(make_partitioned_vector_batch(&parts, &ids, &vectors))
+        .await
+        .unwrap();
+    // A partitioned table builds one index per partition, so look for the
+    // segments anywhere below the table root.
+    {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("default")
+            .join(table_name);
+        let mut stack = vec![root];
+        let mut segments = 0usize;
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().map(|e| e == "seg").unwrap_or(false) {
+                    segments += 1;
+                }
+            }
+        }
+        assert!(segments > 0, "no vector index segments under the table root");
+    }
+
+    let ctx =
+        crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    ctx.sql("SET lakesoul_vector_search.nprobe = 4")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    ctx.sql("SET lakesoul_vector_search.exact_overfetch = 1")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // Across both partitions: the ranking merges the two work units.
+    let sql = format!(
+        "select id, part from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let before = FILTERED_CANDIDATE_RUNS.load(Ordering::Relaxed);
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let after = FILTERED_CANDIDATE_RUNS.load(Ordering::Relaxed);
+    assert!(
+        after > before,
+        "a partitioned table must take the candidate path"
+    );
+    let mut returned: Vec<(u64, i32)> = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .expect("id column");
+        let parts = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow::array::Int32Array>()
+            .expect("part column");
+        for (id, part) in ids.values().iter().zip(parts.values().iter()) {
+            assert_eq!(*part, (*id % 2) as i32, "partition value of id {id}");
+            returned.push((*id, *part));
+        }
+    }
+    assert_eq!(returned.len(), 10, "the partitioned query must fill the limit");
+    let expected = brute_force_topk(&vectors, &query, 10);
+    let hits = returned
+        .iter()
+        .filter(|(id, _)| expected.contains(id))
+        .count();
+    assert!(
+        hits >= 8,
+        "partitioned recall {hits}/10, returned={returned:?} expected={expected:?}"
+    );
+
+    // A partition predicate prunes the scan to one work unit.
+    let sql = format!(
+        "select id, part from \"lakesoul\".default.{table_name} \
+         where part = 0 order by array_distance(vec, ARRAY[{q}]) limit 10"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let mut rows = 0usize;
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .expect("id column");
+        let parts = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow::array::Int32Array>()
+            .expect("part column");
+        for (id, part) in ids.values().iter().zip(parts.values().iter()) {
+            assert_eq!(*part, 0, "partition pruning failed for id {id}");
+            assert_eq!(*id % 2, 0);
+            rows += 1;
+        }
+    }
+    assert_eq!(rows, 10, "a pruned partition must still fill the limit");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_vector_batch_ip_metric() {
     // The snapshot batch entry must support the inner-product metric in both
