@@ -915,16 +915,25 @@ impl LakeSoulVectorSearchExec {
         let per_shard = probe_shards(&shards, &query, top_k, nprobe, parallelism).await?;
         let probe_ms = t_probe.elapsed().as_secs_f64() * 1000.0;
         let candidates_total = per_shard.iter().map(|hits| hits.len()).sum::<usize>();
+        let descending = !column.metric.eq_ignore_ascii_case("L2");
         let mut best: std::collections::HashMap<IndexKey, f32> =
             std::collections::HashMap::with_capacity(candidates_total);
         for hits in per_shard.into_iter().flatten() {
+            // The index score is a distance for L2 and a dot product for IP:
+            // the better of two entries is the smaller distance or the larger
+            // dot product.
             best.entry(hits.key)
-                .and_modify(|score| *score = score.min(hits.score))
+                .and_modify(|score| {
+                    *score = if descending {
+                        score.max(hits.score)
+                    } else {
+                        score.min(hits.score)
+                    }
+                })
                 .or_insert(hits.score);
         }
         let mut ranked: Vec<(f32, IndexKey)> =
             best.into_iter().map(|(key, score)| (score, key)).collect();
-        let descending = !column.metric.eq_ignore_ascii_case("L2");
         let compare = |left: &(f32, IndexKey), right: &(f32, IndexKey)| {
             let order = left
                 .0
@@ -1326,8 +1335,16 @@ impl LakeSoulVectorSearchExec {
                         let mut best: std::collections::HashMap<IndexKey, f32> =
                             std::collections::HashMap::with_capacity(hits.len());
                         for hit in hits {
+                            // L2 distance: smaller is better; IP dot product:
+                            // larger is better.
                             best.entry(hit.key)
-                                .and_modify(|score| *score = score.min(hit.score))
+                                .and_modify(|score| {
+                                    *score = if ascending {
+                                        score.min(hit.score)
+                                    } else {
+                                        score.max(hit.score)
+                                    }
+                                })
                                 .or_insert(hit.score);
                         }
                         let mut ranked: Vec<(f32, IndexKey)> = best
@@ -1335,9 +1352,14 @@ impl LakeSoulVectorSearchExec {
                             .map(|(key, score)| (score, key))
                             .collect();
                         ranked.sort_by(|left, right| {
-                            left.0
+                            let order = left
+                                .0
                                 .partial_cmp(&right.0)
-                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .unwrap_or(std::cmp::Ordering::Equal);
+                            // Keep the best `top_k` by the index score: the
+                            // nearest distances (L2) or the largest dot
+                            // products (IP).
+                            if ascending { order } else { order.reverse() }
                         });
                         ranked.truncate(top_k);
                         let keys: Vec<IndexKey> =

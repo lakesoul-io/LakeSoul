@@ -389,6 +389,76 @@ fn rule_ignores_inner_product_asc() {
 }
 
 #[test]
+fn rule_rewrites_inner_product_desc() {
+    // IP ranks by descending dot product; index-only ordering now supports it.
+    let mem_table = Arc::new(MemTable::try_new(vector_schema(), vec![vec![]]).unwrap());
+    let plan = LogicalPlanBuilder::scan("t", provider_as_source(mem_table), None)
+        .unwrap()
+        .sort(vec![inner_product_expr().sort(false, false)])
+        .unwrap()
+        .limit(0, Some(10))
+        .unwrap()
+        .build()
+        .unwrap();
+    let rewritten = VectorSearchPushdownRule
+        .rewrite(plan, &index_only_context())
+        .unwrap()
+        .data;
+    let request = marker_request(&rewritten).expect("marker must be injected");
+    assert!(request.order_by, "IP index-only ordering must be pushed down");
+    assert_eq!(request.columns[0].metric, "IP");
+    assert_eq!(request.columns[0].weight, 1.0);
+    assert_eq!(request.overfetch, 2);
+}
+
+#[test]
+fn rule_rewrites_pgvector_negated_inner_product() {
+    // pgvector's `<#>` is planned as `-inner_product(vec, q)` ordered ASC,
+    // which is the same ranking as `inner_product(vec, q) DESC`.
+    let mem_table = Arc::new(MemTable::try_new(vector_schema(), vec![vec![]]).unwrap());
+    let plan = LogicalPlanBuilder::scan("t", provider_as_source(mem_table), None)
+        .unwrap()
+        .sort(vec![
+            Expr::Negative(Box::new(inner_product_expr())).sort(true, false)
+        ])
+        .unwrap()
+        .limit(0, Some(10))
+        .unwrap()
+        .build()
+        .unwrap();
+    let rewritten = VectorSearchPushdownRule
+        .rewrite(plan, &index_only_context())
+        .unwrap()
+        .data;
+    let request = marker_request(&rewritten).expect("marker must be injected");
+    assert!(request.order_by, "negated IP must order by the index");
+    assert_eq!(request.columns[0].metric, "IP");
+    // The marker carries the positive weight: the index orders by the dot
+    // product, not by its negation.
+    assert_eq!(request.columns[0].weight, 1.0);
+
+    // Exact re-rank keeps the plan's sort, but still runs over the index.
+    let mem_table = Arc::new(MemTable::try_new(vector_schema(), vec![vec![]]).unwrap());
+    let plan = LogicalPlanBuilder::scan("t", provider_as_source(mem_table), None)
+        .unwrap()
+        .sort(vec![
+            Expr::Negative(Box::new(inner_product_expr())).sort(true, false)
+        ])
+        .unwrap()
+        .limit(0, Some(10))
+        .unwrap()
+        .build()
+        .unwrap();
+    let rewritten = VectorSearchPushdownRule
+        .rewrite(plan, &datafusion::optimizer::OptimizerContext::new())
+        .unwrap()
+        .data;
+    let request = marker_request(&rewritten).expect("marker must be injected");
+    assert!(!request.order_by, "exact mode keeps the sort");
+    assert_eq!(request.columns[0].metric, "IP");
+}
+
+#[test]
 fn rule_rewrites_multi_column_weighted_sum() {
     // `0.7*d(vec_a) + 0.3*d(vec_b)` fuses two indexed columns; the exact plan
     // keeps its Sort for the re-rank over the candidate intersection.
@@ -2149,6 +2219,88 @@ async fn sql_vector_search_index_only_ordering() {
         .unwrap();
     let explain = explain_plan(&set_ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
     assert!(explain.contains("order_by=true"), "{explain}");
+}
+
+fn brute_force_topk_ip(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<u64> {
+    let mut scored: Vec<(f32, u64)> = vectors
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let dot: f32 = v.iter().zip(query).map(|(a, b)| a * b).sum();
+            (-dot, i as u64)
+        })
+        .collect();
+    scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    scored.into_iter().take(k).map(|(_, id)| id).collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_vector_search_ip_index_only_ordering() {
+    use crate::tests::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_search_sql_ip_index_only";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("1");
+    let mut configs = vector_configs();
+    configs[0].params.metric = "IP".to_string();
+    create_table_with_vector_index(client.clone(), table_name, builder.build(), &configs)
+        .await
+        .unwrap();
+
+    let n = 400u64;
+    let vectors = seeded_vectors(n as usize, 7);
+    let ids: Vec<u64> = (0..n).collect();
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    table
+        .execute_upsert(make_batch(&ids, &vectors))
+        .await
+        .unwrap();
+    assert_vector_index_built(table_name);
+
+    let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
+
+    let mut session_config = crate::create_lakesoul_session_config().unwrap();
+    let mut options = LakeSoulVectorSearchConfig::default();
+    options.nprobe = 4;
+    options.rerank = "index".to_string();
+    session_config.options_mut().extensions.insert(options);
+    let ctx = crate::create_lakesoul_session_ctx_with_config(
+        client,
+        &default_args(),
+        session_config,
+    )
+    .unwrap();
+
+    let q = query
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by inner_product(vec, ARRAY[{q}]) desc limit 10"
+    );
+    let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
+    assert!(explain.contains("LakeSoulVectorSearchExec"), "{explain}");
+    assert!(explain.contains("order_by=true"), "{explain}");
+    assert!(!explain.contains("SortExec"), "{explain}");
+
+    let returned = collect_ids(&ctx, &sql).await;
+    let expected = brute_force_topk_ip(&vectors, &query, 10);
+    let hits = returned.iter().filter(|id| expected.contains(id)).count();
+    let recall = hits as f64 / 10.0;
+    assert!(
+        recall >= 0.5,
+        "IP index-only recall {recall}, returned={returned:?} expected={expected:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

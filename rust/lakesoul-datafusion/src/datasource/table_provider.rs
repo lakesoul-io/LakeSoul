@@ -1146,9 +1146,10 @@ impl LakeSoulTableProvider {
                 record_fallback("unsupported_metric");
                 return Ok(None);
             }
-            if request.order_by && metric != "L2" {
-                // Index-only ordering fuses the index distances; the fusion
-                // is only defined for L2.
+            if request.order_by && metric != "L2" && request.columns.len() > 1 {
+                // Fusing several columns' index distances into one ordering is
+                // only defined for L2; a single IP column orders by the dot
+                // product, which the index reports directly.
                 record_fallback("unsupported_metric");
                 return Ok(None);
             }

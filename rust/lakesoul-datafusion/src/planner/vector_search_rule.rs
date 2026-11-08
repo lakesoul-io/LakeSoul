@@ -14,6 +14,11 @@
 //!         └── TableScan
 //! ```
 //!
+//! `inner_product` orders descending (the `IP` metric); pgvector spells it
+//! as the *negative* inner product (`ORDER BY vec <#> q` ==
+//! `-inner_product(vec, q) ASC`), which is the same ordering with the sign
+//! outside and is accepted too.
+//!
 //! and appends an internal marker call to the `TableScan.filters` list.
 //! The scan provider then switches the table read to the vector-index
 //! candidate path while the physical `Sort` + `Limit` stay in place for the
@@ -68,6 +73,11 @@ pub(crate) struct VectorSearchSpec {
     pub narrow: bool,
     /// The matched sort key; used to drop exactly that `Sort` node.
     pub sort_key: Expr,
+    /// Ascending flag of the matched `Sort` expression.  It is the canonical
+    /// direction (`L2` ascending / `IP` descending) unless the sort key is a
+    /// negated inner product, which ranks in the canonical order while the
+    /// expression sorts ascending.
+    pub plan_sort_asc: bool,
 }
 
 /// One weighted column of a detected vector search.
@@ -164,8 +174,15 @@ fn detect(
         return None;
     }
     let metric = terms_metric(&raw_terms)?;
-    let expected_asc = metric == "L2";
-    if sort_expr.asc != expected_asc {
+    // Canonical order: L2 sorts ascending by distance, IP descending by dot
+    // product.  pgvector's `<#>` operator is the negative inner product
+    // (`ORDER BY vec <#> q` == `-inner_product(vec, q) ASC`): the same
+    // ordering with the sign outside, so accept that spelling too and carry
+    // the positive weight into the marker.
+    let canonical_asc = metric == "L2";
+    let negated_ip =
+        metric == "IP" && raw_terms.len() == 1 && raw_terms[0].1 < 0.0 && sort_expr.asc;
+    if sort_expr.asc != canonical_asc && !negated_ip {
         return None;
     }
 
@@ -189,10 +206,14 @@ fn detect(
                 let mut columns = Vec::with_capacity(raw_terms.len());
                 for (expr, weight) in &raw_terms {
                     let (column, query) = extract_distance_args(expr, ts)?;
+                    // A negated inner product ranks by the dot product itself,
+                    // so the marker carries the positive weight and the index
+                    // ordering (IP descending) matches the plan's order.
+                    let weight = if negated_ip { weight.abs() } else { *weight };
                     columns.push(VectorSearchTerm {
                         column,
                         query,
-                        weight: *weight,
+                        weight,
                     });
                 }
                 // Index-only ordering is safe while the distances are used
@@ -201,8 +222,12 @@ fn detect(
                 // out of the projection.  (L2 only for now — the IP
                 // estimator is not directly comparable with
                 // `inner_product`.)
-                let order_by =
-                    index_only && metric == "L2" && distance_calls(plan) == columns.len();
+                // Index-only ordering is available for both metrics: the scan
+                // returns rows ordered by the index distance (L2 ascending,
+                // IP descending), which is exactly the plan's order.
+                let order_by = index_only
+                    && (metric == "L2" || metric == "IP")
+                    && distance_calls(plan) == columns.len();
                 // Index-only ordering needs each bucket's top-k only (a
                 // globally top-k row is within its own bucket's top-k), so the
                 // per-bucket candidate count shrinks by the over-fetch factor.
@@ -227,6 +252,7 @@ fn detect(
                         overfetch,
                         narrow,
                         sort_key,
+                        plan_sort_asc: sort_expr.asc,
                     },
                     current,
                 ));
@@ -273,6 +299,9 @@ fn as_scalar_function(expr: &Expr) -> Option<&ScalarFunction> {
 /// each term is a distance call.
 fn collect_terms(expr: &Expr, sign: f32, terms: &mut Vec<(Expr, f32)>) -> Option<()> {
     match unwrap_cast(expr) {
+        // pgvector's `<#>` is planned as `-inner_product(vec, q)`; the sign
+        // belongs to the ordering, not to the term.
+        Expr::Negative(inner) => collect_terms(inner, -sign, terms),
         Expr::BinaryExpr(binary) => match binary.op {
             Operator::Plus => {
                 collect_terms(&binary.left, sign, terms)?;
@@ -539,7 +568,7 @@ fn sort_matches_spec(sort: &Sort, spec: &VectorSearchSpec) -> bool {
         return false;
     }
     let sort_expr = &sort.expr[0];
-    sort_expr.asc == (spec.metric == "L2") && sort_expr.expr == spec.sort_key
+    sort_expr.asc == spec.plan_sort_asc && sort_expr.expr == spec.sort_key
 }
 
 /// Number of `array_distance`/`inner_product` calls on the matched path,
