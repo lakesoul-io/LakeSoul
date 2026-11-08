@@ -2060,7 +2060,7 @@ impl LakeSoulVectorSearchExec {
         }
         let ranked = if self.vector_search.order_by {
             let ranked_schema = candidates[0].schema();
-            order_by_index_distance(candidates, &ranked_schema, metric)?
+            order_by_index_distance(candidates, &ranked_schema)?
         } else {
             rank_by_exact_distance(&self.vector_search, metric, candidates)?
         };
@@ -2420,7 +2420,7 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
             }
             kept
         } else if self.vector_search.order_by {
-            order_by_index_distance(candidates, &schema, primary_metric)?
+            order_by_index_distance(candidates, &schema)?
         } else {
             candidates
         };
@@ -2456,7 +2456,6 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
 fn order_by_index_distance(
     batches: Vec<arrow::record_batch::RecordBatch>,
     output_schema: &SchemaRef,
-    metric: &str,
 ) -> DFResult<Vec<arrow::record_batch::RecordBatch>> {
     use arrow::compute::{
         SortColumn, SortOptions, lexsort_to_indices, take_record_batch,
@@ -2482,7 +2481,11 @@ fn order_by_index_distance(
         &[SortColumn {
             values: Arc::clone(combined.column(distance_index)),
             options: Some(SortOptions {
-                descending: !metric.eq_ignore_ascii_case("L2"),
+                // The reader reports every index distance as "smaller is
+                // better": sqrt(L2 squared distance) for L2 and the negated
+                // dot product for IP.  A fused ordering over several columns
+                // is the weighted sum of those, so it is always ascending.
+                descending: false,
                 nulls_first: false,
             }),
         }],

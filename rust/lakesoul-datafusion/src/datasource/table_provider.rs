@@ -1145,12 +1145,22 @@ impl LakeSoulTableProvider {
                 record_fallback("unsupported_metric");
                 return Ok(None);
             }
-            if request.order_by && metric != "L2" && request.columns.len() > 1 {
-                // Fusing several columns' index distances into one ordering is
-                // only defined for L2; a single IP column orders by the dot
-                // product, which the index reports directly.
-                record_fallback("unsupported_metric");
-                return Ok(None);
+            if request.order_by && request.columns.len() > 1 {
+                // Fusing several columns' index distances into one ordering
+                // needs comparable distances: every column must use the same
+                // metric (the rule already enforces this; a hand-built marker
+                // may not).  Both L2 and IP work: the reader converts each
+                // per-column score into a distance (sqrt for L2, negated dot
+                // for IP) before the weighted sum.
+                let first = request.columns[0].metric.to_uppercase();
+                if request
+                    .columns
+                    .iter()
+                    .any(|candidate| candidate.metric.to_uppercase() != first)
+                {
+                    record_fallback("unsupported_metric");
+                    return Ok(None);
+                }
             }
             let Some(declared) = self
                 .vector_index_configs

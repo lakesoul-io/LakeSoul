@@ -184,8 +184,13 @@ fn detect(
     // ordering with the sign outside, so accept that spelling too and carry
     // the positive weight into the marker.
     let canonical_asc = metric == "L2";
-    let negated_ip =
-        metric == "IP" && raw_terms.len() == 1 && raw_terms[0].1 < 0.0 && sort_expr.asc;
+    // pgvector's `<#>` is the negated inner product (`ORDER BY vec <#> q` ==
+    // `-inner_product(vec, q) ASC`).  A weighted sum of them is the same
+    // ordering with the sign outside, so a multi-term negated fusion is
+    // accepted too; the positive magnitude becomes the fusion weight.
+    let negated_ip = metric == "IP"
+        && sort_expr.asc
+        && raw_terms.iter().all(|(_, weight)| *weight < 0.0);
     if sort_expr.asc != canonical_asc && !negated_ip {
         return None;
     }
@@ -313,6 +318,23 @@ fn as_scalar_function(expr: &Expr) -> Option<&ScalarFunction> {
 /// Collect the terms of a weighted distance sum (`w1*d1 + w2*d2 - ...`).
 /// Every term is stored with its signed weight; the caller validates that
 /// each term is a distance call.
+/// Push one weighted distance term, unwrapping a nested negation (pgvector's
+/// `<#>` is `-inner_product(..)`, and `0.7 * -(vec <#> q)` must become the
+/// positive magnitude 0.7 on the inner-product term).
+fn push_term(expr: &Expr, weight: f32, sign: f32, terms: &mut Vec<(Expr, f32)>) -> Option<()> {
+    let weight = sign * weight;
+    match unwrap_cast(expr) {
+        Expr::Negative(inner) => {
+            terms.push((unwrap_cast(inner).clone(), -weight));
+            Some(())
+        }
+        other => {
+            terms.push((other.clone(), weight));
+            Some(())
+        }
+    }
+}
+
 fn collect_terms(expr: &Expr, sign: f32, terms: &mut Vec<(Expr, f32)>) -> Option<()> {
     match unwrap_cast(expr) {
         // pgvector's `<#>` is planned as `-inner_product(vec, q)`; the sign
@@ -329,11 +351,9 @@ fn collect_terms(expr: &Expr, sign: f32, terms: &mut Vec<(Expr, f32)>) -> Option
             }
             Operator::Multiply => {
                 if let Some(weight) = numeric_literal(&binary.left) {
-                    terms.push((unwrap_cast(&binary.right).clone(), sign * weight));
-                    Some(())
+                    push_term(&binary.right, weight, sign, terms)
                 } else if let Some(weight) = numeric_literal(&binary.right) {
-                    terms.push((unwrap_cast(&binary.left).clone(), sign * weight));
-                    Some(())
+                    push_term(&binary.left, weight, sign, terms)
                 } else {
                     None
                 }

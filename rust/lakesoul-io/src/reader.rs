@@ -719,12 +719,24 @@ impl LakeSoulReader {
                     });
                     let is_l2 =
                         !matches!(metric.to_uppercase().as_str(), "IP" | "INNERPRODUCT");
+                    // Convert every per-request score into a caller-facing
+                    // distance ("smaller is better"), so the weighted fusion
+                    // below and the index-only ordering work for both metrics:
+                    // L2 reports a squared distance (take its sqrt) and IP
+                    // reports a dot product (negate it).
                     vector_scores.push((
                         request.weight,
                         ordered
                             .into_iter()
                             .map(|(key, (_version, score))| {
-                                (key, if is_l2 { score.max(0.0).sqrt() } else { score })
+                                (
+                                    key,
+                                    if is_l2 {
+                                        score.max(0.0).sqrt()
+                                    } else {
+                                        -score
+                                    },
+                                )
                             })
                             .collect(),
                     ));
@@ -785,7 +797,8 @@ impl LakeSoulReader {
                 codec,
                 scores,
                 // Every per-request score is already the caller-facing
-                // distance (sqrt for L2), so the fusion needs no conversion.
+                // distance (sqrt for L2, negated dot for IP), so the fusion
+                // needs no conversion.
                 sqrt: false,
             });
         }
