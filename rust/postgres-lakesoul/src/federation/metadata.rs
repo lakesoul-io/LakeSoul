@@ -18,13 +18,15 @@ use chrono::Utc;
 use lakesoul_common::ser::arrow_java::{
     schema_from_metadata_str, schema_to_metadata_str,
 };
+use lakesoul_datafusion::federation::DialectKind;
 use lakesoul_metadata::{PooledClient, QueryType};
 use rootcause::report;
 
 use crate::Result;
 
 /// Idempotent runtime DDL. Production deployments also apply
-/// `script/metadata-migrations/V4000003__federation.sql`.
+/// `script/metadata-migrations/V4000003__federation.sql` and
+/// `V4000004__federation_dialect.sql`.
 const FEDERATION_SCHEMA_DDL: &str = r#"
 create schema if not exists federation;
 
@@ -32,10 +34,28 @@ create table if not exists federation.servers
 (
     server_name text primary key,
     driver      text not null default 'postgresql',
+    dialect     text not null default 'postgres',
     options     text not null default '{}',
     created_at  bigint not null,
     updated_at  bigint not null
 );
+
+alter table federation.servers
+    add column if not exists dialect text not null default 'postgres';
+
+-- Backfill rows created before the dialect column existed. The old code
+-- always generated PostgreSQL SQL, so anything else was unusable anyway.
+update federation.servers
+set dialect = case driver
+    when 'mysql' then 'mysql'
+    when 'sqlite' then 'sqlite'
+    when 'duckdb' then 'duckdb'
+    when 'bigquery' then 'bigquery'
+    when 'snowflake' then 'snowflake'
+    when 'trino' then 'generic'
+    else dialect
+end
+where dialect = 'postgres' and driver not in ('postgresql', 'postgres');
 
 create table if not exists federation.user_mappings
 (
@@ -66,6 +86,7 @@ create table if not exists federation.foreign_tables
 pub struct ServerDefinition {
     pub name: String,
     pub driver: String,
+    pub dialect: DialectKind,
     pub options: BTreeMap<String, String>,
 }
 
@@ -114,8 +135,8 @@ impl FederationMetadata {
         let server_rows = self
             .client
             .query(
-                "select server_name, driver, options from federation.servers \
-                 order by server_name",
+                "select server_name, driver, dialect, options \
+                 from federation.servers order by server_name",
                 QueryType::RW,
                 &[],
             )
@@ -125,12 +146,21 @@ impl FederationMetadata {
         for row in server_rows {
             let name: String = row.get(0);
             let driver: String = row.get(1);
-            let options: String = row.get(2);
+            let dialect_name: String = row.get(2);
+            let dialect = DialectKind::parse(&dialect_name).ok_or_else(|| {
+                report!(
+                    "federation server {name} has unknown dialect \
+                     {dialect_name:?}; supported dialects: {}",
+                    DialectKind::supported_names()
+                )
+            })?;
+            let options: String = row.get(3);
             servers.insert(
                 name.clone(),
                 ServerDefinition {
                     name,
                     driver,
+                    dialect,
                     options: parse_options(&options)?,
                 },
             );
@@ -208,24 +238,35 @@ impl FederationMetadata {
         &self,
         name: &str,
         driver: &str,
+        dialect: DialectKind,
         options: &BTreeMap<String, String>,
         if_not_exists: bool,
     ) -> Result<bool> {
         let now = now_ms();
-        let options = serde_json::to_string(options)
+        // The driver and dialect have their own columns; keeping them in the
+        // JSON would also forward them to the ADBC driver as unknown options.
+        let mut options = options.clone();
+        options.remove("driver");
+        options.remove("dialect");
+        let options = serde_json::to_string(&options)
             .map_err(|error| report!("serialize server options: {error}"))?;
+        let dialect = dialect.name();
         let sql = if if_not_exists {
             "insert into federation.servers \
-                 (server_name, driver, options, created_at, updated_at) \
-             values ($1, $2, $3, $4, $4) on conflict (server_name) do nothing"
+                 (server_name, driver, dialect, options, created_at, updated_at) \
+             values ($1, $2, $3, $4, $5, $5) on conflict (server_name) do nothing"
         } else {
             "insert into federation.servers \
-                 (server_name, driver, options, created_at, updated_at) \
-             values ($1, $2, $3, $4, $4)"
+                 (server_name, driver, dialect, options, created_at, updated_at) \
+             values ($1, $2, $3, $4, $5, $5)"
         };
         let inserted = self
             .client
-            .execute(sql, QueryType::RW, &[&name, &driver, &options, &now])
+            .execute(
+                sql,
+                QueryType::RW,
+                &[&name, &driver, &dialect, &options, &now],
+            )
             .await
             .map_err(|error| report!("create federation server {name}: {error}"))?;
         Ok(inserted > 0)

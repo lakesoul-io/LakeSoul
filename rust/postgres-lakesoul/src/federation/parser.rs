@@ -30,6 +30,8 @@ use datafusion_postgres::pgwire::api::results::{Response, Tag};
 use datafusion_postgres::pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use datafusion_postgres::pgwire::messages::response::TransactionStatus;
 
+use lakesoul_datafusion::federation::DialectKind;
+
 use super::FederationRuntime;
 use super::metadata::ForeignTableDefinition;
 
@@ -136,20 +138,17 @@ impl FederationStatementHook {
                 wrapper,
                 options,
             } => {
-                if !wrapper.eq_ignore_ascii_case("postgres_fdw") {
+                let (driver, dialect) = resolve_server_driver(&wrapper, &options)?;
+                if driver.contains('/') || driver.contains('\\') {
                     return Err(feature_not_supported(format!(
-                        "foreign data wrapper {wrapper:?} is not supported; use \
-                         postgres_fdw"
+                        "ADBC driver {driver:?} must be installed by name, not \
+                         configured by path"
                     )));
                 }
-                let driver = options
-                    .get("driver")
-                    .cloned()
-                    .unwrap_or_else(|| "postgresql".to_string());
                 let created = self
                     .runtime
                     .metadata()
-                    .create_server(&name, &driver, &options, if_not_exists)
+                    .create_server(&name, &driver, dialect, &options, if_not_exists)
                     .await
                     .map_err(internal)?;
                 if !created && !if_not_exists {
@@ -336,25 +335,76 @@ impl FederationStatementHook {
                 Ok(Response::Execution(Tag::new("DROP USER MAPPING")))
             }
             FederationStatement::CreateExtension { name } => {
-                if name.eq_ignore_ascii_case("postgres_fdw") {
+                if is_fdw_name(&name) {
                     Ok(Response::Execution(Tag::new("CREATE EXTENSION")))
                 } else {
                     Err(feature_not_supported(format!(
-                        "extension {name:?} is not available"
+                        "extension {name:?} is not available; use adbc_fdw \
+                         or postgres_fdw"
                     )))
                 }
             }
             FederationStatement::DropExtension { name } => {
-                if name.eq_ignore_ascii_case("postgres_fdw") {
+                if is_fdw_name(&name) {
                     Ok(Response::Execution(Tag::new("DROP EXTENSION")))
                 } else {
                     Err(feature_not_supported(format!(
-                        "extension {name:?} is not available"
+                        "extension {name:?} is not available; use adbc_fdw \
+                         or postgres_fdw"
                     )))
                 }
             }
         }
     }
+}
+
+fn is_fdw_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("adbc_fdw") || name.eq_ignore_ascii_case("postgres_fdw")
+}
+
+/// Resolve the ADBC driver and the SQL dialect stored with a new server.
+///
+/// `postgres_fdw` keeps its historical meaning and defaults to the PostgreSQL
+/// ADBC driver. `adbc_fdw` is the generic wrapper and requires an explicit
+/// `driver` option. The dialect is fixed here, at server creation, so a query
+/// never has to guess it later; an explicit `dialect` option overrides the
+/// driver's default.
+fn resolve_server_driver(
+    wrapper: &str,
+    options: &BTreeMap<String, String>,
+) -> PgWireResult<(String, DialectKind)> {
+    let is_postgres = wrapper.eq_ignore_ascii_case("postgres_fdw");
+    if !is_postgres && !wrapper.eq_ignore_ascii_case("adbc_fdw") {
+        return Err(feature_not_supported(format!(
+            "foreign data wrapper {wrapper:?} is not supported; use adbc_fdw \
+             or postgres_fdw"
+        )));
+    }
+    let driver = match options.get("driver") {
+        Some(driver) => driver.clone(),
+        None if is_postgres => "postgresql".to_string(),
+        None => {
+            return Err(feature_not_supported(
+                "adbc_fdw requires OPTIONS (driver '...')".to_string(),
+            ));
+        }
+    };
+    let dialect = match options.get("dialect") {
+        Some(name) => DialectKind::parse(name).ok_or_else(|| {
+            feature_not_supported(format!(
+                "unknown SQL dialect {name:?}; supported dialects: {}",
+                DialectKind::supported_names()
+            ))
+        })?,
+        None => DialectKind::from_driver(&driver).ok_or_else(|| {
+            feature_not_supported(format!(
+                "cannot infer SQL dialect for ADBC driver {driver:?}; add \
+                 OPTIONS (dialect '...'). Supported dialects: {}",
+                DialectKind::supported_names()
+            ))
+        })?,
+    };
+    Ok((driver, dialect))
 }
 
 #[async_trait]
@@ -1047,6 +1097,32 @@ mod tests {
         assert_eq!(wrapper, "postgres_fdw");
         assert_eq!(options.get("host").map(String::as_str), Some("127.0.0.1"));
         assert_eq!(options.get("port").map(String::as_str), Some("5432"));
+    }
+
+    #[test]
+    fn resolves_server_driver_and_dialect() {
+        let mut options = BTreeMap::new();
+        options.insert("driver".to_string(), "mysql".to_string());
+        let (driver, dialect) =
+            resolve_server_driver("adbc_fdw", &options).expect("resolve generic server");
+        assert_eq!(driver, "mysql");
+        assert_eq!(dialect, DialectKind::MySql);
+
+        options.insert("dialect".to_string(), "postgres".to_string());
+        let (_, dialect) =
+            resolve_server_driver("adbc_fdw", &options).expect("explicit dialect");
+        assert_eq!(dialect, DialectKind::Postgres);
+
+        assert!(resolve_server_driver("adbc_fdw", &BTreeMap::new()).is_err());
+
+        options.remove("dialect");
+        options.insert("driver".to_string(), "unknown".to_string());
+        assert!(resolve_server_driver("adbc_fdw", &options).is_err());
+
+        let (driver, dialect) = resolve_server_driver("postgres_fdw", &BTreeMap::new())
+            .expect("legacy wrapper");
+        assert_eq!(driver, "postgresql");
+        assert_eq!(dialect, DialectKind::Postgres);
     }
 
     #[test]

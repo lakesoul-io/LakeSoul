@@ -7927,8 +7927,6 @@ dependencies = [
 name = "postgres-lakesoul"
 version = "4.1.0-dev.0"
 dependencies = [
- "adbc_core",
- "adbc_driver_manager",
  "anyhow",
  "arrow-array",
  "arrow-schema",
@@ -7938,8 +7936,6 @@ dependencies = [
  "clap",
  "datafusion",
  "datafusion-postgres",
- "datafusion-table-providers-adbc",
- "datafusion-table-providers-common",
  "futures",
  "lakesoul-build-info",
  "lakesoul-common",
@@ -7957,8 +7953,6 @@ dependencies = [
  "parquet",
  "pg_walstream",
  "pgvector",
- "r2d2",
- "r2d2_adbc",
  "rootcause",
  "rust_decimal",
  "rustls-pki-types",
@@ -7971,7 +7965,6 @@ dependencies = [
  "tokio-postgres",
  "tracing",
  "tracing-subscriber",
- "url",
  "uuid",
 ]
 
