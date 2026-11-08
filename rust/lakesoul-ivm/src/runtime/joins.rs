@@ -4189,6 +4189,93 @@ impl IvmRuntime {
         Ok(Some((left, right)))
     }
 
+    /// Read the current left rows and all of their current right matches for
+    /// a both-sided left-join window.
+    ///
+    /// The affected left identities are the changed left rows plus the left
+    /// rows that reference a changed right join key (old or new).  Reading
+    /// those identities by primary key and probing the right side state keeps
+    /// the refresh proportional to the delta instead of the view size.
+    #[allow(clippy::too_many_arguments)]
+    async fn keyed_both_sided_left_join_sides(
+        &self,
+        context: &SessionContext,
+        view: &LeftJoinView,
+        left_state: Option<&IvmTable>,
+        right_state: Option<&IvmTable>,
+        right_window: &SourceWindow,
+        delta_left: &DataFrame,
+        delta_right: &DataFrame,
+    ) -> Result<(DataFrame, DataFrame)> {
+        let probe = left_join_probe(view);
+        let right_keys = if view.right_keys.is_empty() {
+            &view.join_keys
+        } else {
+            &view.right_keys
+        };
+        let left_pk_names = view.left.primary_keys.clone();
+        let left_pk_exprs = left_pk_names
+            .iter()
+            .map(|key| col(key.as_str()))
+            .collect::<Vec<_>>();
+        let right_changed_keys = self
+            .join_keys_including_before(
+                context,
+                &view.right,
+                right_window,
+                delta_right,
+                right_keys,
+                &view.key_exprs.right,
+                &view.join_keys,
+            )
+            .await?;
+        let left_for_right = self
+            .lookup_left_rows_for_keys(
+                context,
+                &probe,
+                left_state,
+                right_changed_keys,
+                true,
+            )
+            .await?
+            .select(left_pk_exprs.clone())?
+            .distinct()?;
+        let delta_left_pks = delta_left.clone().select(left_pk_exprs)?.distinct()?;
+        let affected_left = delta_left_pks.union(left_for_right)?.distinct()?;
+        let left_now = self
+            .lookup_source_by_join_keys(
+                context,
+                &view.left,
+                affected_left,
+                &left_pk_names,
+                &left_pk_names,
+                false,
+            )
+            .await?;
+        let left_now = apply_side_filter(
+            context,
+            filter_deletes(left_now, change_column(&view.left))?,
+            &view.left.schema,
+            view.left_filter.as_deref(),
+        )?;
+        let right_now = self
+            .lookup_right_rows_for_left_keys(
+                context,
+                &probe,
+                right_state,
+                right_keys,
+                &left_now,
+            )
+            .await?;
+        let right_now = apply_side_filter(
+            context,
+            filter_deletes(right_now, change_column(&view.right))?,
+            &view.right.schema,
+            view.right_filter.as_deref(),
+        )?;
+        Ok((left_now, right_now))
+    }
+
     /// Ensure and fully re-seed both join side states from the current source
     /// rows.  Rebuilds use this so later keyed lookups cannot see rows from an
     /// older generation.
@@ -4785,16 +4872,20 @@ impl IvmRuntime {
         // The encoded key is positional; only the key types have to agree
         // with the right source the state was encoded from.  A join with
         // differently named keys on the two sides still shares the encoding.
-        for (left, right) in view.join_keys.iter().zip(right_join_keys) {
-            let (Ok(left_field), Ok(right_field)) = (
-                view.left.schema.field_with_name(left),
-                view.right.schema.field_with_name(right),
-            ) else {
-                // A computed key has a synthetic name and no source column.
-                return Ok(None);
-            };
-            if left_field.data_type() != right_field.data_type() {
-                return Ok(None);
+        // A computed key has a synthetic name and no source column, but the
+        // state was encoded from its rendered expression, so no type check is
+        // possible (or needed).
+        if view.key_exprs.right.iter().all(|expr| expr.is_empty()) {
+            for (left, right) in view.join_keys.iter().zip(right_join_keys) {
+                let (Ok(left_field), Ok(right_field)) = (
+                    view.left.schema.field_with_name(left),
+                    view.right.schema.field_with_name(right),
+                ) else {
+                    return Ok(None);
+                };
+                if left_field.data_type() != right_field.data_type() {
+                    return Ok(None);
+                }
             }
         }
         let contribution = if view.key_exprs.left.iter().any(|expr| !expr.is_empty()) {
@@ -7021,10 +7112,31 @@ impl IvmRuntime {
         } else {
             None
         };
-        let one_sided_keyed = one_sided.is_some();
-        let (left_now, right_now) = match one_sided {
-            Some(sides) => sides,
-            None => (
+        let mv_empty = view.output.current_files(&self.client).await?.is_empty();
+        let both_sided = if keyed && !mv_empty {
+            match (&delta_left, &delta_right) {
+                (Some(delta_left), Some(delta_right)) => Some(
+                    self.keyed_both_sided_left_join_sides(
+                        &context,
+                        view,
+                        left_state.as_ref(),
+                        right_state.as_ref(),
+                        &right_window,
+                        delta_left,
+                        delta_right,
+                    )
+                    .await?,
+                ),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let keyed_affected = one_sided.is_some() || both_sided.is_some();
+        let (left_now, right_now) = match (one_sided, both_sided) {
+            (Some(sides), _) => sides,
+            (None, Some(sides)) => sides,
+            _ => (
                 apply_side_filter(
                     &context,
                     filter_deletes(
@@ -7148,10 +7260,10 @@ impl IvmRuntime {
         }
         let affected = affected.distinct()?;
 
-        // For a one-sided keyed window the affected left identities address
-        // the output pairs directly.  The fallback keeps the partition-scoped
-        // or full MV read for both-sided and non-keyed windows.
-        let mv = if one_sided_keyed && view.identity_column {
+        // A keyed window's affected left identities address every output pair
+        // directly (a LEFT join has no right-only row).  The fallback keeps
+        // the partition-scoped or full MV read for non-keyed windows.
+        let mv = if keyed_affected {
             self.lookup_output_side(
                 &context,
                 &view.output,

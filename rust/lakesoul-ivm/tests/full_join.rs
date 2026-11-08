@@ -534,3 +534,70 @@ async fn null_safe_full_join_matches_null_keys_and_sql() {
 
     fixture.cleanup().await;
 }
+
+/// Both sources change in one window: the refresh must rewrite only the
+/// affected pairs, keep right-only rows, and match a full recompute.
+#[test_log::test(tokio::test)]
+async fn both_sided_window_matches_a_full_recompute() {
+    let fixture = setup().await;
+    let runtime = &fixture.runtime;
+    let (left, right, output, view) = (
+        &fixture.left,
+        &fixture.right,
+        &fixture.output,
+        &fixture.view,
+    );
+
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[
+            (1, Some("a"), "L1", "insert"),
+            (2, Some("b"), "L2", "insert"),
+            (3, None, "L3", "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[
+                (10, Some("a"), 100, "insert"),
+                (11, Some("c"), 101, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_full_join(view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, "l.jk = r.jk").await
+    );
+
+    // The left row moves from `a` to `b`; right row 10 changes its payload,
+    // right row 11 (an unmatched right row) is deleted, right row 12 joins the
+    // new left key and right row 13 is a new unmatched right row.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[(1, Some("b"), "L1b", "insert")]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[
+                (10, Some("a"), 110, "insert"),
+                (11, Some("c"), 101, "delete"),
+                (12, Some("b"), 102, "insert"),
+                (13, Some("d"), 103, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_full_join(view).await.unwrap().unwrap();
+    assert_eq!(
+        full_join_rows(runtime, output).await,
+        sql_full_join_rows(runtime, left, right, "l.jk = r.jk").await
+    );
+}
