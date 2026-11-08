@@ -1324,8 +1324,17 @@ class LakeSoulTable:
         """Per-query SQL fallback used when the native batch cannot run."""
         primary_key = self.primary_keys[0] if self.primary_keys else "id"
         effective_rerank = "exact" if rerank == "auto" else rerank
+        # Apply the search options once for the whole batch: `table.search`
+        # issues a `SET` per call when options are passed, and doing that per
+        # query would roughly double the fallback cost.  A per-query search
+        # that passes no options then reuses the session settings.
+        batch_options: dict[str, object] = {"rerank": effective_rerank}
+        if nprobe is not None:
+            batch_options["nprobe"] = int(nprobe)
+        if exact_overfetch is not None:
+            batch_options["exact_overfetch"] = int(exact_overfetch)
+        session.set_vector_search(**batch_options)
         ids: list[list[int]] = []
-        distances: list[list[float]] = []
         for query in queries:
             # Keys only: asking for the distance column would force the
             # engine to evaluate the distance expression above the scan, which
@@ -1336,9 +1345,6 @@ class LakeSoulTable:
                 column=column,
                 top_k=top_k,
                 metric=metric,
-                rerank=effective_rerank,
-                nprobe=nprobe,
-                exact_overfetch=exact_overfetch,
                 columns=[primary_key],
                 with_distance=False,
                 session=session,
