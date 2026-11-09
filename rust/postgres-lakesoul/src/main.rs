@@ -138,10 +138,10 @@ async fn main_inner(cli: Cli) -> Result<()> {
             .is_ok_and(|value| value == "0");
     if !block_cache_enabled {
         warn!(
-            "vector re-rank decoded-block cache is disabled; exact rerank \
-             queries (the default candidate ordering) fall back to the slow \
-             reader path.  Set LAKESOUL_CACHE=1 to enable the shared S3-SSD \
-             block cache"
+            "vector re-rank decoded-block cache is disabled; explicit exact \
+             rerank queries (rerank='exact') fall back to the slow reader \
+             path.  Set LAKESOUL_CACHE=1 to enable the shared S3-SSD block \
+             cache"
         );
     }
     if let Some(endpoint) = tracing.otlp_endpoint() {
