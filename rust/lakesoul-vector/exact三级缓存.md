@@ -111,7 +111,12 @@ export LAKESOUL_VECTOR_BLOCK_CACHE_BYTES=268435456   # L1，默认 256 MiB
   以前的整文件 payload 模式，但 batch 也不再支持 payload；
 - **exact native batch 仍要求每个 hash bucket 恰好 1 个数据文件**（多文件时返回明确错误）；
   index-only batch 不要求这一点；
-- batch 场景应优先 `rerank='index'`（不读向量列）或接受 block 模式的吞吐。
+- 不 compact 的 exact batch 替代：`table.search_batch(rerank="exact")` 自动回退逐
+  query SQL exact；单查询 exact 支持每桶多文件/多版本；或改用 index-only batch；
+- 要保留 native exact batch 吞吐，需要 compact 成每桶单文件，或实现"每文件一个
+  block source + 按 segment rank 取最新"的多文件 batch，当前未实现；
+- `deferred_payload` 与 batch 无关：native batch 只返回主键，没有额外投影列；
+  该选项只影响单查询额外列的二次读取。
 
 ## 8. GloVe-200 / MinIO 实测
 

@@ -45,6 +45,33 @@ pgvector 服务端额外使用 `--worker-threads 8`。
 
 不同轮次差异来自缓存/进程状态，量级一致；index-only 始终是最高吞吐。
 
+## 2.1 batch 如何支持 exact；多文件时怎么办
+
+native snapshot batch 的 exact 路径要求：
+
+- 快照覆盖性证明通过（索引提交覆盖快照全部文件、无 mutation 链、无 CDC 列）；
+- 单个 `Int64` 主键 `id`；
+- 每个 hash bucket **恰好 1 个数据文件**；
+- `LAKESOUL_CACHE=1` 的按需 decoded-block cache；
+- L2 度量，向量列为 `Float32` 的 `List`/`FixedSizeList`。
+
+满足时 `table.search_batch(..., rerank="exact")` 走 native exact（200 query
+warm 约 386 QPS，见 §3）；不满足时：
+
+| 方案 | 是否需 compact | 说明 |
+|---|---|---|
+| Python `table.search_batch(rerank="exact")` | 否 | native 报错后自动回退逐 query SQL exact；结果一致，没有 batch 装载收益 |
+| 单查询 `table.search(rerank="exact")` | 否 | 每桶多文件/多版本由 `take_multi_file_ranked` 按 segment `birth_version` 取最新版本 |
+| `table.search_batch(rerank="index")` | 否 | index-only batch 不要求每桶单文件，吞吐最高（~11k QPS） |
+| native exact batch | **是** | 当前 `exact_rank_and_merge` 只接受每桶一个 `VectorBlockSource`；多文件返回明确错误 |
+
+因此："不 compact 又要 batch exact" 目前只能走逐 query SQL 回退（或单查询）；
+native exact batch 的多文件支持需要按文件建 block source + 按 rank 选最新版本，
+尚未实现。
+
+`deferred_payload` 与 batch 无关：native batch 只返回主键，没有额外投影列；
+该选项只影响单查询 SQL/`table.search` 的额外列二次读取。
+
 ## 3. exact（`rerank='exact'`，按需 block cache）
 
 native batch、一次 200 query、warm 3 轮：
