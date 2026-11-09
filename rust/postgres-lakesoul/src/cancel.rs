@@ -1582,6 +1582,40 @@ mod tests {
         assert!(!Arc::ptr_eq(&b, &next_b));
     }
 
+    /// The server-wide limit spans connections and users: a suspended portal on
+    /// one connection keeps its slot, so another user's statement is refused
+    /// until that portal's work ends.
+    #[test]
+    fn the_server_wide_limit_spans_connections_and_users() {
+        let (server, first) = cancellation_with(Limits {
+            max_concurrent_queries: 1,
+            ..Limits::unlimited()
+        });
+        let second = QueryCancellation::new(Arc::clone(&server), "user_b");
+
+        let portal = first
+            .begin_statement(None, Some("c"))
+            .expect("first statement admitted");
+        let refused = second
+            .begin_statement(None, None)
+            .expect_err("the server is at its limit");
+        assert!(matches!(
+            refused,
+            PgWireError::UserError(info) if info.code == crate::limits::CONFIGURATION_LIMIT_EXCEEDED
+        ));
+        assert!(
+            second.begin_parse(None).is_err(),
+            "planning takes a slot as well"
+        );
+
+        portal.end(StatementOutcome::Completed);
+        assert_eq!(server.state().total_query_count(), 0);
+        let admitted = second
+            .begin_statement(None, None)
+            .expect("the slot the portal gave back");
+        admitted.end(StatementOutcome::Completed);
+    }
+
     /// The statement a portal runs holds one slot from the first `Execute`
     /// until its result ends, however many times pgwire fetches it, and one
     /// identity: a `Parse` and the `Execute`s that follow are one statement.
