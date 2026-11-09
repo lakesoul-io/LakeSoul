@@ -964,6 +964,71 @@ impl datafusion_distributed::WorkerSessionBuilder for CountingSessionBuilder {
     }
 }
 
+/// Counts a task when it arrives, then pauses before building the worker
+/// session.  A test can partition the coordinator-worker link while the task
+/// is provably in flight on the worker.
+struct SlowCountingSessionBuilder {
+    received: Arc<AtomicUsize>,
+    delay: Duration,
+}
+
+#[async_trait::async_trait]
+impl datafusion_distributed::WorkerSessionBuilder for SlowCountingSessionBuilder {
+    async fn build_session_state(
+        &self,
+        ctx: datafusion_distributed::WorkerQueryContext,
+    ) -> datafusion::common::Result<datafusion::execution::SessionState> {
+        self.received.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(self.delay).await;
+        let mut builder = ctx.builder;
+        for codec in crate::distributed::codec::user_codecs() {
+            builder = builder.with_distributed_user_codec_arc(codec);
+        }
+        Ok(builder.build())
+    }
+}
+
+/// Like [`spawn_workers_with_task_recording`], but each worker holds every
+/// task for `delay` after recording it.
+async fn spawn_slow_workers_with_task_recording(
+    workers: usize,
+    delay: Duration,
+) -> (Vec<String>, Vec<Arc<AtomicUsize>>, JoinSet<()>) {
+    let mut urls = Vec::new();
+    let mut receipts = Vec::new();
+    let mut join_set = JoinSet::new();
+    for _ in 0..workers {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        urls.push(format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().unwrap().port()
+        ));
+        let received = Arc::new(AtomicUsize::new(0));
+        let worker = Worker::from_session_builder(SlowCountingSessionBuilder {
+            received: Arc::clone(&received),
+            delay,
+        })
+        .with_runtime_env(
+            crate::session::build_worker_runtime_env(
+                &CoreArgs::default(),
+                ExecutionMemoryArgs::default().create_pool(),
+            )
+            .unwrap(),
+        )
+        .with_version(crate::distributed::DISTRIBUTED_PROTOCOL_VERSION);
+        join_set.spawn(async move {
+            let _ = tonic::transport::Server::builder()
+                .add_service(worker.into_worker_server())
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await;
+        });
+        receipts.push(received);
+    }
+    (urls, receipts, join_set)
+}
+
 /// Like `spawn_workers`, but every worker counts the tasks it is handed, so a
 /// test can prove the workers actually received them.
 async fn spawn_workers_with_task_recording(
@@ -1006,6 +1071,89 @@ async fn spawn_workers_with_task_recording(
 /// Total tasks the recording workers have been handed so far.
 fn recorded_tasks(receipts: &[Arc<AtomicUsize>]) -> usize {
     receipts.iter().map(|c| c.load(Ordering::SeqCst)).sum()
+}
+
+/// A TCP proxy in front of a worker, so a test can cut and restore the
+/// coordinator-to-worker network without stopping the worker process itself.
+#[derive(Clone)]
+struct PartitionProxy {
+    shutdown: tokio::sync::watch::Sender<bool>,
+}
+
+impl PartitionProxy {
+    /// Drop every live connection and stop accepting new ones.
+    fn partition(&self) {
+        let _ = self.shutdown.send(true);
+    }
+
+    /// Accept connections again.
+    fn heal(&self) {
+        let _ = self.shutdown.send(false);
+    }
+}
+
+/// Put a [`PartitionProxy`] in front of each worker URL.
+async fn spawn_partition_proxies(
+    worker_urls: Vec<String>,
+) -> (Vec<String>, Vec<PartitionProxy>, JoinSet<()>) {
+    let mut proxy_urls = Vec::with_capacity(worker_urls.len());
+    let mut proxies = Vec::with_capacity(worker_urls.len());
+    let mut tasks = JoinSet::new();
+    for worker_url in worker_urls {
+        let target = worker_url
+            .strip_prefix("http://")
+            .unwrap_or(&worker_url)
+            .to_string();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown, receiver) = tokio::sync::watch::channel(false);
+        tasks.spawn(async move {
+            run_partition_proxy(listener, target, receiver).await;
+        });
+        proxy_urls.push(format!("http://{addr}"));
+        proxies.push(PartitionProxy { shutdown });
+    }
+    (proxy_urls, proxies, tasks)
+}
+
+async fn run_partition_proxy(
+    listener: tokio::net::TcpListener,
+    target: String,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut connections = JoinSet::new();
+    loop {
+        if *shutdown.borrow() {
+            connections.abort_all();
+            while connections.join_next().await.is_some() {}
+            if shutdown.changed().await.is_err() {
+                return;
+            }
+            continue;
+        }
+        tokio::select! {
+            accepted = listener.accept() => {
+                let Ok((mut client, _)) = accepted else { continue };
+                let target = target.clone();
+                let mut shutdown = shutdown.clone();
+                connections.spawn(async move {
+                    let Ok(mut upstream) =
+                        tokio::net::TcpStream::connect(&target).await
+                    else {
+                        return;
+                    };
+                    tokio::select! {
+                        _ = tokio::io::copy_bidirectional(&mut client, &mut upstream) => {}
+                        _ = shutdown.changed() => {}
+                    }
+                });
+            }
+            _ = shutdown.changed() => {}
+        }
+        while connections.try_join_next().is_some() {}
+    }
 }
 
 /// A store that pauses each worker's *first* file read at a gate: the read
@@ -5321,6 +5469,167 @@ fn test_distributed_ivm_refresh_writes_and_commits_on_the_coordinator() {
             .map(|batch| batch.num_rows())
             .sum::<usize>();
         assert_eq!(rows, 3);
+        workers.shutdown().await;
+        Ok(())
+    });
+}
+
+/// A network partition between the coordinator and a worker during a
+/// distributed IVM refresh must fail the statement without publishing rows;
+/// once the link is restored the retry completes the same window.
+#[cfg(feature = "ivm")]
+#[test]
+fn test_distributed_ivm_network_partition_fails_cleanly_and_recovers() {
+    use datafusion::arrow::array::{Int64Array, RecordBatch, StringArray};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use lakesoul_ivm::{
+        IvmRuntime, IvmRuntimeConfig, IvmSqlExecutor, IvmTableOptions, row_mv_schema_for,
+    };
+
+    run_distributed_test(async {
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        // Each worker holds its first task for two seconds, so the network
+        // can be cut while a task is provably in flight on the worker.
+        let (worker_urls, receipts, mut workers) =
+            spawn_slow_workers_with_task_recording(2, Duration::from_secs(2)).await;
+        let (proxy_urls, proxies, mut proxy_tasks) =
+            spawn_partition_proxies(worker_urls).await;
+        let factory = distributed_factory(Arc::clone(&client), proxy_urls, false)?;
+        let template = factory.create_session(&LakeSoulSessionOptions::default())?;
+        let config = IvmRuntimeConfig::from_session(&template).with_session_factory(
+            Arc::new(crate::session::IvmRefreshSessionFactory::new(factory)),
+        );
+        let runtime = IvmRuntime::from_env_with_config(config).await?;
+        runtime.init_schema().await?;
+        let suffix = uuid::Uuid::new_v4().simple();
+        let dir = std::env::temp_dir().join(format!("lakesoul-ivm-net-{suffix}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("v", DataType::Utf8, true),
+            Field::new("op", DataType::Utf8, false),
+        ]));
+        let source = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_net_src_{suffix}"),
+                    format!("file://{}", dir.join("src").display()),
+                    schema.clone(),
+                )
+                .with_primary_keys(vec!["k".to_string()])
+                .with_cdc_column("op"),
+            )
+            .await?;
+        let mv = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_net_mv_{suffix}"),
+                    format!("file://{}", dir.join("mv").display()),
+                    row_mv_schema_for(&source.schema, &[])?,
+                )
+                .with_primary_keys(vec!["k".to_string()]),
+            )
+            .await?;
+        source
+            .append_batch(
+                runtime.client(),
+                RecordBatch::try_new(
+                    schema,
+                    vec![
+                        Arc::new(Int64Array::from(vec![1, 2, 3])),
+                        Arc::new(StringArray::from(vec!["a", "b", "c"])),
+                        Arc::new(StringArray::from(vec!["insert", "insert", "insert"])),
+                    ],
+                )
+                .unwrap(),
+            )
+            .await?;
+        let context = SessionContext::new();
+        context.register_table(
+            source.table_name.as_str(),
+            Arc::new(runtime.table_provider(&source)),
+        )?;
+        context.register_table(
+            mv.table_name.as_str(),
+            Arc::new(runtime.table_provider(&mv)),
+        )?;
+        let sql = format!(
+            "INSERT INTO {} SELECT * FROM {}",
+            mv.table_name, source.table_name
+        );
+        let executor = Arc::new(
+            IvmSqlExecutor::with_shared_runtime(Arc::new(runtime)).with_session(context),
+        );
+
+        let handle = {
+            let executor = Arc::clone(&executor);
+            let sql = sql.clone();
+            tokio::spawn(async move { executor.execute(&sql).await })
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if receipts
+                .iter()
+                .any(|count| count.load(Ordering::SeqCst) > 0)
+            {
+                break;
+            }
+            assert!(
+                !handle.is_finished(),
+                "the refresh finished without dispatching a task to a worker"
+            );
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no worker received a task in time"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Cut the worker(s) holding a task.  Every stage output is needed for
+        // a correct result, so the refresh must fail.
+        for (index, count) in receipts.iter().enumerate() {
+            if count.load(Ordering::SeqCst) > 0 {
+                proxies[index].partition();
+            }
+        }
+        let failed = tokio::time::timeout(Duration::from_secs(30), handle)
+            .await
+            .expect("the partitioned refresh must not hang")
+            .expect("the refresh task must not panic");
+        assert!(
+            failed.is_err(),
+            "the refresh must fail while the worker link is down: {failed:?}"
+        );
+        assert_eq!(
+            mv.read_current(executor.runtime().client())
+                .await?
+                .iter()
+                .map(|batch| batch.num_rows())
+                .sum::<usize>(),
+            0,
+            "a partitioned refresh must not publish rows"
+        );
+
+        // Heal the link.  The retry runs the same window from scratch and
+        // publishes it exactly once.
+        for proxy in &proxies {
+            proxy.heal();
+        }
+        let retried =
+            tokio::time::timeout(Duration::from_secs(60), executor.execute(&sql))
+                .await
+                .expect("the retry must not hang")?;
+        assert!(retried.epoch.is_some());
+        assert_eq!(
+            mv.read_current(executor.runtime().client())
+                .await?
+                .iter()
+                .map(|batch| batch.num_rows())
+                .sum::<usize>(),
+            3,
+            "the retry after the healed network must publish every row once"
+        );
+
+        proxy_tasks.shutdown().await;
         workers.shutdown().await;
         Ok(())
     });

@@ -991,6 +991,20 @@ impl IvmTable {
         client: &MetaDataClient,
         files: Vec<DataFileInfo>,
     ) -> Result<Vec<String>> {
+        let journal =
+            crate::runtime::commit_plan_before_commit(&self.table_id, &files).await?;
+        let commit_ids = self.commit_files_inner(client, files).await;
+        if let Ok(ref commit_ids) = commit_ids {
+            crate::runtime::commit_plan_after_commit(journal, commit_ids).await?;
+        }
+        commit_ids
+    }
+
+    async fn commit_files_inner(
+        &self,
+        client: &MetaDataClient,
+        files: Vec<DataFileInfo>,
+    ) -> Result<Vec<String>> {
         let context = crate::runtime::TARGET_WRITE
             .try_with(std::sync::Arc::clone)
             .ok();
@@ -1170,6 +1184,27 @@ impl IvmTable {
         self.commit_files(client, files).await
     }
 
+    /// Publish one refresh output to a state mirror and the target.
+    ///
+    /// Both writers run concurrently, then the mirror commits before the
+    /// target so the target remains the last write of the refresh.
+    pub(crate) async fn append_batches_pair(
+        &self,
+        client: &MetaDataClient,
+        batches: Vec<RecordBatch>,
+        other: &IvmTable,
+        other_batches: Vec<RecordBatch>,
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        let (files, other_files) = futures::future::try_join(
+            self.write_batches(batches),
+            other.write_batches(other_batches),
+        )
+        .await?;
+        let other_ids = other.commit_files(client, other_files).await?;
+        let ids = self.commit_files(client, files).await?;
+        Ok((ids, other_ids))
+    }
+
     /// Publish a refresh output stream without collecting the whole result.
     ///
     /// The stream runs the DataFusion plan; batches are written through one
@@ -1257,8 +1292,10 @@ impl IvmTable {
         crate::observability::add_write_time(started.elapsed());
         let files = self.output_files(outputs, rows);
         let other_files = other.output_files(other_outputs, rows);
-        let ids = self.commit_files(client, files).await?;
+        // The target is the last write of a refresh: commit its mirror first
+        // so a persisted target plan always covers every state write.
         let other_ids = other.commit_files(client, other_files).await?;
+        let ids = self.commit_files(client, files).await?;
         Ok((ids, other_ids))
     }
 

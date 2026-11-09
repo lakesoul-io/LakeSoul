@@ -2386,9 +2386,10 @@ pub(crate) struct CommitPlanContext {
     metadata: IvmMetadata,
     record: EpochRecord,
     plan: CommitPlan,
-    /// Plans are armed only for views without auxiliary state tables; a
-    /// stateful view keeps the existing pending-epoch rebuild/repair path.
-    armed: bool,
+    /// The table whose commit completes the refresh.  Every refresh shape
+    /// writes its auxiliary state before its output, so a plan that recorded
+    /// the target commit describes every write of the window.
+    target_table_id: String,
 }
 
 tokio::task_local! {
@@ -3282,6 +3283,7 @@ impl IvmRuntime {
         mv_versions: &[PartitionVersion],
         commit_ids: &[String],
     ) -> Result<()> {
+        finalize_commit_plan().await?;
         let state_versions = self.state_versions(&record.view_id).await?;
         self.metadata
             .mark_epoch_committed_with_states(
@@ -3525,44 +3527,7 @@ pub(crate) async fn append_dataframe(
     frame: DataFrame,
 ) -> Result<AppendOutcome> {
     let written = write_dataframe(table, frame).await?;
-    let plan_entry = record_target_commit_plan_entry(table, &written.files);
-    if let Some((_, metadata, record, plan)) = &plan_entry {
-        metadata.checkpoint_epoch_commit_plan(record, plan).await?;
-        #[cfg(debug_assertions)]
-        if let Some(path) = std::env::var_os("LAKESOUL_IVM_TEST_PLAN_MARKER") {
-            std::fs::write(path, record.epoch.to_string())?;
-        }
-        #[cfg(debug_assertions)]
-        if std::env::var_os("LAKESOUL_IVM_TEST_ABORT_AFTER_COMMIT_PLAN").is_some() {
-            return Err(rootcause::report!(
-                "injected coordinator crash after commit plan for epoch {}",
-                record.epoch
-            ));
-        }
-        #[cfg(debug_assertions)]
-        if std::env::var_os("LAKESOUL_IVM_TEST_PAUSE_AFTER_COMMIT_PLAN").is_some() {
-            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-        }
-    }
-    let commit_ids = table.commit_files(client, written.files.clone()).await?;
-    if let Some((id, metadata, record, _)) = &plan_entry {
-        let plan = COMMIT_PLAN
-            .try_with(|slot| {
-                let mut slot =
-                    slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                let context = slot.as_mut()?;
-                context.plan.mark_committed(id, commit_ids.clone());
-                Some(context.plan.clone())
-            })
-            .ok()
-            .flatten()
-            .ok_or_else(|| {
-                rootcause::report!(
-                    "commit plan context disappeared after a target commit"
-                )
-            })?;
-        metadata.checkpoint_epoch_commit_plan(record, &plan).await?;
-    }
+    let commit_ids = table.commit_files(client, written.files).await?;
     Ok(AppendOutcome {
         commit_ids,
         rows: written.rows,
@@ -3571,48 +3536,137 @@ pub(crate) async fn append_dataframe(
     })
 }
 
-/// Record the target table's staged files in the active commit plan.
+/// One table commit recorded in the active refresh plan.
+pub(crate) struct CommitPlanEntryHandle {
+    id: String,
+    metadata: IvmMetadata,
+    record: EpochRecord,
+    plan: CommitPlan,
+}
+
+/// Persist a table's staged files before their commit.
 ///
-/// Only the target table is journaled.  A view with auxiliary state tables
-/// keeps the existing pending-epoch repair/rebuild path; arming a plan there
-/// would need a complete list of expected state writes before the first
-/// commit, which the current per-shape write order does not provide.
-fn record_target_commit_plan_entry(
-    table: &IvmTable,
+/// Called from [`IvmTable::commit_files`] for every table a refresh writes.
+/// The entry is checkpointed before the commit, so a coordinator that dies
+/// between staging and publishing can replay exactly the staged files.
+pub(crate) async fn commit_plan_before_commit(
+    table_id: &str,
     files: &[DataFileInfo],
-) -> Option<(String, IvmMetadata, EpochRecord, CommitPlan)> {
+) -> Result<Option<CommitPlanEntryHandle>> {
     if files.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let target_id = TARGET_WRITE
-        .try_with(|context| {
-            context
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .target_table_id
-                .clone()
-        })
-        .ok()?;
-    if target_id != table.table_id {
-        return None;
-    }
-    COMMIT_PLAN
+    let recorded = COMMIT_PLAN
         .try_with(|slot| {
             let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             let context = slot.as_mut()?;
-            if !context.armed {
-                return None;
+            let id = context.plan.record(table_id, files.to_vec());
+            let is_target = table_id == context.target_table_id;
+            if is_target {
+                // The target is the last write of the refresh; once its
+                // files are staged the plan describes every write.
+                context.plan.complete = true;
+            } else if context.plan.complete {
+                // A write after the target means the invariant above does
+                // not hold for this shape; keep the plan recoverable only
+                // through the finalize below.
+                context.plan.complete = false;
             }
-            let id = context.plan.record(&table.table_id, files.to_vec());
             Some((
                 id,
+                is_target,
                 context.metadata.clone(),
                 context.record.clone(),
                 context.plan.clone(),
             ))
         })
         .ok()
-        .flatten()
+        .flatten();
+    let Some((id, is_target, metadata, record, plan)) = recorded else {
+        return Ok(None);
+    };
+    metadata
+        .checkpoint_epoch_commit_plan(&record, &plan)
+        .await?;
+    #[cfg(debug_assertions)]
+    if is_target && plan.complete {
+        if let Some(path) = std::env::var_os("LAKESOUL_IVM_TEST_PLAN_MARKER") {
+            std::fs::write(path, record.epoch.to_string())?;
+        }
+        if std::env::var_os("LAKESOUL_IVM_TEST_ABORT_AFTER_COMMIT_PLAN").is_some() {
+            return Err(rootcause::report!(
+                "injected coordinator crash after commit plan for epoch {}",
+                record.epoch
+            ));
+        }
+        if std::env::var_os("LAKESOUL_IVM_TEST_PAUSE_AFTER_COMMIT_PLAN").is_some() {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        }
+    }
+    Ok(Some(CommitPlanEntryHandle {
+        id,
+        metadata,
+        record,
+        plan,
+    }))
+}
+
+/// Mark a recorded entry committed and persist the plan.
+pub(crate) async fn commit_plan_after_commit(
+    handle: Option<CommitPlanEntryHandle>,
+    commit_ids: &[String],
+) -> Result<()> {
+    let Some(handle) = handle else {
+        return Ok(());
+    };
+    let planned = COMMIT_PLAN
+        .try_with(|slot| {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let context = slot.as_mut()?;
+            context.plan.mark_committed(&handle.id, commit_ids.to_vec());
+            Some((
+                context.metadata.clone(),
+                context.record.clone(),
+                context.plan.clone(),
+            ))
+        })
+        .ok()
+        .flatten();
+    let (metadata, record, plan) = match planned {
+        Some(planned) => planned,
+        // The task-local is only cleared between refreshes; fall back to the
+        // handle so a commit already accepted by LakeSoul is still recorded.
+        None => {
+            let mut plan = handle.plan.clone();
+            plan.mark_committed(&handle.id, commit_ids.to_vec());
+            (handle.metadata, handle.record, plan)
+        }
+    };
+    metadata.checkpoint_epoch_commit_plan(&record, &plan).await
+}
+
+/// Mark the active plan complete once the refresh finished writing.
+///
+/// This covers a refresh whose target write is empty (no files), and is a
+/// second chance for shapes that write something after the target.
+async fn finalize_commit_plan() -> Result<()> {
+    let planned = COMMIT_PLAN
+        .try_with(|slot| {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let context = slot.as_mut()?;
+            context.plan.complete = true;
+            Some((
+                context.metadata.clone(),
+                context.record.clone(),
+                context.plan.clone(),
+            ))
+        })
+        .ok()
+        .flatten();
+    let Some((metadata, record, plan)) = planned else {
+        return Ok(());
+    };
+    metadata.checkpoint_epoch_commit_plan(&record, &plan).await
 }
 
 fn apply_filters(mut frame: DataFrame, filters: Vec<Expr>) -> Result<DataFrame> {
@@ -5898,7 +5952,7 @@ impl IvmRuntime {
     /// publish.  Entries whose files are already visible in the target are
     /// treated as committed; LakeSoul commits a batch atomically, so a crash
     /// cannot leave a partial entry.
-    async fn resume_commit_plan(&self, record: &EpochRecord) -> Result<()> {
+    async fn resume_commit_plan(&self, record: &EpochRecord) -> Result<CommitPlan> {
         let mut plan = record.commit_plan.clone();
         for entry in record.commit_plan.entries.iter() {
             if entry.committed {
@@ -5922,19 +5976,20 @@ impl IvmRuntime {
                 .checkpoint_epoch_commit_plan(record, &plan)
                 .await?;
         }
-        Ok(())
+        Ok(plan)
     }
 
-    fn install_commit_plan_context(&self, record: &EpochRecord) {
-        let armed =
-            record.state_versions_before.is_empty() && record.commit_plan.is_empty();
+    fn install_commit_plan_context(&self, record: &EpochRecord, target_table_id: &str) {
         let _ = COMMIT_PLAN.try_with(|slot| {
             let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             *slot = Some(CommitPlanContext {
                 metadata: self.metadata.clone(),
                 record: record.clone(),
-                plan: record.commit_plan.clone(),
-                armed,
+                // An incomplete plan belongs to an attempt that did not
+                // finish writing; re-applying the window stages new files,
+                // so only the new attempt is journaled.
+                plan: CommitPlan::default(),
+                target_table_id: target_table_id.to_string(),
             });
         });
     }
@@ -5978,15 +6033,17 @@ impl IvmRuntime {
             }
             BeginEpoch::Created(record) => record,
             BeginEpoch::Pending(record) => {
-                if !record.commit_plan.is_empty() {
-                    self.resume_commit_plan(&record).await?;
+                if record.commit_plan.complete {
+                    let plan = self.resume_commit_plan(&record).await?;
                     let current = output_partition_versions(&self.client, output).await?;
                     let current_states = self.state_versions(view_id).await?;
+                    let mut commit_ids = record.commit_ids.clone();
+                    commit_ids.extend(plan.commit_ids());
                     self.metadata
                         .mark_epoch_committed_with_states(
                             &record,
                             &current,
-                            &record.commit_ids,
+                            &commit_ids,
                             &current_states,
                         )
                         .await?;
@@ -6062,7 +6119,7 @@ impl IvmRuntime {
             }
         }
 
-        self.install_commit_plan_context(&record);
+        self.install_commit_plan_context(&record, &output.table_id);
         let _ = CURRENT_REFRESH_EPOCH.try_with(|epoch| {
             epoch.store(record.epoch, Ordering::Relaxed);
         });

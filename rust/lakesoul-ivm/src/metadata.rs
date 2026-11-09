@@ -445,22 +445,37 @@ pub struct CommitPlanEntry {
     pub commit_ids: Vec<String>,
 }
 
-/// The files a distributed refresh staged before its coordinator commits them.
+/// The files a refresh staged before its coordinator commits them.
 ///
-/// A plan is written before the first target commit, so a coordinator that
-/// dies between worker writes and commit can replay the target commit without
-/// re-running the refresh.  The plan is currently armed only for views without
-/// auxiliary state tables; a stateful view keeps the existing pending-epoch
-/// rebuild/repair path.
+/// A plan is written before each table commit, so a coordinator that dies
+/// between worker writes and commit can replay the commit without re-running
+/// the refresh.  It covers the target and every auxiliary state table.
+///
+/// `complete` is set once the target commit is about to be published (the
+/// target is the last write of every refresh shape) and again when the
+/// refresh finishes without a target write.  A plan that is not complete
+/// describes only a prefix of a refresh; recovery must fall back to the
+/// pending-epoch repair/rebuild path instead of publishing it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitPlan {
     #[serde(default)]
     pub entries: Vec<CommitPlanEntry>,
+    /// Whether every write of the refresh is represented in `entries`.
+    #[serde(default)]
+    pub complete: bool,
 }
 
 impl CommitPlan {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Collect the commit ids recorded for the entries.
+    pub fn commit_ids(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .flat_map(|entry| entry.commit_ids.iter().cloned())
+            .collect()
     }
 
     /// Record a new uncommitted table write and return its entry id.

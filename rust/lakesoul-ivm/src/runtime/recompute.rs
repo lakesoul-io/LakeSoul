@@ -4199,11 +4199,15 @@ impl IvmRuntime {
                     let write_started = std::time::Instant::now();
                     let state_batches = std::mem::take(&mut state_chunk);
                     let mv_batches = std::mem::take(&mut mv_chunk);
-                    let (state_ids, mv_ids) = futures::future::try_join(
-                        state.append_batches(&self.client, state_batches),
-                        view.mv.append_batches(&self.client, mv_batches),
-                    )
-                    .await?;
+                    let (mv_ids, state_ids) = view
+                        .mv
+                        .append_batches_pair(
+                            &self.client,
+                            mv_batches,
+                            state,
+                            state_batches,
+                        )
+                        .await?;
                     commit_ids.extend(state_ids);
                     commit_ids.extend(mv_ids);
                     write_elapsed += write_started.elapsed();
@@ -4214,11 +4218,10 @@ impl IvmRuntime {
             }
             if !state_chunk.is_empty() {
                 let write_started = std::time::Instant::now();
-                let (state_ids, mv_ids) = futures::future::try_join(
-                    state.append_batches(&self.client, state_chunk),
-                    view.mv.append_batches(&self.client, mv_chunk),
-                )
-                .await?;
+                let (mv_ids, state_ids) = view
+                    .mv
+                    .append_batches_pair(&self.client, mv_chunk, state, state_chunk)
+                    .await?;
                 commit_ids.extend(state_ids);
                 commit_ids.extend(mv_ids);
                 write_elapsed += write_started.elapsed();
@@ -4335,15 +4338,15 @@ impl IvmRuntime {
                 state_chunk.push(batch);
                 mv_chunk.push(mv_batch);
                 if chunk_rows >= crate::table::MAX_STATE_APPEND_ROWS {
-                    let (state_ids, mv_ids) = futures::future::try_join(
-                        state.append_batches(
+                    let (mv_ids, state_ids) = view
+                        .mv
+                        .append_batches_pair(
                             &self.client,
+                            std::mem::take(&mut mv_chunk),
+                            state,
                             std::mem::take(&mut state_chunk),
-                        ),
-                        view.mv
-                            .append_batches(&self.client, std::mem::take(&mut mv_chunk)),
-                    )
-                    .await?;
+                        )
+                        .await?;
                     commit_ids.extend(state_ids);
                     commit_ids.extend(mv_ids);
                     state_writes += 1;
@@ -4353,11 +4356,10 @@ impl IvmRuntime {
             }
         }
         if !state_chunk.is_empty() {
-            let (state_ids, mv_ids) = futures::future::try_join(
-                state.append_batches(&self.client, state_chunk),
-                view.mv.append_batches(&self.client, mv_chunk),
-            )
-            .await?;
+            let (mv_ids, state_ids) = view
+                .mv
+                .append_batches_pair(&self.client, mv_chunk, state, state_chunk)
+                .await?;
             commit_ids.extend(state_ids);
             commit_ids.extend(mv_ids);
             state_writes += 1;

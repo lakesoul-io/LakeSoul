@@ -4048,18 +4048,14 @@ impl IvmRuntime {
         phase_done!("sql_plan");
         let (mv_ids, state_ids) = if view.group_keys.is_empty() {
             // A global top-k can rewrite the whole state; keep the streaming
-            // path instead of collecting the full result in memory.
-            let state_frame = frame.clone().execute_stream().await?;
-            futures::future::try_join(
-                view.mv
-                    .append_stream(&self.client, frame.execute_stream().await?),
-                async {
-                    let ids = state.append_stream(&self.client, state_frame).await?;
-                    self.checkpoint_epoch_states(&record).await?;
-                    Ok::<_, rootcause::Report>(ids)
-                },
-            )
-            .await?
+            // path instead of collecting the full result in memory.  Execute
+            // the plan once and tee the batches into both writers.
+            let (mv_ids, state_ids) = view
+                .mv
+                .append_stream_pair(&self.client, frame.execute_stream().await?, &state)
+                .await?;
+            self.checkpoint_epoch_states(&record).await?;
+            (mv_ids, state_ids)
         } else if state.table_id == view.mv.table_id {
             let mv_ids = view
                 .mv

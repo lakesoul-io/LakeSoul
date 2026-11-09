@@ -528,3 +528,210 @@ async fn a_killed_coordinator_task_resumes_the_persisted_commit_plan() {
         "the persisted plan must commit the row after the task kill"
     );
 }
+
+/// A stateful view persists its auxiliary state before the target.  A crash
+/// after the plan recorded the target commit (but before publishing it) must
+/// resume the target commit, keeping the state the same attempt already
+/// committed, instead of rebuilding the view.
+#[test_log::test(tokio::test)]
+async fn a_stateful_view_resumes_its_commit_plan_without_a_rebuild() {
+    use lakesoul_ivm::{MinMaxKind, StateRole, min_max_mv_schema_for};
+
+    let _guard = test_lock().lock().await;
+    let base = IvmRuntimeConfig::default();
+    let factory = SinkFactory {
+        session: base.session.clone(),
+        runtime: Arc::clone(&base.runtime),
+    };
+    let runtime =
+        IvmRuntime::from_env_with_config(base.with_session_factory(Arc::new(factory)))
+            .await
+            .unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new("op", DataType::Utf8, false),
+    ]));
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_mm_src_{suffix}"),
+                format!("file://{}", dir.path().join("src").display()),
+                schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column("op"),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_mm_mv_{suffix}"),
+                format!("file://{}", dir.path().join("mv").display()),
+                min_max_mv_schema_for(
+                    &source.schema,
+                    &["k".to_string()],
+                    "v",
+                    MinMaxKind::Min,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from(vec![1, 2])),
+                    Arc::new(Int64Array::from(vec![10, 20])),
+                    Arc::new(StringArray::from(vec!["insert", "insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let context = SessionContext::new();
+    context
+        .register_table(
+            source.table_name.as_str(),
+            Arc::new(runtime.table_provider(&source)),
+        )
+        .unwrap();
+    context
+        .register_table(
+            mv.table_name.as_str(),
+            Arc::new(runtime.table_provider(&mv)),
+        )
+        .unwrap();
+    let sql = format!(
+        "INSERT INTO {} SELECT k, MIN(v) FROM {} GROUP BY k",
+        mv.table_name, source.table_name
+    );
+    let executor =
+        IvmSqlExecutor::with_shared_runtime(Arc::new(runtime)).with_session(context);
+    // Bootstrap first: the abort switch only applies to the incremental
+    // window, which writes state and target through the commit plan.
+    let bootstrap = executor.execute(&sql).await.unwrap();
+    assert_eq!(bootstrap.epoch, Some(1));
+    source
+        .append_batch(
+            executor.runtime().client(),
+            RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(Int64Array::from(vec![1])),
+                    Arc::new(Int64Array::from(vec![5])),
+                    Arc::new(StringArray::from(vec!["insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    // SAFETY: the test lock serializes the process-wide switch.
+    unsafe { std::env::set_var("LAKESOUL_IVM_TEST_ABORT_AFTER_COMMIT_PLAN", "1") };
+    let error = executor.execute(&sql).await.unwrap_err();
+    // SAFETY: no other refresh runs while the lock is held.
+    unsafe { std::env::remove_var("LAKESOUL_IVM_TEST_ABORT_AFTER_COMMIT_PLAN") };
+    assert!(
+        error.to_string().contains("after commit plan"),
+        "unexpected error: {error}"
+    );
+    let rows_after_abort = mv
+        .read_current(executor.runtime().client())
+        .await
+        .unwrap()
+        .iter()
+        .map(|batch| batch.num_rows())
+        .sum::<usize>();
+    assert_eq!(
+        rows_after_abort, 2,
+        "the aborted target commit must not publish the incremental min update"
+    );
+    let view_id = mv.table_id.clone();
+    let generation = executor
+        .runtime()
+        .metadata()
+        .view_generation(&view_id)
+        .await
+        .unwrap();
+    let pending = executor
+        .runtime()
+        .metadata()
+        .list_pending_epochs(&view_id, generation)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(
+        pending[0].commit_plan.complete,
+        "the target plan entry must mark the plan complete"
+    );
+    assert_eq!(
+        pending[0].commit_plan.entries.len(),
+        2,
+        "the state write and the target write must both be journaled"
+    );
+    let replayed = executor.execute(&sql).await.unwrap();
+    assert_eq!(replayed.epoch, Some(pending[0].epoch));
+    let mut mins = std::collections::HashMap::new();
+    for batch in mv.read_current(executor.runtime().client()).await.unwrap() {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            mins.insert(keys.value(row), values.value(row));
+        }
+    }
+    assert_eq!(
+        mins,
+        std::collections::HashMap::from([(1, 5), (2, 20)]),
+        "the plan must publish exactly the staged target files"
+    );
+    let states = executor
+        .runtime()
+        .metadata()
+        .list_states(&view_id)
+        .await
+        .unwrap();
+    let state_info = states
+        .iter()
+        .find(|state| state.role == StateRole::State)
+        .expect("the value-count state must be registered");
+    let state = executor
+        .runtime()
+        .open_table_by_id(&state_info.table_id)
+        .await
+        .unwrap();
+    let state_rows = state
+        .read_current(executor.runtime().client())
+        .await
+        .unwrap()
+        .iter()
+        .map(|batch| batch.num_rows())
+        .sum::<usize>();
+    assert!(
+        state_rows >= 2,
+        "the state written by the first attempt must stay, got {state_rows}"
+    );
+    let replay = executor.execute(&sql).await.unwrap();
+    assert_eq!(
+        replay.epoch, None,
+        "a replay without new source files must not open a window"
+    );
+}
