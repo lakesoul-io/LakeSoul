@@ -751,10 +751,11 @@ async fn an_incomplete_state_plan_replays_without_duplicate_state() {
         session: base.session.clone(),
         runtime: Arc::clone(&base.runtime),
     };
-    let runtime =
+    let runtime = Arc::new(
         IvmRuntime::from_env_with_config(base.with_session_factory(Arc::new(factory)))
             .await
-            .unwrap();
+            .unwrap(),
+    );
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
     let suffix = uuid::Uuid::new_v4().simple();
@@ -1009,8 +1010,362 @@ async fn an_incomplete_state_plan_replays_without_duplicate_state() {
             (4, (40, 400))
         ])
     );
+
+    // A committed join MV with a missing state checkpoint must rebuild its
+    // side/pair state by replaying the window with the target suppressed.
+    left.append_batch(runtime.client(), batch(&[(5, 50)]))
+        .await
+        .unwrap();
+    right
+        .append_batch(runtime.client(), batch(&[(5, 500)]))
+        .await
+        .unwrap();
+    let marker = dir.path().join("join-target-committed");
+    // SAFETY: the test lock serializes the process-wide switches.
+    unsafe {
+        std::env::set_var("LAKESOUL_IVM_TEST_SKIP_STATE_CHECKPOINT", "1");
+        std::env::set_var("LAKESOUL_IVM_TEST_SKIP_PLAN_COMPLETE", "1");
+        std::env::set_var("LAKESOUL_IVM_TEST_TARGET_COMMIT_MARKER", &marker);
+        std::env::set_var("LAKESOUL_IVM_TEST_PAUSE_AFTER_TARGET_COMMIT", "1");
+    }
+    let handle = {
+        let runtime = Arc::clone(&runtime);
+        let spec = spec.clone();
+        tokio::spawn(async move { runtime.refresh_spec(&spec).await })
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !marker.exists() {
+        assert!(
+            !handle.is_finished(),
+            "the join refresh finished before the target-commit hook"
+        );
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the join refresh never reached the target-commit hook"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    handle.abort();
+    let _ = handle.await;
+    // SAFETY: the paused task is gone and the lock keeps other tests out.
+    unsafe {
+        std::env::remove_var("LAKESOUL_IVM_TEST_SKIP_STATE_CHECKPOINT");
+        std::env::remove_var("LAKESOUL_IVM_TEST_SKIP_PLAN_COMPLETE");
+        std::env::remove_var("LAKESOUL_IVM_TEST_TARGET_COMMIT_MARKER");
+        std::env::remove_var("LAKESOUL_IVM_TEST_PAUSE_AFTER_TARGET_COMMIT");
+    }
+    let pending = runtime
+        .metadata()
+        .list_pending_epochs(&view.view_id, generation)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(
+        pending[0].state_versions.is_empty(),
+        "the join attempt must not have checkpointed the state versions"
+    );
+    assert!(
+        !pending[0].commit_plan.complete,
+        "the join attempt must leave the plan incomplete"
+    );
+    runtime.refresh_spec(&spec).await.unwrap().unwrap();
+    let mut rows = std::collections::BTreeMap::new();
+    for batch in output.read_current(runtime.client()).await.unwrap().iter() {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let left_values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let right_values = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            assert!(
+                rows.insert(
+                    keys.value(row),
+                    (left_values.value(row), right_values.value(row))
+                )
+                .is_none(),
+                "join key {} was emitted more than once",
+                keys.value(row)
+            );
+        }
+    }
+    assert_eq!(
+        rows,
+        std::collections::BTreeMap::from([
+            (1, (10, 100)),
+            (2, (20, 200)),
+            (3, (30, 300)),
+            (4, (40, 400)),
+            (5, (50, 500))
+        ])
+    );
     assert!(
         runtime.refresh_spec(&spec).await.unwrap().is_none(),
         "a replay without new source files must not open a window"
     );
+}
+
+/// A pending epoch whose MV is committed but whose state checkpoint was lost
+/// must rebuild the auxiliary state by replaying the window with the target
+/// commit suppressed, not by rebuilding the whole view.
+#[test_log::test(tokio::test)]
+async fn a_committed_mv_with_a_missing_state_checkpoint_replays_state_only() {
+    use lakesoul_ivm::{
+        IVM_ROW_KINDS_COLUMN, IVM_VALUE_COLUMN, IVM_VALUE_COUNT_COLUMN, MinMaxKind,
+        StateRole, ViewSpec, min_max_mv_schema_for,
+    };
+
+    let _guard = test_lock().lock().await;
+    let base = IvmRuntimeConfig::default();
+    let factory = SinkFactory {
+        session: base.session.clone(),
+        runtime: Arc::clone(&base.runtime),
+    };
+    let runtime = Arc::new(
+        IvmRuntime::from_env_with_config(base.with_session_factory(Arc::new(factory)))
+            .await
+            .unwrap(),
+    );
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new("op", DataType::Utf8, false),
+    ]));
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_replay_src_{suffix}"),
+                format!("file://{}", dir.path().join("src").display()),
+                schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column("op"),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_replay_mv_{suffix}"),
+                format!("file://{}", dir.path().join("mv").display()),
+                min_max_mv_schema_for(
+                    &source.schema,
+                    &["k".to_string()],
+                    "v",
+                    MinMaxKind::Min,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let batch = |rows: &[(i64, i64)]| {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(vec!["insert"; rows.len()])),
+            ],
+        )
+        .unwrap()
+    };
+    source
+        .append_batch(runtime.client(), batch(&[(1, 10), (2, 20)]))
+        .await
+        .unwrap();
+    let context = SessionContext::new();
+    context
+        .register_table(
+            source.table_name.as_str(),
+            Arc::new(runtime.table_provider(&source)),
+        )
+        .unwrap();
+    context
+        .register_table(
+            mv.table_name.as_str(),
+            Arc::new(runtime.table_provider(&mv)),
+        )
+        .unwrap();
+    let sql = format!(
+        "INSERT INTO {} SELECT k, MIN(v) FROM {} GROUP BY k",
+        mv.table_name, source.table_name
+    );
+    let executor =
+        IvmSqlExecutor::with_shared_runtime(Arc::clone(&runtime)).with_session(context);
+    executor.execute(&sql).await.unwrap();
+    let view_id = mv.table_id.clone();
+    let spec: ViewSpec = serde_json::from_value(
+        runtime
+            .metadata()
+            .get_view_spec(&view_id)
+            .await
+            .unwrap()
+            .expect("the min/max view spec must be persisted"),
+    )
+    .unwrap();
+
+    source
+        .append_batch(runtime.client(), batch(&[(1, 5)]))
+        .await
+        .unwrap();
+    let marker = dir.path().join("replay-target-committed");
+    // SAFETY: the test lock serializes the process-wide switches.
+    unsafe {
+        std::env::set_var("LAKESOUL_IVM_TEST_SKIP_STATE_CHECKPOINT", "1");
+        std::env::set_var("LAKESOUL_IVM_TEST_SKIP_PLAN_COMPLETE", "1");
+        std::env::set_var("LAKESOUL_IVM_TEST_TARGET_COMMIT_MARKER", &marker);
+        std::env::set_var("LAKESOUL_IVM_TEST_PAUSE_AFTER_TARGET_COMMIT", "1");
+    }
+    let handle = {
+        let runtime = Arc::clone(&runtime);
+        let spec = spec.clone();
+        tokio::spawn(async move { runtime.refresh_spec(&spec).await })
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !marker.exists() {
+        assert!(
+            !handle.is_finished(),
+            "the refresh finished before the target-commit hook"
+        );
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the refresh never reached the target-commit hook"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    handle.abort();
+    let _ = handle.await;
+    // SAFETY: the paused task is gone and the lock keeps other tests out.
+    unsafe {
+        std::env::remove_var("LAKESOUL_IVM_TEST_SKIP_STATE_CHECKPOINT");
+        std::env::remove_var("LAKESOUL_IVM_TEST_SKIP_PLAN_COMPLETE");
+        std::env::remove_var("LAKESOUL_IVM_TEST_TARGET_COMMIT_MARKER");
+        std::env::remove_var("LAKESOUL_IVM_TEST_PAUSE_AFTER_TARGET_COMMIT");
+    }
+    let generation = runtime.metadata().view_generation(&view_id).await.unwrap();
+    let pending = runtime
+        .metadata()
+        .list_pending_epochs(&view_id, generation)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(
+        pending[0].state_versions.is_empty(),
+        "the first attempt must not have checkpointed the state versions"
+    );
+    assert!(
+        !pending[0].commit_plan.complete,
+        "the first attempt must leave the plan incomplete"
+    );
+
+    let epoch = runtime.refresh_spec(&spec).await.unwrap().unwrap();
+    assert_eq!(epoch, pending[0].epoch);
+    let mut mins = std::collections::BTreeMap::new();
+    for batch in mv.read_current(runtime.client()).await.unwrap().iter() {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            assert!(
+                mins.insert(keys.value(row), values.value(row)).is_none(),
+                "the state-only replay must not duplicate MV rows"
+            );
+        }
+    }
+    assert_eq!(mins, std::collections::BTreeMap::from([(1, 5), (2, 20)]));
+    let states = runtime.metadata().list_states(&view_id).await.unwrap();
+    let state_info = states
+        .iter()
+        .find(|state| state.role == StateRole::State)
+        .expect("the value-count state must be registered");
+    let state = runtime
+        .open_table_by_id(&state_info.table_id)
+        .await
+        .unwrap();
+    let schema = state.schema.clone();
+    let key_index = schema.index_of("k").unwrap();
+    let value_index = schema.index_of(IVM_VALUE_COLUMN).unwrap();
+    let count_index = schema.index_of(IVM_VALUE_COUNT_COLUMN).unwrap();
+    let kind_index = schema.index_of(IVM_ROW_KINDS_COLUMN).unwrap();
+    let mut active = std::collections::BTreeMap::new();
+    for batch in state.read_current(runtime.client()).await.unwrap().iter() {
+        let keys = batch
+            .column(key_index)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let values = batch
+            .column(value_index)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let counts = batch
+            .column(count_index)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let kinds = batch
+            .column(kind_index)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            if kinds.value(row) == "insert" {
+                active.insert((keys.value(row), values.value(row)), counts.value(row));
+            }
+        }
+    }
+    assert_eq!(
+        active,
+        std::collections::BTreeMap::from([((1, 5), 1), ((2, 20), 1)])
+    );
+
+    // The repaired state must still drive a later minimum update.
+    source
+        .append_batch(runtime.client(), batch(&[(2, 15)]))
+        .await
+        .unwrap();
+    runtime.refresh_spec(&spec).await.unwrap().unwrap();
+    let mut mins = std::collections::BTreeMap::new();
+    for batch in mv.read_current(runtime.client()).await.unwrap().iter() {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            mins.insert(keys.value(row), values.value(row));
+        }
+    }
+    assert_eq!(mins, std::collections::BTreeMap::from([(1, 5), (2, 15)]));
 }

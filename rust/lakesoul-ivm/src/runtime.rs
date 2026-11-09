@@ -2406,6 +2406,9 @@ pub(crate) struct TargetWrite {
     pub(crate) target_table_id: String,
     pub(crate) atomic: bool,
     pub(crate) committed: bool,
+    /// A recovery replay after a committed MV must recompute state without
+    /// publishing the target again.
+    pub(crate) skip_target: bool,
     pub(crate) internal: bool,
     /// The target partitions this view has published.  A rebuild replaces
     /// these partitions only; partitions owned by another writer are left
@@ -2415,6 +2418,21 @@ pub(crate) struct TargetWrite {
     /// to reject a concurrent commit in the same partition before publishing.
     pub(crate) begin_partitions: Vec<PartitionInfo>,
     pub(crate) metadata: IvmMetadata,
+}
+
+/// Whether this refresh replay must not publish target files.
+///
+/// Recovery after a committed MV replays the window to rebuild auxiliary
+/// state; the target commit is suppressed so output rows are not duplicated.
+pub(crate) fn target_writes_suppressed(table_id: &str) -> bool {
+    TARGET_WRITE
+        .try_with(|context| {
+            let guard = context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.skip_target && guard.target_table_id == table_id
+        })
+        .unwrap_or(false)
 }
 
 tokio::task_local! {
@@ -2480,6 +2498,7 @@ impl TargetWrite {
             target_table_id: target_table_id.to_string(),
             atomic,
             committed: false,
+            skip_target: false,
             internal,
             owned_partitions,
             begin_partitions,
@@ -3268,6 +3287,10 @@ impl IvmRuntime {
         &self,
         record: &EpochRecord,
     ) -> Result<()> {
+        #[cfg(debug_assertions)]
+        if std::env::var_os("LAKESOUL_IVM_TEST_SKIP_STATE_CHECKPOINT").is_some() {
+            return Ok(());
+        }
         let state_versions = self.state_versions(&record.view_id).await?;
         self.metadata
             .checkpoint_epoch_state_versions(record, &state_versions)
@@ -3526,6 +3549,16 @@ pub(crate) async fn append_dataframe(
     client: &MetaDataClient,
     frame: DataFrame,
 ) -> Result<AppendOutcome> {
+    if target_writes_suppressed(&table.table_id) {
+        // The MV is already published for this recovery window; skip the
+        // output plan entirely and only let the state writes run.
+        return Ok(AppendOutcome {
+            commit_ids: Vec::new(),
+            rows: 0,
+            inserts: 0,
+            deletes: 0,
+        });
+    }
     let written = write_dataframe(table, frame).await?;
     let commit_ids = table.commit_files(client, written.files).await?;
     Ok(AppendOutcome {
@@ -3566,7 +3599,14 @@ pub(crate) async fn commit_plan_before_commit(
             if is_target {
                 // The target is the last write of the refresh; once its
                 // files are staged the plan describes every write.
-                context.plan.complete = true;
+                #[cfg(debug_assertions)]
+                let skip_complete =
+                    std::env::var_os("LAKESOUL_IVM_TEST_SKIP_PLAN_COMPLETE").is_some();
+                #[cfg(not(debug_assertions))]
+                let skip_complete = false;
+                if !skip_complete {
+                    context.plan.complete = true;
+                }
             } else if context.plan.complete {
                 // A write after the target means the invariant above does
                 // not hold for this shape; keep the plan recoverable only
@@ -3599,7 +3639,7 @@ pub(crate) async fn commit_plan_before_commit(
         ));
     }
     #[cfg(debug_assertions)]
-    if is_target && plan.complete {
+    if is_target {
         if let Some(path) = std::env::var_os("LAKESOUL_IVM_TEST_PLAN_MARKER") {
             std::fs::write(path, record.epoch.to_string())?;
         }
@@ -3682,6 +3722,10 @@ pub(crate) async fn commit_plan_after_commit(
 /// This covers a refresh whose target write is empty (no files), and is a
 /// second chance for shapes that write something after the target.
 async fn finalize_commit_plan() -> Result<()> {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("LAKESOUL_IVM_TEST_SKIP_PLAN_COMPLETE").is_some() {
+        return Ok(());
+    }
     let planned = COMMIT_PLAN
         .try_with(|slot| {
             let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -6031,6 +6075,27 @@ impl IvmRuntime {
         });
     }
 
+    /// Whether replaying a window can rebuild this view's state in place.
+    ///
+    /// Most state tables are append-only: replaying the window appends the
+    /// same epoch-scoped rows and merge-on-read keeps one copy.  The
+    /// multi-aggregate row/partial state is maintained by adding a delta to
+    /// the stored measures, so replaying it would count the window twice and
+    /// must fall back to a rebuild.
+    async fn state_replay_is_safe(&self, view_id: &str) -> Result<bool> {
+        Ok(!self
+            .metadata
+            .list_states(view_id)
+            .await?
+            .iter()
+            .any(|state| {
+                matches!(
+                    state.role,
+                    StateRole::MultiAggRows | StateRole::MultiAggPartials
+                )
+            }))
+    }
+
     async fn begin_window(
         &self,
         view_id: &str,
@@ -6111,28 +6176,44 @@ impl IvmRuntime {
                             || !current_states.is_empty()
                     };
                     let mut commit_ids = record.commit_ids.clone();
+                    let mut state_incomplete = state_incomplete;
                     if state_incomplete && !record.state_versions.is_empty() {
                         let (repair_ids, repaired_tables) =
                             self.repair_mirror_states(view_id, output).await?;
                         commit_ids.extend(repair_ids);
                         let repaired = self.state_versions(view_id).await?;
-                        let repaired_ok = record.state_versions.iter().all(|expected| {
-                            repaired_tables.contains(&expected.table_id)
-                                || repaired.iter().any(|current| current == expected)
-                        });
-                        if !repaired_ok {
+                        state_incomplete =
+                            !record.state_versions.iter().all(|expected| {
+                                repaired_tables.contains(&expected.table_id)
+                                    || repaired.iter().any(|current| current == expected)
+                            });
+                    }
+                    if state_incomplete {
+                        if !self.state_replay_is_safe(view_id).await? {
                             return Err(report!(
                                 "view {view_id} window {window_key} has a committed MV \
                                  but incomplete auxiliary state; a rebuild is required"
                             )
                             .attach(RebuildRequired));
                         }
-                    } else if state_incomplete {
-                        return Err(report!(
-                            "view {view_id} window {window_key} has a committed MV \
-                             but incomplete auxiliary state; a rebuild is required"
-                        )
-                        .attach(RebuildRequired));
+                        // The MV is already published, so recompute the
+                        // window again but suppress every target commit; the
+                        // state writes are epoch-scoped and repair the missing
+                        // state without duplicating output rows.
+                        let scoped = TARGET_WRITE.try_with(|context| {
+                            context
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .skip_target = true;
+                        });
+                        if scoped.is_err() {
+                            return Err(report!(
+                                "view {view_id} window {window_key} has a committed MV \
+                                 but incomplete auxiliary state; a rebuild is required"
+                            )
+                            .attach(RebuildRequired));
+                        }
+                        return Ok(WindowStart::Apply(Box::new(record)));
                     }
                     self.mark_epoch_committed(&record, &current, &commit_ids)
                         .await?;

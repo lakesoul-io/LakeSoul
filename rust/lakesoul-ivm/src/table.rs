@@ -991,6 +991,9 @@ impl IvmTable {
         client: &MetaDataClient,
         files: Vec<DataFileInfo>,
     ) -> Result<Vec<String>> {
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
+            return Ok(Vec::new());
+        }
         let journal =
             crate::runtime::commit_plan_before_commit(&self.table_id, &files).await?;
         let commit_ids = self.commit_files_inner(client, files).await;
@@ -1021,6 +1024,7 @@ impl IvmTable {
             target_table_id,
             atomic,
             committed,
+            skip_target,
             internal,
             owned_partitions,
             begin_partitions,
@@ -1034,12 +1038,18 @@ impl IvmTable {
                 guard.target_table_id.clone(),
                 guard.atomic,
                 guard.committed,
+                guard.skip_target,
                 guard.internal,
                 guard.owned_partitions.clone(),
                 guard.begin_partitions.clone(),
                 guard.metadata.clone(),
             )
         };
+        if skip_target && target_table_id == self.table_id {
+            // The MV is already published for this window; the recovery
+            // replay only rebuilds the auxiliary state.
+            return Ok(Vec::new());
+        }
         if target_table_id != self.table_id {
             if files.is_empty() {
                 return Ok(Vec::new());
@@ -1180,6 +1190,9 @@ impl IvmTable {
         client: &MetaDataClient,
         batches: Vec<RecordBatch>,
     ) -> Result<Vec<String>> {
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
+            return Ok(Vec::new());
+        }
         let files = self.write_batches(batches).await?;
         self.commit_files(client, files).await
     }
@@ -1218,6 +1231,9 @@ impl IvmTable {
     where
         S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
     {
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
+            return Ok(Vec::new());
+        }
         use futures::StreamExt;
         let mut stream = Box::pin(coalesce_batch_stream(
             stream,
@@ -1315,6 +1331,9 @@ impl IvmTable {
     where
         S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
     {
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
+            return Ok(Vec::new());
+        }
         use futures::StreamExt;
         if self.primary_keys.is_empty() {
             return self.append_stream(client, stream).await;
@@ -2460,6 +2479,18 @@ impl IvmTable {
     /// delete commit would reject the following merge/append via the commit
     /// conflict rules, while a compaction leaves the partition writable again.
     pub async fn truncate(&self, client: &MetaDataClient) -> Result<()> {
+        let skip_target = crate::runtime::TARGET_WRITE
+            .try_with(|context| {
+                let guard = context
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.skip_target && guard.target_table_id == self.table_id
+            })
+            .unwrap_or(false);
+        if skip_target {
+            // A recovery replay must not clear an already published target.
+            return Ok(());
+        }
         let is_user_target = crate::runtime::ATOMIC_TARGET
             .try_with(|target| target == &self.table_id)
             .unwrap_or(false);
