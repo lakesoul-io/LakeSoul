@@ -735,3 +735,282 @@ async fn a_stateful_view_resumes_its_commit_plan_without_a_rebuild() {
         "a replay without new source files must not open a window"
     );
 }
+
+/// A crash after an auxiliary state write but before the refresh finished
+/// leaves an incomplete plan.  Recovery must publish the staged files, replay
+/// the window, and produce the affected join rows exactly once.
+#[test_log::test(tokio::test)]
+async fn an_incomplete_state_plan_replays_without_duplicate_state() {
+    use lakesoul_ivm::{
+        JoinView, ViewSpec, keyed_join_output_primary_keys, keyed_join_view_schema_for,
+    };
+
+    let _guard = test_lock().lock().await;
+    let base = IvmRuntimeConfig::default();
+    let factory = SinkFactory {
+        session: base.session.clone(),
+        runtime: Arc::clone(&base.runtime),
+    };
+    let runtime =
+        IvmRuntime::from_env_with_config(base.with_session_factory(Arc::new(factory)))
+            .await
+            .unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("v", DataType::Int64, false),
+    ]));
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_partial_left_{suffix}"),
+                format!("file://{}", dir.path().join("left").display()),
+                schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_bucket_columns(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_partial_right_{suffix}"),
+                format!("file://{}", dir.path().join("right").display()),
+                schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_bucket_columns(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let output = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_partial_out_{suffix}"),
+                format!("file://{}", dir.path().join("out").display()),
+                keyed_join_view_schema_for(
+                    &left.schema,
+                    &right.schema,
+                    &["k".to_string()],
+                    &["k".to_string()],
+                    &["k".to_string()],
+                    "v",
+                    "v",
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(keyed_join_output_primary_keys(
+                &["k".to_string()],
+                &["k".to_string()],
+            )),
+        )
+        .await
+        .unwrap();
+    let view = JoinView::new(
+        format!("ivm_partial_join_{suffix}"),
+        left.clone(),
+        right.clone(),
+        output.clone(),
+        "k",
+        "v",
+        "v",
+    );
+    runtime.register_join_view(&view).await.unwrap();
+    let spec: ViewSpec = serde_json::from_value(
+        runtime
+            .metadata()
+            .get_view_spec(&view.view_id)
+            .await
+            .unwrap()
+            .expect("the join view spec must be persisted"),
+    )
+    .unwrap();
+    let batch = |rows: &[(i64, i64)]| {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .unwrap()
+    };
+    left.append_batch(runtime.client(), batch(&[(1, 10), (2, 20)]))
+        .await
+        .unwrap();
+    right
+        .append_batch(runtime.client(), batch(&[(1, 100), (2, 200)]))
+        .await
+        .unwrap();
+    runtime.refresh_spec(&spec).await.unwrap().unwrap();
+
+    left.append_batch(runtime.client(), batch(&[(3, 30)]))
+        .await
+        .unwrap();
+    right
+        .append_batch(runtime.client(), batch(&[(3, 300)]))
+        .await
+        .unwrap();
+    // SAFETY: the test lock serializes the process-wide switch.
+    unsafe { std::env::set_var("LAKESOUL_IVM_TEST_ABORT_AFTER_STATE_COMMIT", "1") };
+    let error = runtime.refresh_spec(&spec).await.unwrap_err();
+    // SAFETY: no other refresh runs while the lock is held.
+    unsafe { std::env::remove_var("LAKESOUL_IVM_TEST_ABORT_AFTER_STATE_COMMIT") };
+    assert!(
+        error.to_string().contains("after state commit"),
+        "unexpected error: {error}"
+    );
+    let generation = runtime
+        .metadata()
+        .view_generation(&view.view_id)
+        .await
+        .unwrap();
+    let pending = runtime
+        .metadata()
+        .list_pending_epochs(&view.view_id, generation)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(
+        !pending[0].commit_plan.complete,
+        "a crash before the target must leave the plan incomplete"
+    );
+    assert!(
+        !pending[0].commit_plan.is_empty(),
+        "the committed state write must be journaled"
+    );
+    assert!(
+        pending[0]
+            .commit_plan
+            .entries
+            .iter()
+            .all(|entry| entry.table_id != output.table_id),
+        "the target must not have been committed"
+    );
+
+    runtime.refresh_spec(&spec).await.unwrap().unwrap();
+    let mut rows = std::collections::BTreeMap::new();
+    for batch in output.read_current(runtime.client()).await.unwrap().iter() {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let left_values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let right_values = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            assert!(
+                rows.insert(
+                    keys.value(row),
+                    (left_values.value(row), right_values.value(row))
+                )
+                .is_none(),
+                "key {} was emitted more than once",
+                keys.value(row)
+            );
+        }
+    }
+    assert_eq!(
+        rows,
+        std::collections::BTreeMap::from([
+            (1, (10, 100)),
+            (2, (20, 200)),
+            (3, (30, 300))
+        ])
+    );
+
+    // A crash between the state plan checkpoint and the state commit must
+    // publish the staged files on recovery, then replay the window.
+    left.append_batch(runtime.client(), batch(&[(4, 40)]))
+        .await
+        .unwrap();
+    right
+        .append_batch(runtime.client(), batch(&[(4, 400)]))
+        .await
+        .unwrap();
+    // SAFETY: the test lock serializes the process-wide switch.
+    unsafe { std::env::set_var("LAKESOUL_IVM_TEST_ABORT_BEFORE_STATE_COMMIT", "1") };
+    let error = runtime.refresh_spec(&spec).await.unwrap_err();
+    // SAFETY: no other refresh runs while the lock is held.
+    unsafe { std::env::remove_var("LAKESOUL_IVM_TEST_ABORT_BEFORE_STATE_COMMIT") };
+    assert!(
+        error.to_string().contains("before state commit"),
+        "unexpected error: {error}"
+    );
+    let pending = runtime
+        .metadata()
+        .list_pending_epochs(&view.view_id, generation)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(
+        !pending[0].commit_plan.complete,
+        "a crash before the target must leave the plan incomplete"
+    );
+    assert!(
+        pending[0]
+            .commit_plan
+            .entries
+            .iter()
+            .any(|entry| !entry.committed),
+        "the staged state files must be journaled as uncommitted"
+    );
+    runtime.refresh_spec(&spec).await.unwrap().unwrap();
+    let mut rows = std::collections::BTreeMap::new();
+    for batch in output.read_current(runtime.client()).await.unwrap().iter() {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let left_values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let right_values = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            assert!(
+                rows.insert(
+                    keys.value(row),
+                    (left_values.value(row), right_values.value(row))
+                )
+                .is_none(),
+                "key {} was emitted more than once",
+                keys.value(row)
+            );
+        }
+    }
+    assert_eq!(
+        rows,
+        std::collections::BTreeMap::from([
+            (1, (10, 100)),
+            (2, (20, 200)),
+            (3, (30, 300)),
+            (4, (40, 400))
+        ])
+    );
+    assert!(
+        runtime.refresh_spec(&spec).await.unwrap().is_none(),
+        "a replay without new source files must not open a window"
+    );
+}

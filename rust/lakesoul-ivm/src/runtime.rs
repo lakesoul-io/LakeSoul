@@ -3539,6 +3539,7 @@ pub(crate) async fn append_dataframe(
 /// One table commit recorded in the active refresh plan.
 pub(crate) struct CommitPlanEntryHandle {
     id: String,
+    is_target: bool,
     metadata: IvmMetadata,
     record: EpochRecord,
     plan: CommitPlan,
@@ -3589,6 +3590,15 @@ pub(crate) async fn commit_plan_before_commit(
         .checkpoint_epoch_commit_plan(&record, &plan)
         .await?;
     #[cfg(debug_assertions)]
+    if !is_target
+        && std::env::var_os("LAKESOUL_IVM_TEST_ABORT_BEFORE_STATE_COMMIT").is_some()
+    {
+        return Err(rootcause::report!(
+            "injected coordinator crash before state commit for epoch {}",
+            record.epoch
+        ));
+    }
+    #[cfg(debug_assertions)]
     if is_target && plan.complete {
         if let Some(path) = std::env::var_os("LAKESOUL_IVM_TEST_PLAN_MARKER") {
             std::fs::write(path, record.epoch.to_string())?;
@@ -3605,6 +3615,7 @@ pub(crate) async fn commit_plan_before_commit(
     }
     Ok(Some(CommitPlanEntryHandle {
         id,
+        is_target,
         metadata,
         record,
         plan,
@@ -3639,10 +3650,31 @@ pub(crate) async fn commit_plan_after_commit(
         None => {
             let mut plan = handle.plan.clone();
             plan.mark_committed(&handle.id, commit_ids.to_vec());
-            (handle.metadata, handle.record, plan)
+            (handle.metadata.clone(), handle.record.clone(), plan)
         }
     };
-    metadata.checkpoint_epoch_commit_plan(&record, &plan).await
+    metadata
+        .checkpoint_epoch_commit_plan(&record, &plan)
+        .await?;
+    #[cfg(debug_assertions)]
+    if !handle.is_target
+        && std::env::var_os("LAKESOUL_IVM_TEST_ABORT_AFTER_STATE_COMMIT").is_some()
+    {
+        return Err(rootcause::report!(
+            "injected coordinator crash after state commit for epoch {}",
+            record.epoch
+        ));
+    }
+    #[cfg(debug_assertions)]
+    if handle.is_target {
+        if let Some(path) = std::env::var_os("LAKESOUL_IVM_TEST_TARGET_COMMIT_MARKER") {
+            std::fs::write(path, record.epoch.to_string())?;
+        }
+        if std::env::var_os("LAKESOUL_IVM_TEST_PAUSE_AFTER_TARGET_COMMIT").is_some() {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        }
+    }
+    Ok(())
 }
 
 /// Mark the active plan complete once the refresh finished writing.
@@ -6053,6 +6085,13 @@ impl IvmRuntime {
                         )
                         .await?;
                     return Ok(WindowStart::AlreadyApplied(record.epoch));
+                }
+                if !record.commit_plan.is_empty() {
+                    // The attempt crashed before its last write, but the
+                    // files it already staged are valid: publish them so the
+                    // pending-state checks below see the real state.  The
+                    // window itself is still replayed or repaired.
+                    self.resume_commit_plan(&record).await?;
                 }
                 let current = output_partition_versions(&self.client, output).await?;
                 if current != record.mv_versions_before {
