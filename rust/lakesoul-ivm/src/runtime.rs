@@ -2667,6 +2667,10 @@ pub(crate) struct SourceWindow {
     /// partition the window touched (`None` = the partition is first consumed
     /// by this window). Used to read the before state per partition.
     pub(crate) before_versions: HashMap<String, Option<i64>>,
+    /// True when the window was reconstructed from a pending epoch.  Such a
+    /// window must not advance cursors before the epoch is marked.
+    #[serde(skip, default)]
+    pub(crate) barrier: bool,
 }
 
 /// The full current state of one source, as read by a rebuild.
@@ -5893,7 +5897,8 @@ impl IvmRuntime {
             .retain(|group| keep(&group.partition_desc));
         window.before_versions.retain(|desc, _| keep(desc));
         window.identity.retain(|(_, desc, _, _)| keep(desc));
-        if window.added_files.is_empty() && !window.cursors.is_empty() {
+        if window.added_files.is_empty() && !window.cursors.is_empty() && !window.barrier
+        {
             self.advance_cursors(view_id, window.cursors.clone())
                 .await?;
         }
@@ -5919,14 +5924,107 @@ impl IvmRuntime {
             .max()
             .unwrap_or(0);
 
-        let from_versions = cursors
-            .iter()
-            .map(|(desc, cursor)| (desc.clone(), cursor.last_version))
-            .collect::<HashMap<String, i64>>();
-        let window = self
-            .client
-            .get_table_changelog(&source.table_id, &from_versions)
+        // A pending epoch is a barrier: a retry must reconstruct exactly the
+        // window of that attempt, not fold in source commits that arrived
+        // while it was pending.  Rebuild epochs are not incremental windows
+        // and are left to the executor.
+        let generation = self.metadata.view_generation(view_id).await?;
+        let pending = self
+            .metadata
+            .list_pending_epochs(view_id, generation)
             .await?;
+        let barrier = pending
+            .iter()
+            .find(|record| !record.window_key.starts_with("rebuild:"));
+        let pending_ranges = barrier
+            .map(|record| {
+                record
+                    .to_versions
+                    .iter()
+                    .filter(|range| range.source_table_id == source.table_id)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if barrier.is_some() && pending_ranges.is_empty() {
+            // This source contributed nothing to the pending window.
+            return Ok(SourceWindow {
+                added_files: Vec::new(),
+                cursors: Vec::new(),
+                identity: Vec::new(),
+                before_timestamp,
+                before_versions: HashMap::new(),
+                barrier: true,
+            });
+        }
+        let from_versions = match barrier {
+            Some(_) => pending_ranges
+                .iter()
+                .map(|range| (range.partition_desc.clone(), range.from_version))
+                .collect::<HashMap<String, i64>>(),
+            None => cursors
+                .iter()
+                .map(|(desc, cursor)| (desc.clone(), cursor.last_version))
+                .collect::<HashMap<String, i64>>(),
+        };
+        for range in &pending_ranges {
+            let cursor_version = cursors
+                .get(&range.partition_desc)
+                .map(|cursor| cursor.last_version)
+                .unwrap_or(-1);
+            if cursor_version != range.from_version {
+                return Err(report!(
+                    "view {view_id} pending window for source {} partition {} starts at version {}, \
+                     but the cursor is at {cursor_version}",
+                    source.table_id,
+                    range.partition_desc,
+                    range.from_version
+                )
+                .attach(RebuildRequired));
+            }
+        }
+        let window = match barrier {
+            Some(_) => {
+                let to_versions = pending_ranges
+                    .iter()
+                    .map(|range| (range.partition_desc.clone(), range.to_version))
+                    .collect::<HashMap<String, i64>>();
+                let window = self
+                    .client
+                    .get_table_changelog_up_to(
+                        &source.table_id,
+                        &from_versions,
+                        &to_versions,
+                    )
+                    .await?;
+                let returned = window
+                    .partitions
+                    .iter()
+                    .map(|partition| {
+                        (partition.partition_desc.as_str(), partition.to_version)
+                    })
+                    .collect::<HashMap<_, _>>();
+                for range in &pending_ranges {
+                    if returned.get(range.partition_desc.as_str()).copied()
+                        != Some(range.to_version)
+                    {
+                        return Err(report!(
+                            "view {view_id} cannot reconstruct the pending window for source {} \
+                             partition {} at version {}",
+                            source.table_id,
+                            range.partition_desc,
+                            range.to_version
+                        )
+                        .attach(RebuildRequired));
+                    }
+                }
+                window
+            }
+            None => {
+                self.client
+                    .get_table_changelog(&source.table_id, &from_versions)
+                    .await?
+            }
+        };
         let mut added_files = Vec::new();
         let mut new_cursors = Vec::new();
         let mut identity = Vec::new();
@@ -6009,6 +6107,7 @@ impl IvmRuntime {
             identity,
             before_timestamp,
             before_versions,
+            barrier: barrier.is_some(),
         })
     }
 

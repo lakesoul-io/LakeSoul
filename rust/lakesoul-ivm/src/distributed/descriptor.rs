@@ -260,6 +260,7 @@ mod tests {
             identity: vec![(table.table_id.clone(), "-5".to_string(), 0, 1)],
             before_timestamp: 0,
             before_versions: HashMap::from([("-5".to_string(), None)]),
+            barrier: false,
         };
         let snapshot = IvmSourceSnapshot::from_window(&table, &window).unwrap();
         assert_eq!(snapshot.table.table_id, table.table_id);

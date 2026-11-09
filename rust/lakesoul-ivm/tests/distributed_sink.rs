@@ -1629,3 +1629,353 @@ async fn multi_agg_values(
     }
     values
 }
+
+/// A pending epoch pins the source window.  Source commits that arrive while
+/// the epoch is pending must be applied by a later window, not folded into
+/// the recovery and applied twice.
+#[test_log::test(tokio::test)]
+async fn a_pending_window_does_not_absorb_later_source_commits() {
+    use lakesoul_ivm::{RowView, ViewSpec, row_mv_schema_for};
+
+    let _guard = test_lock().lock().await;
+    let runtime = Arc::new(IvmRuntime::from_env().await.unwrap());
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("v", DataType::Utf8, true),
+    ]));
+    let source = runtime
+        .create_table(IvmTableOptions::new(
+            format!("ivm_barrier_src_{suffix}"),
+            format!("file://{}", dir.path().join("src").display()),
+            schema.clone(),
+        ))
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(IvmTableOptions::new(
+            format!("ivm_barrier_mv_{suffix}"),
+            format!("file://{}", dir.path().join("mv").display()),
+            row_mv_schema_for(&source.schema, &[]).unwrap(),
+        ))
+        .await
+        .unwrap();
+    let view = RowView::new(
+        format!("ivm_barrier_row_{suffix}"),
+        source.clone(),
+        mv.clone(),
+    );
+    runtime.register_row_view(&view).await.unwrap();
+    let spec: ViewSpec = serde_json::from_value(
+        runtime
+            .metadata()
+            .get_view_spec(&view.view_id)
+            .await
+            .unwrap()
+            .expect("the row view spec must be persisted"),
+    )
+    .unwrap();
+    let batch = |rows: &[(i64, &str)]| {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .unwrap()
+    };
+    source
+        .append_batch(runtime.client(), batch(&[(1, "a")]))
+        .await
+        .unwrap();
+    runtime.refresh_spec(&spec).await.unwrap().unwrap();
+    assert_eq!(row_values(&runtime, &mv).await, vec!["a"]);
+
+    source
+        .append_batch(runtime.client(), batch(&[(2, "b")]))
+        .await
+        .unwrap();
+    let marker = dir.path().join("barrier-target-committed");
+    // SAFETY: the test lock serializes the process-wide switch.
+    unsafe {
+        std::env::set_var("LAKESOUL_IVM_TEST_TARGET_COMMIT_MARKER", &marker);
+        std::env::set_var("LAKESOUL_IVM_TEST_PAUSE_AFTER_TARGET_COMMIT", "1");
+    }
+    let handle = {
+        let runtime = Arc::clone(&runtime);
+        let spec = spec.clone();
+        tokio::spawn(async move { runtime.refresh_spec(&spec).await })
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !marker.exists() {
+        assert!(
+            !handle.is_finished(),
+            "the refresh finished before the target-commit hook"
+        );
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the refresh never reached the target-commit hook"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    handle.abort();
+    let _ = handle.await;
+    // SAFETY: the paused task is gone and the lock keeps other tests out.
+    unsafe {
+        std::env::remove_var("LAKESOUL_IVM_TEST_TARGET_COMMIT_MARKER");
+        std::env::remove_var("LAKESOUL_IVM_TEST_PAUSE_AFTER_TARGET_COMMIT");
+    }
+    let generation = runtime
+        .metadata()
+        .view_generation(&view.view_id)
+        .await
+        .unwrap();
+    let pending = runtime
+        .metadata()
+        .list_pending_epochs(&view.view_id, generation)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(
+        pending[0].commit_plan.complete,
+        "the target commit must have completed the plan"
+    );
+
+    // W2 arrives while W1 is pending.  The retry must reconstruct W1 only.
+    source
+        .append_batch(runtime.client(), batch(&[(3, "c")]))
+        .await
+        .unwrap();
+    runtime.refresh_spec(&spec).await.unwrap().unwrap();
+    assert_eq!(
+        row_values(&runtime, &mv).await,
+        vec!["a", "b"],
+        "the pending window must not absorb the later source commit"
+    );
+    runtime.refresh_spec(&spec).await.unwrap().unwrap();
+    assert_eq!(
+        row_values(&runtime, &mv).await,
+        vec!["a", "b", "c"],
+        "the later source commit must be applied exactly once after recovery"
+    );
+}
+
+async fn row_values(runtime: &IvmRuntime, mv: &lakesoul_ivm::IvmTable) -> Vec<String> {
+    let mut values = Vec::new();
+    for batch in mv.read_current(runtime.client()).await.unwrap().iter() {
+        let v = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            values.push(v.value(row).to_string());
+        }
+    }
+    values.sort();
+    values
+}
+
+/// The pending-window barrier also protects a value-count state: a source
+/// commit that arrived after the failed window must not change the minimum
+/// until that later window is applied.
+#[test_log::test(tokio::test)]
+async fn a_pending_window_keeps_a_later_minimum_update_for_the_next_window() {
+    use lakesoul_ivm::{
+        MinMaxKind, MinMaxView, ViewSpec, min_max_mv_schema_for,
+        value_count_state_schema_for,
+    };
+
+    let _guard = test_lock().lock().await;
+    let runtime = Arc::new(IvmRuntime::from_env().await.unwrap());
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new("op", DataType::Utf8, false),
+    ]));
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_barrier_mm_src_{suffix}"),
+                format!("file://{}", dir.path().join("src").display()),
+                schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column("op"),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_barrier_mm_mv_{suffix}"),
+                format!("file://{}", dir.path().join("mv").display()),
+                min_max_mv_schema_for(
+                    &source.schema,
+                    &["k".to_string()],
+                    "v",
+                    MinMaxKind::Min,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let state = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_barrier_mm_state_{suffix}"),
+                format!("file://{}", dir.path().join("state").display()),
+                value_count_state_schema_for(&source.schema, &["k".to_string()], "v")
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string(), "value".to_string()])
+            .with_bucket_columns(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = MinMaxView::new(
+        format!("ivm_barrier_mm_view_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        state,
+        "k",
+        "v",
+        MinMaxKind::Min,
+    );
+    runtime.register_min_max_view(&view).await.unwrap();
+    let spec: ViewSpec = serde_json::from_value(
+        runtime
+            .metadata()
+            .get_view_spec(&view.view_id)
+            .await
+            .unwrap()
+            .expect("the min/max view spec must be persisted"),
+    )
+    .unwrap();
+    let batch = |rows: &[(i64, i64)]| {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(vec!["insert"; rows.len()])),
+            ],
+        )
+        .unwrap()
+    };
+    source
+        .append_batch(runtime.client(), batch(&[(1, 10), (2, 20)]))
+        .await
+        .unwrap();
+    runtime.refresh_spec(&spec).await.unwrap().unwrap();
+    assert_eq!(
+        min_values(&runtime, &mv).await,
+        std::collections::BTreeMap::from([(1, 10), (2, 20)])
+    );
+
+    // W1 lowers k=2 to 5, commits the MV, then is aborted before the mark.
+    source
+        .append_batch(runtime.client(), batch(&[(2, 5)]))
+        .await
+        .unwrap();
+    let marker = dir.path().join("barrier-mm-target-committed");
+    // SAFETY: the test lock serializes the process-wide switch.
+    unsafe {
+        std::env::set_var("LAKESOUL_IVM_TEST_TARGET_COMMIT_MARKER", &marker);
+        std::env::set_var("LAKESOUL_IVM_TEST_PAUSE_AFTER_TARGET_COMMIT", "1");
+    }
+    let handle = {
+        let runtime = Arc::clone(&runtime);
+        let spec = spec.clone();
+        tokio::spawn(async move { runtime.refresh_spec(&spec).await })
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !marker.exists() {
+        assert!(
+            !handle.is_finished(),
+            "the refresh finished before the target-commit hook"
+        );
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the refresh never reached the target-commit hook"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    handle.abort();
+    let _ = handle.await;
+    // SAFETY: the paused task is gone and the lock keeps other tests out.
+    unsafe {
+        std::env::remove_var("LAKESOUL_IVM_TEST_TARGET_COMMIT_MARKER");
+        std::env::remove_var("LAKESOUL_IVM_TEST_PAUSE_AFTER_TARGET_COMMIT");
+    }
+
+    // W2 lowers k=2 further to 3 while W1 is still pending.
+    source
+        .append_batch(runtime.client(), batch(&[(2, 3)]))
+        .await
+        .unwrap();
+    runtime.refresh_spec(&spec).await.unwrap().unwrap();
+    assert_eq!(
+        min_values(&runtime, &mv).await,
+        std::collections::BTreeMap::from([(1, 10), (2, 5)]),
+        "the pending window must recover W1 without applying W2"
+    );
+    runtime.refresh_spec(&spec).await.unwrap().unwrap();
+    assert_eq!(
+        min_values(&runtime, &mv).await,
+        std::collections::BTreeMap::from([(1, 10), (2, 3)]),
+        "W2 must be applied exactly once after W1 is marked"
+    );
+}
+
+async fn min_values(
+    runtime: &IvmRuntime,
+    mv: &lakesoul_ivm::IvmTable,
+) -> std::collections::BTreeMap<i64, i64> {
+    use lakesoul_ivm::IVM_ROW_KINDS_COLUMN;
+    let mut values = std::collections::BTreeMap::new();
+    for batch in mv.read_current(runtime.client()).await.unwrap().iter() {
+        let schema = batch.schema();
+        let k = batch
+            .column(schema.index_of("k").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let v = batch
+            .column(schema.index_of("value").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let kinds = batch
+            .column(schema.index_of(IVM_ROW_KINDS_COLUMN).unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            if kinds.value(row) == "insert" {
+                assert!(
+                    values.insert(k.value(row), v.value(row)).is_none(),
+                    "key {} was emitted more than once",
+                    k.value(row)
+                );
+            }
+        }
+    }
+    values
+}

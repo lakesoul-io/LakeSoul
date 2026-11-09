@@ -182,3 +182,53 @@ async fn table_changelog_matches_the_per_partition_scan() -> Result<()> {
 
     Ok(())
 }
+
+#[test_log::test(tokio::test)]
+async fn table_changelog_up_to_caps_each_partition_window() -> Result<()> {
+    let client = MetaDataClient::from_env().await?;
+    let name = unique_name("capped");
+    let table_id = create_test_table(&client, &name).await?;
+
+    client
+        .commit_data_files(&name, NAMESPACE, vec![file("p1", "p1a"), file("p2", "p2a")])
+        .await?;
+    client
+        .commit_data_files(&name, NAMESPACE, vec![file("p1", "p1b")])
+        .await?;
+    client
+        .commit_data_files(&name, NAMESPACE, vec![file("p1", "p1c")])
+        .await?;
+
+    // Only p1 is listed; p2's later versions stay out of this window.
+    let to = HashMap::from([("p1".to_string(), 0i64)]);
+    let window = client
+        .get_table_changelog_up_to(&table_id, &HashMap::new(), &to)
+        .await?;
+    assert_eq!(window.partitions.len(), 1);
+    let p1 = partition(&window, "p1").expect("p1 capped");
+    assert_eq!(p1.to_version, 0);
+    assert_eq!(paths(p1), vec!["/tmp/p1/p1a.parquet"]);
+    assert!(partition(&window, "p2").is_none());
+
+    // The next window starts at the previous cap.
+    let from = HashMap::from([("p1".to_string(), 0i64)]);
+    let to = HashMap::from([("p1".to_string(), 1i64)]);
+    let window = client
+        .get_table_changelog_up_to(&table_id, &from, &to)
+        .await?;
+    let p1 = partition(&window, "p1").expect("p1 next");
+    assert_eq!(p1.to_version, 1);
+    assert_eq!(paths(p1), vec!["/tmp/p1/p1b.parquet"]);
+
+    // A bound with no version row cannot be reached from the history.
+    let from = HashMap::from([("p1".to_string(), 1i64)]);
+    let to = HashMap::from([("p1".to_string(), 9i64)]);
+    let window = client
+        .get_table_changelog_up_to(&table_id, &from, &to)
+        .await?;
+    let p1 = partition(&window, "p1").expect("p1 missing bound");
+    assert!(p1.requires_rebuild);
+    assert_eq!(p1.to_version, 9);
+
+    Ok(())
+}
