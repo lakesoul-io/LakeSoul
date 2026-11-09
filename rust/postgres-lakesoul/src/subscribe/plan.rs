@@ -20,16 +20,37 @@ use super::schema;
 use super::source::{SourceColumn, SourceTable};
 use crate::Result;
 
-/// `high` of every commit written by the subscriber. `low` carries the source
-/// `commit_lsn`; the target table's latest partition snapshot therefore
+/// `high` of every commit written by the PG subscriber. `low` carries the
+/// source `commit_lsn`; the target table's latest partition snapshot therefore
 /// doubles as a durable watermark without a side table.
 pub const SUBSCRIPTION_COMMIT_MAGIC: u64 = 0x4c53_5047_0000_0000;
+
+/// Same idea for the MySQL subscriber. `low` is a local monotonically
+/// increasing sequence; the actual GTID/file+position lives in metadata.
+pub const MYSQL_SUBSCRIPTION_COMMIT_MAGIC: u64 = 0x4c53_4d59_0000_0000;
 
 pub fn commit_id_for(lsn: u64) -> Uuid {
     Uuid {
         high: SUBSCRIPTION_COMMIT_MAGIC,
         low: lsn,
     }
+}
+
+pub fn commit_id_for_mysql(sequence: u64) -> Uuid {
+    Uuid {
+        high: MYSQL_SUBSCRIPTION_COMMIT_MAGIC,
+        low: sequence,
+    }
+}
+
+pub fn decode_mysql_watermark(partitions: &[PartitionInfo]) -> u64 {
+    partitions
+        .iter()
+        .flat_map(|partition| partition.snapshot.iter())
+        .filter(|commit| commit.high == MYSQL_SUBSCRIPTION_COMMIT_MAGIC)
+        .map(|commit| commit.low)
+        .max()
+        .unwrap_or(0)
 }
 
 pub fn decode_watermark(partitions: &[PartitionInfo]) -> u64 {

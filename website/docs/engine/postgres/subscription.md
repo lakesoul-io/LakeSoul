@@ -385,6 +385,62 @@ credentials, is stored in the metadata PostgreSQL so the supervisor can restart
 the child. Protect the metadata database and its backups, and use a
 least-privilege source user.
 
+## MySQL subscriptions
+
+The same endpoint can subscribe to a MySQL 8.0/8.4 primary. A MySQL
+subscription reads `ROW` binlog events and writes the same LakeSoul CDC rows;
+`PUBLICATION` and `SLOT` are PostgreSQL-only and are omitted.
+
+```sql
+CREATE SUBSCRIPTION mysql_users
+CONNECTION 'mysql://user:pass@mysql:3306/app'
+TABLES (users TO users)
+WITH (
+  server_id = 1001,          -- required, unique on this MySQL server
+  gtid_mode = 'auto',        -- auto | on | off
+  snapshot = 'auto',
+  snapshot_locking = 'none', -- none | flush
+  auto_create = true,
+  schema_evolution = 'auto'
+);
+```
+
+The source user needs `SELECT`, `REPLICATION SLAVE` (or `REPLICATION REPLICA`)
+and `REPLICATION CLIENT`. Configure the server with `binlog_format=ROW`,
+`binlog_row_image=FULL`, `binlog_row_metadata=FULL` and an empty
+`binlog_row_value_options`. `server_id` must not equal the source server's own
+id or another subscriber's id.
+
+`snapshot_locking = 'none'` records the binlog position before opening the
+consistent snapshot. The snapshot and stream overlap; the target primary key
+makes replay converge. `flush` holds `FLUSH TABLES WITH READ LOCK` while the
+position and snapshot transaction are established, which is exact but needs
+`RELOAD` and briefly blocks writes. A managed snapshot requires empty targets.
+`snapshot = 'none'` accepts preloaded targets; seed the binlog position at the
+current head, so quiesce writes while preloading.
+
+`snapshot_parallelism` (default 4) opens up to that many snapshot readers. A
+table with a single integer primary key is split into key ranges; composite or
+non-integer keys parallelize at table granularity instead. Each range/table is
+committed independently, and the binlog stream starts at the boundary recorded
+before the readers, so overlapping ranges converge by primary key. With
+`snapshot_locking = 'flush'`, all reader read views are opened and pinned under
+the lock. With `none`, readers can observe slightly different points in time;
+the target is eventually consistent once the stream catches up.
+
+MySQL has no replication slot. If the binlog is purged before the subscriber
+resumes, the subscription stops and requires a resnapshot. Data progress is
+committed to LakeSoul per batch; no global transaction spans worker tasks.
+
+Supported source types are signed/unsigned integers, `DECIMAL(p<=38)`,
+`FLOAT`/`DOUBLE`, `DATE`, `DATETIME`, `TIMESTAMP`, `TIME` (stored as Int64
+microseconds), `YEAR`, text/char, binary/varbinary/blob, `BIT` (stored as
+Binary), `ENUM`, `SET` and `JSON`. P0 rejects `GEOMETRY`, `VECTOR`, `DECIMAL`
+above 38 digits, text that cannot be decoded in its declared charset, and zero
+dates. `ALTER TABLE`
+supports `ADD COLUMN`, safe numeric widening and relaxing `NOT NULL`;
+`DROP`/`RENAME`/`TRUNCATE` and narrowing are rejected.
+
 ## Next
 
 - [Quick start: the PostgreSQL endpoint](../../get-started/quickstart-postgres.md)

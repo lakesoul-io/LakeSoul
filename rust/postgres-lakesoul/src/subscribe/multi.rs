@@ -426,6 +426,7 @@ fn definition(
 ) -> SubscriptionDefinition {
     SubscriptionDefinition {
         subscription_id: config.subscription_id.clone(),
+        source_kind: "postgres".to_string(),
         slot: config.slot.clone(),
         publication: config.publication.clone(),
         source_url: config.source_url.clone(),

@@ -15,7 +15,9 @@ use datafusion::execution::memory_pool::MemoryPool;
 use lakesoul_common::misc::SecretMap;
 use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
 use lakesoul_io::writer::async_writer::FlushOutput;
-use lakesoul_metadata_proto::entity::{CommitOp, DataCommitInfo, DataFileOp, FileOp};
+use lakesoul_metadata_proto::entity::{
+    CommitOp, DataCommitInfo, DataFileOp, FileOp, Uuid,
+};
 use rootcause::{bail, report};
 
 use super::decode::KeyValue;
@@ -174,8 +176,28 @@ pub(crate) async fn commit_outputs(
     lsn: u64,
     row_count: usize,
 ) -> Result<()> {
+    commit_outputs_with_id(
+        table,
+        target_table,
+        outputs,
+        commit_id_for(lsn),
+        row_count,
+        Some(lsn),
+    )
+    .await
+}
+
+/// Commit files with a caller-supplied commit id. The MySQL subscriber uses a
+/// local sequence in `low`; PG keeps using `commit_outputs` above.
+pub(crate) async fn commit_outputs_with_id(
+    table: &LakeSoulTable,
+    target_table: &str,
+    outputs: Vec<FlushOutput>,
+    commit_id: Uuid,
+    row_count: usize,
+    sequence: Option<u64>,
+) -> Result<()> {
     let started = std::time::Instant::now();
-    let commit_id = commit_id_for(lsn);
     let table_info = table.table_info();
     let mut files_by_partition: BTreeMap<String, Vec<DataFileOp>> = BTreeMap::new();
     for output in outputs {
@@ -212,13 +234,16 @@ pub(crate) async fn commit_outputs(
         .commit_data_commit_infos(commits)
         .await
         .map_err(|error| {
-            report!("commit {row_count} rows into {target_table} at LSN {lsn}: {error}")
+            report!(
+                "commit {row_count} rows into {target_table} at sequence \
+                 {sequence:?}: {error}"
+            )
         })?;
 
     tracing::info!(
         table = %target_table,
         rows = row_count,
-        lsn,
+        sequence = sequence.unwrap_or(0),
         elapsed_ms = started.elapsed().as_millis(),
         "published subscription batch"
     );

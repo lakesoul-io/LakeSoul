@@ -24,6 +24,8 @@ use crate::Result;
 pub enum KeyValue {
     Bool(bool),
     Int(i64),
+    /// MySQL `BIGINT UNSIGNED` and other unsigned primary-key columns.
+    UInt(u64),
     Float(u64),
     Decimal(i128, i8),
     Text(String),
