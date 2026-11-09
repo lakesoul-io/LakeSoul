@@ -69,6 +69,7 @@ integrations/lakesoul-spark-gluten/bin
 **/.envrc
 **/.zed
 /metastore_db/
+vendor/
 
 **/memory_profiling.png
 **/output.log
