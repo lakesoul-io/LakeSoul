@@ -27,6 +27,10 @@ use tracing::{debug, info, warn};
 /// Byte budget of the process-wide index cache; `0` disables caching.
 pub const ENV_CACHE_BYTES: &str = "LAKESOUL_INDEX_CACHE_BYTES";
 
+/// Preferred name for the memory budget.  The older names are kept as
+/// fallbacks so existing deployments keep working.
+const ENV_MEMORY_BYTES: &str = "LAKESOUL_INDEX_MEMORY_BYTES";
+
 /// Legacy name of the budget variable, kept as a fallback.
 const LEGACY_ENV_CACHE_BYTES: &str = "LAKESOUL_VECTOR_INDEX_CACHE_BYTES";
 
@@ -50,8 +54,9 @@ struct ErasedEntry {
 }
 
 static CACHE: LazyLock<Option<Cache<String, ErasedEntry>>> = LazyLock::new(|| {
-    let capacity = std::env::var(ENV_CACHE_BYTES)
+    let capacity = std::env::var(ENV_MEMORY_BYTES)
         .ok()
+        .or_else(|| std::env::var(ENV_CACHE_BYTES).ok())
         .or_else(|| std::env::var(LEGACY_ENV_CACHE_BYTES).ok())
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(DEFAULT_CACHE_BYTES);
@@ -63,11 +68,33 @@ static CACHE: LazyLock<Option<Cache<String, ErasedEntry>>> = LazyLock::new(|| {
         capacity_bytes = capacity,
         "index cache initialized ({ENV_CACHE_BYTES})"
     );
+    metrics::describe_counter!(
+        "lakesoul_index_cache_evictions_total",
+        "Loaded index shards evicted from the in-memory index cache"
+    );
+    metrics::describe_counter!(
+        "lakesoul_index_cache_hits_total",
+        "Loaded index shards served from the in-memory index cache"
+    );
+    metrics::describe_counter!(
+        "lakesoul_index_cache_misses_total",
+        "Loaded index shards that missed the in-memory index cache"
+    );
     Some(
         Cache::builder()
             .max_capacity(capacity)
             .weigher(|_key: &String, entry: &ErasedEntry| {
                 entry.bytes.min(u32::MAX as usize) as u32
+            })
+            .eviction_listener(|_key: Arc<String>, _entry: ErasedEntry, cause| {
+                if matches!(
+                    cause,
+                    moka::notification::RemovalCause::Size
+                        | moka::notification::RemovalCause::Replaced
+                ) {
+                    metrics::counter!("lakesoul_index_cache_evictions_total")
+                        .increment(1);
+                }
             })
             .build(),
     )
@@ -75,6 +102,13 @@ static CACHE: LazyLock<Option<Cache<String, ErasedEntry>>> = LazyLock::new(|| {
 
 static HITS: AtomicU64 = AtomicU64::new(0);
 static MISSES: AtomicU64 = AtomicU64::new(0);
+
+/// Configured in-memory budget, or `None` when caching is disabled.
+pub fn capacity_bytes() -> Option<u64> {
+    CACHE
+        .as_ref()
+        .and_then(|cache| cache.policy().max_capacity())
+}
 
 /// `(hits, misses)` since process start; for diagnostics and tests.
 pub fn stats() -> (u64, u64) {
@@ -152,10 +186,12 @@ where
         && let Ok(value) = entry.data.clone().downcast::<T>()
     {
         HITS.fetch_add(1, Ordering::Relaxed);
+        metrics::counter!("lakesoul_index_cache_hits_total").increment(1);
         debug!(prefix, "index cache hit");
         return Ok(value);
     }
     MISSES.fetch_add(1, Ordering::Relaxed);
+    metrics::counter!("lakesoul_index_cache_misses_total").increment(1);
     // Drop the stale value first so `try_get_with` actually loads; the
     // loader future is shared by concurrent queries for this key.
     cache.invalidate(&key).await;

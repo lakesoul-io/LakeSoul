@@ -22,6 +22,7 @@ pub mod key;
 pub mod options;
 pub mod prefix;
 pub mod reader;
+pub mod ssd_cache;
 
 /// A lease held by a reader while it loads or searches a resolved index.
 ///

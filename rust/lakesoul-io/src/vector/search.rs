@@ -298,7 +298,11 @@ async fn load_shard(
         let mutation_head = mutation_head.map(str::to_owned);
         async move {
             let covered = CoveredFiles::from_segments(&segments);
-            let istore = IndexStore::new(store, prefix);
+            // Index files are immutable: route their reads through the
+            // persistent local SSD cache.  This only wraps index loading; the
+            // session object store used for data files is left untouched.
+            let index_store = crate::index::ssd_cache::wrap(store);
+            let istore = IndexStore::new(index_store, prefix);
             let mutation = match mutation_head.as_deref() {
                 Some(head) => Some(
                     load_state(&istore, Some(head), mutation_records, revision)
