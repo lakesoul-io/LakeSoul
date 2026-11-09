@@ -1199,8 +1199,9 @@ class LakeSoulTable:
         Prefers the native snapshot batch entry (one shard resolution and one
         ranking pass for the whole call, same semantics as the SQL path).  When
         the table cannot use it - the native entry requires a single Int64
-        primary key named ``id``, exact mode also needs one data file per hash
-        bucket and the `LAKESOUL_CACHE` decoded-block cache - the batch falls back to
+        primary key named ``id``; exact mode also needs a proven snapshot
+        coverage, `LAKESOUL_CACHE` decoded-block cache and per-file index ranks
+        (several data files per hash bucket are supported) - the batch falls back to
         one SQL search per query.  The fallback gives identical ids, just
         slower (it re-plans the search per query).
 

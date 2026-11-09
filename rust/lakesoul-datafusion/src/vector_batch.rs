@@ -20,7 +20,7 @@
 //! for that snapshot, and the caller picks the snapshot by choosing when to
 //! call it.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use arrow::datatypes::{FieldRef, Schema, SchemaRef};
@@ -32,8 +32,8 @@ use lakesoul_common::IndexKind;
 use lakesoul_io::config::{LakeSoulIOConfigBuilder, OPTION_KEY_FILE_FILTER_PUSHDOWN};
 use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_io::index::key::{KeyCodec, KeyLayout};
-use lakesoul_io::pk_locator::VectorBlockSource;
 use lakesoul_io::index::prefix::derive_index_prefixes;
+use lakesoul_io::pk_locator::{PrefixMatch, VectorBlockSource};
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::vector::search::{
     LoadedShard, VectorHit, cached_typed_shard, load_typed_shard,
@@ -107,9 +107,9 @@ pub struct VectorBatchRequest {
     /// vectors instead of the index estimate.
     ///
     /// The exact re-rank needs the on-demand decoded-block cache
-    /// (`LAKESOUL_CACHE`), a proven snapshot coverage and one
-    /// data file per bucket; any other table gets a clear error instead of
-    /// silently approximate results.  Both L2 and IP indices are supported:
+    /// (`LAKESOUL_CACHE`), a proven snapshot coverage and per-file index
+    /// ranks (several data files per bucket are supported); any other table
+    /// gets a clear error instead of silently approximate results.  Both L2 and IP indices are supported:
     /// the scores are the squared distance (L2) or the negated dot product
     /// (IP), so one ascending sort ranks both.
     pub exact: bool,
@@ -673,11 +673,13 @@ async fn search_vector_batch_chunk(
         let probe_ms = t_probe.elapsed().as_secs_f64() * 1000.0;
         let t_rank = std::time::Instant::now();
         if request.exact {
+            let file_ranks = bucket_file_ranks(views, buckets);
             let results = exact_rank_and_merge(
                 store,
                 buckets,
                 &bucket_hits,
                 file_locations,
+                &file_ranks,
                 schema,
                 primary_keys,
                 request,
@@ -699,12 +701,8 @@ async fn search_vector_batch_chunk(
         }
         // Ranking and the cross-bucket top-k are per query, so they fill every
         // core even though the probe stage is limited to the bucket count.
-        let results = rank_and_merge(
-            &codec,
-            &bucket_hits,
-            request.top_k,
-            request.ascending(),
-        )?;
+        let results =
+            rank_and_merge(&codec, &bucket_hits, request.top_k, request.ascending())?;
         if profile {
             tracing::debug!(
                 queries = request.queries.len(),
@@ -789,13 +787,7 @@ async fn search_vector_batch_chunk(
     let results: Vec<Vec<i64>> = if merge_threads <= 1 {
         (0..queries)
             .map(|query_index| {
-                merge_query(
-                    &bucket_ranked,
-                    query_index,
-                    top_k,
-                    bucket_count,
-                    ascending,
-                )
+                merge_query(&bucket_ranked, query_index, top_k, bucket_count, ascending)
             })
             .collect()
     } else {
@@ -848,19 +840,145 @@ async fn search_vector_batch_chunk(
     Ok(results)
 }
 
+/// File ranks used by the multi-file exact resolver.
+///
+/// A data file's rank is the newest index-segment `birth_version` that lists
+/// it; a key that occurs in several files is read from the greatest rank
+/// (the same rule as the single-query `take_multi_file_ranked` path).
+fn bucket_file_ranks(
+    views: &HashMap<String, Option<Arc<IndexCommitView<VectorSegmentEntry>>>>,
+    buckets: &[(String, Vec<String>)],
+) -> HashMap<String, u64> {
+    let mut ranks: HashMap<String, u64> = HashMap::new();
+    for (prefix, _) in buckets {
+        let Some(view) = views.get(prefix).and_then(Option::as_ref) else {
+            continue;
+        };
+        for segment in &view.segments {
+            for file in &segment.data_files {
+                let rank = ranks.entry(file.clone()).or_insert(0);
+                *rank = (*rank).max(segment.birth_version);
+            }
+        }
+    }
+    ranks
+}
+
+/// Unique candidate keys of one bucket, sorted by their encoded bytes.
+fn bucket_candidate_keys(bucket_hits: &[Vec<VectorHit>], limit: usize) -> Vec<IndexKey> {
+    let mut seen: HashSet<IndexKey> = HashSet::new();
+    for hits in bucket_hits {
+        for hit in hits.iter().take(limit) {
+            seen.insert(hit.key.clone());
+        }
+    }
+    let mut keys: Vec<IndexKey> = seen.into_iter().collect();
+    keys.sort_unstable_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+    keys
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ResolvedRow {
+    file: usize,
+    row: u32,
+}
+
+/// Resolve every candidate key to its visible `(file, row)`.
+///
+/// `files` is sorted by rank descending.  A key missing from a newer file is
+/// looked up in older files; a key found in a newer file shadows older copies.
+/// Equal ranks that both contain the key are ambiguous and force the caller to
+/// fall back to the merge reader.
+fn resolve_bucket_keys(
+    files: &[(Arc<VectorBlockSource>, u64)],
+    keys: &[IndexKey],
+) -> Option<HashMap<IndexKey, ResolvedRow>> {
+    let order: Vec<&IndexKey> = keys.iter().collect();
+    let prefixes: Vec<&[u8]> = order.iter().map(|key| key.as_bytes()).collect();
+    let mut resolved: HashMap<IndexKey, (usize, u32, u64)> =
+        HashMap::with_capacity(keys.len());
+    for (file_index, (source, rank)) in files.iter().enumerate() {
+        let matches = source.lookup_matches(&prefixes);
+        for (key, matched) in order.iter().zip(matches) {
+            match matched {
+                PrefixMatch::Missing => {}
+                PrefixMatch::Multiple => {
+                    // A duplicate in a newer file makes the visible row
+                    // ambiguous.  A duplicate in an older file can be ignored
+                    // once a newer file has resolved the key.
+                    if !resolved.contains_key(*key) {
+                        return None;
+                    }
+                }
+                PrefixMatch::Unique(row) => match resolved.get(*key) {
+                    None => {
+                        resolved.insert((*key).clone(), (file_index, row, *rank));
+                    }
+                    Some((_, _, seen_rank)) if *seen_rank == *rank => {
+                        // Two files of the same rank both own the key.
+                        return None;
+                    }
+                    Some(_) => {
+                        // A newer file already owns the visible row.
+                    }
+                },
+            }
+        }
+    }
+    (resolved.len() == keys.len()).then(|| {
+        resolved
+            .into_iter()
+            .map(|(key, (file, row, _))| (key, ResolvedRow { file, row }))
+            .collect()
+    })
+}
+
+/// Score candidate keys from a multi-file bucket.  Rows are grouped by file
+/// so each source reads its blocks once; the result is restored to `keys`
+/// order for the caller's merge.
+fn score_multi_file(
+    files: &[(Arc<VectorBlockSource>, u64)],
+    resolved: &HashMap<IndexKey, ResolvedRow>,
+    keys: &[IndexKey],
+    query: &[f32],
+    ascending: bool,
+) -> Option<Vec<f32>> {
+    let mut groups: Vec<Vec<(usize, u32)>> = vec![Vec::new(); files.len()];
+    for (position, key) in keys.iter().enumerate() {
+        let row = resolved.get(key)?;
+        groups[row.file].push((position, row.row));
+    }
+    let mut scores: Vec<Option<f32>> = vec![None; keys.len()];
+    for (file_index, group) in groups.iter().enumerate() {
+        if group.is_empty() {
+            continue;
+        }
+        let rows: Vec<u32> = group.iter().map(|(_, row)| *row).collect();
+        let values = files[file_index].0.score_rows(&rows, query, ascending)?;
+        if values.len() != group.len() {
+            return None;
+        }
+        for ((position, _), value) in group.iter().zip(values) {
+            scores[*position] = Some(value);
+        }
+    }
+    scores.into_iter().collect()
+}
+
 /// Exact re-rank of a snapshot batch from the on-demand decoded-block cache.
 ///
-/// Every bucket's candidates are read from the decoded-block cache (one data file per
-/// bucket, one shared `pread` source), scored with the exact L2 distance and
-/// merged across buckets per query.  Primary keys are decoded only for the
-/// candidates that win the top-k, so no key value is materialised for the
-/// losers.
+/// Each bucket may hold several data files.  Their key indexes are opened
+/// independently and the candidate keys are resolved to the newest visible
+/// `(file, row)` before scoring; a bucket with one file keeps the original
+/// `score_keys` fast path.  Primary keys are decoded only for the candidates
+/// that win the top-k, so no key value is materialised for the losers.
 #[allow(clippy::too_many_arguments)]
 async fn exact_rank_and_merge(
     store: &Arc<dyn ObjectStore>,
     buckets: &[(String, Vec<String>)],
     bucket_hits: &[Vec<Vec<VectorHit>>],
-    file_locations: &std::collections::HashMap<String, StorePath>,
+    file_locations: &HashMap<String, StorePath>,
+    file_ranks: &HashMap<String, u64>,
     schema: &SchemaRef,
     primary_keys: &[String],
     request: &VectorBatchRequest,
@@ -898,50 +1016,103 @@ async fn exact_rank_and_merge(
             .data_type()
             .clone(),
     ];
-    // One decoded-block source per bucket: opening resolves the key index and
-    // the shared block cache, and every row read below shares them.
-    let mut opens = Vec::with_capacity(buckets.len());
-    for (prefix, bucket_files) in buckets {
-        if bucket_files.len() != 1 {
-            return Err(DataFusionError::NotImplemented(format!(
-                "exact batch search needs exactly one data file per hash \
-                 bucket, bucket '{prefix}' has {}",
-                bucket_files.len()
-            )));
+    // Open every bucket file: the multi-file resolver needs each file's key
+    // index, and the block source is where its stored vectors come from.
+    let mut counts = Vec::with_capacity(buckets.len());
+    let mut opens = Vec::new();
+    for (_, bucket_files) in buckets {
+        if bucket_files.is_empty() {
+            return Err(DataFusionError::NotImplemented(
+                "exact batch search found an empty hash bucket".to_string(),
+            ));
         }
-        let location = file_locations
-            .get(&bucket_files[0])
-            .cloned()
-            .ok_or_else(|| {
+        counts.push(bucket_files.len());
+        for file_name in bucket_files {
+            let location = file_locations.get(file_name).cloned().ok_or_else(|| {
                 DataFusionError::Execution(format!(
-                    "no object-store location for data file {}",
-                    bucket_files[0]
+                    "no object-store location for data file {file_name}"
                 ))
             })?;
-        let format =
-            PhysicalFormat::from_extension(location.as_ref()).map_err(|error| {
-                DataFusionError::NotImplemented(format!(
-                    "exact batch search does not support {location}: {error}"
-                ))
-            })?;
-        let store = Arc::clone(store);
-        let field = Arc::clone(&vector_field);
-        let key_columns = primary_keys.to_vec();
-        let key_types = key_types.clone();
-        opens.push(async move {
-            VectorBlockSource::open_cached(
-                store,
-                &location,
-                format,
-                &key_columns,
-                &key_types,
-                &field,
-            )
-            .await
-        });
+            let format =
+                PhysicalFormat::from_extension(location.as_ref()).map_err(|error| {
+                    DataFusionError::NotImplemented(format!(
+                        "exact batch search does not support {location}: {error}"
+                    ))
+                })?;
+            let store = Arc::clone(store);
+            let field = Arc::clone(&vector_field);
+            let key_columns = primary_keys.to_vec();
+            let key_types = key_types.clone();
+            opens.push(async move {
+                VectorBlockSource::open_cached(
+                    store,
+                    &location,
+                    format,
+                    &key_columns,
+                    &key_types,
+                    &field,
+                )
+                .await
+            });
+        }
     }
-    let sources = futures::future::join_all(opens).await;
+    let opened = futures::future::join_all(opens).await;
+    let mut sources: Vec<Vec<(Arc<VectorBlockSource>, u64)>> =
+        Vec::with_capacity(buckets.len());
+    let mut cursor = 0usize;
+    for (bucket_index, count) in counts.into_iter().enumerate() {
+        let mut files = Vec::with_capacity(count);
+        for offset in 0..count {
+            let source = opened[cursor].as_ref().ok_or_else(|| {
+                DataFusionError::NotImplemented(format!(
+                    "exact batch search could not open data file {}",
+                    buckets[bucket_index].1[offset]
+                ))
+            })?;
+            let rank = if count > 1 {
+                *file_ranks
+                    .get(&buckets[bucket_index].1[offset])
+                    .ok_or_else(|| {
+                        DataFusionError::NotImplemented(format!(
+                            "exact batch search has no index rank for {}",
+                            buckets[bucket_index].1[offset]
+                        ))
+                    })?
+            } else {
+                0
+            };
+            files.push((Arc::clone(source), rank));
+            cursor += 1;
+        }
+        // Newest first.  Equal ranks are allowed only when they own disjoint
+        // keys; resolve_bucket_keys() rejects overlap.
+        if files.len() > 1 {
+            files.sort_by(|left, right| right.1.cmp(&left.1));
+        }
+        sources.push(files);
+    }
+
+    // Resolve every unique candidate of each multi-file bucket once.  The
+    // scoring workers below then only look rows up in this map.
     let candidates = request.candidates_per_bucket();
+    let mut resolved: Vec<Option<HashMap<IndexKey, ResolvedRow>>> =
+        Vec::with_capacity(sources.len());
+    for (bucket, files) in sources.iter().enumerate() {
+        if files.len() <= 1 {
+            resolved.push(None);
+            continue;
+        }
+        let keys = bucket_candidate_keys(&bucket_hits[bucket], candidates);
+        let map = resolve_bucket_keys(files, &keys).ok_or_else(|| {
+            DataFusionError::NotImplemented(format!(
+                "exact batch search cannot resolve the visible row for every \
+                 candidate in hash bucket {} (multiple files or equal index ranks)",
+                buckets[bucket].0
+            ))
+        })?;
+        resolved.push(Some(map));
+    }
+
     let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
     let t_fetch = std::time::Instant::now();
     // Candidate rows are read on scoped worker threads: every read is a pread
@@ -958,8 +1129,7 @@ async fn exact_rank_and_merge(
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or_else(|| {
-            (queries.saturating_mul(bucket_hits.len()) / cores.max(1))
-                .clamp(32, 320)
+            (queries.saturating_mul(bucket_hits.len()) / cores.max(1)).clamp(32, 320)
         })
         .min(queries.max(1));
     let mut descriptors: Vec<(usize, usize, usize)> = Vec::new();
@@ -977,7 +1147,8 @@ async fn exact_rank_and_merge(
         std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(workers);
             for _ in 0..workers {
-                let sources = sources.clone();
+                let sources = &sources;
+                let resolved = &resolved;
                 let descriptors = &descriptors;
                 let bucket_hits = bucket_hits;
                 let query_vectors = &request.queries;
@@ -992,25 +1163,41 @@ async fn exact_rank_and_merge(
                                 break;
                             }
                             let (bucket, start, end) = descriptors[index];
-                            let Some(source) =
-                                sources.get(bucket).and_then(Option::as_ref)
-                            else {
+                            let files = &sources[bucket];
+                            if files.is_empty() {
                                 return Err(DataFusionError::Execution(
                                     "exact batch search lost a bucket source"
                                         .to_string(),
                                 ));
-                            };
+                            }
                             for query in start..end {
                                 let keys: Vec<IndexKey> = bucket_hits[bucket][query]
                                     .iter()
                                     .take(candidates)
                                     .map(|hit| hit.key.clone())
                                     .collect();
-                                let Some(scores) = source.score_keys(
-                                    &keys,
-                                    &query_vectors[query],
-                                    request.ascending(),
-                                ) else {
+                                let scores = if files.len() == 1 {
+                                    files[0].0.score_keys(
+                                        &keys,
+                                        &query_vectors[query],
+                                        request.ascending(),
+                                    )
+                                } else {
+                                    let Some(map) = resolved[bucket].as_ref() else {
+                                        return Err(DataFusionError::Execution(
+                                            "exact batch search lost a multi-file resolver"
+                                                .to_string(),
+                                        ));
+                                    };
+                                    score_multi_file(
+                                        files,
+                                        map,
+                                        &keys,
+                                        &query_vectors[query],
+                                        request.ascending(),
+                                    )
+                                };
+                                let Some(scores) = scores else {
                                     return Err(DataFusionError::Execution(
                                         "stored-vector block read failed"
                                             .to_string(),
@@ -1080,10 +1267,8 @@ async fn exact_rank_and_merge(
                 .map(|(chunk_index, chunk)| {
                     let merge_one = &merge_one;
                     scope.spawn(move || {
-                        let rows: Vec<DFResult<Vec<i64>>> = chunk
-                            .iter_mut()
-                            .map(|scored| merge_one(scored))
-                            .collect();
+                        let rows: Vec<DFResult<Vec<i64>>> =
+                            chunk.iter_mut().map(merge_one).collect();
                         (chunk_index, rows)
                     })
                 })

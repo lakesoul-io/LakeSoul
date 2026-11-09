@@ -47,30 +47,49 @@ pgvector 服务端额外使用 `--worker-threads 8`。
 
 ## 2.1 batch 如何支持 exact；多文件时怎么办
 
-native snapshot batch 的 exact 路径要求：
+native snapshot batch 的 exact 路径现在支持**一个 hash bucket 下多个数据文件**，
+不再要求 compact 成每桶单文件。条件：
 
-- 快照覆盖性证明通过（索引提交覆盖快照全部文件、无 mutation 链、无 CDC 列）；
+- 快照覆盖性证明通过：索引提交覆盖快照全部文件、无 mutation 链、无 CDC 列；
 - 单个 `Int64` 主键 `id`；
-- 每个 hash bucket **恰好 1 个数据文件**；
 - `LAKESOUL_CACHE=1` 的按需 decoded-block cache；
-- L2 度量，向量列为 `Float32` 的 `List`/`FixedSizeList`。
+- L2 度量，向量列为 `Float32` 的 `List`/`FixedSizeList`；
+- 多文件时每个文件必须能由当前 index generation 给出 `birth_version` rank。
 
-满足时 `table.search_batch(..., rerank="exact")` 走 native exact（200 query
-warm 约 386 QPS，见 §3）；不满足时：
+实现：
 
-| 方案 | 是否需 compact | 说明 |
-|---|---|---|
-| Python `table.search_batch(rerank="exact")` | 否 | native 报错后自动回退逐 query SQL exact；结果一致，没有 batch 装载收益 |
-| 单查询 `table.search(rerank="exact")` | 否 | 每桶多文件/多版本由 `take_multi_file_ranked` 按 segment `birth_version` 取最新版本 |
-| `table.search_batch(rerank="index")` | 否 | index-only batch 不要求每桶单文件，吞吐最高（~11k QPS） |
-| native exact batch | **是** | 当前 `exact_rank_and_merge` 只接受每桶一个 `VectorBlockSource`；多文件返回明确错误 |
+```text
+每个 bucket 的每个文件 → 一个 VectorBlockSource
+候选 key 并集按 rank 降序扫描各文件 key index
+  → key 解析到最新可见的 (file, row)
+  → 按文件分组读 block，恢复候选顺序
+  → 跨 bucket 精确打分/合并
+```
 
-因此："不 compact 又要 batch exact" 目前只能走逐 query SQL 回退（或单查询）；
-native exact batch 的多文件支持需要按文件建 block source + 按 rank 选最新版本，
-尚未实现。
+单文件 bucket 继续走原来的 `score_keys` fast path，不增加组合开销。
 
-`deferred_payload` 与 batch 无关：native batch 只返回主键，没有额外投影列；
-该选项只影响单查询 SQL/`table.search` 的额外列二次读取。
+仍会回退逐 query SQL exact 的情况：
+
+- 覆盖性证明不通过（例如增量 index 的 mutation chain、新文件未被当前 index
+  覆盖）；
+- 同一个 key 在 rank 相同的多个文件命中，或同一文件内多行；
+- 文件没有 index rank；
+- block/source 打开失败。
+
+**注意**：普通增量写入后直接跑 native exact 往往仍会因 mutation chain 或
+index generation 未覆盖全部文件而回退；需要先做一次完整 `rebuild_vector_index()`
+或保证当前 index commit 覆盖所有数据文件且无 mutation chain。多文件 native exact
+不是"任何多文件表都自动可用"，而是"覆盖性证明成立时不再要求单文件"。
+
+不 compact 仍可用的路径：
+
+| 方案 | 说明 |
+|---|---|
+| `table.search_batch(rerank="exact")` | 满足覆盖性证明时走 native 多文件；否则自动逐 query SQL 回退 |
+| `table.search(rerank="exact")` | 单查询支持多文件/多版本，不要求覆盖性证明 |
+| `table.search_batch(rerank="index")` | index-only batch，不要求每桶单文件 |
+
+`deferred_payload` 与 batch 无关：native batch 只返回主键，没有额外投影列。
 
 ## 3. exact（`rerank='exact'`，按需 block cache）
 

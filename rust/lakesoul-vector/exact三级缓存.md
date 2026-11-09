@@ -109,12 +109,13 @@ export LAKESOUL_VECTOR_BLOCK_CACHE_BYTES=268435456   # L1，默认 256 MiB
 - 单查询/热点查询：block cache 只读候选块，首查不需要整列物化；
 - batch exact：一次提交很多 query，会同时触达大量候选块；warm 后 QPS 仍低于
   以前的整文件 payload 模式，但 batch 也不再支持 payload；
-- **exact native batch 仍要求每个 hash bucket 恰好 1 个数据文件**（多文件时返回明确错误）；
-  index-only batch 不要求这一点；
-- 不 compact 的 exact batch 替代：`table.search_batch(rerank="exact")` 自动回退逐
-  query SQL exact；单查询 exact 支持每桶多文件/多版本；或改用 index-only batch；
-- 要保留 native exact batch 吞吐，需要 compact 成每桶单文件，或实现"每文件一个
-  block source + 按 segment rank 取最新"的多文件 batch，当前未实现；
+- **exact native batch 支持每桶多个数据文件**：每个文件一个 `VectorBlockSource`，
+  候选 key 按 segment `birth_version` rank 解析到最新 `(file, row)`，再按文件分组读
+  block；单文件 bucket 保留原 fast path；
+- 仍要求覆盖性证明通过（索引覆盖全部文件、无 mutation chain、无 CDC），否则回退
+  逐 query SQL exact；增量写后需要用 `rebuild_vector_index()` 形成覆盖全部文件的
+  generation；
+- rank 并列、key 在文件内重复、缺少 rank 或 source 打开失败时回退；不返回猜测结果；
 - `deferred_payload` 与 batch 无关：native batch 只返回主键，没有额外投影列；
   该选项只影响单查询额外列的二次读取。
 

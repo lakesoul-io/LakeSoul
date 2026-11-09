@@ -310,7 +310,8 @@ class LakeSoulSession:
 
         The native entry supports a single Int64 primary key named ``id`` and
         defaults to index-only ordering (``exact=False``); ``exact=True``
-        requires one data file per bucket and the `LAKESOUL_CACHE`
+        requires a proven snapshot coverage, per-file index ranks (several
+        data files per bucket are supported) and the `LAKESOUL_CACHE`
         decoded-block cache;
         :meth:`lakesoul.catalog.LakeSoulTable.search_batch` checks both and
         falls back to per-query SQL otherwise, so prefer the table method.

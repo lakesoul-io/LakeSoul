@@ -204,6 +204,22 @@ const INDEX_VERSION: u32 = 2;
 const INDEX_FLAG_ROW_IDS: u32 = 1;
 const INDEX_HEADER_LEN: usize = 48;
 
+/// Result of looking one key up in one file's primary-key index.
+///
+/// The multi-file exact batch resolver needs to distinguish "the key is not in
+/// this file" from "the key occurs several times in this file": the former
+/// means continue with an older file, the latter cannot be resolved by the
+/// index and must fall back to the merge reader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefixMatch {
+    /// The key is not present in this file.
+    Missing,
+    /// The key occurs exactly once; value is the data-file row id.
+    Unique(u32),
+    /// The key occurs more than once; the visible row cannot be chosen here.
+    Multiple,
+}
+
 /// A mmapped, sorted array of arrow-Row encoded keys, one entry per data row.
 ///
 /// Layout (little-endian):
@@ -363,6 +379,18 @@ impl MmapIndex {
     /// a key repeated inside one file (several versions in one commit) is
     /// reported as ambiguous, exactly like a missing one.
     fn rows_per_prefix_lenient(&self, prefixes: &[&[u8]]) -> Vec<Option<u32>> {
+        self.prefix_matches(prefixes)
+            .into_iter()
+            .map(|matched| match matched {
+                PrefixMatch::Unique(row) => Some(row),
+                PrefixMatch::Missing | PrefixMatch::Multiple => None,
+            })
+            .collect()
+    }
+
+    /// Like [`Self::rows_per_prefix_lenient`], but keeps the distinction
+    /// between a missing key and a key repeated inside this file.
+    fn prefix_matches(&self, prefixes: &[&[u8]]) -> Vec<PrefixMatch> {
         let mut rows = Vec::with_capacity(prefixes.len());
         let mut cursor = 0usize;
         for prefix in prefixes {
@@ -390,13 +418,14 @@ impl MmapIndex {
                 }
             }
             let start = low;
-            if start >= self.rows || !self.row(start).starts_with(prefix) {
-                rows.push(None);
+            let matched = if start >= self.rows || !self.row(start).starts_with(prefix) {
+                PrefixMatch::Missing
             } else if start + 1 < self.rows && self.row(start + 1).starts_with(prefix) {
-                rows.push(None);
+                PrefixMatch::Multiple
             } else {
-                rows.push(Some(self.row_id(start)));
-            }
+                PrefixMatch::Unique(self.row_id(start))
+            };
+            rows.push(matched);
             cursor = start;
         }
         rows
@@ -2614,6 +2643,12 @@ impl VectorBlockSource {
         self.entry.index.rows_per_prefix_lenient(sorted_keys)
     }
 
+    /// Like [`Self::lookup_rows`], but reports whether a key is missing from
+    /// this file or occurs several times in it.
+    pub fn lookup_matches(&self, sorted_keys: &[&[u8]]) -> Vec<PrefixMatch> {
+        self.entry.index.prefix_matches(sorted_keys)
+    }
+
     /// The stored vector of every given row, in input order.
     pub fn take_rows(&self, rows: &[u32]) -> Option<arrow::array::ArrayRef> {
         if rows.is_empty() {
@@ -2653,6 +2688,20 @@ impl VectorBlockSource {
         for (slot, position) in order.iter().enumerate() {
             indices[*position as usize] = u64::from(rows[slot]);
         }
+        self.blocks.score_rows(&indices, query, ascending)
+    }
+    /// Exact L2/IP scores of already-resolved rows of this file.
+    ///
+    /// The multi-file exact batch resolves a key to `(file, row)` once and
+    /// then scores both single- and multi-file buckets through the same block
+    /// cache path.
+    pub fn score_rows(
+        &self,
+        rows: &[u32],
+        query: &[f32],
+        ascending: bool,
+    ) -> Option<Vec<f32>> {
+        let indices: Vec<u64> = rows.iter().map(|row| u64::from(*row)).collect();
         self.blocks.score_rows(&indices, query, ascending)
     }
 }

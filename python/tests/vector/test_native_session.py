@@ -303,6 +303,53 @@ def test_search_batch_matches_brute_force() -> None:
         _drop(catalog, table_name, table_path)
 
 
+def test_search_batch_exact_multi_file_bucket() -> None:
+    """Native exact batch resolves several files in one hash bucket."""
+    table_name = "py_session_batch_multifile"
+    vectors = _vectors()
+    catalog, table, table_path = _create_table(table_name, vectors=vectors)
+    try:
+        extra_vectors = np.random.default_rng(71).normal(
+            size=(N, DIM)
+        ).astype(np.float32)
+        extra = pa.table(
+            {
+                "id": pa.array(range(N, 2 * N), type=pa.int64()),
+                "title": pa.array([f"extra-{i}" for i in range(N)]),
+                "vec": pa.FixedSizeListArray.from_arrays(
+                    pa.array(extra_vectors.reshape(-1), type=pa.float32()), DIM
+                ),
+            }
+        )
+        table.write_arrow(extra)
+        # A full rebuild publishes one index generation covering both files so
+        # the native exact batch can prove coverage without compaction.
+        table.rebuild_vector_index()
+        session = catalog.session(vector_search={"nprobe": 4})
+        queries = np.random.default_rng(73).normal(size=(5, DIM)).astype(np.float32)
+        native = session.batch_search(
+            table_name,
+            queries.tolist(),
+            column="vec",
+            top_k=5,
+            nprobe=4,
+            batch_size=5,
+            exact=True,
+            exact_overfetch=2,
+        )
+        for index, query in enumerate(queries):
+            expected = table.search(
+                query.tolist(),
+                top_k=5,
+                rerank="exact",
+                nprobe=4,
+                exact_overfetch=2,
+                session=session,
+            ).column("id").to_pylist()
+            assert native.ids[index] == expected
+    finally:
+        _drop(catalog, table_name, table_path)
+
 def test_search_batch_falls_back_for_non_native_primary_key() -> None:
     """A non-Int64-`id` table falls back to per-query SQL, same results."""
     table_name = "py_session_batch_fallback"
