@@ -23,7 +23,7 @@ SPDX-License-Identifier: Apache-2.0
     <properties>
         <flink.version>1.20.5</flink.version>
         <log4j.version>2.17.2</log4j.version>
-        <cdc.version>3.5.0</cdc.version>
+        <cdc.version>3.7.0-1.20</cdc.version>
     </properties>
 
     <dependencies>
