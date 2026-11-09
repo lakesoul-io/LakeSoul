@@ -21,6 +21,9 @@ on:
       - "main"
       - "release/**"
   workflow_dispatch:
+  schedule:
+    # Nightly full IVM suite; the core IVM steps run on push/PR instead.
+    - cron: "0 2 * * *"
 
 name: Rust CI
 
@@ -177,6 +180,49 @@ jobs:
           RUST_BACKTRACE: full
         run: cargo test --profile test-fast $TEST_PKGS --bins --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test update_contract --jobs 4 -- --nocapture
 
+      # IVM core tests run on every Rust change.  They reuse the
+      # rust-test-fast cache key of this job; do not add a separate key.
+      - name: IVM unit tests
+        if: github.event_name != 'schedule'
+        env:
+          RUST_LOG: info
+          RUST_BACKTRACE: full
+        run: cargo test --profile test-fast -p lakesoul-ivm --features distributed --lib --jobs 4
+
+      - name: IVM SQL oracle
+        if: github.event_name != 'schedule'
+        env:
+          RUST_BACKTRACE: full
+        run: cargo test --profile test-fast -p lakesoul-ivm --features distributed --test sql_oracle --jobs 4 -- --test-threads=1
+
+      - name: IVM sqllogic and recovery tests
+        if: github.event_name != 'schedule'
+        env:
+          RUST_LOG: info
+          RUST_BACKTRACE: full
+        run: cargo test --profile test-fast -p lakesoul-ivm --features distributed --test sqllogic --test distributed_sink --test coordinator_kill --test metadata_partition --jobs 4
+
+      - name: Distributed IVM planner tests
+        if: github.event_name != 'schedule'
+        env:
+          RUST_BACKTRACE: full
+        run: cargo test --profile test-fast -p lakesoul-datafusion --features ivm --lib test_distributed_ivm --jobs 4
+
+      # The full IVM suite is nightly-only: it builds every integration test
+      # binary and is too slow for every PR.
+      - name: Full IVM suite
+        if: github.event_name == 'schedule'
+        env:
+          RUST_LOG: info
+          RUST_BACKTRACE: full
+        run: cargo test --profile test-fast -p lakesoul-ivm --features distributed --lib --tests --jobs 4
+
+      - name: Full distributed IVM planner tests
+        if: github.event_name == 'schedule'
+        env:
+          RUST_BACKTRACE: full
+        run: cargo test --profile test-fast -p lakesoul-datafusion --features ivm --lib --jobs 4
+
   clippy_check:
     runs-on: ubuntu-24.04
     env:
@@ -207,3 +253,9 @@ jobs:
         # Keep every cargo invocation in this workflow on `test-fast` so all
         # artifacts stay in a single profile directory (rust/target/test-fast).
         run: cargo clippy --profile test-fast --no-deps --all-features -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python -p lakesoul-io -- -D warnings
+
+      - name: Run Clippy (IVM)
+        # Reuse the rust-test-fast cache key; no separate IVM key.
+        run: |
+          cargo clippy --profile test-fast --no-deps -p lakesoul-ivm --features distributed --all-targets -- -D warnings
+          cargo clippy --profile test-fast --no-deps -p lakesoul-datafusion --features ivm --all-targets -- -D warnings
