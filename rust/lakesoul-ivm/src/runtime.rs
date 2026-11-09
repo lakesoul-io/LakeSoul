@@ -6077,23 +6077,38 @@ impl IvmRuntime {
 
     /// Whether replaying a window can rebuild this view's state in place.
     ///
-    /// Most state tables are append-only: replaying the window appends the
-    /// same epoch-scoped rows and merge-on-read keeps one copy.  The
-    /// multi-aggregate row/partial state is maintained by adding a delta to
-    /// the stored measures, so replaying it would count the window twice and
-    /// must fall back to a rebuild.
+    /// Most state tables write absolute rows or epoch-scoped delete/insert
+    /// pairs, so replaying the window keeps one copy after merge-on-read.
+    /// The multi-aggregate value state is different: `IvmStateMergeExec`
+    /// computes `old_measure + delta` and writes the result, so replaying an
+    /// already-applied window would count it twice.  The row-state multi-agg
+    /// path writes absolute source rows and partial rows, and is safe; the
+    /// dispatcher prefers it when `MultiAggRows` exists.
     async fn state_replay_is_safe(&self, view_id: &str) -> Result<bool> {
-        Ok(!self
-            .metadata
-            .list_states(view_id)
-            .await?
+        let states = self.metadata.list_states(view_id).await?;
+        if states
             .iter()
-            .any(|state| {
-                matches!(
-                    state.role,
-                    StateRole::MultiAggRows | StateRole::MultiAggPartials
-                )
-            }))
+            .any(|state| state.role == StateRole::MultiAggRows)
+        {
+            return Ok(true);
+        }
+        let Some(spec) = self.metadata.get_view_spec(view_id).await? else {
+            // Without a persisted spec the state role cannot be classified.
+            // Only a target-only view can be replayed safely.
+            return Ok(states.iter().all(|state| state.role == StateRole::Mv));
+        };
+        let spec: ViewSpec = serde_json::from_value(spec)?;
+        // A value state is selected by the spec before the role is
+        // (re)registered, so classify by the spec, not by the current role
+        // list.
+        let has_value_state = matches!(
+            spec,
+            ViewSpec::MultiAgg {
+                state_table_id: Some(_),
+                ..
+            }
+        );
+        Ok(!has_value_state)
     }
 
     async fn begin_window(

@@ -1369,3 +1369,266 @@ async fn a_committed_mv_with_a_missing_state_checkpoint_replays_state_only() {
     }
     assert_eq!(mins, std::collections::BTreeMap::from([(1, 5), (2, 15)]));
 }
+
+/// A multi-aggregate SUM view keeps its measures in a value state that is
+/// updated by `old_measure + delta`.  Replaying an already-applied window
+/// would add the delta twice, so the recovery gate must fall back to a
+/// rebuild until the measure merge is made epoch-aware.
+#[test_log::test(tokio::test)]
+async fn a_multi_agg_value_state_never_replays_its_measure_delta() {
+    use lakesoul_ivm::{
+        IVM_GROUP_ROW_COLUMN, MultiAggView, ViewSpec, multi_agg_mv_schema_for,
+        multi_agg_state_schema_for,
+    };
+
+    let _guard = test_lock().lock().await;
+    let runtime = Arc::new(IvmRuntime::from_env().await.unwrap());
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("k", DataType::Int64, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new("x", DataType::Int64, false),
+    ]));
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_ma_src_{suffix}"),
+                format!("file://{}", dir.path().join("src").display()),
+                schema.clone(),
+            )
+            .with_primary_keys(vec!["id".to_string()])
+            .with_bucket_columns(vec!["id".to_string()]),
+        )
+        .await
+        .unwrap();
+    let group_keys = vec!["k".to_string()];
+    let aggregates = vec![
+        ("SUM(v)".to_string(), "v_sum".to_string(), DataType::Int64),
+        ("SUM(x)".to_string(), "w_sum".to_string(), DataType::Int64),
+    ];
+    let aggregate_columns = vec![
+        ("v_sum".to_string(), DataType::Int64),
+        ("w_sum".to_string(), DataType::Int64),
+    ];
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_ma_mv_{suffix}"),
+                format!("file://{}", dir.path().join("mv").display()),
+                multi_agg_mv_schema_for(
+                    &source.schema,
+                    &group_keys,
+                    &[],
+                    &aggregate_columns,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(group_keys.clone())
+            .with_bucket_columns(group_keys.clone()),
+        )
+        .await
+        .unwrap();
+    let state = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_ma_state_{suffix}"),
+                format!("file://{}", dir.path().join("state").display()),
+                multi_agg_state_schema_for(
+                    &source.schema,
+                    &group_keys,
+                    &aggregate_columns,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec![IVM_GROUP_ROW_COLUMN.to_string()])
+            .with_bucket_columns(vec![IVM_GROUP_ROW_COLUMN.to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = MultiAggView::new(
+        format!("ivm_ma_view_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        group_keys,
+        aggregates,
+    )
+    .with_state(state);
+    runtime.register_multi_agg_view(&view).await.unwrap();
+    let spec: ViewSpec = serde_json::from_value(
+        runtime
+            .metadata()
+            .get_view_spec(&view.view_id)
+            .await
+            .unwrap()
+            .expect("the multi-agg spec must be persisted"),
+    )
+    .unwrap();
+    let batch = |rows: &[(i64, i64, i64, i64)]| {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(id, _, _, _)| *id).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(_, k, _, _)| *k).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(_, _, v, _)| *v).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(_, _, _, x)| *x).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .unwrap()
+    };
+    source
+        .append_batch(
+            runtime.client(),
+            batch(&[(1, 1, 10, 100), (2, 1, 20, 200), (3, 2, 30, 300)]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_spec(&spec).await.unwrap().unwrap();
+    assert_eq!(
+        multi_agg_values(&runtime, &mv).await,
+        std::collections::BTreeMap::from([(1, (30, 300)), (2, (30, 300))])
+    );
+
+    // Update id=1: k=1 changes from (10, 100) to (15, 150).
+    source
+        .append_batch(runtime.client(), batch(&[(1, 1, 15, 150)]))
+        .await
+        .unwrap();
+    let marker = dir.path().join("multi-agg-target-committed");
+    // SAFETY: the test lock serializes the process-wide switches.
+    unsafe {
+        std::env::set_var("LAKESOUL_IVM_TEST_SKIP_STATE_CHECKPOINT", "1");
+        std::env::set_var("LAKESOUL_IVM_TEST_SKIP_PLAN_COMPLETE", "1");
+        std::env::set_var("LAKESOUL_IVM_TEST_TARGET_COMMIT_MARKER", &marker);
+        std::env::set_var("LAKESOUL_IVM_TEST_PAUSE_AFTER_TARGET_COMMIT", "1");
+    }
+    let handle = {
+        let runtime = Arc::clone(&runtime);
+        let spec = spec.clone();
+        tokio::spawn(async move { runtime.refresh_spec(&spec).await })
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !marker.exists() {
+        assert!(
+            !handle.is_finished(),
+            "the refresh finished before the target-commit hook"
+        );
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the refresh never reached the target-commit hook"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    handle.abort();
+    let _ = handle.await;
+    // SAFETY: the paused task is gone and the lock keeps other tests out.
+    unsafe {
+        std::env::remove_var("LAKESOUL_IVM_TEST_SKIP_STATE_CHECKPOINT");
+        std::env::remove_var("LAKESOUL_IVM_TEST_SKIP_PLAN_COMPLETE");
+        std::env::remove_var("LAKESOUL_IVM_TEST_TARGET_COMMIT_MARKER");
+        std::env::remove_var("LAKESOUL_IVM_TEST_PAUSE_AFTER_TARGET_COMMIT");
+    }
+    let generation = runtime
+        .metadata()
+        .view_generation(&view.view_id)
+        .await
+        .unwrap();
+    let pending = runtime
+        .metadata()
+        .list_pending_epochs(&view.view_id, generation)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(
+        pending[0].state_versions.is_empty(),
+        "the first attempt must not have checkpointed the state versions"
+    );
+
+    // P0: the value-state merge is not idempotent, so the recovery gate must
+    // reject the replay and the caller rebuilds.  Once the merge is made
+    // epoch-aware (P1), the same call may replay instead; both paths must
+    // leave the sums correct.
+    match runtime.refresh_spec(&spec).await {
+        Ok(_) => {}
+        Err(error) => {
+            assert!(
+                error.to_string().contains("rebuild is required"),
+                "unexpected recovery error: {error}"
+            );
+            runtime.rebuild_multi_agg(&view).await.unwrap();
+        }
+    }
+    assert_eq!(
+        multi_agg_values(&runtime, &mv).await,
+        std::collections::BTreeMap::from([(1, (35, 350)), (2, (30, 300))]),
+        "the measure delta must not be applied twice"
+    );
+
+    // The recovered state must still drive a later incremental window.
+    source
+        .append_batch(runtime.client(), batch(&[(2, 1, 25, 250)]))
+        .await
+        .unwrap();
+    runtime.refresh_spec(&spec).await.unwrap().unwrap();
+    assert_eq!(
+        multi_agg_values(&runtime, &mv).await,
+        std::collections::BTreeMap::from([(1, (40, 400)), (2, (30, 300))])
+    );
+}
+
+async fn multi_agg_values(
+    runtime: &IvmRuntime,
+    mv: &lakesoul_ivm::IvmTable,
+) -> std::collections::BTreeMap<i64, (i64, i64)> {
+    use lakesoul_ivm::IVM_ROW_KINDS_COLUMN;
+    let mut values = std::collections::BTreeMap::new();
+    for batch in mv.read_current(runtime.client()).await.unwrap().iter() {
+        let schema = batch.schema();
+        let key_index = schema.index_of("k").unwrap();
+        let v_index = schema.index_of("v_sum").unwrap();
+        let w_index = schema.index_of("w_sum").unwrap();
+        let kind_index = schema.index_of(IVM_ROW_KINDS_COLUMN).unwrap();
+        let keys = batch
+            .column(key_index)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let vs = batch
+            .column(v_index)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let ws = batch
+            .column(w_index)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let kinds = batch
+            .column(kind_index)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            if kinds.value(row) == "insert" {
+                assert!(
+                    values
+                        .insert(keys.value(row), (vs.value(row), ws.value(row)))
+                        .is_none(),
+                    "key {} was emitted more than once",
+                    keys.value(row)
+                );
+            }
+        }
+    }
+    values
+}
