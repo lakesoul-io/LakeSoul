@@ -34,16 +34,26 @@
 //!
 //! * `LAKESOUL_VECTOR_RERANK_CACHE` - `1`/`true`/`yes`/`on` enables the cache,
 //!   anything else disables it.  Unset means "enabled when
-//!   `LAKESOUL_VECTOR_RERANK_CACHE_DIR` names a directory".
+//!   `LAKESOUL_VECTOR_RERANK_CACHE_DIR` names a directory and
+//!   `LAKESOUL_VECTOR_RERANK_CACHE_BYTES` is positive".
 //!   Disabled by default: the first exact re-rank of a file then pays for one
 //!   full read of its vector columns and writes the payload to local disk.
 //! * `LAKESOUL_VECTOR_RERANK_CACHE_DIR` - cache directory.  Defaults to
 //!   `${LAKESOUL_CACHE_PATH}/rerank-payload` when the shared cache path is
 //!   configured, else `${TMPDIR:-/tmp}/lakesoul-rerank-payload`.
-//! * `LAKESOUL_VECTOR_RERANK_CACHE_BYTES` - total budget of the directory,
-//!   default 16 GiB.  When a new payload would exceed it, the oldest local
-//!   payload files are evicted first; only a payload larger than the whole
-//!   budget falls back to the regular row take.
+//! * `LAKESOUL_VECTOR_RERANK_CACHE_BYTES` - total budget of the directory;
+//!   **default 0 = disabled**, the same default-off policy as the
+//!   index-only SSD cache.  Set it to a positive byte budget to enable the
+//!   cache.  When a new payload would exceed it, the oldest local payload
+//!   files are evicted first; only a payload larger than the whole budget
+//!   falls back to the regular row take.
+//!
+//! Lifecycle: payload files have no TTL.  They stay on the local SSD across
+//! process restarts until the directory budget evicts the oldest file (mtime
+//! LRU), the source data file is compacted/replaced (new source hash => new
+//! file), or the directory is deleted manually.  The in-memory
+//! `PayloadView`/`VectorPayloadSource` entries live for the process lifetime
+//! and are bounded by their own fixed capacities.
 //! * `LAKESOUL_PAYLOAD_ROW_CACHE_BYTES` - optional in-memory cache of
 //!   individual candidate rows (default 0 = disabled).  Rows are cached in
 //!   their raw little-endian form, so a cache hit avoids one SSD `pread`
@@ -84,6 +94,9 @@ const ENV_DIR: &str = "LAKESOUL_VECTOR_RERANK_CACHE_DIR";
 const ENV_BYTES: &str = "LAKESOUL_VECTOR_RERANK_CACHE_BYTES";
 const ENV_CACHE_PATH: &str = "LAKESOUL_CACHE_PATH";
 const ENV_ROW_CACHE_BYTES: &str = "LAKESOUL_PAYLOAD_ROW_CACHE_BYTES";
+
+/// Default SSD budget: disabled, matching `LAKESOUL_INDEX_SSD_BYTES`.
+const DEFAULT_CACHE_BYTES: u64 = 0;
 
 /// Header of one payload file (little-endian).
 ///
@@ -216,14 +229,14 @@ struct PayloadConfig {
     budget_bytes: u64,
 }
 
-/// Whether the payload cache is enabled.
+/// Whether the payload cache is nominally enabled.
 ///
 /// An explicit `LAKESOUL_VECTOR_RERANK_CACHE` decides; without it, setting
-/// `LAKESOUL_VECTOR_RERANK_CACHE_DIR` is an explicit opt-in of its own (a
-/// deployment that names the directory clearly wants the cache, and forgetting
-/// the flag costs 30-370x on exact re-rank queries).  No other environment
-/// variable enables it: the payload of a large table is a real disk footprint,
-/// so it is only written where someone asked for it.
+/// `LAKESOUL_VECTOR_RERANK_CACHE_DIR` is an explicit opt-in.  The final gate
+/// is `payload_config`: a positive `LAKESOUL_VECTOR_RERANK_CACHE_BYTES` budget
+/// is required as well (default 0 = disabled, matching the index-only SSD
+/// cache).  The payload of a large table is a real disk footprint, so it is
+/// only written where someone asked for it.
 fn enabled_by_env() -> bool {
     match std::env::var(ENV_ENABLED) {
         Ok(value) => matches!(
@@ -250,8 +263,13 @@ fn payload_config() -> Option<PayloadConfig> {
     let budget_bytes = std::env::var(ENV_BYTES)
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(16 * 1024 * 1024 * 1024);
+        .unwrap_or(DEFAULT_CACHE_BYTES);
+    if budget_bytes == 0 {
+        // A flag/directory without an explicit byte budget must not silently
+        // create an unbounded or large local payload copy.  Same default-off
+        // contract as the index SSD cache.
+        return None;
+    }
     Some(PayloadConfig { root, budget_bytes })
 }
 

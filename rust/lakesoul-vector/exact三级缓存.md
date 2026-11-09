@@ -32,7 +32,7 @@ L1 Memory：
 | 层 | 介质 | 内容 | 是否进 S3 | 生命周期 |
 |---|---|---|---|---|
 | L1 | DRAM | 描述符、source、热点行 | 否 | 进程内 LRU |
-| L2 | 本地 NVMe | payload 文件、PK key index | 否 | 持久 / 预算淘汰 |
+| L2 | 本地 NVMe | payload 文件、PK key index | 否 | 持久 / 无 TTL / 预算淘汰（默认关） |
 | L3 | S3 | 原始数据文件、索引文件 | 是 | 表数据生命周期 |
 
 **明确约束：不把 payload 上传 S3。** 多节点各自在本地惰性构建；这是无 S3 payload
@@ -76,13 +76,27 @@ L1 Memory：
 所以 exact 的 L1 不是“大块 payload 缓存”，而是**描述符/source + 可选行级缓存**；
 L2 也不按大块读，只按候选行偏移读。
 
+### 3.5 生命周期与默认值
+
+- **没有 TTL**：payload 文件跨进程/重启保留，不会“过期自动删除”；
+- **淘汰**：目录超过 `LAKESOUL_VECTOR_RERANK_CACHE_BYTES` 时，按 mtime（最旧优先）
+  删除本地 payload；单个 payload 大于整个预算时该文件不缓存、回退 reader；
+- **版本失效**：payload 文件名/header 绑定数据文件 `source_hash` + 列布局 `kind_hash`。
+  compaction/新写入产生新数据文件 → 新 payload；旧文件只等 LRU 淘汰或手动删除；
+- **手动清理**：直接删除 payload 目录安全，下一次 exact 会重建；
+- **内存层**：`PayloadView`/`VectorPayloadSource` 是进程生命周期、固定容量，进程退出即释放；
+- **默认关闭**：`LAKESOUL_VECTOR_RERANK_CACHE_BYTES` 默认 **0**（与
+  `LAKESOUL_INDEX_SSD_BYTES` 的默认关闭策略一致）。只设
+  `LAKESOUL_VECTOR_RERANK_CACHE=1` 或 `..._DIR` 还不够，**必须给正的 byte 预算**才会
+  真正构建 payload；否则 exact direct 自动回退 reader。
+
 ## 4. 配置
 
 ```bash
 # L2 payload（本地，不上 S3）
 LAKESOUL_VECTOR_RERANK_CACHE=1
 LAKESOUL_VECTOR_RERANK_CACHE_DIR=/data/lakesoul/rerank-payload
-LAKESOUL_VECTOR_RERANK_CACHE_BYTES=17179869184   # 16 GiB，超出按 mtime 淘汰
+LAKESOUL_VECTOR_RERANK_CACHE_BYTES=4294967296   # 默认 0=关；显式给预算才启用（示例 4 GiB）
 
 # exact direct 还依赖 PK key index 的本地 cache（现有机制）
 LAKESOUL_CACHE=1
@@ -96,6 +110,10 @@ LAKESOUL_PAYLOAD_ROW_CACHE_BYTES=0
 注意：`VectorPayloadSource::open` 需要 `LAKESOUL_CACHE` 提供的 PK key index
 （`get_or_load_file`）；只开 payload 而不开 `LAKESOUL_CACHE` 时，exact fast path
 会回退到 reader。这是既有实现依赖，本次未改变。
+
+> 默认值调整（R81）：`..._CACHE_BYTES` 从 16 GiB 改为 **0（关闭）**，与 index-only 的
+> `LAKESOUL_INDEX_SSD_BYTES` 默认 0 保持一致；开启时必须显式设置正预算，避免在未规划
+> 本地 SSD 的机器上悄悄写出大目录。
 
 ## 5. GloVe-200 + MinIO 端到端测试
 
