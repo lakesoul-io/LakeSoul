@@ -242,6 +242,29 @@ async fn a_metadata_partition_leaves_a_recoverable_pending_epoch() {
             3,
             "the target commit of the paused attempt must be visible"
         );
+        let generation = runtime
+            .metadata()
+            .view_generation(&view.view_id)
+            .await
+            .unwrap();
+        let pending = runtime
+            .metadata()
+            .list_pending_epochs(&view.view_id, generation)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert!(
+            pending[0].commit_plan.complete,
+            "the target commit must have completed the plan"
+        );
+        assert!(
+            pending[0]
+                .commit_plan
+                .entries
+                .iter()
+                .all(|entry| entry.committed),
+            "every staged file of the plan must be committed"
+        );
         // Cut the metadata link before the retry.
         proxy.partition();
 
