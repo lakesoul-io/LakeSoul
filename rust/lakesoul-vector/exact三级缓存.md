@@ -81,8 +81,8 @@ L2 也不按大块读，只按候选行偏移读。
 
 整文件 payload 的 903 MB 是一次性整列物化；默认路径改为按候选块解码：
 
-- 候选行按 `(data_file, column, block_id)` 分组，block 默认 1024 行
-  （`LAKESOUL_VECTOR_BLOCK_ROWS`），200d f32 约 800 KiB/块；
+- 候选行按 `(data_file, column, block_id)` 分组，block 默认 256 行
+  （`LAKESOUL_VECTOR_BLOCK_ROWS`），200d f32 约 200 KiB/块；
 - L1：moka 加权 LRU（`LAKESOUL_VECTOR_BLOCK_CACHE_BYTES`，默认 256 MiB）；
 - L2：复用 `LAKESOUL_CACHE` 的 `DiskCache`（同一容量/淘汰/S3-SSD 读链路），
   block 作为本地条目写入，进程内按稳定路径寻址；重启按需重建；
@@ -114,7 +114,7 @@ payload。`LAKESOUL_VECTOR_BLOCK_CACHE=0` 可关闭该路径，exact 回退 read
 LAKESOUL_CACHE=1
 LAKESOUL_CACHE_PATH=/data/lakesoul/cache
 LAKESOUL_CACHE_SIZE=8GiB
-LAKESOUL_VECTOR_BLOCK_ROWS=1024
+LAKESOUL_VECTOR_BLOCK_ROWS=256
 LAKESOUL_VECTOR_BLOCK_CACHE_BYTES=268435456    # L1 memory，默认 256 MiB
 # LAKESOUL_VECTOR_BLOCK_CACHE=0                 # 关闭按需 block cache
 
@@ -179,7 +179,41 @@ LAKESOUL_PAYLOAD_ROW_CACHE_BYTES=0
 用一张 6 行 × 8 维本地表、`rerank='exact'`、`LAKESOUL_CACHE=1`、
 `LAKESOUL_VECTOR_RERANK_CACHE_BYTES=0` 验证：exact 结果正确（`[1,2,6]`），
 缓存目录只出现 PK index + 小 block 文件，**没有 payload 目录、没有 903 MB 文件**。
-这验证了按需路径不会一次性物化整列；大表 QPS/命中率仍需按实际候选分布测量。
+这验证了按需路径不会一次性物化整列。
+
+### GloVe-200 + MinIO：按需 block vs 整文件 payload（R83 重测）
+
+同一张 GloVe 表、200 条 query、top_k=100、nprobe=16、of=1，单查询 200 次：
+
+| 模式 | 首查 | QPS（200 query） | RSS | 本地缓存 |
+|---|---:|---:|---:|---:|
+| **eager payload**（显式 `_BYTES=16GiB`，block 关） | 1436.7 ms | **313.9** | 449.9 MB | payload 903.0 MB |
+| block，`BLOCK_ROWS=1024`，L2=1GiB | 925.0 ms | 43.9 | 997.7 MB | block ~917.6 MB |
+| **block，`BLOCK_ROWS=256`，L2=1GiB（推荐）** | **791.9 ms** | **70.0** | 873.4 MB | block ~917.6 MB |
+| block，`BLOCK_ROWS=128`，L2=1GiB | 777.2 ms | 47.5 | 836.2 MB | block ~917.5 MB |
+| block，`BLOCK_ROWS=64`，L2=1GiB | 1568.2 ms | 28.9 | 704.1 MB | block ~904.4 MB |
+| block 256，L2 仅 256MiB | 1592.9 ms | 9.4 | 973.1 MB | block 258.9 MB（频繁淘汰） |
+
+重复执行同一 200 query（block 256、缓存已热）：**83.7 / 107.3 / 107.9 QPS**。
+
+结论：
+
+- **首查**：block 256 约 **792 ms**，比 eager 整列物化（1437 ms）快，且没有一次性
+  903 MB 文件的写入；
+- **稳态随机 query**：block 模式明显低于 eager（70 vs 314 QPS），因为 200 条随机
+  candidate 最终仍会触达大部分 block，缓存增长到约 918 MB；eager 的整文件顺序布局
+  对随机行读取更高效；
+- **重复/热点 query**：block 命中提升到 84–108 QPS，但仍低于 eager；
+- **L2 预算**：block 256 + 256 MiB L2 发生严重抖动（QPS 9.4），说明 block 模式的
+  SSD 预算必须覆盖工作集，否则不如不缓存；
+- batch exact：eager 首 batch 40 ms（payload 已存在），block 256 首个 200q batch
+  513 ms（含 block 构建）；block 模式 batch 不适合冷启动。
+
+因此：
+
+- **默认**仍使用 block 256（按需、无 903 MB 预写），适合“先读后缓存/热点查询”；
+- 对稳定高 QPS 的 hot table，显式打开 eager payload 仍是更快的选择；
+- block 的默认 L2 预算与 `LAKESOUL_CACHE_SIZE` 共享，需要按工作集规划。
 
 ### 清理
 

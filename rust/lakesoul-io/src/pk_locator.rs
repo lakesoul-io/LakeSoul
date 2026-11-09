@@ -2197,7 +2197,7 @@ pub fn vector_payload_cache_enabled() -> bool {
 /// the full payload.
 const ENV_BLOCK_ROWS: &str = "LAKESOUL_VECTOR_BLOCK_ROWS";
 const ENV_BLOCK_MEMORY_BYTES: &str = "LAKESOUL_VECTOR_BLOCK_CACHE_BYTES";
-const DEFAULT_BLOCK_ROWS: usize = 1024;
+const DEFAULT_BLOCK_ROWS: usize = 256;
 const DEFAULT_BLOCK_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
 
 static BLOCK_MEMORY: LazyLock<Option<moka::sync::Cache<(u64, u64, u32), Arc<[u8]>>>> =
