@@ -6077,38 +6077,17 @@ impl IvmRuntime {
 
     /// Whether replaying a window can rebuild this view's state in place.
     ///
-    /// Most state tables write absolute rows or epoch-scoped delete/insert
-    /// pairs, so replaying the window keeps one copy after merge-on-read.
-    /// The multi-aggregate value state is different: `IvmStateMergeExec`
-    /// computes `old_measure + delta` and writes the result, so replaying an
-    /// already-applied window would count it twice.  The row-state multi-agg
-    /// path writes absolute source rows and partial rows, and is safe; the
-    /// dispatcher prefers it when `MultiAggRows` exists.
+    /// Every state writer is now idempotent for a replayed epoch: append-only
+    /// state writes absolute delete/insert rows, and the multi-aggregate
+    /// measure merge keeps a row already written at this epoch instead of
+    /// adding its delta again.  A view without a persisted spec is treated
+    /// conservatively: only its target can be replayed.
     async fn state_replay_is_safe(&self, view_id: &str) -> Result<bool> {
-        let states = self.metadata.list_states(view_id).await?;
-        if states
-            .iter()
-            .any(|state| state.role == StateRole::MultiAggRows)
-        {
-            return Ok(true);
-        }
-        let Some(spec) = self.metadata.get_view_spec(view_id).await? else {
-            // Without a persisted spec the state role cannot be classified.
-            // Only a target-only view can be replayed safely.
+        if self.metadata.get_view_spec(view_id).await?.is_none() {
+            let states = self.metadata.list_states(view_id).await?;
             return Ok(states.iter().all(|state| state.role == StateRole::Mv));
-        };
-        let spec: ViewSpec = serde_json::from_value(spec)?;
-        // A value state is selected by the spec before the role is
-        // (re)registered, so classify by the spec, not by the current role
-        // list.
-        let has_value_state = matches!(
-            spec,
-            ViewSpec::MultiAgg {
-                state_table_id: Some(_),
-                ..
-            }
-        );
-        Ok(!has_value_state)
+        }
+        Ok(true)
     }
 
     async fn begin_window(

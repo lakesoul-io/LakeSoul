@@ -1375,7 +1375,7 @@ async fn a_committed_mv_with_a_missing_state_checkpoint_replays_state_only() {
 /// would add the delta twice, so the recovery gate must fall back to a
 /// rebuild until the measure merge is made epoch-aware.
 #[test_log::test(tokio::test)]
-async fn a_multi_agg_value_state_never_replays_its_measure_delta() {
+async fn a_multi_agg_value_state_replay_does_not_double_its_measure() {
     use lakesoul_ivm::{
         IVM_GROUP_ROW_COLUMN, MultiAggView, ViewSpec, multi_agg_mv_schema_for,
         multi_agg_state_schema_for,
@@ -1554,20 +1554,17 @@ async fn a_multi_agg_value_state_never_replays_its_measure_delta() {
         "the first attempt must not have checkpointed the state versions"
     );
 
-    // P0: the value-state merge is not idempotent, so the recovery gate must
-    // reject the replay and the caller rebuilds.  Once the merge is made
-    // epoch-aware (P1), the same call may replay instead; both paths must
-    // leave the sums correct.
-    match runtime.refresh_spec(&spec).await {
-        Ok(_) => {}
-        Err(error) => {
-            assert!(
-                error.to_string().contains("rebuild is required"),
-                "unexpected recovery error: {error}"
-            );
-            runtime.rebuild_multi_agg(&view).await.unwrap();
-        }
-    }
+    // The value state is updated by old_measure + delta.  The epoch guard in
+    // IvmStateMergeExec must keep the already-written state row, so the
+    // replay resolves the epoch without adding the delta twice.
+    let replayed = runtime
+        .refresh_spec(&spec)
+        .await
+        .expect("the multi-agg value state must replay");
+    assert!(
+        replayed.is_some(),
+        "the pending epoch must be resolved by the replay"
+    );
     assert_eq!(
         multi_agg_values(&runtime, &mv).await,
         std::collections::BTreeMap::from([(1, (35, 350)), (2, (30, 300))]),

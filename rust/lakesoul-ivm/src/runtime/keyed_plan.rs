@@ -2649,6 +2649,7 @@ fn add_accumulator(
     prefix: &str,
     measure: &str,
     data_type: &DataType,
+    already_applied: &[bool],
 ) -> DataFusionResult<ArrayRef> {
     let old = batch
         .column_by_name(&format!("{prefix}{measure}"))
@@ -2673,6 +2674,10 @@ fn add_accumulator(
             Ok(Arc::new(Int64Array::from_iter_values((0..old.len()).map(
                 |row| {
                     let value = if old.is_null(row) { 0 } else { old.value(row) };
+                    if already_applied[row] {
+                        // The window's delta is already in this state row.
+                        return value;
+                    }
                     let change = if delta.is_null(row) {
                         0
                     } else {
@@ -2698,6 +2703,9 @@ fn add_accumulator(
             let values = (0..old.len())
                 .map(|row| {
                     let value = if old.is_null(row) { 0 } else { old.value(row) };
+                    if already_applied[row] {
+                        return value;
+                    }
                     let change = if delta.is_null(row) {
                         0
                     } else {
@@ -2747,6 +2755,24 @@ fn merge_state_batch(
         .ok_or_else(|| {
             DataFusionError::Execution("delta row count is not bigint".to_string())
         })?;
+    let old_epoch = batch
+        .column_by_name(&format!("{IVM_STATE_COLUMN_PREFIX}{IVM_EPOCH_COLUMN}"))
+        .ok_or_else(|| {
+            DataFusionError::Execution("missing old state epoch".to_string())
+        })?;
+    let old_epoch = cast(old_epoch.as_ref(), &DataType::Int64)
+        .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+    let old_epoch = old_epoch
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .ok_or_else(|| {
+            DataFusionError::Execution("old state epoch is not bigint".to_string())
+        })?;
+    // A state row written at this epoch (or a later one) already includes
+    // the window's delta.  Replaying the same window must not add it again.
+    let already_applied = (0..rows)
+        .map(|row| old_epoch.is_valid(row) && old_epoch.value(row) >= epoch)
+        .collect::<Vec<bool>>();
     let counts = (0..rows)
         .map(|row| {
             let old = if old_count.is_null(row) {
@@ -2754,6 +2780,9 @@ fn merge_state_batch(
             } else {
                 old_count.value(row)
             };
+            if already_applied[row] {
+                return old;
+            }
             let delta = if delta_count.is_null(row) {
                 0
             } else {
@@ -2767,7 +2796,17 @@ fn merge_state_batch(
             .iter()
             .map(|count| if *count > 0 { "insert" } else { "delete" }),
     );
-    let epochs = Int64Array::from_iter_values(std::iter::repeat_n(epoch, rows));
+    let epochs = Int64Array::from(
+        (0..rows)
+            .map(|row| {
+                if already_applied[row] && old_epoch.is_valid(row) {
+                    old_epoch.value(row)
+                } else {
+                    epoch
+                }
+            })
+            .collect::<Vec<_>>(),
+    );
     let mut columns = Vec::with_capacity(state_schema.fields().len());
     for field in state_schema.fields() {
         let name = field.name();
@@ -2785,7 +2824,13 @@ fn merge_state_batch(
             } else if name == IVM_EPOCH_COLUMN {
                 Arc::new(epochs.clone())
             } else if measures.iter().any(|measure| measure == name) {
-                add_accumulator(batch, IVM_STATE_COLUMN_PREFIX, name, field.data_type())?
+                add_accumulator(
+                    batch,
+                    IVM_STATE_COLUMN_PREFIX,
+                    name,
+                    field.data_type(),
+                    &already_applied,
+                )?
             } else {
                 return Err(DataFusionError::Execution(format!(
                     "state merge does not know how to write {name}"
@@ -2879,11 +2924,98 @@ mod tests {
             .unwrap();
         let batch =
             RecordBatch::try_new(schema, vec![Arc::new(old), Arc::new(delta)]).unwrap();
-        let out =
-            add_accumulator(&batch, IVM_STATE_COLUMN_PREFIX, "v", &data_type).unwrap();
+        let out = add_accumulator(
+            &batch,
+            IVM_STATE_COLUMN_PREFIX,
+            "v",
+            &data_type,
+            &[false, false],
+        )
+        .unwrap();
         let out = out.as_any().downcast_ref::<Decimal128Array>().unwrap();
         assert_eq!(out.value(0), 150);
         assert_eq!(out.value(1), 25);
+    }
+
+    #[test]
+    fn merge_state_batch_keeps_an_already_applied_epoch() {
+        let state_schema = Arc::new(Schema::new(vec![
+            Field::new(IVM_GROUP_ROW_COLUMN, DataType::Binary, false),
+            Field::new("k", DataType::Int64, false),
+            Field::new("v_sum", DataType::Int64, true),
+            Field::new(IVM_ROW_COUNT_COLUMN, DataType::Int64, false),
+            Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+            Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+        ]));
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new(IVM_GROUP_ROW_COLUMN, DataType::Binary, false),
+            Field::new("k", DataType::Int64, false),
+            Field::new(
+                format!("{IVM_STATE_COLUMN_PREFIX}{IVM_ROW_COUNT_COLUMN}"),
+                DataType::Int64,
+                true,
+            ),
+            Field::new(
+                format!("{IVM_STATE_COLUMN_PREFIX}v_sum"),
+                DataType::Int64,
+                true,
+            ),
+            Field::new(
+                format!("{IVM_STATE_COLUMN_PREFIX}{IVM_EPOCH_COLUMN}"),
+                DataType::Int64,
+                true,
+            ),
+            Field::new("d_rows", DataType::Int64, false),
+            Field::new("d_v_sum", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            input_schema,
+            vec![
+                Arc::new(BinaryArray::from(vec![
+                    Some(b"a".as_slice()),
+                    Some(b"b".as_slice()),
+                    Some(b"c".as_slice()),
+                ])),
+                Arc::new(Int64Array::from(vec![1, 2, 3])),
+                Arc::new(Int64Array::from(vec![2, 3, 4])),
+                Arc::new(Int64Array::from(vec![20, 25, 30])),
+                // Row 0 is pre-window, row 1 was written by this epoch and
+                // row 2 by a later epoch.
+                Arc::new(Int64Array::from(vec![1, 3, 5])),
+                Arc::new(Int64Array::from(vec![1, 1, 1])),
+                Arc::new(Int64Array::from(vec![5, 5, 5])),
+            ],
+        )
+        .unwrap();
+        let out = merge_state_batch(
+            &batch,
+            &state_schema,
+            &["k".to_string()],
+            &["v_sum".to_string()],
+            3,
+        )
+        .unwrap();
+        let counts = out
+            .column_by_name(IVM_ROW_COUNT_COLUMN)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let measures = out
+            .column_by_name("v_sum")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let epochs = out
+            .column_by_name(IVM_EPOCH_COLUMN)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(counts.values(), &[3, 3, 4]);
+        assert_eq!(measures.values(), &[25, 25, 30]);
+        assert_eq!(epochs.values(), &[3, 3, 5]);
     }
 
     #[test]
