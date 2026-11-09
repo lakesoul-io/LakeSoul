@@ -52,7 +52,7 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
     services:
       postgres:
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         env:
           POSTGRES_PASSWORD: lakesoul_test
           POSTGRES_USER: lakesoul_test

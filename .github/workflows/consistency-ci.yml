@@ -45,7 +45,7 @@ jobs:
       # Label used to access the service container
       postgres:
         # Docker Hub image
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         # Provide the password for postgres
         env:
           POSTGRES_PASSWORD: lakesoul_test
