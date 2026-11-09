@@ -76,7 +76,7 @@ use crate::table::{IvmTable, PartitionFiles, file_bucket, partition_matches};
 pub(crate) const IVM_BUCKET_COLUMN: &str = "__ivm_bucket";
 
 #[derive(Debug)]
-struct LakeSoulBucketExpr {
+pub(crate) struct LakeSoulBucketExpr {
     key: Arc<dyn PhysicalExpr>,
     bucket_count: u32,
 }
@@ -100,6 +100,20 @@ impl std::hash::Hash for LakeSoulBucketExpr {
 impl Display for LakeSoulBucketExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "lakesoul_bucket({}, {})", self.key, self.bucket_count)
+    }
+}
+
+impl LakeSoulBucketExpr {
+    pub(crate) fn from_parts(key: Arc<dyn PhysicalExpr>, bucket_count: u32) -> Self {
+        Self { key, bucket_count }
+    }
+
+    pub(crate) fn key(&self) -> &Arc<dyn PhysicalExpr> {
+        &self.key
+    }
+
+    pub(crate) fn bucket_count(&self) -> u32 {
+        self.bucket_count
     }
 }
 
@@ -160,7 +174,7 @@ impl PhysicalExpr for LakeSoulBucketExpr {
 
 /// LakeSoul's composite hash, computed over the writer's bucket columns.
 #[derive(Debug)]
-struct LakeSoulColumnsBucketExpr {
+pub(crate) struct LakeSoulColumnsBucketExpr {
     keys: Vec<Arc<dyn PhysicalExpr>>,
     bucket_count: u32,
 }
@@ -195,6 +209,23 @@ impl Display for LakeSoulColumnsBucketExpr {
             "lakesoul_columns_bucket({:?}, {})",
             self.keys, self.bucket_count
         )
+    }
+}
+
+impl LakeSoulColumnsBucketExpr {
+    pub(crate) fn from_parts(
+        keys: Vec<Arc<dyn PhysicalExpr>>,
+        bucket_count: u32,
+    ) -> Self {
+        Self { keys, bucket_count }
+    }
+
+    pub(crate) fn keys(&self) -> &[Arc<dyn PhysicalExpr>] {
+        &self.keys
+    }
+
+    pub(crate) fn bucket_count(&self) -> u32 {
+        self.bucket_count
     }
 }
 

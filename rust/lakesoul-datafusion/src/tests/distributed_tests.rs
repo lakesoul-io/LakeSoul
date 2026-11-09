@@ -5470,3 +5470,161 @@ fn test_distributed_ivm_chain_refreshes_upstream_first() {
         Ok(())
     });
 }
+
+/// A worker that fails session construction while `fail` is set.
+#[derive(Clone)]
+struct SwitchableSessionBuilder {
+    fail: Arc<std::sync::atomic::AtomicBool>,
+    asked: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl datafusion_distributed::WorkerSessionBuilder for SwitchableSessionBuilder {
+    async fn build_session_state(
+        &self,
+        ctx: datafusion_distributed::WorkerQueryContext,
+    ) -> datafusion::common::Result<datafusion::execution::SessionState> {
+        if self.fail.load(Ordering::SeqCst) {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            return Err(datafusion::common::DataFusionError::Execution(
+                "injected worker session failure".to_string(),
+            ));
+        }
+        crate::distributed::LakeSoulWorkerSessionBuilder
+            .build_session_state(ctx)
+            .await
+    }
+}
+
+/// A worker failure during a distributed refresh must leave no committed MV
+/// rows.  Clearing the fault and retrying the same pending window must then
+/// complete the refresh on the same cluster.
+#[cfg(feature = "ivm")]
+#[test_log::test]
+fn test_distributed_ivm_worker_failure_leaves_no_commit_and_retries() {
+    use datafusion::arrow::array::{Int64Array, RecordBatch, StringArray};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use lakesoul_ivm::{
+        IvmRuntime, IvmRuntimeConfig, IvmSqlExecutor, IvmTableOptions, row_mv_schema_for,
+    };
+
+    run_distributed_test(async {
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        let fail = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let asked = Arc::new(AtomicUsize::new(0));
+        let mut urls = Vec::new();
+        let mut workers = JoinSet::new();
+        for _ in 0..2 {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+            urls.push(format!("http://{}", listener.local_addr()?));
+            let runtime_env = crate::session::build_worker_runtime_env(
+                &CoreArgs::default(),
+                ExecutionMemoryArgs::default().create_pool(),
+            )?;
+            let worker = Worker::from_session_builder(SwitchableSessionBuilder {
+                fail: Arc::clone(&fail),
+                asked: Arc::clone(&asked),
+            })
+            .with_runtime_env(runtime_env)
+            .with_version(crate::distributed::DISTRIBUTED_PROTOCOL_VERSION);
+            workers.spawn(async move {
+                let _ = tonic::transport::Server::builder()
+                    .add_service(worker.into_worker_server())
+                    .serve_with_incoming(TcpListenerStream::new(listener))
+                    .await;
+            });
+        }
+
+        let factory = distributed_factory(Arc::clone(&client), urls, false)?;
+        let template = factory.create_session(&LakeSoulSessionOptions::default())?;
+        let config = IvmRuntimeConfig::from_session(&template).with_session_factory(
+            Arc::new(crate::session::IvmRefreshSessionFactory::new(factory)),
+        );
+        let runtime = IvmRuntime::from_env_with_config(config).await?;
+        runtime.init_schema().await?;
+        let suffix = uuid::Uuid::new_v4().simple();
+        let dir = std::env::temp_dir().join(format!("lakesoul-ivm-fail-{suffix}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("v", DataType::Utf8, true),
+            Field::new("op", DataType::Utf8, false),
+        ]));
+        let source = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_fail_src_{suffix}"),
+                    format!("file://{}", dir.join("src").display()),
+                    schema.clone(),
+                )
+                .with_primary_keys(vec!["k".to_string()])
+                .with_cdc_column("op"),
+            )
+            .await?;
+        let mv = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_fail_mv_{suffix}"),
+                    format!("file://{}", dir.join("mv").display()),
+                    row_mv_schema_for(&source.schema, &[])?,
+                )
+                .with_primary_keys(vec!["k".to_string()]),
+            )
+            .await?;
+        source
+            .append_batch(
+                runtime.client(),
+                RecordBatch::try_new(
+                    schema,
+                    vec![
+                        Arc::new(Int64Array::from(vec![1, 2, 3])),
+                        Arc::new(StringArray::from(vec!["a", "b", "c"])),
+                        Arc::new(StringArray::from(vec!["insert", "insert", "insert"])),
+                    ],
+                )
+                .unwrap(),
+            )
+            .await?;
+        let context = SessionContext::new();
+        context.register_table(
+            source.table_name.as_str(),
+            Arc::new(runtime.table_provider(&source)),
+        )?;
+        context.register_table(
+            mv.table_name.as_str(),
+            Arc::new(runtime.table_provider(&mv)),
+        )?;
+        let sql = format!(
+            "INSERT INTO {} SELECT * FROM {}",
+            mv.table_name, source.table_name
+        );
+        let executor =
+            IvmSqlExecutor::with_shared_runtime(Arc::new(runtime)).with_session(context);
+        let error = executor.execute(&sql).await.unwrap_err();
+        assert!(
+            asked.load(Ordering::SeqCst) > 0,
+            "the failing workers must have been asked for a task: {error}"
+        );
+        assert_eq!(
+            mv.read_current(executor.runtime().client())
+                .await?
+                .iter()
+                .map(|batch| batch.num_rows())
+                .sum::<usize>(),
+            0,
+            "a failed worker must not publish MV rows"
+        );
+        fail.store(false, Ordering::SeqCst);
+        executor.execute(&sql).await?;
+        assert_eq!(
+            mv.read_current(executor.runtime().client())
+                .await?
+                .iter()
+                .map(|batch| batch.num_rows())
+                .sum::<usize>(),
+            3
+        );
+        workers.shutdown().await;
+        Ok(())
+    });
+}

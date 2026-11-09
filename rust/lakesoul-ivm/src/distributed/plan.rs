@@ -33,6 +33,16 @@ pub fn lookup_task_count(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
         .map(|exec| exec.bucket_count())
 }
 
+/// How many tasks a distributed write sink can use.
+///
+/// The sink writes one input partition per task.  Without this hint the sink
+/// stage stays at one task and the coordinator executes it locally, so a
+/// worker-side write failure could never be exercised (or isolated).
+pub fn sink_task_count(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
+    plan.downcast_ref::<crate::distributed::IvmRefreshSinkExec>()
+        .map(|exec| exec.input_partition_count())
+}
+
 /// Split an IVM scan over `task_count` variants, or `None` for other plans.
 pub fn split_stream_scan(
     plan: &Arc<dyn ExecutionPlan>,

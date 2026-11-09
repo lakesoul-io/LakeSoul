@@ -107,3 +107,121 @@ async fn a_worker_sink_writes_files_and_the_coordinator_commits_them() {
         .sum::<usize>();
     assert_eq!(rows, 3);
 }
+
+/// A coordinator crash after the MV commit but before the epoch mark is the
+/// pending-window path: the retry must complete the existing epoch without
+/// writing the rows again.
+#[test_log::test(tokio::test)]
+async fn a_pending_epoch_is_completed_without_duplicate_rows() {
+    use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
+
+    let base = IvmRuntimeConfig::default();
+    let factory = SinkFactory {
+        session: base.session.clone(),
+        runtime: Arc::clone(&base.runtime),
+    };
+    let runtime =
+        IvmRuntime::from_env_with_config(base.with_session_factory(Arc::new(factory)))
+            .await
+            .unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("v", DataType::Utf8, true),
+        Field::new("op", DataType::Utf8, false),
+    ]));
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_epoch_src_{suffix}"),
+                format!("file://{}", dir.path().join("src").display()),
+                schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column("op"),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_epoch_mv_{suffix}"),
+                format!("file://{}", dir.path().join("mv").display()),
+                row_mv_schema_for(&source.schema, &[]).unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(Int64Array::from(vec![1, 2, 3])),
+                    Arc::new(StringArray::from(vec!["a", "b", "c"])),
+                    Arc::new(StringArray::from(vec!["insert", "insert", "insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let view = RowView::new(format!("row_epoch_{suffix}"), source, mv.clone());
+    let epoch = runtime.refresh_row(&view).await.unwrap().unwrap();
+    let generation = runtime
+        .metadata()
+        .view_generation(&view.view_id)
+        .await
+        .unwrap();
+    let record = runtime
+        .metadata()
+        .list_committed_epochs(&view.view_id, generation)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|record| record.epoch == epoch)
+        .unwrap();
+    // Rewind the source cursor and flip the epoch back to pending, as a crash
+    // between the MV commit and the epoch mark would leave it.
+    runtime
+        .metadata()
+        .upsert_cursor(
+            &view.view_id,
+            &view.source.table_id,
+            DEFAULT_PARTITION_DESC,
+            -1,
+            0,
+        )
+        .await
+        .unwrap();
+    runtime
+        .metadata()
+        .set_epoch_pending(&view.view_id, record.generation, record.epoch)
+        .await
+        .unwrap();
+    let replayed = runtime.refresh_row(&view).await.unwrap();
+    assert_eq!(replayed, Some(epoch));
+    assert_eq!(
+        mv.read_current(runtime.client())
+            .await
+            .unwrap()
+            .iter()
+            .map(|batch| batch.num_rows())
+            .sum::<usize>(),
+        3,
+        "completing the pending epoch must not duplicate rows"
+    );
+    assert_eq!(
+        runtime
+            .metadata()
+            .list_committed_epochs(&view.view_id, generation)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}

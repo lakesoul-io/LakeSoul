@@ -504,6 +504,15 @@ fn ivm_lookup_desired_task_count(
     (buckets > 1).then(|| Ok(DesiredTaskCountEventResponse::desired(buckets)))
 }
 
+/// Asks for one sink task per write partition.
+#[cfg(feature = "ivm")]
+fn ivm_sink_desired_task_count(
+    ev: DesiredTaskCountEvent<'_>,
+) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
+    let partitions = lakesoul_ivm::distributed::sink_task_count(ev.plan)?;
+    (partitions > 1).then(|| Ok(DesiredTaskCountEventResponse::desired(partitions)))
+}
+
 /// Splits an IVM scan into disjoint task variants.
 #[cfg(feature = "ivm")]
 fn ivm_scan_scale_up_leaf_node(
@@ -804,6 +813,9 @@ impl LakeSoulSessionFactory {
                     )
                     .with_distributed_desired_task_count_handler(
                         ivm_lookup_desired_task_count,
+                    )
+                    .with_distributed_desired_task_count_handler(
+                        ivm_sink_desired_task_count,
                     )
                     .with_distributed_scale_up_leaf_node_handler(
                         ivm_scan_scale_up_leaf_node,

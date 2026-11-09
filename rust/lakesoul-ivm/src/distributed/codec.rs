@@ -10,6 +10,9 @@ use arrow_schema::{Schema, SchemaRef};
 use datafusion::common::Result as DFResult;
 use datafusion::common::{exec_err, internal_err};
 use datafusion::execution::TaskContext;
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr_common::physical_expr::proto_decode::PhysicalExprDecodeCtx;
+use datafusion::physical_expr_common::physical_expr::proto_encode::PhysicalExprEncodeCtx;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::DefaultLogicalExtensionCodec;
 use datafusion_proto::logical_plan::from_proto::parse_expr;
@@ -17,13 +20,15 @@ use datafusion_proto::logical_plan::to_proto::serialize_expr;
 use datafusion_proto::physical_plan::{
     PhysicalExtensionCodec, PhysicalProtoConverterExtension,
 };
-use datafusion_proto::protobuf::LogicalExprNode;
+use datafusion_proto::protobuf::{LogicalExprNode, PhysicalExprNode};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 
 use crate::distributed::descriptor::IvmTableDescriptor;
 use crate::distributed::sink::{IvmRefreshSinkExec, IvmSinkSpec};
-use crate::runtime::keyed_plan::{IvmPkLookupExec, PkLookupKey};
+use crate::runtime::keyed_plan::{
+    IvmPkLookupExec, LakeSoulBucketExpr, LakeSoulColumnsBucketExpr, PkLookupKey,
+};
 use crate::table::{IvmTable, PartitionFiles};
 
 /// Wire message of one [`IvmStreamExec`] task variant.
@@ -54,6 +59,15 @@ struct IvmPkLookupExecProto {
 struct IvmRefreshSinkExecProto {
     table: IvmTableDescriptor,
     epoch: Option<i64>,
+}
+
+/// Wire form of the two custom bucket expressions.
+#[derive(Debug, Serialize, Deserialize)]
+struct BucketExprProto {
+    /// 0 = single key, 1 = composite columns.
+    kind: u8,
+    bucket_count: u32,
+    children: Vec<Vec<u8>>,
 }
 
 /// Envelope distinguishing the IVM physical nodes that cross the wire.
@@ -198,6 +212,94 @@ impl PhysicalExtensionCodec for IvmRefreshCodec {
             })?;
         buf.extend_from_slice(&bytes);
         Ok(())
+    }
+
+    fn try_encode_expr(
+        &self,
+        node: &Arc<dyn PhysicalExpr>,
+        buf: &mut Vec<u8>,
+        ctx: &PhysicalExprEncodeCtx<'_>,
+    ) -> DFResult<()> {
+        let (kind, children, bucket_count) =
+            if let Some(expr) = node.downcast_ref::<LakeSoulBucketExpr>() {
+                (0, vec![Arc::clone(expr.key())], expr.bucket_count())
+            } else if let Some(expr) = node.downcast_ref::<LakeSoulColumnsBucketExpr>() {
+                (1, expr.keys().to_vec(), expr.bucket_count())
+            } else {
+                return exec_err!("IvmRefreshCodec cannot encode expression {node}");
+            };
+        let children = children
+            .iter()
+            .map(|child| {
+                ctx.encode_child(child)
+                    .map(|node| node.encode_to_vec())
+                    .map_err(|error| {
+                        datafusion::error::DataFusionError::Internal(format!(
+                            "encode IVM bucket expression child: {error}"
+                        ))
+                    })
+            })
+            .collect::<DFResult<Vec<_>>>()?;
+        let proto = BucketExprProto {
+            kind,
+            bucket_count,
+            children,
+        };
+        let bytes = serde_json::to_vec(&proto).map_err(|error| {
+            datafusion::error::DataFusionError::Internal(format!(
+                "encode IVM bucket expression: {error}"
+            ))
+        })?;
+        buf.extend_from_slice(&bytes);
+        Ok(())
+    }
+
+    fn try_decode_expr(
+        &self,
+        buf: &[u8],
+        _inputs: &[Arc<dyn PhysicalExpr>],
+        ctx: &PhysicalExprDecodeCtx<'_>,
+    ) -> DFResult<Arc<dyn PhysicalExpr>> {
+        let proto: BucketExprProto = serde_json::from_slice(buf).map_err(|error| {
+            datafusion::error::DataFusionError::Internal(format!(
+                "decode IVM bucket expression: {error}"
+            ))
+        })?;
+        let children = proto
+            .children
+            .iter()
+            .map(|bytes| {
+                let node =
+                    PhysicalExprNode::decode(bytes.as_slice()).map_err(|error| {
+                        datafusion::error::DataFusionError::Internal(format!(
+                            "decode IVM bucket expression child: {error}"
+                        ))
+                    })?;
+                ctx.decode(&node).map_err(|error| {
+                    datafusion::error::DataFusionError::Internal(format!(
+                        "decode IVM bucket expression child: {error}"
+                    ))
+                })
+            })
+            .collect::<DFResult<Vec<_>>>()?;
+        match proto.kind {
+            0 => {
+                let key = children.into_iter().next().ok_or_else(|| {
+                    datafusion::error::DataFusionError::Internal(
+                        "IVM bucket expression has no key".to_string(),
+                    )
+                })?;
+                Ok(Arc::new(LakeSoulBucketExpr::from_parts(
+                    key,
+                    proto.bucket_count,
+                )))
+            }
+            1 => Ok(Arc::new(LakeSoulColumnsBucketExpr::from_parts(
+                children,
+                proto.bucket_count,
+            ))),
+            kind => internal_err!("unknown IVM bucket expression kind {kind}"),
+        }
     }
 }
 

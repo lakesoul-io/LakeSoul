@@ -128,6 +128,10 @@ impl IvmRefreshSinkExec {
     pub(crate) fn epoch(&self) -> Option<i64> {
         self.epoch
     }
+
+    pub(crate) fn input_partition_count(&self) -> usize {
+        self.input.output_partitioning().partition_count().max(1)
+    }
 }
 
 impl std::fmt::Debug for IvmRefreshSinkExec {
