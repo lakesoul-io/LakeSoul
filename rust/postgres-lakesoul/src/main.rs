@@ -366,6 +366,8 @@ mod cli_probe_tests {
             "port": cli.port,
             "metrics_addr": cli.metrics_addr.to_string(),
             "max_connections": cli.max_connections,
+            "ivm": cli.ivm,
+            "distributed_workers": cli.distributed.distributed_workers,
         })
     }
 
@@ -410,6 +412,16 @@ mod cli_probe_tests {
         );
         assert_eq!(via_cli["bind"], "127.0.0.1");
         assert_eq!(via_cli["port"], 5432);
+    }
+
+    #[test]
+    fn ivm_and_distributed_flags_can_be_combined() {
+        let combined = probe(
+            &[],
+            &["--ivm", "--distributed-workers", "http://127.0.0.1:50051"],
+        );
+        assert_eq!(combined["ivm"], true);
+        assert_eq!(combined["distributed_workers"][0], "http://127.0.0.1:50051");
     }
 
     /// Runs the probe subprocess with a cleared environment plus `envs`.

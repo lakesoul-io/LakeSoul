@@ -5325,3 +5325,148 @@ fn test_distributed_ivm_refresh_writes_and_commits_on_the_coordinator() {
         Ok(())
     });
 }
+
+/// A downstream view reads another view's materialized table.  The chain
+/// scheduler must refresh the upstream first on the coordinator, wait for its
+/// commit, and only then refresh the downstream view.
+#[cfg(feature = "ivm")]
+#[test]
+fn test_distributed_ivm_chain_refreshes_upstream_first() {
+    use datafusion::arrow::array::{Int64Array, RecordBatch, StringArray};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use lakesoul_ivm::{
+        IvmRuntime, IvmRuntimeConfig, IvmSqlExecutor, IvmTableOptions, RefreshAction,
+        row_mv_schema_for,
+    };
+
+    run_distributed_test(async {
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        let (urls, mut workers) = spawn_workers(2).await;
+        let factory = distributed_factory(Arc::clone(&client), urls, false)?;
+        let template = factory.create_session(&LakeSoulSessionOptions::default())?;
+        let config = IvmRuntimeConfig::from_session(&template).with_session_factory(
+            Arc::new(crate::session::IvmRefreshSessionFactory::new(factory)),
+        );
+        let runtime = IvmRuntime::from_env_with_config(config).await?;
+        runtime.init_schema().await?;
+        let suffix = uuid::Uuid::new_v4().simple();
+        let dir = std::env::temp_dir().join(format!("lakesoul-ivm-chain-{suffix}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("v", DataType::Int64, true),
+            Field::new("op", DataType::Utf8, false),
+        ]));
+        let source = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_chain_src_{suffix}"),
+                    format!("file://{}", dir.join("src").display()),
+                    source_schema.clone(),
+                )
+                .with_primary_keys(vec!["k".to_string()])
+                .with_cdc_column("op"),
+            )
+            .await?;
+        let upstream = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_chain_up_{suffix}"),
+                    format!("file://{}", dir.join("up").display()),
+                    row_mv_schema_for(&source.schema, &[])?,
+                )
+                .with_primary_keys(vec!["k".to_string()]),
+            )
+            .await?;
+        let downstream = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_chain_down_{suffix}"),
+                    format!("file://{}", dir.join("down").display()),
+                    row_mv_schema_for(
+                        &upstream.schema,
+                        &["k".to_string(), "v".to_string()],
+                    )?,
+                )
+                .with_primary_keys(vec!["k".to_string()]),
+            )
+            .await?;
+        source
+            .append_batch(
+                runtime.client(),
+                RecordBatch::try_new(
+                    source_schema,
+                    vec![
+                        Arc::new(Int64Array::from(vec![1, 2, 3])),
+                        Arc::new(Int64Array::from(vec![10, 20, 30])),
+                        Arc::new(StringArray::from(vec!["insert", "insert", "insert"])),
+                    ],
+                )
+                .unwrap(),
+            )
+            .await?;
+        let context = SessionContext::new();
+        for table in [&source, &upstream, &downstream] {
+            context.register_table(
+                table.table_name.as_str(),
+                Arc::new(runtime.table_provider(table)),
+            )?;
+        }
+        let executor =
+            IvmSqlExecutor::with_shared_runtime(Arc::new(runtime)).with_session(context);
+        executor
+            .execute(&format!(
+                "INSERT INTO {} SELECT * FROM {}",
+                upstream.table_name, source.table_name
+            ))
+            .await?;
+        executor
+            .execute(&format!(
+                "INSERT INTO {} SELECT k, v FROM {}",
+                downstream.table_name, upstream.table_name
+            ))
+            .await?;
+        let runtime = executor.runtime();
+        source
+            .append_batch(
+                runtime.client(),
+                RecordBatch::try_new(
+                    Arc::new(Schema::new(vec![
+                        Field::new("k", DataType::Int64, false),
+                        Field::new("v", DataType::Int64, true),
+                        Field::new("op", DataType::Utf8, false),
+                    ])),
+                    vec![
+                        Arc::new(Int64Array::from(vec![4])),
+                        Arc::new(Int64Array::from(vec![40])),
+                        Arc::new(StringArray::from(vec!["insert"])),
+                    ],
+                )
+                .unwrap(),
+            )
+            .await?;
+        let refreshed = runtime.refresh_view_chain(&downstream.table_id).await?;
+        assert_eq!(refreshed.len(), 2);
+        assert_eq!(refreshed[0].view_id, upstream.table_id);
+        assert!(matches!(
+            refreshed[0].action,
+            RefreshAction::Incremental | RefreshAction::Rebuilt
+        ));
+        assert!(refreshed[0].epoch.is_some());
+        assert_eq!(refreshed[1].view_id, downstream.table_id);
+        assert!(matches!(
+            refreshed[1].action,
+            RefreshAction::Incremental | RefreshAction::Rebuilt
+        ));
+        assert!(refreshed[1].epoch.is_some());
+        let rows = downstream
+            .read_current(runtime.client())
+            .await?
+            .iter()
+            .map(|batch| batch.num_rows())
+            .sum::<usize>();
+        assert_eq!(rows, 4);
+        workers.shutdown().await;
+        Ok(())
+    });
+}

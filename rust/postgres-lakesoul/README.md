@@ -58,7 +58,22 @@ INSERT INTO target ...;
 - 定义变化、state 为空或 dirty 时自动 rebuild。rebuild 对用户可见 target 使用一次原子 `UpdateCommit`，不会先 truncate，因此读请求不会看到空表。
 - 目标表可以 `PARTITIONED BY`。IVM 记录自己发布过的分区；rebuild 只替换这些分区，其他分区保持原样。
 - 外部引擎在 IVM 拥有或本次写入的分区产生数据 commit 时，IVM 在 refresh 开始和提交前检测到并报错；compaction commit 放行。不同分区上的普通 batch/streaming 写入可以与 IVM 共存。
-- v1 只支持单机；`--ivm` 与 distributed 模式互斥。
+- `--ivm` 可以与 distributed 模式一起启动（实验特性）。coordinator 负责
+  refresh 编排、epoch 和 commit；worker 执行可序列化的 scan/lookup/write
+  stage，只写 staged files，不写 `ivm.epochs`。启动示例：
+
+  ```sh
+  postgres-lakesoul --ivm \
+    --distributed-workers http://worker-0:50051,http://worker-1:50051
+  ```
+
+  worker 必须使用同一协议代（`lakesoul-distributed/3-ivm`）并启用 IVM
+  feature；混合版本会在 discovery/decode 阶段失败。没有可用 worker 时，
+  refresh 仍可在 coordinator 单机执行；显式配置
+  `--distributed-fallback-local` 可让无法分布的 refresh 回退单机。
+- 分布式 IVM 的 Range bucket shuffle 需要配套的 datafusion-distributed
+  Range shuffle 支持；上游 crates.io 4.0.0 尚未包含该改动时，keyed lookup
+  会留在 coordinator，单机语义不受影响。
 
 ## 数据路径、隔离和判定
 
