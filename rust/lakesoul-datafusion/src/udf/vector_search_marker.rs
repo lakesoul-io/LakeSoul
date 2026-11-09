@@ -447,11 +447,11 @@ pub fn multi_marker_udf() -> Arc<ScalarUDF> {
 /// How the vector search orders its candidates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RerankMode {
-    /// Exact re-rank over the stored vector column (default).
-    #[default]
+    /// Exact re-rank over the stored vector column.
     Exact,
     /// Order by the quantized distance computed inside the index; the vector
     /// column is not read at all.
+    #[default]
     Index,
 }
 
@@ -465,9 +465,10 @@ datafusion::common::extensions_options! {
     pub struct LakeSoulVectorSearchConfig {
         /// Number of IVF clusters to probe in each bucket index.
         pub nprobe: usize, default = 64
-        /// Candidate ordering: `"exact"` re-ranks against the stored vector
-        /// column; `"index"` orders by the index distance and never reads it.
-        pub rerank: String, default = String::new()
+        /// Candidate ordering: `"index"` (default) orders by the index
+        /// distance and never reads the stored vector column; `"exact"`
+        /// re-ranks against it.
+        pub rerank: String, default = String::from("index")
         /// Clusters probed concurrently per search (1 = sequential).  The
         /// probed clusters are partitioned into that many groups and merged,
         /// so the result set is unchanged; it trades per-query latency for
@@ -495,12 +496,12 @@ impl datafusion::common::config::ConfigExtension for LakeSoulVectorSearchConfig 
 }
 
 impl LakeSoulVectorSearchConfig {
-    /// The parsed candidate ordering mode (`"exact"` unless `"index"`).
+    /// The parsed candidate ordering mode (`"exact"` only when explicitly set).
     pub fn rerank_mode(&self) -> RerankMode {
-        if self.rerank.eq_ignore_ascii_case("index") {
-            RerankMode::Index
-        } else {
+        if self.rerank.eq_ignore_ascii_case("exact") {
             RerankMode::Exact
+        } else {
+            RerankMode::Index
         }
     }
 }

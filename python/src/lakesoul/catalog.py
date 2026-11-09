@@ -1016,7 +1016,7 @@ class LakeSoulTable:
         column: str | None = None,
         top_k: int = 10,
         metric: str | None = None,
-        rerank: str = "auto",
+        rerank: str = "index",
         nprobe: int | None = None,
         exact_overfetch: int | None = None,
         filter: str | None = None,
@@ -1046,10 +1046,9 @@ class LakeSoulTable:
             metric: ``"L2"`` or ``"IP"``.  Defaults to the index metric.  A
                 metric that differs from the index falls back to a plain scan
                 (same as the SQL path) instead of failing.
-            rerank: ``"auto"`` keeps the session default; ``"exact"`` re-ranks
-                candidates against the stored vectors; ``"index"`` orders by
-                the index distance and does not read the vector column
-                (approximate, faster).
+            rerank: ``"index"`` (default) orders by the index distance and
+                does not read the vector column (approximate, faster);
+                ``"exact"`` re-ranks candidates against the stored vectors.
             nprobe: IVFFlat clusters probed per bucket (session option; set to
                 trade recall for latency).
             exact_overfetch: Candidates per bucket in exact mode
@@ -1188,7 +1187,7 @@ class LakeSoulTable:
         column: str | None = None,
         top_k: int = 10,
         metric: str | None = None,
-        rerank: str = "exact",
+        rerank: str = "index",
         nprobe: int | None = None,
         exact_overfetch: int | None = None,
         batch_size: int = 1024,
@@ -1200,8 +1199,8 @@ class LakeSoulTable:
         Prefers the native snapshot batch entry (one shard resolution and one
         ranking pass for the whole call, same semantics as the SQL path).  When
         the table cannot use it - the native entry requires a single Int64
-        primary key named ``id``, one data file per hash bucket, and exact mode
-        also requires the `LAKESOUL_CACHE` decoded-block cache - the batch falls back to
+        primary key named ``id``, exact mode also needs one data file per hash
+        bucket and the `LAKESOUL_CACHE` decoded-block cache - the batch falls back to
         one SQL search per query.  The fallback gives identical ids, just
         slower (it re-plans the search per query).
 
@@ -1211,8 +1210,8 @@ class LakeSoulTable:
             column: Vector column; defaults to the only declared column.
             top_k: Neighbours returned per query.
             metric: ``"L2"`` or ``"IP"``; defaults to the index metric.
-            rerank: ``"exact"`` (default), ``"index"`` (index ordering, no
-                vector-column reads, approximate) or ``"auto"`` (exact).
+            rerank: ``"index"`` (default; index ordering, no vector-column
+                reads) or ``"exact"`` (re-rank by stored vectors).
             nprobe: Clusters probed per bucket; defaults to the session's
                 ``nprobe``.
             exact_overfetch: Candidates per bucket in exact mode
@@ -1257,7 +1256,7 @@ class LakeSoulTable:
                         f"the index dimension {int(expected_dim)}"
                     )
         requested_nprobe = nprobe if nprobe is not None else query_session.nprobe
-        exact = rerank != "index"
+        exact = rerank == "exact"
         overfetch = 10 if exact_overfetch is None else int(exact_overfetch)
         if overfetch < 1:
             raise ValueError("exact_overfetch must be >= 1")
@@ -1323,7 +1322,7 @@ class LakeSoulTable:
     ) -> BatchSearchResult:
         """Per-query SQL fallback used when the native batch cannot run."""
         primary_key = self.primary_keys[0] if self.primary_keys else "id"
-        effective_rerank = "exact" if rerank == "auto" else rerank
+        effective_rerank = "index" if rerank == "auto" else rerank
         # Apply the search options once for the whole batch: `table.search`
         # issues a `SET` per call when options are passed, and doing that per
         # query would roughly double the fallback cost.  A per-query search
@@ -1345,6 +1344,7 @@ class LakeSoulTable:
                 column=column,
                 top_k=top_k,
                 metric=metric,
+                rerank=effective_rerank,
                 columns=[primary_key],
                 with_distance=False,
                 session=session,

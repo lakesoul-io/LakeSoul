@@ -80,7 +80,7 @@ def _native_vector_search_frame(
         return None
     try:
         session = table.catalog.session()
-        options: dict[str, Any] = {"rerank": rerank if rerank in ("exact", "index") else "exact"}
+        options: dict[str, Any] = {"rerank": rerank if rerank in ("exact", "index") else "index"}
         if nprobe:
             options["nprobe"] = int(nprobe)
         if parallelism > 1:
@@ -99,7 +99,7 @@ def _native_vector_search_frame(
             column=column,
             top_k=top_k,
             metric=metric,
-            rerank=rerank if rerank in ("exact", "index") else "exact",
+            rerank=rerank if rerank in ("exact", "index") else "index",
             nprobe=nprobe,
             columns=columns,
             with_distance=False,
@@ -131,7 +131,7 @@ def _native_multi_search_frame(
         return None
     try:
         session = table.catalog.session()
-        options: dict[str, Any] = {"rerank": rerank if rerank in ("exact", "index") else "exact"}
+        options: dict[str, Any] = {"rerank": rerank if rerank in ("exact", "index") else "index"}
         if nprobe:
             options["nprobe"] = int(nprobe)
         if parallelism > 1:
@@ -178,21 +178,19 @@ def vector_search(
     column: str | None = None,
     metric: str | None = None,
     extra_columns: Sequence[str] = (),
-    rerank: str = "exact",
+    rerank: str = "index",
     parallelism: int = 1,
     with_distance: bool = False,
 ) -> Any:
     """Search the nearest ``top_k`` rows to ``query`` and return a Daft DataFrame.
 
     The similarity filtering is executed by the LakeSoul vector index: each
-    per-bucket reader returns its approximate top-``top_k`` candidates, and
-    the candidates are re-ranked by exact vector distance in Daft before the
-    global top-``top_k`` is returned.
-
-    With ``rerank="index"`` the reader instead ranks the candidates by the
-    quantized distance computed inside the index and returns the reserved
+    per-bucket reader returns its approximate top-``top_k`` candidates.  In
+    the default ``rerank="index"`` mode the candidates are ranked by the
+    quantized distance from the index and the reserved
     ``__lakesoul_vector_distance`` column; the scan never reads the stored
-    vector column.  This is only supported for L2 (inner product keeps the
+    vector column.  With ``rerank="exact"`` Daft re-ranks the candidates by
+    their exact vector distance before the global top-``top_k`` is returned.  This is only supported for L2 (inner product keeps the
     exact rerank) and trades a small amount of recall for fewer bytes and
     less CPU; ``parallelism`` probes that many clusters concurrently per
     reader.
@@ -213,9 +211,9 @@ def vector_search(
             table property.
         extra_columns: Additional columns to return alongside the primary
             key and the vector column.
-        rerank: ``"exact"`` (default) re-ranks the candidates against the
-            stored vector column; ``"index"`` orders by the index distance
-            and skips the vector column entirely (L2 only).
+        rerank: ``"index"`` (default) orders by the index distance and skips
+            the vector column entirely (L2 only); ``"exact"`` re-ranks the
+            candidates against the stored vector column.
         parallelism: Number of clusters to probe concurrently per reader
             (default 1); it lowers single-query latency at the cost of
             throughput when many queries run at once.
@@ -377,7 +375,7 @@ def multi_vector_search(
     nprobe: int = 64,
     weights: Mapping[str, float] | None = None,
     extra_columns: Sequence[str] = (),
-    rerank: str = "exact",
+    rerank: str = "index",
     parallelism: int = 1,
     with_distance: bool = False,
 ) -> Any:
@@ -386,9 +384,9 @@ def multi_vector_search(
     Every queried column is searched independently; a row must be a candidate
     in **every** column's index (the candidate sets are intersected) and the
     rows are ranked by the weighted sum of the per-column distances.  With
-    ``rerank="index"`` the distances come from the indexes and the stored
-    vector columns are never read; the default ``rerank="exact"`` computes the
-    exact weighted sum on the candidate rows inside Daft.
+    the default ``rerank="index"`` the distances come from the indexes and the
+    stored vector columns are never read; ``rerank="exact"`` computes the exact
+    weighted sum on the candidate rows inside Daft.
 
     Only L2 columns are supported (fusing inner-product scores is not
     defined); every queried column must carry the same metric.
@@ -403,8 +401,8 @@ def multi_vector_search(
         weights: Optional per-column fusion weights (default 1.0 each).
         extra_columns: Additional columns to return alongside the primary
             key and the queried vector columns.
-        rerank: ``"exact"`` (default) or ``"index"`` (rank by the fused index
-            distance, skipping the vector columns).
+        rerank: ``"index"`` (default; rank by the fused index, skipping the
+            vector columns) or ``"exact"`` (re-rank by exact distance).
         parallelism: Number of clusters to probe concurrently per reader.
         with_distance: Also return the fused distance in a
             ``vector_distance`` column.

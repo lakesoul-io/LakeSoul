@@ -136,7 +136,7 @@ class LakeSoulSession:
             (``fs.s3a.endpoint``/``bucket``/``access.key``/``secret.key``/
             ``path.style.access``).
         vector_search: Defaults for ``lakesoul_vector_search.*``:
-            ``nprobe``, ``rerank`` (``"exact"``/``"index"``),
+            ``nprobe``, ``rerank`` (``"index"`` default / ``"exact"``),
             ``parallelism``, ``deferred_payload``, ``exact_overfetch``.
         distributed: Optional coordinator settings that route queries through
             the Rust distributed planner and its ``lakesoul-worker`` fleet:
@@ -297,7 +297,7 @@ class LakeSoulSession:
         nprobe: int = 64,
         parallelism: int = 1,
         batch_size: int = 0,
-        exact: bool = True,
+        exact: bool = False,
         exact_overfetch: int = 10,
         metric: str = "L2",
     ) -> BatchSearchResult:
@@ -309,7 +309,9 @@ class LakeSoulSession:
         list of primary keys per query.
 
         The native entry supports a single Int64 primary key named ``id`` and
-        requires the `LAKESOUL_CACHE` decoded-block cache for ``exact=True``;
+        defaults to index-only ordering (``exact=False``); ``exact=True``
+        requires one data file per bucket and the `LAKESOUL_CACHE`
+        decoded-block cache;
         :meth:`lakesoul.catalog.LakeSoulTable.search_batch` checks both and
         falls back to per-query SQL otherwise, so prefer the table method.
         """

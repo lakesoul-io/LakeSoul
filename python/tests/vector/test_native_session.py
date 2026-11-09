@@ -140,7 +140,8 @@ def test_session_sql_and_explain() -> None:
         plan = session.explain(table.to_sql(query, top_k=5))
         assert "LakeSoulVectorSearchExec" in plan, plan
         assert "metric=L2" in plan, plan
-        assert "order_by=false" in plan, plan
+        # The session default is index-only ordering now.
+        assert "order_by=true" in plan, plan
 
         # EXPLAIN ANALYZE runs the query and keeps the plan text.
         analyzed = session.explain(table.to_sql(query, top_k=5), analyze=True)
@@ -156,10 +157,12 @@ def test_search_matches_sql_and_brute_force() -> None:
     catalog, table, table_path = _create_table(table_name, vectors=vectors)
     try:
         query = np.random.default_rng(13).normal(size=DIM).astype(np.float32)
-        session = catalog.session(vector_search={"nprobe": 4, "exact_overfetch": 30})
+        session = catalog.session(
+            vector_search={"nprobe": 4, "exact_overfetch": 30, "rerank": "exact"}
+        )
         expected = _top_k(vectors, query, 5, metric="L2")
 
-        found = table.search(query, top_k=5, session=session)
+        found = table.search(query, top_k=5, rerank="exact", session=session)
         returned = found.column("id").to_pylist()
         assert len(returned) == 5
         assert len(set(returned) & set(expected)) >= 4, (returned, expected)
@@ -172,7 +175,7 @@ def test_search_matches_sql_and_brute_force() -> None:
 
         # with_distance adds the distance column, ordered ascending for L2.
         with_distance = table.search(
-            query, top_k=10, with_distance=True, session=session
+            query, top_k=10, rerank="exact", with_distance=True, session=session
         )
         assert DISTANCE_COLUMN in with_distance.column_names
         distances = with_distance.column(DISTANCE_COLUMN).to_pylist()
@@ -230,9 +233,11 @@ def test_search_index_only_and_ip() -> None:
     )
     try:
         query = np.random.default_rng(23).normal(size=DIM).astype(np.float32)
-        session = ip_catalog.session(vector_search={"nprobe": 4, "exact_overfetch": 30})
+        session = ip_catalog.session(
+            vector_search={"nprobe": 4, "exact_overfetch": 30, "rerank": "exact"}
+        )
         expected = _top_k(vectors, query, 5, metric="IP")
-        found = ip_table.search(query, top_k=5, session=session)
+        found = ip_table.search(query, top_k=5, rerank="exact", session=session)
         returned = found.column("id").to_pylist()
         assert len(returned) == 5
         assert len(set(returned) & set(expected)) >= 4, (returned, expected)
@@ -272,7 +277,7 @@ def test_search_batch_matches_brute_force() -> None:
         queries = generator.normal(size=(6, DIM)).astype(np.float32)
         session = catalog.session(vector_search={"nprobe": 4})
         result = table.search_batch(
-            queries, top_k=5, exact_overfetch=30, session=session
+            queries, top_k=5, rerank="exact", exact_overfetch=30, session=session
         )
         assert len(result.ids) == 6
         for index, query in enumerate(queries):
@@ -286,7 +291,12 @@ def test_search_batch_matches_brute_force() -> None:
 
         # The catalog convenience method delegates to the table method.
         via_catalog = catalog.search_batch(
-            table_name, queries[:2], top_k=5, exact_overfetch=30, session=session
+            table_name,
+            queries[:2],
+            top_k=5,
+            rerank="exact",
+            exact_overfetch=30,
+            session=session,
         )
         assert via_catalog.ids == result.ids[:2]
     finally:
@@ -304,7 +314,9 @@ def test_search_batch_falls_back_for_non_native_primary_key() -> None:
         generator = np.random.default_rng(31)
         queries = generator.normal(size=(3, DIM)).astype(np.float32)
         session = catalog.session(vector_search={"nprobe": 4, "exact_overfetch": 30})
-        result = table.search_batch(queries, top_k=5, session=session)
+        result = table.search_batch(
+            queries, top_k=5, rerank="exact", session=session
+        )
         assert len(result.ids) == 3
         assert result.distances is None
         for index, query in enumerate(queries):
@@ -534,7 +546,9 @@ def test_search_pinned_snapshot_tag_and_as_of() -> None:
     vectors = _vectors()
     catalog, table, table_path = _create_table(table_name, vectors=vectors)
     try:
-        session = catalog.session(vector_search={"nprobe": 4, "exact_overfetch": 20})
+        session = catalog.session(
+            vector_search={"nprobe": 4, "exact_overfetch": 20, "rerank": "exact"}
+        )
         latest_before = session.sql(
             f'SELECT count(*) AS cnt FROM "lakesoul".default.{table_name}'
         )
@@ -575,22 +589,22 @@ def test_search_pinned_snapshot_tag_and_as_of() -> None:
 
         query = np.random.default_rng(59).normal(size=DIM).astype(np.float32)
         frozen_ids = {int(value) for value in table.search(
-            query, top_k=50, snapshot=snapshot_id, session=session
+            query, top_k=50, rerank="exact", snapshot=snapshot_id, session=session
         ).column("id").to_pylist()}
         assert frozen_ids
         assert max(frozen_ids) < N, sorted(frozen_ids)[-3:]
-        latest_ids = table.search(query, top_k=50, session=session).column(
+        latest_ids = table.search(query, top_k=50, rerank="exact", session=session).column(
             "id"
         ).to_pylist()
         assert latest_ids and max(latest_ids) >= N, latest_ids[-3:]
 
         tag_ids = {int(value) for value in table.search(
-            query, top_k=50, tag="v1", session=session
+            query, top_k=50, rerank="exact", tag="v1", session=session
         ).column("id").to_pylist()}
         assert tag_ids == frozen_ids
 
         as_of_ids = {int(value) for value in table.search(
-            query, top_k=50, as_of=int(snapshot.created_at), session=session
+            query, top_k=50, rerank="exact", as_of=int(snapshot.created_at), session=session
         ).column("id").to_pylist()}
         assert as_of_ids == frozen_ids
 
@@ -623,7 +637,7 @@ def test_search_pinned_snapshot_tag_and_as_of() -> None:
 
         # A pinned scan with an extra filter keeps the filter semantics.
         filtered = table.search(
-            query, top_k=10, filter="id < 50", snapshot=snapshot_id, session=session
+            query, top_k=10, rerank="exact", filter="id < 50", snapshot=snapshot_id, session=session
         )
         assert filtered.num_rows == 10
         assert all(value < 50 for value in filtered.column("id").to_pylist())

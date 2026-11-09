@@ -779,6 +779,18 @@ fn clean_table_dir(table_name: &str) {
     );
 }
 
+
+/// Existing exact-path tests use the old default ordering; make it explicit
+/// now that the session default is index-only.
+async fn use_exact_rerank(ctx: &datafusion::prelude::SessionContext) {
+    ctx.sql("SET lakesoul_vector_search.rerank = 'exact'")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+}
+
 fn default_args() -> CoreArgs {
     CoreArgs {
         warehouse_prefix: None,
@@ -1222,6 +1234,7 @@ async fn sql_vector_search_falls_back_without_index() {
     // No vector index is built.
 
     let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
     let q = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8]
         .iter()
         .map(|v| v.to_string())
@@ -2138,6 +2151,7 @@ async fn sql_vector_search_non_integer_primary_keys() {
     assert_vector_index_built(table_name);
 
     let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
     let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
     let q = query
         .iter()
@@ -2221,6 +2235,7 @@ async fn sql_vector_search_non_integer_primary_keys() {
     assert_vector_index_built(table_name);
 
     let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
     let query = [0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7, 0.8];
     let q = query
         .iter()
@@ -2523,6 +2538,7 @@ async fn sql_vector_search_multi_file_bucket() {
 
     let ctx =
         crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
     ctx.sql("SET lakesoul_vector_search.nprobe = 4")
         .await
         .unwrap()
@@ -2608,6 +2624,7 @@ async fn sql_vector_search_multi_file_upsert_uses_newest_version() {
 
     let ctx =
         crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
     ctx.sql("SET lakesoul_vector_search.nprobe = 4")
         .await
         .unwrap()
@@ -2682,6 +2699,7 @@ async fn sql_vector_search_projects_extra_columns() {
 
     let ctx =
         crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
     ctx.sql("SET lakesoul_vector_search.nprobe = 4")
         .await
         .unwrap()
@@ -2805,6 +2823,7 @@ async fn sql_vector_search_filter_narrows_probe() {
 
     let ctx =
         crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
     ctx.sql("SET lakesoul_vector_search.nprobe = 4")
         .await
         .unwrap()
@@ -2998,6 +3017,7 @@ async fn sql_vector_search_cdc_drops_tombstones() {
 
     let ctx =
         crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
     ctx.sql("SET lakesoul_vector_search.nprobe = 4")
         .await
         .unwrap()
@@ -3197,6 +3217,7 @@ async fn sql_vector_search_range_partitioned_table() {
 
     let ctx =
         crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
     ctx.sql("SET lakesoul_vector_search.nprobe = 4")
         .await
         .unwrap()
@@ -3459,6 +3480,7 @@ async fn sql_vector_search_multi_column_fusion() {
     //    Sort above re-ranks it by the exact weighted distances.
     let ctx =
         crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
     let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
     assert!(explain.contains("LakeSoulVectorSearchExec"), "{explain}");
     assert!(
@@ -3574,6 +3596,7 @@ async fn sql_vector_search_multi_column_fusion_ip() {
     // them by the exact weighted dot products.
     let ctx =
         crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    use_exact_rerank(&ctx).await;
     let explain = explain_plan(&ctx, &format!("EXPLAIN VERBOSE {sql}")).await;
     assert!(explain.contains("LakeSoulVectorSearchExec"), "{explain}");
     assert!(

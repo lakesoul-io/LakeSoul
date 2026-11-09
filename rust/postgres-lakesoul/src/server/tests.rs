@@ -2275,6 +2275,14 @@ async fn pgvector_distance_operators_use_the_vector_index() {
     // uses a perturbed query with well-separated distances.
     let probe = perturbed_query();
     let probe_text = vector_text(&probe);
+    // The service default is index-only now; this comparison is about the
+    // exact vector distance, so opt into the exact re-rank explicitly.
+    run_query(
+        &router,
+        &mut client,
+        "SET lakesoul_vector_search.rerank = 'exact'",
+    )
+    .await;
     let sql = format!("SELECT id FROM {table} ORDER BY vec <-> '{probe_text}' LIMIT 3");
     let ids: Vec<i64> = first_column(&run_query(&router, &mut client, &sql).await)
         .iter()
