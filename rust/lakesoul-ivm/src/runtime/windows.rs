@@ -2711,8 +2711,10 @@ impl IvmRuntime {
             .output_files(mv_writer.flush_and_close().await?, written_rows);
         let state_files =
             state.output_files(state_writer.flush_and_close().await?, written_rows);
-        let mv_ids = view.mv.commit_files(&self.client, mv_files).await?;
+        // The mirror commits before the target so a persisted target plan
+        // covers the state write too.
         let state_ids = state.commit_files(&self.client, state_files).await?;
+        let mv_ids = view.mv.commit_files(&self.client, mv_files).await?;
         self.checkpoint_epoch_states(&record).await?;
         commit_ids.extend(mv_ids);
         commit_ids.extend(state_ids);

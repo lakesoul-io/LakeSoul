@@ -5953,6 +5953,11 @@ impl IvmRuntime {
     /// treated as committed; LakeSoul commits a batch atomically, so a crash
     /// cannot leave a partial entry.
     async fn resume_commit_plan(&self, record: &EpochRecord) -> Result<CommitPlan> {
+        // Recovery commits are not new staged writes; keep them out of any
+        // plan context left over from another attempt on this task.
+        let _ = COMMIT_PLAN.try_with(|slot| {
+            *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        });
         let mut plan = record.commit_plan.clone();
         for entry in record.commit_plan.entries.iter() {
             if entry.committed {
