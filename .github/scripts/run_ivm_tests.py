@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Run the LakeSoul IVM test binaries built with the IVM feature set.
 
-The IVM tests need a feature set and package selection that differ from the
-main Rust test steps.  A second `cargo test` with a different target selection
-makes Cargo re-unify the dev-dependency features of the whole graph (for
-example `tokio/test-util` and `rust_decimal/db-tokio-postgres` come from
-`postgres-lakesoul`'s dev-dependencies) and rebuild arrow, datafusion and
-vortex.
+The IVM tests use a package selection that differs from the main Rust test
+steps, so a separate `cargo test` invocation must not change the feature
+unification of the shared dependency graph.  `rust/third_party/sqllogictest`
+keeps its `md-5` dependency aligned with `object_store`; otherwise every
+`lakesoul-ivm` test build changes `md-5` and rebuilds object_store, parquet,
+vortex and datafusion.
 
 Build the test targets with the same dev-dependency feature unification as
 the main test steps, then run the emitted executables directly.  The default

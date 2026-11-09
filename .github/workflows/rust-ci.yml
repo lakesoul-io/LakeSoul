@@ -184,11 +184,12 @@ jobs:
           RUST_BACKTRACE: full
         run: cargo test --profile test-fast $TEST_PKGS --bins --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test update_contract --jobs 4 -- --nocapture
 
-      # IVM tests need their own feature set, but they must reuse the shared
-      # dependency build of the main test steps.  A second `cargo test` with a
-      # different target selection re-unifies dev-dependency features and
-      # rebuilds arrow/datafusion/vortex, so the script builds the whole test
-      # selection once and then runs the emitted executables directly.
+      # IVM tests use their own package selection but must reuse the shared
+      # dependency build of the main test steps.  The script builds the core
+      # targets with the same dev-dependency feature unification as the main
+      # steps and runs the emitted executables directly.  Vendored
+      # sqllogictest keeps md-5 aligned with object_store so the IVM build
+      # does not cascade into object_store/parquet/vortex/datafusion.
       - name: IVM core tests
         if: github.event_name != 'schedule'
         env:
