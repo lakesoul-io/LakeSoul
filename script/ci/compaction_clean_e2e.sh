@@ -96,7 +96,7 @@ YAML
 (cd "$COMPOSE_DIR" && docker compose -f docker-compose.yml -f "$PROXY_OVERRIDE" --profile s3 up -d)
 
 log "ensure object store bucket"
-# the bundled rc client fails against rustfs 1.0.0-beta.3, create the bucket directly
+# create the bucket directly instead of waiting on the rc sidecar
 uv run --quiet --no-project --with boto3 python - "${LAKESOUL_E2E_BUCKET:-lakesoul-test-bucket}" <<'PYBUCKET' || true
 import sys
 import boto3

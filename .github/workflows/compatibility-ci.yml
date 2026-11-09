@@ -85,7 +85,7 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.storage == 'file' || inputs.storage == 'all' }}
     services:
       postgres:
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         env:
           POSTGRES_PASSWORD: lakesoul_test
           POSTGRES_USER: lakesoul_test
@@ -199,7 +199,7 @@ jobs:
     if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.storage == 'rustfs' || inputs.storage == 'all')) }}
     services:
       postgres:
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         env:
           POSTGRES_PASSWORD: lakesoul_test
           POSTGRES_USER: lakesoul_test
@@ -213,7 +213,7 @@ jobs:
         ports:
           - 5432:5432
       rustfs:
-        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:1.0.0-beta.3
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs:1.0.4
         ports:
           - "9000:9000"
           - "9001:9001"
@@ -239,7 +239,7 @@ jobs:
         run: |
           docker run --rm --network host \
             --entrypoint /bin/sh \
-            swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.16 \
+            swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.37 \
             -c '
               set -e
               until rc alias set rustfs http://127.0.0.1:9000 rustfsadmin rustfsadmin; do

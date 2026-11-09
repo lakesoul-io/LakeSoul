@@ -144,7 +144,7 @@ def main() -> None:
                 network,
                 "-e",
                 "POSTGRES_HOST_AUTH_METHOD=trust",
-                "postgres:14.5",
+                "postgres:18",
             )
             pg_owned = True
             for _ in range(60):

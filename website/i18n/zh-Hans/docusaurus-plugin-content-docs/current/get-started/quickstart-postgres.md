@@ -27,7 +27,7 @@ docker run -d --name lakesoul-pg -p 5432:5432 \
   -e POSTGRES_USER=lakesoul_test \
   -e POSTGRES_PASSWORD=lakesoul_test \
   -e POSTGRES_DB=lakesoul_test \
-  postgres:14.5
+  swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
 
 docker cp script/meta_init.sql lakesoul-pg:/
 docker exec -i lakesoul-pg sh -c \

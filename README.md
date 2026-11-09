@@ -149,7 +149,7 @@ Video frames, robot episodes and tensors live as blobs beside their metadata.
 # 1. Metadata database
 docker run -d --name lakesoul-pg -p 5432:5432 \
   -e POSTGRES_USER=lakesoul_test -e POSTGRES_PASSWORD=lakesoul_test \
-  -e POSTGRES_DB=lakesoul_test postgres:14.5
+  -e POSTGRES_DB=lakesoul_test postgres:18
 docker cp script/meta_init.sql lakesoul-pg:/
 docker exec -i lakesoul-pg sh -c \
   "PGPASSWORD=lakesoul_test psql -U lakesoul_test -f meta_init.sql"
