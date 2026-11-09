@@ -3529,6 +3529,10 @@ pub(crate) async fn append_dataframe(
     if let Some((_, metadata, record, plan)) = &plan_entry {
         metadata.checkpoint_epoch_commit_plan(record, plan).await?;
         #[cfg(debug_assertions)]
+        if let Some(path) = std::env::var_os("LAKESOUL_IVM_TEST_PLAN_MARKER") {
+            std::fs::write(path, record.epoch.to_string())?;
+        }
+        #[cfg(debug_assertions)]
         if std::env::var_os("LAKESOUL_IVM_TEST_ABORT_AFTER_COMMIT_PLAN").is_some() {
             return Err(rootcause::report!(
                 "injected coordinator crash after commit plan for epoch {}",

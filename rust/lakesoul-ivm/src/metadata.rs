@@ -812,6 +812,26 @@ impl IvmMetadata {
         Ok(row.is_some_and(|row| row.get::<_, String>(0) == owner))
     }
 
+    /// Renew a refresh lease held by `owner`.  Returns false when the lease
+    /// was already taken over or expired.
+    pub async fn renew_view_lock(
+        &self,
+        view_id: &str,
+        owner: &str,
+        ttl_ms: i64,
+    ) -> Result<bool> {
+        let expires_at = crate::now_ms().saturating_add(ttl_ms);
+        let row = self
+            .query_opt_rw(
+                "update ivm.view_locks set expires_at = $3::BIGINT
+                 where view_id = $1::TEXT and owner = $2::TEXT
+                 returning owner",
+                &[&view_id, &owner, &expires_at],
+            )
+            .await?;
+        Ok(row.is_some())
+    }
+
     /// Release a refresh lease held by `owner`.
     pub async fn unlock_view(&self, view_id: &str, owner: &str) -> Result<()> {
         self.execute_rw(

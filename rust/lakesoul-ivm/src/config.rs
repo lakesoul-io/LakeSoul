@@ -79,6 +79,10 @@ pub struct IvmOptions {
     pub vortex_row_block_size: Option<String>,
     /// Override of the Vortex data-block target bytes for internal tables.
     pub vortex_data_block_bytes: Option<String>,
+    /// Lease TTL for the per-view refresh lock.  A live coordinator renews the
+    /// lease; a killed coordinator stops renewing, so another coordinator can
+    /// take over after this interval.
+    pub refresh_lock_ttl_ms: u64,
 }
 
 impl Default for IvmOptions {
@@ -95,6 +99,7 @@ impl Default for IvmOptions {
             write_pool_dir: None,
             vortex_row_block_size: None,
             vortex_data_block_bytes: None,
+            refresh_lock_ttl_ms: 30 * 60 * 1000,
         }
     }
 }

@@ -1080,20 +1080,28 @@ impl IvmSqlExecutor {
         let mv = self.runtime.open_table(&table_name, &namespace).await?;
         let view_id = mv.table_id.clone();
         let lock_owner = uuid::Uuid::new_v4().to_string();
+        let lock_ttl_ms = crate::config::options().refresh_lock_ttl_ms.max(1000) as i64;
         if !self
             .runtime
             .metadata()
-            .try_lock_view(&view_id, &lock_owner, 30 * 60 * 1000)
+            .try_lock_view(&view_id, &lock_owner, lock_ttl_ms)
             .await?
         {
             return Err(rootcause::report!(
                 "view {view_id} is being refreshed by another statement"
             ));
         }
+        let heartbeat = spawn_view_lock_heartbeat(
+            self.runtime.metadata().clone(),
+            view_id.clone(),
+            lock_owner.clone(),
+            lock_ttl_ms,
+        );
         let _lock = ViewLockGuard {
             metadata: self.runtime.metadata().clone(),
             view_id: view_id.clone(),
             owner: lock_owner,
+            heartbeat,
         };
 
         let source = insert.source.as_deref().ok_or_else(|| {
@@ -3335,10 +3343,12 @@ struct ViewLockGuard {
     metadata: crate::metadata::IvmMetadata,
     view_id: String,
     owner: String,
+    heartbeat: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for ViewLockGuard {
     fn drop(&mut self) {
+        self.heartbeat.abort();
         let metadata = self.metadata.clone();
         let view_id = self.view_id.clone();
         let owner = self.owner.clone();
@@ -3346,6 +3356,27 @@ impl Drop for ViewLockGuard {
             let _ = metadata.unlock_view(&view_id, &owner).await;
         });
     }
+}
+
+/// Renew a view's refresh lease while the statement is running.  A killed
+/// coordinator process stops renewing; the lease then expires and another
+/// coordinator can resume the persisted commit plan.
+fn spawn_view_lock_heartbeat(
+    metadata: crate::metadata::IvmMetadata,
+    view_id: String,
+    owner: String,
+    ttl_ms: i64,
+) -> tokio::task::JoinHandle<()> {
+    let interval = std::time::Duration::from_millis((ttl_ms as u64 / 3).max(50));
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            match metadata.renew_view_lock(&view_id, &owner, ttl_ms).await {
+                Ok(true) => {}
+                Ok(false) | Err(_) => break,
+            }
+        }
+    })
 }
 
 /// The INSERT statement of the entry, validated for the supported subset.
