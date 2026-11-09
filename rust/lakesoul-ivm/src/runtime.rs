@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::metadata::{
-    BeginEpoch, Consumer, Cursor, EpochRecord, IvmMetadata, PartitionVersion,
+    BeginEpoch, CommitPlan, Consumer, Cursor, EpochRecord, IvmMetadata, PartitionVersion,
     SourceVersionRange, StateRole, StateTable, StateVersion,
 };
 use crate::provider::IvmTableProvider;
@@ -2381,6 +2381,20 @@ impl PartitionPredicate {
     }
 }
 
+/// The staged-file plan of the refresh currently running on this task.
+pub(crate) struct CommitPlanContext {
+    metadata: IvmMetadata,
+    record: EpochRecord,
+    plan: CommitPlan,
+    /// Plans are armed only for views without auxiliary state tables; a
+    /// stateful view keeps the existing pending-epoch rebuild/repair path.
+    armed: bool,
+}
+
+tokio::task_local! {
+    pub(crate) static COMMIT_PLAN: Arc<Mutex<Option<CommitPlanContext>>>;
+}
+
 /// The target table one refresh is maintaining.
 ///
 /// A refresh may write state tables and the target; only commits to the
@@ -2986,6 +3000,7 @@ tokio::task_local! {
     static CURRENT_REFRESH_EPOCH: Arc<AtomicI64>;
 }
 
+#[cfg_attr(not(feature = "distributed"), allow(dead_code))]
 pub(crate) fn current_refresh_epoch() -> Option<i64> {
     CURRENT_REFRESH_EPOCH
         .try_with(|epoch| {
@@ -3510,13 +3525,90 @@ pub(crate) async fn append_dataframe(
     frame: DataFrame,
 ) -> Result<AppendOutcome> {
     let written = write_dataframe(table, frame).await?;
-    let commit_ids = table.commit_files(client, written.files).await?;
+    let plan_entry = record_target_commit_plan_entry(table, &written.files);
+    if let Some((_, metadata, record, plan)) = &plan_entry {
+        metadata.checkpoint_epoch_commit_plan(record, plan).await?;
+        #[cfg(debug_assertions)]
+        if std::env::var_os("LAKESOUL_IVM_TEST_ABORT_AFTER_COMMIT_PLAN").is_some() {
+            return Err(rootcause::report!(
+                "injected coordinator crash after commit plan for epoch {}",
+                record.epoch
+            ));
+        }
+        #[cfg(debug_assertions)]
+        if std::env::var_os("LAKESOUL_IVM_TEST_PAUSE_AFTER_COMMIT_PLAN").is_some() {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        }
+    }
+    let commit_ids = table.commit_files(client, written.files.clone()).await?;
+    if let Some((id, metadata, record, _)) = &plan_entry {
+        let plan = COMMIT_PLAN
+            .try_with(|slot| {
+                let mut slot =
+                    slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let context = slot.as_mut()?;
+                context.plan.mark_committed(id, commit_ids.clone());
+                Some(context.plan.clone())
+            })
+            .ok()
+            .flatten()
+            .ok_or_else(|| {
+                rootcause::report!(
+                    "commit plan context disappeared after a target commit"
+                )
+            })?;
+        metadata.checkpoint_epoch_commit_plan(record, &plan).await?;
+    }
     Ok(AppendOutcome {
         commit_ids,
         rows: written.rows,
         inserts: written.inserts,
         deletes: written.deletes,
     })
+}
+
+/// Record the target table's staged files in the active commit plan.
+///
+/// Only the target table is journaled.  A view with auxiliary state tables
+/// keeps the existing pending-epoch repair/rebuild path; arming a plan there
+/// would need a complete list of expected state writes before the first
+/// commit, which the current per-shape write order does not provide.
+fn record_target_commit_plan_entry(
+    table: &IvmTable,
+    files: &[DataFileInfo],
+) -> Option<(String, IvmMetadata, EpochRecord, CommitPlan)> {
+    if files.is_empty() {
+        return None;
+    }
+    let target_id = TARGET_WRITE
+        .try_with(|context| {
+            context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .target_table_id
+                .clone()
+        })
+        .ok()?;
+    if target_id != table.table_id {
+        return None;
+    }
+    COMMIT_PLAN
+        .try_with(|slot| {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let context = slot.as_mut()?;
+            if !context.armed {
+                return None;
+            }
+            let id = context.plan.record(&table.table_id, files.to_vec());
+            Some((
+                id,
+                context.metadata.clone(),
+                context.record.clone(),
+                context.plan.clone(),
+            ))
+        })
+        .ok()
+        .flatten()
 }
 
 fn apply_filters(mut frame: DataFrame, filters: Vec<Expr>) -> Result<DataFrame> {
@@ -4786,88 +4878,99 @@ impl IvmRuntime {
             kind,
             CURRENT_REFRESH_EPOCH.scope(
                 Arc::new(AtomicI64::new(-1)),
-                TARGET_WRITE.scope(Arc::new(Mutex::new(scope)), async {
-                    match self.spec_view(spec).await {
-                        Ok(SpecView::SumCount(view)) => {
-                            self.refresh_sum_count(&view).await
+                COMMIT_PLAN.scope(
+                    Arc::new(Mutex::new(None)),
+                    TARGET_WRITE.scope(Arc::new(Mutex::new(scope)), async {
+                        match self.spec_view(spec).await {
+                            Ok(SpecView::SumCount(view)) => {
+                                self.refresh_sum_count(&view).await
+                            }
+                            Ok(SpecView::Variance(view)) => {
+                                self.refresh_variance(&view).await
+                            }
+                            Ok(SpecView::Median(view)) => {
+                                self.refresh_median(&view).await
+                            }
+                            Ok(SpecView::BoolAgg(view)) => {
+                                self.refresh_bool_agg(&view).await
+                            }
+                            Ok(SpecView::ApproxDistinct(view)) => {
+                                self.refresh_approx_distinct(&view).await
+                            }
+                            Ok(SpecView::ApproxPercentile(view)) => {
+                                self.refresh_approx_percentile(&view).await
+                            }
+                            Ok(SpecView::ComputedAgg(view)) => {
+                                self.refresh_computed_agg(&view).await
+                            }
+                            Ok(SpecView::StringAgg(view)) => {
+                                self.refresh_string_agg(&view).await
+                            }
+                            Ok(SpecView::ArrayAgg(view)) => {
+                                self.refresh_array_agg(&view).await
+                            }
+                            Ok(SpecView::Join(view)) => self.refresh_join(&view).await,
+                            Ok(SpecView::MultiJoin(view)) => {
+                                self.refresh_multi_join(&view).await
+                            }
+                            Ok(SpecView::MultiAgg(view)) => {
+                                self.refresh_multi_agg(&view).await
+                            }
+                            Ok(SpecView::LookupJoin(view)) => {
+                                self.refresh_lookup_join(&view).await
+                            }
+                            Ok(SpecView::MultiLookupJoin(view)) => {
+                                self.refresh_multi_lookup_join(&view).await
+                            }
+                            Ok(SpecView::LeftJoin(view)) => {
+                                self.refresh_left_join(&view).await
+                            }
+                            Ok(SpecView::FullJoin(view)) => {
+                                self.refresh_full_join(&view).await
+                            }
+                            Ok(SpecView::CrossJoin(view)) => {
+                                self.refresh_cross_join(&view).await
+                            }
+                            Ok(SpecView::MinMax(view)) => {
+                                self.refresh_min_max(&view).await
+                            }
+                            Ok(SpecView::DistinctAgg(view)) => {
+                                self.refresh_distinct_agg(&view).await
+                            }
+                            Ok(SpecView::Window(view)) => {
+                                self.refresh_window(&view).await
+                            }
+                            Ok(SpecView::SemiAnti(view)) => {
+                                self.refresh_semi_anti(&view).await
+                            }
+                            Ok(SpecView::LeftAggregate(view)) => {
+                                self.refresh_left_aggregate(&view).await
+                            }
+                            Ok(SpecView::LookupChain(view)) => {
+                                self.refresh_lookup_chain(&view).await
+                            }
+                            Ok(SpecView::GroupingSets(view)) => {
+                                self.refresh_grouping_sets(&view).await
+                            }
+                            Ok(SpecView::Row(view)) => self.refresh_row(&view).await,
+                            Ok(SpecView::UnionAll(view)) => {
+                                self.refresh_union_all(&view).await
+                            }
+                            Ok(SpecView::UnionDistinct(view)) => {
+                                self.refresh_union_distinct(&view).await
+                            }
+                            Ok(SpecView::TopK(view)) => self.refresh_top_k(&view).await,
+                            Ok(SpecView::MultiWindow(view)) => {
+                                self.refresh_multi_window(&view).await
+                            }
+                            Ok(SpecView::Fallback(view)) => {
+                                self.refresh_fallback(&view).await
+                            }
+                            Ok(SpecView::Sink(view)) => self.refresh_sink(&view).await,
+                            Err(error) => Err(error),
                         }
-                        Ok(SpecView::Variance(view)) => {
-                            self.refresh_variance(&view).await
-                        }
-                        Ok(SpecView::Median(view)) => self.refresh_median(&view).await,
-                        Ok(SpecView::BoolAgg(view)) => self.refresh_bool_agg(&view).await,
-                        Ok(SpecView::ApproxDistinct(view)) => {
-                            self.refresh_approx_distinct(&view).await
-                        }
-                        Ok(SpecView::ApproxPercentile(view)) => {
-                            self.refresh_approx_percentile(&view).await
-                        }
-                        Ok(SpecView::ComputedAgg(view)) => {
-                            self.refresh_computed_agg(&view).await
-                        }
-                        Ok(SpecView::StringAgg(view)) => {
-                            self.refresh_string_agg(&view).await
-                        }
-                        Ok(SpecView::ArrayAgg(view)) => {
-                            self.refresh_array_agg(&view).await
-                        }
-                        Ok(SpecView::Join(view)) => self.refresh_join(&view).await,
-                        Ok(SpecView::MultiJoin(view)) => {
-                            self.refresh_multi_join(&view).await
-                        }
-                        Ok(SpecView::MultiAgg(view)) => {
-                            self.refresh_multi_agg(&view).await
-                        }
-                        Ok(SpecView::LookupJoin(view)) => {
-                            self.refresh_lookup_join(&view).await
-                        }
-                        Ok(SpecView::MultiLookupJoin(view)) => {
-                            self.refresh_multi_lookup_join(&view).await
-                        }
-                        Ok(SpecView::LeftJoin(view)) => {
-                            self.refresh_left_join(&view).await
-                        }
-                        Ok(SpecView::FullJoin(view)) => {
-                            self.refresh_full_join(&view).await
-                        }
-                        Ok(SpecView::CrossJoin(view)) => {
-                            self.refresh_cross_join(&view).await
-                        }
-                        Ok(SpecView::MinMax(view)) => self.refresh_min_max(&view).await,
-                        Ok(SpecView::DistinctAgg(view)) => {
-                            self.refresh_distinct_agg(&view).await
-                        }
-                        Ok(SpecView::Window(view)) => self.refresh_window(&view).await,
-                        Ok(SpecView::SemiAnti(view)) => {
-                            self.refresh_semi_anti(&view).await
-                        }
-                        Ok(SpecView::LeftAggregate(view)) => {
-                            self.refresh_left_aggregate(&view).await
-                        }
-                        Ok(SpecView::LookupChain(view)) => {
-                            self.refresh_lookup_chain(&view).await
-                        }
-                        Ok(SpecView::GroupingSets(view)) => {
-                            self.refresh_grouping_sets(&view).await
-                        }
-                        Ok(SpecView::Row(view)) => self.refresh_row(&view).await,
-                        Ok(SpecView::UnionAll(view)) => {
-                            self.refresh_union_all(&view).await
-                        }
-                        Ok(SpecView::UnionDistinct(view)) => {
-                            self.refresh_union_distinct(&view).await
-                        }
-                        Ok(SpecView::TopK(view)) => self.refresh_top_k(&view).await,
-                        Ok(SpecView::MultiWindow(view)) => {
-                            self.refresh_multi_window(&view).await
-                        }
-                        Ok(SpecView::Fallback(view)) => {
-                            self.refresh_fallback(&view).await
-                        }
-                        Ok(SpecView::Sink(view)) => self.refresh_sink(&view).await,
-                        Err(error) => Err(error),
-                    }
-                }),
+                    }),
+                ),
             ),
         )
         .await;
@@ -5787,6 +5890,51 @@ impl IvmRuntime {
     /// the recomputed window would overlap applied history (a cursor rewind
     /// that is not aligned with a previous window boundary) and a rebuild is
     /// required.
+    /// Commit the target files a previous coordinator staged but did not
+    /// publish.  Entries whose files are already visible in the target are
+    /// treated as committed; LakeSoul commits a batch atomically, so a crash
+    /// cannot leave a partial entry.
+    async fn resume_commit_plan(&self, record: &EpochRecord) -> Result<()> {
+        let mut plan = record.commit_plan.clone();
+        for entry in record.commit_plan.entries.iter() {
+            if entry.committed {
+                continue;
+            }
+            let table = self.open_table_by_id(&entry.table_id).await?;
+            let current = table.current_files(&self.client).await?;
+            let all_visible = entry
+                .files
+                .iter()
+                .all(|file| current.iter().any(|path| path == &file.path));
+            if all_visible {
+                plan.mark_visible(&entry.id);
+            } else {
+                let commit_ids = table
+                    .commit_files(&self.client, entry.files.clone())
+                    .await?;
+                plan.mark_committed(&entry.id, commit_ids);
+            }
+            self.metadata
+                .checkpoint_epoch_commit_plan(record, &plan)
+                .await?;
+        }
+        Ok(())
+    }
+
+    fn install_commit_plan_context(&self, record: &EpochRecord) {
+        let armed =
+            record.state_versions_before.is_empty() && record.commit_plan.is_empty();
+        let _ = COMMIT_PLAN.try_with(|slot| {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *slot = Some(CommitPlanContext {
+                metadata: self.metadata.clone(),
+                record: record.clone(),
+                plan: record.commit_plan.clone(),
+                armed,
+            });
+        });
+    }
+
     async fn begin_window(
         &self,
         view_id: &str,
@@ -5826,6 +5974,20 @@ impl IvmRuntime {
             }
             BeginEpoch::Created(record) => record,
             BeginEpoch::Pending(record) => {
+                if !record.commit_plan.is_empty() {
+                    self.resume_commit_plan(&record).await?;
+                    let current = output_partition_versions(&self.client, output).await?;
+                    let current_states = self.state_versions(view_id).await?;
+                    self.metadata
+                        .mark_epoch_committed_with_states(
+                            &record,
+                            &current,
+                            &record.commit_ids,
+                            &current_states,
+                        )
+                        .await?;
+                    return Ok(WindowStart::AlreadyApplied(record.epoch));
+                }
                 let current = output_partition_versions(&self.client, output).await?;
                 if current != record.mv_versions_before {
                     // A previous attempt wrote the MV but did not mark the
@@ -5896,6 +6058,7 @@ impl IvmRuntime {
             }
         }
 
+        self.install_commit_plan_context(&record);
         let _ = CURRENT_REFRESH_EPOCH.try_with(|epoch| {
             epoch.store(record.epoch, Ordering::Relaxed);
         });

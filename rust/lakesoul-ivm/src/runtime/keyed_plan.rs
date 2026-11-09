@@ -103,6 +103,7 @@ impl Display for LakeSoulBucketExpr {
     }
 }
 
+#[cfg_attr(not(feature = "distributed"), allow(dead_code))]
 impl LakeSoulBucketExpr {
     pub(crate) fn from_parts(key: Arc<dyn PhysicalExpr>, bucket_count: u32) -> Self {
         Self { key, bucket_count }
@@ -212,6 +213,7 @@ impl Display for LakeSoulColumnsBucketExpr {
     }
 }
 
+#[cfg_attr(not(feature = "distributed"), allow(dead_code))]
 impl LakeSoulColumnsBucketExpr {
     pub(crate) fn from_parts(
         keys: Vec<Arc<dyn PhysicalExpr>>,

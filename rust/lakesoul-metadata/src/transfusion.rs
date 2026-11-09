@@ -312,7 +312,7 @@ fn has_hash_partitions(table_info: &TableInfo) -> bool {
 // An example of bucketed parquet file name with bucket id 3:
 //   part-r-00000-2dd664f9-d2c4-4ffe-878f-c6c70c1fb0cb_00003.gz.parquet
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataFileInfo {
     // range partitions
     pub partition_desc: String,
