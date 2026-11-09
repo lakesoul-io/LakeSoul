@@ -87,7 +87,8 @@ datafusion-execution = { version = "55" }
 datafusion-datasource = { version = "55" }
 datafusion-datasource-parquet = { version = "55" }
 datafusion-substrait = { version = "55" }
-datafusion-distributed = { version = "4.0.0" }
+# LakeSoul fork branch: Range shuffle support for IVM bucket co-location.
+datafusion-distributed = { git = "https://github.com/lakesoul-io/datafusion-distributed.git", branch = "lakesoul-ivm-range-shuffle" }
 datafusion-proto = { version = "55" }
 # arrow
 arrow = { version = "59", features = ["prettyprint"] }

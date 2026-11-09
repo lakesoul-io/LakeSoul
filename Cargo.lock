@@ -2675,8 +2675,7 @@ dependencies = [
 [[package]]
 name = "datafusion-distributed"
 version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99be6a2157fece40ed9f141105931998e57a2b5669365624243a8104368e0aad"
+source = "git+https://github.com/lakesoul-io/datafusion-distributed.git?branch=lakesoul-ivm-range-shuffle#04d54864bec6d2e2da58eec1b3c54615107ed876"
 dependencies = [
  "arrow-flight",
  "arrow-ipc",
