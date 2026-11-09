@@ -40,7 +40,7 @@ jobs:
   run-pytest:
     runs-on: ubuntu-24.04
     env:
-      # Match rust-ci's test job so Python CI can reuse rust-test-fast.
+      # Keep the Python build's compiler and linker setup stable.
       RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
     services:
       # Label used to access the service container
@@ -140,14 +140,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lld
           command -v ld.lld >/dev/null || sudo ln -s "$(command -v lld)" /usr/local/bin/ld.lld
-      # Reuse rust-ci's rust-test-fast tier: Python only needs a host build to
-      # run pytest, and matching the test job's profile, target, linker and
-      # RUSTFLAGS lets the dependency artifacts carry over.
+      # Python builds a package/feature graph that differs from rust-ci's test
+      # job. Sharing rust-test-fast restores a 2 GB archive and still rebuilds
+      # every unit because the fingerprints differ, so Python owns this tier:
+      # main seeds it, pull requests restore it.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
-          shared-key: "rust-test-fast"
-          save-if: false
+          shared-key: "python-test-fast"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build native libraries
         run: |
