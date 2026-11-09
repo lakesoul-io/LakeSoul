@@ -7,3 +7,4 @@
 pub mod file_format;
 pub mod table_factory;
 pub mod table_provider;
+pub mod upsert_exec;

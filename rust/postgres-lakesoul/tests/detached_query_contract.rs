@@ -28,6 +28,7 @@ async fn detached_query_contract() -> Result<()> {
             select_result_pages(h, &suite).await?;
             multi_statement_sets_and_result_sets(h, &suite).await?;
             insert_job_writes_the_target(h, &suite).await?;
+            upsert_job_updates_the_target(h, &suite).await?;
             duplicate_job_key_returns_the_same_job(h, &suite).await?;
             cancel_stops_a_streaming_job(h, &suite).await?;
             Ok(())
@@ -189,6 +190,44 @@ async fn insert_job_writes_the_target(h: &Harness, suite: &str) -> Result<()> {
         "unexpected command tag {tag:?}"
     );
     ensure_eq(kind.as_deref(), Some("table"))?;
+    Ok(())
+}
+
+/// A detached job runs the upsert path: the plain write hook only rejects
+/// `DO UPDATE`, so the job entry point must route it through the planned
+/// upsert instead.
+async fn upsert_job_updates_the_target(h: &Harness, suite: &str) -> Result<()> {
+    let query_id = submit(
+        &h.lake,
+        "INSERT INTO pk_items (id, val, label) VALUES (1, 100, 'job') \
+         ON CONFLICT (id) DO UPDATE \
+           SET val = EXCLUDED.val, label = EXCLUDED.label",
+        &format!("{suite}-upsert"),
+    )
+    .await?;
+    ensure_eq(&wait(h, &query_id, 30_000).await?, "succeeded")?;
+
+    let row = h
+        .lake
+        .query_one("SELECT val, label FROM pk_items WHERE id = 1", &[])
+        .await?;
+    let val: i64 = row.get(0);
+    let label: Option<String> = row.get(1);
+    ensure_eq_i64(val, 100)?;
+    ensure_eq(label.as_deref(), Some("job"))?;
+
+    let row = h
+        .lake
+        .query_one(
+            &format!("SELECT command_tag FROM lakesoul_query_status('{query_id}')"),
+            &[],
+        )
+        .await?;
+    let tag: Option<String> = row.get(0);
+    ensure!(
+        tag.as_deref().is_some_and(|tag| tag.starts_with("INSERT")),
+        "unexpected command tag {tag:?}"
+    );
     Ok(())
 }
 

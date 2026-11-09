@@ -34,6 +34,7 @@ use rootcause::compat::boxed_error::IntoBoxedError;
 
 use crate::catalog::LakeSoulProviderOptions;
 use crate::datasource::table_provider::LakeSoulTableProvider;
+use crate::datasource::upsert_exec::{UpsertExec, UpsertNode};
 use crate::federation::FederationTableProvider;
 use crate::lakesoul_table::LakeSoulTable;
 
@@ -77,6 +78,57 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
         debug!("create_physical_plan: {}", &logical_plan);
         match logical_plan {
+            LogicalPlan::Extension(extension) => {
+                let Some(node) = extension.node.as_any().downcast_ref::<UpsertNode>()
+                else {
+                    return self
+                        .default_planner
+                        .create_physical_plan(logical_plan, session_state)
+                        .await;
+                };
+                let input = self
+                    .create_physical_plan(&node.input, session_state)
+                    .await?;
+                let input_schema = node.input.schema();
+                let where_expr = self.create_physical_expr(
+                    &node.where_expr,
+                    input_schema,
+                    session_state,
+                    &PhysicalPlanningContext::default(),
+                )?;
+                let assignments = node
+                    .assignments
+                    .iter()
+                    .map(|assignment| {
+                        assignment
+                            .as_ref()
+                            .map(|expression| {
+                                self.create_physical_expr(
+                                    expression,
+                                    input_schema,
+                                    session_state,
+                                    &PhysicalPlanningContext::default(),
+                                )
+                            })
+                            .transpose()
+                    })
+                    .collect::<DFResult<Vec<_>>>()?;
+                let exec = UpsertExec::try_new(
+                    input,
+                    Arc::new(node.output_schema.as_arrow().clone()),
+                    node.key_columns.clone(),
+                    node.order_column,
+                    node.old_columns.clone(),
+                    node.new_columns.clone(),
+                    node.matched_column,
+                    node.not_null_columns.clone(),
+                    where_expr,
+                    assignments,
+                    node.table_name.clone(),
+                    node.mode,
+                )?;
+                Ok(Arc::new(exec))
+            }
             LogicalPlan::Filter(filter) => {
                 debug!("filter: {}", &filter.predicate);
                 let physical_input = self

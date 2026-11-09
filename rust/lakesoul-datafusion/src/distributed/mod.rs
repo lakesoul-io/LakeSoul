@@ -86,7 +86,8 @@ pub use resolver::{
 /// Protocol version exchanged between coordinators and workers.
 ///
 /// Discovery filters workers whose reported version does not match, and
-/// workers with a different build reject encoded plans loudly at decode time.
+/// workers whose [`codec::CODEC_VERSION`] differs reject encoded plans loudly
+/// at decode time.
 ///
 /// # Generations
 ///
@@ -97,22 +98,30 @@ pub use resolver::{
 /// ignore unknown fields rather than rejecting them, so a plan written by this
 /// build would have been silently accepted by a `/1` worker.
 ///
-/// `/4` is the previous non-IVM generation: it extends the ADBC foreign codec
-/// at position 4 of [`codec::user_codecs`] with the worker-side write stage
-/// (`FederationWriteExec`). It carries the explicit [`codec::CODEC_VERSION`]
-/// field and registers the vortex scan codec at position 1, the metadata-only
-/// scan codec at position 2, the write codec at position 3, the federation
-/// codec at position 4 and the IVM refresh codec at position 5 when the `ivm`
-/// feature is enabled.
+/// The protocol is still unreleased, so the generation stays at `/2`
+/// (`/2-ivm` with the `ivm` feature) while the codec list grows. It carries
+/// the explicit [`codec::CODEC_VERSION`] field and registers the vortex scan
+/// codec at position 1, the metadata-only scan codec at position 2, the write
+/// codec at position 3, the federation codec at position 4, the IVM refresh
+/// codec at position 5 when the `ivm` feature is enabled, then the
+/// external-file scan and write codecs and the ordered per-key upsert state
+/// machine.
 ///
-/// `/6` / `/7-ivm` is the current external-file generation. It appends the
-/// external-file scan codec and then the external-file write codec after the
-/// IVM codec. The numeric part tracks [`codec::CODEC_VERSION`]; the `-ivm`
-/// suffix keeps the codec-list generations apart during discovery.
+/// The numeric part tracks [`codec::CODEC_VERSION`]; the `-ivm` suffix keeps
+/// the two codec lists apart during discovery. Because the same number covers
+/// every development build, every coordinator and worker must run the same
+/// build: a payload from another build can name a codec position that
+/// dispatches to a different codec instead of failing loudly.
+///
+/// Do not bump the number for an unreleased change: append codecs and keep
+/// `/2`. Discovery is the only gate between two development builds that share
+/// this number; [`StaticWorkerResolver`] probes only when it is built or
+/// updated and keeps workers whose probe timed out, so rebuild the resolver
+/// when a static worker changes build.
 #[cfg(feature = "ivm")]
-pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/7-ivm";
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2-ivm";
 #[cfg(not(feature = "ivm"))]
-pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/6";
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2";
 
 pub use worker::{
     LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker,
