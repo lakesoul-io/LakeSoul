@@ -57,6 +57,21 @@ pgvector 服务端额外使用 `--worker-threads 8`，并开启同样的 payload
 - 本表 pgvector 数值是 **200 条顺序 batch workload + psycopg**，包含每条 SQL 的
   planning/协议开销，所以低于单 query 最优值，但仍在同一量级。
 
+## 2.1 补充：exact block cache vs eager payload（R84）
+
+同一 GloVe 表、200 query 一次 native batch、warm 3 轮：
+
+| 模式 | 首 batch | warm QPS | RSS | 本地缓存 |
+|---|---:|---:|---:|---:|
+| **index-only（无 payload）** | 1219 ms | **11,424.7** | 292.6 MB | — |
+| **exact block 256，L2=1GiB** | 2131 ms | **386.6** | 858.7 MB | block 917.6 MB |
+| **exact eager payload（16GiB）** | 1441 ms | **6,561.4** | 455.9 MB | payload 903.0 MB |
+
+说明：block 首 batch 包含候选块解码/写入，warm 3 轮后 386.6 QPS；eager 首 batch
+包含 903 MB payload 构建，之后 6,561 QPS。index-only batch 不读向量列，最高。
+按需 block 适合“逐查询/热点”路径，batch exact 的高吞吐仍建议 eager payload 或
+index-only；block 不是 batch 的吞吐最优选择。
+
 ## 3. 观察
 
 1. **batch 入口是数量级提升**：DataFusion 的 native batch 把 200 个 query 的 snapshot

@@ -206,8 +206,12 @@ LAKESOUL_PAYLOAD_ROW_CACHE_BYTES=0
 - **重复/热点 query**：block 命中提升到 84–108 QPS，但仍低于 eager；
 - **L2 预算**：block 256 + 256 MiB L2 发生严重抖动（QPS 9.4），说明 block 模式的
   SSD 预算必须覆盖工作集，否则不如不缓存；
-- batch exact：eager 首 batch 40 ms（payload 已存在），block 256 首个 200q batch
-  513 ms（含 block 构建）；block 模式 batch 不适合冷启动。
+- batch exact（一次调用 200 query，warm 3 轮）：
+  index-only 11,424.7 QPS / 首 1219 ms / RSS 292.6 MB；
+  **block 256 386.6 QPS / 首 batch 2131 ms / RSS 858.7 MB / 缓存 917.6 MB**；
+  eager 6,561.4 QPS / 首 batch 1441 ms / RSS 455.9 MB / payload 903.0 MB。
+  block 的 batch 首次包含候选块构建，warm QPS 仍显著低于 eager；batch exact 更适合
+  eager payload 或 index-only。
 
 因此：
 
