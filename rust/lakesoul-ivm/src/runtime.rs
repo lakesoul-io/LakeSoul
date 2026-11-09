@@ -2409,6 +2409,10 @@ pub(crate) struct TargetWrite {
     /// A recovery replay after a committed MV must recompute state without
     /// publishing the target again.
     pub(crate) skip_target: bool,
+    /// Debug-only tracking of the target whose recovery replay owns this
+    /// scope, used to catch a commit that escaped the task-local.
+    #[cfg(debug_assertions)]
+    recovery_target_id: Option<String>,
     pub(crate) internal: bool,
     /// The target partitions this view has published.  A rebuild replaces
     /// these partitions only; partitions owned by another writer are left
@@ -2433,6 +2437,48 @@ pub(crate) fn target_writes_suppressed(table_id: &str) -> bool {
             guard.skip_target && guard.target_table_id == table_id
         })
         .unwrap_or(false)
+}
+
+#[cfg(debug_assertions)]
+fn recovery_targets() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static TARGETS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashSet<String>>,
+    > = std::sync::OnceLock::new();
+    TARGETS.get_or_init(Default::default)
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn register_recovery_target(table_id: &str) {
+    recovery_targets()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(table_id.to_string());
+}
+
+#[cfg(debug_assertions)]
+fn unregister_recovery_target(table_id: &str) {
+    recovery_targets()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(table_id);
+}
+
+/// Debug-only: is this table the target of an active recovery replay?
+#[cfg(debug_assertions)]
+pub(crate) fn recovery_target_active(table_id: &str) -> bool {
+    recovery_targets()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(table_id)
+}
+
+impl Drop for TargetWrite {
+    fn drop(&mut self) {
+        #[cfg(debug_assertions)]
+        if let Some(table_id) = self.recovery_target_id.take() {
+            unregister_recovery_target(&table_id);
+        }
+    }
 }
 
 tokio::task_local! {
@@ -2499,6 +2545,8 @@ impl TargetWrite {
             atomic,
             committed: false,
             skip_target: false,
+            #[cfg(debug_assertions)]
+            recovery_target_id: None,
             internal,
             owned_partitions,
             begin_partitions,
@@ -6189,6 +6237,47 @@ impl IvmRuntime {
         Ok(true)
     }
 
+    /// Whether a pending epoch's pre-window state table lost data.
+    ///
+    /// Replaying one window can only repair the window itself; it cannot
+    /// reconstruct the source-derived history of a state table that was
+    /// truncated or dropped.  The epoch records the state partitions that
+    /// existed before the window, so a missing partition or an empty file set
+    /// is a reliable signal to rebuild instead of replaying.
+    async fn pending_state_was_lost(&self, record: &EpochRecord) -> Result<bool> {
+        for before in &record.state_versions_before {
+            if before.versions.is_empty() {
+                continue;
+            }
+            let partitions =
+                match self.client.get_all_partition_info(&before.table_id).await {
+                    Ok(partitions) => partitions,
+                    // A dropped state table cannot be repaired by a window.
+                    Err(_) => return Ok(true),
+                };
+            for version in &before.versions {
+                let Some(partition) = partitions
+                    .iter()
+                    .find(|partition| partition.partition_desc == version.partition_desc)
+                else {
+                    return Ok(true);
+                };
+                if i64::from(partition.version) < version.version {
+                    return Ok(true);
+                }
+                if self
+                    .client
+                    .get_data_files_of_single_partition(partition)
+                    .await?
+                    .is_empty()
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     async fn begin_window(
         &self,
         view_id: &str,
@@ -6230,6 +6319,13 @@ impl IvmRuntime {
             BeginEpoch::Pending(record) => {
                 if record.commit_plan.complete {
                     let plan = self.resume_commit_plan(&record).await?;
+                    if self.pending_state_was_lost(&record).await? {
+                        return Err(report!(
+                            "view {view_id} window {window_key} lost an auxiliary state table; \
+                             a rebuild is required"
+                        )
+                        .attach(RebuildRequired));
+                    }
                     let current = output_partition_versions(&self.client, output).await?;
                     let current_states = self.state_versions(view_id).await?;
                     let mut commit_ids = record.commit_ids.clone();
@@ -6250,6 +6346,13 @@ impl IvmRuntime {
                     // pending-state checks below see the real state.  The
                     // window itself is still replayed or repaired.
                     self.resume_commit_plan(&record).await?;
+                }
+                if self.pending_state_was_lost(&record).await? {
+                    return Err(report!(
+                        "view {view_id} window {window_key} lost an auxiliary state table; \
+                         a rebuild is required"
+                    )
+                    .attach(RebuildRequired));
                 }
                 let current = output_partition_versions(&self.client, output).await?;
                 if current != record.mv_versions_before {
@@ -6294,10 +6397,15 @@ impl IvmRuntime {
                         // state writes are epoch-scoped and repair the missing
                         // state without duplicating output rows.
                         let scoped = TARGET_WRITE.try_with(|context| {
-                            context
+                            let mut guard = context
                                 .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                                .skip_target = true;
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            guard.skip_target = true;
+                            #[cfg(debug_assertions)]
+                            {
+                                guard.recovery_target_id = Some(output.table_id.clone());
+                                register_recovery_target(&output.table_id);
+                            }
                         });
                         if scoped.is_err() {
                             return Err(report!(

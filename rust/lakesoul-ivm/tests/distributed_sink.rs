@@ -1553,6 +1553,7 @@ async fn a_multi_agg_value_state_replay_does_not_double_its_measure() {
         pending[0].state_versions.is_empty(),
         "the first attempt must not have checkpointed the state versions"
     );
+    let target_files = mv.current_files(runtime.client()).await.unwrap().len();
 
     // The value state is updated by old_measure + delta.  The epoch guard in
     // IvmStateMergeExec must keep the already-written state row, so the
@@ -1564,6 +1565,11 @@ async fn a_multi_agg_value_state_replay_does_not_double_its_measure() {
     assert!(
         replayed.is_some(),
         "the pending epoch must be resolved by the replay"
+    );
+    assert_eq!(
+        mv.current_files(runtime.client()).await.unwrap().len(),
+        target_files,
+        "the state-only replay must not publish target files"
     );
     assert_eq!(
         multi_agg_values(&runtime, &mv).await,
@@ -1978,4 +1984,192 @@ async fn min_values(
         }
     }
     values
+}
+
+/// A state table truncated between the target commit and the epoch mark must
+/// force a rebuild: replaying one window cannot reconstruct the source-derived
+/// history it lost.
+#[test_log::test(tokio::test)]
+async fn a_lost_source_state_table_forces_a_rebuild() {
+    use lakesoul_ivm::{
+        MinMaxKind, MinMaxView, ViewSpec, min_max_mv_schema_for,
+        value_count_state_schema_for,
+    };
+
+    let _guard = test_lock().lock().await;
+    let runtime = Arc::new(IvmRuntime::from_env().await.unwrap());
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("k", DataType::Int64, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new("op", DataType::Utf8, false),
+    ]));
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_lost_src_{suffix}"),
+                format!("file://{}", dir.path().join("src").display()),
+                schema.clone(),
+            )
+            .with_primary_keys(vec!["id".to_string()])
+            .with_cdc_column("op"),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_lost_mv_{suffix}"),
+                format!("file://{}", dir.path().join("mv").display()),
+                min_max_mv_schema_for(
+                    &source.schema,
+                    &["k".to_string()],
+                    "v",
+                    MinMaxKind::Min,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let state = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_lost_state_{suffix}"),
+                format!("file://{}", dir.path().join("state").display()),
+                value_count_state_schema_for(&source.schema, &["k".to_string()], "v")
+                    .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string(), "value".to_string()])
+            .with_bucket_columns(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = MinMaxView::new(
+        format!("ivm_lost_view_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        state.clone(),
+        "k",
+        "v",
+        MinMaxKind::Min,
+    );
+    runtime.register_min_max_view(&view).await.unwrap();
+    let spec: ViewSpec = serde_json::from_value(
+        runtime
+            .metadata()
+            .get_view_spec(&view.view_id)
+            .await
+            .unwrap()
+            .expect("the min/max spec must be persisted"),
+    )
+    .unwrap();
+    let batch = |rows: &[(i64, i64, i64, &str)]| {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(id, _, _, _)| *id).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(_, k, _, _)| *k).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(_, _, v, _)| *v).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|(_, _, _, op)| *op).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .unwrap()
+    };
+    source
+        .append_batch(
+            runtime.client(),
+            batch(&[(1, 1, 10, "insert"), (2, 1, 20, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_spec(&spec).await.unwrap().unwrap();
+    assert_eq!(
+        min_values(&runtime, &mv).await,
+        std::collections::BTreeMap::from([(1, 10)])
+    );
+
+    // W1 inserts id=3 with v=5 and commits the MV, then aborts before mark.
+    source
+        .append_batch(runtime.client(), batch(&[(3, 1, 5, "insert")]))
+        .await
+        .unwrap();
+    let marker = dir.path().join("lost-target-committed");
+    // SAFETY: the test lock serializes the process-wide switch.
+    unsafe {
+        std::env::set_var("LAKESOUL_IVM_TEST_TARGET_COMMIT_MARKER", &marker);
+        std::env::set_var("LAKESOUL_IVM_TEST_PAUSE_AFTER_TARGET_COMMIT", "1");
+    }
+    let handle = {
+        let runtime = Arc::clone(&runtime);
+        let spec = spec.clone();
+        tokio::spawn(async move { runtime.refresh_spec(&spec).await })
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !marker.exists() {
+        assert!(
+            !handle.is_finished(),
+            "the refresh finished before the target-commit hook"
+        );
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the refresh never reached the target-commit hook"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    handle.abort();
+    let _ = handle.await;
+    // SAFETY: the paused task is gone and the lock keeps other tests out.
+    unsafe {
+        std::env::remove_var("LAKESOUL_IVM_TEST_TARGET_COMMIT_MARKER");
+        std::env::remove_var("LAKESOUL_IVM_TEST_PAUSE_AFTER_TARGET_COMMIT");
+    }
+    let generation = runtime
+        .metadata()
+        .view_generation(&view.view_id)
+        .await
+        .unwrap();
+    let pending = runtime
+        .metadata()
+        .list_pending_epochs(&view.view_id, generation)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(
+        pending[0].commit_plan.complete,
+        "the target commit must have completed the plan"
+    );
+
+    // Simulate an external truncate that removed the state history.
+    state.truncate(runtime.client()).await.unwrap();
+    let error = runtime.refresh_spec(&spec).await.unwrap_err();
+    assert!(
+        error.to_string().contains("lost an auxiliary state table"),
+        "unexpected recovery error: {error}"
+    );
+    runtime.rebuild_min_max(&view).await.unwrap();
+
+    // The rebuilt state must fall back to 10 after id=3 is deleted.
+    source
+        .append_batch(runtime.client(), batch(&[(3, 1, 5, "delete")]))
+        .await
+        .unwrap();
+    runtime.refresh_spec(&spec).await.unwrap().unwrap();
+    assert_eq!(
+        min_values(&runtime, &mv).await,
+        std::collections::BTreeMap::from([(1, 10)]),
+        "the rebuilt state must retain values 10 and 20"
+    );
 }

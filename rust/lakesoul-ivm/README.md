@@ -670,6 +670,12 @@ source state.
 
 ## Limitations
 
+View definitions must be deterministic.  A crash can leave a pending epoch
+that the next refresh replays (or whose state merge it re-executes), so
+`now()`, random functions, and UDFs with side effects can produce different
+rows or state on the retry.  Materialize a source column or another stable
+expression instead.
+
 The following shapes are **not maintained incrementally**.  By default a
 statement of such a shape still defines the view: the executor recomputes it
 on every refresh (Tier-2, see

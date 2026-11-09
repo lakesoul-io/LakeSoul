@@ -991,6 +991,15 @@ impl IvmTable {
         client: &MetaDataClient,
         files: Vec<DataFileInfo>,
     ) -> Result<Vec<String>> {
+        #[cfg(debug_assertions)]
+        if crate::runtime::recovery_target_active(&self.table_id)
+            && !crate::runtime::target_writes_suppressed(&self.table_id)
+        {
+            panic!(
+                "target {} commit escaped the recovery suppression",
+                self.table_id
+            );
+        }
         if crate::runtime::target_writes_suppressed(&self.table_id) {
             return Ok(Vec::new());
         }
@@ -1208,6 +1217,19 @@ impl IvmTable {
         other: &IvmTable,
         other_batches: Vec<RecordBatch>,
     ) -> Result<(Vec<String>, Vec<String>)> {
+        let mine_suppressed = crate::runtime::target_writes_suppressed(&self.table_id);
+        let other_suppressed = crate::runtime::target_writes_suppressed(&other.table_id);
+        if mine_suppressed && other_suppressed {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        if mine_suppressed {
+            let other_ids = other.append_batches(client, other_batches).await?;
+            return Ok((Vec::new(), other_ids));
+        }
+        if other_suppressed {
+            let ids = self.append_batches(client, batches).await?;
+            return Ok((ids, Vec::new()));
+        }
         let (files, other_files) = futures::future::try_join(
             self.write_batches(batches),
             other.write_batches(other_batches),
@@ -1277,6 +1299,19 @@ impl IvmTable {
     where
         S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
     {
+        let mine_suppressed = crate::runtime::target_writes_suppressed(&self.table_id);
+        let other_suppressed = crate::runtime::target_writes_suppressed(&other.table_id);
+        if mine_suppressed && other_suppressed {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        if mine_suppressed {
+            let other_ids = other.append_stream(client, stream).await?;
+            return Ok((Vec::new(), other_ids));
+        }
+        if other_suppressed {
+            let ids = self.append_stream(client, stream).await?;
+            return Ok((ids, Vec::new()));
+        }
         use futures::StreamExt;
         let mut stream = Box::pin(coalesce_batch_stream(
             stream,
