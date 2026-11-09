@@ -184,63 +184,26 @@ jobs:
           RUST_BACKTRACE: full
         run: cargo test --profile test-fast $TEST_PKGS --bins --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test update_contract --jobs 4 -- --nocapture
 
-      # IVM core tests run on every Rust change.  They reuse the
-      # rust-test-fast cache key of this job; do not add a separate key.
-      # Every invocation keeps the full TEST_PKGS selection (plus
-      # lakesoul-ivm) so shared dependency features stay unified.
-      - name: IVM unit tests
+      # IVM tests need their own feature set, but they must reuse the shared
+      # dependency build of the main test steps.  A second `cargo test` with a
+      # different target selection re-unifies dev-dependency features and
+      # rebuilds arrow/datafusion/vortex, so the script builds the whole test
+      # selection once and then runs the emitted executables directly.
+      - name: IVM core tests
         if: github.event_name != 'schedule'
         env:
           RUST_LOG: info
           RUST_BACKTRACE: full
-        run: |
-          cargo test --profile test-fast $TEST_PKGS -p lakesoul-ivm \
-            --features "$IVM_FEATURES" --lib --jobs 4
+        run: python3 .github/scripts/run_ivm_tests.py
 
-      - name: IVM SQL oracle
-        if: github.event_name != 'schedule'
-        env:
-          RUST_BACKTRACE: full
-        run: |
-          cargo test --profile test-fast $TEST_PKGS -p lakesoul-ivm \
-            --features "$IVM_FEATURES" --test sql_oracle --jobs 4 \
-            -- --test-threads=1
-
-      - name: IVM sqllogic and recovery tests
-        if: github.event_name != 'schedule'
-        env:
-          RUST_LOG: info
-          RUST_BACKTRACE: full
-        run: |
-          cargo test --profile test-fast $TEST_PKGS -p lakesoul-ivm \
-            --features "$IVM_FEATURES" \
-            --test sqllogic --test distributed_sink --test coordinator_kill \
-            --test metadata_partition --jobs 4
-
-      - name: Distributed IVM planner tests
-        if: github.event_name != 'schedule'
-        env:
-          RUST_BACKTRACE: full
-        run: |
-          cargo test --profile test-fast $TEST_PKGS -p lakesoul-ivm \
-            --features "$IVM_FEATURES" --lib test_distributed_ivm --jobs 4
-
-      # The full IVM suite is nightly-only: it builds every integration test
-      # binary and is too slow for every PR.  Enumerate the IVM test targets so
-      # the full TEST_PKGS selection does not also run every other package's
-      # integration tests.
+      # The full IVM suite is nightly-only: it runs every IVM test binary
+      # built by the script, without another cargo invocation.
       - name: Full IVM suite
         if: github.event_name == 'schedule'
         env:
           RUST_LOG: info
           RUST_BACKTRACE: full
-        run: |
-          tests=()
-          for file in rust/lakesoul-ivm/tests/*.rs; do
-            tests+=(--test "$(basename "$file" .rs)")
-          done
-          cargo test --profile test-fast $TEST_PKGS -p lakesoul-ivm \
-            --features "$IVM_FEATURES" --lib "${tests[@]}" --jobs 4
+        run: python3 .github/scripts/run_ivm_tests.py --full
 
   clippy_check:
     runs-on: ubuntu-24.04
