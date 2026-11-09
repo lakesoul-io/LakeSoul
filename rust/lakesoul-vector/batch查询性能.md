@@ -111,6 +111,37 @@ native batch、一次 200 query、warm 3 轮：
 - 更高 batch exact 吞吐需要更细的块布局或预取优化，当前不提供整文件 payload
   作为快速路径。
 
+## 3.1 多文件 per-bucket 实测（2 文件/桶，full rebuild）
+
+GloVe-1.18M×200d，4 bucket，每桶 **2 个数据文件**（两次 disjoint 写入后
+`rebuild_vector_index()` 形成覆盖全部文件的 generation），不带 compact；
+200 query、top_k=100、nprobe=16、of=1、MinIO 本地：
+
+| 模式 | 首 batch | warm QPS | RSS | 本地 cache |
+|---|---:|---:|---:|---:|
+| **multi-file exact batch** | 2179 ms | **393.5** | 948.8 MB | 917.5 MB |
+| multi-file index-only batch | — | **11,309.0** | 949.1 MB | 917.5 MB |
+| 单文件 exact batch（R84 对照） | 2131 ms | 386.6 | 858.7 MB | 917.6 MB |
+
+单查询 exact（fresh process，200 query）：
+
+| 模式 | 首查 | QPS | RSS |
+|---|---:|---:|---:|
+| **multi-file** | 788.6 ms | **83.1** | 832.2 MB |
+| 单文件（R83 对照） | 791.9 ms | 70.0 | 873.4 MB |
+
+观察：
+
+- 多文件 exact batch 与单文件基本同量级：393.5 vs 386.6 QPS（+1.8%），首 batch
+  多约 48 ms；RSS 多约 90 MB（每桶多一个 block source/key index）；
+- 多文件单查询 exact 本机 83.1 QPS，略高于 R83 单文件的 70 QPS；不同 run 的
+  cache/负载有波动，不能直接归因于多文件；
+- 所有模式都没有 payload 文件；block cache 约 917.5 MB；
+- 正确性：10 条 GloVe query 的 native multi-file exact 与逐 query SQL exact
+  **10/10 完全一致**；
+- 前提仍是覆盖性证明：两次增量 index 的 mutation chain 会 fallback；本次先
+  `rebuild_vector_index()`。
+
 ## 4. 观察
 
 1. **DataFusion SQL loop** 每 query 重新 planning，明显低于 native batch；

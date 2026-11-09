@@ -119,6 +119,22 @@ export LAKESOUL_VECTOR_BLOCK_CACHE_BYTES=268435456   # L1，默认 256 MiB
 - `deferred_payload` 与 batch 无关：native batch 只返回主键，没有额外投影列；
   该选项只影响单查询额外列的二次读取。
 
+## 7.1 多文件 per-bucket 实测
+
+同一 GloVe 表、4 bucket、每桶 2 个数据文件（disjoint 写入后 full rebuild），
+200 query、top_k=100、nprobe=16、of=1、MinIO：
+
+| 模式 | 首 batch | warm QPS | RSS | block cache |
+|---|---:|---:|---:|---:|
+| multi-file exact batch | 2179 ms | **393.5** | 948.8 MB | 917.5 MB |
+| multi-file index-only batch | — | **11,309.0** | 949.1 MB | 917.5 MB |
+| 单文件 exact batch（R84 对照） | 2131 ms | 386.6 | 858.7 MB | 917.6 MB |
+
+单查询 exact fresh process：首查 788.6 ms、**83.1 QPS**、RSS 832.2 MB；
+10 条 query 的 native multi-file exact 与 SQL exact **10/10 一致**。
+多文件 batch 与单文件同量级（+1.8% QPS、+~90 MB RSS）；增量 index 的
+mutation chain 仍会回退，本测试先做 full rebuild。
+
 ## 8. GloVe-200 / MinIO 实测
 
 1,183,514 × 200d、4 bucket、nlist=1024、bits=1、top_k=100、nprobe=16、of=1；
