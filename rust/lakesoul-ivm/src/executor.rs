@@ -1081,15 +1081,25 @@ impl IvmSqlExecutor {
         let view_id = mv.table_id.clone();
         let lock_owner = uuid::Uuid::new_v4().to_string();
         let lock_ttl_ms = crate::config::options().refresh_lock_ttl_ms.max(1000) as i64;
-        if !self
+        // ViewLockGuard::drop releases the lease from a spawned task, so a
+        // back-to-back statement can still observe the previous statement's
+        // lease for a few milliseconds.  Wait briefly for it instead of
+        // failing a statement that is about to become valid; a genuinely
+        // concurrent refresh still fails after the bounded wait.
+        let mut lock_waits = 0;
+        while !self
             .runtime
             .metadata()
             .try_lock_view(&view_id, &lock_owner, lock_ttl_ms)
             .await?
         {
-            return Err(rootcause::report!(
-                "view {view_id} is being refreshed by another statement"
-            ));
+            lock_waits += 1;
+            if lock_waits >= 40 {
+                return Err(rootcause::report!(
+                    "view {view_id} is being refreshed by another statement"
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         let heartbeat = spawn_view_lock_heartbeat(
             self.runtime.metadata().clone(),
