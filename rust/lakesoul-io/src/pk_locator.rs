@@ -47,9 +47,12 @@ use std::sync::{Arc, LazyLock};
 
 use arrow::array::{Array, ArrayRef, AsArray};
 use arrow::compute::{SortColumn, cast, lexsort_to_indices, take};
-use arrow::datatypes::{DataType, FieldRef, Schema, SchemaRef, TimeUnit};
+use arrow::datatypes::{
+    DataType, FieldRef, Float32Type, Float64Type, Schema, SchemaRef, TimeUnit,
+};
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
+use bytes::Bytes;
 use datafusion::catalog::Session;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_common::{ScalarValue, stats::Precision};
@@ -83,9 +86,11 @@ use vortex::scan::strict_sorted_buffer::StrictSortedBuffer;
 use vortex::session::VortexSession;
 
 use crate::cache::get_lakesoul_cache;
+use crate::cache::paging::PageCache;
 use crate::config::LakeSoulIOConfig;
 use crate::file_format::{PhysicalFormat, vortex_scan_session};
 use crate::helpers::transform::make_default_array;
+use crate::session::GLOBAL_RUNTIME;
 
 /// Stored-vector payload cache for exact re-ranking (opt-in, see the module
 /// documentation).  It serves candidate rows without decoding the vector
@@ -2170,7 +2175,7 @@ pub async fn try_build_key_inputs_encoded(
 
 /// Whether exact re-rank can read stored vectors from the payload cache.
 pub fn vector_payload_cache_enabled() -> bool {
-    payload::enabled()
+    payload::enabled() || block_source_enabled()
 }
 
 /// One data file's stored-vector payload, opened once for a candidate batch.
@@ -2182,10 +2187,252 @@ pub fn vector_payload_cache_enabled() -> bool {
 /// reproduce exactly (no payload cache, a file with explicit row ids, or a key
 /// that does not resolve to exactly one row), so callers can fall back to the
 /// reader path on `None`.
+/// On-demand decoded vector blocks for exact re-ranking.
+///
+/// The eager payload mode writes a whole vector column to one local file.  This
+/// path instead builds only the row blocks an exact query actually touches:
+/// each block is decoded from the source data file once, cached in the shared
+/// `DiskCache` (the same S3->SSD cache used by `LAKESOUL_CACHE`) and in a small
+/// in-memory LRU, then reused by later candidate reads.  It never materializes
+/// the full payload.
+const ENV_BLOCK_ROWS: &str = "LAKESOUL_VECTOR_BLOCK_ROWS";
+const ENV_BLOCK_MEMORY_BYTES: &str = "LAKESOUL_VECTOR_BLOCK_CACHE_BYTES";
+const DEFAULT_BLOCK_ROWS: usize = 1024;
+const DEFAULT_BLOCK_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
+
+static BLOCK_MEMORY: LazyLock<Option<moka::sync::Cache<(u64, u64, u32), Arc<[u8]>>>> =
+    LazyLock::new(|| {
+        let capacity = std::env::var(ENV_BLOCK_MEMORY_BYTES)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_BLOCK_MEMORY_BYTES);
+        if capacity == 0 {
+            return None;
+        }
+        Some(
+            moka::sync::Cache::builder()
+                .max_capacity(capacity.div_ceil(1024))
+                .weigher(|_key: &(u64, u64, u32), value: &Arc<[u8]>| {
+                    (value.len().div_ceil(1024)).min(u32::MAX as usize) as u32
+                })
+                .build(),
+        )
+    });
+
+fn block_rows() -> usize {
+    std::env::var(ENV_BLOCK_ROWS)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_BLOCK_ROWS)
+}
+
+fn block_source_enabled() -> bool {
+    !std::env::var("LAKESOUL_VECTOR_BLOCK_CACHE").is_ok_and(|value| value == "0")
+        && index_disk_cache().is_some()
+}
+
+/// Decode a contiguous row range of one vector column into raw little-endian
+/// row-major bytes.
+async fn read_vector_block(
+    entry: &CachedFile,
+    location: &StorePath,
+    field: &FieldRef,
+    dim: usize,
+    elem: payload::PayloadElem,
+    indices: &[u64],
+) -> Option<Vec<u8>> {
+    let schema: SchemaRef = Arc::new(Schema::new(vec![field.as_ref().clone()]));
+    let names = vec![field.name().clone()];
+    let batches = match &entry.source {
+        FileSource::Vortex { file, session } => {
+            take_rows(file, location, session, indices, &schema, &names)
+                .await
+                .ok()?
+        }
+        FileSource::Parquet {
+            store,
+            location,
+            size,
+        } => take_rows_parquet(store, location, *size, indices, &schema, &names)
+            .await
+            .ok()?,
+    };
+    let row_bytes = dim * elem.size();
+    let mut out = Vec::with_capacity(indices.len() * row_bytes);
+    for batch in batches {
+        let rows = batch.num_rows();
+        if rows == 0 {
+            continue;
+        }
+        let array = batch.column(0);
+        let flat = payload::chunk_values(array, rows, dim)?;
+        match elem {
+            payload::PayloadElem::F32 => {
+                for value in flat.as_primitive::<Float32Type>().values() {
+                    out.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+            payload::PayloadElem::F64 => {
+                for value in flat.as_primitive::<Float64Type>().values() {
+                    out.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+        if out.len() > indices.len() * row_bytes {
+            return None;
+        }
+    }
+    (out.len() == indices.len() * row_bytes).then_some(out)
+}
+
+struct BlockSource {
+    entry: Arc<CachedFile>,
+    location: StorePath,
+    field: FieldRef,
+    elem: payload::PayloadElem,
+    dim: usize,
+    row_bytes: usize,
+    rows: usize,
+    block_rows: usize,
+    source_hash: u64,
+    field_hash: u64,
+    block_location: StorePath,
+}
+
+impl BlockSource {
+    fn new(
+        entry: Arc<CachedFile>,
+        location: StorePath,
+        field: &FieldRef,
+    ) -> Option<Self> {
+        let elem = payload::payload_elem(field.data_type())?;
+        let dim = match field.data_type() {
+            DataType::FixedSizeList(_, dim) if *dim > 0 => *dim as usize,
+            _ => return None,
+        };
+        let source_hash = index_source_hash(&location);
+        let field_hash = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            field.name().hash(&mut hasher);
+            field.data_type().hash(&mut hasher);
+            hasher.finish()
+        };
+        let block_location = StorePath::from(format!(
+            "vector-blocks/{source_hash:016x}/{field_hash:016x}"
+        ));
+        let rows = entry.index.rows;
+        Some(Self {
+            entry,
+            location,
+            field: Arc::clone(field),
+            elem,
+            dim,
+            row_bytes: dim * elem.size(),
+            rows,
+            block_rows: block_rows(),
+            source_hash,
+            field_hash,
+            block_location,
+        })
+    }
+
+    fn block_id(&self, row: u64) -> Option<u32> {
+        let id = row / self.block_rows as u64;
+        (id <= u32::MAX as u64).then_some(id as u32)
+    }
+
+    fn memory_get(&self, block: u32) -> Option<Arc<[u8]>> {
+        BLOCK_MEMORY
+            .as_ref()?
+            .get(&(self.source_hash, self.field_hash, block))
+    }
+
+    fn memory_put(&self, block: u32, value: Arc<[u8]>) {
+        if let Some(cache) = BLOCK_MEMORY.as_ref() {
+            cache.insert((self.source_hash, self.field_hash, block), value);
+        }
+    }
+
+    fn get_block(&self, block: u32) -> Option<Arc<[u8]>> {
+        if let Some(value) = self.memory_get(block) {
+            return Some(value);
+        }
+        if let Some(cache) = index_disk_cache() {
+            if let Ok(Some(bytes)) =
+                GLOBAL_RUNTIME.block_on(cache.get(&self.block_location, block))
+            {
+                let value: Arc<[u8]> = Arc::from(bytes.as_ref());
+                self.memory_put(block, Arc::clone(&value));
+                return Some(value);
+            }
+        }
+        let start = block as usize * self.block_rows;
+        if start >= self.rows {
+            return None;
+        }
+        let end = (start + self.block_rows).min(self.rows);
+        let indices: Vec<u64> = (start..end).map(|row| row as u64).collect();
+        let bytes = GLOBAL_RUNTIME.block_on(read_vector_block(
+            &self.entry,
+            &self.location,
+            &self.field,
+            self.dim,
+            self.elem,
+            &indices,
+        ))?;
+        let value: Arc<[u8]> = Arc::from(bytes);
+        if let Some(cache) = index_disk_cache() {
+            let _ = GLOBAL_RUNTIME.block_on(cache.put(
+                &self.block_location,
+                block,
+                Bytes::from(value.to_vec()),
+            ));
+        }
+        self.memory_put(block, Arc::clone(&value));
+        Some(value)
+    }
+
+    fn row_bytes(&self, row: u64) -> Option<Arc<[u8]>> {
+        let block = self.block_id(row)?;
+        let block_bytes = self.get_block(block)?;
+        let offset = (row % self.block_rows as u64) as usize * self.row_bytes;
+        let end = offset.checked_add(self.row_bytes)?;
+        let row = block_bytes.get(offset..end)?;
+        Some(Arc::from(row))
+    }
+
+    fn take(&self, indices: &[u64], field: &FieldRef) -> Option<ArrayRef> {
+        if field.data_type() != self.field.data_type() {
+            return None;
+        }
+        let rows: Vec<Arc<[u8]>> = indices
+            .iter()
+            .map(|row| self.row_bytes(*row))
+            .collect::<Option<_>>()?;
+        payload::take_rows_from_bytes(field, self.dim, self.elem, &rows)
+    }
+
+    fn score_rows(
+        &self,
+        indices: &[u64],
+        query: &[f32],
+        ascending: bool,
+    ) -> Option<Vec<f32>> {
+        let rows: Vec<Arc<[u8]>> = indices
+            .iter()
+            .map(|row| self.row_bytes(*row))
+            .collect::<Option<_>>()?;
+        payload::score_rows_from_bytes(self.dim, self.elem, &rows, query, ascending)
+    }
+}
+
 #[derive(Clone)]
 pub struct VectorPayloadSource {
     entry: Arc<CachedFile>,
-    view: Arc<payload::PayloadView>,
+    view: Option<Arc<payload::PayloadView>>,
+    blocks: Option<Arc<BlockSource>>,
     vector_field: FieldRef,
 }
 
@@ -2201,9 +2448,8 @@ pub struct VectorPayloadSource {
 /// the pinned key-index mappings of very wide tables bounded: a source is
 /// only useful while its table is being queried, so evicting the oldest entry
 /// costs one re-open.
-static PAYLOAD_SOURCES: LazyLock<
-    std::sync::Mutex<SourceCache>,
-> = LazyLock::new(|| std::sync::Mutex::new(SourceCache::default()));
+static PAYLOAD_SOURCES: LazyLock<std::sync::Mutex<SourceCache>> =
+    LazyLock::new(|| std::sync::Mutex::new(SourceCache::default()));
 
 /// Maximum number of cached sources (one per data file and column layout).
 const PAYLOAD_SOURCE_CACHE_ENTRIES: usize = 16;
@@ -2233,8 +2479,7 @@ impl SourceCache {
 }
 
 fn payload_source_cache_enabled() -> bool {
-    !std::env::var("LAKESOUL_PAYLOAD_SOURCE_CACHE")
-        .is_ok_and(|value| value == "0")
+    !std::env::var("LAKESOUL_PAYLOAD_SOURCE_CACHE").is_ok_and(|value| value == "0")
 }
 
 impl VectorPayloadSource {
@@ -2249,9 +2494,16 @@ impl VectorPayloadSource {
         vector_field: &FieldRef,
     ) -> Option<Arc<Self>> {
         if !payload_source_cache_enabled() {
-            return Self::open(store, location, format, key_columns, key_types, vector_field)
-                .await
-                .map(Arc::new);
+            return Self::open(
+                store,
+                location,
+                format,
+                key_columns,
+                key_types,
+                vector_field,
+            )
+            .await
+            .map(Arc::new);
         }
         let key = {
             use std::hash::{Hash, Hasher};
@@ -2271,8 +2523,15 @@ impl VectorPayloadSource {
             return Some(source);
         }
         let source = Arc::new(
-            Self::open(store, location, format, key_columns, key_types, vector_field)
-                .await?,
+            Self::open(
+                store,
+                location,
+                format,
+                key_columns,
+                key_types,
+                vector_field,
+            )
+            .await?,
         );
         if let Ok(mut cache) = PAYLOAD_SOURCES.lock() {
             cache.insert(key, Arc::clone(&source));
@@ -2289,7 +2548,7 @@ impl VectorPayloadSource {
         key_types: &[DataType],
         vector_field: &FieldRef,
     ) -> Option<Self> {
-        if !payload::enabled() {
+        if !payload::enabled() && !block_source_enabled() {
             return None;
         }
         let mut session: Option<VortexSession> = None;
@@ -2306,10 +2565,27 @@ impl VectorPayloadSource {
         if entry.index.has_row_ids() {
             return None;
         }
-        let view = payload::open_view(&entry, location, vector_field).await?;
+        let view = if payload::enabled() {
+            payload::open_view(&entry, location, vector_field).await
+        } else {
+            None
+        };
+        let blocks = if view.is_none() && block_source_enabled() {
+            Some(Arc::new(BlockSource::new(
+                Arc::clone(&entry),
+                location.clone(),
+                vector_field,
+            )?))
+        } else {
+            None
+        };
+        if view.is_none() && blocks.is_none() {
+            return None;
+        }
         Some(Self {
             entry,
             view,
+            blocks,
             vector_field: Arc::clone(vector_field),
         })
     }
@@ -2328,7 +2604,9 @@ impl VectorPayloadSource {
         // payload read has to answer in the original order.
         let mut order: Vec<u32> = (0..keys.len() as u32).collect();
         order.sort_unstable_by(|left, right| {
-            keys[*left as usize].as_bytes().cmp(keys[*right as usize].as_bytes())
+            keys[*left as usize]
+                .as_bytes()
+                .cmp(keys[*right as usize].as_bytes())
         });
         let sorted: Vec<&[u8]> = order
             .iter()
@@ -2339,10 +2617,12 @@ impl VectorPayloadSource {
         for (slot, position) in order.iter().enumerate() {
             indices[*position as usize] = u64::from(rows[slot]);
         }
-        let mut arrays = self
-            .view
-            .take(&indices, std::slice::from_ref(&self.vector_field))?;
-        (arrays.len() == 1).then(|| arrays.remove(0))
+        if let Some(view) = self.view.as_ref() {
+            let mut arrays =
+                view.take(&indices, std::slice::from_ref(&self.vector_field))?;
+            return (arrays.len() == 1).then(|| arrays.remove(0));
+        }
+        self.blocks.as_ref()?.take(&indices, &self.vector_field)
     }
 
     /// Which of the given candidate keys resolve to exactly one row of this
@@ -2361,10 +2641,12 @@ impl VectorPayloadSource {
             return None;
         }
         let indices: Vec<u64> = rows.iter().map(|row| u64::from(*row)).collect();
-        let mut arrays = self
-            .view
-            .take(&indices, std::slice::from_ref(&self.vector_field))?;
-        (arrays.len() == 1).then(|| arrays.remove(0))
+        if let Some(view) = self.view.as_ref() {
+            let mut arrays =
+                view.take(&indices, std::slice::from_ref(&self.vector_field))?;
+            return (arrays.len() == 1).then(|| arrays.remove(0));
+        }
+        self.blocks.as_ref()?.take(&indices, &self.vector_field)
     }
 
     /// Exact L2/IP scores of the given keys' stored vectors.
@@ -2384,7 +2666,9 @@ impl VectorPayloadSource {
         }
         let mut order: Vec<u32> = (0..keys.len() as u32).collect();
         order.sort_unstable_by(|left, right| {
-            keys[*left as usize].as_bytes().cmp(keys[*right as usize].as_bytes())
+            keys[*left as usize]
+                .as_bytes()
+                .cmp(keys[*right as usize].as_bytes())
         });
         let sorted: Vec<&[u8]> = order
             .iter()
@@ -2395,7 +2679,10 @@ impl VectorPayloadSource {
         for (slot, position) in order.iter().enumerate() {
             indices[*position as usize] = u64::from(rows[slot]);
         }
-        self.view.score_rows(&indices, query, ascending)
+        if let Some(view) = self.view.as_ref() {
+            return view.score_rows(&indices, query, ascending);
+        }
+        self.blocks.as_ref()?.score_rows(&indices, query, ascending)
     }
 }
 
@@ -2447,7 +2734,9 @@ pub fn take_multi_file_ranked(
     // order (the candidates arrive in index-distance order).
     let mut order: Vec<u32> = (0..keys.len() as u32).collect();
     order.sort_unstable_by(|left, right| {
-        keys[*left as usize].as_bytes().cmp(keys[*right as usize].as_bytes())
+        keys[*left as usize]
+            .as_bytes()
+            .cmp(keys[*right as usize].as_bytes())
     });
     let sorted: Vec<&[u8]> = order
         .iter()

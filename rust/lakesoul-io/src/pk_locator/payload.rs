@@ -114,7 +114,7 @@ const PAYLOAD_ALIGN: u64 = 64;
 
 /// Payload formats: the element width stored on disk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PayloadElem {
+pub(crate) enum PayloadElem {
     F32,
     F64,
 }
@@ -144,7 +144,7 @@ impl PayloadElem {
         }
     }
 
-    fn size(self) -> usize {
+    pub(crate) fn size(self) -> usize {
         match self {
             PayloadElem::F32 => 4,
             PayloadElem::F64 => 8,
@@ -275,7 +275,7 @@ fn payload_config() -> Option<PayloadConfig> {
 
 /// The element type of a stored float-list column (`List`, `LargeList` or
 /// `FixedSizeList` of `Float32`/`Float64`).
-fn payload_elem(data_type: &DataType) -> Option<PayloadElem> {
+pub(crate) fn payload_elem(data_type: &DataType) -> Option<PayloadElem> {
     match data_type {
         DataType::FixedSizeList(field, dim) if *dim > 0 => PayloadElem::of_field(field),
         DataType::List(field) | DataType::LargeList(field) => {
@@ -300,7 +300,7 @@ fn align_up(value: u64) -> u64 {
 }
 
 /// Number of vector elements in row `row` of a stored vector column.
-fn row_len(array: &ArrayRef, row: usize) -> Option<usize> {
+pub(crate) fn row_len(array: &ArrayRef, row: usize) -> Option<usize> {
     match array.data_type() {
         DataType::FixedSizeList(_, _) => {
             let list = array.as_any().downcast_ref::<FixedSizeListArray>()?;
@@ -329,7 +329,11 @@ fn row_len(array: &ArrayRef, row: usize) -> Option<usize> {
 /// List columns are only accepted when every row of the chunk holds exactly
 /// the column's vector length and none of the rows is null: the payload layout
 /// has a fixed row stride, and the fallback row take covers anything else.
-fn chunk_values(array: &ArrayRef, rows: usize, dim: usize) -> Option<ArrayRef> {
+pub(crate) fn chunk_values(
+    array: &ArrayRef,
+    rows: usize,
+    dim: usize,
+) -> Option<ArrayRef> {
     match array.data_type() {
         DataType::FixedSizeList(_, _) => {
             let list = array.as_any().downcast_ref::<FixedSizeListArray>()?;
@@ -510,7 +514,7 @@ fn take_vectors(
 }
 
 /// Squared L2 distance of two stored vectors, eight lanes at a time.
-fn squared_distance_f32(stored: &[f32], query: &[f32]) -> f32 {
+pub(crate) fn squared_distance_f32(stored: &[f32], query: &[f32]) -> f32 {
     if stored.len() != query.len() {
         return f32::INFINITY;
     }
@@ -533,7 +537,7 @@ fn squared_distance_f32(stored: &[f32], query: &[f32]) -> f32 {
 }
 
 /// Negated inner product, eight lanes at a time.
-fn negated_dot_f32(stored: &[f32], query: &[f32]) -> f32 {
+pub(crate) fn negated_dot_f32(stored: &[f32], query: &[f32]) -> f32 {
     if stored.len() != query.len() {
         return f32::NEG_INFINITY;
     }
@@ -551,6 +555,125 @@ fn negated_dot_f32(stored: &[f32], query: &[f32]) -> f32 {
         index += 1;
     }
     -sum
+}
+
+/// Build an Arrow vector-list array from already-decoded row bytes.
+pub(crate) fn take_rows_from_bytes(
+    field: &FieldRef,
+    dim: usize,
+    elem: PayloadElem,
+    rows: &[Arc<[u8]>],
+) -> Option<ArrayRef> {
+    let row_bytes = dim * elem.size();
+    let values_len = rows.len().checked_mul(dim)?;
+    let values: ArrayRef = match elem {
+        PayloadElem::F32 => {
+            let mut flat: Vec<f32> = vec![0.0; values_len];
+            let dst = unsafe {
+                std::slice::from_raw_parts_mut(
+                    flat.as_mut_ptr() as *mut u8,
+                    values_len * 4,
+                )
+            };
+            for (position, row) in rows.iter().enumerate() {
+                if row.len() != row_bytes {
+                    return None;
+                }
+                dst[position * row_bytes..(position + 1) * row_bytes]
+                    .copy_from_slice(row);
+            }
+            Arc::new(Float32Array::from(flat))
+        }
+        PayloadElem::F64 => {
+            let mut flat: Vec<f64> = vec![0.0; values_len];
+            let dst = unsafe {
+                std::slice::from_raw_parts_mut(
+                    flat.as_mut_ptr() as *mut u8,
+                    values_len * 8,
+                )
+            };
+            for (position, row) in rows.iter().enumerate() {
+                if row.len() != row_bytes {
+                    return None;
+                }
+                dst[position * row_bytes..(position + 1) * row_bytes]
+                    .copy_from_slice(row);
+            }
+            Arc::new(Float64Array::from(flat))
+        }
+    };
+    let count = rows.len();
+    match field.data_type() {
+        DataType::FixedSizeList(item, size) => Some(Arc::new(FixedSizeListArray::new(
+            Arc::clone(item),
+            *size,
+            values,
+            None,
+        ))),
+        DataType::List(item) => {
+            let offsets: Vec<i32> = (0..=count).map(|at| (at * dim) as i32).collect();
+            Some(Arc::new(ListArray::new(
+                Arc::clone(item),
+                OffsetBuffer::new(offsets.into()),
+                values,
+                None,
+            )))
+        }
+        DataType::LargeList(item) => {
+            let offsets: Vec<i64> = (0..=count).map(|at| (at * dim) as i64).collect();
+            Some(Arc::new(LargeListArray::new(
+                Arc::clone(item),
+                OffsetBuffer::new(offsets.into()),
+                values,
+                None,
+            )))
+        }
+        _ => None,
+    }
+}
+
+/// Score already-decoded row bytes with the exact L2/IP formula.
+pub(crate) fn score_rows_from_bytes(
+    dim: usize,
+    elem: PayloadElem,
+    rows: &[Arc<[u8]>],
+    query: &[f32],
+    ascending: bool,
+) -> Option<Vec<f32>> {
+    if dim != query.len() {
+        return None;
+    }
+    let mut scores = Vec::with_capacity(rows.len());
+    let mut stored: Vec<f32> = Vec::with_capacity(dim);
+    for row in rows {
+        stored.clear();
+        match elem {
+            PayloadElem::F32 => {
+                for value in row.chunks_exact(4) {
+                    stored.push(f32::from_le_bytes([
+                        value[0], value[1], value[2], value[3],
+                    ]));
+                }
+            }
+            PayloadElem::F64 => {
+                for value in row.chunks_exact(8) {
+                    stored.push(f64::from_le_bytes([
+                        value[0], value[1], value[2], value[3], value[4], value[5],
+                        value[6], value[7],
+                    ]) as f32);
+                }
+            }
+        }
+        if stored.len() != dim {
+            return None;
+        }
+        scores.push(if ascending {
+            squared_distance_f32(&stored, query)
+        } else {
+            negated_dot_f32(&stored, query)
+        });
+    }
+    Some(scores)
 }
 
 /// A payload file: the stored vectors of one data file, in row order.

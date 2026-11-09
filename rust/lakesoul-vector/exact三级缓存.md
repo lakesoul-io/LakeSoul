@@ -1,8 +1,9 @@
-# exact 三级缓存：S3 原始数据 → SSD payload → Memory 描述符/热点行
+# exact 缓存：按需 block cache（S3→SSD→Memory）+ 可选整文件 payload
 
-> 目标：exact（`rerank='exact'`）不把 payload 上传到 S3，S3 只保留原始数据文件；
-> 本地 SSD 保存 row-addressable payload；内存保存 payload 描述符、key index/payload
-> source 和可选的热点候选行。查询期只按候选行读取，不做大块/整列读取。
+> 目标：exact（`rerank='exact'`）不把 payload 上传到 S3，S3 只保留原始数据文件。
+> **默认按需**：只解码查询真正命中的候选块，块缓存复用 LakeSoul 的
+> `LAKESOUL_CACHE`（S3→SSD），不会一次物化整列；整文件 payload 物化保留为显式
+> opt-in 的 hot-table 模式。查询期只读候选行/候选块，不做大块/整列读取。
 
 ## 1. 为什么 exact 需要单独的缓存
 
@@ -20,8 +21,8 @@ exact 的输入是 ANN 候选 key，必须回到数据文件读取这些 key 的
 L3 S3：原始数据文件（Vortex/Parquet，含 f32 向量列）
    │ 只用于构建 payload / 读取 payload 不覆盖的列
    ▼
-L2 SSD：本地 payload 文件（row-addressable，持久、LRU/GC）
-   │ 以及现有 LAKESOUL_CACHE 中的 PK key index（exact direct 依赖）
+L2 SSD：按需 decoded block cache（复用 LAKESOUL_CACHE 的 DiskCache）
+   │ 可选：整文件 payload（显式 hot-table 模式）+ PK key index
    ▼
 L1 Memory：
    ├─ PayloadView / VectorPayloadSource 缓存（描述符、row count、dim、offset、key index）
@@ -32,7 +33,7 @@ L1 Memory：
 | 层 | 介质 | 内容 | 是否进 S3 | 生命周期 |
 |---|---|---|---|---|
 | L1 | DRAM | 描述符、source、热点行 | 否 | 进程内 LRU |
-| L2 | 本地 NVMe | payload 文件、PK key index | 否 | 持久 / 无 TTL / 预算淘汰（默认关） |
+| L2 | 本地 NVMe | 按需 decoded blocks、可选整文件 payload、PK key index | 否 | 按需增长；DiskCache 预算/淘汰 |
 | L3 | S3 | 原始数据文件、索引文件 | 是 | 表数据生命周期 |
 
 **明确约束：不把 payload 上传 S3。** 多节点各自在本地惰性构建；这是无 S3 payload
@@ -76,7 +77,23 @@ L1 Memory：
 所以 exact 的 L1 不是“大块 payload 缓存”，而是**描述符/source + 可选行级缓存**；
 L2 也不按大块读，只按候选行偏移读。
 
-### 3.5 生命周期与默认值
+### 3.5 按需 block cache（默认路径）
+
+整文件 payload 的 903 MB 是一次性整列物化；默认路径改为按候选块解码：
+
+- 候选行按 `(data_file, column, block_id)` 分组，block 默认 1024 行
+  （`LAKESOUL_VECTOR_BLOCK_ROWS`），200d f32 约 800 KiB/块；
+- L1：moka 加权 LRU（`LAKESOUL_VECTOR_BLOCK_CACHE_BYTES`，默认 256 MiB）；
+- L2：复用 `LAKESOUL_CACHE` 的 `DiskCache`（同一容量/淘汰/S3-SSD 读链路），
+  block 作为本地条目写入，进程内按稳定路径寻址；重启按需重建；
+- miss 时只对 block 的行范围做行选择读取（Vortex/Parquet），解码后写入 L2/L1；
+- 命中后只从 block 复制候选行，不再扫整列。
+
+启用条件：`LAKESOUL_CACHE=1`（block cache 复用它的 DiskCache）；默认不构建整文件
+payload。`LAKESOUL_VECTOR_BLOCK_CACHE=0` 可关闭该路径，exact 回退 reader。
+整文件 payload 仍是显式 opt-in：`LAKESOUL_VECTOR_RERANK_CACHE_BYTES > 0`。
+
+### 3.6 生命周期与默认值
 
 - **没有 TTL**：payload 文件跨进程/重启保留，不会“过期自动删除”；
 - **淘汰**：目录超过 `LAKESOUL_VECTOR_RERANK_CACHE_BYTES` 时，按 mtime（最旧优先）
@@ -93,10 +110,18 @@ L2 也不按大块读，只按候选行偏移读。
 ## 4. 配置
 
 ```bash
-# L2 payload（本地，不上 S3）
+# 默认：按需 block cache，复用 LAKESOUL_CACHE 的 S3-SSD
+LAKESOUL_CACHE=1
+LAKESOUL_CACHE_PATH=/data/lakesoul/cache
+LAKESOUL_CACHE_SIZE=8GiB
+LAKESOUL_VECTOR_BLOCK_ROWS=1024
+LAKESOUL_VECTOR_BLOCK_CACHE_BYTES=268435456    # L1 memory，默认 256 MiB
+# LAKESOUL_VECTOR_BLOCK_CACHE=0                 # 关闭按需 block cache
+
+# 可选：整文件 payload（hot table；默认 0=关）
 LAKESOUL_VECTOR_RERANK_CACHE=1
 LAKESOUL_VECTOR_RERANK_CACHE_DIR=/data/lakesoul/rerank-payload
-LAKESOUL_VECTOR_RERANK_CACHE_BYTES=4294967296   # 默认 0=关；显式给预算才启用（示例 4 GiB）
+LAKESOUL_VECTOR_RERANK_CACHE_BYTES=4294967296   # 显式正预算才启用（示例 4 GiB）
 
 # exact direct 还依赖 PK key index 的本地 cache（现有机制）
 LAKESOUL_CACHE=1
@@ -118,6 +143,9 @@ LAKESOUL_PAYLOAD_ROW_CACHE_BYTES=0
 ## 5. GloVe-200 + MinIO 端到端测试
 
 ### 环境
+
+> 下列 QPS 是**整文件 payload 模式**的历史数据，用于说明 opt-in 模式的收益；
+> 默认按需 block 模式只从候选块构建，不会产生 903 MB 的整列文件。
 
 - MinIO `RELEASE.2025-09-07T16-13-09Z`，`127.0.0.1:9000`，bucket `lakesoul-test`；
 - 表 `vec_glove_exact_e2e`：GloVe base **1,183,514 行 × 200 维 f32**，
@@ -145,6 +173,13 @@ LAKESOUL_PAYLOAD_ROW_CACHE_BYTES=0
 - **row cache 反而慢 10.7%、RSS 多 92.7 MB**：GloVe candidate 随机、200 条 query 内重复低，
   每次 miss 都要 cache lookup/插入，收益不足。因此默认关闭，保留为可选能力；
 - MinIO 对象列表只有 4 个数据文件 + `_vector_index/`，**没有 payload 对象**，满足“不在 S3 存 payload”。
+
+### 按需 block 模式的本地验证
+
+用一张 6 行 × 8 维本地表、`rerank='exact'`、`LAKESOUL_CACHE=1`、
+`LAKESOUL_VECTOR_RERANK_CACHE_BYTES=0` 验证：exact 结果正确（`[1,2,6]`），
+缓存目录只出现 PK index + 小 block 文件，**没有 payload 目录、没有 903 MB 文件**。
+这验证了按需路径不会一次性物化整列；大表 QPS/命中率仍需按实际候选分布测量。
 
 ### 清理
 
