@@ -1,9 +1,10 @@
 # PostgreSQL foreign tables (ADBC)
 
 LakeSoul's PostgreSQL front end can expose a table from another database as a
-read-only foreign table in the current LakeSoul namespace. Queries read the
-remote table through an [ADBC](https://arrow.apache.org/adbc/) driver and can
-join it with local LakeSoul tables in one DataFusion plan.
+foreign table in the current LakeSoul namespace. Queries read the remote table
+through an [ADBC](https://arrow.apache.org/adbc/) driver and can join it with
+local LakeSoul tables in one DataFusion plan. `INSERT INTO` writes through the
+same driver.
 
 The endpoint stores servers, user mappings and foreign tables in the
 `federation` metadata schema. A query plan contains only the server key;
@@ -111,6 +112,52 @@ FROM local_users l
 JOIN remote_users r USING (id);
 ```
 
+## Write to a foreign table
+
+Writes are append-only. To make retries and repeated IVM deliveries idempotent,
+declare the remote key and a conflict policy on the foreign table:
+
+```sql
+CREATE FOREIGN TABLE public.remote_users (
+  id      bigint,
+  name    text,
+  amount  numeric(20,4)
+)
+SERVER app_source
+OPTIONS (
+  schema_name 'public',
+  table_name  'users',
+  primary_key 'id',
+  on_conflict 'update'       -- or 'nothing'
+);
+```
+
+Then a normal insert runs on the data workers:
+
+```sql
+INSERT INTO remote_users VALUES (1, 'alice', 10.0), (2, 'bob', 20.0);
+```
+
+`on_conflict 'update'` generates `ON CONFLICT (id) DO UPDATE` on PostgreSQL and
+SQLite, or `ON DUPLICATE KEY UPDATE` on MySQL. `on_conflict 'nothing'` ignores
+an existing key instead. Re-running the same statement therefore converges
+instead of duplicating rows. `write_batch_size` (default 1024) bounds how many
+rows go into one generated statement. With `on_conflict 'update'`, the source
+must not contain the same conflict key twice in one statement; PostgreSQL
+rejects that as a command that would affect one row twice, so deduplicate the
+source first.
+
+Writes use at-least-once delivery with per-batch commits, not a global
+transaction. If a task fails, batches that already committed remain; retrying
+the statement is safe only when the target has the declared unique key and the
+conflict policy is `update` or `nothing`. A plain append has no idempotency
+guarantee.
+
+The write stage runs on workers, not on the coordinator: its input is hash
+repartitioned and the row-count summary goes back to the coordinator. At least
+two write tasks are used when workers are configured, including a single-worker
+deployment. Without a distributed worker resolver, the write runs locally.
+
 ## Cleanup
 
 ```sql
@@ -138,22 +185,36 @@ lakesoul-worker \
 with `LAKESOUL_PG_URL`, `LAKESOUL_PG_USERNAME` and `LAKESOUL_PG_PASSWORD`
 pointing at the metadata PostgreSQL. The worker loads all federation user
 mappings at startup and registers their ADBC pools by the server and the
-user-mapping key (the query user, or `PUBLIC` for a shared mapping).
+user-mapping key (the query user, or `PUBLIC` for a shared mapping). Create
+servers and user mappings before starting workers, or restart workers after a
+change; the registry is not polled.
 
 The coordinator generates the remote SQL with the dialect stored on the
-server; a worker only executes the serialized SQL. The scan itself is currently
-not split into multiple tasks. A plan whose stages are all single-task runs on
-the coordinator, because `datafusion-distributed` removes a network boundary
-that would connect two single-task stages. When the scan is part of a larger
-plan with a multi-task stage - for example a join with a LakeSoul table scanned
-over several tasks - the scan stage is sent to a worker and the worker resolves
-the server/user-mapping key from its own federation registry. Parallel remote
+server; a worker only executes the serialized SQL. A foreign scan is one
+partition, so a plan whose stages are all single-task runs on the coordinator,
+because `datafusion-distributed` removes a network boundary that would connect
+two single-task stages. When the scan is part of a larger plan with a multi-task
+stage - for example a join with a LakeSoul table scanned over several tasks -
+the scan stage is sent to a worker and the worker resolves the
+server/user-mapping key from its own federation registry. Parallel remote
 scanning (several tasks per foreign table) is a later optimization.
+
+Foreign writes take the opposite shape: the write stage is hash repartitioned
+and always runs on workers when workers are configured. Each task commits its
+own batches; there is no global transaction across tasks.
 
 ## Current limits
 
-- Read-only: `INSERT`, `UPDATE` and `DELETE` on a foreign table are not
-  implemented.
+- Only `INSERT` is implemented; `UPDATE` and `DELETE` on a foreign table are
+  not implemented.
+- `INSERT ... ON CONFLICT`, `INSERT OVERWRITE` and `RETURNING` are not
+  supported. Configure `primary_key` and `on_conflict` on the foreign table
+  instead.
+- Writes are at-least-once with per-batch commits. There is no global
+  transaction across worker tasks; a failed statement can leave already
+  committed batches. Idempotency requires a unique key and `on_conflict`.
+- SQLite permits only one writer at a time. Parallel write tasks can fail with
+  `database is locked`; use a server database for parallel writes.
 - `IMPORT FOREIGN SCHEMA` is not implemented yet; create each foreign table
   explicitly.
 - Supported DDL is `CREATE/DROP SERVER`, `CREATE/DROP USER MAPPING`,

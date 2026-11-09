@@ -347,6 +347,21 @@ fn unshippable_node(stage: &Arc<dyn ExecutionPlan>) -> Option<DataFusionError> {
                 return Some(error);
             }
         }
+        if node
+            .downcast_ref::<crate::federation::FederationWriteExec>()
+            .is_some()
+        {
+            use datafusion_proto::physical_plan::{
+                DefaultPhysicalProtoConverter, PhysicalExtensionCodec,
+            };
+            if let Err(error) = crate::federation::FederationPlanCodec.try_encode(
+                Arc::clone(&node),
+                &mut Vec::new(),
+                &DefaultPhysicalProtoConverter {},
+            ) {
+                return Some(error);
+            }
+        }
         if let Some(exec) = node.downcast_ref::<DataSourceExec>()
             && let Some(config) = exec.data_source().downcast_ref::<FileScanConfig>()
             && !source_has_wire_form(config.file_source().as_ref())

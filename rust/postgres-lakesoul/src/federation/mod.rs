@@ -142,6 +142,7 @@ impl FederationRuntime {
             dialect,
             Arc::clone(&table.schema),
             TableReference::from(remote.as_str()),
+            table.options.clone(),
         )))
     }
 

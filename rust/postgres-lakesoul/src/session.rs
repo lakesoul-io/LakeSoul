@@ -308,6 +308,7 @@ impl PgSessionFactory {
         let context = self.base.create_session(&LakeSoulSessionOptions {
             default_schema: settings.initial_schema().to_string(),
             time_zone: settings.time_zone.iana_name().map(str::to_owned),
+            federation_writes: true,
         })?;
 
         let state = context.state();

@@ -349,6 +349,7 @@ impl StartupState {
             .create_session(&LakeSoulSessionOptions {
                 default_schema: namespace.clone(),
                 time_zone: Some("UTC".to_string()),
+                ..LakeSoulSessionOptions::default()
             })
             .map_err(|error| anyhow!("create management SessionContext: {error:?}"))?;
 

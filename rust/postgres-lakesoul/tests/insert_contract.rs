@@ -1790,6 +1790,7 @@ async fn management_replace_rows(h: &Harness, table: &str, values: &str) -> Resu
         .create_session(&LakeSoulSessionOptions {
             default_schema: h.lake_namespace.clone(),
             time_zone: Some("UTC".to_string()),
+            ..LakeSoulSessionOptions::default()
         })
         .map_err(|error| {
             anyhow::anyhow!("partition merge management session: {error:?}")

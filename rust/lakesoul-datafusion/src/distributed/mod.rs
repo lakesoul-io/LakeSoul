@@ -97,21 +97,23 @@ pub use resolver::{
 /// ignore unknown fields rather than rejecting them, so a plan written by this
 /// build would have been silently accepted by a `/1` worker.
 ///
-/// `/3` is the current generation: it adds the ADBC foreign-scan codec at
-/// position 4 of [`codec::user_codecs`], after the explicit
-/// [`codec::CODEC_VERSION`] field, the vortex scan codec at position 1, the
-/// metadata-only scan codec at position 2 and the write codec at position 3.
-/// All of it is one generation because none of those formats has ever been
-/// released — a `/3` worker from this tree resolves every codec position a
-/// coordinator from it can stamp. Split them the moment one of them ships on
-/// its own: extension payloads name the *position* of the codec that wrote
-/// them, so a coordinator that can stamp position 4 needs workers that resolve
-/// it. The merge-on-read payload `/1` implied no longer has a codec at all: a
-/// `MergeParquetExec` stage is refused while planning instead of being shipped.
+/// `/4` is the current generation: it extends the ADBC foreign codec at
+/// position 4 of [`codec::user_codecs`] with the worker-side write stage
+/// (`FederationWriteExec`). It carries the explicit [`codec::CODEC_VERSION`]
+/// field and registers the vortex scan codec at position 1, the metadata-only
+/// scan codec at position 2, the write codec at position 3 and the federation
+/// codec at position 4. All of it is one generation because none of those
+/// formats has been released independently — a `/4` worker from this tree
+/// resolves every codec position a coordinator from it can stamp. Split them
+/// the moment one of them ships on its own: extension payloads name the
+/// *position* of the codec that wrote them, so a coordinator that can stamp
+/// position 4 needs workers that resolve it. The merge-on-read payload `/1`
+/// implied no longer has a codec at all: a `MergeParquetExec` stage is refused
+/// while planning instead of being shipped.
 ///
-/// Advertising `/3` filters `/1` and `/2` workers out at discovery and closes
-/// the other direction at decode time.
-pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/3";
+/// Advertising `/4` filters `/1`, `/2` and `/3` workers out at discovery and
+/// closes the other direction at decode time.
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/4";
 
 pub use worker::{
     LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker,

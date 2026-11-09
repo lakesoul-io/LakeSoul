@@ -250,6 +250,11 @@ pub struct LakeSoulSessionOptions {
     /// Optional DataFusion execution time zone. When omitted, the value from
     /// the factory's [`SessionConfig`] template is preserved.
     pub time_zone: Option<String>,
+    /// Allow ADBC foreign-table writes to run on workers even when only one
+    /// worker is registered. This raises the per-stage task cap to two so the
+    /// write stage keeps a network boundary instead of being elided onto the
+    /// coordinator.
+    pub federation_writes: bool,
 }
 
 impl Default for LakeSoulSessionOptions {
@@ -257,6 +262,7 @@ impl Default for LakeSoulSessionOptions {
         Self {
             default_schema: DEFAULT_SCHEMA.to_string(),
             time_zone: None,
+            federation_writes: false,
         }
     }
 }
@@ -315,6 +321,14 @@ fn write_task_budget(
     use crate::datasource::file_format::{LakeSoulCommitExec, LakeSoulWriteExec};
     if ev.plan.is::<LakeSoulCommitExec>() {
         return Some(Ok(DesiredTaskCountEventResponse::maximum(1)));
+    }
+    if let Some(write) = ev
+        .plan
+        .downcast_ref::<crate::federation::FederationWriteExec>()
+    {
+        return Some(Ok(DesiredTaskCountEventResponse::desired(
+            write.parallelism(),
+        )));
     }
     let write = ev.plan.downcast_ref::<LakeSoulWriteExec>()?;
     // A keyed write must run below a stage boundary: its input is a hash
@@ -702,6 +716,18 @@ impl LakeSoulSessionFactory {
                 crate::planner::text_score_rule::TextScoreProjectionRule,
             ));
         if let (Some(dist), Some(resolver)) = (&distributed, &resolver) {
+            // A single-worker deployment should still be able to run a
+            // federation write stage away from the coordinator. Two tasks are
+            // the minimum that keeps the producer/consumer network boundary
+            // from being elided. Only sessions that opt in to foreign writes
+            // raise the cap; other single-worker sessions keep their existing
+            // coordinator placement.
+            let write_tasks = if options.federation_writes {
+                let workers = resolver.get_urls().map(|urls| urls.len()).unwrap_or(0);
+                (workers > 0).then(|| workers.max(2))
+            } else {
+                None
+            };
             builder = builder
                 .with_distributed_worker_resolver(Arc::clone(resolver))
                 .with_distributed_metrics_collection(true)?
@@ -734,6 +760,9 @@ impl LakeSoulSessionFactory {
                 )?;
             }
             builder = builder.with_distributed_planner();
+            if let Some(write_tasks) = write_tasks {
+                builder = builder.with_distributed_max_tasks_per_stage(write_tasks)?;
+            }
 
             // Availability policy gate in front of the distributed planner:
             // fast-fail in production, optional single-node fallback in
