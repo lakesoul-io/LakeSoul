@@ -47,7 +47,6 @@ use std::path::{Path as FsPath, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 
-use bytes::Bytes;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use moka::future::Cache;
@@ -462,6 +461,7 @@ pub fn wrap(store: Arc<dyn ObjectStore>) -> Arc<dyn ObjectStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
     use object_store::memory::InMemory;
     use tempfile::tempdir;
 

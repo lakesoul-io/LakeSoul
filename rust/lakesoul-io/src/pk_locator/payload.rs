@@ -41,8 +41,13 @@
 //!   `${LAKESOUL_CACHE_PATH}/rerank-payload` when the shared cache path is
 //!   configured, else `${TMPDIR:-/tmp}/lakesoul-rerank-payload`.
 //! * `LAKESOUL_VECTOR_RERANK_CACHE_BYTES` - total budget of the directory,
-//!   default 16 GiB.  A payload that would exceed it is not built and the
-//!   query falls back to the regular row take.
+//!   default 16 GiB.  When a new payload would exceed it, the oldest local
+//!   payload files are evicted first; only a payload larger than the whole
+//!   budget falls back to the regular row take.
+//! * `LAKESOUL_PAYLOAD_ROW_CACHE_BYTES` - optional in-memory cache of
+//!   individual candidate rows (default 0 = disabled).  Rows are cached in
+//!   their raw little-endian form, so a cache hit avoids one SSD `pread`
+//!   without fetching a whole block and amplifying random reads.
 //!
 //! Delete the directory to reclaim the space; entries are rebuilt on demand.
 
@@ -78,6 +83,7 @@ const ENV_ENABLED: &str = "LAKESOUL_VECTOR_RERANK_CACHE";
 const ENV_DIR: &str = "LAKESOUL_VECTOR_RERANK_CACHE_DIR";
 const ENV_BYTES: &str = "LAKESOUL_VECTOR_RERANK_CACHE_BYTES";
 const ENV_CACHE_PATH: &str = "LAKESOUL_CACHE_PATH";
+const ENV_ROW_CACHE_BYTES: &str = "LAKESOUL_PAYLOAD_ROW_CACHE_BYTES";
 
 /// Header of one payload file (little-endian).
 ///
@@ -166,6 +172,39 @@ pub fn stats() -> (u64, u64) {
 static VIEWS: LazyLock<Cache<String, Arc<PayloadView>>> =
     LazyLock::new(|| Cache::builder().max_capacity(256).build());
 
+/// Optional L1 cache of individual payload rows.
+///
+/// Keyed by `(source hash, kind hash, column position, row id)`; values are
+/// the raw little-endian row bytes (800 B for a 200d f32 vector).  The row
+/// cache is deliberately row-granular: a block cache would fetch a whole
+/// block for each random candidate and amplify reads by orders of magnitude.
+static ROW_CACHE: LazyLock<Option<moka::sync::Cache<(u64, u64, u64, u64), Arc<[u8]>>>> =
+    LazyLock::new(|| {
+        let capacity = std::env::var(ENV_ROW_CACHE_BYTES)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|value| *value > 0);
+        let capacity = capacity?;
+        metrics::describe_counter!(
+            "lakesoul_payload_row_cache_hits_total",
+            "Payload candidate rows served from the in-memory row cache"
+        );
+        metrics::describe_counter!(
+            "lakesoul_payload_row_cache_misses_total",
+            "Payload candidate rows that missed the in-memory row cache"
+        );
+        Some(
+            moka::sync::Cache::builder()
+                .max_capacity(capacity.div_ceil(1024))
+                .weigher(|_key: &(u64, u64, u64, u64), value: &Arc<[u8]>| {
+                    (value.len().div_ceil(1024)).min(u32::MAX as usize) as u32
+                })
+                .build(),
+        )
+    });
+
+type RowKey = (u64, u64, u64, u64);
+
 /// Builds are one-shot per file; serialising them keeps a burst of concurrent
 /// queries from reading the same vector column several times at once.
 static BUILD_LOCK: LazyLock<tokio::sync::Mutex<()>> =
@@ -221,7 +260,9 @@ fn payload_config() -> Option<PayloadConfig> {
 fn payload_elem(data_type: &DataType) -> Option<PayloadElem> {
     match data_type {
         DataType::FixedSizeList(field, dim) if *dim > 0 => PayloadElem::of_field(field),
-        DataType::List(field) | DataType::LargeList(field) => PayloadElem::of_field(field),
+        DataType::List(field) | DataType::LargeList(field) => {
+            PayloadElem::of_field(field)
+        }
         _ => None,
     }
 }
@@ -314,6 +355,20 @@ fn chunk_values(array: &ArrayRef, rows: usize, dim: usize) -> Option<ArrayRef> {
     }
 }
 
+fn row_cache_get(key: &RowKey) -> Option<Arc<[u8]>> {
+    let cache = ROW_CACHE.as_ref()?;
+    let value = cache.get(key)?;
+    metrics::counter!("lakesoul_payload_row_cache_hits_total").increment(1);
+    Some(value)
+}
+
+fn row_cache_put(key: RowKey, data: &[u8]) {
+    let Some(cache) = ROW_CACHE.as_ref() else {
+        return;
+    };
+    cache.insert(key, Arc::from(data));
+}
+
 /// Copy the requested rows of one stored column into a fresh Arrow array of
 /// the projected column's type.
 ///
@@ -329,6 +384,7 @@ fn take_vectors(
     dim: usize,
     field: &FieldRef,
     indices: &[u64],
+    cache_id: RowKey,
 ) -> Option<ArrayRef> {
     let row_bytes = dim * elem.size();
     let values_len = indices.len().checked_mul(dim)?;
@@ -352,7 +408,20 @@ fn take_vectors(
                 }
                 let at = offset + (index * row_bytes) as u64;
                 let target = &mut dst[position * dim * 4..(position + 1) * dim * 4];
-                file.read_exact_at(target, at).ok()?;
+                let key = (cache_id.0, cache_id.1, position as u64, index as u64);
+                if let Some(row) = row_cache_get(&key) {
+                    if row.len() != row_bytes {
+                        return None;
+                    }
+                    target.copy_from_slice(&row);
+                } else {
+                    if ROW_CACHE.is_some() {
+                        metrics::counter!("lakesoul_payload_row_cache_misses_total")
+                            .increment(1);
+                        row_cache_put(key, target);
+                    }
+                    file.read_exact_at(target, at).ok()?;
+                }
             }
             Arc::new(Float32Array::from(flat))
         }
@@ -372,7 +441,20 @@ fn take_vectors(
                 }
                 let at = offset + (index * row_bytes) as u64;
                 let target = &mut dst[position * dim * 8..(position + 1) * dim * 8];
-                file.read_exact_at(target, at).ok()?;
+                let key = (cache_id.0, cache_id.1, position as u64, index as u64);
+                if let Some(row) = row_cache_get(&key) {
+                    if row.len() != row_bytes {
+                        return None;
+                    }
+                    target.copy_from_slice(&row);
+                } else {
+                    if ROW_CACHE.is_some() {
+                        metrics::counter!("lakesoul_payload_row_cache_misses_total")
+                            .increment(1);
+                        row_cache_put(key, target);
+                    }
+                    file.read_exact_at(target, at).ok()?;
+                }
             }
             Arc::new(Float64Array::from(flat))
         }
@@ -460,6 +542,9 @@ pub(crate) struct PayloadView {
     columns: Vec<ColSpec>,
     dims: Vec<usize>,
     offsets: Vec<u64>,
+    /// Identity for the L1 row cache; the payload file is immutable.
+    source_hash: u64,
+    kind_hash: u64,
 }
 
 impl PayloadView {
@@ -500,11 +585,9 @@ impl PayloadView {
         let mut offsets = Vec::with_capacity(columns.len());
         for (position, column) in columns.iter().enumerate() {
             let at = PAYLOAD_HEADER_LEN + position * PAYLOAD_DESC_LEN;
-            let dim =
-                u32::from_le_bytes(header[at..at + 4].try_into().ok()?) as usize;
+            let dim = u32::from_le_bytes(header[at..at + 4].try_into().ok()?) as usize;
             let elem = PayloadElem::from_tag(header[at + 4])?;
-            let offset =
-                u64::from_le_bytes(header[at + 8..at + 16].try_into().ok()?);
+            let offset = u64::from_le_bytes(header[at + 8..at + 16].try_into().ok()?);
             if dim == 0 || elem != column.elem {
                 return None;
             }
@@ -521,6 +604,8 @@ impl PayloadView {
             columns: columns.to_vec(),
             dims,
             offsets,
+            source_hash,
+            kind_hash,
         })
     }
 
@@ -557,7 +642,17 @@ impl PayloadView {
                 return None;
             }
             let at = offset + (index * row_bytes) as u64;
-            self.file.read_exact_at(&mut buffer, at).ok()?;
+            let key = (self.source_hash, self.kind_hash, 0, index as u64);
+            if let Some(row) = row_cache_get(&key) {
+                if row.len() != row_bytes {
+                    return None;
+                }
+                buffer.copy_from_slice(&row);
+            } else {
+                metrics::counter!("lakesoul_payload_row_cache_misses_total").increment(1);
+                self.file.read_exact_at(&mut buffer, at).ok()?;
+                row_cache_put(key, &buffer);
+            }
             stored.clear();
             match column.elem {
                 PayloadElem::F32 => {
@@ -570,8 +665,8 @@ impl PayloadView {
                 PayloadElem::F64 => {
                     for value in buffer.chunks_exact(8) {
                         stored.push(f64::from_le_bytes([
-                            value[0], value[1], value[2], value[3], value[4],
-                            value[5], value[6], value[7],
+                            value[0], value[1], value[2], value[3], value[4], value[5],
+                            value[6], value[7],
                         ]) as f32);
                     }
                 }
@@ -604,6 +699,7 @@ impl PayloadView {
                 self.dims[position],
                 field,
                 indices,
+                (self.source_hash, self.kind_hash, 0, 0),
             )?);
         }
         Some(arrays)
@@ -670,7 +766,8 @@ async fn build_payload(
         return None;
     }
     let mut offsets = Vec::with_capacity(columns.len());
-    let mut total = align_up((PAYLOAD_HEADER_LEN + columns.len() * PAYLOAD_DESC_LEN) as u64);
+    let mut total =
+        align_up((PAYLOAD_HEADER_LEN + columns.len() * PAYLOAD_DESC_LEN) as u64);
     for (column, dim) in columns.iter().zip(dims) {
         offsets.push(total);
         total = align_up(total + (rows * dim * column.elem.size()) as u64);
@@ -685,11 +782,17 @@ async fn build_payload(
     if let Some(usage) = directory_usage(&config.root)
         && usage.saturating_add(total) > config.budget_bytes
     {
+        let freed = evict_to_fit(&config.root, total, config.budget_bytes);
+        if freed == 0 {
+            debug!(
+                "rerank payload directory holds {usage} of {} bytes and cannot make room for {location}",
+                config.budget_bytes
+            );
+            return None;
+        }
         debug!(
-            "rerank payload directory holds {usage} of {} bytes; not caching {location}",
-            config.budget_bytes
+            "evicted {freed} bytes from the rerank payload directory to fit {location}"
         );
-        return None;
     }
     std::fs::create_dir_all(&config.root).ok()?;
     let temp = config.root.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
@@ -823,6 +926,48 @@ fn directory_usage(root: &Path) -> Option<u64> {
     Some(total)
 }
 
+/// Delete the oldest payload files until `need` more bytes fit in `budget`.
+///
+/// The payload files are immutable derived data: removing one only makes the
+/// next exact query rebuild it.  Open readers keep their file descriptor, so
+/// a concurrent query that already opened the file is unaffected on Unix.
+fn evict_to_fit(root: &Path, need: u64, budget: u64) -> u64 {
+    let mut entries: Vec<(std::time::SystemTime, PathBuf, u64)> = Vec::new();
+    let Ok(entries_iter) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    for entry in entries_iter.flatten() {
+        let path = entry.path();
+        if !path.is_file()
+            || path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with(".tmp"))
+        {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
+        entries.push((modified, path, metadata.len()));
+    }
+    entries.sort_by_key(|(modified, _, _)| *modified);
+    let mut usage = entries.iter().map(|(_, _, size)| *size).sum::<u64>();
+    let mut freed = 0u64;
+    for (_modified, path, size) in entries {
+        if usage.saturating_add(need) <= budget {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            usage = usage.saturating_sub(size);
+            freed = freed.saturating_add(size);
+            metrics::counter!("lakesoul_payload_evictions_total").increment(1);
+            debug!(path = %path.display(), size, "evicted rerank payload file");
+        }
+    }
+    freed
+}
+
 /// The payload of one data file, opened or built once.
 async fn load_or_build(
     config: &PayloadConfig,
@@ -840,17 +985,20 @@ async fn load_or_build(
     let key = path.display().to_string();
     if let Some(view) = VIEWS.get(&key).await {
         HITS.fetch_add(1, AtomicOrdering::Relaxed);
+        metrics::counter!("lakesoul_payload_cache_hits_total").increment(1);
         return Some(view);
     }
     let _guard = BUILD_LOCK.lock().await;
     if let Some(view) = VIEWS.get(&key).await {
         HITS.fetch_add(1, AtomicOrdering::Relaxed);
+        metrics::counter!("lakesoul_payload_cache_hits_total").increment(1);
         return Some(view);
     }
     if let Some(view) =
         PayloadView::open(&path, expected_rows, kind_hash, source_hash, columns)
     {
         HITS.fetch_add(1, AtomicOrdering::Relaxed);
+        metrics::counter!("lakesoul_payload_cache_hits_total").increment(1);
         let view = Arc::new(view);
         VIEWS.insert(key, Arc::clone(&view)).await;
         return Some(view);
@@ -1022,9 +1170,30 @@ pub(crate) async fn open_view(
     .await
 }
 
-#[cfg(test)]#[cfg(test)]
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The directory budget evicts old payload files instead of refusing the
+    /// new payload outright.
+    #[test]
+    fn evicts_payloads_to_fit_budget() {
+        let dir =
+            std::env::temp_dir().join(format!("lsrpay-evict-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for index in 0..3 {
+            std::fs::write(dir.join(format!("{index}.payload")), vec![0u8; 1024])
+                .unwrap();
+        }
+        let freed = evict_to_fit(&dir, 1024, 2048);
+        assert!(freed > 0, "must evict at least one payload");
+        let usage = directory_usage(&dir).unwrap();
+        assert!(
+            usage + 1024 <= 2048,
+            "payload directory must fit the budget"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// Write a two-column payload entry and read rows back through it.
     #[test]
@@ -1045,7 +1214,8 @@ mod tests {
         let dims = [3usize, 2usize];
         let rows = 3usize;
         let mut offsets = Vec::new();
-        let mut total = align_up((PAYLOAD_HEADER_LEN + columns.len() * PAYLOAD_DESC_LEN) as u64);
+        let mut total =
+            align_up((PAYLOAD_HEADER_LEN + columns.len() * PAYLOAD_DESC_LEN) as u64);
         for (column, dim) in columns.iter().zip(&dims) {
             offsets.push(total);
             total = align_up(total + (rows * dim * column.elem.size()) as u64);
@@ -1137,9 +1307,13 @@ mod tests {
         assert_eq!(row.values().as_ref(), &[20.5f64, 21.5]);
 
         // A different row count or layout is rejected instead of misread.
-        assert!(PayloadView::open(&path, rows + 1, kind_hash, source_hash, &columns).is_none());
         assert!(
-            PayloadView::open(&path, rows, kind_hash + 1, source_hash, &columns).is_none()
+            PayloadView::open(&path, rows + 1, kind_hash, source_hash, &columns)
+                .is_none()
+        );
+        assert!(
+            PayloadView::open(&path, rows, kind_hash + 1, source_hash, &columns)
+                .is_none()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
