@@ -8,10 +8,11 @@ example `tokio/test-util` and `rust_decimal/db-tokio-postgres` come from
 `postgres-lakesoul`'s dev-dependencies) and rebuild arrow, datafusion and
 vortex.
 
-Build once with the same `--lib --bins --tests` selection as the main test
-steps, then run the emitted executables directly.  `--full` runs every
-lakesoul-ivm test target for the nightly job; the default runs the core set
-used on pull requests.
+Build the test targets with the same dev-dependency feature unification as
+the main test steps, then run the emitted executables directly.  The default
+selection used on pull requests builds the core IVM targets plus the main
+step's contract test targets; `--full` builds every lakesoul-ivm test target
+for the nightly job.
 """
 
 import json
@@ -44,9 +45,35 @@ CORE = [
 ]
 CORE_ARGS = {name: args for _label, _package, name, args in CORE}
 
+# Integration test targets of the main "PostgreSQL SQL compatibility" step.
+# Selecting the same targets activates the same dev-dependency features as the
+# main steps (tokio/test-util and rust_decimal/db-tokio-postgres come from
+# postgres-lakesoul's dev-dependencies) without linking every lakesoul-ivm
+# integration test binary on every pull request.
+MAIN_TESTS = [
+    "sql_compat",
+    "session_contract",
+    "storage_contract",
+    "catalog_contract",
+    "vector_contract",
+    "tpch_contract",
+    "ddl_contract",
+    "insert_contract",
+    "update_contract",
+]
+IVM_TESTS = [
+    target
+    for _label, _package, target, _args in CORE
+    if target not in (PLANNER_TARGET, "lakesoul_ivm")
+]
 
-def build(artifacts_path):
+
+def build(artifacts_path, full):
     packages = os.environ["TEST_PKGS"].split()
+    targets = ["--lib", "--bins", "--tests"] if full else ["--lib", "--bins"]
+    if not full:
+        for target in MAIN_TESTS + IVM_TESTS:
+            targets.extend(["--test", target])
     command = [
         "cargo",
         "test",
@@ -57,9 +84,7 @@ def build(artifacts_path):
         IVM_PACKAGE,
         "--features",
         os.environ["IVM_FEATURES"],
-        "--lib",
-        "--bins",
-        "--tests",
+        *targets,
         "--no-run",
         "--jobs",
         "4",
@@ -109,7 +134,7 @@ def run(label, executable, args):
 def main():
     full = "--full" in sys.argv[1:]
     runner_temp = os.environ.get("RUNNER_TEMP", tempfile.gettempdir())
-    artifacts = build(os.path.join(runner_temp, "ivm-artifacts.json"))
+    artifacts = build(os.path.join(runner_temp, "ivm-artifacts.json"), full)
 
     if not full:
         for label, package, target, args in CORE:
