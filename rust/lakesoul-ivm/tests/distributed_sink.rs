@@ -125,6 +125,7 @@ async fn a_worker_sink_writes_files_and_the_coordinator_commits_them() {
 async fn a_pending_epoch_is_completed_without_duplicate_rows() {
     use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 
+    let _guard = test_lock().lock().await;
     let base = IvmRuntimeConfig::default();
     let factory = SinkFactory {
         session: base.session.clone(),
