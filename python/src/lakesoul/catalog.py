@@ -244,7 +244,7 @@ class LakeSoulCatalog:
 
         The session is a read-only DataFusion engine that runs lakehouse SQL and
         all vector-search entry points (``LakeSoulTable.search`` uses it).  It
-        is created once and reused by default: the metadata, index and payload
+        is created once and reused by default: the metadata, index and block
         caches stay warm across queries.
 
         Args:
@@ -1201,7 +1201,7 @@ class LakeSoulTable:
         ranking pass for the whole call, same semantics as the SQL path).  When
         the table cannot use it - the native entry requires a single Int64
         primary key named ``id``, one data file per hash bucket, and exact mode
-        also requires the stored-vector payload cache - the batch falls back to
+        also requires the `LAKESOUL_CACHE` decoded-block cache - the batch falls back to
         one SQL search per query.  The fallback gives identical ids, just
         slower (it re-plans the search per query).
 
@@ -1338,7 +1338,7 @@ class LakeSoulTable:
         for query in queries:
             # Keys only: asking for the distance column would force the
             # engine to evaluate the distance expression above the scan, which
-            # disables the candidate/payload fast paths and can re-read the
+            # disables the candidate/block fast paths and can re-read the
             # whole vector column per query.
             rows = self.search(
                 query,
@@ -1384,12 +1384,6 @@ class LakeSoulTable:
             and "id" in self.schema.names
             and pa.types.is_int64(self.schema.field("id").type)
         )
-
-    def _payload_cache_enabled(self) -> bool:
-        flag = os.environ.get("LAKESOUL_VECTOR_RERANK_CACHE", "").strip().lower()
-        if flag:
-            return flag in ("1", "true", "yes", "on")
-        return bool(os.environ.get("LAKESOUL_VECTOR_RERANK_CACHE_DIR", "").strip())
 
     def scan(
         self,

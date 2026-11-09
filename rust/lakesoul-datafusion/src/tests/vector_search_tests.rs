@@ -751,22 +751,17 @@ fn make_batch_with_tag(ids: &[u64], vectors: &[Vec<f32>], tags: &[i64]) -> Recor
     .unwrap()
 }
 
-/// The direct exact re-rank needs the stored-vector payload cache; these
-/// tests set it once before the first query so the multi-file resolution is
-/// actually exercised (the reader path would also return correct rows, which
-/// would hide a regression).
+/// The direct exact re-rank needs the on-demand decoded-block cache; these
+/// tests enable the shared `LAKESOUL_CACHE` before the first query so the
+/// multi-file resolution is actually exercised (the reader path would also
+/// return correct rows, which would hide a regression).
 fn enable_direct_exact_path() {
     static ENABLE: std::sync::Once = std::sync::Once::new();
     ENABLE.call_once(|| {
-        let payload_dir = std::env::current_dir()
-            .unwrap()
-            .join("default")
-            .join("vector-rerank-payload");
         // SAFETY: the test process sets these before any vector query runs.
         unsafe {
             std::env::set_var("LAKESOUL_CACHE", "1");
-            std::env::set_var("LAKESOUL_VECTOR_RERANK_CACHE", "1");
-            std::env::set_var("LAKESOUL_VECTOR_RERANK_CACHE_DIR", payload_dir);
+            std::env::set_var("LAKESOUL_VECTOR_BLOCK_ROWS", "256");
         }
     });
 }

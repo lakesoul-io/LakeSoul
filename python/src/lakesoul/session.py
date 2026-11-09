@@ -10,7 +10,7 @@ statement a user would write), so results follow the engine's lakehouse
 semantics - snapshot isolation, merge-on-read (latest version, CDC delete
 tombstones dropped), partition pruning - and use the vector-index fast paths.
 
-The session also keeps the metadata/index/payload caches warm, which matters
+The session also keeps the metadata/index/block caches warm, which matters
 for repeated queries: create it once and reuse it.
 
 The native binding is built only when the extension is built with the
@@ -309,7 +309,7 @@ class LakeSoulSession:
         list of primary keys per query.
 
         The native entry supports a single Int64 primary key named ``id`` and
-        requires the stored-vector payload cache for ``exact=True``;
+        requires the `LAKESOUL_CACHE` decoded-block cache for ``exact=True``;
         :meth:`lakesoul.catalog.LakeSoulTable.search_batch` checks both and
         falls back to per-query SQL otherwise, so prefer the table method.
         """

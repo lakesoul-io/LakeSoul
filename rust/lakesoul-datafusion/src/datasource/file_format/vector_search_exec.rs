@@ -1210,7 +1210,7 @@ impl LakeSoulVectorSearchExec {
     }
 
     /// True when the exact re-rank can run directly on the index and the
-    /// stored-vector payload cache, without the per-bucket readers.
+    /// on-demand decoded-block cache, without the per-bucket readers.
     ///
     /// The scan must be a single-column exact search with no filter between
     /// the scan and the sort, the projection must be primary keys plus the
@@ -1225,7 +1225,7 @@ impl LakeSoulVectorSearchExec {
         if std::env::var("LAKESOUL_VECTOR_EXACT_DIRECT").is_ok_and(|value| value == "0") {
             return false;
         }
-        if !lakesoul_io::pk_locator::vector_payload_cache_enabled() {
+        if !lakesoul_io::pk_locator::vector_exact_block_cache_enabled() {
             return false;
         }
         if self.vector_search.order_by
@@ -1268,7 +1268,7 @@ impl LakeSoulVectorSearchExec {
         !has_extra_projection || self.defers_payload(session_config)
     }
 
-    /// Serve an exact re-rank from the index keys and the payload cache.
+    /// Serve an exact re-rank from the index keys and the decoded-block cache.
     ///
     /// Returns `None` whenever a condition cannot be proven; the caller then
     /// runs the per-bucket reader path.
@@ -1545,7 +1545,7 @@ impl LakeSoulVectorSearchExec {
     }
 
     /// Probe the shards directly, load the candidates' stored vectors from the
-    /// payload cache, rank them with the exact distance and return the rows the
+    /// decoded-block cache, rank them with the exact distance and return the rows the
     /// plan's limit may return.
     async fn exact_batches_inner(
         &self,
@@ -1681,7 +1681,7 @@ impl LakeSoulVectorSearchExec {
                         let format =
                             PhysicalFormat::from_extension(location.as_ref()).ok()?;
                         sources.push(
-                            lakesoul_io::pk_locator::VectorPayloadSource::open_cached(
+                            lakesoul_io::pk_locator::VectorBlockSource::open_cached(
                                 Arc::clone(&store),
                                 &location,
                                 format,
@@ -2330,13 +2330,13 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
             ));
         }
         // Exact re-rank directly on the index keys and the stored-vector
-        // payload cache: no per-bucket reader and no merge plan.
+        // decoded-block cache: no per-bucket reader and no merge plan.
         if let Some(batches) = self.try_exact_batches(&context, nprobe, parallelism)? {
             if profile {
                 debug!(
                     batches = batches.len(),
                     rows = batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
-                    "vector search served from the index and the payload cache"
+                    "vector search served from the index and the decoded-block cache"
                 );
             }
             // The direct read returns the ranking columns; a projection with

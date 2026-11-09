@@ -56,10 +56,7 @@ pytestmark = pytest.mark.skipif(
 
 os.environ.setdefault("LAKESOUL_CACHE", "1")
 os.environ.setdefault("LAKESOUL_CACHE_PATH", "/tmp/lakesoul_workers_cache")
-os.environ.setdefault("LAKESOUL_VECTOR_RERANK_CACHE", "1")
-os.environ.setdefault(
-    "LAKESOUL_VECTOR_RERANK_CACHE_DIR", "/tmp/lakesoul_workers_payload"
-)
+os.environ.setdefault("LAKESOUL_VECTOR_BLOCK_ROWS", "256")
 
 DIM = 8
 N = 120

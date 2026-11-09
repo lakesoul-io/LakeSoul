@@ -32,7 +32,7 @@ use lakesoul_common::IndexKind;
 use lakesoul_io::config::{LakeSoulIOConfigBuilder, OPTION_KEY_FILE_FILTER_PUSHDOWN};
 use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_io::index::key::{KeyCodec, KeyLayout};
-use lakesoul_io::pk_locator::VectorPayloadSource;
+use lakesoul_io::pk_locator::VectorBlockSource;
 use lakesoul_io::index::prefix::derive_index_prefixes;
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::vector::search::{
@@ -106,8 +106,8 @@ pub struct VectorBatchRequest {
     /// Re-rank each query's candidates by the exact distance of their stored
     /// vectors instead of the index estimate.
     ///
-    /// The exact re-rank needs the stored-vector payload cache
-    /// (`LAKESOUL_VECTOR_RERANK_CACHE`), a proven snapshot coverage and one
+    /// The exact re-rank needs the on-demand decoded-block cache
+    /// (`LAKESOUL_CACHE`), a proven snapshot coverage and one
     /// data file per bucket; any other table gets a clear error instead of
     /// silently approximate results.  Both L2 and IP indices are supported:
     /// the scores are the squared distance (L2) or the negated dot product
@@ -848,9 +848,9 @@ async fn search_vector_batch_chunk(
     Ok(results)
 }
 
-/// Exact re-rank of a snapshot batch from the stored-vector payload cache.
+/// Exact re-rank of a snapshot batch from the on-demand decoded-block cache.
 ///
-/// Every bucket's candidates are read from the payload cache (one data file per
+/// Every bucket's candidates are read from the decoded-block cache (one data file per
 /// bucket, one shared `pread` source), scored with the exact L2 distance and
 /// merged across buckets per query.  Primary keys are decoded only for the
 /// candidates that win the top-k, so no key value is materialised for the
@@ -898,8 +898,8 @@ async fn exact_rank_and_merge(
             .data_type()
             .clone(),
     ];
-    // One payload source per bucket: opening resolves the key index and the
-    // cached payload view, and every row read below shares them.
+    // One decoded-block source per bucket: opening resolves the key index and
+    // the shared block cache, and every row read below shares them.
     let mut opens = Vec::with_capacity(buckets.len());
     for (prefix, bucket_files) in buckets {
         if bucket_files.len() != 1 {
@@ -929,7 +929,7 @@ async fn exact_rank_and_merge(
         let key_columns = primary_keys.to_vec();
         let key_types = key_types.clone();
         opens.push(async move {
-            VectorPayloadSource::open_cached(
+            VectorBlockSource::open_cached(
                 store,
                 &location,
                 format,
@@ -1012,7 +1012,7 @@ async fn exact_rank_and_merge(
                                     request.ascending(),
                                 ) else {
                                     return Err(DataFusionError::Execution(
-                                        "stored-vector payload read failed"
+                                        "stored-vector block read failed"
                                             .to_string(),
                                     ));
                                 };

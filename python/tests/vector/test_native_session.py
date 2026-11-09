@@ -30,14 +30,11 @@ pytest.importorskip(
 from lakesoul import LakeSoulCatalog, LakeSoulSession  # noqa: E402
 
 # The exact direct path (and the native batch entry in exact mode) reads the
-# stored vectors through the payload cache, which in turn needs the local
-# object-store cache for the persistent key index.
+# stored vectors through the on-demand decoded-block cache, which in turn needs
+# the local object-store cache for the persistent key index.
 os.environ.setdefault("LAKESOUL_CACHE", "1")
 os.environ.setdefault("LAKESOUL_CACHE_PATH", "/tmp/lakesoul_session_cache")
-os.environ.setdefault("LAKESOUL_VECTOR_RERANK_CACHE", "1")
-os.environ.setdefault(
-    "LAKESOUL_VECTOR_RERANK_CACHE_DIR", "/tmp/lakesoul_session_payload"
-)
+os.environ.setdefault("LAKESOUL_VECTOR_BLOCK_ROWS", "256")
 
 DIM = 8
 N = 200

@@ -92,10 +92,9 @@ use crate::file_format::{PhysicalFormat, vortex_scan_session};
 use crate::helpers::transform::make_default_array;
 use crate::session::GLOBAL_RUNTIME;
 
-/// Stored-vector payload cache for exact re-ranking (opt-in, see the module
-/// documentation).  It serves candidate rows without decoding the vector
-/// column of the data file.
-mod payload;
+/// Format-free helpers for the exact re-rank decoded-block cache.  Candidate
+/// rows are served from on-demand blocks; no whole-column payload file exists.
+mod block;
 
 /// Above this many candidate keys the locator is not worth it: the caller
 /// is better off scanning.
@@ -2173,28 +2172,27 @@ pub async fn try_build_key_inputs_encoded(
     .await
 }
 
-/// Whether exact re-rank can read stored vectors from the payload cache.
-pub fn vector_payload_cache_enabled() -> bool {
-    payload::enabled() || block_source_enabled()
+/// Whether exact re-rank can read stored vectors from the block cache.
+pub fn vector_exact_block_cache_enabled() -> bool {
+    block_source_enabled()
 }
 
-/// One data file's stored-vector payload, opened once for a candidate batch.
+/// One data file's on-demand decoded blocks, opened once for a candidate batch.
 ///
 /// This is the direct exact-re-rank entry: [`Self::open`] resolves the key
-/// index and the payload of one data file, and [`Self::take`] serves the
+/// index and the block cache of one data file, and [`Self::take`] serves the
 /// stored vectors of encoded keys without decoding any primary-key value and
 /// without touching the merge path.  Both steps refuse what they cannot
-/// reproduce exactly (no payload cache, a file with explicit row ids, or a key
-/// that does not resolve to exactly one row), so callers can fall back to the
-/// reader path on `None`.
+/// reproduce exactly (no `LAKESOUL_CACHE` block cache, a file with explicit row
+/// ids, or a key that does not resolve to exactly one row), so callers can
+/// fall back to the reader path on `None`.
 /// On-demand decoded vector blocks for exact re-ranking.
 ///
-/// The eager payload mode writes a whole vector column to one local file.  This
-/// path instead builds only the row blocks an exact query actually touches:
+/// This path builds only the row blocks an exact query actually touches:
 /// each block is decoded from the source data file once, cached in the shared
 /// `DiskCache` (the same S3->SSD cache used by `LAKESOUL_CACHE`) and in a small
 /// in-memory LRU, then reused by later candidate reads.  It never materializes
-/// the full payload.
+/// a full vector column.
 const ENV_BLOCK_ROWS: &str = "LAKESOUL_VECTOR_BLOCK_ROWS";
 const ENV_BLOCK_MEMORY_BYTES: &str = "LAKESOUL_VECTOR_BLOCK_CACHE_BYTES";
 const DEFAULT_BLOCK_ROWS: usize = 256;
@@ -2239,7 +2237,7 @@ async fn read_vector_block(
     location: &StorePath,
     field: &FieldRef,
     dim: usize,
-    elem: payload::PayloadElem,
+    elem: block::VectorElem,
     indices: &[u64],
 ) -> Option<Vec<u8>> {
     let schema: SchemaRef = Arc::new(Schema::new(vec![field.as_ref().clone()]));
@@ -2266,14 +2264,14 @@ async fn read_vector_block(
             continue;
         }
         let array = batch.column(0);
-        let flat = payload::chunk_values(array, rows, dim)?;
+        let flat = block::chunk_values(array, rows, dim)?;
         match elem {
-            payload::PayloadElem::F32 => {
+            block::VectorElem::F32 => {
                 for value in flat.as_primitive::<Float32Type>().values() {
                     out.extend_from_slice(&value.to_le_bytes());
                 }
             }
-            payload::PayloadElem::F64 => {
+            block::VectorElem::F64 => {
                 for value in flat.as_primitive::<Float64Type>().values() {
                     out.extend_from_slice(&value.to_le_bytes());
                 }
@@ -2290,7 +2288,7 @@ struct BlockSource {
     entry: Arc<CachedFile>,
     location: StorePath,
     field: FieldRef,
-    elem: payload::PayloadElem,
+    elem: block::VectorElem,
     dim: usize,
     row_bytes: usize,
     rows: usize,
@@ -2306,7 +2304,7 @@ impl BlockSource {
         location: StorePath,
         field: &FieldRef,
     ) -> Option<Self> {
-        let elem = payload::payload_elem(field.data_type())?;
+        let elem = block::vector_elem(field.data_type())?;
         let dim = match field.data_type() {
             DataType::FixedSizeList(_, dim) if *dim > 0 => *dim as usize,
             _ => return None,
@@ -2411,7 +2409,7 @@ impl BlockSource {
             .iter()
             .map(|row| self.row_bytes(*row))
             .collect::<Option<_>>()?;
-        payload::take_rows_from_bytes(field, self.dim, self.elem, &rows)
+        block::take_rows_from_bytes(field, self.dim, self.elem, &rows)
     }
 
     fn score_rows(
@@ -2424,49 +2422,48 @@ impl BlockSource {
             .iter()
             .map(|row| self.row_bytes(*row))
             .collect::<Option<_>>()?;
-        payload::score_rows_from_bytes(self.dim, self.elem, &rows, query, ascending)
+        block::score_rows_from_bytes(self.dim, self.elem, &rows, query, ascending)
     }
 }
 
 #[derive(Clone)]
-pub struct VectorPayloadSource {
+pub struct VectorBlockSource {
     entry: Arc<CachedFile>,
-    view: Option<Arc<payload::PayloadView>>,
-    blocks: Option<Arc<BlockSource>>,
+    blocks: Arc<BlockSource>,
     vector_field: FieldRef,
 }
 
-/// Opened payload sources, by data file and column layout.
+/// Opened decoded-block sources, by data file and column layout.
 ///
 /// Every query of a table opens the same few sources (one per hash bucket);
-/// the entry and payload view themselves are already cached, so this only
+/// the entry and block cache themselves are already cached, so this only
 /// saves the per-query cache lookups (~0.08 ms for four buckets).  Data files
 /// are immutable and the key includes the location, the key columns/types and
 /// the vector field, so a compaction (new file names) simply misses.
-/// `LAKESOUL_PAYLOAD_SOURCE_CACHE=0` disables it.
-/// Cached [`VectorPayloadSource`]s plus their insertion order.  The cap keeps
+/// `LAKESOUL_VECTOR_BLOCK_SOURCE_CACHE=0` disables it.
+/// Cached [`VectorBlockSource`]s plus their insertion order.  The cap keeps
 /// the pinned key-index mappings of very wide tables bounded: a source is
 /// only useful while its table is being queried, so evicting the oldest entry
 /// costs one re-open.
-static PAYLOAD_SOURCES: LazyLock<std::sync::Mutex<SourceCache>> =
+static BLOCK_SOURCES: LazyLock<std::sync::Mutex<SourceCache>> =
     LazyLock::new(|| std::sync::Mutex::new(SourceCache::default()));
 
 /// Maximum number of cached sources (one per data file and column layout).
-const PAYLOAD_SOURCE_CACHE_ENTRIES: usize = 16;
+const BLOCK_SOURCE_CACHE_ENTRIES: usize = 16;
 
 #[derive(Default)]
 struct SourceCache {
-    entries: std::collections::HashMap<String, Arc<VectorPayloadSource>>,
+    entries: std::collections::HashMap<String, Arc<VectorBlockSource>>,
     order: std::collections::VecDeque<String>,
 }
 
 impl SourceCache {
-    fn get(&self, key: &str) -> Option<Arc<VectorPayloadSource>> {
+    fn get(&self, key: &str) -> Option<Arc<VectorBlockSource>> {
         self.entries.get(key).cloned()
     }
 
-    fn insert(&mut self, key: String, source: Arc<VectorPayloadSource>) {
-        while self.entries.len() >= PAYLOAD_SOURCE_CACHE_ENTRIES {
+    fn insert(&mut self, key: String, source: Arc<VectorBlockSource>) {
+        while self.entries.len() >= BLOCK_SOURCE_CACHE_ENTRIES {
             let Some(oldest) = self.order.pop_front() else {
                 break;
             };
@@ -2478,11 +2475,11 @@ impl SourceCache {
     }
 }
 
-fn payload_source_cache_enabled() -> bool {
-    !std::env::var("LAKESOUL_PAYLOAD_SOURCE_CACHE").is_ok_and(|value| value == "0")
+fn block_source_cache_enabled() -> bool {
+    !std::env::var("LAKESOUL_VECTOR_BLOCK_SOURCE_CACHE").is_ok_and(|value| value == "0")
 }
 
-impl VectorPayloadSource {
+impl VectorBlockSource {
     /// Cached variant of [`Self::open`]: the same data file and column layout
     /// resolves to the same source for the life of the process.
     pub async fn open_cached(
@@ -2493,7 +2490,7 @@ impl VectorPayloadSource {
         key_types: &[DataType],
         vector_field: &FieldRef,
     ) -> Option<Arc<Self>> {
-        if !payload_source_cache_enabled() {
+        if !block_source_cache_enabled() {
             return Self::open(
                 store,
                 location,
@@ -2517,7 +2514,7 @@ impl VectorPayloadSource {
             vector_field.data_type().hash(&mut hasher);
             format!("{:016x}", hasher.finish())
         };
-        if let Ok(cache) = PAYLOAD_SOURCES.lock()
+        if let Ok(cache) = BLOCK_SOURCES.lock()
             && let Some(source) = cache.get(&key)
         {
             return Some(source);
@@ -2533,13 +2530,13 @@ impl VectorPayloadSource {
             )
             .await?,
         );
-        if let Ok(mut cache) = PAYLOAD_SOURCES.lock() {
+        if let Ok(mut cache) = BLOCK_SOURCES.lock() {
             cache.insert(key, Arc::clone(&source));
         }
         Some(source)
     }
 
-    /// Open the key index and the stored-vector payload of one data file.
+    /// Open the key index and the decoded-block cache of one data file.
     pub async fn open(
         store: Arc<dyn ObjectStore>,
         location: &StorePath,
@@ -2548,7 +2545,7 @@ impl VectorPayloadSource {
         key_types: &[DataType],
         vector_field: &FieldRef,
     ) -> Option<Self> {
-        if !payload::enabled() && !block_source_enabled() {
+        if !block_source_enabled() {
             return None;
         }
         let mut session: Option<VortexSession> = None;
@@ -2565,26 +2562,13 @@ impl VectorPayloadSource {
         if entry.index.has_row_ids() {
             return None;
         }
-        let view = if payload::enabled() {
-            payload::open_view(&entry, location, vector_field).await
-        } else {
-            None
-        };
-        let blocks = if view.is_none() && block_source_enabled() {
-            Some(Arc::new(BlockSource::new(
-                Arc::clone(&entry),
-                location.clone(),
-                vector_field,
-            )?))
-        } else {
-            None
-        };
-        if view.is_none() && blocks.is_none() {
-            return None;
-        }
+        let blocks = Arc::new(BlockSource::new(
+            Arc::clone(&entry),
+            location.clone(),
+            vector_field,
+        )?);
         Some(Self {
             entry,
-            view,
             blocks,
             vector_field: Arc::clone(vector_field),
         })
@@ -2601,7 +2585,7 @@ impl VectorPayloadSource {
         }
         // The candidate keys are not sorted (they arrive in index-distance
         // order); the locator's monotonic search needs them sorted, and the
-        // payload read has to answer in the original order.
+        // block read has to answer in the original order.
         let mut order: Vec<u32> = (0..keys.len() as u32).collect();
         order.sort_unstable_by(|left, right| {
             keys[*left as usize]
@@ -2617,12 +2601,7 @@ impl VectorPayloadSource {
         for (slot, position) in order.iter().enumerate() {
             indices[*position as usize] = u64::from(rows[slot]);
         }
-        if let Some(view) = self.view.as_ref() {
-            let mut arrays =
-                view.take(&indices, std::slice::from_ref(&self.vector_field))?;
-            return (arrays.len() == 1).then(|| arrays.remove(0));
-        }
-        self.blocks.as_ref()?.take(&indices, &self.vector_field)
+        self.blocks.take(&indices, &self.vector_field)
     }
 
     /// Which of the given candidate keys resolve to exactly one row of this
@@ -2641,12 +2620,7 @@ impl VectorPayloadSource {
             return None;
         }
         let indices: Vec<u64> = rows.iter().map(|row| u64::from(*row)).collect();
-        if let Some(view) = self.view.as_ref() {
-            let mut arrays =
-                view.take(&indices, std::slice::from_ref(&self.vector_field))?;
-            return (arrays.len() == 1).then(|| arrays.remove(0));
-        }
-        self.blocks.as_ref()?.take(&indices, &self.vector_field)
+        self.blocks.take(&indices, &self.vector_field)
     }
 
     /// Exact L2/IP scores of the given keys' stored vectors.
@@ -2654,7 +2628,7 @@ impl VectorPayloadSource {
     /// Same lookup as [`Self::take`] but without building an Arrow array per
     /// query: the batch re-rank only needs the scores, so the rows are read and
     /// reduced in place.  `None` when a key does not resolve to exactly one row
-    /// (the merge path has to decide versions) or the payload cannot serve it.
+    /// (the merge path has to decide versions) or the block cache cannot serve it.
     pub fn score_keys(
         &self,
         keys: &[IndexKey],
@@ -2679,10 +2653,7 @@ impl VectorPayloadSource {
         for (slot, position) in order.iter().enumerate() {
             indices[*position as usize] = u64::from(rows[slot]);
         }
-        if let Some(view) = self.view.as_ref() {
-            return view.score_rows(&indices, query, ascending);
-        }
-        self.blocks.as_ref()?.score_rows(&indices, query, ascending)
+        self.blocks.score_rows(&indices, query, ascending)
     }
 }
 
@@ -2693,13 +2664,14 @@ impl VectorPayloadSource {
 /// none of them, or in more than one — the key has several versions and the
 /// merge-on-read path has to pick the visible one — makes the whole call return
 /// `None`, so the caller falls back to the reader path.  Buckets that hold
-/// several append-only files therefore use the direct payload read instead of
+/// several append-only files therefore use the direct block read instead of
 /// requiring compaction down to one file per bucket.
 ///
-/// A key unique to one file is read from that file's payload; the caller's key
-/// order is preserved so the distances stay aligned with the candidate order.
+/// A key unique to one file is read from that file's decoded blocks; the
+/// caller's key order is preserved so the distances stay aligned with the
+/// candidate order.
 pub fn take_multi_file(
-    sources: &[std::sync::Arc<VectorPayloadSource>],
+    sources: &[std::sync::Arc<VectorBlockSource>],
     keys: &[IndexKey],
 ) -> Option<arrow::array::ArrayRef> {
     take_multi_file_ranked(sources, &[], keys)
@@ -2717,7 +2689,7 @@ pub fn take_multi_file(
 /// `ranks` keeps the conservative behaviour: only keys unique to one file
 /// resolve.
 pub fn take_multi_file_ranked(
-    sources: &[std::sync::Arc<VectorPayloadSource>],
+    sources: &[std::sync::Arc<VectorBlockSource>],
     ranks: &[u64],
     keys: &[IndexKey],
 ) -> Option<arrow::array::ArrayRef> {
@@ -2774,7 +2746,7 @@ pub fn take_multi_file_ranked(
     if tied.iter().any(|is_tied| *is_tied) {
         return None;
     }
-    // One payload read per file, in the caller's key order.
+    // One block read per file, in the caller's key order.
     let mut per_source: Vec<Vec<u32>> = vec![Vec::new(); sources.len()];
     for resolved in &owner {
         let (source_index, row) = (*resolved)?;
@@ -2928,35 +2900,15 @@ async fn build_key_inputs(
         let t = std::time::Instant::now();
         let batches = match &entry.source {
             FileSource::Vortex { file, session } => {
-                // Exact re-rank reads the stored vector of every candidate
-                // row.  With the payload cache enabled and a projection made
-                // of keys plus stored vectors only, the rows come from the
-                // cached payload and the mmapped key index instead of a scan
-                // that decodes the file's whole vector column per query.
-                match payload::try_take_rows(
-                    &entry,
+                take_rows(
+                    file,
                     &location,
+                    session,
                     &indices,
                     &projected_schema,
                     &projection_names,
-                    columns,
-                    types,
                 )
                 .await
-                {
-                    Some(batches) => Ok(batches),
-                    None => {
-                        take_rows(
-                            file,
-                            &location,
-                            session,
-                            &indices,
-                            &projected_schema,
-                            &projection_names,
-                        )
-                        .await
-                    }
-                }
             }
             FileSource::Parquet {
                 store,
@@ -2983,9 +2935,8 @@ async fn build_key_inputs(
         inputs.push(exec as Arc<dyn ExecutionPlan>);
     }
     if profile {
-        let (payload_hits, payload_builds) = payload::stats();
         eprintln!(
-            "pk_locator: keys={} files={} pruned={} rows={} cache={:?} take={:?} total={:?} payload_hits={} payload_builds={}",
+            "pk_locator: keys={} files={} pruned={} rows={} cache={:?} take={:?} total={:?}",
             key_count,
             n_files,
             n_pruned,
@@ -2993,8 +2944,6 @@ async fn build_key_inputs(
             t_cache,
             t_take,
             t_total.elapsed(),
-            payload_hits,
-            payload_builds,
         );
     }
     Some(inputs)
@@ -3039,7 +2988,7 @@ async fn take_rows(
     // Project only the columns the caller asked for.  A dense projection of
     // the whole file (`root()`) decodes every column of every chunk the row
     // indices touch, so a candidate fetch of a few hundred rows would pay for
-    // the whole payload — including a 200-dimensional vector column — instead
+    // the whole projected set — including a 200-dimensional vector column — instead
     // of the handful of projected columns it actually returns.
     let projection = select(
         FieldNames::from_iter(projection_names.iter().map(|name| name.as_str())),

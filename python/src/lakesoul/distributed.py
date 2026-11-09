@@ -41,7 +41,7 @@ from lakesoul.session import LakeSoulSession
 Engine = Literal["threads", "ray", "dask"]
 
 #: Session cache used by the thread engine: one session per worker keeps the
-#: metadata/index/payload caches warm across queries.
+#: metadata/index/block caches warm across queries.
 _SESSION_CACHE: dict[str, LakeSoulSession] = {}
 _SESSION_CACHE_LOCK = threading.Lock()
 

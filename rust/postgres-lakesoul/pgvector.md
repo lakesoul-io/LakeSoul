@@ -776,51 +776,27 @@ VectorTopKOptimizerRule
 参考：[pgvector 官方语法与操作符](https://github.com/pgvector/pgvector#querying)。
 ---
 
-# 九、实测：pgvector 查询 QPS（GloVe-1.18M × 200d）
+# 九、缓存与性能（整文件 payload 已移除）
 
-测试环境与 datafusion 侧完全一致：8 物理核/16 逻辑核 KVM、AVX-512；表
-`vec_glove_pg`（vortex、4 个 hash bucket、`vector_index_columns` = `{"column":"vec","dim":200,
-"nlist":1024,"total_bits":1,"metric":"L2"}`）；200 条真实 GloVe query；`ORDER BY vec <-> '[…]'
-LIMIT 100`；客户端为 libpq（psql 单连接顺序 / 8 个并行连接），服务端
-`postgres-lakesoul --worker-threads 16`，且进程环境开启 payload 缓存
-（`LAKESOUL_VECTOR_RERANK_CACHE=1` + `LAKESOUL_VECTOR_RERANK_CACHE_DIR`）。
+整文件 payload 已完全移除。`postgres-lakesoul` 的 `<->` exact 重排现在依赖
+`LAKESOUL_CACHE` 提供的按需 decoded-block 缓存：
 
-实测（R58 镜像；服务端 `LAKESOUL_METADATA_TTL_MS=200` + payload/source 缓存开启，单 psql 连接
-顺序执行 200 条 query，每个配置前先做一次 exact 预热；200 条全量 recall 见括号）：
+```bash
+export LAKESOUL_CACHE=1
+export LAKESOUL_CACHE_PATH=/data/lakesoul/cache
+export LAKESOUL_CACHE_SIZE=8GiB
+export LAKESOUL_VECTOR_BLOCK_ROWS=256
+export LAKESOUL_VECTOR_BLOCK_CACHE_BYTES=268435456
+```
 
-| 会话配置 | c=1 QPS | c=8 QPS | Recall@100 | 备注 |
-|---|---:|---:|---:|---|
-| 默认（exact、nprobe=64、of=10） | 261–271 | — | 0.7743 | 服务不设任何 `SET` 时的开箱值 |
-| `rerank='index'; nprobe=16` | **781–791** | **2,827–2,931** | 0.4204 | 只按索引距离排序，不读向量列 |
-| `rerank='exact'; nprobe=32; overfetch=1` | **591–598** | **2,161–2,385** | 0.6419 | 精确重排，推荐工作点 |
-| `rerank='exact'; nprobe=64; overfetch=1` | 584 | — | 0.6419 | 更高召回档 |
-| **payload 缓存关闭**：exact np32/of1 | 10.0（R49） | — | — | 回退 reader 路径 |
-| **payload 缓存关闭**：默认 np64/of10 | 0.5（R49） | — | — | 每查询约 2 s |
+服务启动时如果没有 `LAKESOUL_CACHE`，会打印 WARN：exact 查询仍正确，但会回退到
+reader 路径（明显更慢）。exact 的单查询/批量实测见
+[exact三级缓存.md](../lakesoul-vector/exact三级缓存.md) 和
+[batch查询性能.md](../lakesoul-vector/batch查询性能.md)。
 
-历史（R49 镜像，供对比）：默认 182–194、index-only 490–495（c=8 1,962–1,985）、exact 303–318
-（c=8 1,202–1,227）；R51（元数据 TTL）、R52（融合排序）、R54（payload source 缓存）、R57（单查询
-probe 直连）、R58（pgvector list 字面量折叠）、R61（每语句 SQL 兼容解析器改为进程级复用，服务端
-exact +31%、index-only +39%）叠加后达到上表工作点。
-
-对照 datafusion SQL 路径（同表、同参数，R57 镜像）：index-only 单查询 693 QPS、exact np32/of1
-535 QPS（c=8 2,246）；即 PG wire + psql 文本协议端到端多 **15–19%** 开销（每语句约 0.1–0.2 ms），
-服务端 exec 本身与进程内一致（0.65–0.90 ms）。召回与 datafusion 逐位同源（200 条全量
-0.4204 / 0.6419 / 0.6756）。
-
-其它观测：
-- 服务进程 RSS ≈ 504 MB（index cache 15 MB；payload 目录 903 MB 在 tmpfs 上，走 pread，不映射进 RSS）；
-- payload 冷构建：4 个文件共 903 MB，首个 exact 查询 **0.96 s**；之后单查询端到端 28–39 ms
-  （含连接、planning、3.3 ms 级 exec）；
-- 结果正确性：`<->` 返回的距离与 datafusion 精确路径一致（crate 内 192 项测试已覆盖）。
-
-**结论与建议**：
-1. **P0：服务进程必须开启 payload 缓存**。pgvector 的 `<->` 默认走 exact 重排，缓存关闭时会回退到
-   reader 路径，QPS 从 185–318 掉到 0.5–10（30–370×）。本提交在启动时打印 WARN 提示
-   （`LAKESOUL_VECTOR_RERANK_CACHE=1`，可选 `..._CACHE_DIR`）。
-2. PG wire 不是瓶颈，**不建议**为此改协议层；需要更高 QPS 时应调会话参数（见上表）或等待
-   datafusion 侧 SQL 前端优化（与 `ORDER BY ... LIMIT` 的规划路径共用）。
-3. 若要对齐原生 pgvector 语义（按索引距离返回近似序、不读向量列），把
-   `lakesoul_vector_search.rerank` 默认设为 `index` 更贴切——这是行为/召回取舍，需产品决策。
+历史 R58 的 pgvector QPS 表（exact 261–598 QPS）是在已删除的整文件 payload 模式下
+测得的，不再代表当前版本；不要按那张表做容量规划。index-only（`rerank='index'`）
+不读向量列，不受该移除影响，仍是最高的 PG wire 吞吐路径。
 
 ---
 
