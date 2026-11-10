@@ -62,6 +62,20 @@ mod vortex_catalog_tests;
 // in cargo test, this executed only once
 #[ctor::ctor]
 fn init() {
+    // Cache configuration is a process-wide lazy value.  Individual tests set
+    // LAKESOUL_CACHE before their first query, but another test may initialize
+    // the config first; pin both the legacy and the unified names here.
+    unsafe {
+        std::env::set_var("LAKESOUL_CACHE", "1");
+        std::env::set_var("LAKESOUL_VECTOR_CACHE", "1");
+        std::env::set_var(
+            "LAKESOUL_CACHE_PATH",
+            "/tmp/lakesoul-datafusion-test-cache",
+        );
+        std::env::set_var("LAKESOUL_CACHE_SIZE", "4GiB");
+        std::env::set_var("LAKESOUL_VECTOR_MEMORY_BYTES", "1GiB");
+        std::env::set_var("LAKESOUL_VECTOR_BLOCK_ROWS", "256");
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
