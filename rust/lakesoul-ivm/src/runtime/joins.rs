@@ -4535,7 +4535,11 @@ impl IvmRuntime {
             "keyed before lookup routing"
         );
         let before_groups = source
-            .before_window_groups(&self.client, &window.before_versions)
+            .before_window_groups(
+                &self.client,
+                &window.before_versions,
+                window.before_timestamp,
+            )
             .await?;
         let groups = groups_by_bucket(before_groups, bucket_count);
         let provider = IvmLookupTable::columns(

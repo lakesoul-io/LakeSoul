@@ -14,10 +14,10 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTable,
-    IvmTableOptions, JoinView, SemiAntiView, StateRole, enable_partition_stats,
-    keyed_join_output_primary_keys, keyed_join_view_schema_for, multi_agg_mv_schema_for,
-    row_mv_schema_for, semi_anti_mv_schema_for, state_partition_stats,
-    sum_count_mv_schema_for,
+    IvmTableOptions, JoinView, RefreshAction, SemiAntiView, StateRole,
+    enable_partition_stats, keyed_join_output_primary_keys, keyed_join_view_schema_for,
+    multi_agg_mv_schema_for, row_mv_schema_for, semi_anti_mv_schema_for,
+    state_partition_stats, sum_count_mv_schema_for,
 };
 use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo};
 use tempfile::tempdir;
@@ -5512,4 +5512,142 @@ async fn multi_agg_scalar_is_re_evaluated_when_partials_merge() {
         }
     }
     assert_eq!(rows, vec![("g1".to_string(), 35, "G1".to_string())]);
+}
+
+/// The row state of a multi-aggregate view keeps only the source columns the
+/// view reads; an unreferenced payload column must not be copied into it.
+#[test_log::test(tokio::test)]
+async fn multi_agg_row_state_drops_unreferenced_source_columns() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("g", DataType::Utf8, false),
+        Field::new("v", DataType::Int64, false),
+        Field::new("unused", DataType::Utf8, true),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_part_width_src_{suffix}"),
+                table_path(&dir, "src"),
+                schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_part_width_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                multi_agg_mv_schema_for(
+                    &source.schema,
+                    &["g".to_string()],
+                    &[],
+                    &[
+                        ("cnt".to_string(), DataType::Int64),
+                        ("mx".to_string(), DataType::Int64),
+                    ],
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from_iter_values([1, 2])),
+            Arc::new(StringArray::from_iter_values(["a", "b"])),
+            Arc::new(Int64Array::from_iter_values([10, 20])),
+            Arc::new(StringArray::from_iter_values(["x", "y"])),
+            Arc::new(StringArray::from_iter_values(["insert", "insert"])),
+        ],
+    )
+    .unwrap();
+    source.append_batch(runtime.client(), batch).await.unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_part_width_mv_{suffix} \
+         SELECT g, COUNT(*) AS cnt, MAX(v) AS mx \
+         FROM ivm_part_width_src_{suffix} GROUP BY g"
+    );
+    executor.execute(&statement).await.unwrap();
+    let runtime = executor.runtime();
+    let mut row_state = None;
+    for view in runtime.metadata().list_views().await.unwrap() {
+        for state in runtime.metadata().list_states(&view.view_id).await.unwrap() {
+            if state.role == StateRole::MultiAggRows
+                && state.table_name.starts_with(&mv.table_name)
+            {
+                row_state = Some(state);
+            }
+        }
+    }
+    let state = row_state.expect("multi-agg row state");
+    let state = runtime.open_table_by_id(&state.table_id).await.unwrap();
+    assert!(state.schema.field_with_name("v").is_ok());
+    assert!(state.schema.field_with_name("g").is_ok());
+    assert!(state.schema.field_with_name("k").is_ok());
+    assert!(
+        state.schema.field_with_name("unused").is_err(),
+        "unreferenced source columns must not be copied into the row state: {:?}",
+        state.schema
+    );
+}
+
+/// A compaction only rewrites files; it advances the source cursor without
+/// creating an empty refresh epoch.
+#[test_log::test(tokio::test)]
+async fn compaction_advances_cursors_without_a_refresh_epoch() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = create_source(&runtime, &dir, &suffix).await;
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 10, "d1", "insert"), (2, "b", 20, "d2", "insert")]),
+        )
+        .await
+        .unwrap();
+    let output_columns = ["k", "g", "v", "day"].map(String::from);
+    runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_part_compact_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                row_mv_schema_for(&source.schema, &output_columns).unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_part_compact_mv_{suffix} SELECT k, g, v, day \
+         FROM ivm_part_src_{suffix}"
+    );
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    let runtime = executor.runtime();
+    source.compact(runtime.client()).await.unwrap();
+    let refreshed = runtime
+        .refresh_view_chain(&execution.view_id)
+        .await
+        .unwrap();
+    assert!(
+        refreshed
+            .iter()
+            .all(|view| view.action == RefreshAction::Unchanged),
+        "compaction must not create a refresh epoch: {refreshed:?}"
+    );
 }

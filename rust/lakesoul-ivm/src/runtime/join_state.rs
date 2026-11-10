@@ -519,7 +519,11 @@ impl super::IvmRuntime {
         };
         let bucket_count = route_columns.as_ref().map_or(1, |_| bucket_count);
         let before_groups = source
-            .before_window_groups(&self.client, &window.before_versions)
+            .before_window_groups(
+                &self.client,
+                &window.before_versions,
+                window.before_timestamp,
+            )
             .await?;
         let groups = super::keyed_plan::groups_by_bucket(before_groups, bucket_count);
         let provider = super::keyed_plan::IvmLookupTable::columns(

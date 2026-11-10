@@ -2718,6 +2718,7 @@ impl IvmRuntime {
                 &context,
                 &view.source,
                 &window.before_versions,
+                window.before_timestamp,
             )
             .await?,
             &view.source.schema,

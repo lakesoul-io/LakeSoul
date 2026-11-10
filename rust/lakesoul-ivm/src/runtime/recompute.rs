@@ -2979,6 +2979,7 @@ impl IvmRuntime {
                     &context,
                     parts.source,
                     &window.before_versions,
+                    window.before_timestamp,
                 )
                 .await?;
             project_group_keys_frame(
@@ -3676,7 +3677,11 @@ impl IvmRuntime {
         }
         let primary_key = view.source.primary_keys[0].as_str();
         let before_groups = source
-            .before_window_groups(&self.client, &window.before_versions)
+            .before_window_groups(
+                &self.client,
+                &window.before_versions,
+                window.before_timestamp,
+            )
             .await?;
         let stage_dir = std::env::temp_dir().join(format!(
             "lakesoul-ivm-contrib-{}",

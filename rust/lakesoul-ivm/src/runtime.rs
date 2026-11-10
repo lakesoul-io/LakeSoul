@@ -5467,8 +5467,11 @@ impl IvmRuntime {
         context: &SessionContext,
         table: &IvmTable,
         before: &std::collections::HashMap<String, Option<i64>>,
+        before_timestamp: i64,
     ) -> Result<DataFrame> {
-        let groups = table.before_window_groups(&self.client, before).await?;
+        let groups = table
+            .before_window_groups(&self.client, before, before_timestamp)
+            .await?;
         self.groups_table_frame(context, table, groups)
     }
 
@@ -6147,6 +6150,26 @@ impl IvmRuntime {
                 source_table_id: source.table_id.clone(),
                 partitions: dropped,
             }));
+        }
+
+        // A compaction commit advances the partition version without adding
+        // changelog rows.  It must not create a refresh epoch: advance the
+        // cursors so the next window starts after the compaction.  A pending
+        // barrier is excluded because its exact window still has to be
+        // replayed.
+        if barrier.is_none() {
+            added_files.retain(|group| !group.files.is_empty());
+            if added_files.is_empty() && !new_cursors.is_empty() {
+                self.advance_cursors(view_id, new_cursors).await?;
+                return Ok(SourceWindow {
+                    added_files: Vec::new(),
+                    cursors: Vec::new(),
+                    identity: Vec::new(),
+                    before_timestamp,
+                    before_versions: HashMap::new(),
+                    barrier: false,
+                });
+            }
         }
 
         Ok(SourceWindow {

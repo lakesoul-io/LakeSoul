@@ -2779,28 +2779,6 @@ impl IvmSqlExecutor {
         Ok(columns)
     }
 
-    /// Whether an older row state still has every column the projection
-    /// reads.  Such a state is used as-is: its extra source columns stay in
-    /// the physical schema (and are maintained on writes) instead of forcing
-    /// a full rebuild just to trim them.  New states are created projected.
-    fn state_schema_compatible(
-        actual: &arrow_schema::SchemaRef,
-        expected: &arrow_schema::SchemaRef,
-        source: &arrow_schema::SchemaRef,
-        group_keys: &[String],
-    ) -> bool {
-        expected.fields().iter().all(|field| {
-            actual
-                .field_with_name(field.name())
-                .is_ok_and(|actual| actual.data_type() == field.data_type())
-        }) && actual.fields().iter().all(|field| {
-            source.field_with_name(field.name()).is_ok()
-                || group_keys.contains(field.name())
-                || field.name() == IVM_ROW_KINDS_COLUMN
-                || field.name() == IVM_EPOCH_COLUMN
-        })
-    }
-
     /// Ensure the partial state of a decomposable multi-aggregate view.
     ///
     /// The partial state stores one row per `(group key, source partition)`
@@ -3040,13 +3018,7 @@ impl IvmSqlExecutor {
                 .await?
             {
                 let table = self.runtime.open_table_by_id(&existing.table_id).await?;
-                if (schema_matches(&table.schema, &schema)
-                    || Self::state_schema_compatible(
-                        &table.schema,
-                        &schema,
-                        &state_source.schema,
-                        group_keys,
-                    ))
+                if schema_matches(&table.schema, &schema)
                     && table.primary_keys == primary_keys
                 {
                     if let Some(plan) = &partial_plan {
