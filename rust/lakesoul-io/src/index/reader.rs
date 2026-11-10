@@ -12,8 +12,10 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
+use futures::Stream;
 
 use crate::config::LakeSoulIOConfigBuilder;
+use crate::reader::LakeSoulReader;
 use crate::session::LakeSoulIOSession;
 
 /// Parent directory of the first file, URL scheme preserved.
@@ -77,6 +79,85 @@ pub fn shard_reader_config_builder(
 /// The schema is inferred through LakeSoul's format registry so Parquet,
 /// Vortex, and remote object stores all use the same schema path as the
 /// actual reader.  Empty row groups are skipped.
+/// Stream the merged visible rows of one shard.
+///
+/// The regular [`read_shard_batches`] materialises every batch before the
+/// vector builder can consume it.  This variant keeps the same schema
+/// inference and merge-on-read reader but returns a bounded stream, so the
+/// builder can run its reservoir pass without holding the full shard.
+pub fn stream_shard_batches(
+    file_paths: Vec<String>,
+    pk_columns: Vec<String>,
+    projection: Vec<String>,
+    object_store_options: std::collections::HashMap<String, String>,
+    default_fs: Option<String>,
+) -> impl Stream<Item = crate::Result<RecordBatch>> {
+    async_stream::try_stream! {
+        if file_paths.is_empty() {
+            return;
+        }
+        let inference_config = shard_reader_config_builder(
+            &file_paths,
+            &pk_columns,
+            &object_store_options,
+            default_fs.as_deref(),
+        )
+        .set_inferring_schema(true)
+        .build();
+        let inference_session =
+            LakeSoulIOSession::try_new(inference_config).map_err(|e| {
+                rootcause::report!("failed to create schema inference session: {}", e)
+            })?;
+        let inferred_schema = inference_session
+            .get_table_schema()
+            .await
+            .map_err(|e| rootcause::report!("failed to infer data file schema: {}", e))?;
+        let file_schema = inferred_schema.file_schema();
+        let mut fields = Vec::with_capacity(projection.len() + pk_columns.len());
+        for column in &pk_columns {
+            fields.push(
+                file_schema
+                    .field_with_name(column)
+                    .map_err(|e| {
+                        rootcause::report!("PK column '{}' not found: {}", column, e)
+                    })?
+                    .clone(),
+            );
+        }
+        for column in &projection {
+            fields.push(
+                file_schema
+                    .field_with_name(column)
+                    .map_err(|e| {
+                        rootcause::report!("index column '{}' not found: {}", column, e)
+                    })?
+                    .clone(),
+            );
+        }
+        let schema = Arc::new(Schema::new(fields));
+        let io_config = shard_reader_config_builder(
+            &file_paths,
+            &pk_columns,
+            &object_store_options,
+            default_fs.as_deref(),
+        )
+        .with_schema(schema)
+        .build();
+        let mut reader = LakeSoulReader::new(io_config)
+            .map_err(|e| rootcause::report!("failed to create reader: {}", e))?;
+        reader
+            .start()
+            .await
+            .map_err(|e| rootcause::report!("failed to start reader: {}", e))?;
+        while let Some(batch_result) = reader.next_rb().await {
+            let batch = batch_result.map_err(|e| rootcause::report!("read error: {}", e))?;
+            if batch.num_rows() > 0 {
+                yield batch;
+            }
+        }
+    }
+}
+
 pub async fn read_shard_batches(
     file_paths: &[String],
     pk_columns: &[String],

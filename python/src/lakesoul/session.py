@@ -286,6 +286,17 @@ class LakeSoulSession:
             raise LakeSoulQueryError(str(error)) from error
         return convert(pa.Table.from_batches(batches), to)
 
+    def sql_stream(self, sql: str) -> Any:
+        """Execute SQL and yield Arrow record batches lazily.
+
+        Use this instead of :meth:`sql` when the result can be large or the
+        caller may stop after the first few batches.  The returned object is
+        an iterator of ``pyarrow.RecordBatch``.
+        """
+        if not isinstance(sql, str):
+            raise TypeError("sql must be a string")
+        return self._inner.sql_stream(sql)
+
     def batch_search(
         self,
         table: str,

@@ -1117,6 +1117,54 @@ class LakeSoulTable:
             if alias is not None:
                 query_session.unregister(alias)
 
+    def search_stream(
+        self,
+        query: Sequence[float],
+        *,
+        column: str | None = None,
+        top_k: int = 10,
+        metric: str | None = None,
+        rerank: str = "index",
+        nprobe: int | None = None,
+        exact_overfetch: int | None = None,
+        filter: str | None = None,
+        columns: Sequence[str] | None = None,
+        with_distance: bool = False,
+        session: LakeSoulSession | None = None,
+    ) -> Any:
+        """Run a vector search and yield Arrow batches lazily.
+
+        This is the streaming counterpart of :meth:`search`: the SQL statement
+        is planned once and the caller consumes result batches with
+        ``for batch in table.search_stream(...)``.  It does not support pinned
+        snapshot/tag/as_of arguments yet; use a dedicated session snapshot for
+        that case.
+        """
+        if rerank not in ("auto", "exact", "index"):
+            raise ValueError(
+                f"rerank must be 'auto', 'exact' or 'index', got {rerank!r}"
+            )
+        query_session = self._search_session(session)
+        sql, _, _ = self._vector_search_sql(
+            query,
+            column=column,
+            top_k=top_k,
+            metric=metric,
+            filter=filter,
+            columns=columns,
+            with_distance=with_distance,
+        )
+        options: dict[str, object] = {}
+        if rerank != "auto":
+            options["rerank"] = rerank
+        if nprobe is not None:
+            options["nprobe"] = int(nprobe)
+        if exact_overfetch is not None:
+            options["exact_overfetch"] = int(exact_overfetch)
+        if options:
+            query_session.set_vector_search(**options)
+        return query_session.sql_stream(sql)
+
     @staticmethod
     def _identifier_pattern(name: str) -> str:
         escaped = re.escape(str(name))

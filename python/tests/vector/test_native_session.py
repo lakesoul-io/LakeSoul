@@ -694,3 +694,36 @@ def test_search_pinned_snapshot_tag_and_as_of() -> None:
     finally:
         catalog.drop_tag(table, "v1")
         _drop(catalog, table_name, table_path)
+
+
+def test_streaming_build_and_streaming_reads() -> None:
+    """A fresh rebuild uses the streaming builder; reads can be consumed lazily."""
+    table_name = "py_streaming_build_reads"
+    catalog, table, table_path = _create_table(table_name)
+    try:
+        # Force the fresh/rebuild path: pass1 reservoir + pass2 streaming.
+        rebuilt = table.rebuild_vector_index(column="vec")
+        assert rebuilt["status"] == "ok", rebuilt
+
+        query = np.random.default_rng(13).normal(size=DIM).astype(np.float32)
+        session = catalog.session(vector_search={"nprobe": 4})
+        expected = table.search(
+            query, top_k=5, columns=["id"], session=session
+        ).column("id").to_pylist()
+        batches = list(
+            table.search_stream(
+                query, top_k=5, columns=["id"], session=session
+            )
+        )
+        ids = [int(value.as_py()) for batch in batches for value in batch.column("id")]
+        assert ids == [int(value) for value in expected], (ids, expected)
+
+        sql_batches = list(
+            session.sql_stream(
+                f'SELECT id FROM "lakesoul".default.{table_name} '
+                "ORDER BY id LIMIT 7"
+            )
+        )
+        assert sum(batch.num_rows for batch in sql_batches) == 7
+    finally:
+        _drop(catalog, table_name, table_path)

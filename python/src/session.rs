@@ -28,6 +28,8 @@ use datafusion::catalog::{
 };
 use datafusion::datasource::TableProvider;
 use datafusion::execution::context::SessionContext;
+use datafusion_execution::SendableRecordBatchStream;
+use futures::StreamExt;
 use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::create_lakesoul_session_config;
 use lakesoul_datafusion::datasource::table_provider::{
@@ -36,7 +38,6 @@ use lakesoul_datafusion::datasource::table_provider::{
 use lakesoul_datafusion::distributed::{DistributedOptions, WorkerDiscovery};
 use lakesoul_datafusion::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
 use lakesoul_datafusion::vector_batch::VectorBatchRequest;
-use lakesoul_datafusion::create_lakesoul_session_ctx_with_config;
 use lakesoul_datafusion::udf::vector_search_marker::LakeSoulVectorSearchConfig;
 use lakesoul_io::session::GLOBAL_RUNTIME;
 use lakesoul_metadata::MetaDataClient;
@@ -82,6 +83,42 @@ use crate::install_module;
 static SNAPSHOT_ALIAS: AtomicU64 = AtomicU64::new(0);
 const SNAPSHOT_CATALOG: &str = "__lakesoul_snapshots";
 const SNAPSHOT_SCHEMA: &str = "public";
+
+/// Iterator over a DataFusion query's Arrow batches.
+///
+/// The stream is pulled lazily, one batch per `__next__`, so large query
+/// results do not have to be materialised as one Arrow table first.
+#[pyclass(module = "lakesoul._lib._session", name = "NativeBatchStream", unsendable)]
+pub struct NativeBatchStream {
+    stream: Option<SendableRecordBatchStream>,
+}
+
+#[pymethods]
+impl NativeBatchStream {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(
+        &mut self,
+        py: Python<'_>,
+    ) -> PyResult<Option<PyArrowType<RecordBatch>>> {
+        let Some(mut stream) = self.stream.take() else {
+            return Ok(None);
+        };
+        let next = py.detach(|| GLOBAL_RUNTIME.block_on(stream.next()));
+        match next {
+            Some(Ok(batch)) => {
+                self.stream = Some(stream);
+                Ok(Some(PyArrowType(batch)))
+            }
+            Some(Err(error)) => Err(PyRuntimeError::new_err(format!(
+                "streaming query failed: {error}"
+            ))),
+            None => Ok(None),
+        }
+    }
+}
 
 #[pyclass(module = "lakesoul._lib._session", name = "NativeSession")]
 pub struct NativeSession {
@@ -306,6 +343,34 @@ impl NativeSession {
     ) -> PyResult<Vec<PyArrowType<RecordBatch>>> {
         self.collect_arrow(py, &sql)
             .map(|batches| batches.into_iter().map(PyArrowType).collect())
+    }
+
+    /// Execute one SQL statement and return a lazy iterator of Arrow batches.
+    ///
+    /// Unlike `sql`, this does not collect the whole result: callers can stop
+    /// early, and large results stay bounded by the consumer's pace.
+    fn sql_stream(
+        &self,
+        py: Python<'_>,
+        sql: String,
+    ) -> PyResult<NativeBatchStream> {
+        let ctx = Arc::clone(&self.ctx);
+        let stream = py
+            .detach(move || {
+                GLOBAL_RUNTIME.block_on(async move {
+                    let dataframe = ctx.sql(&sql).await.map_err(|error| {
+                        format!("query planning failed: {error}; SQL: {sql}")
+                    })?;
+                    dataframe
+                        .execute_stream()
+                        .await
+                        .map_err(|error| format!("query execution failed: {error}; SQL: {sql}"))
+                })
+            })
+            .map_err(PyRuntimeError::new_err)?;
+        Ok(NativeBatchStream {
+            stream: Some(stream),
+        })
     }
 
     /// Render `EXPLAIN` / `EXPLAIN ANALYZE` for a statement.
@@ -686,6 +751,7 @@ pub(crate) fn init(py: Python<'_>, parent: &Bound<PyModule>) -> PyResult<()> {
     let m = PyModule::new(py, "_session")?;
     parent.add_submodule(&m)?;
     install_module("lakesoul._lib._session", &m)?;
+    m.add_class::<NativeBatchStream>()?;
     m.add_class::<NativeSession>()?;
     Ok(())
 }
