@@ -13,7 +13,9 @@
 //!   no-list source may be narrower and is completed with NULL;
 //! - check every untyped literal against its target column (`22P02` for an
 //!   invalid string, `42804` for a type mismatch) and every typed `VALUES`
-//!   or `SELECT` expression with PostgreSQL's assignment matrix.
+//!   or `SELECT` expression with PostgreSQL's assignment matrix. A `VALUES`
+//!   source whose rows cannot be planned as one query still has each typed
+//!   expression and literal checked against its target column.
 //!
 //! Keeping this in one place means the replacement `DO UPDATE` path cannot
 //! drift from the ordinary `INSERT` contract.
@@ -26,12 +28,14 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use arrow::datatypes::{Field, Schema};
-use datafusion::common::DFSchemaRef;
+use arrow::datatypes::{DataType, Field, Schema};
+use datafusion::common::{DFSchema, DFSchemaRef};
+use datafusion::logical_expr::ExprSchemable;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{
-    Expr, Ident, Insert, ObjectName, Query, SelectItem, SetExpr, Statement, Value, Values,
+    Expr, ExprWithAlias, Ident, Insert, ObjectName, Query, SelectItem, SetExpr,
+    Statement, Value, Values,
 };
 
 use crate::pg_assignment::{self, AssignmentError};
@@ -179,7 +183,7 @@ pub async fn analyse(
                 .iter()
                 .filter_map(|row| row.content.get(position))
                 .collect::<Vec<_>>();
-            validate_values_column(position, &column, target, planned.as_ref())?;
+            validate_values_column(position, &column, target, planned.as_ref(), session)?;
         }
     } else if let Some(planned) = &planned {
         let width = source_width.unwrap_or(0);
@@ -194,6 +198,7 @@ pub async fn analyse(
                 width,
                 schema.field(index),
                 planned,
+                session,
             )?;
         }
     }
@@ -348,30 +353,78 @@ fn validate_values_column(
     column: &[&Expr],
     target: &Field,
     source_schema: Option<&DFSchemaRef>,
+    session: &SessionContext,
 ) -> Result<(), InsertAnalysisError> {
     let mut literals = Vec::with_capacity(column.len());
-    let mut typed = false;
+    let mut typed = Vec::new();
     for expr in column {
         match pg_assignment::literal(expr) {
             Some(value) => literals.push(value),
-            None => typed = true,
+            None => typed.push(*expr),
         }
     }
-    if typed {
-        // A typed expression resolves the column's type; the literals in the
-        // other rows are coerced to it, so the planned type decides.
-        if let Some(source) = source_schema
-            .and_then(|schema| schema.fields().get(index))
-            .map(|field| field.data_type())
-        {
-            return pg_assignment::ensure_assignment(source, target).map_err(Into::into);
+    if typed.is_empty() {
+        for value in literals {
+            pg_assignment::check_literal(value, target)
+                .map_err(InsertAnalysisError::from)?;
         }
         return Ok(());
+    }
+    // A typed expression resolves the column's type; the literals in the
+    // other rows are coerced to it, so the planned type decides.
+    if let Some(source) = source_schema
+        .and_then(|schema| schema.fields().get(index))
+        .map(|field| field.data_type())
+    {
+        return pg_assignment::ensure_assignment(source, target).map_err(Into::into);
+    }
+    // The source has no independent plan (its rows disagree, or a parameter
+    // is still untyped). PostgreSQL still coerces every row of a `VALUES`
+    // column against the target, so check each expression on its own rather
+    // than accepting the column unchecked: a boolean literal mixed with a
+    // numeric expression must not become an integer through the upsert cast.
+    validate_unplanned_values_column(literals, typed, target, session)
+}
+
+/// Validate one `VALUES` column whose source query could not be planned as a
+/// whole. Each typed expression is checked by the type it has on its own; an
+/// expression that cannot be typed independently at all (an unresolved
+/// parameter) stays unknown and is accepted. Literals are resolved against
+/// the target column, as PostgreSQL does for each row of an `INSERT` source.
+fn validate_unplanned_values_column(
+    literals: Vec<pg_assignment::Literal<'_>>,
+    typed: Vec<&Expr>,
+    target: &Field,
+    session: &SessionContext,
+) -> Result<(), InsertAnalysisError> {
+    for expr in typed {
+        if let Some(source) = expression_type(expr, session) {
+            pg_assignment::ensure_assignment(&source, target)
+                .map_err(InsertAnalysisError::from)?;
+        }
     }
     for value in literals {
         pg_assignment::check_literal(value, target).map_err(InsertAnalysisError::from)?;
     }
     Ok(())
+}
+
+/// The type an individual `VALUES` expression carries before the target
+/// column supplies its context, or `None` when the expression cannot be typed
+/// on its own (for example an unresolved parameter).
+fn expression_type(expr: &Expr, session: &SessionContext) -> Option<DataType> {
+    let schema = DFSchema::empty();
+    let planned = session
+        .state()
+        .create_logical_expr_from_sql_expr(
+            ExprWithAlias {
+                expr: expr.clone(),
+                alias: None,
+            },
+            &schema,
+        )
+        .ok()?;
+    planned.get_type(&schema).ok()
 }
 
 /// Check one exported column of an `INSERT ... SELECT` source. A projection
@@ -386,6 +439,7 @@ fn validate_select_column(
     width: usize,
     target: &Field,
     planned: &DFSchemaRef,
+    session: &SessionContext,
 ) -> Result<(), InsertAnalysisError> {
     match body {
         SetExpr::Select(select) => {
@@ -396,12 +450,17 @@ fn validate_select_column(
             }
             ensure_planned_type(index, target, planned)
         }
-        SetExpr::Query(query) => {
-            validate_select_column(query.body.as_ref(), index, width, target, planned)
-        }
+        SetExpr::Query(query) => validate_select_column(
+            query.body.as_ref(),
+            index,
+            width,
+            target,
+            planned,
+            session,
+        ),
         SetExpr::SetOperation { left, right, .. } => {
-            validate_select_column(left, index, width, target, planned)?;
-            validate_select_column(right, index, width, target, planned)
+            validate_select_column(left, index, width, target, planned, session)?;
+            validate_select_column(right, index, width, target, planned, session)
         }
         SetExpr::Values(values) => {
             let column = values
@@ -409,7 +468,7 @@ fn validate_select_column(
                 .iter()
                 .filter_map(|row| row.content.get(index))
                 .collect::<Vec<_>>();
-            validate_values_column(index, &column, target, Some(planned))
+            validate_values_column(index, &column, target, Some(planned), session)
         }
         _ => ensure_planned_type(index, target, planned),
     }
@@ -453,9 +512,10 @@ fn ensure_planned_type(
 }
 
 /// The source query's own logical schema, or `None` when it cannot be planned
-/// on its own (for example while a parameter type is still unknown). The
-/// statement's plan reports that error itself, so a missing schema only
-/// disables the static check.
+/// on its own (for example while a parameter type is still unknown). A
+/// `SELECT` source then only loses the static check, but a `VALUES` source
+/// still checks each expression against its target (see
+/// [`validate_unplanned_values_column`]).
 async fn plan_source(query: &Query, session: &SessionContext) -> Option<DFSchemaRef> {
     session
         .state()
@@ -471,5 +531,147 @@ fn values(query: &Query) -> Option<&Values> {
     match query.body.as_ref() {
         SetExpr::Values(values) => Some(values),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
+    use datafusion::sql::sqlparser::parser::Parser;
+
+    use super::*;
+
+    fn schema_with_n(data_type: DataType) -> Schema {
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("n", data_type, true),
+        ])
+    }
+
+    fn insert(sql: &str) -> Insert {
+        let dialect = PostgreSqlDialect {};
+        let mut statements =
+            Parser::parse_sql(&dialect, sql).expect("test SQL must parse");
+        assert_eq!(statements.len(), 1, "expected exactly one statement");
+        match statements.remove(0) {
+            Statement::Insert(insert) => insert,
+            other => panic!("expected INSERT, got {other}"),
+        }
+    }
+
+    async fn analyse_sql(
+        sql: &str,
+        schema: &Schema,
+    ) -> Result<SourceAnalysis, InsertAnalysisError> {
+        analyse(&insert(sql), schema, &SessionContext::new()).await
+    }
+
+    async fn rejection(sql: &str) -> InsertAnalysisError {
+        analyse_sql(sql, &schema_with_n(DataType::Int64))
+            .await
+            .expect_err("expected the INSERT source to be rejected")
+    }
+
+    /// A boolean row must not become `1` just because another row of the same
+    /// `VALUES` column contains a numeric expression and the source therefore
+    /// has no independent plan.
+    #[tokio::test]
+    async fn rejects_boolean_literal_hidden_by_numeric_expression() {
+        let error = rejection(
+            "INSERT INTO t VALUES (1, TRUE), (2, 1 + 1) \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n",
+        )
+        .await;
+        assert_eq!(error.sqlstate, pg_assignment::DATATYPE_MISMATCH);
+        assert!(
+            error.message.contains("boolean"),
+            "unexpected message: {}",
+            error.message
+        );
+    }
+
+    /// Row order cannot change the verdict: the numeric expression first,
+    /// then the boolean literal.
+    #[tokio::test]
+    async fn rejects_boolean_literal_hidden_by_numeric_expression_in_reverse_order() {
+        let error = rejection(
+            "INSERT INTO t (id, n) VALUES (1, 1 + 1), (2, TRUE) \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n",
+        )
+        .await;
+        assert_eq!(error.sqlstate, pg_assignment::DATATYPE_MISMATCH);
+    }
+
+    /// The unknown `'5'` literal would assign to the BIGINT target by itself;
+    /// the typed boolean expression in the same column still has to be
+    /// rejected, even though the whole source cannot be planned.
+    #[tokio::test]
+    async fn rejects_incompatible_typed_expression_when_literals_are_assignable() {
+        let error = rejection(
+            "INSERT INTO t (id, n) VALUES (1, '5'), (2, TRUE AND FALSE) \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n",
+        )
+        .await;
+        assert_eq!(error.sqlstate, pg_assignment::DATATYPE_MISMATCH);
+        assert!(
+            error.message.contains("boolean"),
+            "unexpected message: {}",
+            error.message
+        );
+    }
+
+    /// Every row is individually assignable to the TEXT target, so the source
+    /// having no common plan (BOOLEAN next to INTEGER) is not by itself a
+    /// reason to reject the statement.
+    #[tokio::test]
+    async fn accepts_assignable_rows_when_source_has_no_common_plan() {
+        let analysis = analyse_sql(
+            "INSERT INTO t (id, n) VALUES (1, TRUE), (2, 1 + 1) \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n",
+            &schema_with_n(DataType::Utf8),
+        )
+        .await
+        .expect("both rows assign to TEXT");
+        assert_eq!(analysis.targets, vec![0, 1]);
+        assert_eq!(analysis.source_width, Some(2));
+    }
+
+    /// PostgreSQL resolves the unknown literal against the target column while
+    /// the numeric expression keeps its own type; the mixed column is valid
+    /// for a BIGINT target.
+    #[tokio::test]
+    async fn accepts_unknown_literal_with_typed_numeric_expression() {
+        let analysis = analyse_sql(
+            "INSERT INTO t (id, n) VALUES (1, '5'), (2, 1 + 1) \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n",
+            &schema_with_n(DataType::Int64),
+        )
+        .await
+        .expect("'5' and 1 + 1 both assign to BIGINT");
+        assert_eq!(analysis.targets, vec![0, 1]);
+    }
+
+    /// An unresolved parameter stays unknown when the source has no common
+    /// plan; it must not be rejected, and the typed rows are still checked
+    /// against the target (TEXT here, where both rows are assignable).
+    #[tokio::test]
+    async fn accepts_unresolved_placeholder_when_source_has_no_common_plan() {
+        let analysis = analyse_sql(
+            "INSERT INTO t (id, n) VALUES ($1, TRUE), (2, 1 + 1) \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n",
+            &schema_with_n(DataType::Utf8),
+        )
+        .await
+        .expect("the placeholder is target-typed and rows assign to TEXT");
+        assert_eq!(analysis.targets, vec![0, 1]);
+        assert_eq!(analysis.source_width, Some(2));
+    }
+
+    /// A `VALUES` column with only literals keeps the existing plain INSERT
+    /// rule: a boolean literal is not an integer.
+    #[tokio::test]
+    async fn rejects_boolean_literal_without_typed_expression() {
+        let error = rejection("INSERT INTO t (id, n) VALUES (1, TRUE)").await;
+        assert_eq!(error.sqlstate, pg_assignment::DATATYPE_MISMATCH);
     }
 }

@@ -573,7 +573,7 @@ pub async fn plan_upsert(
                 Some(selection) => {
                     let expression =
                         logical_expr(session, selection, paired.schema().as_ref())?;
-                    check_predicate(expression, paired.schema().as_ref())?
+                    check_predicate(selection, expression, paired.schema().as_ref())?
                 }
                 None => lit_bool(true),
             },
@@ -1284,7 +1284,15 @@ async fn build_incoming(
         .map_err(UpsertPlanError::DataFusion)
 }
 
-/// Wrap each supplied source expression in a cast to its target column type.
+/// Give the genuinely unknown source expressions their target column types.
+///
+/// Only a value PostgreSQL leaves `unknown` (a string literal, `NULL`, or a
+/// parameter) is cast when the source can observe expression types through
+/// `DISTINCT`, `UNION`, `ORDER BY` or `LIMIT`; `build_incoming`'s final
+/// projection applies the assignment cast afterwards. Without those source
+/// semantics (an ordinary `VALUES` list, whose written row order is separately
+/// pinned), every supplied value keeps the pre-existing target conversion so
+/// heterogeneous literal rows still share one target type.
 fn cast_source_types(
     query: &mut Query,
     schema: &Schema,
@@ -1300,10 +1308,17 @@ fn cast_source_types(
             targets[position] = Some(index);
         }
     }
-    cast_body_types(query.body.as_mut(), schema, &targets);
+    let preserve_source_types =
+        query_has_order(query) || body_has_set_operation(query.body.as_ref());
+    cast_body_types(query.body.as_mut(), schema, &targets, preserve_source_types);
 }
 
-fn cast_body_types(body: &mut SetExpr, schema: &Schema, targets: &[Option<usize>]) {
+fn cast_body_types(
+    body: &mut SetExpr,
+    schema: &Schema,
+    targets: &[Option<usize>],
+    preserve_source_types: bool,
+) {
     match body {
         SetExpr::Values(values) => {
             for row in &mut values.rows {
@@ -1312,6 +1327,9 @@ fn cast_body_types(body: &mut SetExpr, schema: &Schema, targets: &[Option<usize>
                     let Some(value) = row.content.get(position).cloned() else {
                         continue;
                     };
+                    if preserve_source_types && !unknown_source(&value) {
+                        continue;
+                    }
                     if let Some(cast) =
                         cast_expression(value, schema.field(index).data_type())
                     {
@@ -1347,6 +1365,9 @@ fn cast_body_types(body: &mut SetExpr, schema: &Schema, targets: &[Option<usize>
                     }
                     _ => continue,
                 };
+                if !unknown_source(&expr) {
+                    continue;
+                }
                 let Some(cast) = cast_expression(expr, schema.field(index).data_type())
                 else {
                     continue;
@@ -1357,13 +1378,41 @@ fn cast_body_types(body: &mut SetExpr, schema: &Schema, targets: &[Option<usize>
                 *item = SelectItem::ExprWithAlias { expr: cast, alias };
             }
         }
-        SetExpr::Query(query) => cast_body_types(query.body.as_mut(), schema, targets),
+        SetExpr::Query(query) => {
+            cast_body_types(query.body.as_mut(), schema, targets, preserve_source_types)
+        }
         SetExpr::SetOperation { left, right, .. } => {
-            cast_body_types(left, schema, targets);
-            cast_body_types(right, schema, targets);
+            cast_body_types(left, schema, targets, preserve_source_types);
+            cast_body_types(right, schema, targets, preserve_source_types);
         }
         _ => {}
     }
+}
+
+/// Whether the source is (or wraps) a set operation, where `UNION`/`EXCEPT`/
+/// `INTERSECT` combine the branch types and `DISTINCT` semantics can observe
+/// an early conversion.
+fn body_has_set_operation(body: &SetExpr) -> bool {
+    match body {
+        SetExpr::SetOperation { .. } => true,
+        SetExpr::Query(query) => body_has_set_operation(query.body.as_ref()),
+        _ => false,
+    }
+}
+
+/// Whether PostgreSQL leaves this source expression without a type of its own
+/// until the assignment supplies one. A number or boolean literal already has
+/// its own type, so casting it early would change source `DISTINCT`/`ORDER BY`
+/// semantics (for example a numeric source ordered before a `TEXT` target).
+fn unknown_source(expr: &SqlExpr) -> bool {
+    matches!(
+        pg_assignment::literal(expr),
+        Some(
+            pg_assignment::Literal::String(_)
+                | pg_assignment::Literal::Null
+                | pg_assignment::Literal::Placeholder
+        )
+    )
 }
 
 fn cast_expression(expr: SqlExpr, data_type: &DataType) -> Option<SqlExpr> {
@@ -1394,11 +1443,31 @@ fn cast_expression(expr: SqlExpr, data_type: &DataType) -> Option<SqlExpr> {
 }
 
 /// Add a literal source-order column to a `VALUES` body.
+///
+/// A `VALUES` list is emitted in the written row order, so a literal token
+/// records that order without re-evaluating any expression. A source that
+/// orders itself anywhere (including a nested parenthesized query) already
+/// fixes the observable order; its rows must not carry a pre-sort token.
 fn append_value_order(query: &mut Query) -> bool {
-    if query.order_by.is_some() {
+    if query_has_order(query) {
         return false;
     }
     append_value_order_body(query.body.as_mut())
+}
+
+/// Whether this query or any nested query body carries an `ORDER BY`.
+fn query_has_order(query: &Query) -> bool {
+    query.order_by.is_some() || body_has_order(query.body.as_ref())
+}
+
+fn body_has_order(body: &SetExpr) -> bool {
+    match body {
+        SetExpr::Query(query) => query_has_order(query),
+        SetExpr::SetOperation { left, right, .. } => {
+            body_has_order(left) || body_has_order(right)
+        }
+        _ => false,
+    }
 }
 
 fn append_value_order_body(body: &mut SetExpr) -> bool {
@@ -1416,17 +1485,21 @@ fn append_value_order_body(body: &mut SetExpr) -> bool {
     }
 }
 
-/// Pin an explicit source ORDER BY under a `LIMIT ALL`, so the optimizer
+/// Pin every explicit source `ORDER BY` under a `LIMIT ALL`, so the optimizer
 /// cannot drop the ordering the source ordinal depends on. An existing
-/// LIMIT/OFFSET/FETCH carries the statement's own row-count semantics.
+/// LIMIT/OFFSET/FETCH carries the statement's own row-count semantics. A
+/// parenthesized source query orders in a nested `Query`; its order is just
+/// as observable and must be pinned there.
 fn pin_source_order(source: &mut Query) {
-    if source.order_by.is_none()
-        || source.limit_clause.is_some()
-        || source.fetch.is_some()
-    {
+    pin_query_order(source);
+    pin_body_orders(source.body.as_mut());
+}
+
+fn pin_query_order(query: &mut Query) {
+    if query.order_by.is_none() || query.limit_clause.is_some() || query.fetch.is_some() {
         return;
     }
-    source.limit_clause =
+    query.limit_clause =
         Some(datafusion::sql::sqlparser::ast::LimitClause::LimitOffset {
             limit: Some(SqlExpr::Value(
                 Value::Number(i64::MAX.to_string(), false).into(),
@@ -1434,6 +1507,20 @@ fn pin_source_order(source: &mut Query) {
             offset: None,
             limit_by: Vec::new(),
         });
+}
+
+fn pin_body_orders(body: &mut SetExpr) {
+    match body {
+        SetExpr::Query(query) => {
+            pin_query_order(query);
+            pin_body_orders(query.body.as_mut());
+        }
+        SetExpr::SetOperation { left, right, .. } => {
+            pin_body_orders(left);
+            pin_body_orders(right);
+        }
+        _ => {}
+    }
 }
 
 fn row_number_expr() -> SqlExpr {
@@ -1681,10 +1768,25 @@ fn internal_qualifier(target_qualifier: &str) -> String {
 }
 
 /// PostgreSQL requires a conflict `WHERE` to be boolean; `NULL` is coerced,
-/// and an unresolved parameter takes `boolean` from the context. A non-boolean
+/// and an unresolved parameter takes `boolean` from the context. An untyped
+/// string literal is `unknown` there too, so it is parsed as a boolean
+/// (`'true'`/`'off'`/...); an invalid spelling is `22P02`. A genuinely typed
+/// string (for example `'true'::text`) is still `42804`. A non-boolean
 /// expression is `42804` at planning time, never a silently skipped row at
 /// execution.
-fn check_predicate(expression: Expr, schema: &DFSchema) -> Result<Expr, UpsertPlanError> {
+fn check_predicate(
+    sql: &SqlExpr,
+    expression: Expr,
+    schema: &DFSchema,
+) -> Result<Expr, UpsertPlanError> {
+    if let Some(pg_assignment::Literal::String(text)) = pg_assignment::literal(sql) {
+        let target = Field::new("where", DataType::Boolean, true);
+        pg_assignment::check_literal(pg_assignment::Literal::String(text), &target)
+            .map_err(UpsertPlanError::Assignment)?;
+        return expression
+            .cast_to(&DataType::Boolean, schema)
+            .map_err(UpsertPlanError::DataFusion);
+    }
     match expression.get_type(schema)? {
         DataType::Boolean => Ok(expression),
         DataType::Null => expression

@@ -104,6 +104,7 @@ async fn upsert_scenarios(h: &Harness) -> Result<()> {
     duplicate_source_key_matrix(h).await?;
     select_source_order_preserves_non_projected_expression(h).await?;
     incoming_and_output_constraint_order(h).await?;
+    unknown_literals_and_mixed_values(h).await?;
     internal_names_do_not_collide(h).await?;
     alias_and_ambiguous_names(h).await?;
     prepared_upsert_rebinds_and_reads_new_commits(h).await?;
@@ -1126,6 +1127,111 @@ async fn incoming_and_output_constraint_order(h: &Harness) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Protocol analysis SQLSTATEs
+// ---------------------------------------------------------------------------
+
+/// PostgreSQL's unknown-literal rules at the protocol boundary.
+///
+/// A conflict `WHERE` string literal is untyped, so `'true'`/`'false'` take
+/// the boolean context; an invalid value is `22P02`, while a *typed* text
+/// expression stays `42804`. A mixed `VALUES` list whose later row carries a
+/// typed expression that cannot be assigned to the target column is `42804`
+/// before anything is written, even though an earlier row is valid.
+async fn unknown_literals_and_mixed_values(h: &Harness) -> Result<()> {
+    const DDL: &str = "CREATE TABLE {t} (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))";
+    const SEED: &str = "INSERT INTO {t} (id, n) VALUES (1,10)";
+    const PROJECTION: &str = "SELECT id, n FROM {t} ORDER BY id";
+
+    for protocol in Protocol::BOTH {
+        run_rows_case(
+            h,
+            protocol,
+            "unknown_where_true",
+            DDL,
+            SEED,
+            "INSERT INTO {t} (id, n) VALUES (1,5) \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n WHERE 'true'",
+            PROJECTION,
+            1,
+        )
+        .await?;
+        run_rows_case(
+            h,
+            protocol,
+            "unknown_where_false",
+            DDL,
+            SEED,
+            "INSERT INTO {t} (id, n) VALUES (1,5) \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n WHERE 'false'",
+            PROJECTION,
+            0,
+        )
+        .await?;
+        run_error_case(
+            h,
+            protocol,
+            "unknown_where_invalid",
+            DDL,
+            SEED,
+            "INSERT INTO {t} (id, n) VALUES (1,5) \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n WHERE 'maybe'",
+            INVALID_TEXT_REPRESENTATION,
+        )
+        .await?;
+        run_error_case(
+            h,
+            protocol,
+            "unknown_where_typed",
+            DDL,
+            SEED,
+            "INSERT INTO {t} (id, n) VALUES (1,5) \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n WHERE 'true'::text",
+            DATATYPE_MISMATCH,
+        )
+        .await?;
+        // A boolean and a numeric expression cannot share the BIGINT column.
+        // PostgreSQL rejects the statement at analysis, so the valid first
+        // row is never published; the reverse row order must behave the same.
+        run_error_case(
+            h,
+            protocol,
+            "mixed_values_boolean",
+            DDL,
+            SEED,
+            "INSERT INTO {t} (id, n) VALUES (1,true),(2,1+1) \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n",
+            DATATYPE_MISMATCH,
+        )
+        .await?;
+        // The same analysis without an explicit target list: the source row
+        // order still lines up with the table's columns.
+        run_error_case(
+            h,
+            protocol,
+            "mixed_values_boolean_nolist",
+            DDL,
+            SEED,
+            "INSERT INTO {t} VALUES (1,true),(2,1+1) \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n",
+            DATATYPE_MISMATCH,
+        )
+        .await?;
+        run_error_case(
+            h,
+            protocol,
+            "mixed_values_boolean_rev",
+            DDL,
+            SEED,
+            "INSERT INTO {t} (id, n) VALUES (2,1+1),(1,true) \
+             ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n",
+            DATATYPE_MISMATCH,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Internal marker names
 // ---------------------------------------------------------------------------
 
@@ -1572,6 +1678,30 @@ async fn prepared_upsert_after_drop_and_recreate(h: &Harness) -> Result<()> {
         1,
     )?;
     ensure_connection_usable(h, "stale prepared upsert into CDC").await?;
+
+    // A target that is simply gone: the stale binding is reported even though
+    // the planner's own lookup fails before it can capture an identity.
+    peer.simple_query(&format!("DROP TABLE {REBUILD}"))
+        .await
+        .context("peer DROP of the recreated CDC table")?;
+    let before = h.authoritative_snapshot().await?;
+    let error = h
+        .lake
+        .execute(&statement, &[&1i64, &5i64])
+        .await
+        .expect_err("a prepared upsert must not resolve a dropped target");
+    ensure_sqlstate(
+        &error,
+        UNDEFINED_TABLE,
+        "prepared upsert into a missing target",
+    )?;
+    let after = h.authoritative_snapshot().await?;
+    ensure_snapshot_unchanged(
+        &before,
+        &after,
+        "stale prepared upsert into a missing target",
+    )?;
+    ensure_connection_usable(h, "stale prepared upsert into a missing target").await?;
     Ok(())
 }
 

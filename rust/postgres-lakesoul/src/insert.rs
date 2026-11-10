@@ -152,20 +152,52 @@ impl QueryHook for InsertStatementHook {
                 let (status, database) = request_context(client)?;
                 if is_do_update(insert) {
                     reject_transaction(status, "INSERT")?;
-                    verify_upsert_identity(
-                        insert,
-                        logical_plan,
-                        session_context,
-                        &database,
-                    )
-                    .await?;
-                    let planned = prepare_upsert(
+                    // The Parse-time plan names the table the client prepared.
+                    // The planner's own catalog lookup is the authoritative
+                    // one: comparing against the identity it captured closes
+                    // the window in which a concurrent DROP / same-name CREATE
+                    // could slip between a separate validation lookup and the
+                    // planner's lookup, validating one table and writing the
+                    // other.
+                    let parsed = plan_table_id(logical_plan);
+                    let (table_ref, table_name) =
+                        target_reference(&insert.table, &database)?;
+                    let planned = match prepare_upsert(
                         insert,
                         session_context,
                         &database,
                         UpsertSnapshotMode::Capture,
                     )
-                    .await?;
+                    .await
+                    {
+                        Ok(planned) => planned,
+                        Err(error) => {
+                            // Some replacements are refused before the planner
+                            // can report an identity (missing, non-LakeSoul,
+                            // CDC, ...). The prepared target is still gone, so
+                            // report the stale identity instead of the new
+                            // table's error.
+                            if let Some(parsed) = parsed.as_deref() {
+                                match resolved_table_id(session_context, &table_ref).await
+                                {
+                                    Ok(Some(current)) if current == parsed => {}
+                                    Ok(_) => {
+                                        return Err(stale_upsert_error(&table_name));
+                                    }
+                                    // The catalog cannot tell: keep the
+                                    // planner's error rather than inventing a
+                                    // stale-target one.
+                                    Err(_) => {}
+                                }
+                            }
+                            return Err(error);
+                        }
+                    };
+                    if let Some(parsed) = parsed.as_deref()
+                        && planned.identity.table_id != parsed
+                    {
+                        return Err(stale_upsert_error(&table_name));
+                    }
                     return execute_upsert(&planned, Some(params), session_context).await;
                 }
                 let target = prepare(insert, session_context, status, &database).await?;
@@ -257,29 +289,19 @@ async fn execute_upsert_plan(
     Ok((rows_affected(&batches)?, Tag::new("INSERT").with_oid(0)))
 }
 
-/// Reject a prepared upsert whose target name now resolves to another table.
-async fn verify_upsert_identity(
-    insert: &Insert,
-    logical_plan: &LogicalPlan,
-    session_context: &SessionContext,
-    database: &str,
-) -> PgWireResult<()> {
-    let Some(parsed) = plan_table_id(logical_plan) else {
-        return Ok(());
-    };
-    let (table_ref, table_name) = target_reference(&insert.table, database)?;
-    let current = resolved_table_id(session_context, &table_ref).await?;
-    if current.as_deref() != Some(parsed.as_str()) {
-        return Err(user_error(
-            UNDEFINED_TABLE,
-            format!(
-                "relation \"{table_name}\" was dropped and recreated; reparse the statement"
-            ),
-        ));
-    }
-    Ok(())
+/// The prepared statement's target table is no longer the one the client
+/// parsed. PostgreSQL discards the prepared plan in this case; `42P01` is the
+/// front end's established stale-target contract.
+fn stale_upsert_error(table_name: &str) -> PgWireError {
+    user_error(
+        UNDEFINED_TABLE,
+        format!(
+            "relation \"{table_name}\" was dropped and recreated; reparse the statement"
+        ),
+    )
 }
 
+/// The `table_id` the Parse-time plan was built against.
 fn plan_table_id(plan: &LogicalPlan) -> Option<String> {
     let LogicalPlan::Dml(datafusion::logical_expr::dml::DmlStatement { target, .. }) =
         plan
@@ -293,6 +315,13 @@ fn plan_table_id(plan: &LogicalPlan) -> Option<String> {
         .map(|provider| provider.table_info().table_id.clone())
 }
 
+/// The `table_id` the target name resolves to right now, if it is a LakeSoul
+/// table. A missing table is `None`.
+///
+/// This is only used to classify a failed plan: the identity that executes is
+/// always [`lakesoul_datafusion::planner::upsert::PlannedUpsert::identity`],
+/// captured by the same lookup that built the plan. A separate lookup before
+/// planning would be racy on its own.
 async fn resolved_table_id(
     session_context: &SessionContext,
     table_ref: &datafusion::common::TableReference,

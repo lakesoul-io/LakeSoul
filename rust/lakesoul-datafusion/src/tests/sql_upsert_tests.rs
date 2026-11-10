@@ -27,7 +27,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use arrow::array::{ArrayRef, Int32Array, RecordBatch, StringArray};
+use arrow::array::{ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::catalog::{CatalogProvider, SchemaProvider, Session, TableProvider};
@@ -522,6 +522,341 @@ async fn upsert_empty_and_skipped_sources_publish_nothing() -> Result<()> {
         vec![(1, 10), (9, 90)]
     );
     assert_disk_equals_active_files(&client, &dest).await?;
+
+    client.drop_table(&dest.name, "default").await?;
+    remove_table_dir(&dest);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Source and predicate semantics
+// ---------------------------------------------------------------------------
+
+/// A `SELECT DISTINCT` source keeps its own types. Casting `1.1`/`1.2` to the
+/// target `INT` before `DISTINCT` would collapse them into one row; PostgreSQL
+/// deduplicates the decimals, then the assignment turns both into key 1, so
+/// the second input is `21000` and nothing is published.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upsert_distinct_source_keeps_source_types() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let pool = metadata_pool().await?;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("v", DataType::Int32, false),
+    ]));
+    let dest = create_table_fixture(
+        &client,
+        "upsert_distinct_source",
+        schema,
+        false,
+        vec!["id".to_string()],
+    )
+    .await?;
+    let ctx = single_node_session(client.clone())?;
+    let before = state_of(&pool, &client, &dest).await?;
+    let sql = format!(
+        "INSERT INTO {table} SELECT DISTINCT 1, v \
+         FROM (VALUES (1.1), (1.2)) AS s(v) \
+         ON CONFLICT (id) DO UPDATE SET v = EXCLUDED.v",
+        table = dest.name
+    );
+    let error = run_upsert(&ctx, &dest.name, &sql)
+        .await
+        .expect_err("both distinct decimals become key 1 after the assignment");
+    let error = error
+        .downcast_report::<datafusion::error::DataFusionError>()
+        .unwrap_or_else(|error| panic!("expected a typed DataFusion error: {error}"))
+        .into_current_context();
+    let violation = find_cause::<WriteViolation>(error.find_root())
+        .unwrap_or_else(|| panic!("expected a typed write violation, got: {error}"));
+    assert_eq!(
+        violation.sqlstate(),
+        "21000",
+        "the deduplicated decimals must both become key 1"
+    );
+    assert_eq!(
+        state_of(&pool, &client, &dest).await?,
+        before,
+        "21000 must not publish a row"
+    );
+    let remaining = run_sql(
+        &ctx,
+        &format!("SELECT count(*) AS remaining FROM {}", dest.name),
+    )
+    .await?;
+    assert_eq!(
+        datafusion::common::ScalarValue::try_from_array(remaining[0].column(0), 0)?,
+        datafusion::common::ScalarValue::Int64(Some(0)),
+        "the failed statement must leave the table empty"
+    );
+    assert_disk_equals_active_files(&client, &dest).await?;
+
+    client.drop_table(&dest.name, "default").await?;
+    remove_table_dir(&dest);
+    Ok(())
+}
+
+/// A `UNION` source also combines its branches in the original types. Casting
+/// each branch to the target `INT` before the union would make the two
+/// decimals identical, so `UNION` would deduplicate them into one row instead
+/// of producing two inputs for key 1 (`21000`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upsert_union_source_keeps_source_types() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let pool = metadata_pool().await?;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("v", DataType::Int32, false),
+    ]));
+    let dest = create_table_fixture(
+        &client,
+        "upsert_union_source",
+        schema,
+        false,
+        vec!["id".to_string()],
+    )
+    .await?;
+    let ctx = single_node_session(client.clone())?;
+    let before = state_of(&pool, &client, &dest).await?;
+    let sql = format!(
+        "INSERT INTO {table} \
+         SELECT 1, v FROM (VALUES (1.1)) AS s(v) \
+         UNION \
+         SELECT 1, v FROM (VALUES (1.2)) AS s(v) \
+         ON CONFLICT (id) DO UPDATE SET v = EXCLUDED.v",
+        table = dest.name
+    );
+    let error = run_upsert(&ctx, &dest.name, &sql)
+        .await
+        .expect_err("the union keeps two decimals that both become key 1");
+    let error = error
+        .downcast_report::<datafusion::error::DataFusionError>()
+        .unwrap_or_else(|error| panic!("expected a typed DataFusion error: {error}"))
+        .into_current_context();
+    let violation = find_cause::<WriteViolation>(error.find_root())
+        .unwrap_or_else(|| panic!("expected a typed write violation, got: {error}"));
+    assert_eq!(
+        violation.sqlstate(),
+        "21000",
+        "the union must see distinct source values, not two pre-cast key 1 rows"
+    );
+    assert_eq!(
+        state_of(&pool, &client, &dest).await?,
+        before,
+        "21000 must not publish a row"
+    );
+    assert_disk_equals_active_files(&client, &dest).await?;
+
+    client.drop_table(&dest.name, "default").await?;
+    remove_table_dir(&dest);
+    Ok(())
+}
+
+/// A numeric source is ordered as a number, and only then assigned to a
+/// `TEXT` target. Casting the projection to `TEXT` before `ORDER BY` would
+/// sort `'2'` above `'10'` and select the wrong row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upsert_numeric_source_orders_before_text_assignment() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("v", DataType::Utf8, false),
+    ]));
+    let dest = create_table_fixture(
+        &client,
+        "upsert_text_assignment",
+        schema,
+        false,
+        vec!["id".to_string()],
+    )
+    .await?;
+    let ctx = single_node_session(client.clone())?;
+    let sql = format!(
+        "INSERT INTO {table} (id, v) \
+         SELECT id, v AS x FROM (VALUES (1, 2), (2, 10)) AS s(id, v) \
+         ORDER BY x DESC LIMIT 1 \
+         ON CONFLICT (id) DO UPDATE SET v = EXCLUDED.v",
+        table = dest.name
+    );
+    let batches = run_upsert(&ctx, &dest.name, &sql).await?;
+    assert_eq!(inserted_rows(&batches), 1);
+    let batches = run_sql(
+        &ctx,
+        &format!("SELECT id, v FROM {} ORDER BY id", dest.name),
+    )
+    .await?;
+    let batch = batches
+        .iter()
+        .find(|batch| batch.num_rows() > 0)
+        .expect("the statement must insert one row");
+    let id = batch
+        .column_by_name("id")
+        .and_then(|column| column.as_any().downcast_ref::<Int64Array>())
+        .expect("id is Int64");
+    let value = batch
+        .column_by_name("v")
+        .and_then(|column| column.as_any().downcast_ref::<StringArray>())
+        .expect("v is Utf8");
+    assert_eq!(id.value(0), 2, "the largest number must sort first");
+    assert_eq!(
+        value.value(0),
+        "10",
+        "the assignment to TEXT must happen after the numeric ORDER BY"
+    );
+    assert_disk_equals_active_files(&client, &dest).await?;
+
+    client.drop_table(&dest.name, "default").await?;
+    remove_table_dir(&dest);
+    Ok(())
+}
+
+/// A parenthesized `VALUES` source orders inside a nested query. Its pre-sort
+/// row positions must not be pinned as the statement order: `DESC` visits
+/// `(1,2)` first, updates it, and the later `(1,1)` is `21000`; `ASC` skips
+/// `(1,1)` and then updates with `(1,2)`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upsert_nested_values_order_matches_source_order() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let pool = metadata_pool().await?;
+    let dest = create_pk_table(&client, "upsert_nested_values_order", false).await?;
+    crate::tests::distributed_write_tests::seed_pk_rows(&dest, &[(1, 0)]).await?;
+    let ctx = single_node_session(client.clone())?;
+    let before = state_of(&pool, &client, &dest).await?;
+
+    let descending = format!(
+        "INSERT INTO {table} (id, v) \
+         (VALUES (1, 1), (1, 2) ORDER BY 2 DESC) \
+         ON CONFLICT (id) DO UPDATE SET v = EXCLUDED.v \
+         WHERE EXCLUDED.v = 2",
+        table = dest.name
+    );
+    let error = run_upsert(&ctx, &dest.name, &descending)
+        .await
+        .expect_err("DESC updates with (1,2) before the later (1,1)");
+    let error = error
+        .downcast_report::<datafusion::error::DataFusionError>()
+        .unwrap_or_else(|error| panic!("expected a typed DataFusion error: {error}"))
+        .into_current_context();
+    let violation = find_cause::<WriteViolation>(error.find_root())
+        .unwrap_or_else(|| panic!("expected a typed write violation, got: {error}"));
+    assert_eq!(violation.sqlstate(), "21000");
+    assert_eq!(
+        read_iv_rows(&ctx, &dest.name).await?,
+        vec![(1, 0)],
+        "the descending source must publish nothing"
+    );
+    assert_eq!(
+        state_of(&pool, &client, &dest).await?,
+        before,
+        "the descending source must leave the partition state untouched"
+    );
+
+    let ascending = format!(
+        "INSERT INTO {table} (id, v) \
+         (VALUES (1, 1), (1, 2) ORDER BY 2 ASC) \
+         ON CONFLICT (id) DO UPDATE SET v = EXCLUDED.v \
+         WHERE EXCLUDED.v = 2",
+        table = dest.name
+    );
+    let batches = run_upsert(&ctx, &dest.name, &ascending).await?;
+    assert_eq!(inserted_rows(&batches), 1);
+    assert_eq!(
+        read_iv_rows(&ctx, &dest.name).await?,
+        vec![(1, 2)],
+        "ASC skips (1,1) and then updates the row with (1,2)"
+    );
+    assert_disk_equals_active_files(&client, &dest).await?;
+
+    client.drop_table(&dest.name, "default").await?;
+    remove_table_dir(&dest);
+    Ok(())
+}
+
+/// An untyped string predicate takes PostgreSQL's boolean context, while a
+/// genuinely typed text value stays `42804` and an invalid spelling is
+/// `22P02` before anything is published.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upsert_untyped_string_predicate_is_boolean() -> Result<()> {
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let pool = metadata_pool().await?;
+    let dest = create_pk_table(&client, "upsert_string_predicate", false).await?;
+    crate::tests::distributed_write_tests::seed_pk_rows(&dest, &[(1, 10)]).await?;
+    let ctx = single_node_session(client.clone())?;
+
+    let true_sql = format!(
+        "INSERT INTO {table} (id, v) VALUES (1, 5) \
+         ON CONFLICT (id) DO UPDATE SET v = EXCLUDED.v WHERE 'true'",
+        table = dest.name
+    );
+    let batches = run_upsert(&ctx, &dest.name, &true_sql).await?;
+    assert_eq!(inserted_rows(&batches), 1);
+    assert_eq!(
+        read_iv_rows(&ctx, &dest.name).await?,
+        vec![(1, 5)],
+        "'true' must resolve to boolean true"
+    );
+
+    let false_sql = format!(
+        "INSERT INTO {table} (id, v) VALUES (1, 9) \
+         ON CONFLICT (id) DO UPDATE SET v = EXCLUDED.v WHERE 'false'",
+        table = dest.name
+    );
+    let batches = run_upsert(&ctx, &dest.name, &false_sql).await?;
+    assert_eq!(inserted_rows(&batches), 0);
+    assert_eq!(
+        read_iv_rows(&ctx, &dest.name).await?,
+        vec![(1, 5)],
+        "'false' must skip the conflict row"
+    );
+
+    let before = state_of(&pool, &client, &dest).await?;
+    let invalid_sql = format!(
+        "INSERT INTO {table} (id, v) VALUES (1, 9) \
+         ON CONFLICT (id) DO UPDATE SET v = EXCLUDED.v WHERE 'not-bool'",
+        table = dest.name
+    );
+    let error = plan_upsert_sql(
+        &ctx,
+        &invalid_sql,
+        TableReference::bare(dest.name.as_str()),
+        SnapshotMode::Capture,
+    )
+    .await
+    .expect_err("an invalid unknown string cannot become a boolean");
+    assert_eq!(
+        error.sqlstate(),
+        "22P02",
+        "an invalid untyped boolean spelling is a conversion error"
+    );
+    assert_eq!(
+        state_of(&pool, &client, &dest).await?,
+        before,
+        "a rejected predicate must not publish"
+    );
+
+    let typed_sql = format!(
+        "INSERT INTO {table} (id, v) VALUES (1, 9) \
+         ON CONFLICT (id) DO UPDATE SET v = EXCLUDED.v WHERE 'true'::text",
+        table = dest.name
+    );
+    let error = plan_upsert_sql(
+        &ctx,
+        &typed_sql,
+        TableReference::bare(dest.name.as_str()),
+        SnapshotMode::Capture,
+    )
+    .await
+    .expect_err("typed text is not a boolean predicate");
+    assert_eq!(
+        error.sqlstate(),
+        "42804",
+        "a genuinely typed text predicate must stay a datatype mismatch"
+    );
+    assert_eq!(
+        state_of(&pool, &client, &dest).await?,
+        before,
+        "a rejected predicate must not publish"
+    );
 
     client.drop_table(&dest.name, "default").await?;
     remove_table_dir(&dest);
