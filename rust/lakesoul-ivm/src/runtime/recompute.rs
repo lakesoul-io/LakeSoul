@@ -13,6 +13,10 @@ use datafusion::common::ScalarValue;
 use datafusion::prelude::{col, lit};
 
 use crate::metadata::{PartitionVersion, StateRole};
+use crate::table::{
+    IvmTableOptions, create_ivm_table, keyed_state_file_format,
+    state_range_partition_columns,
+};
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 
 /// The internal state schema for a multi-aggregate view: the Arrow row
@@ -2759,6 +2763,248 @@ struct KeyedContributions {
     _guard: StageGuard,
 }
 
+/// The schema of the narrow index of a recomputed aggregate: the group keys,
+/// the source primary key, the source range partition columns and the
+/// bookkeeping columns.  The index stores no aggregate payload; a refresh
+/// resolves the source rows of the affected groups by primary key.
+fn recomputed_index_schema_for(
+    source: &IvmTable,
+    group_keys: &[String],
+    group_exprs: &[String],
+) -> Result<SchemaRef> {
+    let mut fields = super::group_key_fields(&source.schema, group_keys, group_exprs)?;
+    let mut add = |name: &str| -> Result<()> {
+        if fields.iter().any(|field| field.name() == name) {
+            return Ok(());
+        }
+        let field = source.schema.field_with_name(name)?;
+        fields.push(Arc::new(Field::new(
+            name,
+            field.data_type().clone(),
+            field.is_nullable(),
+        )));
+        Ok(())
+    };
+    for key in &source.primary_keys {
+        add(key)?;
+    }
+    for column in &source.range_partition_columns {
+        add(column)?;
+    }
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+impl IvmRuntime {
+    /// Ensure the narrow group index of a recomputed aggregate.  A state that
+    /// disappeared while the view was populated cannot be trusted: the caller
+    /// must rebuild so the index is seeded from the full source.
+    async fn ensure_recomputed_index(
+        &self,
+        parts: &RecomputeParts<'_>,
+        allow_populated: bool,
+    ) -> Result<Option<IvmTable>> {
+        if parts.group_keys.is_empty()
+            || parts.source.primary_keys.is_empty()
+            || parts.source.primary_keys.starts_with(parts.group_keys)
+        {
+            return Ok(None);
+        }
+        let schema = recomputed_index_schema_for(
+            parts.source,
+            parts.group_keys,
+            parts.group_exprs,
+        )?;
+        let mut primary_keys = parts.group_keys.to_vec();
+        for column in &parts.source.range_partition_columns {
+            if parts.source.schema.field_with_name(column).is_ok()
+                && !primary_keys.contains(column)
+            {
+                primary_keys.push(column.clone());
+            }
+        }
+        for key in &parts.source.primary_keys {
+            if !primary_keys.contains(key) {
+                primary_keys.push(key.clone());
+            }
+        }
+        let range_partitions = state_range_partition_columns(parts.source, &primary_keys);
+        if let Some(existing) = self
+            .metadata()
+            .get_state(parts.view_id, StateRole::RecomputedIndex)
+            .await?
+        {
+            let table = self.open_table_by_id(&existing.table_id).await?;
+            if table.schema == schema && table.primary_keys == primary_keys {
+                return Ok(Some(table));
+            }
+            self.metadata()
+                .unregister_state(parts.view_id, StateRole::RecomputedIndex)
+                .await?;
+            let _ = self
+                .client()
+                .drop_table(&table.table_name, &table.namespace)
+                .await;
+            if !allow_populated
+                && !parts.mv.current_files(self.client()).await?.is_empty()
+            {
+                return Err(report!(
+                    "view {} lost its recomputed group index; a rebuild is required",
+                    parts.view_id
+                )
+                .attach(RebuildRequired));
+            }
+        } else if !allow_populated
+            && !parts.mv.current_files(self.client()).await?.is_empty()
+        {
+            return Err(report!(
+                "view {} lost its recomputed group index; a rebuild is required",
+                parts.view_id
+            )
+            .attach(RebuildRequired));
+        }
+        let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
+        let mut options = IvmTableOptions::new(
+            format!("{}__ivm_recomputed_index_{suffix}", parts.mv.table_name),
+            format!("{}__ivm_recomputed_index_{suffix}", parts.mv.table_path),
+            schema,
+        )
+        .with_namespace(parts.mv.namespace.clone())
+        .with_primary_keys(primary_keys)
+        .with_bucket_columns(parts.group_keys.to_vec())
+        .with_cdc_column(IVM_ROW_KINDS_COLUMN)
+        .with_file_format(keyed_state_file_format());
+        if !range_partitions.is_empty() {
+            options = options.with_range_partition_columns(range_partitions);
+        }
+        options.hash_bucket_num = parts.source.hash_bucket_num.clone();
+        let table = create_ivm_table(self.client(), options).await?;
+        self.metadata()
+            .register_state(parts.view_id, StateRole::RecomputedIndex, &table)
+            .await?;
+        Ok(Some(table))
+    }
+
+    /// Apply the changed source rows to the index: retract the previous group
+    /// tuple of every changed primary key and insert its current tuple.
+    async fn update_recomputed_index(
+        &self,
+        context: &SessionContext,
+        parts: &RecomputeParts<'_>,
+        index: &IvmTable,
+        delta: &DataFrame,
+        old: &DataFrame,
+        epoch: i64,
+    ) -> Result<Vec<String>> {
+        let fields = index
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .filter(|name| name != IVM_ROW_KINDS_COLUMN && name != IVM_EPOCH_COLUMN)
+            .collect::<Vec<_>>();
+        let project = |frame: DataFrame| -> Result<DataFrame> {
+            let frame = project_group_keys_frame(
+                context,
+                frame,
+                &parts.source.schema,
+                parts.group_keys,
+                parts.group_exprs,
+            )?;
+            project_frame(frame, &fields)
+        };
+        let old_rows = project(old.clone())?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let delta_rows =
+            project(filter_deletes(delta.clone(), change_column(parts.source))?)?
+                .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let mut rows = old_rows.union(delta_rows)?;
+        let mut sort = index
+            .primary_keys
+            .iter()
+            .map(|key| column_expr(key))
+            .collect::<Vec<_>>();
+        sort.push(column_expr(IVM_ROW_KINDS_COLUMN));
+        rows = rows.sort_by(sort)?;
+        index
+            .append_stream(self.client(), rows.execute_stream().await?)
+            .await
+    }
+
+    /// The current source rows of the affected groups, resolved through the
+    /// index: index tuples -> source primary keys -> source rows.
+    async fn read_recomputed_index_groups(
+        &self,
+        context: &SessionContext,
+        parts: &RecomputeParts<'_>,
+        index: &IvmTable,
+        affected: DataFrame,
+    ) -> Result<DataFrame> {
+        let index_rows = self
+            .lookup_source_by_join_keys(
+                context,
+                index,
+                affected,
+                parts.group_keys,
+                parts.group_keys,
+                true,
+            )
+            .await?;
+        let pks = index_rows
+            .select(
+                parts
+                    .source
+                    .primary_keys
+                    .iter()
+                    .map(|key| col(key.as_str()))
+                    .collect::<Vec<_>>(),
+            )?
+            .distinct()?;
+        self.lookup_source_by_join_keys(
+            context,
+            parts.source,
+            pks,
+            &parts.source.primary_keys,
+            &parts.source.primary_keys,
+            true,
+        )
+        .await
+    }
+
+    /// Seed the index with the full current source rows during a rebuild.
+    async fn seed_recomputed_index(
+        &self,
+        index: &IvmTable,
+        frame: DataFrame,
+        epoch: i64,
+    ) -> Result<Vec<String>> {
+        let fields = index
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .filter(|name| name != IVM_ROW_KINDS_COLUMN && name != IVM_EPOCH_COLUMN)
+            .collect::<Vec<_>>();
+        let rows = project_frame(frame, &fields)?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        index
+            .append_stream(self.client(), rows.execute_stream().await?)
+            .await
+    }
+}
+
 impl IvmRuntime {
     /// Persist a variance view spec (idempotent).
     pub async fn register_variance_view(&self, view: &VarianceView) -> Result<()> {
@@ -2910,6 +3156,7 @@ impl IvmRuntime {
         if window.added_files.is_empty() && !lookup_changed {
             return Ok(None);
         }
+        let index = self.ensure_recomputed_index(parts, false).await?;
         let mut identity = window.identity.clone();
         if let Some(lookup_window) = &lookup_window {
             identity.extend(lookup_window.identity.iter().cloned());
@@ -3002,6 +3249,14 @@ impl IvmRuntime {
         } else {
             dataframe(&context, Vec::new(), &parts.source.schema)?
         };
+        if let Some(index) = &index {
+            commit_ids.extend(
+                self.update_recomputed_index(
+                    &context, parts, index, &delta, &old_frame, epoch,
+                )
+                .await?,
+            );
+        }
         context.register_table("delta", delta.clone().into_view())?;
         let lookup_delta = match (&parts.lookup, &lookup_window) {
             (Some(lookup), Some(lookup_window))
@@ -3026,7 +3281,36 @@ impl IvmRuntime {
         if keyed {
             context.register_table("old", old_frame.clone().into_view())?;
         }
-        let src = if parts.group_exprs.is_empty()
+        let src = if lookup_changed {
+            // A lookup change can affect groups that have no source delta;
+            // the full source is the only complete input for the HAVING
+            // re-evaluation.
+            self.current_table_frame(&context, parts.source)?
+        } else if let Some(index) = &index {
+            let key_exprs = parts
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let affected_keys = delta
+                .clone()
+                .select(key_exprs.clone())?
+                .distinct()?
+                .union(old_frame.clone().select(key_exprs)?.distinct()?)?
+                .distinct()?;
+            let null_key = parts
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()).is_null())
+                .reduce(|left, right| left.or(right))
+                .ok_or_else(|| report!("recompute view has no group keys"))?;
+            if count_frame_rows(affected_keys.clone().filter(null_key)?).await? == 0 {
+                self.read_recomputed_index_groups(&context, parts, index, affected_keys)
+                    .await?
+            } else {
+                self.current_table_frame(&context, parts.source)?
+            }
+        } else if parts.group_exprs.is_empty()
             && !parts.group_keys.is_empty()
             && parts.source.primary_keys.starts_with(parts.group_keys)
         {
@@ -3085,6 +3369,7 @@ impl IvmRuntime {
         drop(context);
         commit_ids.extend(parts.mv.append_stream(&self.client, stream).await?);
 
+        self.checkpoint_epoch_states(&record).await?;
         let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
@@ -3133,6 +3418,10 @@ impl IvmRuntime {
         let generation = self.metadata.bump_generation(parts.view_id).await?;
         self.metadata.delete_cursors(parts.view_id).await?;
         parts.mv.truncate(&self.client).await?;
+        let index = self.ensure_recomputed_index(parts, true).await?;
+        if let Some(index) = &index {
+            index.truncate(self.client()).await?;
+        }
 
         let baseline = self
             .source_baseline_for_filter(parts.source, parts.filter)
@@ -3204,6 +3493,12 @@ impl IvmRuntime {
             parts.group_keys,
             parts.group_exprs,
         )?;
+        if let Some(index) = &index {
+            commit_ids.extend(
+                self.seed_recomputed_index(index, frame.clone(), epoch)
+                    .await?,
+            );
+        }
         context.register_table("src", frame.into_view())?;
         if let Some(lookup) = &parts.lookup {
             context

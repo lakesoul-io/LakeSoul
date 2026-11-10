@@ -282,6 +282,10 @@ pub enum StateRole {
     /// values of that partition.  A refresh recomputes only the changed
     /// partitions and merges all partials of the affected groups.
     MultiAggPartials,
+    /// A narrow `(group keys, source primary key)` index for a recomputed
+    /// aggregate.  It lets the refresh read the source rows of the affected
+    /// groups by primary key instead of scanning the whole source.
+    RecomputedIndex,
     /// A join source state keyed by the encoded join key.
     JoinLeft,
     /// A join source state keyed by the encoded join key.
@@ -308,6 +312,7 @@ impl StateRole {
             StateRole::State => "state",
             StateRole::MultiAggRows => "multi_agg_rows",
             StateRole::MultiAggPartials => "multi_agg_partials",
+            StateRole::RecomputedIndex => "recomputed_index",
             StateRole::JoinLeft => "join_left",
             StateRole::JoinRight => "join_right",
             StateRole::JoinPairIndex => "join_pair_index",
@@ -334,6 +339,7 @@ impl StateRole {
             "state" => Ok(StateRole::State),
             "multi_agg_rows" => Ok(StateRole::MultiAggRows),
             "multi_agg_partials" => Ok(StateRole::MultiAggPartials),
+            "recomputed_index" => Ok(StateRole::RecomputedIndex),
             // An earlier development role name; keep reading it so a
             // pre-existing metadata row does not fail the whole listing.
             "multi_agg_partitions" => Ok(StateRole::MultiAggPartials),
