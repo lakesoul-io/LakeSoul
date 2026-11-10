@@ -2502,15 +2502,48 @@ impl MetaDataClient {
         table_id: &str,
         from_versions: &HashMap<String, i64>,
     ) -> Result<IncrementalWindow> {
+        self.get_table_changelog_bounded(table_id, from_versions, None)
+            .await
+    }
+
+    /// The changelog of a table from `from_versions` up to explicit
+    /// `to_versions`, one upper bound per partition.
+    ///
+    /// This is how an IVM refresh reconstructs the exact window of a pending
+    /// epoch: files committed after the failed attempt must not be folded
+    /// into the replayed window.  Partitions that are not listed in
+    /// `to_versions` are ignored, and a version that has no changelog row up
+    /// to the bound reports `requires_rebuild`.
+    pub async fn get_table_changelog_up_to(
+        &self,
+        table_id: &str,
+        from_versions: &HashMap<String, i64>,
+        to_versions: &HashMap<String, i64>,
+    ) -> Result<IncrementalWindow> {
+        self.get_table_changelog_bounded(table_id, from_versions, Some(to_versions))
+            .await
+    }
+
+    async fn get_table_changelog_bounded(
+        &self,
+        table_id: &str,
+        from_versions: &HashMap<String, i64>,
+        to_versions: Option<&HashMap<String, i64>>,
+    ) -> Result<IncrementalWindow> {
         let partitions = self.get_all_partition_info(table_id).await?;
         let changed = partitions
             .iter()
             .filter(|partition| {
-                i64::from(partition.version)
-                    > from_versions
+                let from_version = from_versions
+                    .get(&partition.partition_desc)
+                    .copied()
+                    .unwrap_or(-1);
+                match to_versions {
+                    Some(to_versions) => to_versions
                         .get(&partition.partition_desc)
-                        .copied()
-                        .unwrap_or(-1)
+                        .is_some_and(|to_version| *to_version > from_version),
+                    None => i64::from(partition.version) > from_version,
+                }
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -2551,6 +2584,10 @@ impl MetaDataClient {
                 .get(&partition.partition_desc)
                 .copied()
                 .unwrap_or(-1);
+            let upper_version = to_versions
+                .and_then(|to_versions| to_versions.get(&partition.partition_desc))
+                .copied()
+                .unwrap_or(i64::from(partition.version));
             let mut changelog = PartitionChangelog {
                 partition_desc: partition.partition_desc.clone(),
                 to_version: from_version,
@@ -2575,7 +2612,7 @@ impl MetaDataClient {
                 .iter()
                 .filter(|row| {
                     i64::from(row.version) > from_version
-                        && row.version <= partition.version
+                        && i64::from(row.version) <= upper_version
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -2585,6 +2622,7 @@ impl MetaDataClient {
                     // History below the cursor is gone: the diff cannot be
                     // trusted, so report the bound and ask for a rebuild.
                     changelog.requires_rebuild = true;
+                    changelog.to_version = upper_version;
                     changelog.to_timestamp = partition.timestamp;
                 }
                 changelogs.push(changelog);
@@ -2592,7 +2630,7 @@ impl MetaDataClient {
             }
             if baseline.is_none() && from_version >= 0 {
                 let last = window.last().expect("window is not empty");
-                changelog.to_version = i64::from(last.version);
+                changelog.to_version = upper_version;
                 changelog.to_timestamp = last.timestamp;
                 changelog.requires_rebuild = true;
                 changelogs.push(changelog);
@@ -2626,6 +2664,13 @@ impl MetaDataClient {
                 }
                 changelog.to_version = i64::from(row.version);
                 changelog.to_timestamp = row.timestamp;
+            }
+            if to_versions.is_some() && changelog.to_version < upper_version {
+                // The requested bound has no version row (history was
+                // compacted away); the caller must rebuild instead of
+                // applying a shorter window.
+                changelog.to_version = upper_version;
+                changelog.requires_rebuild = true;
             }
 
             if changelog.requires_rebuild || changelog.partition_deleted {

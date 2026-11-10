@@ -232,6 +232,11 @@ impl IvmRuntime {
 
     /// Refresh every view reachable from the roots in one traversal,
     /// upstream first.  A diamond's shared upstream is refreshed once.
+    ///
+    /// The chain scheduler always runs on the coordinator, even when a single
+    /// view's refresh uses distributed workers: a downstream level starts only
+    /// after every upstream view in the previous level has committed its epoch.
+    /// Retry, rebuild and dirty self-heal therefore stay coordinator-side.
     pub async fn refresh_view_chains(
         &self,
         view_ids: &[String],

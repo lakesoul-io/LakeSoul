@@ -96,9 +96,31 @@ pub fn lakesoul_worker(options: &LakeSoulWorkerOptions) -> crate::Result<Worker>
         &options.core_args,
         Arc::clone(&options.memory_pool),
     )?;
+    #[cfg(feature = "ivm")]
+    install_ivm_worker_config(&options.core_args, &runtime);
     Ok(Worker::from_session_builder(LakeSoulWorkerSessionBuilder)
         .with_runtime_env(runtime)
         .with_version(DISTRIBUTED_PROTOCOL_VERSION))
+}
+
+/// Install the object-store options and IVM limits scan/write nodes use.
+///
+/// IVM's reader and writer build their own `LakeSoulIOConfig`; unlike a
+/// coordinator session they do not read the session's `LakeSoulIOConfig`
+/// extension.  The worker therefore installs the same `CoreArgs` credentials
+/// once at start-up.
+#[cfg(feature = "ivm")]
+fn install_ivm_worker_config(
+    core_args: &CoreArgs,
+    runtime: &Arc<datafusion::execution::runtime_env::RuntimeEnv>,
+) {
+    let mut config = lakesoul_ivm::IvmRuntimeConfig::new(
+        datafusion::prelude::SessionConfig::new(),
+        Arc::clone(runtime),
+    );
+    config.object_store_options = core_args.s3_options();
+    config.options.max_active_tasks = Some(4);
+    lakesoul_ivm::config::install(config);
 }
 
 /// Convenience: spawn a LakeSoul worker gRPC server on `listener`.

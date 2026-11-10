@@ -97,22 +97,23 @@ pub use resolver::{
 /// ignore unknown fields rather than rejecting them, so a plan written by this
 /// build would have been silently accepted by a `/1` worker.
 ///
-/// `/4` is the current generation: it extends the ADBC foreign codec at
-/// position 4 of [`codec::user_codecs`] with the worker-side write stage
+/// `/4` is the current non-IVM generation: it extends the ADBC foreign codec
+/// at position 4 of [`codec::user_codecs`] with the worker-side write stage
 /// (`FederationWriteExec`). It carries the explicit [`codec::CODEC_VERSION`]
 /// field and registers the vortex scan codec at position 1, the metadata-only
-/// scan codec at position 2, the write codec at position 3 and the federation
-/// codec at position 4. All of it is one generation because none of those
-/// formats has been released independently — a `/4` worker from this tree
-/// resolves every codec position a coordinator from it can stamp. Split them
-/// the moment one of them ships on its own: extension payloads name the
-/// *position* of the codec that wrote them, so a coordinator that can stamp
-/// position 4 needs workers that resolve it. The merge-on-read payload `/1`
-/// implied no longer has a codec at all: a `MergeParquetExec` stage is refused
-/// while planning instead of being shipped.
+/// scan codec at position 2, the write codec at position 3, the federation
+/// codec at position 4 and the IVM refresh codec at position 5 when the `ivm`
+/// feature is enabled. A `/4` worker from this tree resolves every codec
+/// position a non-IVM coordinator from it can stamp; an IVM coordinator
+/// advertises `/5-ivm` so it never dispatches a plan whose position 5 is
+/// unknown to the worker.
 ///
-/// Advertising `/4` filters `/1`, `/2` and `/3` workers out at discovery and
-/// closes the other direction at decode time.
+/// `/5-ivm` is the IVM generation. The numeric part tracks
+/// [`codec::CODEC_VERSION`]; the `-ivm` suffix keeps the codec-list
+/// generations apart during discovery.
+#[cfg(feature = "ivm")]
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/5-ivm";
+#[cfg(not(feature = "ivm"))]
 pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/4";
 
 pub use worker::{

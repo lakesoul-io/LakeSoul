@@ -40,6 +40,7 @@ use lakesoul_io::{
 };
 use lakesoul_metadata::{MetaDataClient, transfusion::DataFileInfo};
 use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo, TableInfo};
+use serde::{Deserialize, Serialize};
 
 use crate::config::IvmOptions;
 use crate::error::Result;
@@ -321,7 +322,7 @@ pub struct IvmTable {
 }
 
 /// The data files of one storage partition of a table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartitionFiles {
     /// The `partition_desc` of the group (the LakeSoul default `-5` for an
     /// unpartitioned group).
@@ -990,6 +991,32 @@ impl IvmTable {
         client: &MetaDataClient,
         files: Vec<DataFileInfo>,
     ) -> Result<Vec<String>> {
+        #[cfg(debug_assertions)]
+        if crate::runtime::recovery_target_active(&self.table_id)
+            && !crate::runtime::target_writes_suppressed(&self.table_id)
+        {
+            panic!(
+                "target {} commit escaped the recovery suppression",
+                self.table_id
+            );
+        }
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
+            return Ok(Vec::new());
+        }
+        let journal =
+            crate::runtime::commit_plan_before_commit(&self.table_id, &files).await?;
+        let commit_ids = self.commit_files_inner(client, files).await;
+        if let Ok(ref commit_ids) = commit_ids {
+            crate::runtime::commit_plan_after_commit(journal, commit_ids).await?;
+        }
+        commit_ids
+    }
+
+    async fn commit_files_inner(
+        &self,
+        client: &MetaDataClient,
+        files: Vec<DataFileInfo>,
+    ) -> Result<Vec<String>> {
         let context = crate::runtime::TARGET_WRITE
             .try_with(std::sync::Arc::clone)
             .ok();
@@ -1006,6 +1033,7 @@ impl IvmTable {
             target_table_id,
             atomic,
             committed,
+            skip_target,
             internal,
             owned_partitions,
             begin_partitions,
@@ -1019,12 +1047,18 @@ impl IvmTable {
                 guard.target_table_id.clone(),
                 guard.atomic,
                 guard.committed,
+                guard.skip_target,
                 guard.internal,
                 guard.owned_partitions.clone(),
                 guard.begin_partitions.clone(),
                 guard.metadata.clone(),
             )
         };
+        if skip_target && target_table_id == self.table_id {
+            // The MV is already published for this window; the recovery
+            // replay only rebuilds the auxiliary state.
+            return Ok(Vec::new());
+        }
         if target_table_id != self.table_id {
             if files.is_empty() {
                 return Ok(Vec::new());
@@ -1165,8 +1199,45 @@ impl IvmTable {
         client: &MetaDataClient,
         batches: Vec<RecordBatch>,
     ) -> Result<Vec<String>> {
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
+            return Ok(Vec::new());
+        }
         let files = self.write_batches(batches).await?;
         self.commit_files(client, files).await
+    }
+
+    /// Publish one refresh output to a state mirror and the target.
+    ///
+    /// Both writers run concurrently, then the mirror commits before the
+    /// target so the target remains the last write of the refresh.
+    pub(crate) async fn append_batches_pair(
+        &self,
+        client: &MetaDataClient,
+        batches: Vec<RecordBatch>,
+        other: &IvmTable,
+        other_batches: Vec<RecordBatch>,
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        let mine_suppressed = crate::runtime::target_writes_suppressed(&self.table_id);
+        let other_suppressed = crate::runtime::target_writes_suppressed(&other.table_id);
+        if mine_suppressed && other_suppressed {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        if mine_suppressed {
+            let other_ids = other.append_batches(client, other_batches).await?;
+            return Ok((Vec::new(), other_ids));
+        }
+        if other_suppressed {
+            let ids = self.append_batches(client, batches).await?;
+            return Ok((ids, Vec::new()));
+        }
+        let (files, other_files) = futures::future::try_join(
+            self.write_batches(batches),
+            other.write_batches(other_batches),
+        )
+        .await?;
+        let other_ids = other.commit_files(client, other_files).await?;
+        let ids = self.commit_files(client, files).await?;
+        Ok((ids, other_ids))
     }
 
     /// Publish a refresh output stream without collecting the whole result.
@@ -1182,6 +1253,9 @@ impl IvmTable {
     where
         S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
     {
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
+            return Ok(Vec::new());
+        }
         use futures::StreamExt;
         let mut stream = Box::pin(coalesce_batch_stream(
             stream,
@@ -1225,6 +1299,19 @@ impl IvmTable {
     where
         S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
     {
+        let mine_suppressed = crate::runtime::target_writes_suppressed(&self.table_id);
+        let other_suppressed = crate::runtime::target_writes_suppressed(&other.table_id);
+        if mine_suppressed && other_suppressed {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        if mine_suppressed {
+            let other_ids = other.append_stream(client, stream).await?;
+            return Ok((Vec::new(), other_ids));
+        }
+        if other_suppressed {
+            let ids = self.append_stream(client, stream).await?;
+            return Ok((ids, Vec::new()));
+        }
         use futures::StreamExt;
         let mut stream = Box::pin(coalesce_batch_stream(
             stream,
@@ -1256,8 +1343,10 @@ impl IvmTable {
         crate::observability::add_write_time(started.elapsed());
         let files = self.output_files(outputs, rows);
         let other_files = other.output_files(other_outputs, rows);
-        let ids = self.commit_files(client, files).await?;
+        // The target is the last write of a refresh: commit its mirror first
+        // so a persisted target plan always covers every state write.
         let other_ids = other.commit_files(client, other_files).await?;
+        let ids = self.commit_files(client, files).await?;
         Ok((ids, other_ids))
     }
 
@@ -1277,6 +1366,9 @@ impl IvmTable {
     where
         S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
     {
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
+            return Ok(Vec::new());
+        }
         use futures::StreamExt;
         if self.primary_keys.is_empty() {
             return self.append_stream(client, stream).await;
@@ -2422,6 +2514,18 @@ impl IvmTable {
     /// delete commit would reject the following merge/append via the commit
     /// conflict rules, while a compaction leaves the partition writable again.
     pub async fn truncate(&self, client: &MetaDataClient) -> Result<()> {
+        let skip_target = crate::runtime::TARGET_WRITE
+            .try_with(|context| {
+                let guard = context
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.skip_target && guard.target_table_id == self.table_id
+            })
+            .unwrap_or(false);
+        if skip_target {
+            // A recovery replay must not clear an already published target.
+            return Ok(());
+        }
         let is_user_target = crate::runtime::ATOMIC_TARGET
             .try_with(|target| target == &self.table_id)
             .unwrap_or(false);

@@ -21,6 +21,9 @@ on:
       - "main"
       - "release/**"
   workflow_dispatch:
+  schedule:
+    # Nightly full IVM suite; the core IVM steps run on push/PR instead.
+    - cron: "0 2 * * *"
 
 name: Rust CI
 
@@ -53,6 +56,10 @@ jobs:
         -p lakesoul-common -p lakesoul-io -p lakesoul-vector
         -p lakesoul-datafusion -p lakesoul-console -p lakesoul-worker
         -p postgres-lakesoul
+      # Keep the IVM cargo invocations on the same package selection as the
+      # main Rust tests.  A package-only selection changes the feature
+      # unification of shared crates and recompiles arrow/datafusion/vortex.
+      IVM_FEATURES: "lakesoul-ivm/distributed,lakesoul-datafusion/ivm"
     services:
       # Label used to access the service container
       postgres:
@@ -177,6 +184,28 @@ jobs:
           RUST_BACKTRACE: full
         run: cargo test --profile test-fast $TEST_PKGS --bins --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test update_contract --jobs 4 -- --nocapture
 
+      # IVM tests use their own package selection but must reuse the shared
+      # dependency build of the main test steps.  The script builds the core
+      # targets with the same dev-dependency feature unification as the main
+      # steps and runs the emitted executables directly.  Vendored
+      # sqllogictest keeps md-5 aligned with object_store so the IVM build
+      # does not cascade into object_store/parquet/vortex/datafusion.
+      - name: IVM core tests
+        if: github.event_name != 'schedule'
+        env:
+          RUST_LOG: info
+          RUST_BACKTRACE: full
+        run: python3 .github/scripts/run_ivm_tests.py
+
+      # The full IVM suite is nightly-only: it runs every IVM test binary
+      # built by the script, without another cargo invocation.
+      - name: Full IVM suite
+        if: github.event_name == 'schedule'
+        env:
+          RUST_LOG: info
+          RUST_BACKTRACE: full
+        run: python3 .github/scripts/run_ivm_tests.py --full
+
   clippy_check:
     runs-on: ubuntu-24.04
     env:
@@ -206,4 +235,10 @@ jobs:
       - name: Run Clippy
         # Keep every cargo invocation in this workflow on `test-fast` so all
         # artifacts stay in a single profile directory (rust/target/test-fast).
-        run: cargo clippy --profile test-fast --no-deps --all-features -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python -p lakesoul-io -- -D warnings
+        # One invocation with one feature set also avoids recompiling the
+        # shared datafusion/arrow/vortex graph for the IVM packages.
+        run: >-
+          cargo clippy --profile test-fast --no-deps --all-features
+          -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python
+          -p lakesoul-io -p lakesoul-ivm -p lakesoul-datafusion
+          -- -D warnings

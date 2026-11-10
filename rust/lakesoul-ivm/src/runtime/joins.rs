@@ -5130,17 +5130,22 @@ impl IvmRuntime {
         pair_index: Option<&IvmTable>,
         frame: DataFrame,
     ) -> Result<Vec<String>> {
-        let written = append_dataframe(output, &self.client, frame.clone()).await?;
-        let mut commit_ids = written.commit_ids;
+        // Auxiliary state first: the target commit is the last write of the
+        // refresh, so a persisted commit plan that reaches the target covers
+        // every state table too.
+        let mut commit_ids = Vec::new();
+        if let Some(index) = pair_index {
+            let index_written =
+                append_dataframe(index, &self.client, frame.clone()).await?;
+            commit_ids.extend(index_written.commit_ids);
+        }
         if let Some(state) = state {
             let state_written =
                 append_dataframe(state, &self.client, frame.clone()).await?;
             commit_ids.extend(state_written.commit_ids);
         }
-        if let Some(index) = pair_index {
-            let index_written = append_dataframe(index, &self.client, frame).await?;
-            commit_ids.extend(index_written.commit_ids);
-        }
+        let written = append_dataframe(output, &self.client, frame).await?;
+        commit_ids.extend(written.commit_ids);
         Ok(commit_ids)
     }
 

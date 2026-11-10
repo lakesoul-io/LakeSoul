@@ -12,7 +12,7 @@ use clap::Parser;
 use datafusion_postgres::{ServerOptions, auth::AuthManager, serve_with_handlers};
 use lakesoul_common::misc::JiffTime;
 use lakesoul_datafusion::cli::{CoreArgs, DistributedArgs};
-use lakesoul_datafusion::session::ExecutionMemoryArgs;
+use lakesoul_datafusion::session::{ExecutionMemoryArgs, IvmRefreshSessionFactory};
 use lakesoul_ivm::{IvmOptions, IvmRuntimeConfig};
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_observability::{
@@ -243,15 +243,22 @@ async fn main_inner(cli: Cli) -> Result<()> {
     let distributed_enabled = distributed.is_some();
     let session_factory = if cli.ivm {
         if distributed_enabled {
-            return Err(rootcause::report!(
-                "IVM v1 is single-node only; start the server without --distributed"
-            ));
+            warn!(
+                "IVM distributed refresh is experimental; workers must be built \
+                 with the IVM feature and the same protocol generation"
+            );
         }
         let template = session_factory.create_template_session()?;
-        let config = IvmRuntimeConfig::from_session(&template).with_options(IvmOptions {
-            max_active_tasks: Some(4),
-            ..IvmOptions::default()
-        });
+        let mut config =
+            IvmRuntimeConfig::from_session(&template).with_options(IvmOptions {
+                max_active_tasks: Some(4),
+                ..IvmOptions::default()
+            });
+        if distributed_enabled {
+            config = config.with_session_factory(Arc::new(
+                IvmRefreshSessionFactory::new(session_factory.refresh_session_factory()),
+            ));
+        }
         let service = IvmService::new(Arc::clone(&meta_client), config).await?;
         session_factory.with_ivm(Arc::new(service))
     } else {
@@ -359,6 +366,8 @@ mod cli_probe_tests {
             "port": cli.port,
             "metrics_addr": cli.metrics_addr.to_string(),
             "max_connections": cli.max_connections,
+            "ivm": cli.ivm,
+            "distributed_workers": cli.distributed.distributed_workers,
         })
     }
 
@@ -403,6 +412,16 @@ mod cli_probe_tests {
         );
         assert_eq!(via_cli["bind"], "127.0.0.1");
         assert_eq!(via_cli["port"], 5432);
+    }
+
+    #[test]
+    fn ivm_and_distributed_flags_can_be_combined() {
+        let combined = probe(
+            &[],
+            &["--ivm", "--distributed-workers", "http://127.0.0.1:50051"],
+        );
+        assert_eq!(combined["ivm"], true);
+        assert_eq!(combined["distributed_workers"][0], "http://127.0.0.1:50051");
     }
 
     /// Runs the probe subprocess with a cleared environment plus `envs`.

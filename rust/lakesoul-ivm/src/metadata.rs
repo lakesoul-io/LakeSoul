@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use lakesoul_metadata::error::LakeSoulMetaDataError;
+use lakesoul_metadata::transfusion::DataFileInfo;
 use lakesoul_metadata::{PooledClient, QueryType, create_connection, pg_config_from_env};
 use serde::{Deserialize, Serialize};
 use tokio_postgres::error::SqlState;
@@ -111,6 +112,7 @@ do $$ begin
         mv_versions        jsonb  not null default '[]'::jsonb,
         state_versions     jsonb  not null default '[]'::jsonb,
         commit_ids         jsonb  not null default '[]'::jsonb,
+        commit_plan        jsonb  not null default '{}'::jsonb,
         created_at         bigint not null,
         committed_at       bigint,
         primary key (view_id, generation, epoch)
@@ -130,6 +132,11 @@ end $$;
 
 do $$ begin
     alter table ivm.epochs add column if not exists state_versions jsonb not null default '[]'::jsonb;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.epochs add column if not exists commit_plan jsonb not null default '{}'::jsonb;
 exception when duplicate_column or unique_violation then null;
 end $$;
 
@@ -423,6 +430,84 @@ pub struct StateVersion {
     pub versions: Vec<PartitionVersion>,
 }
 
+/// One staged table write recorded before the coordinator commits it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitPlanEntry {
+    /// Stable identity of this entry within the plan.
+    pub id: String,
+    /// The table the files belong to.
+    pub table_id: String,
+    /// The files an append produced.
+    pub files: Vec<DataFileInfo>,
+    /// Whether the coordinator has already committed the files.
+    pub committed: bool,
+    /// The commit ids returned by LakeSoul, when known.
+    pub commit_ids: Vec<String>,
+}
+
+/// The files a refresh staged before its coordinator commits them.
+///
+/// A plan is written before each table commit, so a coordinator that dies
+/// between worker writes and commit can replay the commit without re-running
+/// the refresh.  It covers the target and every auxiliary state table.
+///
+/// `complete` is set once the target commit is about to be published (the
+/// target is the last write of every refresh shape) and again when the
+/// refresh finishes without a target write.  A plan that is not complete
+/// describes only a prefix of a refresh; recovery must fall back to the
+/// pending-epoch repair/rebuild path instead of publishing it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitPlan {
+    #[serde(default)]
+    pub entries: Vec<CommitPlanEntry>,
+    /// Whether every write of the refresh is represented in `entries`.
+    #[serde(default)]
+    pub complete: bool,
+}
+
+impl CommitPlan {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Collect the commit ids recorded for the entries.
+    pub fn commit_ids(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .flat_map(|entry| entry.commit_ids.iter().cloned())
+            .collect()
+    }
+
+    /// Record a new uncommitted table write and return its entry id.
+    pub fn record(&mut self, table_id: &str, files: Vec<DataFileInfo>) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.entries.push(CommitPlanEntry {
+            id: id.clone(),
+            table_id: table_id.to_string(),
+            files,
+            committed: false,
+            commit_ids: Vec::new(),
+        });
+        id
+    }
+
+    /// Mark an entry committed after LakeSoul accepted its files.
+    pub fn mark_committed(&mut self, id: &str, commit_ids: Vec<String>) {
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
+            entry.committed = true;
+            entry.commit_ids.extend(commit_ids);
+        }
+    }
+
+    /// Mark an entry committed without commit ids, after verifying its files
+    /// are already visible in the table.
+    pub fn mark_visible(&mut self, id: &str) {
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
+            entry.committed = true;
+        }
+    }
+}
+
 /// One row of `ivm.epochs`: a refresh window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpochRecord {
@@ -448,6 +533,8 @@ pub struct EpochRecord {
     pub state_versions: Vec<StateVersion>,
     /// The LakeSoul commit ids the window wrote to the MV/state.
     pub commit_ids: Vec<String>,
+    /// Files staged by workers, recorded before the coordinator commits them.
+    pub commit_plan: CommitPlan,
     /// The allocation time (unix milliseconds).
     pub created_at: i64,
     /// The commit time (unix milliseconds).
@@ -481,7 +568,7 @@ impl BeginEpoch {
 
 const EPOCH_COLUMNS: &str = "view_id, generation, epoch, window_key, status, \
      to_versions, mv_versions_before, state_versions_before, mv_versions, \
-     state_versions, commit_ids, created_at, committed_at";
+     state_versions, commit_ids, commit_plan, created_at, committed_at";
 
 /// The `ivm` schema access layer.
 #[derive(Clone)]
@@ -738,6 +825,26 @@ impl IvmMetadata {
             )
             .await?;
         Ok(row.is_some_and(|row| row.get::<_, String>(0) == owner))
+    }
+
+    /// Renew a refresh lease held by `owner`.  Returns false when the lease
+    /// was already taken over or expired.
+    pub async fn renew_view_lock(
+        &self,
+        view_id: &str,
+        owner: &str,
+        ttl_ms: i64,
+    ) -> Result<bool> {
+        let expires_at = crate::now_ms().saturating_add(ttl_ms);
+        let row = self
+            .query_opt_rw(
+                "update ivm.view_locks set expires_at = $3::BIGINT
+                 where view_id = $1::TEXT and owner = $2::TEXT
+                 returning owner",
+                &[&view_id, &owner, &expires_at],
+            )
+            .await?;
+        Ok(row.is_some())
     }
 
     /// Release a refresh lease held by `owner`.
@@ -1135,6 +1242,27 @@ impl IvmMetadata {
         Ok(())
     }
 
+    /// Persist the staged-file plan of a pending epoch before the coordinator
+    /// starts committing it.
+    pub async fn checkpoint_epoch_commit_plan(
+        &self,
+        record: &EpochRecord,
+        plan: &CommitPlan,
+    ) -> Result<()> {
+        self.execute_rw(
+            "update ivm.epochs set commit_plan = $4::JSONB
+             where view_id = $1::TEXT and generation = $2::BIGINT and epoch = $3::BIGINT",
+            &[
+                &record.view_id,
+                &record.generation,
+                &record.epoch,
+                &serde_json::to_value(plan)?,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Mark an epoch committed and record both the MV and auxiliary state
     /// partition versions.  Recovery can then distinguish a complete state
     /// write from a partial one.
@@ -1163,6 +1291,29 @@ impl IvmMetadata {
         )
         .await?;
         Ok(())
+    }
+
+    /// Pending epochs of a view generation, ordered by epoch.  Used by the
+    /// coordinator recovery path and by crash tests.
+    pub async fn list_pending_epochs(
+        &self,
+        view_id: &str,
+        generation: i64,
+    ) -> Result<Vec<EpochRecord>> {
+        let rows = self
+            .client
+            .query(
+                &format!(
+                    "select {EPOCH_COLUMNS} from ivm.epochs
+                     where view_id = $1::TEXT and generation = $2::BIGINT
+                       and status = 'pending'
+                     order by epoch"
+                ),
+                QueryType::RO,
+                &[&view_id, &generation],
+            )
+            .await?;
+        rows.iter().map(epoch_record_from_row).collect()
     }
 
     /// All committed epochs of a view generation, ordered by epoch.
@@ -1449,7 +1600,8 @@ fn epoch_record_from_row(row: &tokio_postgres::Row) -> Result<EpochRecord> {
         mv_versions: serde_json::from_value(row.get(8))?,
         state_versions: serde_json::from_value(row.get(9))?,
         commit_ids: serde_json::from_value(row.get(10))?,
-        created_at: row.get(11),
-        committed_at: row.get(12),
+        commit_plan: serde_json::from_value(row.get(11))?,
+        created_at: row.get(12),
+        committed_at: row.get(13),
     })
 }

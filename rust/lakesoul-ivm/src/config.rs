@@ -79,6 +79,10 @@ pub struct IvmOptions {
     pub vortex_row_block_size: Option<String>,
     /// Override of the Vortex data-block target bytes for internal tables.
     pub vortex_data_block_bytes: Option<String>,
+    /// Lease TTL for the per-view refresh lock.  A live coordinator renews the
+    /// lease; a killed coordinator stops renewing, so another coordinator can
+    /// take over after this interval.
+    pub refresh_lock_ttl_ms: u64,
 }
 
 impl Default for IvmOptions {
@@ -95,6 +99,7 @@ impl Default for IvmOptions {
             write_pool_dir: None,
             vortex_row_block_size: None,
             vortex_data_block_bytes: None,
+            refresh_lock_ttl_ms: 30 * 60 * 1000,
         }
     }
 }
@@ -107,6 +112,17 @@ pub(crate) fn default_spill_dir() -> String {
         .join("lakesoul/ivm-spill")
         .to_string_lossy()
         .into_owned()
+}
+
+/// Creates the session every refresh plans its DataFrames in.
+///
+/// A coordinator that enables distributed execution installs a factory here so
+/// refresh sessions inherit the distributed planner, its task handlers and the
+/// IVM codecs.  Without a factory, [`IvmRuntimeConfig`] falls back to the
+/// plain `SessionConfig + RuntimeEnv` template.
+pub trait IvmSessionFactory: Send + Sync {
+    /// Build one isolated refresh session.
+    fn create(&self) -> crate::Result<SessionContext>;
 }
 
 /// A DataFusion session template plus the IVM behaviour options.
@@ -127,6 +143,8 @@ pub struct IvmRuntimeConfig {
     pub object_store_options: HashMap<String, String>,
     /// IVM behaviour options.
     pub options: IvmOptions,
+    /// Optional isolated-session factory used to inherit a distributed planner.
+    pub session_factory: Option<Arc<dyn IvmSessionFactory>>,
 }
 
 impl IvmRuntimeConfig {
@@ -137,6 +155,7 @@ impl IvmRuntimeConfig {
             runtime,
             object_store_options: HashMap::new(),
             options: IvmOptions::default(),
+            session_factory: None,
         }
     }
 
@@ -153,12 +172,19 @@ impl IvmRuntimeConfig {
             runtime: context.runtime_env(),
             object_store_options,
             options: IvmOptions::default(),
+            session_factory: None,
         }
     }
 
     /// Replace the behaviour options.
     pub fn with_options(mut self, options: IvmOptions) -> Self {
         self.options = options;
+        self
+    }
+
+    /// Install the factory that creates isolated refresh sessions.
+    pub fn with_session_factory(mut self, factory: Arc<dyn IvmSessionFactory>) -> Self {
+        self.session_factory = Some(factory);
         self
     }
 }
@@ -206,7 +232,11 @@ fn read_config() -> IvmRuntimeConfig {
 }
 
 /// Install the configuration used by refresh sessions and planner helpers.
-pub(crate) fn install(value: IvmRuntimeConfig) {
+///
+/// A coordinator normally gets this through [`IvmRuntime::new`](crate::runtime::IvmRuntime::new).
+/// A distributed worker that only executes serialized scan/write nodes installs
+/// its own object-store options here; it does not need a metadata client.
+pub fn install(value: IvmRuntimeConfig) {
     *config()
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = value;
@@ -216,6 +246,11 @@ pub(crate) fn install(value: IvmRuntimeConfig) {
 pub(crate) fn session() -> (SessionConfig, Arc<RuntimeEnv>) {
     let config = read_config();
     (config.session, config.runtime)
+}
+
+/// The optional isolated-session factory installed by the embedder.
+pub(crate) fn session_factory() -> Option<Arc<dyn IvmSessionFactory>> {
+    read_config().session_factory
 }
 
 /// The installed behaviour options.
@@ -248,6 +283,21 @@ mod tests {
         assert_eq!(options.view_parallelism, 1);
         assert_eq!(options.max_derived_steps, 64);
         assert!(options.max_active_tasks.is_none());
+    }
+
+    #[test]
+    fn a_runtime_config_can_install_a_session_factory() {
+        #[derive(Debug)]
+        struct Factory;
+
+        impl IvmSessionFactory for Factory {
+            fn create(&self) -> crate::Result<SessionContext> {
+                Ok(SessionContext::new())
+            }
+        }
+
+        let config = IvmRuntimeConfig::default().with_session_factory(Arc::new(Factory));
+        assert!(config.session_factory.is_some());
     }
 
     #[test]
