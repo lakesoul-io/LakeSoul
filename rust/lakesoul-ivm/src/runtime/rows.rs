@@ -663,14 +663,51 @@ impl IvmRuntime {
                     self.current_table_frame(&context, &view.source)?,
                     change_column(&view.source),
                 )?;
-                let mv = self.current_table_frame(&context, &view.mv)?;
-                // A scalar subquery change re-evaluates every key either the
-                // current source or the view knows.
+                // A scalar subquery change re-evaluates every current source
+                // key, plus the identities this window deleted.
                 let affected = source_now
                     .clone()
                     .select(key_exprs.clone())?
                     .distinct()?
-                    .union(mv.clone().select(key_exprs.clone())?.distinct()?)?;
+                    .union(delta.clone().select(key_exprs.clone())?.distinct()?)?
+                    .distinct()?;
+                // The view only holds rows whose source identity still
+                // exists (or was removed by this window), so its old rows are
+                // read through the same keyed lookup as a normal refresh.
+                // Only a target keyed differently from its source needs the
+                // full MV read.
+                let (mv, affected) = if view.mv.primary_keys == view.source.primary_keys {
+                    let mv = self
+                        .lookup_source_by_join_keys(
+                            &context,
+                            &view.mv,
+                            affected.clone(),
+                            &view.source.primary_keys,
+                            &view.mv.primary_keys,
+                            true,
+                        )
+                        .await?;
+                    (mv, affected)
+                } else {
+                    let mv = match &partitions {
+                        Some(restriction) => {
+                            self.current_table_frame_filtered_partitions(
+                                &context,
+                                &view.mv,
+                                Vec::new(),
+                                restriction,
+                            )
+                            .await?
+                        }
+                        None => self.current_table_frame(&context, &view.mv)?,
+                    };
+                    // The fallback read has no key to probe, so every
+                    // row it returns is a candidate for retraction.
+                    let affected = affected
+                        .union(mv.clone().select(key_exprs.clone())?.distinct()?)?
+                        .distinct()?;
+                    (mv, affected)
+                };
                 (source_now, mv, affected)
             } else {
                 // The changed keys include delete tombstones: their state row
@@ -703,18 +740,9 @@ impl IvmRuntime {
                 };
                 (source_now, mv, affected)
             };
-            let mut passing = if scalar_changed {
-                source_now.join(
-                    affected.clone(),
-                    JoinType::LeftSemi,
-                    &key_names,
-                    &key_names,
-                    None,
-                )?
-            } else {
-                // Every delta row belongs to an affected key.
-                source_now
-            };
+            // Every delta row belongs to an affected key; a scalar change
+            // re-evaluates every current source row.
+            let mut passing = source_now;
             if let Some(predicate) = predicate {
                 passing = passing.filter(predicate)?;
             }

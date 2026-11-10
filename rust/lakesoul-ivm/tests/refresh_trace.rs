@@ -13,7 +13,8 @@ use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use lakesoul_ivm::{
     IvmRuntime, IvmSqlExecutor, IvmTableOptions, MultiJoinColumn,
-    multi_join_mv_schema_for, multi_join_primary_keys, semi_anti_mv_schema_for,
+    multi_join_mv_schema_for, multi_join_primary_keys, row_mv_schema_for,
+    semi_anti_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -321,6 +322,110 @@ async fn multi_join_incremental_refresh_has_no_full_scan() {
 
     let runtime = executor.runtime();
     for table in sources.iter().chain(std::iter::once(&mv)) {
+        runtime
+            .client()
+            .drop_table(&table.table_name, "default")
+            .await
+            .unwrap();
+    }
+}
+
+/// A scalar-subquery change re-evaluates the current source, but the old view
+/// rows come from a keyed MV lookup, not a full MV scan.
+#[tokio::test(flavor = "current_thread")]
+async fn scalar_subquery_refresh_does_not_scan_the_view() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_trace_scalar_src_{suffix}"),
+                table_path(&dir, "src"),
+                left_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let dimension = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_trace_scalar_dim_{suffix}"),
+                table_path(&dir, "dim"),
+                left_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_trace_scalar_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                row_mv_schema_for(
+                    &source.schema,
+                    &["k".to_string(), "g".to_string(), "x".to_string()],
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_trace_scalar_mv_{suffix} \
+         SELECT k, g, x FROM ivm_trace_scalar_src_{suffix} \
+         WHERE x > (SELECT avg(x) FROM ivm_trace_scalar_dim_{suffix})"
+    );
+    source
+        .append_batch(
+            executor.runtime().client(),
+            left_batch(&[(1, 1, 10, "insert"), (2, 1, 20, "insert")]),
+        )
+        .await
+        .unwrap();
+    dimension
+        .append_batch(
+            executor.runtime().client(),
+            left_batch(&[(100, 1, 12, "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let writer = BufferWriter(buffer.clone());
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(move || writer.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    dimension
+        .append_batch(
+            executor.runtime().client(),
+            left_batch(&[(100, 1, 25, "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+
+    let trace = last_refresh_trace(&buffer, "row");
+    assert!(
+        !trace.contains(&mv.table_name),
+        "a scalar-subquery refresh scanned its MV in full: {trace}"
+    );
+
+    let runtime = executor.runtime();
+    for table in [&source, &dimension, &mv] {
         runtime
             .client()
             .drop_table(&table.table_name, "default")
