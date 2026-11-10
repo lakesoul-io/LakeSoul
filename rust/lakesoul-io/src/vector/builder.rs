@@ -292,21 +292,27 @@ impl VectorShardIndexBuilder {
         });
         let mut pass2_slot = Some(pass2);
         let make_stream = move || pass2_slot.take().expect("pass 2 stream is consumed once");
-        let index = builder.build(make_stream).await?;
+        let istore = IndexStore::new(self.store.clone(), index_prefix.clone());
+        let chunk_bytes = std::env::var("LAKESOUL_VECTOR_BUILD_CHUNK_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(64 * 1024 * 1024);
+        let (index, mut new_segments) = builder
+            .build_with_chunk_flush(make_stream, istore, chunk_bytes)
+            .await?;
         if let Some(error) = pass2_error.lock().expect("pass2 error lock").take() {
             return Err(RabitqError::Io(error));
         }
-        info!("Writing index segments (streaming build)...");
-        let istore = IndexStore::new(self.store.clone(), index_prefix.clone());
-        let (header, mut new_segments) =
-            index.write_base_segments(&istore).await.map_err(|e| {
-                warn!("Failed to write index segments: {:?}", e);
-                e
-            })?;
+        let header = index.index_header();
         for segment in &mut new_segments {
             segment.data_files = self.file_paths.clone();
         }
-        info!("Fresh index built successfully (streaming input)");
+        info!(
+            "Fresh index built successfully (streaming input, {} segments, chunk={} MiB)",
+            new_segments.len(),
+            chunk_bytes / 1024 / 1024
+        );
         Ok(Some(ShardBuildOutcome {
             index_prefix,
             header: header.serialize(),
