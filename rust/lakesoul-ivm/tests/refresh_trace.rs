@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use lakesoul_ivm::{
-    IvmRuntime, IvmSqlExecutor, IvmTableOptions, semi_anti_mv_schema_for,
+    IvmRuntime, IvmSqlExecutor, IvmTableOptions, MultiJoinColumn,
+    multi_join_mv_schema_for, multi_join_primary_keys, semi_anti_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -201,6 +202,125 @@ async fn semi_anti_incremental_refresh_has_no_full_scan() {
     );
 
     for table in [&left, &right, &mv] {
+        runtime
+            .client()
+            .drop_table(&table.table_name, "default")
+            .await
+            .unwrap();
+    }
+}
+
+/// A NULL-safe multi-join reads its sources through the narrow join-key
+/// indexes on an incremental window, never in full.
+#[tokio::test(flavor = "current_thread")]
+async fn multi_join_incremental_refresh_has_no_full_scan() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let mut sources = Vec::new();
+    for index in 0..3 {
+        let source = runtime
+            .create_table(
+                IvmTableOptions::new(
+                    format!("ivm_trace_mj_src{index}_{suffix}"),
+                    table_path(&dir, &format!("src{index}")),
+                    left_schema(),
+                )
+                .with_primary_keys(vec!["k".to_string()])
+                .with_cdc_column(CHANGE_COLUMN),
+            )
+            .await
+            .unwrap();
+        source
+            .append_batch(
+                runtime.client(),
+                left_batch(&[(index as i64 + 1, 10, index as i64 + 1, "insert")]),
+            )
+            .await
+            .unwrap();
+        sources.push(source);
+    }
+    let schemas = sources
+        .iter()
+        .map(|source| source.schema.clone())
+        .collect::<Vec<_>>();
+    let primary_keys = vec![
+        vec!["k".to_string()],
+        vec!["k".to_string()],
+        vec!["k".to_string()],
+    ];
+    let columns = vec![
+        MultiJoinColumn {
+            source: 0,
+            column: "g".to_string(),
+            name: "ag".to_string(),
+        },
+        MultiJoinColumn {
+            source: 1,
+            column: "g".to_string(),
+            name: "bg".to_string(),
+        },
+        MultiJoinColumn {
+            source: 2,
+            column: "g".to_string(),
+            name: "cg".to_string(),
+        },
+    ];
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_trace_mj_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                multi_join_mv_schema_for(&schemas, &primary_keys, &columns).unwrap(),
+            )
+            .with_primary_keys(multi_join_primary_keys(&primary_keys)),
+        )
+        .await
+        .unwrap();
+
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let writer = BufferWriter(buffer.clone());
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(move || writer.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_trace_mj_mv_{suffix} \
+         SELECT a.g AS ag, b.g AS bg, c.g AS cg \
+         FROM ivm_trace_mj_src0_{suffix} a \
+         JOIN ivm_trace_mj_src1_{suffix} b \
+           ON a.g IS NOT DISTINCT FROM b.g \
+         JOIN ivm_trace_mj_src2_{suffix} c \
+           ON b.g IS NOT DISTINCT FROM c.g"
+    );
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    buffer.lock().expect("trace buffer").clear();
+
+    // One source update: the incremental refresh must read the delta and the
+    // keyed join-key index, not any full source.
+    sources[1]
+        .append_batch(
+            executor.runtime().client(),
+            left_batch(&[(2, 11, 2, "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+
+    let trace = last_refresh_trace(&buffer, "multi_join");
+    assert!(
+        trace.contains("full_scan=false"),
+        "incremental multi-join refresh scanned a table in full: {trace}"
+    );
+
+    let runtime = executor.runtime();
+    for table in sources.iter().chain(std::iter::once(&mv)) {
         runtime
             .client()
             .drop_table(&table.table_name, "default")

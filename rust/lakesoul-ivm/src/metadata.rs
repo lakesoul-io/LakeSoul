@@ -299,6 +299,9 @@ pub enum StateRole {
     /// step's left key to the base row identities, so a changed dimension can
     /// fan out to affected base rows without scanning the base.
     LookupChainIndex(u32),
+    /// One narrow `(encoded join key, source primary key)` index for a
+    /// multi-join edge that needs a null-safe or computed key lookup.
+    MultiJoinKeyIndex(u32),
     /// The source-row state used to recompute window/top-k ranks.
     RankState,
     /// One partition spec of a multi-window view.  The index is the spec
@@ -321,6 +324,7 @@ impl StateRole {
             StateRole::JoinRight => "join_right",
             StateRole::JoinPairIndex => "join_pair_index",
             StateRole::LookupChainIndex(_) => "lookup_chain_index",
+            StateRole::MultiJoinKeyIndex(_) => "multi_join_key_index",
             StateRole::RankState => "rank_state",
             StateRole::MultiWindow(_) => "multi_window",
         }
@@ -335,6 +339,9 @@ impl StateRole {
             }
             StateRole::GroupingSetIndex(index) => {
                 Cow::Owned(format!("grouping_set_index:{index}"))
+            }
+            StateRole::MultiJoinKeyIndex(index) => {
+                Cow::Owned(format!("multi_join_key_index:{index}"))
             }
             role => Cow::Borrowed(role.as_str()),
         }
@@ -381,6 +388,16 @@ impl StateRole {
                         .map_err(|_| {
                             rootcause::report!(
                                 "invalid lookup-chain index state role {other:?}"
+                            )
+                        });
+                }
+                if let Some(index) = other.strip_prefix("multi_join_key_index:") {
+                    return index
+                        .parse::<u32>()
+                        .map(StateRole::MultiJoinKeyIndex)
+                        .map_err(|_| {
+                            rootcause::report!(
+                                "invalid multi-join key index state role {other:?}"
                             )
                         });
                 }
