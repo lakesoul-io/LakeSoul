@@ -568,6 +568,10 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         List<CompressDataFileInfo> resultList = new ArrayList<>();
         HashMap<String, List<CompressDataFileInfo>> rsMap = new HashMap<>();
         List<CompressDataFileInfo> discardInfoList = new ArrayList<>();
+        Set<String> snapshotPaths =
+                this.fileInfo.stream()
+                        .map(CompressDataFileInfo::getFilePath)
+                        .collect(Collectors.toSet());
         LOG.info("Task {}, Starting compact task, fileInfo {}", taskId, this.fileInfo);
         if (this.tableHashBucketNumChanged) {
             List<CompressDataFileInfo> fileList = this.fileInfo;
@@ -615,7 +619,6 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             }
         } else {
             boolean L0Compacted = false;
-            boolean l1Added = false;
             boolean canPromoteL0 = true;
             List<CompressDataFileInfo> mergedL0Files = new ArrayList<>();
             if (levelFileMap.containsKey(INCREMENTAL_FILE)) {
@@ -660,10 +663,6 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                                                     .COMPACTION_PICK_NEXT_LEVEL_MIN_FILE_SIZE()
                                                     .defaultValue()
                                                     .get()));
-                    Set<String> originalPaths =
-                            totalIncreFileList.stream()
-                                    .map(CompressDataFileInfo::getFilePath)
-                                    .collect(Collectors.toSet());
                     List<CompressDataFileInfo> outputs =
                             rollingEnabled
                                     ? compactL0(totalIncreFileList, promotionSize, discardInfoList)
@@ -672,9 +671,9 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                         // Only an ordered prefix can move to the older L1 layer.
                         if (canPromoteL0 && file.getFileSize() >= promotionSize) {
                             CompressDataFileInfo promoted;
-                            if (originalPaths.contains(file.getFilePath())) {
+                            if (snapshotPaths.contains(file.getFilePath())) {
                                 // Keep the old snapshot readable until metadata commits.
-                                promoted = copyExistingL0ToL1(file);
+                                promoted = copyExistingFileToLevel(file, 1);
                                 discardInfoList.add(file);
                             } else {
                                 promoted = moveFileToLevel(file, 0, 1);
@@ -682,7 +681,6 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                             levelFileMap
                                     .computeIfAbsent(COMPACT_DIR + 1, key -> new ArrayList<>())
                                     .add(promoted);
-                            l1Added = true;
                         } else {
                             canPromoteL0 = false;
                             mergedL0Files.add(file);
@@ -695,7 +693,9 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
             for (int level = 1; level <= this.maxNumLevelLimit; ++level) {
                 List<CompressDataFileInfo> discardFileList = new ArrayList<>();
                 List<CompressDataFileInfo> oriCompactFileList = getCompactFileListByLevel(level);
-                if (level == 1 && rollingEnabled && l1Added) {
+                // Eligible tables also consolidate existing small L1 files when L0
+                // does not promote. Singletons and completed files are retained.
+                if (level == 1 && rollingEnabled) {
                     mergedlevelFileMap.put(level, compactL1(oriCompactFileList, discardFileList));
                 } else if ((level != 1 || !rollingEnabled) && needCompaction(level)) {
                     int index = 0;
@@ -834,14 +834,22 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
                         } else {
                             int pickLevel = level + 1;
                             LOG.info(
-                                    "fileName {} fileSize {} MOVE to Level {}",
+                                    "fileName {} fileSize {} promote to Level {}",
                                     fileInfo.getFilePath(),
                                     fileInfo.getFileSize(),
                                     pickLevel);
                             discardFileList.remove(fileInfo);
                             iterator.remove();
-                            CompressDataFileInfo newFileInfo =
-                                    moveFileToLevel(fileInfo, level, pickLevel);
+                            CompressDataFileInfo newFileInfo;
+                            if (snapshotPaths.contains(fileInfo.getFilePath())) {
+                                // Committed snapshots still reference the source path.
+                                newFileInfo = copyExistingFileToLevel(fileInfo, pickLevel);
+                                // Preserve the existing discard timestamp convention.
+                                discardFileList.add(fileInfo);
+                            } else {
+                                // This task's unpublished outputs have no old readers.
+                                newFileInfo = moveFileToLevel(fileInfo, level, pickLevel);
+                            }
                             levelFileMap
                                     .computeIfAbsent(
                                             COMPACT_DIR + pickLevel,
@@ -1038,9 +1046,10 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
     }
 
     /** Copy an existing snapshot file; cleanup removes the old path after commit. */
-    private CompressDataFileInfo copyExistingL0ToL1(CompressDataFileInfo file) throws IOException {
+    private CompressDataFileInfo copyExistingFileToLevel(CompressDataFileInfo file, int level)
+            throws IOException {
         Path source = new Path(file.getFilePath());
-        Path directory = new Path(this.tablePath, COMPACT_DIR + 1);
+        Path directory = new Path(this.tablePath, COMPACT_DIR + level);
         if (!this.metaPartitionExpr.equals(LAKESOUL_NON_PARTITION_TABLE_PART_DESC)) {
             directory = new Path(directory, this.metaPartitionExpr.replace(",", "/"));
         }
@@ -1048,13 +1057,19 @@ public class CompactBucketIO implements AutoCloseable, Serializable {
         FileSystem sourceFs = source.getFileSystem(conf);
         FileSystem destinationFs = destination.getFileSystem(conf);
         if (!destinationFs.mkdirs(directory) && !destinationFs.exists(directory)) {
-            throw new IOException("Cannot create L1 directory " + directory);
+            throw new IOException("Cannot create L" + level + " directory " + directory);
         }
         if (!org.apache.hadoop.fs.FileUtil.copy(
                 sourceFs, source, destinationFs, destination, false, false, conf)) {
-            throw new IOException("Cannot copy L0 file " + source + " to " + destination);
+            throw new IOException("Cannot copy file " + source + " to " + destination);
         }
         writeBlobref(destination.toString());
+        LOG.info(
+                "Task {}, COPY snapshot file {} to Level {} at {}",
+                taskId,
+                source,
+                level,
+                destination);
         return new CompressDataFileInfo(
                 destination.toString(),
                 file.getFileSize(),

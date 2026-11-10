@@ -181,7 +181,9 @@ object LakeSoulSQLConf {
   val COMPACTION_LOWLEVEL_ROLLING_ENABLED =
     buildConf("compaction.lowlevel.rolling.enabled")
       .doc(
-        "Enable lowlevel (L0-L1) rolling compaction; disabled uses legacy L0 batching and L1 merging."
+        "Enable ordered lowlevel (L0-L1) rolling for eligible tables. " +
+          "Each compaction also checks existing L1 small files; disabled uses legacy L0 " +
+          "batching and L1 merging."
       )
       .booleanConf
       .createWithDefault(true)
