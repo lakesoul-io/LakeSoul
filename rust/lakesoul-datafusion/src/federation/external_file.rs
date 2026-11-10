@@ -232,7 +232,7 @@ impl ExternalFileStoreConfig {
 /// Concrete external-file format and its writer options.
 #[derive(Clone)]
 pub enum ExternalFileFormat {
-    Parquet(TableParquetOptions),
+    Parquet(Box<TableParquetOptions>),
     Csv(CsvOptions),
     Json(JsonOptions),
 }
@@ -241,7 +241,7 @@ impl ExternalFileFormat {
     fn file_format(&self) -> Arc<dyn FileFormat> {
         match self {
             Self::Parquet(options) => {
-                Arc::new(ParquetFormat::default().with_options(options.clone()))
+                Arc::new(ParquetFormat::default().with_options(options.as_ref().clone()))
             }
             Self::Csv(options) => {
                 Arc::new(CsvFormat::default().with_options(options.clone()))
@@ -254,7 +254,9 @@ impl ExternalFileFormat {
 
     fn sink(&self, config: FileSinkConfig) -> DFResult<Arc<dyn DataSink>> {
         Ok(match self {
-            Self::Parquet(options) => Arc::new(ParquetSink::new(config, options.clone())),
+            Self::Parquet(options) => {
+                Arc::new(ParquetSink::new(config, options.as_ref().clone()))
+            }
             Self::Csv(options) => {
                 Arc::new(CsvSink::new(config, CsvWriterOptions::try_from(options)?))
             }
@@ -347,7 +349,7 @@ impl ExternalFileSpec {
         }
 
         let format = match format.as_str() {
-            "parquet" => ExternalFileFormat::Parquet(TableParquetOptions::default()),
+            "parquet" => ExternalFileFormat::Parquet(Box::default()),
             "csv" => ExternalFileFormat::Csv(csv_options(options)?),
             "json" => ExternalFileFormat::Json(json_options(options, false)?),
             "ndjson" => ExternalFileFormat::Json(json_options(options, true)?),
@@ -406,9 +408,10 @@ fn json_options(
     } else {
         true
     };
-    let mut options = JsonOptions::default();
-    options.newline_delimited = newline_delimited;
-    Ok(options)
+    Ok(JsonOptions {
+        newline_delimited,
+        ..Default::default()
+    })
 }
 
 fn infer_format(path: &str) -> Option<String> {

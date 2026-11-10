@@ -5970,8 +5970,11 @@ fn test_external_file_scan_runs_distributed() {
         let factory = distributed_factory_with(client, worker_urls, 4, false)?;
         let context = factory.create_session(&LakeSoulSessionOptions::default())?;
 
-        let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
-        let prefix = format!("external-file-test-{suffix}");
+        // A process-local counter restarts at zero on every test binary run,
+        // while CI runs the same suite against one RustFS bucket several
+        // times. Use a UUID so an earlier run's appended file cannot leak
+        // into this run's initial read.
+        let prefix = format!("external-file-test-{}", uuid::Uuid::new_v4().simple());
         let store = object_store::aws::AmazonS3Builder::new()
             .with_bucket_name(&bucket)
             .with_endpoint(&endpoint)
