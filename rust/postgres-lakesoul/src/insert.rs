@@ -67,6 +67,7 @@ use datafusion_postgres::pgwire::messages::response::TransactionStatus;
 
 use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
 use lakesoul_datafusion::federation::FederationTableProvider;
+use lakesoul_datafusion::federation::external_file::ExternalFileTableProvider;
 use lakesoul_datafusion::pg_assignment::{check_literal, ensure_assignment, literal};
 use lakesoul_datafusion::write_mode::{
     ConflictMode, LakeSoulWriteMode, WriteConflict, WriteViolation,
@@ -171,6 +172,7 @@ struct Target {
 enum TargetKind {
     LakeSoul(ConflictMode),
     Foreign,
+    ExternalFile,
 }
 
 /// Connection state a hook may hold across an `await`.
@@ -239,6 +241,22 @@ async fn prepare(
             checked_statement(insert, &provider.schema(), session_context, false).await?;
         return Ok(Target {
             kind: TargetKind::Foreign,
+            statement,
+        });
+    }
+
+    if let Some(provider) = provider_any.downcast_ref::<ExternalFileTableProvider>() {
+        if insert.on.is_some() {
+            return Err(feature_not_supported(
+                "INSERT ... ON CONFLICT is not supported on an external file table; \
+                 append-only inserts have no key conflict handling"
+                    .to_string(),
+            ));
+        }
+        let statement =
+            checked_statement(insert, &provider.schema(), session_context, false).await?;
+        return Ok(Target {
+            kind: TargetKind::ExternalFile,
             statement,
         });
     }

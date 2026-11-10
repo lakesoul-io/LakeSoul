@@ -5386,6 +5386,7 @@ dependencies = [
  "serde",
  "serde-aux",
  "serde_json",
+ "tempfile",
  "test-log",
  "tokio",
  "tokio-stream",

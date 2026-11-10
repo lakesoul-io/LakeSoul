@@ -57,7 +57,9 @@ use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::Result as DFResult;
 use datafusion::common::{exec_err, internal_err};
-use datafusion::datasource::physical_plan::{FileSource, ParquetSource};
+use datafusion::datasource::physical_plan::{
+    CsvSource, FileSource, JsonSource, ParquetSource,
+};
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{LexRequirement, PhysicalSortRequirement};
@@ -79,6 +81,7 @@ use rootcause::compat::boxed_error::IntoBoxedError;
 use vortex_datafusion::{VortexScanCodec, VortexSource};
 
 use crate::datasource::file_format::{InsertOnly, LakeSoulCommitExec, LakeSoulWriteExec};
+use crate::federation::external_file::{ExternalFileScanCodec, ExternalFileWriteCodec};
 use crate::write_mode::ConflictMode;
 
 /// Wire-format version of the LakeSoul extension payloads
@@ -97,13 +100,15 @@ use crate::write_mode::ConflictMode;
 /// position 4 with the write stage (`FederationWriteExec`) after
 /// [`VortexScanCodec`], [`LakeSoulScanCodec`] and [`LakeSoulWriteCodec`].
 /// Generation 5 appends the IVM refresh codec at position 5 when the `ivm`
-/// feature is enabled. Split them the moment one ships alone. The
-/// merge-on-read payload that `/1` implied lost its codec, which is the same
-/// kind of list change.
+/// feature is enabled. Generation 6 appends [`ExternalFileScanCodec`], which
+/// carries an external-file store configuration and a nested scan plan.
+/// Generation 7 appends [`ExternalFileWriteCodec`] for append-only writes.
+/// Split them the moment one ships alone. The merge-on-read payload that `/1`
+/// implied lost its codec, which is the same kind of list change.
 #[cfg(feature = "ivm")]
-pub const CODEC_VERSION: u32 = 5;
+pub const CODEC_VERSION: u32 = 7;
 #[cfg(not(feature = "ivm"))]
-pub const CODEC_VERSION: u32 = 4;
+pub const CODEC_VERSION: u32 = 6;
 
 /// Wire format for the metadata-only [`LakeSoulScanExec`].
 ///
@@ -378,9 +383,10 @@ const MAX_WRITE_ID_LEN: usize = 64;
 /// one function so the positions an extension payload refers to cannot drift:
 /// position 0 is always the distributed codec itself, position 1 the vortex
 /// scan codec, position 2 [`LakeSoulScanCodec`] (metadata-only lazy scans) and
-/// position 3 [`LakeSoulWriteCodec`] (distributed write stages) and position 4
-/// [`crate::federation::FederationPlanCodec`] (ADBC foreign scans and writes).
-/// A worker that
+/// position 3 [`LakeSoulWriteCodec`] (distributed write stages), position 4
+/// [`crate::federation::FederationPlanCodec`] (ADBC foreign scans and writes),
+/// position 5 the IVM refresh codec when the `ivm` feature is enabled, then
+/// [`ExternalFileScanCodec`] and [`ExternalFileWriteCodec`]. A worker that
 /// registers a different list either fails to decode a stage or would hand a
 /// payload to the wrong codec, so the list is part of the wire generation
 /// ([`CODEC_VERSION`]).
@@ -398,6 +404,8 @@ pub fn user_codecs() -> Vec<Arc<dyn PhysicalExtensionCodec>> {
     ];
     #[cfg(feature = "ivm")]
     codecs.push(Arc::new(lakesoul_ivm::distributed::IvmRefreshCodec));
+    codecs.push(Arc::new(ExternalFileScanCodec));
+    codecs.push(Arc::new(ExternalFileWriteCodec));
     codecs
 }
 
@@ -416,16 +424,20 @@ pub fn composed_codec() -> ComposedPhysicalExtensionCodec {
 /// Whether a worker can decode a stage whose scan leaf reads through `source`.
 ///
 /// Two ways a file source gets a wire form: `datafusion-proto` serializes it
-/// itself when it implements `try_to_proto` (parquet, and the csv/json sources
-/// LakeSoul does not build), or an extension codec in [`user_codecs`] carries
-/// it — currently [`VortexScanCodec`] for [`VortexSource`]. Anything else is
+/// itself when it implements `try_to_proto` (parquet, csv and json), or an
+/// extension codec in [`user_codecs`] carries it — currently
+/// [`VortexScanCodec`] for [`VortexSource`] and [`ExternalFileScanCodec`] for
+/// external-file scans. Anything else is
 /// refused while planning, where the caller's fallback policy can still act on
 /// it, instead of failing when the stage is sent to a worker.
 ///
 /// Keep this in sync with [`user_codecs`]: a source is only encodable here
 /// because a codec in that list encodes it.
 pub fn source_has_wire_form(source: &dyn FileSource) -> bool {
-    source.is::<ParquetSource>() || source.is::<VortexSource>()
+    source.is::<ParquetSource>()
+        || source.is::<CsvSource>()
+        || source.is::<JsonSource>()
+        || source.is::<VortexSource>()
 }
 
 /// Whether a worker can decode and read a metadata-only [`LakeSoulScanExec`].

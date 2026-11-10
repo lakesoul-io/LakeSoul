@@ -2,14 +2,17 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Distributed execution of ADBC foreign-table scans.
+//! Distributed execution of ADBC and external-file foreign-table scans.
 //!
-//! A foreign scan is intentionally one partition. A plan whose stages are all
+//! An ADBC foreign scan is intentionally one partition; an external-file scan is
+//! a self-contained distributed leaf carrying its object-store configuration. A plan whose stages are all
 //! single-task runs on the coordinator; when the scan borders a multi-task
 //! stage (a join or aggregation over a distributed LakeSoul scan), its stage is
 //! assigned to one worker while the rest of the plan stays distributed. The
 //! coordinator and workers resolve a server key to a cached ADBC pool; the plan
 //! payload carries only that key, SQL and schema, never credentials.
+
+pub mod external_file;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -1382,7 +1385,7 @@ pub async fn load_pools_from_metadata(meta: &MetaDataClientRef) -> crate::Result
     let client = pool.lock().await.clone();
     let servers = client
         .query(
-            "select server_name, driver, options from federation.servers",
+            "select server_name, backend, driver, options from federation.servers",
             QueryType::RW,
             &[],
         )
@@ -1399,8 +1402,14 @@ pub async fn load_pools_from_metadata(meta: &MetaDataClientRef) -> crate::Result
     let mut definitions = BTreeMap::new();
     for row in servers {
         let name: String = row.get(0);
-        let driver: String = row.get(1);
-        let options: String = row.get(2);
+        let backend: String = row.get(1);
+        let driver: String = row.get(2);
+        let options: String = row.get(3);
+        if !backend.eq_ignore_ascii_case("adbc") {
+            // External-file servers carry their store configuration in each
+            // scan plan; they do not have an ADBC pool to load.
+            continue;
+        }
         let options: BTreeMap<String, String> =
             serde_json::from_str(&options).map_err(|error| {
                 rootcause::report!(

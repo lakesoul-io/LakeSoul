@@ -519,7 +519,7 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::physical_plan::{
-        FileGroup, FileScanConfigBuilder, FileSource,
+        FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
     };
     use datafusion::datasource::table_schema::TableSchema;
     use datafusion::execution::object_store::ObjectStoreUrl;
@@ -539,6 +539,9 @@ mod tests {
     };
 
     use super::*;
+    use crate::federation::external_file::{
+        ExternalFileScanExec, ExternalFileStoreConfig,
+    };
 
     /// Stands in for a distributed planner that cannot plan the query at all —
     /// the failure `fallback_to_local` covers.
@@ -919,6 +922,49 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("wire-encodable scan leaf"), "{message}");
         assert!(message.contains("a.foreign"), "{message}");
+    }
+
+    /// An external-file scan is a self-contained distributed leaf (its
+    /// credential-carrying payload carries a nested Parquet scan). The gate
+    /// must allow it even though it does not expose the inner `DataSourceExec`
+    /// as a child.
+    fn external_file_leaf(file: &str) -> Arc<dyn ExecutionPlan> {
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+        let source = ParquetSource::new(TableSchema::new(schema, Vec::new()));
+        let config = FileScanConfigBuilder::new(
+            ObjectStoreUrl::parse("s3://bucket").expect("object store url"),
+            Arc::new(source),
+        )
+        .with_file_groups(vec![FileGroup::new(vec![PartitionedFile::new(
+            file.to_string(),
+            1024,
+        )])])
+        .build();
+        let inner = DataSourceExec::from_data_source(config);
+        Arc::new(
+            ExternalFileScanExec::try_new(
+                inner,
+                ObjectStoreUrl::parse("s3://bucket").expect("object store url"),
+                ExternalFileStoreConfig {
+                    endpoint: Some("http://127.0.0.1:9000".to_string()),
+                    access_key_id: Some("access".to_string()),
+                    secret_access_key: Some("secret".to_string()),
+                    session_token: None,
+                    region: Some("us-east-1".to_string()),
+                    virtual_host_style: false,
+                    allow_http: true,
+                },
+                "external".to_string(),
+                file.to_string(),
+            )
+            .expect("external file scan"),
+        )
+    }
+
+    #[test]
+    fn external_file_wrapper_is_shippable() {
+        let leaf = external_file_leaf("s3://bucket/t/a.parquet");
+        assert!(unshippable_node(&leaf).is_none());
     }
 
     /// Development: the same stage is planned with the plain LakeSoul planner,

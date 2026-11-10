@@ -14,6 +14,9 @@ use std::sync::Arc;
 
 use datafusion::catalog::TableProvider;
 use datafusion::common::TableReference;
+use lakesoul_datafusion::federation::external_file::{
+    ExternalFileStoreConfig, ExternalFileTableProvider,
+};
 use lakesoul_datafusion::federation::{
     FederationPool, clear_pools, open_pool, register_pool, table_provider,
 };
@@ -23,7 +26,8 @@ use rootcause::bail;
 
 use crate::Result;
 use metadata::{
-    FederationData, FederationMetadata, ServerDefinition, UserMappingDefinition,
+    FederationData, FederationMetadata, ServerBackend, ServerDefinition,
+    UserMappingDefinition,
 };
 
 #[derive(Default)]
@@ -80,6 +84,15 @@ impl FederationRuntime {
         &self.metadata
     }
 
+    pub fn server_backend(&self, name: &str) -> Option<ServerBackend> {
+        self.state
+            .read()
+            .data
+            .servers
+            .get(name)
+            .map(|server| server.backend)
+    }
+
     pub fn foreign_names(&self, database: &str) -> Vec<String> {
         self.state
             .read()
@@ -126,6 +139,29 @@ impl FederationRuntime {
                 };
             (table, server, mapping, mapping_user)
         };
+        if server.backend == ServerBackend::ExternalFile {
+            let store_config = ExternalFileStoreConfig::from_options(&server.options)
+                .map_err(|error| {
+                    rootcause::report!(
+                        "configure external file server {}: {error}",
+                        server.name
+                    )
+                })?;
+            let provider = ExternalFileTableProvider::try_new(
+                table.local_name.clone(),
+                &table.options,
+                Arc::clone(&table.schema),
+                store_config,
+            )
+            .map_err(|error| {
+                rootcause::report!(
+                    "configure external file table {}.{}: {error}",
+                    table.local_schema,
+                    table.local_name
+                )
+            })?;
+            return Ok(Some(Arc::new(provider)));
+        }
         let dialect = server.dialect;
         let pool = Self::pool_for(
             &mut self.state.write().pools,
