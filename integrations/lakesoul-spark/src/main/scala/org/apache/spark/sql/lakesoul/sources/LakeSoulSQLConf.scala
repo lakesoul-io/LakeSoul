@@ -178,6 +178,33 @@ object LakeSoulSQLConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMPACTION_LOWLEVEL_ROLLING_ENABLED =
+    buildConf("compaction.lowlevel.rolling.enabled")
+      .doc(
+        "Enable ordered lowlevel (L0-L1) rolling for eligible tables. " +
+          "Each compaction also checks existing L1 small files; disabled uses legacy L0 " +
+          "batching and L1 merging."
+      )
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMPACTION_LOWLEVEL_ROLLING_TABLES =
+    buildConf("compaction.lowlevel.rolling.tables")
+      .doc(
+        "Comma-separated exact namespace.table names eligible for lowlevel (L0-L1) rolling compaction. " +
+          "Empty allows all tables; rolling.enabled must also be true."
+      )
+      .stringConf
+      .createWithDefault("")
+
+  val COMPACTION_L1_TARGET_FILE_SIZE =
+    buildConf("compaction.l1.target.file.size")
+      .doc(
+        "Target input size for sequential L1 merges. Actual output size depends on compression and updates."
+      )
+      .stringConf
+      .createWithDefault("256MB")
+
   val COMPACTION_MAX_BYTES_FOR_LEVEL_BASE: ConfigEntry[String] =
     buildConf("compaction.max.bytes.for.level.base")
       .doc("""
@@ -213,10 +240,10 @@ object LakeSoulSQLConf {
   val COMPACTION_MAX_LEVEL0_FILE_NUM_LIMIT: ConfigEntry[Int] =
     buildConf("compaction.level0.file.number.limit")
       .doc("""
-          |COMPACTION LEVEL0 SINGLE TASK FILE NUMBER. Default is 10.
+          |COMPACTION LEVEL0 SINGLE TASK FILE NUMBER. Default is 4 (merge when more than three files).
         """.stripMargin)
       .intConf
-      .createWithDefault(10)
+      .createWithDefault(4)
 
   val COMPACTION_IGNORE_NOT_EXIST_FILE: ConfigEntry[Boolean] =
     buildConf("compaction.ignore.not.exist.file")
