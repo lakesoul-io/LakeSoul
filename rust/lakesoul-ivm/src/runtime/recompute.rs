@@ -5197,11 +5197,23 @@ impl IvmRuntime {
             context.register_table("src", src.into_view())?;
             view.parts()?
         };
-        // The row-state refresh already knows the affected groups.  When the
-        // MV is keyed by exactly those groups and there is no lookup column,
-        // probe only those rows instead of scanning the whole MV for the
-        // delete/insert sides.
-        if parts.lookup.is_none() && view.mv.primary_keys == view.group_keys {
+        // The row-state refresh already knows the affected groups.  Probe the
+        // MV by those group keys instead of scanning the whole MV for the
+        // delete/insert sides; a bucket layout on the group keys narrows the
+        // read further.  A lookup (HAVING subquery) can affect groups with no
+        // source delta, so it keeps the full scan.
+        let null_key = view
+            .group_keys
+            .iter()
+            .map(|key| col(key.as_str()).is_null())
+            .reduce(|left, right| left.or(right));
+        let keyed_mv = match (parts.lookup.is_none(), null_key) {
+            (true, Some(null_key)) => {
+                count_frame_rows(affected.clone().filter(null_key)?).await? == 0
+            }
+            _ => false,
+        };
+        if keyed_mv {
             let mv_rows = self
                 .lookup_source_by_join_keys(
                     &context,
