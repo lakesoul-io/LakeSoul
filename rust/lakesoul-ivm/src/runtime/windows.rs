@@ -2262,116 +2262,28 @@ impl IvmRuntime {
     /// affected partitions instead of scanning the MV.  It is created lazily
     /// and registered as the view's `State` table; the view spec itself stays
     /// unchanged for backward compatibility.
-    /// Whether a mirror index is missing a partition that the MV has.
-    ///
-    /// A seeded mirror can legitimately have a lower absolute partition
-    /// version than a long-lived MV, so comparing version numbers would
-    /// rewrite it on every refresh.  Missing partitions are unambiguous;
-    /// row-level staleness is handled by the epoch checkpoint/recovery path.
-    async fn mirror_state_missing_partitions(
-        &self,
-        state: &IvmTable,
-        mv: &IvmTable,
-    ) -> Result<bool> {
-        if mv.current_files(&self.client).await?.is_empty() {
-            return Ok(false);
-        }
-        if state.current_files(&self.client).await?.is_empty() {
-            return Ok(true);
-        }
-        let state_versions = output_partition_versions(&self.client, state).await?;
-        let mv_versions = output_partition_versions(&self.client, mv).await?;
-        let state_partitions = state_versions
-            .into_iter()
-            .map(|version| version.partition_desc)
-            .collect::<std::collections::HashSet<_>>();
-        Ok(mv_versions
-            .iter()
-            .any(|version| !state_partitions.contains(&version.partition_desc)))
-    }
-
     async fn ensure_window_state(&self, view: &WindowView) -> Result<IvmTable> {
-        let states = self.metadata.list_states(&view.view_id).await?;
-        if let Some(existing) = states.iter().find(|state| state.role == StateRole::State)
+        // The target MV is the authoritative row set: a refresh owns the
+        // partitions it writes and the target is not mutated by other
+        // writers.  Keeping a second full MV copy only doubled the refresh
+        // write; the narrow `RankState` remains the source for re-ranking.
+        // Retire a mirror created by an older revision.
+        if let Some(existing) = self
+            .metadata()
+            .get_state(&view.view_id, StateRole::State)
+            .await?
         {
-            let state = self.open_table_by_id(&existing.table_id).await?;
-            let reset = self
-                .mirror_state_missing_partitions(&state, &view.mv)
+            self.metadata()
+                .unregister_state(&view.view_id, StateRole::State)
                 .await?;
-            if reset {
-                self.sync_window_state(view, &state, true).await?;
+            if existing.table_id != view.mv.table_id {
+                let _ = self
+                    .client()
+                    .drop_table(&existing.table_name, &existing.namespace)
+                    .await;
             }
-            return Ok(state);
         }
-        let keys = distinct_keys(
-            view.partition_keys
-                .iter()
-                .chain(view.source.primary_keys.iter()),
-        );
-        let name = format!("{}__ivm_window_state", view.mv.table_name);
-        // A derived step can be recreated under a new table id while its
-        // fixed-name window state still exists.  Reuse it when it can answer
-        // the new reads; otherwise drop the stale state before recreating.
-        if let Ok(existing) = self.open_table(&name, &view.mv.namespace).await {
-            if existing.schema == view.mv.schema
-                && existing.primary_keys == keys
-                && existing.range_partition_columns == view.mv.range_partition_columns
-            {
-                self.register_state_tables(
-                    &view.view_id,
-                    &[(StateRole::State, &existing)],
-                )
-                .await?;
-                let reset = self
-                    .mirror_state_missing_partitions(&existing, &view.mv)
-                    .await?;
-                if reset {
-                    self.sync_window_state(view, &existing, true).await?;
-                }
-                return Ok(existing);
-            }
-            let _ = self.metadata.delete_view(&existing.table_id).await;
-            let _ = self.client().drop_table(&name, &view.mv.namespace).await;
-        }
-        let mut options = IvmTableOptions::new(
-            name,
-            format!("{}__ivm_window_state", view.mv.table_path),
-            view.mv.schema.clone(),
-        )
-        .with_namespace(view.mv.namespace.clone())
-        .with_primary_keys(keys)
-        .with_bucket_columns(view.partition_keys.clone())
-        .with_range_partition_columns(view.mv.range_partition_columns.clone())
-        .with_file_format(crate::table::internal_file_format());
-        options.hash_bucket_num = view.mv.hash_bucket_num.clone();
-        let state = self.create_table(options).await?;
-        self.register_state_tables(&view.view_id, &[(StateRole::State, &state)])
-            .await?;
-        self.sync_window_state(view, &state, false).await?;
-        Ok(state)
-    }
-
-    /// Seed a newly created/empty window partition index from the current MV,
-    /// or replace a mirror that is behind the MV.
-    async fn sync_window_state(
-        &self,
-        view: &WindowView,
-        state: &IvmTable,
-        reset: bool,
-    ) -> Result<()> {
-        if view.mv.current_files(&self.client).await?.is_empty() {
-            return Ok(());
-        }
-        if reset {
-            state.truncate(&self.client).await?;
-        }
-        let context = refresh_session();
-        context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
-        let frame = context.sql("select * from mv").await?;
-        state
-            .append_stream(&self.client, frame.execute_stream().await?)
-            .await?;
-        Ok(())
+        Ok(view.mv.clone())
     }
 
     /// Refresh a `ROW_NUMBER()` view by recomputing its affected partitions.
@@ -2685,39 +2597,47 @@ impl IvmRuntime {
         };
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&window_refresh_sql(view, epoch)).await?;
-        // Execute the top-k SQL once and tee each batch into the MV and the
-        // top-k state writer.  Two independent append_stream calls executed
-        // the whole lookup/window plan twice, which dominated a 1M window.
-        use futures::StreamExt;
-        let mut output = frame.execute_stream().await?;
-        let mut mv_writer = view.mv.writer().await?;
-        let mut state_writer = state.writer().await?;
-        let mut written_rows = 0u64;
-        while let Some(batch) = output.next().await {
-            let batch = batch?;
-            if batch.num_rows() == 0 {
-                continue;
+        if state.table_id == view.mv.table_id {
+            // The target MV is also the state: one stream feeds it once.
+            commit_ids.extend(
+                view.mv
+                    .append_stream(&self.client, frame.execute_stream().await?)
+                    .await?,
+            );
+        } else {
+            // Execute the SQL once and tee each batch into the MV and its
+            // separate mirror state.
+            use futures::StreamExt;
+            let mut output = frame.execute_stream().await?;
+            let mut mv_writer = view.mv.writer().await?;
+            let mut state_writer = state.writer().await?;
+            let mut written_rows = 0u64;
+            while let Some(batch) = output.next().await {
+                let batch = batch?;
+                if batch.num_rows() == 0 {
+                    continue;
+                }
+                written_rows += batch.num_rows() as u64;
+                mv_writer
+                    .write_record_batch(view.mv.cast_batch(batch.clone())?)
+                    .await?;
+                state_writer
+                    .write_record_batch(state.cast_batch(batch)?)
+                    .await?;
             }
-            written_rows += batch.num_rows() as u64;
-            mv_writer
-                .write_record_batch(view.mv.cast_batch(batch.clone())?)
-                .await?;
-            state_writer
-                .write_record_batch(state.cast_batch(batch)?)
-                .await?;
+            let mv_files = view
+                .mv
+                .output_files(mv_writer.flush_and_close().await?, written_rows);
+            let state_files =
+                state.output_files(state_writer.flush_and_close().await?, written_rows);
+            // The mirror commits before the target so a persisted target plan
+            // covers the state write too.
+            let state_ids = state.commit_files(&self.client, state_files).await?;
+            let mv_ids = view.mv.commit_files(&self.client, mv_files).await?;
+            commit_ids.extend(mv_ids);
+            commit_ids.extend(state_ids);
         }
-        let mv_files = view
-            .mv
-            .output_files(mv_writer.flush_and_close().await?, written_rows);
-        let state_files =
-            state.output_files(state_writer.flush_and_close().await?, written_rows);
-        // The mirror commits before the target so a persisted target plan
-        // covers the state write too.
-        let state_ids = state.commit_files(&self.client, state_files).await?;
-        let mv_ids = view.mv.commit_files(&self.client, mv_files).await?;
         self.checkpoint_epoch_states(&record).await?;
-        commit_ids.extend(mv_ids);
-        commit_ids.extend(state_ids);
         phase_done!("sql_execute_and_append");
         let _ = phase.elapsed();
 
@@ -3292,8 +3212,11 @@ impl IvmRuntime {
                 &rank_columns,
             )
             .await?;
+        let shared_state = state.table_id == view.mv.table_id;
         view.mv.truncate(&self.client).await?;
-        state.truncate(&self.client).await?;
+        if !shared_state {
+            state.truncate(&self.client).await?;
+        }
 
         let baseline = self
             .source_baseline_for_filter(&view.source, view.filter.as_deref())
@@ -3329,14 +3252,22 @@ impl IvmRuntime {
             Arc::new(self.table_provider_groups(&view.source, baseline.groups.clone())),
         )?;
         let frame = context.sql(&window_rebuild_sql(view, epoch)).await?;
-        let (mv_ids, state_ids) = futures::future::try_join(
-            view.mv
-                .append_stream(&self.client, frame.clone().execute_stream().await?),
-            state.append_stream(&self.client, frame.execute_stream().await?),
-        )
-        .await?;
-        commit_ids.extend(mv_ids);
-        commit_ids.extend(state_ids);
+        if shared_state {
+            commit_ids.extend(
+                view.mv
+                    .append_stream(&self.client, frame.execute_stream().await?)
+                    .await?,
+            );
+        } else {
+            let (mv_ids, state_ids) = futures::future::try_join(
+                view.mv
+                    .append_stream(&self.client, frame.clone().execute_stream().await?),
+                state.append_stream(&self.client, frame.execute_stream().await?),
+            )
+            .await?;
+            commit_ids.extend(mv_ids);
+            commit_ids.extend(state_ids);
+        }
         self.checkpoint_epoch_states(&record).await?;
         if let Some(rank) = &rank_state {
             rank.truncate(&self.client).await?;
@@ -3361,74 +3292,27 @@ impl IvmRuntime {
     /// the state, avoiding a second write and a second copy.  Only share when
     /// the MV is keyed by the group itself, which is how a top-1 view created
     /// by the runtime is laid out.
-    fn top_k_shared_state(view: &TopKView) -> bool {
-        view.offset == 0
-            && view.limit == 1
-            && !view.group_keys.is_empty()
-            && view.mv.primary_keys == view.group_keys
-    }
-
     async fn ensure_top_k_state(&self, view: &TopKView) -> Result<IvmTable> {
-        if Self::top_k_shared_state(view) {
-            return Ok(view.mv.clone());
-        }
-        let states = self.metadata.list_states(&view.view_id).await?;
-        if let Some(existing) = states.iter().find(|state| state.role == StateRole::State)
+        // The target MV is the authoritative top-k row set; the refresh owns
+        // its partitions and no separate full copy is needed.  `RankState`
+        // keeps the narrow source columns used to re-rank a group.  Retire a
+        // mirror created by an older revision.
+        if let Some(existing) = self
+            .metadata()
+            .get_state(&view.view_id, StateRole::State)
+            .await?
         {
-            let state = self.open_table_by_id(&existing.table_id).await?;
-            let reset = self
-                .mirror_state_missing_partitions(&state, &view.mv)
+            self.metadata()
+                .unregister_state(&view.view_id, StateRole::State)
                 .await?;
-            if reset {
-                self.sync_top_k_state(view, &state, true).await?;
+            if existing.table_id != view.mv.table_id {
+                let _ = self
+                    .client()
+                    .drop_table(&existing.table_name, &existing.namespace)
+                    .await;
             }
-            return Ok(state);
         }
-        let keys = distinct_keys(
-            view.group_keys
-                .iter()
-                .chain(view.source.primary_keys.iter()),
-        );
-        let mut options = IvmTableOptions::new(
-            format!("{}__ivm_topk_state", view.mv.table_name),
-            format!("{}__ivm_topk_state", view.mv.table_path),
-            view.mv.schema.clone(),
-        )
-        .with_namespace(view.mv.namespace.clone())
-        .with_primary_keys(keys)
-        .with_bucket_columns(view.group_keys.clone())
-        .with_range_partition_columns(view.mv.range_partition_columns.clone())
-        .with_file_format(crate::table::keyed_state_file_format());
-        options.hash_bucket_num = view.mv.hash_bucket_num.clone();
-        let state = self.create_table(options).await?;
-        self.register_state_tables(&view.view_id, &[(StateRole::State, &state)])
-            .await?;
-        self.sync_top_k_state(view, &state, false).await?;
-        Ok(state)
-    }
-
-    async fn sync_top_k_state(
-        &self,
-        view: &TopKView,
-        state: &IvmTable,
-        reset: bool,
-    ) -> Result<()> {
-        if state.table_id == view.mv.table_id {
-            return Ok(());
-        }
-        if view.mv.current_files(&self.client).await?.is_empty() {
-            return Ok(());
-        }
-        if reset {
-            state.truncate(&self.client).await?;
-        }
-        let context = refresh_session();
-        context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
-        let frame = context.sql("select * from mv").await?;
-        state
-            .append_stream(&self.client, frame.execute_stream().await?)
-            .await?;
-        Ok(())
+        Ok(view.mv.clone())
     }
 
     /// Whether a rank-state version change is only the external compaction.
@@ -4048,23 +3932,23 @@ impl IvmRuntime {
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&top_k_refresh_sql(view, epoch)).await?;
         phase_done!("sql_plan");
-        let (mv_ids, state_ids) = if view.group_keys.is_empty() {
-            // A global top-k can rewrite the whole state; keep the streaming
-            // path instead of collecting the full result in memory.  Execute
-            // the plan once and tee the batches into both writers.
-            let (mv_ids, state_ids) = view
-                .mv
-                .append_stream_pair(&self.client, frame.execute_stream().await?, &state)
-                .await?;
-            self.checkpoint_epoch_states(&record).await?;
-            (mv_ids, state_ids)
-        } else if state.table_id == view.mv.table_id {
+        let (mv_ids, state_ids) = if state.table_id == view.mv.table_id {
+            // The target MV is also the state: one stream feeds it once.
             let mv_ids = view
                 .mv
                 .append_stream(&self.client, frame.execute_stream().await?)
                 .await?;
             self.checkpoint_epoch_states(&record).await?;
             (mv_ids, Vec::new())
+        } else if view.group_keys.is_empty() {
+            // A global top-k with a separate mirror state can rewrite the
+            // whole state; keep the streaming path and tee the batches.
+            let (mv_ids, state_ids) = view
+                .mv
+                .append_stream_pair(&self.client, frame.execute_stream().await?, &state)
+                .await?;
+            self.checkpoint_epoch_states(&record).await?;
+            (mv_ids, state_ids)
         } else {
             // Execute the refresh SQL once and feed both the MV and its mirror
             // state from the same stream.  Two independent streams re-ran

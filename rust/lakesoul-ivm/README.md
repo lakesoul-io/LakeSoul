@@ -570,6 +570,25 @@ after merge-on-read, so it can never resurrect an older version of a key).
   note that a Tier-1 view must not read a fallback view: the fallback rewrites
   its MV, so a downstream incremental refresh cannot see what it removed.
 
+Every refresh attempt also records `last_refresh_at`, `last_check_at`,
+`last_action`, `last_duration_ms`, `last_source_lag_ms`, `last_rows_read`,
+`last_rows_written`, `last_error_at` and `consecutive_failures` on
+`ivm.views`; `IvmMetadata::list_views` exposes them through `ViewInfo`, and
+`IvmRuntime::view_source_lag` computes the current per-partition source gap on
+demand.
+
+## Cleanup
+
+The target table is a normal LakeSoul table and is never dropped by the IVM
+runtime.  `IvmRuntime::drop_views_for_target(namespace, table_name, options)`
+looks up every view that materializes into that target, removes its view
+definition, cursors, epochs, consumer watermarks and internal state (including
+derived steps), and leaves the target's data and schema in place.  The call
+takes the per-view lease and refuses to drop a view other IVM views still read
+unless `cascade` is set.  This is the way to stop maintaining a target without
+deleting it; dropping the target table itself does not implicitly remove the
+IVM metadata.
+
 ## Observability
 
 The runtime and the SQL entry emit [`metrics`](https://docs.rs/metrics)
@@ -594,6 +613,8 @@ metadata records the fallback mode and its reason.
 | `lakesoul_ivm_refresh_rows_scanned` | `kind` | rows read by one refresh |
 | `lakesoul_ivm_mv_rows_written` | `kind` | materialized-view rows written by one refresh |
 | `lakesoul_ivm_mv_bytes_written` | `kind` | materialized-view bytes written by one refresh |
+| `lakesoul_ivm_view_source_lag_seconds` | `kind` | largest source commit-time gap at the last view check |
+| `lakesoul_ivm_view_last_refresh_failed` | `kind` | whether the last view refresh attempt failed |
 
 The `kind` label is the view kind (`sum_count`, `min_max`, `window`, `join`,
 `union_distinct`, ...); view and table ids are never used as labels.  A

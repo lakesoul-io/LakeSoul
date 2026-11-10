@@ -92,7 +92,10 @@ rebuild.
   back to a full recompute.
 - The statement must run in autocommit. Explicit transactions and multi-statement
   batches are refused.
-- Incremental SQL and distributed execution are mutually exclusive in v1.
+- Distributed execution is supported when every worker is built with the IVM
+  feature and the same protocol generation. The coordinator still owns source
+  windows, epochs and file commits; workers perform the scan/lookup/write
+  stages.
 
 ## Next
 

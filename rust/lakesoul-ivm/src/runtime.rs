@@ -50,6 +50,7 @@ use crate::table::{
 
 mod aggregates;
 mod chain;
+mod cleanup;
 mod fallback;
 pub(crate) mod join_state;
 mod joins;
@@ -66,6 +67,7 @@ mod windows;
 
 pub use self::aggregates::*;
 pub use self::chain::*;
+pub use self::cleanup::{DropViewOptions, DropViewReport};
 pub use self::fallback::*;
 pub use self::joins::*;
 pub use self::lookup_chain::*;
@@ -3312,6 +3314,13 @@ impl IvmRuntime {
                 continue;
             }
             let table = self.open_table_by_id(&state.table_id).await?;
+            if state.role == StateRole::RankState {
+                // The rank state is re-seeded from the source before the
+                // window/top-k refresh opens the epoch; it is not a mirror of
+                // the output and cannot be rebuilt from it.
+                repaired_tables.push(state.table_id);
+                continue;
+            }
             let mirror = state.role == StateRole::JoinPairIndex
                 || (state.role == StateRole::State
                     && table.schema.as_ref() == output.schema.as_ref());
@@ -3320,6 +3329,13 @@ impl IvmRuntime {
             }
             let context = refresh_session();
             let frame = self.current_table_frame(&context, output)?;
+            let fields = table
+                .schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect::<Vec<_>>();
+            let frame = project_frame(frame, &fields)?;
             table.truncate(&self.client).await?;
             commit_ids.extend(
                 append_dataframe(&table, &self.client, frame)
@@ -5040,6 +5056,92 @@ impl IvmRuntime {
         Ok(())
     }
 
+    /// The current source lag of a view.
+    ///
+    /// For every source partition this is the gap between the latest committed
+    /// partition timestamp and the cursor the view has consumed.  A partition
+    /// without a cursor is counted from its latest commit as well.  The result
+    /// is the largest gap across all sources and partitions; a world without
+    /// source data reports zero.
+    pub async fn view_source_lag(&self, view_id: &str) -> Result<Option<i64>> {
+        let Some(value) = self.metadata.get_view_spec(view_id).await? else {
+            return Ok(None);
+        };
+        let spec: ViewSpec = serde_json::from_value(value)?;
+        self.source_lag_for_spec(&spec).await
+    }
+
+    async fn source_lag_for_spec(&self, spec: &ViewSpec) -> Result<Option<i64>> {
+        let cursors = self.metadata.list_cursors(spec.view_id()).await?;
+        let now = crate::now_ms();
+        let mut saw_partition = false;
+        let mut lag = 0i64;
+        for source_id in spec.source_table_ids() {
+            let partitions = match self.client.get_all_partition_info(source_id).await {
+                Ok(partitions) => partitions,
+                Err(_) => continue,
+            };
+            for partition in partitions {
+                if partition.timestamp <= 0 {
+                    continue;
+                }
+                saw_partition = true;
+                let consumed = cursors.iter().find(|cursor| {
+                    cursor.source_table_id == source_id
+                        && cursor.partition_desc == partition.partition_desc
+                });
+                let gap = match consumed {
+                    Some(cursor) => partition
+                        .timestamp
+                        .saturating_sub(cursor.last_timestamp)
+                        .max(0),
+                    // A new partition has no cursor yet: its freshness is the
+                    // age of the commit that created/last changed it.
+                    None => now.saturating_sub(partition.timestamp).max(0),
+                };
+                lag = lag.max(gap);
+            }
+        }
+        Ok(saw_partition.then_some(lag))
+    }
+
+    /// Record the freshness fields of one attempt.  Storage failures are
+    /// logged, not propagated: observability must not fail a refresh.
+    async fn record_freshness(
+        &self,
+        spec: &ViewSpec,
+        action: &str,
+        started: std::time::Instant,
+        io: &crate::observability::RefreshIo,
+        success: bool,
+    ) {
+        let lag = if success {
+            self.source_lag_for_spec(spec).await.ok().flatten()
+        } else {
+            None
+        };
+        if let Err(error) = self
+            .metadata
+            .record_view_refresh(
+                spec.view_id(),
+                action,
+                started.elapsed().as_millis() as u64,
+                lag,
+                io.rows_scanned(),
+                io.rows_written(),
+                success,
+            )
+            .await
+        {
+            tracing::warn!(
+                view_id = %spec.view_id(),
+                %error,
+                "could not record view freshness"
+            );
+        }
+        crate::observability::record_view_health(spec.kind(), lag, success);
+    }
+
     /// Refresh a view from its persisted [`ViewSpec`], opening every table by
     pub async fn refresh_spec(&self, spec: &ViewSpec) -> Result<Option<i64>> {
         self.ensure_incremental_upstreams(spec).await?;
@@ -5182,6 +5284,14 @@ impl IvmRuntime {
             write_calls = io.write_calls(),
             "view refresh finished"
         );
+        let action = match &result {
+            Ok(Some(_)) if kind == "fallback" => "fallback",
+            Ok(Some(_)) => "incremental",
+            Ok(None) => "noop",
+            Err(_) => "error",
+        };
+        self.record_freshness(spec, action, started, &io, result.is_ok())
+            .await;
         result
     }
 
@@ -5281,6 +5391,8 @@ impl IvmRuntime {
         if result.is_ok() {
             crate::observability::record_rebuild(kind, started.elapsed());
         }
+        self.record_freshness(spec, "rebuild", started, &io, result.is_ok())
+            .await;
         result
     }
 

@@ -57,7 +57,16 @@ do $$ begin
         generation          bigint not null default 0,
         definition_hash     text,
         source_sql          text,
-        created_at          bigint not null
+        created_at          bigint not null,
+        last_refresh_at     bigint,
+        last_check_at       bigint,
+        last_action         text,
+        last_duration_ms    bigint not null default 0,
+        last_source_lag_ms  bigint,
+        last_rows_read      bigint not null default 0,
+        last_rows_written   bigint not null default 0,
+        last_error_at       bigint,
+        consecutive_failures bigint not null default 0
     );
 exception when duplicate_table or unique_violation then null;
 end $$;
@@ -84,6 +93,50 @@ end $$;
 
 do $$ begin
     alter table ivm.views add column if not exists last_error text;
+exception when duplicate_column or unique_violation then null;
+end $$;
+do $$ begin
+    alter table ivm.views add column if not exists last_refresh_at bigint;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists last_check_at bigint;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists last_action text;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists last_duration_ms bigint not null default 0;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists last_source_lag_ms bigint;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists last_rows_read bigint not null default 0;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists last_rows_written bigint not null default 0;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists last_error_at bigint;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists consecutive_failures bigint not null default 0;
 exception when duplicate_column or unique_violation then null;
 end $$;
 
@@ -457,6 +510,24 @@ pub struct ViewInfo {
     pub fallback: bool,
     /// Why the view fell back, when it did (for example the rejected shape).
     pub fallback_reason: Option<String>,
+    /// The last successful refresh/rebuild time (unix milliseconds).
+    pub last_refresh_at: Option<i64>,
+    /// The last source-window check time, including a no-op (unix ms).
+    pub last_check_at: Option<i64>,
+    /// The last refresh action (`incremental`, `noop`, `rebuild`, ...).
+    pub last_action: Option<String>,
+    /// Wall-clock duration of the last refresh attempt.
+    pub last_duration_ms: i64,
+    /// The largest source commit timestamp gap seen at the last check.
+    pub last_source_lag_ms: Option<i64>,
+    /// Rows read by the last refresh (from the refresh IO scope).
+    pub last_rows_read: i64,
+    /// Rows written by the last refresh (from the refresh IO scope).
+    pub last_rows_written: i64,
+    /// The last failed refresh time (unix milliseconds).
+    pub last_error_at: Option<i64>,
+    /// Consecutive failed refreshes since the last success.
+    pub consecutive_failures: i64,
 }
 
 /// The partition versions of one auxiliary state table at an epoch boundary.
@@ -1069,7 +1140,10 @@ impl IvmMetadata {
             .query(
                 "select view_id, status, refresh_interval_ms, last_epoch, last_error,
                         (spec->>'kind' = 'fallback') as fallback,
-                        spec->>'reason' as fallback_reason
+                        spec->>'reason' as fallback_reason,
+                        last_refresh_at, last_check_at, last_action,
+                        last_duration_ms, last_source_lag_ms, last_rows_read,
+                        last_rows_written, last_error_at, consecutive_failures
                  from ivm.views order by view_id",
                 QueryType::RO,
                 &[],
@@ -1085,6 +1159,15 @@ impl IvmMetadata {
                 last_error: row.get(4),
                 fallback: row.get(5),
                 fallback_reason: row.get(6),
+                last_refresh_at: row.get(7),
+                last_check_at: row.get(8),
+                last_action: row.get(9),
+                last_duration_ms: row.get(10),
+                last_source_lag_ms: row.get(11),
+                last_rows_read: row.get(12),
+                last_rows_written: row.get(13),
+                last_error_at: row.get(14),
+                consecutive_failures: row.get(15),
             })
             .collect())
     }
@@ -1582,6 +1665,53 @@ impl IvmMetadata {
             )
             .await?;
         Ok(deleted)
+    }
+
+    /// Record one refresh attempt for the freshness/observability surface.
+    ///
+    /// `success` is false for a failed attempt; `last_refresh_at` is then left
+    /// unchanged and the failure counter is advanced.  A no-op is a successful
+    /// check and advances both the check and refresh timestamps.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_view_refresh(
+        &self,
+        view_id: &str,
+        action: &str,
+        duration_ms: u64,
+        source_lag_ms: Option<i64>,
+        rows_read: u64,
+        rows_written: u64,
+        success: bool,
+    ) -> Result<()> {
+        let duration_ms = i64::try_from(duration_ms).unwrap_or(i64::MAX);
+        let rows_read = i64::try_from(rows_read).unwrap_or(i64::MAX);
+        let rows_written = i64::try_from(rows_written).unwrap_or(i64::MAX);
+        let now = crate::now_ms();
+        self.execute_rw(
+            "update ivm.views set
+                 last_check_at = $2::BIGINT,
+                 last_action = $3::TEXT,
+                 last_duration_ms = $4::BIGINT,
+                 last_source_lag_ms = coalesce($5::BIGINT, last_source_lag_ms),
+                 last_rows_read = $6::BIGINT,
+                 last_rows_written = $7::BIGINT,
+                 last_refresh_at = case when $8::BOOLEAN then $2::BIGINT else last_refresh_at end,
+                 last_error_at = case when $8::BOOLEAN then last_error_at else $2::BIGINT end,
+                 consecutive_failures = case when $8::BOOLEAN then 0 else consecutive_failures + 1 end
+             where view_id = $1::TEXT",
+            &[
+                &view_id,
+                &now,
+                &action,
+                &duration_ms,
+                &source_lag_ms,
+                &rows_read,
+                &rows_written,
+                &success,
+            ],
+        )
+        .await?;
+        Ok(())
     }
 
     /// Delete a view and its cursors.

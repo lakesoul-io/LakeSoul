@@ -4899,15 +4899,35 @@ impl IvmRuntime {
                 &left_columns,
             )
             .await?;
-        let right = self
-            .lookup_output_side(
+        let right = if let Some(index) = right_index {
+            // The right-key index is narrow: resolve the matching pair
+            // identities first, then read the full output rows by pair key.
+            let right_pairs = self
+                .lookup_output_side(
+                    context,
+                    index,
+                    affected_right,
+                    &view.right.primary_keys,
+                    &right_columns,
+                )
+                .await?;
+            let pair_keys = left_columns
+                .iter()
+                .chain(right_columns.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            self.lookup_output_side(context, table, &right_pairs, &pair_keys, &pair_keys)
+                .await?
+        } else {
+            self.lookup_output_side(
                 context,
-                right_index.unwrap_or(table),
+                table,
                 affected_right,
                 &view.right.primary_keys,
                 &right_columns,
             )
-            .await?;
+            .await?
+        };
         let pairs = left.union(right)?.distinct()?;
         filter_deletes(pairs, change_column(table))
     }
@@ -5139,8 +5159,16 @@ impl IvmRuntime {
         // every state table too.
         let mut commit_ids = Vec::new();
         if let Some(index) = pair_index {
-            let index_written =
-                append_dataframe(index, &self.client, frame.clone()).await?;
+            // The pair index is a narrow right-key -> pair-identity index;
+            // the output payload stays in the target/state table.
+            let fields = index
+                .schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect::<Vec<_>>();
+            let rows = project_frame(frame.clone(), &fields)?;
+            let index_written = append_dataframe(index, &self.client, rows).await?;
             commit_ids.extend(index_written.commit_ids);
         }
         if let Some(state) = state {
@@ -5247,13 +5275,20 @@ impl IvmRuntime {
             .iter()
             .map(|key| right_pk_alias(key))
             .collect::<Vec<_>>();
+        // The index only maps the right key to the pair identity.  The output
+        // payload is read from the MV after the index resolves the identities.
+        let mut schema_fields = bucket_columns.clone();
+        schema_fields.extend(view.left.primary_keys.iter().map(|key| left_pk_alias(key)));
+        schema_fields.push(IVM_ROW_KINDS_COLUMN.to_string());
+        schema_fields.push(IVM_EPOCH_COLUMN.to_string());
+        let schema = project_schema(&output.schema, &schema_fields)?;
         if let Some(existing) = self
             .metadata()
             .get_state(&view.view_id, StateRole::JoinPairIndex)
             .await?
         {
             let table = self.open_table_by_id(&existing.table_id).await?;
-            if table.schema == output.schema && table.primary_keys == primary_keys {
+            if table.schema == schema && table.primary_keys == primary_keys {
                 let output_files = output.current_files(&self.client).await?;
                 let index_files = table.current_files(&self.client).await?;
                 let mut stale = index_files.is_empty() && !output_files.is_empty();
@@ -5298,7 +5333,7 @@ impl IvmRuntime {
         let mut options = IvmTableOptions::new(
             format!("{}__ivm_right_index_{suffix}", output.table_name),
             format!("{}__ivm_right_index_{suffix}", output.table_path),
-            output.schema.clone(),
+            schema,
         )
         .with_namespace(output.namespace.clone())
         .with_primary_keys(primary_keys)
@@ -5326,6 +5361,13 @@ impl IvmRuntime {
     ) -> Result<Vec<String>> {
         let context = refresh_session();
         let frame = self.current_table_frame(&context, output)?;
+        let fields = index
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>();
+        let frame = project_frame(frame, &fields)?;
         index.truncate(&self.client).await?;
         Ok(append_dataframe(index, &self.client, frame)
             .await?

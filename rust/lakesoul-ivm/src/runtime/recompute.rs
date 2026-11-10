@@ -3340,9 +3340,68 @@ impl IvmRuntime {
             }
             _ => None,
         };
+        let key_exprs = parts
+            .group_keys
+            .iter()
+            .map(|key| col(key.as_str()))
+            .collect::<Vec<_>>();
+        let mut affected = delta
+            .clone()
+            .select(key_exprs.clone())?
+            .distinct()?
+            .union(old_frame.clone().select(key_exprs.clone())?.distinct()?)?
+            .distinct()?;
+        if let Some(lookup_delta) = &lookup_delta {
+            affected = affected.union(lookup_delta.clone())?.distinct()?;
+        }
+        let global_lookup_changed = lookup_changed
+            && parts
+                .lookup
+                .as_ref()
+                .is_some_and(|lookup| lookup.join_keys.is_empty());
+        let affected_has_null = if parts.group_keys.is_empty() || global_lookup_changed {
+            false
+        } else {
+            let null_key = parts
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()).is_null())
+                .reduce(|left, right| left.or(right))
+                .ok_or_else(|| report!("recompute view has no group keys"))?;
+            count_frame_rows(affected.clone().filter(null_key)?).await? > 0
+        };
         if let Some(lookup) = &parts.lookup {
-            context
-                .register_table("lookup", Arc::new(self.table_provider(lookup.table)))?;
+            let rows = if global_lookup_changed
+                || affected_has_null
+                || lookup.join_keys.is_empty()
+                || !lookup
+                    .join_keys
+                    .iter()
+                    .all(|key| parts.group_keys.contains(key))
+            {
+                self.current_table_frame(&context, lookup.table)?
+            } else {
+                let contribution = affected
+                    .clone()
+                    .select(
+                        lookup
+                            .join_keys
+                            .iter()
+                            .map(|key| col(key.as_str()))
+                            .collect::<Vec<_>>(),
+                    )?
+                    .distinct()?;
+                self.lookup_source_by_join_keys(
+                    &context,
+                    lookup.table,
+                    contribution,
+                    lookup.join_keys,
+                    lookup_right_keys(lookup),
+                    true,
+                )
+                .await?
+            };
+            context.register_table("lookup", rows.into_view())?;
             if let Some(frame) = lookup_delta {
                 context.register_table("lookup_delta", frame.into_view())?;
             }
@@ -3350,64 +3409,25 @@ impl IvmRuntime {
         if keyed {
             context.register_table("old", old_frame.clone().into_view())?;
         }
-        let src = if lookup_changed {
-            // A lookup change can affect groups that have no source delta;
-            // the full source is the only complete input for the HAVING
-            // re-evaluation.
-            self.current_table_frame(&context, parts.source)?
-        } else if let Some(index) = &index {
-            let key_exprs = parts
-                .group_keys
-                .iter()
-                .map(|key| col(key.as_str()))
-                .collect::<Vec<_>>();
-            let affected_keys = delta
-                .clone()
-                .select(key_exprs.clone())?
-                .distinct()?
-                .union(old_frame.clone().select(key_exprs)?.distinct()?)?
-                .distinct()?;
-            let null_key = parts
-                .group_keys
-                .iter()
-                .map(|key| col(key.as_str()).is_null())
-                .reduce(|left, right| left.or(right))
-                .ok_or_else(|| report!("recompute view has no group keys"))?;
-            if count_frame_rows(affected_keys.clone().filter(null_key)?).await? == 0 {
-                self.read_recomputed_index_groups(&context, parts, index, affected_keys)
-                    .await?
-            } else {
-                self.current_table_frame(&context, parts.source)?
-            }
-        } else if parts.group_exprs.is_empty()
-            && !parts.group_keys.is_empty()
-            && parts.source.primary_keys.starts_with(parts.group_keys)
+        let src = if !parts.group_keys.is_empty()
+            && !global_lookup_changed
+            && !affected_has_null
         {
-            // The group keys are a prefix of the source primary key: read only
-            // the affected groups from the keyed source instead of scanning
-            // the whole table.
-            let key_exprs = parts
-                .group_keys
-                .iter()
-                .map(|key| col(key.as_str()))
-                .collect::<Vec<_>>();
-            let affected_keys = delta
-                .clone()
-                .select(key_exprs.clone())?
-                .distinct()?
-                .union(old_frame.clone().select(key_exprs)?.distinct()?)?
-                .distinct()?;
-            let null_key = parts
-                .group_keys
-                .iter()
-                .map(|key| col(key.as_str()).is_null())
-                .reduce(|left, right| left.or(right))
-                .ok_or_else(|| report!("recompute view has no group keys"))?;
-            if count_frame_rows(affected_keys.clone().filter(null_key)?).await? == 0 {
+            if let Some(index) = &index {
+                self.read_recomputed_index_groups(
+                    &context,
+                    parts,
+                    index,
+                    affected.clone(),
+                )
+                .await?
+            } else if parts.group_exprs.is_empty()
+                && parts.source.primary_keys.starts_with(parts.group_keys)
+            {
                 self.lookup_source_by_join_keys(
                     &context,
                     parts.source,
-                    affected_keys,
+                    affected.clone(),
                     parts.group_keys,
                     parts.group_keys,
                     true,
@@ -3427,7 +3447,23 @@ impl IvmRuntime {
             parts.group_exprs,
         )?;
         context.register_table("src", src.into_view())?;
-        context.register_table("mv", Arc::new(self.table_provider(parts.mv)))?;
+        let mv = if !parts.group_keys.is_empty()
+            && !global_lookup_changed
+            && !affected_has_null
+        {
+            self.lookup_source_by_join_keys(
+                &context,
+                parts.mv,
+                affected.clone(),
+                parts.group_keys,
+                parts.group_keys,
+                true,
+            )
+            .await?
+        } else {
+            self.current_table_frame(&context, parts.mv)?
+        };
+        context.register_table("mv", mv.into_view())?;
         let frame = context
             .sql(&recompute_refresh_sql(parts, epoch, lookup_changed))
             .await?;

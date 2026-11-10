@@ -2876,66 +2876,6 @@ impl IvmSqlExecutor {
         mv: &IvmTable,
         spec: &ViewSpec,
     ) -> Result<Option<String>> {
-        if matches!(spec, ViewSpec::Join { .. } | ViewSpec::LookupJoin { .. }) {
-            let schema = mv.schema.clone();
-            let primary_keys = mv.primary_keys.clone();
-            let bucket_columns = if primary_keys.is_empty() {
-                Vec::new()
-            } else if !mv.bucket_columns.is_empty() {
-                mv.bucket_columns
-                    .iter()
-                    .filter(|column| primary_keys.contains(column))
-                    .cloned()
-                    .collect::<Vec<_>>()
-            } else {
-                vec![primary_keys[0].clone()]
-            };
-            let mut replaced = false;
-            if let Some(existing) = self
-                .runtime
-                .metadata()
-                .get_state(spec.view_id(), StateRole::State)
-                .await?
-            {
-                let table = self.runtime.open_table_by_id(&existing.table_id).await?;
-                if schema_matches(&table.schema, &schema)
-                    && table.primary_keys == primary_keys
-                {
-                    return Ok(Some(table.table_id));
-                }
-                self.runtime
-                    .metadata()
-                    .unregister_state(spec.view_id(), StateRole::State)
-                    .await?;
-                // Keep the old physical table: a stored spec may still carry
-                // its id until the re-analysis persists the replacement.
-                replaced = true;
-            }
-            let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
-            let mut options = IvmTableOptions::new(
-                format!("{}__ivm_state_{suffix}", mv.table_name),
-                format!("{}__ivm_state_{suffix}", mv.table_path),
-                schema,
-            )
-            .with_namespace(mv.namespace.clone())
-            .with_primary_keys(primary_keys)
-            .with_bucket_columns(bucket_columns)
-            .with_file_format(keyed_state_file_format());
-            if options.schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_ok() {
-                options = options.with_cdc_column(IVM_ROW_KINDS_COLUMN);
-            }
-            options.hash_bucket_num = mv.hash_bucket_num.clone();
-            let table = create_ivm_table(self.runtime.client(), options).await?;
-            if replaced {
-                // The state starts empty, so the next refresh must rebuild the
-                // view instead of applying a delta to an empty state.
-                self.runtime
-                    .metadata()
-                    .set_view_status(spec.view_id(), "dirty")
-                    .await?;
-            }
-            return Ok(Some(table.table_id));
-        }
         if !multi_agg_value_state_eligible(spec)
             && let ViewSpec::MultiAgg {
                 source_table_id,

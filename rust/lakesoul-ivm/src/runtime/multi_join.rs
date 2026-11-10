@@ -725,7 +725,14 @@ fn multi_join_index_specs(
         || view
             .keys
             .iter()
-            .any(|key| key.left_expr.is_some() || key.right_expr.is_some());
+            .any(|key| key.left_expr.is_some() || key.right_expr.is_some())
+        || edges.iter().any(|edge| {
+            // A plain non-PK edge cannot use the source's primary-key index;
+            // without a narrow join-key index the generic probe scans every
+            // bucket.  Keep one index for those edges too.
+            edge.left_keys != view.sources[edge.left].primary_keys
+                || edge.right_keys != view.sources[edge.right].primary_keys
+        });
     if !needs_index {
         return Vec::new();
     }

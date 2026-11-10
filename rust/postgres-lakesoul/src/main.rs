@@ -299,9 +299,9 @@ async fn main_inner(cli: Cli) -> Result<()> {
     let distributed_enabled = distributed.is_some();
     let session_factory = if cli.ivm {
         if distributed_enabled {
-            warn!(
-                "IVM distributed refresh is experimental; workers must be built \
-                 with the IVM feature and the same protocol generation"
+            info!(
+                "IVM distributed refresh enabled; workers must be built with the \
+                 IVM feature and the same protocol generation"
             );
         }
         let template = session_factory.create_template_session()?;
