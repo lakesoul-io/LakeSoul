@@ -295,6 +295,34 @@ postgres-lakesoul --subscribe \
 
 SQL 创建的订阅会把源连接串（包含凭据）写入元数据 PostgreSQL，以便 supervisor 重启子进程。请保护元数据库及其备份，并为源库使用最小权限的复制用户。
 
+## MySQL 订阅
+
+同一个端点也可以订阅 MySQL 8.0/8.4 主库。MySQL 订阅读取 `ROW` binlog 事件，写入同样的 LakeSoul CDC 行；`PUBLICATION` 和 `SLOT` 是 PostgreSQL 专有语法，MySQL 不需要。
+
+```sql
+CREATE SUBSCRIPTION mysql_users
+CONNECTION 'mysql://user:pass@mysql:3306/app'
+TABLES (users TO users)
+WITH (
+  server_id = 1001,          -- 必填，在同一 MySQL 实例内唯一
+  gtid_mode = 'auto',        -- auto | on | off
+  snapshot = 'auto',
+  snapshot_locking = 'none', -- none | flush
+  auto_create = true,
+  schema_evolution = 'auto'
+);
+```
+
+源用户需要 `SELECT`、`REPLICATION SLAVE`（或 `REPLICATION REPLICA`）和 `REPLICATION CLIENT`。源库需配置 `binlog_format=ROW`、`binlog_row_image=FULL`、`binlog_row_metadata=FULL`，并清空 `binlog_row_value_options`。`server_id` 不能等于源库自身的 id，也不能与其他订阅重复。
+
+`snapshot_locking = 'none'` 先记录 binlog 位点，再开启一致性快照；快照和增量流会有重叠，依赖目标主键 merge 收敛。`flush` 在记录位点和建立快照事务时持有 `FLUSH TABLES WITH READ LOCK`，边界精确，但需要 `RELOAD` 权限并会短暂阻塞写入。managed snapshot 要求目标表为空；`snapshot = 'none'` 接受预加载目标，会从当前 binlog head 开始，因此预加载期间应暂停写入。
+
+`snapshot_parallelism`（默认 4）会打开最多这么多快照 reader。单列整数主键会按主键范围切分；复合主键或非整数主键则按表并行。每个范围/表独立提交；binlog 从 reader 启动前记录的 boundary 开始，重叠范围靠主键 merge 收敛。`snapshot_locking = 'flush'` 时所有 reader 的 read view 都在锁内打开并固定；`none` 时不同 reader 可能看到略微不同的时间点，流追上后最终一致。
+
+MySQL 没有 replication slot。如果订阅恢复前 binlog 已被 purge，订阅会停止并要求重新 snapshot。数据按 batch 提交到 LakeSoul，没有跨 worker task 的全局事务。
+
+支持的源类型包括有符号/无符号整数、`DECIMAL(p<=38)`、`FLOAT`/`DOUBLE`、`DATE`、`DATETIME`、`TIMESTAMP`、`TIME`（存为 Int64 微秒）、`YEAR`、字符/文本、binary/varbinary/blob、`BIT`（存为 Binary）、`ENUM`、`SET` 和 `JSON`。P0 拒绝 `GEOMETRY`、`VECTOR`、超过 38 位的 `DECIMAL`、按声明字符集无法解码的文本和 zero date。`ALTER TABLE` 支持 `ADD COLUMN`、安全数值放宽和放宽 `NOT NULL`；拒绝 `DROP`/`RENAME`/`TRUNCATE` 和类型收窄。
+
 ## 下一步
 
 - [快速开始：PostgreSQL 端点](../../get-started/quickstart-postgres.md)

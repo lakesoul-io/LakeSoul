@@ -31,6 +31,11 @@ use lakesoul_datafusion::session::parse_memory_limit;
 use lakesoul_metadata::MetaDataClientRef;
 use rootcause::report;
 
+use super::mysql::SnapshotLocking;
+use super::mysql::catalog::{
+    GtidMode, build_pool, inspect_source as inspect_mysql_source,
+};
+use super::mysql::plan::MySqlTablePlan;
 use super::plan::TablePlan;
 use super::schema::{self, TargetOptions};
 use super::source;
@@ -100,9 +105,14 @@ struct ParsedTable {
 #[derive(Debug)]
 struct CreateSubscription {
     name: String,
+    source_kind: String,
+    source_database: String,
     connection: String,
     publication: String,
     slot_name: String,
+    server_id: Option<u32>,
+    gtid_mode: String,
+    snapshot_locking: String,
     snapshot: SnapshotMode,
     tables: Vec<ParsedTable>,
     auto_create: bool,
@@ -160,6 +170,9 @@ impl SubscriptionStatementHook {
 
     async fn create(&self, create: CreateSubscription) -> PgWireResult<Response> {
         let metadata = self.metadata().await;
+        if create.source_kind == "mysql" {
+            return self.create_mysql(create, metadata).await;
+        }
         if metadata.exists(&create.name).await.map_err(internal)? {
             return Err(duplicate_subscription(&create.name));
         }
@@ -300,6 +313,7 @@ impl SubscriptionStatementHook {
         }
         let definition = SubscriptionDefinition {
             subscription_id: create.name.clone(),
+            source_kind: "postgres".to_string(),
             slot: create.slot_name.clone(),
             publication: create.publication.clone(),
             source_url: create.connection.clone(),
@@ -337,6 +351,216 @@ impl SubscriptionStatementHook {
         Ok(Response::Execution(Tag::new("CREATE SUBSCRIPTION")))
     }
 
+    async fn create_mysql(
+        &self,
+        create: CreateSubscription,
+        metadata: SubscriptionMetadata,
+    ) -> PgWireResult<Response> {
+        if metadata.exists(&create.name).await.map_err(internal)? {
+            return Err(duplicate_subscription(&create.name));
+        }
+        if metadata
+            .load_by_slot(&create.slot_name)
+            .await
+            .map_err(internal)?
+            .is_some()
+        {
+            return Err(feature_not_supported(format!(
+                "subscription key {} is already in use",
+                create.slot_name
+            )));
+        }
+        let server_id = create
+            .server_id
+            .ok_or_else(|| invalid_parameter("server_id is required for MySQL"))?;
+        let gtid_mode = GtidMode::parse(&create.gtid_mode).ok_or_else(|| {
+            invalid_parameter(format!("unknown gtid_mode {:?}", create.gtid_mode))
+        })?;
+        let _ = SnapshotLocking::parse(&create.snapshot_locking).ok_or_else(|| {
+            invalid_parameter(format!(
+                "unknown snapshot_locking {:?}",
+                create.snapshot_locking
+            ))
+        })?;
+
+        let (pool, _opts) = build_pool(&create.connection).await.map_err(|error| {
+            user_error("08006", sanitized_error(&error, &create.connection))
+        })?;
+        let table_names: Vec<String> = create
+            .tables
+            .iter()
+            .map(|table| table.source_table.clone())
+            .collect();
+        let source = inspect_mysql_source(
+            &pool,
+            &create.source_database,
+            &table_names,
+            server_id,
+            gtid_mode,
+        )
+        .await
+        .map_err(|error| {
+            user_error("0A000", sanitized_error(&error, &create.connection))
+        })?;
+
+        let target_options = TargetOptions {
+            auto_create: create.auto_create,
+            schema_evolution: create.schema_evolution,
+            warehouse_prefix: self.warehouse.clone(),
+            cdc_column: create.cdc_column.clone(),
+        };
+        let mut table_definitions = Vec::with_capacity(create.tables.len());
+        let mut sources = HashSet::new();
+        let mut targets = HashSet::new();
+        for table in &create.tables {
+            if !sources.insert((table.source_schema.clone(), table.source_table.clone()))
+            {
+                return Err(invalid_parameter(format!(
+                    "source table {}.{} is listed twice",
+                    table.source_schema, table.source_table
+                )));
+            }
+            let target_namespace = table
+                .target_namespace
+                .clone()
+                .unwrap_or_else(|| self.database.clone());
+            if !targets.insert((target_namespace.clone(), table.target_table.clone())) {
+                return Err(invalid_parameter(format!(
+                    "target table {}.{} is listed twice",
+                    target_namespace, table.target_table
+                )));
+            }
+            if metadata
+                .target_in_use(&target_namespace, &table.target_table)
+                .await
+                .map_err(internal)?
+            {
+                return Err(feature_not_supported(format!(
+                    "target table {}.{} is already used by another subscription",
+                    target_namespace, table.target_table
+                )));
+            }
+            let source_table = source
+                .tables
+                .iter()
+                .find(|source| source.name == table.source_table)
+                .cloned()
+                .ok_or_else(|| {
+                    invalid_parameter(format!(
+                        "source table {}.{} was not found",
+                        create.source_database, table.source_table
+                    ))
+                })?;
+            let plan = MySqlTablePlan::new(
+                &self.meta,
+                source_table,
+                &target_namespace,
+                &table.target_table,
+                &target_options,
+                true,
+                true,
+            )
+            .await
+            .map_err(|error| user_error("0A000", error.to_string()))?;
+            if let Some(configured) = &table.primary_key {
+                let mut configured = configured.clone();
+                let mut actual = plan.source.primary_key.clone();
+                configured.sort();
+                actual.sort();
+                if configured != actual {
+                    return Err(invalid_parameter(format!(
+                        "configured primary key {:?} does not match MySQL primary key {:?}",
+                        table.primary_key, plan.source.primary_key
+                    )));
+                }
+            }
+            if create.snapshot != SnapshotMode::None && plan.has_commits {
+                return Err(user_error(
+                    "55000",
+                    format!(
+                        "target table {}.{} is not empty; a managed snapshot \
+                         requires an empty target",
+                        target_namespace, table.target_table
+                    ),
+                ));
+            }
+            let primary_key = table
+                .primary_key
+                .clone()
+                .unwrap_or_else(|| plan.source.primary_key.clone());
+            if primary_key.is_empty() {
+                return Err(user_error(
+                    "0A000",
+                    format!(
+                        "source table {}.{} has no primary key",
+                        create.source_database, table.source_table
+                    ),
+                ));
+            }
+            table_definitions.push(TableDefinition {
+                source_schema: create.source_database.clone(),
+                source_table: table.source_table.clone(),
+                source_relation_oid: 0,
+                target_namespace,
+                target_table: table.target_table.clone(),
+                target_table_id: plan.table.table_info().table_id.clone(),
+                primary_key,
+            });
+        }
+
+        let definition = SubscriptionDefinition {
+            subscription_id: create.name.clone(),
+            source_kind: "mysql".to_string(),
+            slot: create.slot_name.clone(),
+            publication: String::new(),
+            source_url: create.connection.clone(),
+            snapshot_mode: match create.snapshot {
+                SnapshotMode::None => "none",
+                SnapshotMode::Auto | SnapshotMode::Managed => "managed",
+            }
+            .to_string(),
+            auto_create: create.auto_create,
+            schema_evolution: match create.schema_evolution {
+                SchemaEvolution::None => "none",
+                SchemaEvolution::Auto => "auto",
+            }
+            .to_string(),
+            warehouse_prefix: self.warehouse.clone(),
+            cdc_column: create.cdc_column.clone(),
+            supervised: true,
+            commit_rows: create.commit_rows,
+            commit_interval_ms: create.commit_interval_ms,
+            snapshot_batch_rows: create.snapshot_batch_rows,
+            snapshot_batch_bytes: create.snapshot_batch_bytes,
+            snapshot_parallelism: create.snapshot_parallelism,
+            snapshot_memory_bytes: create.snapshot_memory_bytes,
+            tables: table_definitions,
+        };
+        if !metadata.register(&definition).await.map_err(internal)? {
+            return Err(duplicate_subscription(&create.name));
+        }
+        if let Err(error) = metadata
+            .register_mysql_state(
+                &create.name,
+                server_id,
+                &create.gtid_mode,
+                &create.snapshot_locking,
+                &create.source_database,
+            )
+            .await
+        {
+            let _ = metadata.unregister(&create.name).await;
+            return Err(user_error("XX000", error.to_string()));
+        }
+        if let Err(error) = self.supervisor.start(&create.name).await {
+            let text = sanitized_error(&error, &create.connection);
+            let _ = metadata.set_state(&create.name, "error", Some(&text)).await;
+            let _ = metadata.unregister(&create.name).await;
+            return Err(user_error("XX000", text));
+        }
+        Ok(Response::Execution(Tag::new("CREATE SUBSCRIPTION")))
+    }
+
     async fn drop_subscription(
         &self,
         if_exists: bool,
@@ -353,19 +577,21 @@ impl SubscriptionStatementHook {
         self.supervisor.stop(name).await.map_err(|error| {
             user_error("XX000", sanitized_error(&error, &record.source_url))
         })?;
-        drop_replication_slot(&ordinary_url(&record.source_url), &record.slot)
-            .await
-            .map_err(|error| {
-                let text = sanitized_error(&error, &record.source_url);
-                user_error(
-                    if text.contains("connect to source PostgreSQL") {
-                        "08006"
-                    } else {
-                        "55006"
-                    },
-                    text,
-                )
-            })?;
+        if record.source_kind != "mysql" {
+            drop_replication_slot(&ordinary_url(&record.source_url), &record.slot)
+                .await
+                .map_err(|error| {
+                    let text = sanitized_error(&error, &record.source_url);
+                    user_error(
+                        if text.contains("connect to source PostgreSQL") {
+                            "08006"
+                        } else {
+                            "55006"
+                        },
+                        text,
+                    )
+                })?;
+        }
         if !metadata.unregister(name).await.map_err(internal)? && !if_exists {
             return Err(undefined_subscription(name));
         }
@@ -560,13 +786,45 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
     if connection.trim().is_empty() {
         return Err(invalid_parameter("CONNECTION must not be empty"));
     }
-    cursor.expect_word("PUBLICATION")?;
-    let publication = cursor.identifier()?;
-    if cursor.eat_comma() {
-        return Err(feature_not_supported(
-            "P0 supports exactly one publication per subscription".to_string(),
+    let source_kind = if connection
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("mysql://")
+    {
+        "mysql"
+    } else if connection
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("postgresql://")
+        || connection
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("postgres://")
+    {
+        "postgres"
+    } else {
+        return Err(invalid_parameter(
+            "CONNECTION must use mysql://, postgresql:// or postgres://",
         ));
-    }
+    };
+    let source_database = if source_kind == "mysql" {
+        crate::subscribe::mysql::database_from_url(&connection)
+            .map_err(|error| invalid_parameter(error.to_string()))?
+    } else {
+        String::new()
+    };
+    let publication = if source_kind == "postgres" {
+        cursor.expect_word("PUBLICATION")?;
+        let publication = cursor.identifier()?;
+        if cursor.eat_comma() {
+            return Err(feature_not_supported(
+                "P0 supports exactly one publication per subscription".to_string(),
+            ));
+        }
+        publication
+    } else {
+        String::new()
+    };
 
     let mut parsed_tables = Vec::new();
     if cursor.eat_word("TABLES") {
@@ -574,17 +832,28 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
         if cursor.eat_rparen() {
             return Err(invalid_parameter("TABLES must list at least one table"));
         }
+        let default_schema = if source_kind == "mysql" {
+            source_database.clone()
+        } else {
+            "public".to_string()
+        };
         loop {
             let first = cursor.identifier()?;
             let (source_schema, source_table) = if cursor.eat_period() {
                 (first, cursor.identifier()?)
             } else {
-                ("public".to_string(), first)
+                (default_schema.clone(), first)
             };
-            if source_schema != "public" {
+            if source_kind == "postgres" && source_schema != "public" {
                 return Err(feature_not_supported(format!(
                     "source table {source_schema}.{source_table} is not in the \
                      public schema"
+                )));
+            }
+            if source_kind == "mysql" && source_schema != source_database {
+                return Err(invalid_parameter(format!(
+                    "source table {source_schema}.{source_table} is outside the \
+                     connection database {source_database:?}"
                 )));
             }
             cursor.expect_word("TO")?;
@@ -661,6 +930,9 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
         "auto_create",
         "schema_evolution",
         "cdc_column",
+        "server_id",
+        "gtid_mode",
+        "snapshot_locking",
     ];
     for key in options.keys() {
         if !allowed.contains(&key.as_str()) {
@@ -668,6 +940,49 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
                 "unsupported subscription option {key:?}"
             )));
         }
+    }
+
+    let had_server_id = options.contains_key("server_id");
+    let had_gtid_mode = options.contains_key("gtid_mode");
+    let had_snapshot_locking = options.contains_key("snapshot_locking");
+    let server_id = options
+        .remove("server_id")
+        .map(|value| {
+            value
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| invalid_parameter("server_id must be a 32-bit integer"))
+        })
+        .transpose()?;
+    let gtid_mode = options
+        .remove("gtid_mode")
+        .unwrap_or_else(|| "auto".to_string())
+        .to_ascii_lowercase();
+    if !matches!(gtid_mode.as_str(), "auto" | "on" | "off") {
+        return Err(invalid_parameter(format!(
+            "gtid_mode must be auto, on or off, got {gtid_mode:?}"
+        )));
+    }
+    let snapshot_locking = options
+        .remove("snapshot_locking")
+        .unwrap_or_else(|| "none".to_string())
+        .to_ascii_lowercase();
+    if !matches!(snapshot_locking.as_str(), "none" | "flush") {
+        return Err(invalid_parameter(format!(
+            "snapshot_locking must be none or flush, got {snapshot_locking:?}"
+        )));
+    }
+    if source_kind != "mysql" && (had_server_id || had_gtid_mode || had_snapshot_locking)
+    {
+        return Err(feature_not_supported(
+            "server_id, gtid_mode and snapshot_locking are MySQL-only options"
+                .to_string(),
+        ));
+    }
+    if source_kind == "mysql" && server_id.is_none() {
+        return Err(invalid_parameter(
+            "server_id is required for a MySQL subscription",
+        ));
     }
 
     let primary_key = options
@@ -684,8 +999,12 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
 
     let tables = if parsed_tables.is_empty() {
         let source_table_option = take_required(&mut options, "source_table")?;
-        let (source_schema, source_table) = parse_source_table(&source_table_option)
-            .map_err(|error| invalid_parameter(error.to_string()))?;
+        let (source_schema, source_table) = if source_kind == "mysql" {
+            parse_mysql_source_table(&source_table_option, &source_database)?
+        } else {
+            parse_source_table(&source_table_option)
+                .map_err(|error| invalid_parameter(error.to_string()))?
+        };
         let target_table = take_required(&mut options, "target_table")?;
         let (target_namespace, target_table) = parse_target_option(&target_table)?;
         vec![ParsedTable {
@@ -755,9 +1074,14 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
 
     Ok(CreateSubscription {
         name,
+        source_kind: source_kind.to_string(),
+        source_database,
         connection,
         publication,
         slot_name,
+        server_id,
+        gtid_mode,
+        snapshot_locking,
         snapshot,
         tables,
         auto_create,
@@ -770,6 +1094,35 @@ fn parse_create(mut cursor: Cursor) -> PgWireResult<CreateSubscription> {
         snapshot_parallelism,
         snapshot_memory_bytes,
     })
+}
+
+fn parse_mysql_source_table(
+    value: &str,
+    default_database: &str,
+) -> PgWireResult<(String, String)> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(invalid_parameter("source_table must not be empty"));
+    }
+    let (schema, table) = match value.split_once('.') {
+        Some((schema, table)) => {
+            if schema.is_empty() || table.is_empty() || table.contains('.') {
+                return Err(invalid_parameter(
+                    "source_table must be table or database.table",
+                ));
+            }
+            if !schema.eq_ignore_ascii_case(default_database) {
+                return Err(invalid_parameter(format!(
+                    "source_table {value:?} is outside the connection database \
+                     {default_database:?}"
+                )));
+            }
+            (schema.to_string(), table.to_string())
+        }
+        None => (default_database.to_string(), value.to_string()),
+    };
+    validate_identifier("source table", &table, false)?;
+    Ok((schema, table))
 }
 
 fn parse_target_option(value: &str) -> PgWireResult<(Option<String>, String)> {
@@ -1267,6 +1620,59 @@ mod tests {
         assert_eq!(create.tables[0].target_namespace, None);
         assert_eq!(create.tables[0].target_table, "users");
         assert!(create.tables[0].primary_key.is_none());
+    }
+
+    #[test]
+    fn parses_mysql_create_options() {
+        let statement = parse_statement(
+            "CREATE SUBSCRIPTION s
+             CONNECTION 'mysql://user:pass@source:3306/app'
+             TABLES (users TO users, app.orders TO analytics.orders)
+             WITH (
+               server_id = 1001,
+               gtid_mode = 'auto',
+               snapshot_locking = 'none',
+               auto_create = true
+             )",
+        )
+        .unwrap();
+        let SubscriptionStatement::Create(create) = statement else {
+            panic!("expected CREATE");
+        };
+        assert_eq!(create.source_kind, "mysql");
+        assert_eq!(create.source_database, "app");
+        assert_eq!(create.server_id, Some(1001));
+        assert_eq!(create.gtid_mode, "auto");
+        assert_eq!(create.snapshot_locking, "none");
+        assert!(create.publication.is_empty());
+        assert_eq!(create.tables.len(), 2);
+        assert_eq!(create.tables[0].source_schema, "app");
+        assert_eq!(create.tables[1].source_schema, "app");
+        assert_eq!(
+            create.tables[1].target_namespace.as_deref(),
+            Some("analytics")
+        );
+    }
+
+    #[test]
+    fn mysql_requires_server_id_and_rejects_publication() {
+        assert!(
+            parse_statement(
+                "CREATE SUBSCRIPTION s
+                 CONNECTION 'mysql://user:pass@source/app'
+                 TABLES (users TO users)"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_statement(
+                "CREATE SUBSCRIPTION s
+                 CONNECTION 'postgresql://source/db'
+                 PUBLICATION p
+                 WITH (server_id = 1001)"
+            )
+            .is_err()
+        );
     }
 
     #[test]

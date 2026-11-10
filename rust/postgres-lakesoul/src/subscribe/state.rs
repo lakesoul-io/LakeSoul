@@ -99,6 +99,26 @@ do $$ begin
 exception when duplicate_table or unique_violation then null;
 end $$;
 
+do $$ begin
+    create table if not exists subscription.mysql_state (
+        subscription_id   text primary key references subscription.subscriptions (subscription_id) on delete cascade,
+        server_id         integer not null,
+        gtid_mode         text not null default 'auto',
+        snapshot_locking  text not null default 'none',
+        source_database   text not null,
+        stream_offset     jsonb,
+        stream_sequence   bigint not null default 0,
+        snapshot_boundary jsonb,
+        snapshot_rows     bigint not null default 0,
+        snapshot_state    text not null default 'pending',
+        updated_at        bigint not null
+    );
+exception when duplicate_table or unique_violation then null;
+end $$;
+
+alter table if exists subscription.mysql_state
+    add column if not exists snapshot_rows bigint not null default 0;
+
 -- Pre-release databases created before these options existed. Fresh tables
 -- already have the columns, so these are no-ops there.
 alter table if exists subscription.subscriptions
@@ -109,6 +129,8 @@ alter table if exists subscription.subscriptions
     add column if not exists warehouse_prefix text;
 alter table if exists subscription.subscriptions
     add column if not exists cdc_column text not null default 'rowKinds';
+alter table if exists subscription.subscriptions
+    add column if not exists source_kind text not null default 'postgres';
 "#;
 
 #[derive(Debug, Clone)]
@@ -125,6 +147,7 @@ pub struct TableDefinition {
 #[derive(Debug, Clone)]
 pub struct SubscriptionDefinition {
     pub subscription_id: String,
+    pub source_kind: String,
     pub slot: String,
     pub publication: String,
     pub source_url: String,
@@ -165,6 +188,7 @@ pub struct TableRecord {
 #[derive(Debug, Clone)]
 pub struct SubscriptionRecord {
     pub subscription_id: String,
+    pub source_kind: String,
     pub slot: String,
     pub publication: String,
     pub source_url: String,
@@ -190,9 +214,16 @@ pub struct SubscriptionRecord {
 
 impl SubscriptionRecord {
     pub fn validate(&self, definition: &SubscriptionDefinition) -> Result<()> {
-        if self.subscription_id != definition.subscription_id
-            || self.slot != definition.slot
-            || self.publication != definition.publication
+        if self.source_kind != definition.source_kind {
+            bail!(
+                "subscription state is for source kind {:?}, not {:?}",
+                self.source_kind,
+                definition.source_kind
+            );
+        }
+        if definition.source_kind == "postgres"
+            && (self.slot != definition.slot
+                || self.publication != definition.publication)
         {
             bail!(
                 "subscription state belongs to slot {:?} / publication {:?}, not {:?} / {:?}",
@@ -200,6 +231,13 @@ impl SubscriptionRecord {
                 self.publication,
                 definition.slot,
                 definition.publication
+            );
+        }
+        if definition.source_kind == "mysql" && self.source_url != definition.source_url {
+            bail!(
+                "subscription state belongs to source URL {:?}, not {:?}",
+                self.source_url,
+                definition.source_url
             );
         }
         if definition.tables.is_empty() {
@@ -295,6 +333,20 @@ impl SubscriptionRecord {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct MySqlStateRecord {
+    pub subscription_id: String,
+    pub server_id: u32,
+    pub gtid_mode: String,
+    pub snapshot_locking: String,
+    pub source_database: String,
+    pub stream_offset: Option<serde_json::Value>,
+    pub stream_sequence: u64,
+    pub snapshot_boundary: Option<serde_json::Value>,
+    pub snapshot_rows: u64,
+    pub snapshot_state: String,
+}
+
 #[derive(Clone)]
 pub struct SubscriptionMetadata {
     client: PooledClient,
@@ -324,6 +376,153 @@ impl SubscriptionMetadata {
         self.load_where("slot_name = $1", slot).await
     }
 
+    pub async fn load_mysql_state(
+        &self,
+        subscription_id: &str,
+    ) -> Result<Option<MySqlStateRecord>> {
+        let row = self
+            .client
+            .query_opt(
+                "select subscription_id, server_id, gtid_mode, snapshot_locking, \
+                        source_database, stream_offset, stream_sequence, \
+                        snapshot_boundary, snapshot_rows, snapshot_state \
+                 from subscription.mysql_state where subscription_id = $1",
+                QueryType::RW,
+                &[&subscription_id],
+            )
+            .await
+            .map_err(|error| {
+                report!("read MySQL subscription state for {subscription_id}: {error}")
+            })?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let server_id: i32 = row.get(1);
+        let stream_sequence: i64 = row.get(6);
+        let snapshot_rows: i64 = row.get(8);
+        Ok(Some(MySqlStateRecord {
+            subscription_id: row.get(0),
+            server_id: u32::try_from(server_id)
+                .map_err(|_| report!("invalid MySQL server_id {server_id}"))?,
+            gtid_mode: row.get(2),
+            snapshot_locking: row.get(3),
+            source_database: row.get(4),
+            stream_offset: row.get(5),
+            stream_sequence: u64::try_from(stream_sequence).map_err(|_| {
+                report!("invalid MySQL stream_sequence {stream_sequence}")
+            })?,
+            snapshot_boundary: row.get(7),
+            snapshot_rows: u64::try_from(snapshot_rows)
+                .map_err(|_| report!("invalid MySQL snapshot_rows {snapshot_rows}"))?,
+            snapshot_state: row.get(9),
+        }))
+    }
+
+    pub async fn register_mysql_state(
+        &self,
+        subscription_id: &str,
+        server_id: u32,
+        gtid_mode: &str,
+        snapshot_locking: &str,
+        source_database: &str,
+    ) -> Result<()> {
+        let server_id = i32::try_from(server_id)
+            .map_err(|_| report!("MySQL server_id is too large"))?;
+        self.client
+            .execute(
+                "insert into subscription.mysql_state \
+                     (subscription_id, server_id, gtid_mode, snapshot_locking, \
+                      source_database, snapshot_state, updated_at) \
+                 values ($1, $2, $3, $4, $5, 'pending', $6) \
+                 on conflict (subscription_id) do update set \
+                     server_id = excluded.server_id, \
+                     gtid_mode = excluded.gtid_mode, \
+                     snapshot_locking = excluded.snapshot_locking, \
+                     source_database = excluded.source_database, \
+                     updated_at = excluded.updated_at",
+                QueryType::RW,
+                &[
+                    &subscription_id,
+                    &server_id,
+                    &gtid_mode,
+                    &snapshot_locking,
+                    &source_database,
+                    &now_ms(),
+                ],
+            )
+            .await
+            .map_err(|error| {
+                report!("register MySQL subscription state {subscription_id}: {error}")
+            })?;
+        Ok(())
+    }
+
+    pub async fn set_mysql_snapshot_boundary(
+        &self,
+        subscription_id: &str,
+        boundary: &serde_json::Value,
+        rows: u64,
+        state: &str,
+    ) -> Result<()> {
+        let rows = i64::try_from(rows)
+            .map_err(|_| report!("MySQL snapshot row count is too large"))?;
+        self.client
+            .execute(
+                "update subscription.mysql_state set snapshot_boundary = $2, \
+                        snapshot_rows = $3, snapshot_state = $4, updated_at = $5 \
+                 where subscription_id = $1",
+                QueryType::RW,
+                &[&subscription_id, boundary, &rows, &state, &now_ms()],
+            )
+            .await
+            .map_err(|error| {
+                report!("store MySQL snapshot boundary for {subscription_id}: {error}")
+            })?;
+        Ok(())
+    }
+
+    pub async fn set_mysql_snapshot_state(
+        &self,
+        subscription_id: &str,
+        state: &str,
+    ) -> Result<()> {
+        self.client
+            .execute(
+                "update subscription.mysql_state set snapshot_state = $2, \
+                        updated_at = $3 where subscription_id = $1",
+                QueryType::RW,
+                &[&subscription_id, &state, &now_ms()],
+            )
+            .await
+            .map_err(|error| {
+                report!("store MySQL snapshot state for {subscription_id}: {error}")
+            })?;
+        Ok(())
+    }
+
+    pub async fn update_mysql_stream_offset(
+        &self,
+        subscription_id: &str,
+        offset: &serde_json::Value,
+        sequence: u64,
+    ) -> Result<()> {
+        let sequence = i64::try_from(sequence)
+            .map_err(|_| report!("MySQL stream sequence is too large"))?;
+        self.client
+            .execute(
+                "update subscription.mysql_state set stream_offset = $2, \
+                        stream_sequence = $3, updated_at = $4 \
+                 where subscription_id = $1",
+                QueryType::RW,
+                &[&subscription_id, offset, &sequence, &now_ms()],
+            )
+            .await
+            .map_err(|error| {
+                report!("store MySQL stream offset for {subscription_id}: {error}")
+            })?;
+        Ok(())
+    }
+
     async fn load_where(
         &self,
         predicate: &str,
@@ -335,7 +534,7 @@ impl SubscriptionMetadata {
                     snapshot_batch_rows, snapshot_batch_bytes, \
                     snapshot_parallelism, snapshot_memory_bytes, auto_create, \
                     schema_evolution, warehouse_prefix, cdc_column, supervisor_pid, \
-                    log_path, last_error \
+                    log_path, last_error, source_kind \
              from subscription.subscriptions where {predicate}"
         );
         let subscription = self
@@ -366,6 +565,7 @@ impl SubscriptionMetadata {
         let supervisor_pid: Option<i32> = subscription.get(17);
         let log_path: Option<String> = subscription.get(18);
         let last_error: Option<String> = subscription.get(19);
+        let source_kind: String = subscription.get(20);
 
         let table_rows = self
             .client
@@ -431,6 +631,7 @@ impl SubscriptionMetadata {
 
         Ok(Some(SubscriptionRecord {
             subscription_id,
+            source_kind,
             slot,
             publication,
             source_url,
@@ -527,9 +728,11 @@ impl SubscriptionMetadata {
                       warehouse_prefix, cdc_column, commit_rows, commit_interval_ms, \
                       snapshot_batch_rows, snapshot_batch_bytes, \
                       snapshot_parallelism, snapshot_memory_bytes, \
-                      supervisor_pid, log_path, last_error, created_at, updated_at) \
+                      supervisor_pid, log_path, last_error, source_kind, \
+                      created_at, updated_at) \
                  values ($1, $2, $3, $4, 'starting', true, $5, $6, $7, $8, $9, \
-                         $10, $11, $12, $13, $14, $15, null, null, null, $16, $16) \
+                         $10, $11, $12, $13, $14, $15, null, null, null, $16, \
+                         $17, $17) \
                  on conflict (subscription_id) do nothing",
                 &[
                     &definition.subscription_id,
@@ -547,6 +750,7 @@ impl SubscriptionMetadata {
                     &snapshot_batch_bytes,
                     &snapshot_parallelism,
                     &snapshot_memory_bytes,
+                    &definition.source_kind,
                     &now,
                 ],
             )
@@ -990,6 +1194,7 @@ mod tests {
     fn definition() -> SubscriptionDefinition {
         SubscriptionDefinition {
             subscription_id: "slot".to_string(),
+            source_kind: "postgres".to_string(),
             slot: "slot".to_string(),
             publication: "pub".to_string(),
             source_url: "postgresql://source/db".to_string(),
@@ -1020,6 +1225,7 @@ mod tests {
     fn sample_record() -> SubscriptionRecord {
         SubscriptionRecord {
             subscription_id: "slot".to_string(),
+            source_kind: "postgres".to_string(),
             slot: "slot".to_string(),
             publication: "pub".to_string(),
             source_url: "postgresql://source/db".to_string(),

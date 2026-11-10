@@ -20,6 +20,7 @@
 mod copy_text;
 mod decode;
 mod multi;
+mod mysql;
 mod plan;
 mod runner;
 mod schema;
@@ -483,6 +484,26 @@ async fn run_from_metadata(subscription_id: &str, meta: MetaDataClientRef) -> Re
         state = %record.state,
         "loaded supervised subscription definition"
     );
+    if record.source_kind != "postgres" && record.source_kind != "mysql" {
+        bail!(
+            "subscription {subscription_id} has unknown source kind {:?}",
+            record.source_kind
+        );
+    }
+    if record.source_kind == "mysql" {
+        let state = metadata
+            .load_mysql_state(subscription_id)
+            .await?
+            .ok_or_else(|| {
+                report!("MySQL subscription {subscription_id} has no source state")
+            })?;
+        let source_url = record.source_url.clone();
+        let result = mysql::run_from_record(&record, &state, meta).await;
+        if let Err(error) = &result {
+            record_state_error(&metadata, subscription_id, &source_url, error).await;
+        }
+        return result;
+    }
     let table = record
         .tables
         .first()
@@ -959,6 +980,7 @@ async fn register_or_validate(
     };
     let definition = SubscriptionDefinition {
         subscription_id: config.subscription_id.clone(),
+        source_kind: "postgres".to_string(),
         slot: config.slot.clone(),
         publication: config.publication.clone(),
         source_url: config.source_url.clone(),
