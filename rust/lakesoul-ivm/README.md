@@ -643,6 +643,9 @@ let runtime = IvmRuntime::from_env_with_config(config).await?;
 `SessionConfig` owns target partitions and batch size; `RuntimeEnv` owns the
 memory pool and spill directory.  In a datafusion-distributed deployment each
 coordinator and executor sets the same values from its own deployment config.
+The coordinator and every IVM worker must also use the same `IvmOptions`
+(`state_index`, writer pool, internal layout and task limits): the refresh
+sessions are built independently on each process.
 `IvmRuntime::from_env()` remains as a test/example convenience and uses the
 default session, but production code should pass its own config.
 
