@@ -18,9 +18,6 @@ use super::*;
 /// What a [`IvmRuntime::drop_view`] call removes.
 #[derive(Debug, Clone)]
 pub struct DropViewOptions {
-    /// Drop the internal state tables (the default).  The target MV itself is
-    /// never dropped, even when this is true.
-    pub drop_states: bool,
     /// Drop the internal derived step tables (`<target>__ivm_step*`).
     pub drop_derived: bool,
     /// Also drop the IVM metadata of views that read this view's target.
@@ -33,7 +30,6 @@ pub struct DropViewOptions {
 impl Default for DropViewOptions {
     fn default() -> Self {
         Self {
-            drop_states: true,
             drop_derived: true,
             cascade: false,
             dry_run: false,
@@ -273,9 +269,6 @@ impl IvmRuntime {
         options: &DropViewOptions,
         report: &mut DropViewReport,
     ) -> Result<()> {
-        if !options.drop_states {
-            return Ok(());
-        }
         for state in self.metadata().list_states(view_id).await? {
             if keep_target
                 && state.role == StateRole::Mv
