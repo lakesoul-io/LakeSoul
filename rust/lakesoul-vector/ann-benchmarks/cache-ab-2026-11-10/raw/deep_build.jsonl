@@ -1,0 +1,4 @@
+{"dataset": "deep", "nlist": 4096, "bits": 1, "build_s": 219.15065921470523, "status": "ok", "rss": {"VmHWM": 3564.65625, "VmRSS": 2394.19921875}}
+{"dataset": "deep", "nlist": 4096, "bits": 7, "build_s": 227.62793567962945, "status": "ok", "rss": {"VmHWM": 3807.546875, "VmRSS": 2504.4453125}}
+{"dataset": "deep", "nlist": 1024, "bits": 1, "build_s": 66.00204137153924, "status": "ok", "rss": {"VmHWM": 3604.48828125, "VmRSS": 2403.33203125}}
+{"dataset": "deep", "nlist": 1024, "bits": 7, "build_s": 74.45833983831108, "status": "ok", "rss": {"VmHWM": 3839.546875, "VmRSS": 2756.83984375}}

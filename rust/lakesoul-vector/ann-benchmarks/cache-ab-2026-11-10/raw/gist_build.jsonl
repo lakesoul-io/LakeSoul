@@ -1,0 +1,4 @@
+{"dataset": "gist", "nlist": 256, "bits": 1, "build_s": 26.669603925198317, "status": "ok", "rss": {"VmHWM": 3114.91015625, "VmRSS": 1167.4765625}}
+{"dataset": "gist", "nlist": 256, "bits": 7, "build_s": 32.00104155018926, "status": "ok", "rss": {"VmHWM": 3260.234375, "VmRSS": 2281.21875}}
+{"dataset": "gist", "nlist": 1024, "bits": 1, "build_s": 74.52957567572594, "status": "ok", "rss": {"VmHWM": 2993.01171875, "VmRSS": 679.015625}}
+{"dataset": "gist", "nlist": 1024, "bits": 7, "build_s": 77.60061153024435, "status": "ok", "rss": {"VmHWM": 3205.44140625, "VmRSS": 1737.91796875}}

@@ -1,0 +1,4 @@
+{"dataset": "glove", "nlist": 256, "bits": 1, "build_s": 14.449100205674767, "status": "ok", "rss": {"VmHWM": 1228.54296875, "VmRSS": 953.56640625}}
+{"dataset": "glove", "nlist": 256, "bits": 7, "build_s": 17.097322897985578, "status": "ok", "rss": {"VmHWM": 1298.48828125, "VmRSS": 1023.4609375}}
+{"dataset": "glove", "nlist": 1024, "bits": 1, "build_s": 54.89221856556833, "status": "ok", "rss": {"VmHWM": 1175.56640625, "VmRSS": 945.828125}}
+{"dataset": "glove", "nlist": 1024, "bits": 7, "build_s": 48.997574001550674, "status": "ok", "rss": {"VmHWM": 1217.875, "VmRSS": 991.1171875}}
