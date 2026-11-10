@@ -122,6 +122,11 @@ struct Cli {
     #[clap(long, env = "LAKESOUL_PG_MAX_QUERIES_PER_USER", default_value_t = 0)]
     max_queries_per_user: usize,
 
+    /// Maximum number of concurrent statements across all users, 0 for
+    /// unlimited. A suspended portal holds its slot until it is closed.
+    #[clap(long, env = "LAKESOUL_PG_MAX_CONCURRENT_QUERIES", default_value_t = 0)]
+    max_concurrent_queries: usize,
+
     /// Maximum number of rows a statement may return, 0 for unlimited
     #[clap(long, env = "LAKESOUL_PG_MAX_RESULT_ROWS", default_value_t = 0)]
     max_result_rows: usize,
@@ -151,6 +156,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
         ))?;
     }
     cancel::register_query_metrics();
+    limits::register_limit_metrics();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
     if cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some() {
         return subscribe::run(
@@ -266,11 +272,12 @@ async fn main_inner(cli: Cli) -> Result<()> {
     };
 
     info!(
-        "start serving on {}:{} (max_connections={}, max_queries_per_user={}, max_result_rows={}, max_result_bytes={})",
+        "start serving on {}:{} (max_connections={}, max_queries_per_user={}, max_concurrent_queries={}, max_result_rows={}, max_result_bytes={})",
         cli.bind,
         cli.port,
         cli.max_connections,
         cli.max_queries_per_user,
+        cli.max_concurrent_queries,
         cli.max_result_rows,
         cli.max_result_bytes
     );
@@ -279,12 +286,22 @@ async fn main_inner(cli: Cli) -> Result<()> {
         .with_host(cli.bind.clone())
         .with_port(cli.port);
 
-    let limits = ServerLimits::new(Limits {
+    let limits = Limits {
         max_connections: cli.max_connections,
         max_queries_per_user: cli.max_queries_per_user,
+        max_concurrent_queries: cli.max_concurrent_queries,
         max_result_rows: cli.max_result_rows,
         max_result_bytes: cli.max_result_bytes,
-    });
+    };
+    if limits.one_user_can_fill_the_server() {
+        warn!(
+            max_queries_per_user = limits.max_queries_per_user,
+            max_concurrent_queries = limits.max_concurrent_queries,
+            "one user can take every server-wide statement slot; set \
+             max_queries_per_user below max_concurrent_queries"
+        );
+    }
+    let limits = ServerLimits::new(limits);
 
     let handlers = Arc::new(LakeSoulHandlers::new(Arc::new(session_factory), limits));
     let server_result = tokio::select! {
@@ -368,6 +385,7 @@ mod cli_probe_tests {
             "max_connections": cli.max_connections,
             "ivm": cli.ivm,
             "distributed_workers": cli.distributed.distributed_workers,
+            "max_concurrent_queries": cli.max_concurrent_queries,
         })
     }
 
@@ -389,18 +407,21 @@ mod cli_probe_tests {
         assert_eq!(defaults["bind"], "127.0.0.1");
         assert_eq!(defaults["port"], 5432);
         assert_eq!(defaults["max_connections"], 0);
+        assert_eq!(defaults["max_concurrent_queries"], 0);
 
         let via_env = probe(
             &[
                 ("LAKESOUL_PG_BIND", "0.0.0.0"),
                 ("LAKESOUL_PG_PORT", "15432"),
                 ("LAKESOUL_PG_MAX_CONNECTIONS", "64"),
+                ("LAKESOUL_PG_MAX_CONCURRENT_QUERIES", "32"),
             ],
             &[],
         );
         assert_eq!(via_env["bind"], "0.0.0.0");
         assert_eq!(via_env["port"], 15432);
         assert_eq!(via_env["max_connections"], 64);
+        assert_eq!(via_env["max_concurrent_queries"], 32);
 
         // Explicitly passed values that equal the defaults still beat env.
         let via_cli = probe(
