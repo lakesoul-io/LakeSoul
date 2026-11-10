@@ -42,6 +42,20 @@ pub struct SessionIdentity {
     pub database: String,
 }
 
+datafusion::common::extensions_options! {
+    /// The PostgreSQL identity a session's table functions use for ownership
+    /// checks. It lives in the DataFusion session config because a table
+    /// function only receives a `&dyn Session`, not the pgwire client.
+    pub struct PgIdentityConfig {
+        pub user: String, default = String::new()
+        pub database: String, default = String::new()
+    }
+}
+
+impl datafusion::common::config::ConfigExtension for PgIdentityConfig {
+    const PREFIX: &'static str = "lakesoul_pg_identity";
+}
+
 /// PostgreSQL connection-local settings.
 #[derive(Debug, Clone)]
 pub struct SessionSettings {
@@ -166,6 +180,9 @@ pub struct PgSessionFactory {
     subscriptions: Option<Arc<crate::subscribe::supervisor::SubscriptionSupervisor>>,
     /// Shared foreign-server registry. `None` disables federation.
     federation: Option<Arc<crate::federation::FederationRuntime>>,
+    /// Detached-query service. `None` in tests and in embeddings that do not
+    /// install the control statements.
+    jobs: Option<Arc<crate::jobs::JobService>>,
 }
 
 impl PgSessionFactory {
@@ -208,6 +225,7 @@ impl PgSessionFactory {
             warehouse: args.warehouse_prefix.clone(),
             subscriptions: None,
             federation: None,
+            jobs: None,
         })
     }
 
@@ -221,6 +239,17 @@ impl PgSessionFactory {
 
     pub fn federation(&self) -> Option<&Arc<crate::federation::FederationRuntime>> {
         self.federation.as_ref()
+    }
+
+    /// Installs the detached-query service used by the SQL control statements
+    /// and the status/result table functions.
+    pub fn with_jobs(mut self, jobs: Arc<crate::jobs::JobService>) -> Self {
+        self.jobs = Some(jobs);
+        self
+    }
+
+    pub fn jobs(&self) -> Option<&Arc<crate::jobs::JobService>> {
+        self.jobs.as_ref()
     }
 
     pub fn with_subscriptions(
@@ -350,6 +379,10 @@ impl PgSessionFactory {
             .options_mut()
             .extensions
             .insert(crate::ivm::IvmSessionConfig::default());
+        config.options_mut().extensions.insert(PgIdentityConfig {
+            user: identity.user.clone(),
+            database: identity.database.clone(),
+        });
         // How the next statement treats a key that is already present. The
         // INSERT hook sets it before every write; the sink reads it while
         // planning, so `ON CONFLICT DO NOTHING` drops rows instead of failing.
@@ -405,6 +438,29 @@ impl PgSessionFactory {
             .map_err(|error| report!("pgvector parameter planner: {error}"))?;
         datafusion_postgres::pgvector::install(&context)
             .map_err(|error| report!("pgvector install: {error}"))?;
+        if let Some(jobs) = &self.jobs {
+            crate::jobs::register_control_stubs(&context);
+            context.register_udtf(
+                "lakesoul_query_status",
+                Arc::new(crate::jobs::QueryStatusFunction::new(Arc::clone(jobs))),
+            );
+            context.register_udtf(
+                "lakesoul_queries",
+                Arc::new(crate::jobs::QueriesFunction::new(Arc::clone(jobs))),
+            );
+            context.register_udtf(
+                "lakesoul_query_result",
+                Arc::new(crate::jobs::QueryResultFunction::new(Arc::clone(jobs))),
+            );
+            context.register_udtf(
+                "lakesoul_query_result_set",
+                Arc::new(crate::jobs::QueryResultSetFunction::new(Arc::clone(jobs))),
+            );
+            context.register_udtf(
+                "lakesoul_query_result_sets",
+                Arc::new(crate::jobs::QueryResultSetsFunction::new(Arc::clone(jobs))),
+            );
+        }
         let mut session = PgSession::new(
             identity,
             context,

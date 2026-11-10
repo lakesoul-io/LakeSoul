@@ -40,6 +40,7 @@ for the metadata database and the first table.
 | **Search** | pgvector-compatible vector operators, `text_score` for BM25 |
 | **Incremental SQL** | `INSERT ... SELECT` maintains its target when the session enables it |
 | **Subscriptions** | `CREATE/DROP/ALTER SUBSCRIPTION` replicates one source PostgreSQL table into a LakeSoul CDC table |
+| **Detached queries** | `lakesoul_submit` runs a long `SELECT` or `INSERT ... SELECT` outside the submitting connection; poll, fetch and cancel it by query id |
 | **Transactions** | Autocommit; `READ COMMITTED`; failed-transaction recovery |
 | **Isolation** | One database maps to one LakeSoul namespace; user tables live in `public` |
 
@@ -56,5 +57,6 @@ refused with SQLSTATE `0A000`. See the
 - [Insert and upsert](insert-and-upsert.md)
 - [Transactions and catalog](transactions-and-catalog.md)
 - [PostgreSQL subscriptions](subscription.md)
+- [Detached queries](detached-queries.md)
 - [Compatibility](compatibility.md)
 - [Operations](operations.md)

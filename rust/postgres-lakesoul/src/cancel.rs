@@ -140,7 +140,7 @@ pub struct QueryToken {
 }
 
 impl QueryToken {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (cancelled, _) = watch::channel(false);
         Self { cancelled }
     }

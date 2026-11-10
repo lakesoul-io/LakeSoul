@@ -84,7 +84,7 @@ impl IvmService {
     }
 }
 
-fn ivm_enabled(context: &SessionContext) -> bool {
+pub(crate) fn ivm_enabled(context: &SessionContext) -> bool {
     context
         .state()
         .config()
@@ -126,7 +126,7 @@ fn parse_bool(value: &Expr) -> PgWireResult<bool> {
     }
 }
 
-fn set_enabled(context: &SessionContext, enabled: bool) -> PgWireResult<()> {
+pub(crate) fn set_enabled(context: &SessionContext, enabled: bool) -> PgWireResult<()> {
     write_config(context, move |config| {
         let extensions = &mut config.options_mut().extensions;
         if let Some(current) = extensions.get_mut::<IvmSessionConfig>() {

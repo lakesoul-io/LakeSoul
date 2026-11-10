@@ -63,7 +63,9 @@ use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire::api::ClientInfo;
 use datafusion_postgres::pgwire::api::results::{Response, Tag};
 use datafusion_postgres::pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
-use datafusion_postgres::pgwire::messages::response::TransactionStatus;
+use datafusion_postgres::pgwire::messages::response::{
+    CommandComplete, TransactionStatus,
+};
 
 use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
 use lakesoul_datafusion::federation::FederationTableProvider;
@@ -1004,6 +1006,32 @@ async fn run(
     status: TransactionStatus,
     database: &str,
 ) -> PgWireResult<Response> {
+    let (rows, tag) = execute_write(insert, session_context, status, database).await?;
+    Ok(Response::Execution(tag.with_rows(rows)))
+}
+
+/// Runs one `INSERT` for a detached job, outside a client connection.
+///
+/// The write is the same one the wire path performs, including its single
+/// commit; the caller gets the row count and the command tag instead of a
+/// pgwire response.
+pub(crate) async fn run_for_job(
+    insert: &Insert,
+    session_context: &SessionContext,
+    database: &str,
+) -> PgWireResult<(usize, String)> {
+    let (rows, tag) =
+        execute_write(insert, session_context, TransactionStatus::Idle, database).await?;
+    let tag = CommandComplete::from(tag.with_rows(rows)).tag;
+    Ok((rows, tag))
+}
+
+async fn execute_write(
+    insert: &Insert,
+    session_context: &SessionContext,
+    status: TransactionStatus,
+    database: &str,
+) -> PgWireResult<(usize, Tag)> {
     let target = prepare(insert, session_context, status, database).await?;
     if let TargetKind::LakeSoul(mode) = target.kind {
         write_mode(session_context)?.set(mode);
@@ -1015,11 +1043,7 @@ async fn run(
         .await
         .map_err(insert_error)?;
     let batches = dataframe.collect().await.map_err(insert_error)?;
-    Ok(Response::Execution(
-        Tag::new("INSERT")
-            .with_oid(0)
-            .with_rows(rows_affected(&batches)?),
-    ))
+    Ok((rows_affected(&batches)?, Tag::new("INSERT").with_oid(0)))
 }
 
 async fn execute_bound(

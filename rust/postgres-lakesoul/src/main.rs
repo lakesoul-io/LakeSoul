@@ -35,6 +35,7 @@ mod failed_transaction;
 mod federation;
 mod insert;
 mod ivm;
+mod jobs;
 mod limits;
 mod pg_compat;
 mod pg_numeric;
@@ -138,6 +139,28 @@ struct Cli {
     /// Enable IVM maintenance through `INSERT ... SELECT`
     #[clap(long, env = "LAKESOUL_PG_IVM")]
     ivm: bool,
+
+    /// Maximum number of detached queries running at once, 0 for unlimited
+    #[clap(long, env = "LAKESOUL_PG_MAX_JOBS", default_value_t = 4)]
+    max_jobs: usize,
+
+    /// Retention of a detached SELECT result, in hours
+    #[clap(long, env = "LAKESOUL_PG_JOB_RESULT_TTL_HOURS", default_value_t = 24)]
+    job_result_ttl_hours: u64,
+
+    /// Retention of detached query history, in hours
+    #[clap(long, env = "LAKESOUL_PG_JOB_RECORD_TTL_HOURS", default_value_t = 72)]
+    job_record_ttl_hours: u64,
+
+    /// Maximum size of a detached SELECT result, in MiB
+    #[clap(long, env = "LAKESOUL_PG_JOB_RESULT_MAX_MIB", default_value_t = 1024)]
+    job_result_max_mib: u64,
+
+    /// Stable identity of this pg-wire cluster for detached-job recovery.
+    /// Defaults to <bind>:<port>; set it when the listen address can change
+    /// across restarts.
+    #[clap(long, env = "LAKESOUL_PG_JOB_CLUSTER_ID")]
+    job_cluster_id: Option<String>,
 }
 
 async fn main_inner(cli: Cli) -> Result<()> {
@@ -156,6 +179,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
         ))?;
     }
     cancel::register_query_metrics();
+    jobs::register_metrics();
     limits::register_limit_metrics();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
     if cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some() {
@@ -271,15 +295,49 @@ async fn main_inner(cli: Cli) -> Result<()> {
         session_factory
     };
 
+    let job_config = jobs::JobConfig {
+        max_jobs: cli.max_jobs,
+        result_max_bytes: cli.job_result_max_mib.saturating_mul(1024 * 1024),
+        result_ttl_ms: (cli.job_result_ttl_hours as i64).saturating_mul(60 * 60 * 1000),
+        record_ttl_ms: (cli.job_record_ttl_hours as i64).saturating_mul(60 * 60 * 1000),
+        ..jobs::JobConfig::default()
+    };
+    if job_config.record_ttl_ms < job_config.result_ttl_ms {
+        warn!(
+            result_ttl_hours = cli.job_result_ttl_hours,
+            record_ttl_hours = cli.job_record_ttl_hours,
+            "job record retention is shorter than result retention; \
+             expired results may be left without a job row"
+        );
+    }
+    let cluster_id = cli
+        .job_cluster_id
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", cli.bind, cli.port));
+    let jobs = jobs::JobService::new(
+        Arc::clone(&meta_client),
+        cli.core.warehouse_prefix.clone(),
+        job_config,
+        cluster_id,
+    )
+    .await?;
+    let session_factory = Arc::new(session_factory.with_jobs(Arc::clone(&jobs)));
+    Arc::new(jobs::JobRunner::new(
+        Arc::clone(&jobs),
+        Arc::clone(&session_factory),
+    ))
+    .spawn();
+
     info!(
-        "start serving on {}:{} (max_connections={}, max_queries_per_user={}, max_concurrent_queries={}, max_result_rows={}, max_result_bytes={})",
+        "start serving on {}:{} (max_connections={}, max_queries_per_user={}, max_concurrent_queries={}, max_result_rows={}, max_result_bytes={}, max_jobs={})",
         cli.bind,
         cli.port,
         cli.max_connections,
         cli.max_queries_per_user,
         cli.max_concurrent_queries,
         cli.max_result_rows,
-        cli.max_result_bytes
+        cli.max_result_bytes,
+        cli.max_jobs
     );
 
     let server_opts = ServerOptions::new()
@@ -303,7 +361,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
     }
     let limits = ServerLimits::new(limits);
 
-    let handlers = Arc::new(LakeSoulHandlers::new(Arc::new(session_factory), limits));
+    let handlers = Arc::new(LakeSoulHandlers::new(Arc::clone(&session_factory), limits));
     let server_result = tokio::select! {
         result = serve_with_handlers(handlers, &server_opts) => Some(result),
         _ = shutdown_signal() => None,
@@ -312,6 +370,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
     // otherwise a graceful server shutdown would leave them holding
     // replication slots.
     subscriptions.stop_all().await;
+    jobs.shutdown().await;
     if let Some(result) = server_result {
         result?;
     }
