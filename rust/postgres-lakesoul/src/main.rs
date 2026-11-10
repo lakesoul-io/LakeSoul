@@ -131,17 +131,16 @@ async fn main_inner(cli: Cli) -> Result<()> {
     );
     // Exact re-rank is the default candidate ordering of the pgvector path
     // (`ORDER BY vec <-> '[...]' LIMIT k`), and it needs the on-demand
-    // decoded-block cache backed by `LAKESOUL_CACHE`: without it every
+    // decoded-block cache backed by the unified L2 cache: without it every
     // candidate row is read through the vectorized reader.
-    let block_cache_enabled = std::env::var("LAKESOUL_CACHE").is_ok()
-        && !std::env::var("LAKESOUL_VECTOR_BLOCK_CACHE")
-            .is_ok_and(|value| value == "0");
+    let block_cache_enabled =
+        lakesoul_vector::cache_config::config().disk_enabled();
     if !block_cache_enabled {
         warn!(
             "vector re-rank decoded-block cache is disabled; explicit exact \
              rerank queries (rerank='exact') fall back to the slow reader \
-             path.  Set LAKESOUL_CACHE=1 to enable the shared S3-SSD block \
-             cache"
+             path.  Set LAKESOUL_VECTOR_CACHE=1 and LAKESOUL_CACHE_SIZE > 0 \
+             to enable the shared S3-SSD block cache"
         );
     }
     if let Some(endpoint) = tracing.otlp_endpoint() {
