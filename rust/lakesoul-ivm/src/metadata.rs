@@ -286,6 +286,9 @@ pub enum StateRole {
     /// aggregate.  It lets the refresh read the source rows of the affected
     /// groups by primary key instead of scanning the whole source.
     RecomputedIndex,
+    /// One narrow index per grouping set, keyed by the set's keys and the
+    /// source primary key.  The index position is the set position.
+    GroupingSetIndex(u32),
     /// A join source state keyed by the encoded join key.
     JoinLeft,
     /// A join source state keyed by the encoded join key.
@@ -313,6 +316,7 @@ impl StateRole {
             StateRole::MultiAggRows => "multi_agg_rows",
             StateRole::MultiAggPartials => "multi_agg_partials",
             StateRole::RecomputedIndex => "recomputed_index",
+            StateRole::GroupingSetIndex(_) => "grouping_set_index",
             StateRole::JoinLeft => "join_left",
             StateRole::JoinRight => "join_right",
             StateRole::JoinPairIndex => "join_pair_index",
@@ -328,6 +332,9 @@ impl StateRole {
             StateRole::MultiWindow(index) => Cow::Owned(format!("multi_window:{index}")),
             StateRole::LookupChainIndex(index) => {
                 Cow::Owned(format!("lookup_chain_index:{index}"))
+            }
+            StateRole::GroupingSetIndex(index) => {
+                Cow::Owned(format!("grouping_set_index:{index}"))
             }
             role => Cow::Borrowed(role.as_str()),
         }
@@ -356,6 +363,16 @@ impl StateRole {
                             )
                         },
                     );
+                }
+                if let Some(index) = other.strip_prefix("grouping_set_index:") {
+                    return index
+                        .parse::<u32>()
+                        .map(StateRole::GroupingSetIndex)
+                        .map_err(|_| {
+                            rootcause::report!(
+                                "invalid grouping-set index state role {other:?}"
+                            )
+                        });
                 }
                 if let Some(index) = other.strip_prefix("lookup_chain_index:") {
                     return index

@@ -2296,6 +2296,52 @@ pub fn sum_count_cleanup_delete_sql(
     )
 }
 
+/// One unique grouping set and its narrow index.  A grouping set drops some
+/// flat group keys; keeping one index per set lets every set read its affected
+/// source rows by key.
+struct GroupingSetIndexSpec {
+    position: u32,
+    keys: Vec<String>,
+    exprs: Vec<String>,
+}
+
+fn grouping_set_index_specs(view: &GroupingSetsView) -> Vec<GroupingSetIndexSpec> {
+    let mut specs: Vec<GroupingSetIndexSpec> = Vec::new();
+    for (position, set) in view.groupings.iter().enumerate() {
+        let keys = set
+            .iter()
+            .map(|index| view.group_keys[*index].clone())
+            .collect::<Vec<_>>();
+        let mut exprs = if view.group_exprs.is_empty() {
+            Vec::new()
+        } else {
+            set.iter()
+                .map(|index| view.group_exprs[*index].clone())
+                .collect::<Vec<_>>()
+        };
+        if !exprs.is_empty() {
+            if exprs.iter().all(|expression| expression.is_empty()) {
+                exprs.clear();
+            } else {
+                for (expression, key) in exprs.iter_mut().zip(&keys) {
+                    if expression.is_empty() {
+                        *expression = key.clone();
+                    }
+                }
+            }
+        }
+        if specs.iter().any(|spec| spec.keys == keys) {
+            continue;
+        }
+        specs.push(GroupingSetIndexSpec {
+            position: position as u32,
+            keys,
+            exprs,
+        });
+    }
+    specs
+}
+
 impl IvmRuntime {
     /// Persist a sum/count view spec (idempotent).
     pub async fn register_view(&self, view: &SumCountView) -> Result<()> {
@@ -2690,6 +2736,26 @@ impl IvmRuntime {
         if window.added_files.is_empty() {
             return Ok(None);
         }
+        let set_specs = grouping_set_index_specs(view);
+        let has_empty_set = set_specs.iter().any(|spec| spec.keys.is_empty());
+        let mut set_indexes: Vec<(GroupingSetIndexSpec, Option<IvmTable>)> = Vec::new();
+        if !has_empty_set && !view.source.primary_keys.is_empty() {
+            for spec in set_specs {
+                let index = self
+                    .ensure_narrow_group_index(
+                        &view.view_id,
+                        &view.source,
+                        &view.mv,
+                        &spec.keys,
+                        &spec.exprs,
+                        StateRole::GroupingSetIndex(spec.position),
+                        &format!("grouping_set_{}", spec.position),
+                        false,
+                    )
+                    .await?;
+                set_indexes.push((spec, index));
+            }
+        }
         let record = match self
             .begin_window(&view.view_id, &window.identity, &view.mv)
             .await?
@@ -2741,63 +2807,102 @@ impl IvmRuntime {
             )?
         };
         context.register_table("old", old.clone().into_view())?;
-        let src = if view.group_exprs.is_empty()
-            && !view.group_keys.is_empty()
-            && view.source.primary_keys.starts_with(&view.group_keys)
-        {
-            let key_exprs = view
-                .group_keys
-                .iter()
-                .map(|key| col(key.as_str()))
-                .collect::<Vec<_>>();
-            let affected_keys = delta
-                .clone()
-                .select(key_exprs.clone())?
-                .distinct()?
-                .union(old.clone().select(key_exprs)?.distinct()?)?
-                .distinct()?;
-            let null_key = view
-                .group_keys
-                .iter()
-                .map(|key| col(key.as_str()).is_null())
-                .reduce(|left, right| left.or(right))
-                .ok_or_else(|| report!("grouping-sets view has no group keys"))?;
-            if count_frame_rows(affected_keys.clone().filter(null_key)?).await? == 0 {
-                let source_now = self
-                    .lookup_source_by_join_keys(
+        let mut index_pks: Option<DataFrame> = None;
+        let mut fallback_full = set_indexes.is_empty();
+        if !fallback_full {
+            for (spec, index) in &set_indexes {
+                let key_exprs = spec
+                    .keys
+                    .iter()
+                    .map(|key| col(key.as_str()))
+                    .collect::<Vec<_>>();
+                let affected = delta
+                    .clone()
+                    .select(key_exprs.clone())?
+                    .distinct()?
+                    .union(old.clone().select(key_exprs)?.distinct()?)?
+                    .distinct()?;
+                let null_key = spec
+                    .keys
+                    .iter()
+                    .map(|key| col(key.as_str()).is_null())
+                    .reduce(|left, right| left.or(right))
+                    .ok_or_else(|| report!("grouping-sets view has no group keys"))?;
+                if count_frame_rows(affected.clone().filter(null_key)?).await? > 0 {
+                    fallback_full = true;
+                    break;
+                }
+                let pks = if let Some(index) = index {
+                    commit_ids.extend(
+                        self.update_narrow_group_index(
+                            &context,
+                            &view.source,
+                            &spec.keys,
+                            &spec.exprs,
+                            index,
+                            &delta,
+                            &old,
+                            epoch,
+                        )
+                        .await?,
+                    );
+                    self.read_narrow_index_keys(
                         &context,
                         &view.source,
-                        affected_keys,
-                        &view.group_keys,
-                        &view.group_keys,
-                        true,
+                        &spec.keys,
+                        index,
+                        affected,
                     )
-                    .await?;
-                project_group_keys_frame(
-                    &context,
-                    source_now,
-                    &view.source.schema,
-                    &view.group_keys,
-                    &view.group_exprs,
-                )?
-            } else {
-                project_group_keys_frame(
-                    &context,
-                    self.current_table_frame(&context, &view.source)?,
-                    &view.source.schema,
-                    &view.group_keys,
-                    &view.group_exprs,
-                )?
+                    .await?
+                } else {
+                    let rows = self
+                        .lookup_source_by_join_keys(
+                            &context,
+                            &view.source,
+                            affected,
+                            &spec.keys,
+                            &spec.keys,
+                            true,
+                        )
+                        .await?;
+                    rows.select(
+                        view.source
+                            .primary_keys
+                            .iter()
+                            .map(|key| col(key.as_str()))
+                            .collect::<Vec<_>>(),
+                    )?
+                    .distinct()?
+                };
+                index_pks = Some(match index_pks {
+                    Some(existing) => existing.union(pks)?,
+                    None => pks,
+                });
             }
+        }
+        let src = if fallback_full {
+            self.current_table_frame(&context, &view.source)?
         } else {
-            project_group_keys_frame(
+            let pks = index_pks
+                .expect("grouping sets have at least one index")
+                .distinct()?;
+            self.lookup_source_by_join_keys(
                 &context,
-                self.current_table_frame(&context, &view.source)?,
-                &view.source.schema,
-                &view.group_keys,
-                &view.group_exprs,
-            )?
+                &view.source,
+                pks,
+                &view.source.primary_keys,
+                &view.source.primary_keys,
+                true,
+            )
+            .await?
         };
+        let src = project_group_keys_frame(
+            &context,
+            src,
+            &view.source.schema,
+            &view.group_keys,
+            &view.group_exprs,
+        )?;
         context.register_table("src", src.into_view())?;
         let mv = if view.group_keys.is_empty() {
             self.current_table_frame(&context, &view.mv)?
@@ -2885,6 +2990,29 @@ impl IvmRuntime {
         let generation = self.metadata.bump_generation(&view.view_id).await?;
         self.metadata.delete_cursors(&view.view_id).await?;
         view.mv.truncate(&self.client).await?;
+        let set_specs = grouping_set_index_specs(view);
+        let has_empty_set = set_specs.iter().any(|spec| spec.keys.is_empty());
+        let mut set_indexes: Vec<(GroupingSetIndexSpec, Option<IvmTable>)> = Vec::new();
+        if !has_empty_set && !view.source.primary_keys.is_empty() {
+            for spec in set_specs {
+                let index = self
+                    .ensure_narrow_group_index(
+                        &view.view_id,
+                        &view.source,
+                        &view.mv,
+                        &spec.keys,
+                        &spec.exprs,
+                        StateRole::GroupingSetIndex(spec.position),
+                        &format!("grouping_set_{}", spec.position),
+                        true,
+                    )
+                    .await?;
+                if let Some(index) = &index {
+                    index.truncate(self.client()).await?;
+                }
+                set_indexes.push((spec, index));
+            }
+        }
 
         let baseline = self
             .source_baseline_for_filter(&view.source, view.filter.as_deref())
@@ -2924,6 +3052,12 @@ impl IvmRuntime {
             &view.group_keys,
             &view.group_exprs,
         )?;
+        for (_, index) in &set_indexes {
+            if let Some(index) = index {
+                commit_ids
+                    .extend(self.seed_narrow_index(index, frame.clone(), epoch).await?);
+            }
+        }
         context.register_table("src", frame.into_view())?;
         let frame = context.sql(&grouping_sets_rebuild_sql(view, epoch)).await?;
         commit_ids.extend(

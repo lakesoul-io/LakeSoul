@@ -2767,7 +2767,7 @@ struct KeyedContributions {
 /// the source primary key, the source range partition columns and the
 /// bookkeeping columns.  The index stores no aggregate payload; a refresh
 /// resolves the source rows of the affected groups by primary key.
-fn recomputed_index_schema_for(
+pub(super) fn recomputed_index_schema_for(
     source: &IvmTable,
     group_keys: &[String],
     group_exprs: &[String],
@@ -2805,101 +2805,96 @@ fn recomputed_index_schema_for(
 }
 
 impl IvmRuntime {
-    /// Ensure the narrow group index of a recomputed aggregate.  A state that
-    /// disappeared while the view was populated cannot be trusted: the caller
-    /// must rebuild so the index is seeded from the full source.
-    async fn ensure_recomputed_index(
+    /// Ensure a narrow `(projection keys, source primary key)` index for one
+    /// group projection of a view.  A state that disappeared while the view
+    /// was populated cannot be trusted: the caller must rebuild so the index
+    /// is seeded from the full source.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn ensure_narrow_group_index(
         &self,
-        parts: &RecomputeParts<'_>,
+        view_id: &str,
+        source: &IvmTable,
+        mv: &IvmTable,
+        group_keys: &[String],
+        group_exprs: &[String],
+        role: StateRole,
+        label: &str,
         allow_populated: bool,
     ) -> Result<Option<IvmTable>> {
-        if parts.group_keys.is_empty()
-            || parts.source.primary_keys.is_empty()
-            || parts.source.primary_keys.starts_with(parts.group_keys)
+        if group_keys.is_empty()
+            || source.primary_keys.is_empty()
+            || source.primary_keys.starts_with(group_keys)
         {
             return Ok(None);
         }
-        let schema = recomputed_index_schema_for(
-            parts.source,
-            parts.group_keys,
-            parts.group_exprs,
-        )?;
-        let mut primary_keys = parts.group_keys.to_vec();
-        for column in &parts.source.range_partition_columns {
-            if parts.source.schema.field_with_name(column).is_ok()
+        let schema = recomputed_index_schema_for(source, group_keys, group_exprs)?;
+        let mut primary_keys = group_keys.to_vec();
+        for column in &source.range_partition_columns {
+            if source.schema.field_with_name(column).is_ok()
                 && !primary_keys.contains(column)
             {
                 primary_keys.push(column.clone());
             }
         }
-        for key in &parts.source.primary_keys {
+        for key in &source.primary_keys {
             if !primary_keys.contains(key) {
                 primary_keys.push(key.clone());
             }
         }
-        let range_partitions = state_range_partition_columns(parts.source, &primary_keys);
-        if let Some(existing) = self
-            .metadata()
-            .get_state(parts.view_id, StateRole::RecomputedIndex)
-            .await?
-        {
+        let range_partitions = state_range_partition_columns(source, &primary_keys);
+        if let Some(existing) = self.metadata().get_state(view_id, role).await? {
             let table = self.open_table_by_id(&existing.table_id).await?;
             if table.schema == schema && table.primary_keys == primary_keys {
                 return Ok(Some(table));
             }
-            self.metadata()
-                .unregister_state(parts.view_id, StateRole::RecomputedIndex)
-                .await?;
+            self.metadata().unregister_state(view_id, role).await?;
             let _ = self
                 .client()
                 .drop_table(&table.table_name, &table.namespace)
                 .await;
-            if !allow_populated
-                && !parts.mv.current_files(self.client()).await?.is_empty()
-            {
+            if !allow_populated && !mv.current_files(self.client()).await?.is_empty() {
                 return Err(report!(
-                    "view {} lost its recomputed group index; a rebuild is required",
-                    parts.view_id
+                    "view {view_id} lost its {label} group index; a rebuild is required"
                 )
                 .attach(RebuildRequired));
             }
-        } else if !allow_populated
-            && !parts.mv.current_files(self.client()).await?.is_empty()
-        {
+        } else if !allow_populated && !mv.current_files(self.client()).await?.is_empty() {
             return Err(report!(
-                "view {} lost its recomputed group index; a rebuild is required",
-                parts.view_id
+                "view {view_id} lost its {label} group index; a rebuild is required"
             )
             .attach(RebuildRequired));
         }
         let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
         let mut options = IvmTableOptions::new(
-            format!("{}__ivm_recomputed_index_{suffix}", parts.mv.table_name),
-            format!("{}__ivm_recomputed_index_{suffix}", parts.mv.table_path),
+            format!("{}__ivm_{}_index_{suffix}", mv.table_name, label),
+            format!("{}__ivm_{}_index_{suffix}", mv.table_path, label),
             schema,
         )
-        .with_namespace(parts.mv.namespace.clone())
+        .with_namespace(mv.namespace.clone())
         .with_primary_keys(primary_keys)
-        .with_bucket_columns(parts.group_keys.to_vec())
+        .with_bucket_columns(group_keys.to_vec())
         .with_cdc_column(IVM_ROW_KINDS_COLUMN)
         .with_file_format(keyed_state_file_format());
         if !range_partitions.is_empty() {
             options = options.with_range_partition_columns(range_partitions);
         }
-        options.hash_bucket_num = parts.source.hash_bucket_num.clone();
+        options.hash_bucket_num = source.hash_bucket_num.clone();
         let table = create_ivm_table(self.client(), options).await?;
         self.metadata()
-            .register_state(parts.view_id, StateRole::RecomputedIndex, &table)
+            .register_state(view_id, role, &table)
             .await?;
         Ok(Some(table))
     }
 
-    /// Apply the changed source rows to the index: retract the previous group
-    /// tuple of every changed primary key and insert its current tuple.
-    async fn update_recomputed_index(
+    /// Apply the changed source rows to one narrow index: retract the previous
+    /// group tuple of every changed primary key and insert its current tuple.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn update_narrow_group_index(
         &self,
         context: &SessionContext,
-        parts: &RecomputeParts<'_>,
+        source: &IvmTable,
+        group_keys: &[String],
+        group_exprs: &[String],
         index: &IvmTable,
         delta: &DataFrame,
         old: &DataFrame,
@@ -2916,19 +2911,18 @@ impl IvmRuntime {
             let frame = project_group_keys_frame(
                 context,
                 frame,
-                &parts.source.schema,
-                parts.group_keys,
-                parts.group_exprs,
+                &source.schema,
+                group_keys,
+                group_exprs,
             )?;
             project_frame(frame, &fields)
         };
         let old_rows = project(old.clone())?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-        let delta_rows =
-            project(filter_deletes(delta.clone(), change_column(parts.source))?)?
-                .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
-                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let delta_rows = project(filter_deletes(delta.clone(), change_column(source))?)?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         let mut rows = old_rows.union(delta_rows)?;
         let mut sort = index
             .primary_keys
@@ -2942,48 +2936,57 @@ impl IvmRuntime {
             .await
     }
 
-    /// The current source rows of the affected groups, resolved through the
-    /// index: index tuples -> source primary keys -> source rows.
-    async fn read_recomputed_index_groups(
+    /// The current source rows of the affected keys, resolved through one
+    /// narrow index: index tuples -> source primary keys -> source rows.
+    pub(super) async fn read_narrow_index_keys(
         &self,
         context: &SessionContext,
-        parts: &RecomputeParts<'_>,
+        source: &IvmTable,
+        group_keys: &[String],
         index: &IvmTable,
         affected: DataFrame,
     ) -> Result<DataFrame> {
         let index_rows = self
             .lookup_source_by_join_keys(
-                context,
-                index,
-                affected,
-                parts.group_keys,
-                parts.group_keys,
-                true,
+                context, index, affected, group_keys, group_keys, true,
             )
             .await?;
-        let pks = index_rows
+        Ok(index_rows
             .select(
-                parts
-                    .source
+                source
                     .primary_keys
                     .iter()
                     .map(|key| col(key.as_str()))
                     .collect::<Vec<_>>(),
             )?
-            .distinct()?;
+            .distinct()?)
+    }
+
+    pub(super) async fn read_narrow_index_groups(
+        &self,
+        context: &SessionContext,
+        source: &IvmTable,
+        group_keys: &[String],
+        index: &IvmTable,
+        affected: DataFrame,
+    ) -> Result<DataFrame> {
+        let pks = self
+            .read_narrow_index_keys(context, source, group_keys, index, affected)
+            .await?;
         self.lookup_source_by_join_keys(
             context,
-            parts.source,
+            source,
             pks,
-            &parts.source.primary_keys,
-            &parts.source.primary_keys,
+            &source.primary_keys,
+            &source.primary_keys,
             true,
         )
         .await
     }
 
-    /// Seed the index with the full current source rows during a rebuild.
-    async fn seed_recomputed_index(
+    /// Seed one narrow index with the full current source rows during a
+    /// rebuild.
+    pub(super) async fn seed_narrow_index(
         &self,
         index: &IvmTable,
         frame: DataFrame,
@@ -3002,6 +3005,72 @@ impl IvmRuntime {
         index
             .append_stream(self.client(), rows.execute_stream().await?)
             .await
+    }
+
+    async fn ensure_recomputed_index(
+        &self,
+        parts: &RecomputeParts<'_>,
+        allow_populated: bool,
+    ) -> Result<Option<IvmTable>> {
+        self.ensure_narrow_group_index(
+            parts.view_id,
+            parts.source,
+            parts.mv,
+            parts.group_keys,
+            parts.group_exprs,
+            StateRole::RecomputedIndex,
+            "recomputed",
+            allow_populated,
+        )
+        .await
+    }
+
+    async fn update_recomputed_index(
+        &self,
+        context: &SessionContext,
+        parts: &RecomputeParts<'_>,
+        index: &IvmTable,
+        delta: &DataFrame,
+        old: &DataFrame,
+        epoch: i64,
+    ) -> Result<Vec<String>> {
+        self.update_narrow_group_index(
+            context,
+            parts.source,
+            parts.group_keys,
+            parts.group_exprs,
+            index,
+            delta,
+            old,
+            epoch,
+        )
+        .await
+    }
+
+    async fn read_recomputed_index_groups(
+        &self,
+        context: &SessionContext,
+        parts: &RecomputeParts<'_>,
+        index: &IvmTable,
+        affected: DataFrame,
+    ) -> Result<DataFrame> {
+        self.read_narrow_index_groups(
+            context,
+            parts.source,
+            parts.group_keys,
+            index,
+            affected,
+        )
+        .await
+    }
+
+    async fn seed_recomputed_index(
+        &self,
+        index: &IvmTable,
+        frame: DataFrame,
+        epoch: i64,
+    ) -> Result<Vec<String>> {
+        self.seed_narrow_index(index, frame, epoch).await
     }
 }
 
