@@ -6632,3 +6632,26 @@ mod type_encoding_tests {
         assert_eq!(fields[0].data_type(), &DataType::Utf8);
     }
 }
+
+#[cfg(test)]
+mod parse_aggregate_columns_test {
+    use super::*;
+    use arrow_schema::{DataType, Field, Schema};
+
+    #[test]
+    fn parse_aggregate_call_columns() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("v", DataType::Utf8, true),
+            Field::new("k", DataType::Int64, false),
+        ]));
+        let context = refresh_session();
+        let columns = filter_columns(
+            &context,
+            &schema,
+            "string_agg(\"v\", ',' order by \"k\" desc nulls first)",
+        )
+        .unwrap();
+        assert!(columns.contains(&"v".to_string()), "{columns:?}");
+        assert!(columns.contains(&"k".to_string()), "{columns:?}");
+    }
+}

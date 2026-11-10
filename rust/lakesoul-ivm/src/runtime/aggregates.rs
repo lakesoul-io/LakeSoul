@@ -2706,25 +2706,40 @@ impl IvmRuntime {
         let context = refresh_session();
         let delta = project_group_keys_frame(
             &context,
-            self.groups_table_frame(&context, &view.source, window.added_files)?,
+            self.groups_table_frame(&context, &view.source, window.added_files.clone())?,
             &view.source.schema,
             &view.group_keys,
             &view.group_exprs,
         )?;
         context.register_table("delta", delta.clone().into_view())?;
-        let old = project_group_keys_frame(
-            &context,
-            self.before_window_table_frame(
+        let old = if view.source.primary_keys.is_empty() {
+            dataframe(&context, Vec::new(), &view.source.schema)?
+        } else {
+            // Only the changed primary keys need their previous group keys;
+            // the full before image is not read.
+            let key_exprs = view
+                .source
+                .primary_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let contribution = delta.clone().select(key_exprs)?.distinct()?;
+            let before = self
+                .lookup_source_before_by_pks(
+                    &context,
+                    &view.source,
+                    &window,
+                    contribution,
+                )
+                .await?;
+            project_group_keys_frame(
                 &context,
-                &view.source,
-                &window.before_versions,
-                window.before_timestamp,
-            )
-            .await?,
-            &view.source.schema,
-            &view.group_keys,
-            &view.group_exprs,
-        )?;
+                before,
+                &view.source.schema,
+                &view.group_keys,
+                &view.group_exprs,
+            )?
+        };
         context.register_table("old", old.clone().into_view())?;
         let src = if view.group_exprs.is_empty()
             && !view.group_keys.is_empty()

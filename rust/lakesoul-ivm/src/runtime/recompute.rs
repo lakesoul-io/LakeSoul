@@ -2967,19 +2967,29 @@ impl IvmRuntime {
         let context = refresh_session();
         let delta = project_group_keys_frame(
             &context,
-            self.groups_table_frame(&context, parts.source, window.added_files)?,
+            self.groups_table_frame(&context, parts.source, window.added_files.clone())?,
             &parts.source.schema,
             parts.group_keys,
             parts.group_exprs,
         )?;
         let keyed = !parts.source.primary_keys.is_empty();
         let old_frame = if keyed {
+            // Read only the old rows of the changed primary keys instead of
+            // the whole before image; the affected groups are exactly the
+            // groups of these rows plus the delta.
+            let key_exprs = parts
+                .source
+                .primary_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let contribution = delta.clone().select(key_exprs)?.distinct()?;
             let old = self
-                .before_window_table_frame(
+                .lookup_source_before_by_pks(
                     &context,
                     parts.source,
-                    &window.before_versions,
-                    window.before_timestamp,
+                    &window,
+                    contribution,
                 )
                 .await?;
             project_group_keys_frame(
@@ -2992,7 +3002,7 @@ impl IvmRuntime {
         } else {
             dataframe(&context, Vec::new(), &parts.source.schema)?
         };
-        context.register_table("delta", delta.into_view())?;
+        context.register_table("delta", delta.clone().into_view())?;
         let lookup_delta = match (&parts.lookup, &lookup_window) {
             (Some(lookup), Some(lookup_window))
                 if !lookup_window.added_files.is_empty() =>
@@ -3014,9 +3024,48 @@ impl IvmRuntime {
             }
         }
         if keyed {
-            context.register_table("old", old_frame.into_view())?;
+            context.register_table("old", old_frame.clone().into_view())?;
         }
-        let src = self.current_table_frame(&context, parts.source)?;
+        let src = if parts.group_exprs.is_empty()
+            && !parts.group_keys.is_empty()
+            && parts.source.primary_keys.starts_with(parts.group_keys)
+        {
+            // The group keys are a prefix of the source primary key: read only
+            // the affected groups from the keyed source instead of scanning
+            // the whole table.
+            let key_exprs = parts
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let affected_keys = delta
+                .clone()
+                .select(key_exprs.clone())?
+                .distinct()?
+                .union(old_frame.clone().select(key_exprs)?.distinct()?)?
+                .distinct()?;
+            let null_key = parts
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()).is_null())
+                .reduce(|left, right| left.or(right))
+                .ok_or_else(|| report!("recompute view has no group keys"))?;
+            if count_frame_rows(affected_keys.clone().filter(null_key)?).await? == 0 {
+                self.lookup_source_by_join_keys(
+                    &context,
+                    parts.source,
+                    affected_keys,
+                    parts.group_keys,
+                    parts.group_keys,
+                    true,
+                )
+                .await?
+            } else {
+                self.current_table_frame(&context, parts.source)?
+            }
+        } else {
+            self.current_table_frame(&context, parts.source)?
+        };
         let src = project_group_keys_frame(
             &context,
             src,
