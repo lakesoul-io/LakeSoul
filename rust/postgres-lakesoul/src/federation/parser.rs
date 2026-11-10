@@ -31,9 +31,12 @@ use datafusion_postgres::pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use datafusion_postgres::pgwire::messages::response::TransactionStatus;
 
 use lakesoul_datafusion::federation::DialectKind;
+use lakesoul_datafusion::federation::external_file::{
+    ExternalFileSpec, ExternalFileStoreConfig,
+};
 
 use super::FederationRuntime;
-use super::metadata::ForeignTableDefinition;
+use super::metadata::{ForeignTableDefinition, ServerBackend};
 
 const SENTINEL_FUNCTION: &str = "lakesoul_federation_ddl";
 
@@ -138,8 +141,15 @@ impl FederationStatementHook {
                 wrapper,
                 options,
             } => {
-                let (driver, dialect) = resolve_server_driver(&wrapper, &options)?;
-                if driver.contains('/') || driver.contains('\\') {
+                let resolved = resolve_server_driver(&wrapper, &options)?;
+                if resolved.backend == ServerBackend::ExternalFile {
+                    ExternalFileStoreConfig::from_options(&options)
+                        .map_err(|error| user_error("0A000", error.to_string()))?;
+                }
+                let driver = resolved.driver;
+                if resolved.backend == ServerBackend::Adbc
+                    && (driver.contains('/') || driver.contains('\\'))
+                {
                     return Err(feature_not_supported(format!(
                         "ADBC driver {driver:?} must be installed by name, not \
                          configured by path"
@@ -148,7 +158,14 @@ impl FederationStatementHook {
                 let created = self
                     .runtime
                     .metadata()
-                    .create_server(&name, &driver, dialect, &options, if_not_exists)
+                    .create_server(
+                        &name,
+                        resolved.backend,
+                        &driver,
+                        resolved.dialect,
+                        &options,
+                        if_not_exists,
+                    )
                     .await
                     .map_err(internal)?;
                 if !created && !if_not_exists {
@@ -171,6 +188,16 @@ impl FederationStatementHook {
                 } else {
                     user
                 };
+                if self.runtime.server_backend(&server)
+                    == Some(ServerBackend::ExternalFile)
+                    && !options.is_empty()
+                {
+                    return Err(feature_not_supported(
+                        "external file servers use server-level credentials; \
+                         CREATE USER MAPPING options are not supported"
+                            .to_string(),
+                    ));
+                }
                 let created = self
                     .runtime
                     .metadata()
@@ -201,6 +228,12 @@ impl FederationStatementHook {
                         "foreign tables are only supported in the public schema, \
                          got {local_schema}.{local_name}"
                     )));
+                }
+                if self.runtime.server_backend(&server)
+                    == Some(ServerBackend::ExternalFile)
+                {
+                    ExternalFileSpec::parse(&options)
+                        .map_err(|error| user_error("0A000", error.to_string()))?;
                 }
                 let remote_schema = options
                     .get("schema_name")
@@ -339,8 +372,8 @@ impl FederationStatementHook {
                     Ok(Response::Execution(Tag::new("CREATE EXTENSION")))
                 } else {
                     Err(feature_not_supported(format!(
-                        "extension {name:?} is not available; use adbc_fdw \
-                         or postgres_fdw"
+                        "extension {name:?} is not available; use adbc_fdw, \
+                         postgres_fdw or external_file_wrapper"
                     )))
                 }
             }
@@ -349,8 +382,8 @@ impl FederationStatementHook {
                     Ok(Response::Execution(Tag::new("DROP EXTENSION")))
                 } else {
                     Err(feature_not_supported(format!(
-                        "extension {name:?} is not available; use adbc_fdw \
-                         or postgres_fdw"
+                        "extension {name:?} is not available; use adbc_fdw, \
+                         postgres_fdw or external_file_wrapper"
                     )))
                 }
             }
@@ -359,25 +392,45 @@ impl FederationStatementHook {
 }
 
 fn is_fdw_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case("adbc_fdw") || name.eq_ignore_ascii_case("postgres_fdw")
+    name.eq_ignore_ascii_case("adbc_fdw")
+        || name.eq_ignore_ascii_case("postgres_fdw")
+        || name.eq_ignore_ascii_case("external_file_wrapper")
 }
 
-/// Resolve the ADBC driver and the SQL dialect stored with a new server.
+struct ResolvedServer {
+    backend: ServerBackend,
+    driver: String,
+    dialect: DialectKind,
+}
+
+/// Resolve the backend, ADBC driver and SQL dialect stored with a new server.
 ///
 /// `postgres_fdw` keeps its historical meaning and defaults to the PostgreSQL
 /// ADBC driver. `adbc_fdw` is the generic wrapper and requires an explicit
-/// `driver` option. The dialect is fixed here, at server creation, so a query
-/// never has to guess it later; an explicit `dialect` option overrides the
-/// driver's default.
+/// `driver` option. `external_file_wrapper` is a DataFusion `ListingTable`
+/// backend; its `driver` and `dialect` are internal placeholders.
 fn resolve_server_driver(
     wrapper: &str,
     options: &BTreeMap<String, String>,
-) -> PgWireResult<(String, DialectKind)> {
+) -> PgWireResult<ResolvedServer> {
+    if wrapper.eq_ignore_ascii_case("external_file_wrapper") {
+        if options.contains_key("driver") || options.contains_key("dialect") {
+            return Err(feature_not_supported(
+                "external_file_wrapper does not take driver or dialect options"
+                    .to_string(),
+            ));
+        }
+        return Ok(ResolvedServer {
+            backend: ServerBackend::ExternalFile,
+            driver: "external_file".to_string(),
+            dialect: DialectKind::Generic,
+        });
+    }
     let is_postgres = wrapper.eq_ignore_ascii_case("postgres_fdw");
     if !is_postgres && !wrapper.eq_ignore_ascii_case("adbc_fdw") {
         return Err(feature_not_supported(format!(
-            "foreign data wrapper {wrapper:?} is not supported; use adbc_fdw \
-             or postgres_fdw"
+            "foreign data wrapper {wrapper:?} is not supported; use adbc_fdw, \
+             postgres_fdw or external_file_wrapper"
         )));
     }
     let driver = match options.get("driver") {
@@ -404,7 +457,11 @@ fn resolve_server_driver(
             ))
         })?,
     };
-    Ok((driver, dialect))
+    Ok(ResolvedServer {
+        backend: ServerBackend::Adbc,
+        driver,
+        dialect,
+    })
 }
 
 #[async_trait]
@@ -1103,15 +1160,16 @@ mod tests {
     fn resolves_server_driver_and_dialect() {
         let mut options = BTreeMap::new();
         options.insert("driver".to_string(), "mysql".to_string());
-        let (driver, dialect) =
+        let resolved =
             resolve_server_driver("adbc_fdw", &options).expect("resolve generic server");
-        assert_eq!(driver, "mysql");
-        assert_eq!(dialect, DialectKind::MySql);
+        assert_eq!(resolved.backend, ServerBackend::Adbc);
+        assert_eq!(resolved.driver, "mysql");
+        assert_eq!(resolved.dialect, DialectKind::MySql);
 
         options.insert("dialect".to_string(), "postgres".to_string());
-        let (_, dialect) =
+        let resolved =
             resolve_server_driver("adbc_fdw", &options).expect("explicit dialect");
-        assert_eq!(dialect, DialectKind::Postgres);
+        assert_eq!(resolved.dialect, DialectKind::Postgres);
 
         assert!(resolve_server_driver("adbc_fdw", &BTreeMap::new()).is_err());
 
@@ -1119,10 +1177,17 @@ mod tests {
         options.insert("driver".to_string(), "unknown".to_string());
         assert!(resolve_server_driver("adbc_fdw", &options).is_err());
 
-        let (driver, dialect) = resolve_server_driver("postgres_fdw", &BTreeMap::new())
+        let resolved = resolve_server_driver("postgres_fdw", &BTreeMap::new())
             .expect("legacy wrapper");
-        assert_eq!(driver, "postgresql");
-        assert_eq!(dialect, DialectKind::Postgres);
+        assert_eq!(resolved.backend, ServerBackend::Adbc);
+        assert_eq!(resolved.driver, "postgresql");
+        assert_eq!(resolved.dialect, DialectKind::Postgres);
+
+        let resolved = resolve_server_driver("external_file_wrapper", &BTreeMap::new())
+            .expect("external file wrapper");
+        assert_eq!(resolved.backend, ServerBackend::ExternalFile);
+        assert_eq!(resolved.driver, "external_file");
+        assert_eq!(resolved.dialect, DialectKind::Generic);
     }
 
     #[test]
@@ -1148,6 +1213,38 @@ mod tests {
         assert_eq!(schema.field(0).name(), "id");
         assert_eq!(server, "s");
         assert_eq!(options.get("table_name").map(String::as_str), Some("users"));
+    }
+
+    #[test]
+    fn parses_external_file_table() {
+        let statement = parse_statement(
+            "CREATE FOREIGN TABLE public.events (id bigint, name text) \
+             SERVER s3_server OPTIONS (path 's3://bucket/events/', format 'csv')",
+        )
+        .unwrap();
+        let FederationStatement::CreateForeignTable {
+            schema,
+            server,
+            options,
+            ..
+        } = statement
+        else {
+            panic!("expected CREATE FOREIGN TABLE");
+        };
+        assert_eq!(schema.fields().len(), 2);
+        assert_eq!(server, "s3_server");
+        assert_eq!(
+            options.get("path").map(String::as_str),
+            Some("s3://bucket/events/")
+        );
+        assert_eq!(options.get("format").map(String::as_str), Some("csv"));
+    }
+
+    #[test]
+    fn external_file_wrapper_rejects_driver_option() {
+        let mut options = BTreeMap::new();
+        options.insert("driver".to_string(), "postgresql".to_string());
+        assert!(resolve_server_driver("external_file_wrapper", &options).is_err());
     }
 
     #[test]

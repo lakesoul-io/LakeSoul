@@ -164,6 +164,10 @@ jobs:
           LAKESOUL_IO_USE_V2_MERGE: "false"
           RUST_LOG: info
           RUST_BACKTRACE: full
+          LAKESOUL_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+          LAKESOUL_TEST_S3_BUCKET: lakesoul-test-bucket
+          LAKESOUL_TEST_S3_ACCESS_KEY: rustfsadmin
+          LAKESOUL_TEST_S3_SECRET_KEY: rustfsadmin
         run: |
           cargo test --profile test-fast $TEST_PKGS --lib --bins --tests --jobs 4
       - name: PostgreSQL SQL compatibility (legacy merge)
@@ -176,6 +180,10 @@ jobs:
           LAKESOUL_IO_USE_V2_MERGE: "true"
           RUST_LOG: info
           RUST_BACKTRACE: full
+          LAKESOUL_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+          LAKESOUL_TEST_S3_BUCKET: lakesoul-test-bucket
+          LAKESOUL_TEST_S3_ACCESS_KEY: rustfsadmin
+          LAKESOUL_TEST_S3_SECRET_KEY: rustfsadmin
         run: |
           cargo test --profile test-fast $TEST_PKGS --lib --bins --tests --jobs 4
       - name: PostgreSQL SQL compatibility (v2 merge)

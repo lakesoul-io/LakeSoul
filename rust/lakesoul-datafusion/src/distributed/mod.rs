@@ -97,24 +97,22 @@ pub use resolver::{
 /// ignore unknown fields rather than rejecting them, so a plan written by this
 /// build would have been silently accepted by a `/1` worker.
 ///
-/// `/4` is the current non-IVM generation: it extends the ADBC foreign codec
+/// `/4` is the previous non-IVM generation: it extends the ADBC foreign codec
 /// at position 4 of [`codec::user_codecs`] with the worker-side write stage
 /// (`FederationWriteExec`). It carries the explicit [`codec::CODEC_VERSION`]
 /// field and registers the vortex scan codec at position 1, the metadata-only
 /// scan codec at position 2, the write codec at position 3, the federation
 /// codec at position 4 and the IVM refresh codec at position 5 when the `ivm`
-/// feature is enabled. A `/4` worker from this tree resolves every codec
-/// position a non-IVM coordinator from it can stamp; an IVM coordinator
-/// advertises `/5-ivm` so it never dispatches a plan whose position 5 is
-/// unknown to the worker.
+/// feature is enabled.
 ///
-/// `/5-ivm` is the IVM generation. The numeric part tracks
-/// [`codec::CODEC_VERSION`]; the `-ivm` suffix keeps the codec-list
-/// generations apart during discovery.
+/// `/6` / `/7-ivm` is the current external-file generation. It appends the
+/// external-file scan codec and then the external-file write codec after the
+/// IVM codec. The numeric part tracks [`codec::CODEC_VERSION`]; the `-ivm`
+/// suffix keeps the codec-list generations apart during discovery.
 #[cfg(feature = "ivm")]
-pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/5-ivm";
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/7-ivm";
 #[cfg(not(feature = "ivm"))]
-pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/4";
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/6";
 
 pub use worker::{
     LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker,

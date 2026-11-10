@@ -115,7 +115,10 @@ use arrow::array::{ArrayRef, BinaryArray, Int32Array, Int64Array};
 use arrow::record_batch::RecordBatch;
 use datafusion::arrow::array::StringArray;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion::catalog::memory::DataSourceExec;
+use datafusion::catalog::memory::{
+    DataSourceExec, MemoryCatalogProvider, MemorySchemaProvider,
+};
+use datafusion::catalog::{CatalogProvider, SchemaProvider};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::FileScanConfig;
@@ -136,6 +139,8 @@ use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_io::helpers::extract_hash_bucket_id;
 use lakesoul_io::physical_plan::{LakeSoulScanExec, MergeParquetExec};
 use lakesoul_metadata::{MetaDataClient, MetaDataClientRef};
+use object_store::{ObjectStore, ObjectStoreExt};
+use parquet::arrow::ArrowWriter;
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -143,6 +148,9 @@ use vortex_datafusion::VortexSource;
 
 use crate::distributed::{
     DistributedOptions, LakeSoulWorkerOptions, StaticWorkerResolver, WorkerDiscovery,
+};
+use crate::federation::external_file::{
+    ExternalFileSpec, ExternalFileStoreConfig, ExternalFileTableProvider,
 };
 use crate::session::{
     ExecutionMemoryArgs, LakeSoulSessionFactory, LakeSoulSessionOptions,
@@ -5932,6 +5940,232 @@ fn test_distributed_ivm_worker_failure_leaves_no_commit_and_retries() {
                 .map(|batch| batch.num_rows())
                 .sum::<usize>(),
             3
+        );
+        workers.shutdown().await;
+        Ok(())
+    });
+}
+
+/// Exercises the external-file FDW's distributed path against a real
+/// S3-compatible service. The object store configuration is carried by the
+/// scan plan; the workers never read federation metadata.
+///
+/// Set `LAKESOUL_TEST_S3_ENDPOINT`, `LAKESOUL_TEST_S3_BUCKET`,
+/// `LAKESOUL_TEST_S3_ACCESS_KEY` and `LAKESOUL_TEST_S3_SECRET_KEY` to run it.
+#[test]
+fn test_external_file_scan_runs_distributed() {
+    let (Ok(endpoint), Ok(bucket), Ok(access_key), Ok(secret_key)) = (
+        std::env::var("LAKESOUL_TEST_S3_ENDPOINT"),
+        std::env::var("LAKESOUL_TEST_S3_BUCKET"),
+        std::env::var("LAKESOUL_TEST_S3_ACCESS_KEY"),
+        std::env::var("LAKESOUL_TEST_S3_SECRET_KEY"),
+    ) else {
+        eprintln!("skipping external-file distributed test: S3 env is not set");
+        return;
+    };
+
+    run_distributed_test(async {
+        let client = Arc::new(MetaDataClient::from_env().await?);
+        let (worker_urls, mut workers) = spawn_workers(2).await;
+        let factory = distributed_factory_with(client, worker_urls, 4, false)?;
+        let context = factory.create_session(&LakeSoulSessionOptions::default())?;
+
+        // A process-local counter restarts at zero on every test binary run,
+        // while CI runs the same suite against one RustFS bucket several
+        // times. Use a UUID so an earlier run's appended file cannot leak
+        // into this run's initial read.
+        let prefix = format!("external-file-test-{}", uuid::Uuid::new_v4().simple());
+        let store = object_store::aws::AmazonS3Builder::new()
+            .with_bucket_name(&bucket)
+            .with_endpoint(&endpoint)
+            .with_region("us-east-1")
+            .with_access_key_id(&access_key)
+            .with_secret_access_key(&secret_key)
+            .with_virtual_hosted_style_request(false)
+            .with_allow_http(true)
+            .build()?;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+
+        for (name, body) in [
+            ("part-0.csv", "id,name\n1,alice\n2,bob\n"),
+            ("part-1.csv", "id,name\n3,carol\n"),
+        ] {
+            store
+                .put(
+                    &object_store::path::Path::from(format!("{prefix}/csv/{name}")),
+                    body.as_bytes().to_vec().into(),
+                )
+                .await?;
+        }
+        let json_prefix = format!("{prefix}-json");
+        for (name, body) in [
+            (
+                "part-0.json",
+                "{\"id\":1,\"name\":\"alice\"}\n{\"id\":2,\"name\":\"bob\"}\n",
+            ),
+            ("part-1.json", "{\"id\":3,\"name\":\"carol\"}\n"),
+        ] {
+            store
+                .put(
+                    &object_store::path::Path::from(format!("{json_prefix}/{name}")),
+                    body.as_bytes().to_vec().into(),
+                )
+                .await?;
+        }
+
+        let parquet_prefix = format!("{prefix}-parquet");
+        let parquet_batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["alice", "bob", "carol"])) as ArrayRef,
+            ],
+        )?;
+        let mut parquet_bytes = Vec::new();
+        {
+            let mut writer =
+                ArrowWriter::try_new(&mut parquet_bytes, Arc::clone(&schema), None)?;
+            writer.write(&parquet_batch)?;
+            writer.close()?;
+        }
+        store
+            .put(
+                &object_store::path::Path::from(format!(
+                    "{parquet_prefix}/part-0.parquet"
+                )),
+                parquet_bytes.into(),
+            )
+            .await?;
+
+        let store_config = ExternalFileStoreConfig {
+            endpoint: Some(endpoint.clone()),
+            access_key_id: Some(access_key.clone()),
+            secret_access_key: Some(secret_key.clone()),
+            session_token: None,
+            region: Some("us-east-1".to_string()),
+            virtual_host_style: false,
+            allow_http: true,
+        };
+        let store: Arc<dyn ObjectStore> = Arc::new(store);
+        let catalog = MemoryCatalogProvider::new();
+        let schema_provider = MemorySchemaProvider::new();
+        for (name, path, format, extra) in [
+            (
+                "external_csv_events",
+                format!("s3://{bucket}/{prefix}/csv/"),
+                "csv",
+                Some(("has_header", "true")),
+            ),
+            (
+                "external_json_events",
+                format!("s3://{bucket}/{json_prefix}/"),
+                "json",
+                None,
+            ),
+            (
+                "external_parquet_events",
+                format!("s3://{bucket}/{parquet_prefix}/"),
+                "parquet",
+                None,
+            ),
+        ] {
+            let mut options = BTreeMap::new();
+            options.insert("path".to_string(), path);
+            options.insert("format".to_string(), format.to_string());
+            if let Some((key, value)) = extra {
+                options.insert(key.to_string(), value.to_string());
+            }
+            let spec = ExternalFileSpec::parse(&options)?;
+            let provider = ExternalFileTableProvider::try_new_with_store(
+                name.to_string(),
+                spec,
+                Arc::clone(&schema),
+                store_config.clone(),
+                Arc::clone(&store),
+            )?;
+            schema_provider.register_table(name.to_string(), Arc::new(provider))?;
+        }
+        catalog.register_schema("public", Arc::new(schema_provider))?;
+        context.register_catalog("external", Arc::new(catalog));
+
+        for table in [
+            "external_csv_events",
+            "external_json_events",
+            "external_parquet_events",
+        ] {
+            let query =
+                format!("SELECT id, name FROM external.public.{table} ORDER BY id");
+            let batches = context.sql(&query).await?.collect().await?;
+            let rows: Vec<(i64, Option<String>)> = batches
+                .iter()
+                .flat_map(|batch| {
+                    let ids = batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap();
+                    let names = batch
+                        .column(1)
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .unwrap();
+                    (0..batch.num_rows())
+                        .map(|row| (ids.value(row), Some(names.value(row).to_string())))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            assert_eq!(
+                rows,
+                vec![
+                    (1, Some("alice".to_string())),
+                    (2, Some("bob".to_string())),
+                    (3, Some("carol".to_string()))
+                ],
+                "table {table}"
+            );
+        }
+
+        context
+            .sql("INSERT INTO external.public.external_csv_events VALUES (4, 'dave')")
+            .await?
+            .collect()
+            .await?;
+        let batches = context
+            .sql("SELECT id, name FROM external.public.external_csv_events ORDER BY id")
+            .await?
+            .collect()
+            .await?;
+        let rows: Vec<(i64, Option<String>)> = batches
+            .iter()
+            .flat_map(|batch| {
+                let ids = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                let names = batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                (0..batch.num_rows())
+                    .map(|row| (ids.value(row), Some(names.value(row).to_string())))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (1, Some("alice".to_string())),
+                (2, Some("bob".to_string())),
+                (3, Some("carol".to_string())),
+                (4, Some("dave".to_string()))
+            ],
+            "append"
         );
         workers.shutdown().await;
         Ok(())

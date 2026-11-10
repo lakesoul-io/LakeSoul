@@ -91,6 +91,7 @@ downcast-rs = "2"
 
 [dev-dependencies]
 ctor = "0.4"
+tempfile.workspace = true
 # Captures the write-path metrics in the unit tests.
 metrics-exporter-prometheus = { workspace = true }
 # The W3C propagator used by the global text-map propagator normally installed

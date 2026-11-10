@@ -2,7 +2,7 @@
 
 LakeSoul 的 PostgreSQL 端点可以把其他数据库中的表映射成当前 LakeSoul namespace 下的外部表。查询通过 [ADBC](https://arrow.apache.org/adbc/) driver 读取远端表，并可以与 LakeSoul 本地表在同一个 DataFusion 计划中 join。`INSERT INTO` 通过同一个 driver 写入。
 
-端点把 server、user mapping 和 foreign table 保存在元数据 PostgreSQL 的 `federation` schema。查询计划只携带 server key，用户名密码保留在元数据中，由 coordinator 或分布式 worker 解析。projection、filter 和 limit 的下推使用 server 上记录的 SQL dialect。
+端点把 server、user mapping 和 foreign table 保存在元数据 PostgreSQL 的 `federation` schema。对于 ADBC 表，查询计划只携带 server key，用户名密码保留在元数据中，由 coordinator 或分布式 worker 解析。外部文件 scan plan 会携带 S3 store 配置（包括凭据），worker 在执行时注册 store；详见下文“S3 外部文件”一节。projection、filter 和 limit 的下推使用 server 上记录的 SQL dialect。
 
 ## 安装 ADBC driver
 
@@ -158,3 +158,129 @@ coordinator 使用 server 上保存的 dialect 生成远端 SQL；worker 只执�
 - 暂不支持 `ALTER SERVER`、`ALTER FOREIGN TABLE`、`GRANT` 和 FDW catalog view。
 - foreign table 声明的 schema 就是类型契约。源库中无法用端点的 Arrow/PostgreSQL 类型表示的类型，需要显式 cast 或声明兼容列。
 - 同一个查询中的多张 foreign table 使用各自连接，不共享远端事务快照。
+
+## S3 外部文件（`external_file_wrapper`）
+
+`external_file_wrapper` 使用 DataFusion `ListingTable` 把 S3 前缀暴露为外表。
+表的 `path` 直接写完整 S3 URL，server 只保存 S3 连接配置：
+
+```sql
+CREATE EXTENSION external_file_wrapper;
+
+CREATE SERVER s3_server
+FOREIGN DATA WRAPPER external_file_wrapper
+OPTIONS (
+  endpoint 'http://rustfs:9000',
+  access_key_id 'rustfsadmin',
+  secret_access_key 'rustfsadmin',
+  virtual_host_style 'false'
+);
+
+CREATE FOREIGN TABLE public.events (
+  id          bigint,
+  event_time  timestamp,
+  payload     text
+)
+SERVER s3_server
+OPTIONS (
+  path   's3://lakehouse/external/events/',
+  format 'parquet'
+);
+```
+
+`path` 必须是完整的 `s3://` 或 `s3a://` URL（`s3a://` 会规范化为 `s3://`）。
+以 `/` 结尾表示目录，应指向直接包含数据文件的目录；不以 `/` 结尾表示单个对象。`format` 支持
+`parquet`、`csv`、`json`；单文件可以根据扩展名省略 `format`。
+
+该 wrapper 使用 server-level 凭据，不接受 `CREATE USER MAPPING` 的 options。
+S3-compatible 服务通常需要 `virtual_host_style 'false'`（path-style 访问）。
+支持 `endpoint`、`access_key_id`/`ak`、`secret_access_key`/`sk`、
+`session_token`、`region` 和 `allow_http`。凭据保存在元数据 PostgreSQL 中，需要保护该数据库；
+生产环境优先使用短期凭据或实例/IAM role。
+
+CSV/JSON 常用选项：
+
+```sql
+CREATE FOREIGN TABLE public.csv_events (
+  id bigint,
+  name text
+)
+SERVER s3_server
+OPTIONS (
+  path        's3://lakehouse/external/csv/',
+  format      'csv',
+  has_header  'true',
+  delimiter   ','
+);
+
+CREATE FOREIGN TABLE public.json_events (
+  id bigint,
+  name text
+)
+SERVER s3_server
+OPTIONS (
+  path       's3://lakehouse/external/json/',
+  format     'json',       -- 默认 newline-delimited JSON
+  json_array 'false'
+);
+```
+
+列定义就是 schema contract，不会从文件自动推断。Parquet 缺失的声明列读为
+NULL，兼容类型会做转换；CSV 按列位置解析，因此声明顺序必须和文件一致，
+`has_header` 只负责跳过表头；JSON 按字段名匹配。P0 不支持嵌套 Parquet/JSON
+类型和 Hive partition 列。
+
+同一目录可以包含多种格式，但一个 foreign table 只能选择一种 `format`/扩展名，
+需要按格式分别建表。外表支持 append-only 的 `INSERT INTO`，见下文“向外部文件
+append”。
+
+外部文件扫描参与分布式执行。scan plan 会携带 S3 store 配置（包括凭据），
+worker 在执行前注册 object store，不需要在启动时加载 federation 元数据。
+由于凭据会进入 plan payload，coordinator 和 worker 之间应使用 TLS 或可信网络，
+并避免把 plan payload 打到日志里。coordinator 和 worker 必须使用相同的分布式
+协议版本。
+
+P0 每个外部扫描是一个分布式 task；文件级并行扫描是后续优化。多个 server 可以
+指向同一个 bucket，但 object store registry 按 bucket 记录，同 bucket 使用不同
+凭据会互相覆盖；目前应保证一个 bucket 只有一套凭据。
+
+其他 P0 限制：
+
+- 只支持 S3 / S3-compatible；不暴露本地文件和 HDFS。
+- 未实现 `IMPORT FOREIGN SCHEMA` 和 `ALTER FOREIGN TABLE`；使用显式列定义，
+  修改 path/format 需要 drop 后重建。
+- 外部文件是不可变输入，没有 snapshot、事务或 time travel；查询期间不要原地
+  覆盖文件。
+- 空前缀是合法的，会返回空表。
+
+## 向外部文件 append
+
+外部文件外表支持 append-only 的 `INSERT INTO`：
+
+```sql
+INSERT INTO public.events
+SELECT id, event_time, payload FROM local_events;
+
+INSERT INTO public.events VALUES (1, now(), 'raw');
+```
+
+目标 `path` 必须是目录（以 `/` 结尾）；向单个对象写入会被拒绝。每个输入 partition
+对应一个 writer task，DataFusion 的 file sink 会在目标目录下写入新的、文件名唯一的
+文件。`VALUES` 只有一个输入 partition，因此写一个文件；分布式 `SELECT` 可能写
+多个文件。
+
+没有事务、原子性或回滚：
+
+- 语句失败时，已经完成的 task 写入的文件会保留；
+- 成功 task 写入的文件在语句结束前就可能被读取；
+- 重试同一语句会再次 append，可能产生重复数据；
+- 不做清理，也不做 compaction。
+
+不支持 `INSERT OVERWRITE`、`INSERT ... ON CONFLICT`、`UPDATE`、`DELETE` 和
+`RETURNING`。目标格式由 foreign table 固定（`parquet`、`csv` 或 `json`）；
+JSON 输出是 newline-delimited。write plan 会携带和 scan 相同的 server-level
+S3 store 配置，worker 在执行时注册 object store。凭据进入 plan 的安全权衡，以及
+同 bucket 多套凭据互相覆盖的限制，同样适用于写入。
+
+目标必须是非分区目录；P0/P1 不写 Hive-style partition 列。INSERT 不会产生
+LakeSoul commit，因此没有 snapshot、time travel，也没有跨文件的原子可见性。
