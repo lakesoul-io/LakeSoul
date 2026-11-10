@@ -29,7 +29,7 @@ query node
 ├──────────────────────────────────────────────────────────────┤
 │ L2 SSD: IndexSsdCache (persistent, whole-file entries)       │
 │    key = index 对象路径哈希（segment / mutation 文件）        │
-│    预算 LAKESOUL_INDEX_SSD_BYTES；moka 加权 LRU；跨重启保留  │
+│    预算来自 LAKESOUL_CACHE_SIZE 的 index 份额；moka 加权 LRU；跨重启保留 │
 ├──────────────────────────────────────────────────────────────┤
 │ L3 S3: _vector_index/... 的 segment / mutation 文件          │
 │    仅在 L2 miss 时读取；用 IndexCachedStore 包装             │
@@ -43,7 +43,7 @@ query node
   - 但缓存的是 **整个索引文件**（`get`/`get_range` 都按整文件落盘），不是 16 KiB 页；
   - **持久化**：目录不在启动时清空；残留 `.tmp` 清理后，已有文件在查询命中时惰性注册；
   - 原子写入：下载到 `.tmp` → `sync_all` → `rename`；不会读到半成品；
-  - 预算：`LAKESOUL_INDEX_SSD_BYTES`；容量为 0/unset 时完全关闭；
+  - 预算：`LAKESOUL_CACHE_SIZE` 的 index 份额；总容量为 0 时关闭；
   - 指标：`IndexSsdCache::stats() = (hits, misses, fetched_bytes)`，后续可接 Prometheus。
 - 新增 **`IndexCachedStore`**（实现 `object_store::ObjectStore`）：
   - 只重写 `get_opts`（HEAD/条件 GET 直接委托，避免为 HEAD 下载整文件）；
@@ -61,8 +61,7 @@ query node
 ### 2.2 SSD → Memory：借鉴 LakeSoul 的 moka 缓存设计
 
 - 现有 `index/cache.rs` 已是 moka 加权 LRU；本次增强：
-  - 新增首选 env **`LAKESOUL_INDEX_MEMORY_BYTES`**（兼容旧 `LAKESOUL_INDEX_CACHE_BYTES` /
-    `LAKESOUL_VECTOR_INDEX_CACHE_BYTES`）；
+  - L1 预算来自 **`LAKESOUL_VECTOR_MEMORY_BYTES`**（内部自动分配）；
   - 增加 `lakesoul_index_cache_{hits,misses,evictions}_total` 指标；
   - 保留 commit 校验、singleflight `try_get_with`、类型擦除、超预算 entry 直接再次加载等行为。
 - 消费路径：
@@ -74,21 +73,55 @@ query node
 
 ## 3. 配置
 
-| 变量 | 含义 | 默认 |
-|---|---|---|
-| `LAKESOUL_INDEX_MEMORY_BYTES` | L1 内存预算（兼容旧名） | 512 MiB；`0` 关闭 |
-| `LAKESOUL_INDEX_SSD_BYTES` | L2 SSD 字节预算 | `0`（关闭，需显式开启） |
-| `LAKESOUL_INDEX_SSD_DIR` | L2 目录 | `${LAKESOUL_CACHE_PATH}/index-cache` 或 `${TMPDIR}/lakesoul-index-cache` |
-| `LAKESOUL_INDEX_SSD_KIND` | 缓存命名空间 | `index-v1` |
-| `LAKESOUL_VECTOR_SNAPSHOT_CACHE=0` | 关闭快照缓存（既有） | 开启 |
+### 3.1 公共变量（与 exact 共用同一套）
 
-示例：
+| 变量 | 所属层 | 默认 | 含义 |
+|---|---|---|---|
+| `LAKESOUL_VECTOR_CACHE` | 总开关 | 开 | `0` 关闭向量缓存；index-only 变慢但结果不变 |
+| `LAKESOUL_VECTOR_MEMORY_BYTES` | L1 Memory | 512 MiB | 进程内总预算；cluster/directory/block 自动分配 |
+| `LAKESOUL_CACHE_PATH` | L2 SSD | `lakesoul_cache_dir` | index segment 文件与 exact block 共用根目录 |
+| `LAKESOUL_CACHE_SIZE` | L2 SSD | 1 GiB（配置 L2 时） | L2 总容量；`0` 关闭 L2 |
+| `LAKESOUL_VECTOR_LAZY_INDEX` | index 读取 | auto | cluster 数 ≥64 时只加载 probe 的 cluster |
+
+index-only 与 exact 不再各自配置容量。内部：
+
+```text
+LAKESOUL_VECTOR_MEMORY_BYTES
+  ├─ directory/snapshot
+  ├─ cluster cache（index-only 主用）
+  └─ block cache（只有 exact 活跃时占用）
+
+LAKESOUL_CACHE_SIZE
+  ├─ index segment 文件
+  └─ exact decoded block / PK key index
+```
+
+### 3.2 兼容/专家变量
+
+以下旧变量仍可用，但不属于公共配置，后续会移除：
+
+```text
+LAKESOUL_INDEX_MEMORY_BYTES / LAKESOUL_INDEX_CACHE_BYTES
+LAKESOUL_INDEX_SSD_BYTES / _DIR / _KIND
+LAKESOUL_VECTOR_CLUSTER_CACHE_BYTES
+LAKESOUL_VECTOR_SNAPSHOT_CACHE_BYTES
+LAKESOUL_VECTOR_BLOCK_CACHE_BYTES / _ROWS / _BYTES
+LAKESOUL_VECTOR_BLOCK_SOURCE_CACHE
+```
+
+### 3.3 示例
 
 ```bash
-export LAKESOUL_INDEX_SSD_BYTES=34359738368          # 32 GiB
-export LAKESOUL_INDEX_SSD_DIR=/data/lakesoul/index-cache
-export LAKESOUL_INDEX_MEMORY_BYTES=1073741824        # 1 GiB
+export LAKESOUL_VECTOR_CACHE=1
+export LAKESOUL_VECTOR_MEMORY_BYTES=4GiB
+export LAKESOUL_CACHE_PATH=/data/lakesoul/cache
+export LAKESOUL_CACHE_SIZE=100GiB
+export LAKESOUL_VECTOR_LAZY_INDEX=auto
 ```
+
+index-only 可以只开 L1（`LAKESOUL_CACHE_SIZE=0`），但重启/淘汰后要从 S3 重新读
+index 文件；配置 L2 后 index segment 会落本地 SSD。exact 需要 L2；没有 L2 时
+exact 自动回退 reader，结果正确但慢。
 
 ## 4. 正确性
 
@@ -142,7 +175,7 @@ export LAKESOUL_INDEX_MEMORY_BYTES=1073741824        # 1 GiB
 
 ## 6. 已知限制 / 后续
 
-1. **默认关闭**：`LAKESOUL_INDEX_SSD_BYTES=0`；需要部署方显式开启并管理 SSD 目录。
+1. **L2 由 `LAKESOUL_CACHE_SIZE` 控制**：未配置时只有 L1/S3；配置后 index 份额自动启用。
 2. **启动惰性注册**：进程启动不扫描/打开所有缓存文件；首次访问才注册进 moka，
    因此重启后的首个查询仍有一次全量文件打开/解析成本（本测试 ~175 ms）。
 3. **无内容校验**：依赖索引文件不可变 + 索引 segment 自带 CRC；若本地缓存文件被截断，

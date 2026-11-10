@@ -13,14 +13,14 @@
 | Python batch API | `LakeSoulTable.search_batch`，200 query 一次调用，内部走 native snapshot batch |
 | pgvector SQL loop | `postgres-lakesoul` PG wire，psycopg 单连接顺序执行 `<->` SQL |
 
-exact 的公共缓存配置：
+exact/index-only 的统一公共缓存配置：
 
 ```bash
-LAKESOUL_CACHE=1                 # 必需：S3-SSD 数据页 + 按需 decoded-block 缓存
+LAKESOUL_VECTOR_CACHE=1
+LAKESOUL_VECTOR_MEMORY_BYTES=8GiB
 LAKESOUL_CACHE_PATH=/tmp/lakesoul-batch-cache
-LAKESOUL_CACHE_SIZE=8GiB
-LAKESOUL_VECTOR_BLOCK_ROWS=256
-LAKESOUL_VECTOR_BLOCK_CACHE_BYTES=268435456
+LAKESOUL_CACHE_SIZE=100GiB
+LAKESOUL_VECTOR_LAZY_INDEX=auto
 ```
 
 没有整文件 payload 配置；`LAKESOUL_VECTOR_RERANK_CACHE*` 已删除。
@@ -52,7 +52,7 @@ native snapshot batch 的 exact 路径现在支持**一个 hash bucket 下多个
 
 - 快照覆盖性证明通过：索引提交覆盖快照全部文件、无 mutation 链、无 CDC 列；
 - 单个 `Int64` 主键 `id`；
-- `LAKESOUL_CACHE=1` 的按需 decoded-block cache；
+- `LAKESOUL_VECTOR_CACHE` / `LAKESOUL_CACHE_SIZE` 的按需 decoded-block cache；
 - L2 度量，向量列为 `Float32` 的 `List`/`FixedSizeList`；
 - 多文件时每个文件必须能由当前 index generation 给出 `birth_version` rank。
 

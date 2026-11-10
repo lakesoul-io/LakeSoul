@@ -1,3 +1,8 @@
+> 缓存配置已收敛为 5 个公共变量（`LAKESOUL_VECTOR_CACHE`、
+> `LAKESOUL_VECTOR_MEMORY_BYTES`、`LAKESOUL_CACHE_PATH`、`LAKESOUL_CACHE_SIZE`、
+> `LAKESOUL_VECTOR_LAZY_INDEX`），旧变量仅作兼容；见
+> [exact三级缓存.md](exact三级缓存.md) 与 [index-only三级缓存.md](index-only三级缓存.md)。
+
 # DataFusion 向量 QPS 接近 Rust 内核的方案（第二版）
 
 > 本文件是第一份 [端到端 QPS 分析方案](./端到端向量检索QPS分析与优化方案.md) 的延续，专门说明如何满足“先用 GloVe 验证，index-only、不做 Upsert，并把 QPS 提升到接近纯 Rust”的目标。上一份方案仍保留为诊断和缓存/PK locator 对照记录。实施仍只限向量检索；不改变 LakeSoul 表格式、PG/ACID 提交、快照、merge-on-read、PK 语义或其他索引。

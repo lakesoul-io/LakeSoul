@@ -1,3 +1,8 @@
+> 缓存配置已收敛为 5 个公共变量（`LAKESOUL_VECTOR_CACHE`、
+> `LAKESOUL_VECTOR_MEMORY_BYTES`、`LAKESOUL_CACHE_PATH`、`LAKESOUL_CACHE_SIZE`、
+> `LAKESOUL_VECTOR_LAZY_INDEX`），旧变量仅作兼容；见
+> [exact三级缓存.md](exact三级缓存.md) 与 [index-only三级缓存.md](index-only三级缓存.md)。
+
 # LakeSoul fresh index-only QPS 分析与向量路径优化方案
 
 > 本方案针对 SIFT-128 fresh index-only 约 12.7 QPS 的 LakeSoul 端到端现象。`LakeSoul 向量索引改进前后基准测试报告.md` 仅参考其线程/测量说明，不照搬其中的核心 QPS 数字、bits/nprobe 或单索引负载。方案只优化向量检索，不改变湖仓表数据、事务、快照、Upsert/Delete、merge-on-read 或其他索引语义。
@@ -16,12 +21,12 @@ Daft 的 `rerank="index"` 分支投影主键和保留的向量距离，不读向
 
 向量索引 cache 与 PK locator 所依赖的共享磁盘 cache 是两套配置：
 
-- `LAKESOUL_INDEX_CACHE_BYTES` 控制内存中的 vector/text index cache；
+- `LAKESOUL_INDEX_MEMORY_BYTES` 控制内存中的 vector/text index cache（旧名 `LAKESOUL_INDEX_CACHE_BYTES`）；
 - PK locator 要求 `LAKESOUL_CACHE` 已设置，且 `LAKESOUL_CACHE_SIZE` 对应的 cache capacity 非零。
 
 [PK locator 的开关](../../rust/lakesoul-io/src/pk_locator.rs#L107-L153)；[独立 disk-cache 初始化](../../rust/lakesoul-io/src/cache/mod.rs#L68-L102)。Vortex 格式本身不会自动开启 locator。
 
-此前 SIFT 基准记录了 `LAKESOUL_INDEX_CACHE_BYTES=8GiB`，但没有记录/设置 `LAKESOUL_CACHE`。在所述运行环境 `LAKESOUL_CACHE` 未设置的前提下，`try_build_key_inputs_encoded()` 会在 locator cache gate 处返回 `None`；`file_filter_pushdown` 默认也是关闭的，候选 PK Filter 留在普通扫描/merge 路径。[encoded key locator gate](../../rust/lakesoul-io/src/pk_locator.rs#L2056-L2068)；[过滤下推默认值](../../rust/lakesoul-io/src/config/mod.rs#L311-L315)；[下推判断](../../rust/lakesoul-io/src/session.rs#L833-L863)。
+此前 SIFT 基准记录了 `LAKESOUL_INDEX_MEMORY_BYTES=8GiB`（当时的旧名是 `LAKESOUL_INDEX_CACHE_BYTES`），但没有记录/设置 `LAKESOUL_CACHE`。在所述运行环境 `LAKESOUL_CACHE` 未设置的前提下，`try_build_key_inputs_encoded()` 会在 locator cache gate 处返回 `None`；`file_filter_pushdown` 默认也是关闭的，候选 PK Filter 留在普通扫描/merge 路径。[encoded key locator gate](../../rust/lakesoul-io/src/pk_locator.rs#L2056-L2068)；[过滤下推默认值](../../rust/lakesoul-io/src/config/mod.rs#L311-L315)；[下推判断](../../rust/lakesoul-io/src/session.rs#L833-L863)。
 
 这种路径会读取四个 bucket 文件组中的主键列并参与 merge/过滤，尽管最终只输出少量候选、没有读取向量列。对 900K 行表，这比单纯的内存 ANN 查询多了主要工作量，很可能是 fresh 78ms 的首要来源。**这是根据脚本环境和分支条件的推断；仍应通过 locator profile 或读取字节/行数验证，不应仅凭 QPS 声称其占据了多少毫秒。**
 
