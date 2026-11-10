@@ -5533,6 +5533,20 @@ impl IvmRuntime {
                 &view.right.schema,
                 view.right_filter.as_deref(),
             )?;
+            // A computed join key is materialized under its key name before
+            // the keyed side lookups and the keyed join projection.
+            let left_delta = super::join_state::materialize_join_keys(
+                &context,
+                left_delta,
+                &view.key_exprs.left,
+                &view.join_keys,
+            )?;
+            let right_delta = super::join_state::materialize_join_keys(
+                &context,
+                right_delta,
+                &view.key_exprs.right,
+                right_join_keys,
+            )?;
 
             let full_left = || -> Result<DataFrame> {
                 let frame = if let Some(state) = &left_side_state {
@@ -5564,12 +5578,8 @@ impl IvmRuntime {
             // Both sides are keyed and use plain key columns: the changed
             // rows are the deltas, and the opposite side is read by the
             // delta's join keys.  This avoids a full read of either state.
-            let fast = !view.null_safe
-                && !view.left.primary_keys.is_empty()
-                && !view.right.primary_keys.is_empty()
-                && (view.right_keys.is_empty() || view.right_keys == view.join_keys)
-                && view.key_exprs.left.iter().all(|expr| expr.is_empty())
-                && view.key_exprs.right.iter().all(|expr| expr.is_empty());
+            let fast =
+                !view.left.primary_keys.is_empty() && !view.right.primary_keys.is_empty();
             let empty_left = context
                 .read_batches(vec![RecordBatch::new_empty(view.left.schema.clone())])?;
             let empty_right = context
@@ -5586,7 +5596,7 @@ impl IvmRuntime {
                     empty_right.clone()
                 };
                 let right_for_left = if left_changed {
-                    apply_side_filter(
+                    let filtered = apply_side_filter(
                         &context,
                         self.lookup_right_rows_for_left_keys(
                             &context,
@@ -5598,12 +5608,18 @@ impl IvmRuntime {
                         .await?,
                         &view.right.schema,
                         view.right_filter.as_deref(),
+                    )?;
+                    with_computed_keys(
+                        &context,
+                        filtered,
+                        &view.key_exprs.right,
+                        right_join_keys,
                     )?
                 } else {
                     empty_right.clone()
                 };
                 let left_for_right = if right_changed {
-                    apply_side_filter(
+                    let filtered = apply_side_filter(
                         &context,
                         self.lookup_left_rows_for_right_keys(
                             &context,
@@ -5614,6 +5630,12 @@ impl IvmRuntime {
                         .await?,
                         &view.left.schema,
                         view.left_filter.as_deref(),
+                    )?;
+                    with_computed_keys(
+                        &context,
+                        filtered,
+                        &view.key_exprs.left,
+                        &view.join_keys,
                     )?
                 } else {
                     empty_left.clone()
