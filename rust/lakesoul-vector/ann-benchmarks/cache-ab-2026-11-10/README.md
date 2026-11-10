@@ -26,6 +26,13 @@
 查询：SIFT/GloVe/GIST NQ=100（缓存开启）/NQ=20（缓存关闭）；Deep NQ=50/20。
 top_k=100，exact_overfetch=1，4 个 hash bucket。
 
+
+> **RSS 测量说明（重要）**：本报告 `raw/` 中的搜索 RSS 来自旧版
+> `search2.py`，脚本在搜索进程里同时保留了完整 `train` 数组（GIST/Deep 各
+> 3.84 GB）。因此 raw 中的 GIST/Deep RSS 包含 **3.8 GB 的 base 数据**，不是纯粹
+> 的查询 cache RSS；SIFT/GloVe 也分别包含 0.52/0.95 GB。新版脚本已 `del train`，
+> 后续重测应使用 `VmRSS_after - baseline` 或 `VmHWM` 减去 base 数据占用。
+
 ## 3. 缓存配置
 
 缓存开启：

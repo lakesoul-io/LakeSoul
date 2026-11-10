@@ -5,7 +5,12 @@ from common2 import *
 from lakesoul import LakeSoulCatalog
 name=sys.argv[1]; nlist=int(sys.argv[2]); bits=int(sys.argv[3]); nprobe=int(sys.argv[4]); cache=sys.argv[5]
 d=DATASETS[name]; TOP=100; NQ=d["nq"] if cache=="on" else d["nq_off"]
-train,test,gt=load_split(name); qs=test[:NQ]; gt=gt[:NQ,:TOP]
+train,test,gt=load_split(name)
+# The search process only needs queries and ground truth.  Holding `train`
+# would add the full base-vector array (3.8 GB for GIST/Deep) to RSS and make
+# the measurement look like search memory instead of benchmark-script memory.
+del train
+qs=test[:NQ]; gt=gt[:NQ,:TOP]
 cat=LakeSoulCatalog.from_env(object_store_options=OPTIONS); s=cat.session(vector_search={"rerank":"index"},object_store_options=OPTIONS,warehouse_prefix=f"s3://{BUCKET}/"); t=cat.table(d["table"])
 def search(q,rerank):
  return t.search(q.tolist(),top_k=TOP,rerank=rerank,nprobe=nprobe,exact_overfetch=1,metric=d["metric"],session=s).column("id").to_pylist()
