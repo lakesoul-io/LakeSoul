@@ -38,7 +38,8 @@ VectorBlockSource（每 data file / 向量列一个）
 
 ## 3. block 定义
 
-- 行数：`LAKESOUL_VECTOR_BLOCK_ROWS`，默认 **256**；
+- 行数：`LAKESOUL_VECTOR_BLOCK_ROWS`；未设置时按 `LAKESOUL_VECTOR_BLOCK_BYTES`
+  （默认 256 KiB）自适应，GIST 等宽向量会自动变小，避免单 block 过大；
 - 200d f32 时 block 约 `256 × 200 × 4 = 200 KiB`；
 - Key：`(source_hash, field_hash, block_id)`；
 - block 内容：该 block 内所有向量行，row-major little-endian；
@@ -84,25 +85,48 @@ VectorBlockSource（每 data file / 向量列一个）
 
 ## 6. 配置
 
+### 6.1 变量总表
+
+| 变量 | 所属层 | 默认 | 含义 |
+|---|---|---|---|
+| `LAKESOUL_CACHE` | L2 SSD | 关闭 | 开启通用 `DiskCache`（S3→SSD）。exact direct **必需**；未设置时 exact direct 不启用，回退 reader（正确但慢） |
+| `LAKESOUL_CACHE_PATH` | L2 SSD | `lakesoul_cache_dir`（相对当前目录） | 通用缓存目录；PK key index、decoded block、原始数据页共用 |
+| `LAKESOUL_CACHE_SIZE` | L2 SSD | 1 GiB | 通用缓存容量上限；**必须带单位后缀** `KiB` / `MiB` / `GiB` / `TiB`，无后缀会按默认 1 GiB 处理 |
+| `LAKESOUL_VECTOR_BLOCK_ROWS` | L1 / block 粒度 | 自适应 | 每个 decoded block 的行数；未设置时按目标 `LAKESOUL_VECTOR_BLOCK_BYTES`（默认 256 KiB）计算 |
+| `LAKESOUL_VECTOR_BLOCK_BYTES` | L1 / block 粒度 | 256 KiB | 自适应 block 的目标字节数 |
+| `LAKESOUL_VECTOR_BLOCK_CACHE_BYTES` | L1 Memory | 256 MiB | 解码块的内存 LRU 预算；`0` 表示不使用内存层（仍可用 L2） |
+| `LAKESOUL_VECTOR_BLOCK_CACHE` | 开关 | 开启 | `=0` 关闭按需 block 路径（exact direct 不可用，回退 reader） |
+| `LAKESOUL_VECTOR_BLOCK_SOURCE_CACHE` | 辅助 Memory | 开启（固定 16 项） | `=0` 关闭 `VectorBlockSource` 句柄缓存（避免每 query 重开 key index） |
+| `LAKESOUL_INDEX_MEMORY_BYTES` | 共享 L1 Memory | 512 MiB | ANN 候选探测的已解析索引缓存；exact 与 index-only 共用。旧名：`LAKESOUL_INDEX_CACHE_BYTES`、`LAKESOUL_VECTOR_INDEX_CACHE_BYTES` |
+| `LAKESOUL_VECTOR_SNAPSHOT_CACHE` | 共享辅助 Memory | 开启（2 条） | `=0` 关闭候选扫描快照缓存；预算见 `LAKESOUL_VECTOR_SNAPSHOT_CACHE_BYTES` |
+| `LAKESOUL_VECTOR_LAZY_INDEX` | index 读取 | auto | cluster 数 ≥64 时只加载 probe 的 cluster；`0` 强制整 shard |
+| `LAKESOUL_VECTOR_CLUSTER_CACHE_BYTES` | lazy cluster | 1 GiB | 只缓存被 probe 的 cluster |
+| `LAKESOUL_VECTOR_MEMORY_BYTES` | 总预算提示 | — | 为 cluster/block/snapshot 提供默认配额 |
+
+- L3 是对象存储（S3/MinIO），没有缓存变量，是原始数据文件的唯一真源。
+- exact **不使用** index-only 的 `LAKESOUL_INDEX_SSD_*`：exact 的索引加载走通用缓存/常规路径，不经过 `IndexSsdCache`。
+- `LAKESOUL_METADATA_TTL_MS` 不属于三级缓存，只控制元数据可见性延迟。
+- 没有 `LAKESOUL_VECTOR_RERANK_CACHE*` 任何开关。
+
+### 6.2 示例
+
 ```bash
-# 必需：按需 block cache 复用 LAKESOUL_CACHE 的 S3-SSD DiskCache
+# L2 SSD：通用 DiskCache（exact direct 必需）
 export LAKESOUL_CACHE=1
 export LAKESOUL_CACHE_PATH=/data/lakesoul/cache
 export LAKESOUL_CACHE_SIZE=8GiB
 
-# block 配置
+# L1 Memory：按需 decoded block
 export LAKESOUL_VECTOR_BLOCK_ROWS=256
-export LAKESOUL_VECTOR_BLOCK_CACHE_BYTES=268435456   # L1，默认 256 MiB
-# export LAKESOUL_VECTOR_BLOCK_CACHE=0                # 关闭 block cache
+export LAKESOUL_VECTOR_BLOCK_CACHE_BYTES=268435456   # 默认 256 MiB
+# export LAKESOUL_VECTOR_BLOCK_CACHE=0                # 关闭按需 block（回退 reader）
 
-# 可选：block source 缓存（避免每 query 重开 key index；默认开）
+# 辅助：block source 句柄缓存（默认开）
 # export LAKESOUL_VECTOR_BLOCK_SOURCE_CACHE=0
-```
 
-- 没有 `LAKESOUL_CACHE` 时 exact direct 不启用，回退 reader（正确但慢）；
-- 没有 `LAKESOUL_VECTOR_RERANK_CACHE*` 任何开关；
-- `LAKESOUL_VECTOR_BLOCK_CACHE=0` 关闭 block 路径；
-- L1 预算为 0 时仍可用 L2。
+# 共享：ANN 候选探测的已解析索引缓存
+export LAKESOUL_INDEX_MEMORY_BYTES=536870912         # 默认 512 MiB
+```
 
 ## 7. 与批查询的关系
 
@@ -134,6 +158,19 @@ export LAKESOUL_VECTOR_BLOCK_CACHE_BYTES=268435456   # L1，默认 256 MiB
 10 条 query 的 native multi-file exact 与 SQL exact **10/10 一致**。
 多文件 batch 与单文件同量级（+1.8% QPS、+~90 MB RSS）；增量 index 的
 mutation chain 仍会回退，本测试先做 full rebuild。
+
+## 7.2 cluster-lazy 对大 index exact 的影响
+
+Deep-Image 10M 同表（nlist=1024、bits=1、nprobe=16、NQ=100）：
+
+| 模式 | eager | cluster-lazy |
+|---|---:|---:|
+| exact 单查询 | 1.90 QPS / RSS 2026 MB | **9.72 QPS / RSS 1808 MB** |
+| exact batch | 92.4 QPS / RSS 2894 MB | **291.3 QPS / RSS 2481 MB** |
+
+index 侧只加载 probe 的 cluster；exact 仍使用 decoded-block cache，但不再为
+每个 query 重载完整 index，因此 QPS 和 RSS 都改善。GIST-960 的 exact 仍主要
+受 3.84 KB/行、~984 KB/block 的 block 读放大限制。
 
 ## 8. GloVe-200 / MinIO 实测
 

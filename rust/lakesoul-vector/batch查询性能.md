@@ -142,6 +142,22 @@ GloVe-1.18M×200d，4 bucket，每桶 **2 个数据文件**（两次 disjoint �
 - 前提仍是覆盖性证明：两次增量 index 的 mutation chain 会 fallback；本次先
   `rebuild_vector_index()`。
 
+## 3.2 大 index 的 cluster-lazy 实测（Deep-Image 10M）
+
+同一张 Deep-Image 表（4 bucket、nlist=1024、bits=1、nprobe=16、NQ=100）对比
+cluster-lazy 与 eager：
+
+| 指标 | eager | cluster-lazy | 变化 |
+|---|---:|---:|---:|
+| index 单查询 | 2.50 QPS / 首查 1933 ms / RSS 1412 MB | **65.6 QPS / 274 ms / 903 MB** | 26× / -36% |
+| index batch | 120.4 QPS / 430 ms / RSS 1419 MB | **699.2 QPS / 142 ms / 918 MB** | 5.8× / -35% |
+| exact 单查询 | 1.90 QPS / 1536 ms / RSS 2026 MB | **9.72 QPS / 1118 ms / 1808 MB** | 5.1× / -11% |
+| exact batch | 92.4 QPS / 697 ms / RSS 2894 MB | **291.3 QPS / 396 ms / 2481 MB** | 3.2× / -14% |
+
+cluster 数 ≥64 时自动启用；`LAKESOUL_VECTOR_LAZY_INDEX=0` 可强制 old eager
+路径做 A/B。首次 lazy open 会读取每个 cluster 的 centroid（range read），之后
+只加载被 probe 的 cluster，不再整 shard 进 heap。
+
 ## 4. 观察
 
 1. **DataFusion SQL loop** 每 query 重新 planning，明显低于 native batch；
