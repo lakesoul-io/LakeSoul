@@ -183,4 +183,7 @@ PG_SERVICE_PID=<pid> python scripts/pgbench.py sift 32
 - exact 的 block cache 是 warm 状态；冷查询会更慢；
 - 每次切换 index 配置都会重建 index generation，切换后 block cache 可能保留旧候选块；
 - Deep-Image 的 NQ=100，其他数据集 NQ=200；批量 QPS 为 3 轮 warm 平均；
-- pgvector 结果使用当时最后的 bits=7 index 配置（SIFT/GloVe/GIST nlist=1024、Deep nlist=4096）。
+- pgvector 结果使用当时最后的 bits=7 index 配置（SIFT/GloVe/GIST nlist=1024、
+  Deep nlist=4096）；pgvector 服务是在**同一个进程内顺序**跑完四个数据集，前一个
+  数据集的 index/block cache 可能仍占用内存，Deep 的服务端 RSS/QPS 受此影响，不能
+  当作 fresh-process 数据；pgvector 服务二进制为当时已有的 `f464e5be` 构建。
