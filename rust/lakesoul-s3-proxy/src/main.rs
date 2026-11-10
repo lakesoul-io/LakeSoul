@@ -29,7 +29,7 @@ use pingora::prelude::*;
 use pingora::protocols::l4::socket::SocketAddr;
 use pingora::server::ShutdownWatch;
 use pingora::services::background::BackgroundService;
-use prometheus::{IntCounter, register_int_counter};
+use pingora_prometheus::prometheus::{IntCounter, register_int_counter};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::net::{IpAddr, SocketAddrV4};
@@ -163,8 +163,7 @@ fn main() {
     proxy_server.add_service(lb);
 
     // add prometheus endpoint
-    let mut prometheus_service_http =
-        pingora::services::listening::Service::prometheus_http_service();
+    let mut prometheus_service_http = pingora_prometheus::prometheus_http_service();
     prometheus_service_http.add_tcp("0.0.0.0:1234");
     proxy_server.add_service(prometheus_service_http);
 

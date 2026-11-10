@@ -25,6 +25,7 @@ use lakesoul_io::config::{
     LakeSoulIOConfigBuilder, OPTION_KEY_CDC_COLUMN, OPTION_KEY_STABLE_SORT,
 };
 use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::transfusion::DataFileInfo;
 use lakesoul_metadata_proto::entity::{PartitionInfo, TableInfo};
 use object_store::{ObjectMeta, ObjectStore, ObjectStoreExt, path::Path};
 use rootcause::{prelude::ResultExt, report};
@@ -33,7 +34,8 @@ use url::Url;
 use crate::Result;
 use lakesoul_common::ser::arrow_java::schema_from_table_info_metadata;
 use lakesoul_io::config::{
-    OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES, OPTION_KEY_VORTEX_ROW_BLOCK_SIZE,
+    OPTION_KEY_VORTEX_VECTOR_DATA_BLOCK_TARGET_BYTES,
+    OPTION_KEY_VORTEX_VECTOR_ROW_BLOCK_SIZE,
 };
 
 use crate::catalog::{LakeSoulTableProperty, parse_table_info_partitions};
@@ -101,6 +103,7 @@ pub(crate) fn create_io_config_builder_from_table_info(
     .into_iter()
     .map(|config| config.column)
     .collect::<Vec<_>>();
+    let has_vector_columns = !vector_columns.is_empty();
     let mut builder = LakeSoulIOConfigBuilder::new()
         .with_schema(Arc::new(schema_from_table_info_metadata(
             &table_info.table_schema,
@@ -118,14 +121,20 @@ pub(crate) fn create_io_config_builder_from_table_info(
         .with_option(OPTION_KEY_STABLE_SORT, use_cdc)
         .with_option(OPTION_KEY_CDC_COLUMN, cdc_column);
 
-    // Vortex files default to small row blocks so random row access stays
-    // cheap; a table can override the layout per column or as a whole.
-    if let Some(value) = &properties.vortex_row_block_size {
-        builder = builder.with_option(OPTION_KEY_VORTEX_ROW_BLOCK_SIZE, value.clone());
-    }
-    if let Some(value) = &properties.vortex_data_block_target_bytes {
-        builder =
-            builder.with_option(OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES, value.clone());
+    // Vector columns default to the small Vortex layout (1024-row blocks,
+    // 128 KiB data blocks) so candidate reads stay cheap; a table property
+    // overrides it for the vector columns only.
+    if has_vector_columns {
+        if let Some(value) = &properties.vortex_row_block_size {
+            builder = builder
+                .with_option(OPTION_KEY_VORTEX_VECTOR_ROW_BLOCK_SIZE, value.clone());
+        }
+        if let Some(value) = &properties.vortex_data_block_target_bytes {
+            builder = builder.with_option(
+                OPTION_KEY_VORTEX_VECTOR_DATA_BLOCK_TARGET_BYTES,
+                value.clone(),
+            );
+        }
     }
 
     for (key, value) in options {
@@ -306,19 +315,63 @@ pub async fn listing_partition_info(
     Ok((partition_info, files))
 }
 
+/// List one partition's files from the metadata client without touching the
+/// object store.
+///
+/// The returned descriptors replay the exact snapshot carried by
+/// `partition_info` and keep the metadata client's version order. No `HEAD`,
+/// `GET` or `list` is issued, so the descriptors carry only metadata: a
+/// `DataFileInfo::size <= 0` means the recorded size is unknown and must not be
+/// reported as `Some(0)`.
+#[tracing::instrument(
+    name = "listing_partition_file_infos",
+    level = "trace",
+    skip_all,
+    fields(
+        partition_desc = %partition_info.partition_desc,
+        version = partition_info.version,
+    )
+)]
+pub async fn listing_partition_file_infos(
+    partition_info: PartitionInfo,
+    client: MetaDataClientRef,
+) -> Result<(PartitionInfo, Vec<DataFileInfo>)> {
+    let files = client
+        .get_data_file_infos_of_single_partition(&partition_info)
+        .await
+        .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
+    trace!(file_count = files.len(), "listed partition file infos");
+    Ok((partition_info, files))
+}
+
 /// Case fold the table name.
 pub fn case_fold_table_name(name: &str) -> String {
     name.to_ascii_lowercase()
 }
 
 /// Case fold the column name.
+///
+/// `rowKinds` is LakeSoul's reserved CDC change column and keeps its exact
+/// spelling: Spark/Flink tables and IVM targets name it that way, and folding
+/// it would make the change column invisible to the IVM runtime.
 pub fn case_fold_column_name(name: &str) -> String {
+    if name == "rowKinds" {
+        return name.to_string();
+    }
     name.to_ascii_lowercase()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cdc_change_column_keeps_its_case() {
+        assert_eq!(case_fold_column_name("rowKinds"), "rowKinds");
+        assert_eq!(case_fold_column_name("RowKinds"), "rowkinds");
+        assert_eq!(case_fold_column_name("K"), "k");
+        assert_eq!(case_fold_table_name("MixedCase"), "mixedcase");
+    }
 
     fn ivm_table_info(properties: &str) -> Arc<TableInfo> {
         let schema = Schema::new(vec![

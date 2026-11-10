@@ -1,0 +1,153 @@
+// SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//! Standalone LakeSoul distributed worker.
+//!
+//! Usage:
+//!
+//! ```sh
+//! lakesoul-worker --bind 0.0.0.0 --port 50051 \
+//!     --warehouse-prefix s3://bucket/warehouse --endpoint http://s3:9000 ...
+//! ```
+//!
+//! Object-store flags match the coordinator CLI (`CoreArgs`): the worker and
+//! the coordinator must observe identical S3/HDFS/warehouse configuration so
+//! serialized stage plans resolve their object stores.
+
+use std::io::IsTerminal;
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use clap::Parser;
+use lakesoul_common::misc::JiffTime;
+use lakesoul_datafusion::cli::CoreArgs;
+use lakesoul_datafusion::distributed::{
+    DISTRIBUTED_PROTOCOL_VERSION, LakeSoulWorkerOptions, spawn_lakesoul_worker,
+};
+use lakesoul_datafusion::session::ExecutionMemoryArgs;
+use lakesoul_observability::{
+    LogFormat, MemorySamplingArgs, PrometheusMetricsConfig, TracingConfig, init_tracing,
+    install_prometheus_metrics, spawn_reload_on_sighup,
+};
+use tracing::info;
+
+mod allocator;
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "lakesoul-worker",
+    about = "LakeSoul distributed worker",
+    version = lakesoul_build_info::VERSION_WITH_COMMIT,
+)]
+struct Args {
+    /// Bind address.
+    #[arg(long, env = "LAKESOUL_WORKER_BIND", default_value = "0.0.0.0")]
+    bind: String,
+
+    /// gRPC port this worker serves on.
+    #[arg(long, env = "LAKESOUL_WORKER_PORT", default_value_t = 50051)]
+    port: u16,
+
+    /// Address serving Prometheus metrics.
+    #[arg(
+        long,
+        env = "LAKESOUL_WORKER_METRICS_ADDR",
+        default_value = "127.0.0.1:19091"
+    )]
+    metrics_addr: SocketAddr,
+
+    #[command(flatten)]
+    core: CoreArgs,
+
+    #[command(flatten)]
+    memory: ExecutionMemoryArgs,
+
+    #[command(flatten)]
+    memory_sampling: MemorySamplingArgs,
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Args {
+        bind,
+        port,
+        metrics_addr,
+        core,
+        memory,
+        memory_sampling,
+    } = Args::parse();
+
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(core.worker_threads.max(2))
+        .enable_all()
+        .build()?
+        .block_on(async move {
+            // The OTLP/gRPC exporter builds its tonic channel here; that needs
+            // an active Tokio reactor.
+            let tracing_guard = Arc::new(init_tracing(
+                TracingConfig::new("lakesoul-worker"),
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                LogFormat::new()
+                    .with_target(false)
+                    .with_file(false)
+                    // Tee'd into LAKESOUL_LOG_DIR for Loki: escape codes would
+                    // end up in the log store, so color only a real terminal.
+                    .with_ansi(std::io::stdout().is_terminal()),
+                JiffTime::beijing("%m-%d %T%.3f %Z"),
+            )?);
+            // Dynamic log level: edit LAKESOUL_LOG_FILTER_FILE (or RUST_LOG)
+            // and `kill -HUP <pid>`.
+            spawn_reload_on_sighup(tracing_guard.filter_handle());
+            allocator::log_active();
+            install_prometheus_metrics(PrometheusMetricsConfig::new(
+                "lakesoul-worker",
+                metrics_addr,
+            ))?;
+            if let Some(endpoint) = tracing_guard.otlp_endpoint() {
+                info!(endpoint, "OTLP trace exporter enabled");
+            }
+            info!(
+                version = lakesoul_build_info::VERSION,
+                commit = lakesoul_build_info::GIT_COMMIT,
+                target = lakesoul_build_info::TARGET,
+                profile = lakesoul_build_info::PROFILE,
+                metrics_addr = %metrics_addr,
+                "starting LakeSoul worker (protocol {DISTRIBUTED_PROTOCOL_VERSION}) on {bind}:{port}"
+            );
+
+            // Created after the metrics recorder: the pool and the sampler
+            // bind their gauges to it.
+            memory.install_vortex_decode_budget()?;
+            let memory_pool = memory.create_pool();
+            {
+                let pool = Arc::clone(&memory_pool);
+                memory_sampling.spawn(allocator::stats_reader(), move || pool.reserved())?;
+            }
+            // A worker has no catalog session, so it registers the ADBC pools
+            // that serialized federation plans resolve by server key.
+            if std::env::var_os("LAKESOUL_PG_URL").is_some() {
+                let meta = Arc::new(
+                    lakesoul_datafusion::MetaDataClient::from_env()
+                        .await
+                        .map_err(|error| {
+                            std::io::Error::other(error.to_string())
+                        })?,
+                );
+                lakesoul_datafusion::federation::load_pools_from_metadata(&meta)
+                    .await
+                    .map_err(|error| {
+                        std::io::Error::other(error.to_string())
+                    })?;
+                info!("federation ADBC pools registered");
+            }
+            let options = LakeSoulWorkerOptions {
+                core_args: core,
+                memory_pool,
+            };
+            let addr: SocketAddr = format!("{bind}:{port}").parse()?;
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            spawn_lakesoul_worker(&options, listener).await?;
+            Ok(())
+        })
+}

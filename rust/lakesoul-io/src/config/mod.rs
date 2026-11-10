@@ -36,10 +36,12 @@ impl Default for IOSchema {
 /// Per-column write layout override.
 ///
 /// Every field is optional; `None` keeps the writer default for that aspect.
-/// Columns not listed fall back to the built-in defaults: small row blocks and
-/// a small data block target (vortex), and binary/blob columns are written
-/// without compression so already-compressed payloads (e.g. H.264 GOPs) are
-/// not compressed twice.
+/// Columns not listed fall back to the Vortex writer defaults (8192-row blocks
+/// and a 1 MiB data block target).  Columns declared in a table's
+/// `vector_index_columns` property default to the small random-access layout
+/// unless a policy overrides them, and binary/blob columns are written without
+/// compression so already-compressed payloads (e.g. H.264 GOPs) are not
+/// compressed twice.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ColumnPolicy {
     /// `Some(false)` writes the column without the BtrBlocks compressor.
@@ -49,6 +51,14 @@ pub struct ColumnPolicy {
     /// Overrides the target uncompressed byte size for block coalescing.
     pub data_block_target_bytes: Option<u64>,
 }
+
+/// Default Vortex row block size for columns declared in a table's
+/// `vector_index_columns` property.
+pub const DEFAULT_VECTOR_ROW_BLOCK_SIZE: usize = 1024;
+
+/// Default Vortex data block target (uncompressed bytes) for the columns
+/// declared in a table's `vector_index_columns` property.
+pub const DEFAULT_VECTOR_DATA_BLOCK_TARGET_BYTES: u64 = 128 * 1024;
 
 /// Configuration for LakeSoul IO operations.
 ///
@@ -274,6 +284,12 @@ impl LakeSoulIOConfig {
         &self.files
     }
 
+    /// Default values injected for columns absent from the data files
+    /// (range-partition columns).
+    pub fn default_column_values(&self) -> &HashMap<String, String> {
+        &self.default_column_value
+    }
+
     /// Returns a slice of auxiliary sort column names
     pub fn aux_sort_cols_slice(&self) -> &[String] {
         &self.aux_sort_cols
@@ -295,6 +311,15 @@ impl LakeSoulIOConfig {
     /// Returns the additional configuration options map
     pub fn options(&self) -> &SecretMap {
         &self.options
+    }
+
+    /// Returns the merge operators of the primary-key columns.
+    ///
+    /// The merge kernel reads them when it combines versions of one key; a
+    /// reader rebuilt from a wire format (the distributed codec) needs the
+    /// same map, not a default.
+    pub fn merge_operators(&self) -> &HashMap<String, String> {
+        &self.merge_operators
     }
 
     /// Returns the root directory path for files
@@ -346,6 +371,20 @@ impl LakeSoulIOConfig {
     /// Returns the configured vortex data block target (bytes) if set
     pub fn vortex_data_block_target_bytes(&self) -> Option<u64> {
         self.option(OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES)
+            .and_then(|value| value.parse().ok())
+    }
+
+    /// Returns the configured Vortex row block size for the table's vector
+    /// columns, if set.  Unset keeps the small vector layout default.
+    pub fn vortex_vector_row_block_size(&self) -> Option<usize> {
+        self.option(OPTION_KEY_VORTEX_VECTOR_ROW_BLOCK_SIZE)
+            .and_then(|value| value.parse().ok())
+    }
+
+    /// Returns the configured Vortex data block target for the table's vector
+    /// columns, if set.  Unset keeps the small vector layout default.
+    pub fn vortex_vector_data_block_target_bytes(&self) -> Option<u64> {
+        self.option(OPTION_KEY_VORTEX_VECTOR_DATA_BLOCK_TARGET_BYTES)
             .and_then(|value| value.parse().ok())
     }
 
@@ -747,11 +786,6 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
-    /// Sets the largest `pk IN (...)` candidate set the pk index resolves.
-    ///
-    /// Above this many candidates the scan falls back to the regular path.
-    /// The default ([`crate::pk_locator::MAX_PK_CANDIDATES`]) suits point
-    /// lookups; IVM refreshes raise it for their key-filtered state reads.
     /// Pass exact key tuples instead of deriving them from SQL filters.
     pub fn with_explicit_pk_keys(
         mut self,
@@ -763,6 +797,11 @@ impl LakeSoulIOConfigBuilder {
         self
     }
 
+    /// Sets the largest `pk IN (...)` candidate set the pk index resolves.
+    ///
+    /// Above this many candidates the scan falls back to the regular path.
+    /// The default ([`crate::pk_locator::MAX_PK_CANDIDATES`]) suits point
+    /// lookups; IVM refreshes raise it for their key-filtered state reads.
     pub fn with_max_pk_candidates(mut self, max_pk_candidates: usize) -> Self {
         self.config.max_pk_candidates = max_pk_candidates;
         self

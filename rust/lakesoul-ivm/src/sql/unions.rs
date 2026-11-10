@@ -145,9 +145,20 @@ pub(super) fn analyze_union(
             &branch.exprs,
         )?;
         if !same_union_schema(&first_schema, &schema) {
-            return Err(unsupported(
-                "UNION ALL branches must have identical output schemas",
-            ));
+            return Err(unsupported(format!(
+                "UNION ALL branches must have identical output schemas: \
+                 first={:?}, branch={:?}",
+                first_schema
+                    .fields()
+                    .iter()
+                    .map(|field| (field.name(), field.data_type()))
+                    .collect::<Vec<_>>(),
+                schema
+                    .fields()
+                    .iter()
+                    .map(|field| (field.name(), field.data_type()))
+                    .collect::<Vec<_>>(),
+            )));
         }
     }
     let source_column = if sources.iter().any(|branch| {
@@ -240,16 +251,19 @@ struct UnionBranch {
 }
 
 /// The columns a user sees through a union: the plan's output columns minus
-/// the IVM bookkeeping columns.  Those columns are an implementation detail
-/// and must not leak through `SELECT *` over a derived step.
-fn visible_union_columns(schema: &Schema) -> Vec<String> {
-    schema
+/// the IVM bookkeeping columns and a derived step's internal partition
+/// payloads.  Those columns are an implementation detail and must not leak
+/// through `SELECT *` over a derived step.
+fn visible_union_columns(table: &IvmTable) -> Vec<String> {
+    table
+        .schema
         .fields()
         .iter()
         .map(|field| field.name().clone())
         .filter(|name| {
             name != crate::runtime::IVM_ROW_KINDS_COLUMN
                 && name != crate::runtime::IVM_EPOCH_COLUMN
+                && !table.internal_columns.contains(name)
         })
         .collect()
 }
@@ -294,7 +308,7 @@ fn union_branch(
     // may still expose the bookkeeping columns.  Project them away so the
     // branch has the same shape as a plain source branch.
     if columns.is_empty() {
-        let visible = visible_union_columns(&source.schema);
+        let visible = visible_union_columns(&source);
         if visible.len() != source.schema.fields().len() {
             columns = visible;
         }

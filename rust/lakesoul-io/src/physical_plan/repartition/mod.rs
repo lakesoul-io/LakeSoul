@@ -50,6 +50,13 @@ type MaybeBatch = Option<Result<RecordBatch>>;
 type InputPartitionsToCurrentPartitionSender = Vec<DistributionSender<MaybeBatch>>;
 type InputPartitionsToCurrentPartitionReceiver = Vec<DistributionReceiver<MaybeBatch>>;
 
+fn into_datafusion_error(report: Report) -> DataFusionError {
+    match report.downcast_report::<DataFusionError>() {
+        Ok(report) => report.into_current_context(),
+        Err(report) => DataFusionError::External(report.into_boxed_error()),
+    }
+}
+
 /// Lazily initialized state
 ///
 /// Note that the state is initialized ONCE for all partitions by a single task(thread).
@@ -647,9 +654,15 @@ impl RepartitionByRangeAndHashExec {
             }
             // Error from running input task
             Ok(Err(e)) => {
-                let e = e.into_cloneable();
+                // Share the original typed DataFusion error. A cloneable
+                // rootcause report with a string context hides its cause from
+                // std::error::Error::source and loses SQLSTATE classification.
+                let error = Arc::new(DataFusionError::Context(
+                    "error from input task".to_string(),
+                    Box::new(into_datafusion_error(e)),
+                ));
                 for (_, tx) in txs {
-                    tx.send(Some(Err(e.clone().context("error from input task").into())))
+                    tx.send(Some(Err(DataFusionError::Shared(error.clone()).into())))
                         .await
                         .ok();
                 }
@@ -744,7 +757,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
             self.hash_partitioning.clone(),
             ExecutionPlanMetricsSet::new(), // children's metrics is not propagated
         )
-        .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+        .map_err(into_datafusion_error)?;
 
         Ok(Arc::new(repartition))
     }
@@ -787,7 +800,7 @@ impl ExecutionPlan for RepartitionByRangeAndHashExec {
                     ))
                 })
                 .await
-                .map_err(|rep| DataFusionError::External(rep.into()))?;
+                .map_err(into_datafusion_error)?;
 
             trace!(
                 "Before returning stream in {}::execute for partition: {}",
@@ -914,9 +927,7 @@ impl Stream for RepartitionStream {
         loop {
             match self.input.recv().poll_unpin(cx) {
                 Poll::Ready(Some(Some(v))) => {
-                    return Poll::Ready(Some(v.map_err(|report| {
-                        DataFusionError::External(report.into_boxed_error())
-                    })));
+                    return Poll::Ready(Some(v.map_err(into_datafusion_error)));
                 }
                 Poll::Ready(Some(None)) => {
                     self.num_input_partitions_processed += 1;
@@ -969,9 +980,7 @@ impl Stream for PerPartitionStream {
     ) -> Poll<Option<Self::Item>> {
         match self.receiver.recv().poll_unpin(cx) {
             Poll::Ready(Some(Some(v))) => {
-                Poll::Ready(Some(v.map_err(|report| {
-                    DataFusionError::External(report.into_boxed_error())
-                })))
+                Poll::Ready(Some(v.map_err(into_datafusion_error)))
             }
             Poll::Ready(Some(None)) => {
                 // Input partition has finished sending batches

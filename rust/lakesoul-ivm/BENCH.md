@@ -294,7 +294,7 @@ The format decides whether the index pays:
   decompression: 635–662 ms at 1% vs 402–421 ms uncompressed.
 
 Vortex also speeds up the full recompute itself (2.0–2.2 s vs 2.6–2.8 s),
-mostly on the aggregate rebuild.  `LAKESOUL_IVM_STATE_INDEX=1` still forces the
+mostly on the aggregate rebuild.  `IvmOptions::state_index = StateIndexMode::Force` still forces the
 index on for Parquet (clustered key sets and point lookups can benefit there).
 
 Consequence for the refresh path: on Parquet the state read is throughput-bound
@@ -306,7 +306,7 @@ delta-proportional through 3%, so the target scenario should use Vortex tables
 with the local cache enabled.
 
 The rebuild crossover is calibrated per format (`lookup_chain`,
-`LAKESOUL_IVM_REBUILD_RATIO` overrides): Parquet 4%, Vortex **8%**.  On Vortex,
+`IvmOptions::rebuild_ratio` overrides): Parquet 4%, Vortex **8%**.  On Vortex,
 chain totals (incremental vs forced rebuild) are 5%: **1.18–1.37 s** vs
 2.20–2.27 s, 6%: **1.29–1.35 s** vs 2.38–2.45 s, 7%: **1.51–1.63 s** vs
 2.37–2.45 s, 8%: 1.83–2.34 s vs **1.69–1.93 s** — incremental wins up to 7%,
@@ -325,8 +325,7 @@ Two follow-ups from the state-read experiment:
   projection into the reader (`read_before_window_filtered_projected`).  On a
   10M-row source with 8 payload columns (`examples/ivm_bench_wide.rs`) the
   refresh drops from 1401/1351 ms to 1332/1172 ms (~9–12%) at 1% change; a
-  narrow source has nothing to prune.  `LAKESOUL_IVM_NO_PROJECTION=1` restores
-  the full read.
+  narrow source has nothing to prune.  The projection is always on.
 * **Object storage (RustFS, loopback S3) at 1M/1%.**  The state is only four
   MV files here, so the fixed per-request cost dominates and the ranking flips
   relative to local NVMe: Parquet join 235–250 ms / agg 91–100 ms; Vortex

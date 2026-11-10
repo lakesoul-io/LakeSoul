@@ -5,10 +5,10 @@
 //! Resource limits for the PostgreSQL endpoint, and the accounting they need.
 //!
 //! The plan asks for governance the upstream service does not have: a bound on
-//! connections, on the statements one user may run at once, and on the rows a
-//! statement may return, all of them observable. They are enforced here, before
-//! the work they bound starts, and released by RAII guards, so a disconnected
-//! client or a panicking task cannot leak a slot.
+//! connections, on the statements one user - and the whole server - may run at
+//! once, and on the rows a statement may return, all of them observable. They
+//! are enforced here, before the work they bound starts, and released by RAII
+//! guards, so a disconnected client or a panicking task cannot leak a slot.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,11 +25,22 @@ pub const TOO_MANY_CONNECTIONS: &str = "53300";
 /// state for (statements per user, rows per result).
 pub const CONFIGURATION_LIMIT_EXCEEDED: &str = "53400";
 
+/// Statements running right now, across every user.
+const ACTIVE_QUERIES: &str = "lakesoul_active_queries";
+/// Connections and statements a limit refused, grouped by the limit.
+const ADMISSION_REJECTED_TOTAL: &str = "lakesoul_admission_rejected_total";
+
 /// The limits one server enforces. Zero means unlimited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     pub max_connections: usize,
     pub max_queries_per_user: usize,
+    /// Statements the whole server may run at once, 0 for unlimited.
+    ///
+    /// The connection limit does not bound this - a connection holds a slot
+    /// per suspended portal - and the per-user limit grows with the number of
+    /// users, while every statement draws on one shared memory pool.
+    pub max_concurrent_queries: usize,
     pub max_result_rows: usize,
     /// Bytes of encoded rows a statement may send, 0 for unlimited.
     pub max_result_bytes: usize,
@@ -41,6 +52,7 @@ impl Default for Limits {
         Self {
             max_connections: 64,
             max_queries_per_user: 8,
+            max_concurrent_queries: 0,
             max_result_rows: 0,
             max_result_bytes: 0,
         }
@@ -54,9 +66,19 @@ impl Limits {
         Self {
             max_connections: 0,
             max_queries_per_user: 0,
+            max_concurrent_queries: 0,
             max_result_rows: 0,
             max_result_bytes: 0,
         }
+    }
+
+    /// Whether one user may take every server-wide statement slot, leaving
+    /// none for anybody else: the per-user limit is unset or not below the
+    /// server-wide one.
+    pub fn one_user_can_fill_the_server(&self) -> bool {
+        self.max_concurrent_queries > 0
+            && (self.max_queries_per_user == 0
+                || self.max_queries_per_user >= self.max_concurrent_queries)
     }
 }
 
@@ -67,19 +89,34 @@ pub enum LimitError {
     TooManyConnections { max: usize },
     #[error("\"{user}\" (limit {max})")]
     TooManyQueries { user: String, max: usize },
+    #[error("limit {max}")]
+    ServerAtCapacity { max: usize },
 }
 
 impl LimitError {
+    /// The `limit` label the refusal is counted under.
+    fn label(&self) -> &'static str {
+        match self {
+            Self::TooManyConnections { .. } => "connections",
+            Self::TooManyQueries { .. } => "queries_per_user",
+            Self::ServerAtCapacity { .. } => "concurrent_queries",
+        }
+    }
+
     /// The error sent to a client during startup, which ends the connection.
     pub fn into_fatal(self) -> PgWireError {
         let (code, message) = match &self {
             Self::TooManyConnections { .. } => (
                 TOO_MANY_CONNECTIONS,
-                "sorry, too many clients already (self)".to_string(),
+                format!("sorry, too many clients already ({self})"),
             ),
             Self::TooManyQueries { .. } => (
                 TOO_MANY_CONNECTIONS,
                 format!("too many concurrent queries for user {self}"),
+            ),
+            Self::ServerAtCapacity { .. } => (
+                TOO_MANY_CONNECTIONS,
+                format!("too many concurrent queries on this server ({self})"),
             ),
         };
         PgWireError::UserError(Box::new(ErrorInfo::new(
@@ -99,6 +136,10 @@ impl LimitError {
             Self::TooManyQueries { .. } => (
                 CONFIGURATION_LIMIT_EXCEEDED,
                 format!("too many concurrent queries for user {self}"),
+            ),
+            Self::ServerAtCapacity { .. } => (
+                CONFIGURATION_LIMIT_EXCEEDED,
+                format!("too many concurrent queries on this server ({self})"),
             ),
         };
         PgWireError::UserError(Box::new(ErrorInfo::new(
@@ -133,11 +174,49 @@ pub fn result_bytes_limit_error(bytes: usize) -> PgWireError {
     )))
 }
 
+static DESCRIBE_METRICS: std::sync::Once = std::sync::Once::new();
+
+/// Exports the admission metrics at zero, so the first refusal after startup
+/// shows in `increase()`. Call once at startup, after installing the metrics
+/// recorder.
+pub fn register_limit_metrics() {
+    DESCRIBE_METRICS.call_once(|| {
+        metrics::describe_gauge!(
+            ACTIVE_QUERIES,
+            "Statements holding an admission slot, across every user"
+        );
+        metrics::describe_counter!(
+            ADMISSION_REJECTED_TOTAL,
+            "Connections and statements refused by a limit, grouped by limit"
+        );
+    });
+    metrics::gauge!(ACTIVE_QUERIES).set(0.0);
+    for limit in ["connections", "queries_per_user", "concurrent_queries"] {
+        metrics::counter!(ADMISSION_REJECTED_TOTAL, "limit" => limit).increment(0);
+    }
+}
+
+/// Counts a refusal and hands it back.
+fn rejected(error: LimitError) -> LimitError {
+    metrics::counter!(ADMISSION_REJECTED_TOTAL, "limit" => error.label()).increment(1);
+    error
+}
+
+/// The statements running now: per user, and in total.
+///
+/// One lock covers both, so a statement takes - or is refused - both slots at
+/// once, and the gauge, set under it, never reports a stale total.
+#[derive(Debug, Default)]
+struct StatementCounts {
+    per_user: HashMap<String, usize>,
+    total: usize,
+}
+
 /// The live counts behind [`Limits`], shared by every connection of a server.
 #[derive(Debug, Default)]
 pub struct LimitsState {
     active_connections: AtomicUsize,
-    queries_per_user: Mutex<HashMap<String, usize>>,
+    statements: Mutex<StatementCounts>,
 }
 
 impl LimitsState {
@@ -150,11 +229,19 @@ impl LimitsState {
     /// How many statements `user` is running. Diagnostics and tests.
     #[cfg(test)]
     pub fn query_count(&self, user: &str) -> usize {
-        self.queries_per_user
+        self.statements
             .lock()
+            .per_user
             .get(user)
             .copied()
             .unwrap_or_default()
+    }
+
+    /// How many statements are running across every user. Diagnostics and
+    /// tests.
+    #[cfg(test)]
+    pub fn total_query_count(&self) -> usize {
+        self.statements.lock().total
     }
 }
 
@@ -188,7 +275,7 @@ impl ServerLimits {
         let mut current = self.state.active_connections.load(Ordering::Acquire);
         loop {
             if max > 0 && current >= max {
-                return Err(LimitError::TooManyConnections { max });
+                return Err(rejected(LimitError::TooManyConnections { max }));
             }
             match self.state.active_connections.compare_exchange_weak(
                 current,
@@ -207,20 +294,31 @@ impl ServerLimits {
     }
 
     /// Takes a statement slot for `user`, or refuses the statement.
+    ///
+    /// The per-user limit is checked first: a user at their own limit is told
+    /// so, which they can act on, rather than that the server is busy. Both
+    /// checks and both increments happen under one lock, so a refused statement
+    /// never holds half a slot.
     pub fn admit_statement(
         self: &Arc<Self>,
         user: &str,
     ) -> Result<StatementPermit, LimitError> {
-        let max = self.limits.max_queries_per_user;
-        let mut queries = self.state.queries_per_user.lock();
-        let running = queries.entry(user.to_string()).or_default();
-        if max > 0 && *running >= max {
-            return Err(LimitError::TooManyQueries {
+        let per_user = self.limits.max_queries_per_user;
+        let global = self.limits.max_concurrent_queries;
+        let mut counts = self.state.statements.lock();
+        let running = counts.per_user.get(user).copied().unwrap_or_default();
+        if per_user > 0 && running >= per_user {
+            return Err(rejected(LimitError::TooManyQueries {
                 user: user.to_string(),
-                max,
-            });
+                max: per_user,
+            }));
         }
-        *running += 1;
+        if global > 0 && counts.total >= global {
+            return Err(rejected(LimitError::ServerAtCapacity { max: global }));
+        }
+        *counts.per_user.entry(user.to_string()).or_default() += 1;
+        counts.total += 1;
+        metrics::gauge!(ACTIVE_QUERIES).set(counts.total as f64);
         Ok(StatementPermit {
             server: Arc::clone(self),
             user: user.to_string(),
@@ -271,13 +369,15 @@ pub struct StatementPermit {
 
 impl Drop for StatementPermit {
     fn drop(&mut self) {
-        let mut queries = self.server.state.queries_per_user.lock();
-        if let Some(running) = queries.get_mut(&self.user) {
+        let mut counts = self.server.state.statements.lock();
+        if let Some(running) = counts.per_user.get_mut(&self.user) {
             *running = running.saturating_sub(1);
             if *running == 0 {
-                queries.remove(&self.user);
+                counts.per_user.remove(&self.user);
             }
         }
+        counts.total = counts.total.saturating_sub(1);
+        metrics::gauge!(ACTIVE_QUERIES).set(counts.total as f64);
     }
 }
 
@@ -294,6 +394,17 @@ pub enum StatementOutcome {
 }
 
 impl StatementOutcome {
+    /// Every outcome, so each `outcome` label can be exported before its
+    /// first statement.
+    pub const ALL: [Self; 6] = [
+        Self::Completed,
+        Self::Canceled,
+        Self::TimedOut,
+        Self::ResultLimit,
+        Self::Failed,
+        Self::Abandoned,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Completed => "completed",
@@ -318,6 +429,7 @@ mod tests {
         ServerLimits::new(Limits {
             max_connections,
             max_queries_per_user: max_queries,
+            max_concurrent_queries: 0,
             max_result_rows: max_rows,
             max_result_bytes: 0,
         })
@@ -336,11 +448,9 @@ mod tests {
             PgWireError::UserError(info) => {
                 assert_eq!(info.code, TOO_MANY_CONNECTIONS);
                 assert_eq!(info.severity, "FATAL");
-                assert!(
-                    info.message.contains("too many clients"),
-                    "{}",
-                    info.message
-                );
+                // PostgreSQL's own wording, which clients match on, with the
+                // limit that refused the connection.
+                assert_eq!(info.message, "sorry, too many clients already (limit 2)");
             }
             other => panic!("unexpected: {other:?}"),
         }
@@ -452,5 +562,119 @@ mod tests {
         assert_eq!(server.state().query_count("user_a"), 1_000);
         drop(held);
         assert_eq!(server.state().query_count("user_a"), 0);
+    }
+
+    fn concurrent(max_queries: usize, max_concurrent: usize) -> Arc<ServerLimits> {
+        ServerLimits::new(Limits {
+            max_queries_per_user: max_queries,
+            max_concurrent_queries: max_concurrent,
+            ..Limits::unlimited()
+        })
+    }
+
+    #[test]
+    fn statements_are_bounded_across_users() {
+        let server = concurrent(0, 2);
+        let first = server.admit_statement("user_a").expect("first");
+        let _second = server.admit_statement("user_b").expect("second");
+        assert_eq!(server.state().total_query_count(), 2);
+
+        let refused = server.admit_statement("user_c").expect_err("third");
+        assert_eq!(refused, LimitError::ServerAtCapacity { max: 2 });
+        match refused.into_statement() {
+            PgWireError::UserError(info) => {
+                assert_eq!(info.code, CONFIGURATION_LIMIT_EXCEEDED);
+                assert_eq!(info.severity, "ERROR");
+                assert!(info.message.contains("on this server"), "{}", info.message);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert_eq!(
+            server.state().query_count("user_c"),
+            0,
+            "a refused statement holds no per-user slot"
+        );
+
+        drop(first);
+        assert_eq!(server.state().total_query_count(), 1);
+        _ = server
+            .admit_statement("user_c")
+            .expect("the freed slot is usable");
+    }
+
+    #[test]
+    fn a_user_at_their_own_limit_is_told_so_before_the_server_limit() {
+        let server = concurrent(1, 1);
+        let _held = server.admit_statement("user_a").expect("first");
+        assert!(matches!(
+            server.admit_statement("user_a"),
+            Err(LimitError::TooManyQueries { .. })
+        ));
+        assert!(matches!(
+            server.admit_statement("user_b"),
+            Err(LimitError::ServerAtCapacity { max: 1 })
+        ));
+        assert_eq!(server.state().total_query_count(), 1);
+    }
+
+    #[test]
+    fn only_one_of_many_racing_statements_gets_the_last_server_slot() {
+        let server = concurrent(0, 1);
+        let granted = Arc::new(AtomicUsize::new(0));
+        std::thread::scope(|scope| {
+            for user in 0..16 {
+                let server = Arc::clone(&server);
+                let granted = Arc::clone(&granted);
+                scope.spawn(move || {
+                    if let Ok(permit) = server.admit_statement(&format!("user_{user}")) {
+                        granted.fetch_add(1, Ordering::Relaxed);
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        drop(permit);
+                    }
+                });
+            }
+        });
+        assert_eq!(granted.load(Ordering::Relaxed), 1);
+        assert_eq!(server.state().total_query_count(), 0);
+    }
+
+    #[test]
+    fn one_user_filling_the_server_is_detected() {
+        assert!(!Limits::unlimited().one_user_can_fill_the_server());
+        assert!(!concurrent(4, 0).limits.one_user_can_fill_the_server());
+        assert!(!concurrent(4, 16).limits.one_user_can_fill_the_server());
+        assert!(concurrent(0, 16).limits.one_user_can_fill_the_server());
+        assert!(concurrent(16, 16).limits.one_user_can_fill_the_server());
+    }
+
+    #[test]
+    fn admission_metrics_track_active_statements_and_refusals() {
+        let recorder =
+            metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        // Rendered while `first` still holds its slot: the gauge is the number
+        // of statements running at the moment of the scrape.
+        let rendered = metrics::with_local_recorder(&recorder, || {
+            register_limit_metrics();
+            let server = concurrent(0, 2);
+            let first = server.admit_statement("user_a").expect("first");
+            let second = server.admit_statement("user_b").expect("second");
+            assert!(server.admit_statement("user_c").is_err());
+            drop(second);
+            let rendered = handle.render();
+            drop(first);
+            rendered
+        });
+        for series in [
+            "lakesoul_active_queries 1",
+            "lakesoul_admission_rejected_total{limit=\"concurrent_queries\"} 1",
+            "lakesoul_admission_rejected_total{limit=\"queries_per_user\"} 0",
+            "lakesoul_admission_rejected_total{limit=\"connections\"} 0",
+        ] {
+            assert!(
+                rendered.lines().any(|line| line == series),
+                "{series} missing in:\n{rendered}"
+            );
+        }
     }
 }

@@ -4,6 +4,10 @@ use rand_distr::{Distribution, Normal, Uniform};
 use crate::rabitq::RabitqError;
 use crate::rabitq::math::{dot, normalize};
 
+#[cfg(target_arch = "x86_64")]
+#[path = "rotation_avx2.rs"]
+mod x86_sign;
+
 /// Type of rotator to use for data transformation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -283,7 +287,14 @@ impl FhtKacRotator {
     }
 
     /// Apply sign flip based on bit mask
+    #[inline]
     fn flip_sign(data: &mut [f32], flip_bits: &[u8]) {
+        #[cfg(target_arch = "x86_64")]
+        if data.len() >= 8 && is_x86_feature_detected!("avx2") {
+            // SAFETY: AVX2 is detected; the helper bounds each eight-float load.
+            unsafe { x86_sign::flip_sign(data, flip_bits) };
+            return;
+        }
         for (i, value) in data.iter_mut().enumerate() {
             let byte_idx = i / 8;
             let bit_idx = i % 8;
@@ -306,6 +317,14 @@ impl FhtKacRotator {
         );
 
         let mut h = 1;
+        #[cfg(target_arch = "x86_64")]
+        if n >= 8 && is_x86_feature_detected!("avx2") {
+            // The first three stages never cross an eight-float block.
+            // Preserve each butterfly's operands and rounding, without any
+            // temporary array, altered rotation seed, or reordered reduction.
+            unsafe { x86_sign::fht_first_three(data) };
+            h = 8;
+        }
         while h < n {
             for i in (0..n).step_by(h * 2) {
                 for j in i..(i + h) {
@@ -844,6 +863,111 @@ mod tests {
         let recovered = fht_rot.inverse_rotate(&rotated);
         for (orig, recov) in input.iter().zip(recovered.iter()) {
             assert!((orig - recov).abs() < 1e-3);
+        }
+    }
+}
+
+#[cfg(test)]
+mod avx2_parity_tests {
+    use super::*;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    fn reference_fht(data: &mut [f32]) {
+        let n = data.len();
+        let mut h = 1;
+        while h < n {
+            for i in (0..n).step_by(h * 2) {
+                for j in i..(i + h) {
+                    let x = data[j];
+                    let y = data[j + h];
+                    data[j] = x + y;
+                    data[j + h] = x - y;
+                }
+            }
+            h *= 2;
+        }
+    }
+
+    fn reference_flip_sign(data: &mut [f32], flip_bits: &[u8]) {
+        for (i, value) in data.iter_mut().enumerate() {
+            let byte_idx = i / 8;
+            let bit_idx = i % 8;
+            if byte_idx < flip_bits.len() && (flip_bits[byte_idx] >> bit_idx) & 1 == 1 {
+                *value = -*value;
+            }
+        }
+    }
+
+    fn reference_rotate_into(rotator: &FhtKacRotator, input: &[f32], output: &mut [f32]) {
+        output[..rotator.dim].copy_from_slice(input);
+        output[rotator.dim..].fill(0.0);
+        let flip_offset = rotator.padded_dim / 8;
+
+        if rotator.trunc_dim == rotator.padded_dim {
+            for round in 0..4 {
+                let start = round * flip_offset;
+                reference_flip_sign(output, &rotator.flip[start..start + flip_offset]);
+                reference_fht(output);
+                FhtKacRotator::rescale(output, rotator.fac);
+            }
+        } else {
+            let start = rotator.padded_dim - rotator.trunc_dim;
+            for round in 0..4 {
+                let flip_start = round * flip_offset;
+                reference_flip_sign(
+                    output,
+                    &rotator.flip[flip_start..flip_start + flip_offset],
+                );
+                if round % 2 == 0 {
+                    reference_fht(&mut output[..rotator.trunc_dim]);
+                    FhtKacRotator::rescale(&mut output[..rotator.trunc_dim], rotator.fac);
+                } else {
+                    reference_fht(&mut output[start..]);
+                    FhtKacRotator::rescale(&mut output[start..], rotator.fac);
+                }
+                FhtKacRotator::kacs_walk(output);
+            }
+            FhtKacRotator::rescale(output, 0.25);
+        }
+    }
+
+    #[test]
+    fn accelerated_rotation_matches_scalar_bits() {
+        let mut rng = StdRng::seed_from_u64(53711);
+        for dim in [
+            1usize, 2, 7, 8, 15, 16, 31, 32, 63, 64, 65, 96, 128, 200, 256, 960, 1024,
+        ] {
+            for seed in [0u64, 42, 53711] {
+                let rotator = FhtKacRotator::new(dim, seed);
+                let mut expected = vec![f32::NAN; rotator.padded_dim];
+                let mut actual = expected.clone();
+                for case in 0..12 {
+                    let input: Vec<f32> = (0..dim)
+                        .map(|i| match case {
+                            0 => 0.0,
+                            1 => -0.0,
+                            2 => {
+                                if i % 2 == 0 {
+                                    1.0
+                                } else {
+                                    -1.0
+                                }
+                            }
+                            _ => rng.gen_range(-1.0..1.0),
+                        })
+                        .collect();
+                    reference_rotate_into(&rotator, &input, &mut expected);
+                    rotator.rotate_into(&input, &mut actual);
+                    assert!(
+                        actual
+                            .iter()
+                            .zip(&expected)
+                            .all(|(a, b)| a.to_bits() == b.to_bits()),
+                        "dim={dim} seed={seed} case={case}"
+                    );
+                }
+            }
         }
     }
 }

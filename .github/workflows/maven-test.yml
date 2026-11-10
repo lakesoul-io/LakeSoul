@@ -9,41 +9,69 @@ name: CI with Maven Test
 
 on:
   push:
-    paths-ignore:
-      - "javadoc/**"
-      - "website/**"
-      - "python/**"
-      - "cpp/**"
-      - "**.md"
-      - "rust/lakesoul-datafusion/**"
-      - "rust/lakesoul-es-gateway/**"
-      - "rust/lakesoul-ivm/**"
-      - "rust/lakesoul-text/**"
-      - "rust/lakesoul-vector/**"
-      - "rust/postgres-lakesoul/**"
-      - "script/benchmark/embodied/**"
-      - "script/benchmark/text/**"
-      - "script/benchmark/vector/**"
-      - "script/weknora-es-harness/**"
+    paths:
+      - ".github/workflows/maven-test.yml"
+      - ".github/actions/**"
+      - ".mvn/**"
+      - "pom.xml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "rust/lakesoul-build-info/**"
+      - "rust/lakesoul-common/**"
+      - "rust/lakesoul-io/**"
+      - "rust/lakesoul-io-c/**"
+      - "rust/lakesoul-metadata/**"
+      - "rust/lakesoul-metadata-c/**"
+      - "rust/lakesoul-metadata-proto/**"
+      - "rust/lakesoul-observability/**"
+      - "script/meta_init.sql"
+      - "script/meta_cleanup.sql"
+      - "script/meta_init_for_local_test.sh"
+      - "script/meta_rbac_init.sql"
+      - "script/meta_rbac_init_for_local_test.sh"
+      - "script/meta_rbac_init_domains_for_test.sql"
+      - "script/meta_rbac_init_users_for_test.sql"
+      - "integrations/lakesoul-common/**"
+      - "integrations/lakesoul-spark/**"
+      - "integrations/lakesoul-spark-gluten/**"
+      - "integrations/lakesoul-flink/**"
+      - "integrations/lakesoul-presto/**"
+      - "integrations/native-io/**"
     branches:
       - "main"
   pull_request:
-    paths-ignore:
-      - "javadoc/**"
-      - "website/**"
-      - "python/**"
-      - "cpp/**"
-      - "**.md"
-      - "rust/lakesoul-datafusion/**"
-      - "rust/lakesoul-es-gateway/**"
-      - "rust/lakesoul-ivm/**"
-      - "rust/lakesoul-text/**"
-      - "rust/lakesoul-vector/**"
-      - "rust/postgres-lakesoul/**"
-      - "script/benchmark/embodied/**"
-      - "script/benchmark/text/**"
-      - "script/benchmark/vector/**"
-      - "script/weknora-es-harness/**"
+    paths:
+      - ".github/workflows/maven-test.yml"
+      - ".github/actions/**"
+      - ".mvn/**"
+      - "pom.xml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "rust/lakesoul-build-info/**"
+      - "rust/lakesoul-common/**"
+      - "rust/lakesoul-io/**"
+      - "rust/lakesoul-io-c/**"
+      - "rust/lakesoul-metadata/**"
+      - "rust/lakesoul-metadata-c/**"
+      - "rust/lakesoul-metadata-proto/**"
+      - "rust/lakesoul-observability/**"
+      - "script/meta_init.sql"
+      - "script/meta_cleanup.sql"
+      - "script/meta_init_for_local_test.sh"
+      - "script/meta_rbac_init.sql"
+      - "script/meta_rbac_init_for_local_test.sh"
+      - "script/meta_rbac_init_domains_for_test.sql"
+      - "script/meta_rbac_init_users_for_test.sql"
+      - "integrations/lakesoul-common/**"
+      - "integrations/lakesoul-spark/**"
+      - "integrations/lakesoul-spark-gluten/**"
+      - "integrations/lakesoul-flink/**"
+      - "integrations/lakesoul-presto/**"
+      - "integrations/native-io/**"
     branches:
       - "main"
       - "release/**"
@@ -63,7 +91,7 @@ jobs:
     env:
       RUSTFLAGS: "-Awarnings"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
@@ -76,15 +104,12 @@ jobs:
       - uses: ./.github/actions/setup-flatc
 
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
           shared-key: "native-glibc217-v2"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: false
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -129,7 +154,7 @@ jobs:
       # Label used to access the service container
       postgres:
         # Docker Hub image
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         # Provide the password for postgres
         env:
           POSTGRES_PASSWORD: lakesoul_test
@@ -147,7 +172,7 @@ jobs:
           - 5432:5432
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
@@ -160,10 +185,7 @@ jobs:
         run: |
           ./script/meta_init_for_local_test.sh -j 2
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
@@ -187,7 +209,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: maven-test-report-artifact-spark-1
-          path: lakesoul-spark/target/reports
+          path: integrations/lakesoul-spark/target/reports
           retention-days: 5
           if-no-files-found: error
 
@@ -199,7 +221,7 @@ jobs:
       # Label used to access the service container
       postgres:
         # Docker Hub image
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         # Provide the password for postgres
         env:
           POSTGRES_PASSWORD: lakesoul_test
@@ -217,7 +239,7 @@ jobs:
           - 5432:5432
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
@@ -230,10 +252,7 @@ jobs:
         run: |
           ./script/meta_init_for_local_test.sh -j 2
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
@@ -256,7 +275,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: maven-test-report-artifact-spark-2
-          path: lakesoul-spark/target/reports
+          path: integrations/lakesoul-spark/target/reports
           retention-days: 5
           if-no-files-found: error
 
@@ -268,7 +287,7 @@ jobs:
       # Label used to access the service container
       postgres:
         # Docker Hub image
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         # Provide the password for postgres
         env:
           POSTGRES_PASSWORD: lakesoul_test
@@ -286,7 +305,7 @@ jobs:
           - 5432:5432
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
@@ -299,10 +318,7 @@ jobs:
         run: |
           ./script/meta_init_for_local_test.sh -j 1
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
@@ -330,7 +346,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: maven-test-report-artifact-spark-2
-          path: lakesoul-spark-gluten/target/reports
+          path: integrations/lakesoul-spark-gluten/target/reports
           retention-days: 5
           if-no-files-found: error
 
@@ -342,7 +358,7 @@ jobs:
       # Label used to access the service container
       postgres:
         # Docker Hub image
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         # Provide the password for postgres
         env:
           POSTGRES_PASSWORD: lakesoul_test
@@ -360,7 +376,7 @@ jobs:
           - 5432:5432
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
@@ -376,10 +392,7 @@ jobs:
         run: |
           ./script/meta_rbac_init_for_local_test.sh -j 1
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: beyondstorage/setup-hdfs@master
         with:
           hdfs-version: "3.3.6"
@@ -410,7 +423,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: maven-test-report-artifact-spark-3
-          path: lakesoul-spark/target/reports
+          path: integrations/lakesoul-spark/target/reports
           retention-days: 5
           if-no-files-found: error
 
@@ -422,7 +435,7 @@ jobs:
       # Label used to access the service container
       postgres:
         # Docker Hub image
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         # Provide the password for postgres
         env:
           POSTGRES_PASSWORD: lakesoul_test
@@ -440,7 +453,7 @@ jobs:
           - 5432:5432
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
@@ -453,10 +466,7 @@ jobs:
         run: |
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
@@ -480,7 +490,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: maven-test-report-artifact-flink-sink-fail
-          path: lakesoul-flink/target/reports
+          path: integrations/lakesoul-flink/target/reports
           retention-days: 5
           if-no-files-found: error
 
@@ -492,7 +502,7 @@ jobs:
       # Label used to access the service container
       postgres:
         # Docker Hub image
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         # Provide the password for postgres
         env:
           POSTGRES_PASSWORD: lakesoul_test
@@ -510,7 +520,7 @@ jobs:
           - 5432:5432
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
@@ -523,10 +533,7 @@ jobs:
         run: |
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
@@ -550,7 +557,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: maven-test-report-artifact-flink-source-fail
-          path: lakesoul-flink/target/reports
+          path: integrations/lakesoul-flink/target/reports
           retention-days: 5
           if-no-files-found: error
 
@@ -562,7 +569,7 @@ jobs:
       # Label used to access the service container
       postgres:
         # Docker Hub image
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         # Provide the password for postgres
         env:
           POSTGRES_PASSWORD: lakesoul_test
@@ -580,7 +587,7 @@ jobs:
           - 5432:5432
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
@@ -593,10 +600,7 @@ jobs:
         run: |
           PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql lakesoul_test
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: actions/download-artifact@v4
         with:
           name: lakesoul-nativemetadata-x86_64-unknown-linux-gnu-maven-test
@@ -620,7 +624,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: maven-test-report-artifact-flink-1
-          path: lakesoul-flink/target/reports
+          path: integrations/lakesoul-flink/target/reports
           retention-days: 5
           if-no-files-found: error
 
@@ -632,7 +636,7 @@ jobs:
       # Label used to access the service container
       postgres:
         # Docker Hub image
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         # Provide the password for postgres
         env:
           POSTGRES_PASSWORD: lakesoul_test
@@ -650,7 +654,7 @@ jobs:
           - 5432:5432
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
@@ -678,10 +682,7 @@ jobs:
           sudo sysctl -w kernel.core_pattern=/tmp/lakesoul-core.%p.%t
 
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: beyondstorage/setup-hdfs@master
         with:
           hdfs-version: "3.3.6"
@@ -730,7 +731,7 @@ jobs:
             /tmp/flink-rbac-maven.log
             /tmp/hs_err_pid*.log
             /tmp/lakesoul-core.*
-            lakesoul-flink/target/surefire-reports/
+            integrations/lakesoul-flink/target/surefire-reports/
           retention-days: 5
           if-no-files-found: warn
       - name: Generate Report Site
@@ -743,6 +744,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: maven-test-report-artifact-flink-2
-          path: lakesoul-flink/target/reports
+          path: integrations/lakesoul-flink/target/reports
           retention-days: 5
           if-no-files-found: error

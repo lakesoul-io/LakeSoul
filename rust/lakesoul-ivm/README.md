@@ -512,6 +512,21 @@ after merge-on-read, so it can never resurrect an older version of a key).
   one traversal), and a `dirty` target view is rebuilt by the statement
   itself.  `IvmMetadata::list_views` lists the views with their status,
   interval and last error.
+* The user-visible target must carry the `rowKinds` change column.  A missing
+  `__ivm_epoch` column is added to the table schema and the target is rebuilt.
+  A rebuild replaces the target with one atomic `UpdateCommit`; it never
+  truncates first, so readers of the old snapshot are unaffected.  Internal
+  derived/state tables keep the truncate-and-append path so their incremental
+  consumers see a normal append.
+* A range-partitioned target is maintained per partition: `ivm.view_partitions`
+  records the partitions a view has published, and a rebuild replaces only
+  those partitions (plus the partitions this refresh wrote).  Partitions owned
+  by another writer are left untouched, so batch/streaming may write other
+  partitions of the same target.
+* A data commit written by another engine in the target scope (owned or
+  written partitions) is rejected before the refresh and again before its
+  commit; compaction commits are allowed.  A per-view lease serializes
+  concurrent IVM refreshes of the same target.
 * The window identity (source, partition, from/to versions) is recorded in
   `ivm.epochs`. Re-applying the same window is a no-op; a partially written
   window is completed by the retry because the affected keys are rewritten.
@@ -585,6 +600,45 @@ The `kind` label is the view kind (`sum_count`, `min_max`, `window`, `join`,
 fallback view's kind is `fallback`, so its refreshes and rebuilds are also
 visible per view kind.
 
+## Runtime configuration
+
+IVM runs inside a DataFusion session owned by the embedding process.  It does
+not read any `LAKESOUL_IVM_*` environment variable.  The caller builds an
+`IvmRuntimeConfig` from its session and passes it to the runtime:
+
+```rust
+use lakesoul_ivm::{IvmOptions, IvmRuntime, IvmRuntimeConfig};
+
+// Resource configuration belongs to the caller's DataFusion context.
+let config = IvmRuntimeConfig::from_session(&session)   // SessionConfig + RuntimeEnv
+    .with_options(IvmOptions {
+        max_active_tasks: Some(4),
+        max_derived_steps: 128,
+        ..IvmOptions::default()
+    });
+let runtime = IvmRuntime::from_env_with_config(config).await?;
+```
+
+`SessionConfig` owns target partitions and batch size; `RuntimeEnv` owns the
+memory pool and spill directory.  In a datafusion-distributed deployment each
+coordinator and executor sets the same values from its own deployment config.
+`IvmRuntime::from_env()` remains as a test/example convenience and uses the
+default session, but production code should pass its own config.
+
+| `IvmOptions` field | Default | Meaning |
+|---|---|---|
+| `max_active_tasks` | `None` (unbounded) | Concurrent keyed state streams per lookup plan |
+| `view_parallelism` | `1` | Independent views refreshed concurrently |
+| `max_derived_steps` | `64` | Planner limit on materialized derived views |
+| `state_index` | `Auto` | Row-level PK index: Vortex on, Parquet off |
+| `rebuild_ratio` | per format (Vortex 8%, Parquet 4%) | Change ratio above which a refresh rebuilds |
+| `topk_materialize_bytes` | `1 GiB` | Per-frame top-k materialization budget; `0` disables |
+| `internal_file_format` | `Vortex` | Format of newly created internal tables |
+| `write_pool_size` | `500mb` | Bounded memory pool of one streaming writer |
+| `write_pool_dir` | `<tmp>/lakesoul/ivm-spill` | Writer spill directory |
+| `vortex_row_block_size` | IVM default `1024` | Vortex row-block override for internal tables |
+| `vortex_data_block_bytes` | IVM default `128 KiB` | Vortex data-block target override |
+
 ## Rust API
 
 ```rust
@@ -615,6 +669,12 @@ The typed views mirror the SQL shapes above; `register_*` persists the spec,
 source state.
 
 ## Limitations
+
+View definitions must be deterministic.  A crash can leave a pending epoch
+that the next refresh replays (or whose state merge it re-executes), so
+`now()`, random functions, and UDFs with side effects can produce different
+rows or state on the retry.  Materialize a source column or another stable
+expression instead.
 
 The following shapes are **not maintained incrementally**.  By default a
 statement of such a shape still defines the view: the executor recomputes it
@@ -705,9 +765,10 @@ storage or S3, and prints a CSV plus p50/p95 summaries.  Start with
 
 A refresh that retracts rows reads the affected keys of its state (the MV
 rows being replaced).  On **Vortex** tables that read goes through the
-row-level pk index by default: the sink writes every column in 1024-row
-blocks, so only the blocks with a matched key are read (the index itself
-needs `LAKESOUL_CACHE`; without it the read falls back to a scan).  On the
+row-level pk index by default: the IVM sink writes every column of its
+internal tables in 1024-row blocks, so only the blocks with a matched key are
+read (the index itself needs `LAKESOUL_CACHE`; without it the read falls back
+to a scan).  On the
 10M star this is 182–204 / 266–279 / 402–421 ms for the join step at
 0.01%/0.1%/1% change (635–662 ms with `vortex-compact`), against 2.0–2.2 s
 for a full rebuild; at 3% the chain is still ~0.8 s.  On **Parquet** the index

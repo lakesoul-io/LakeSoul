@@ -3,7 +3,7 @@
 //! Includes V3 persistence I/O primitives, FastScan batch layout helpers,
 //! and pending-buffer incremental insert helpers.
 use crate::rabitq::key::IndexKey;
-use crate::rabitq::quantizer::QuantizedVector;
+use crate::rabitq::quantizer::{QuantizedParams, QuantizedVector};
 use crate::rabitq::simd;
 use crate::rabitq::{Metric, RabitqError};
 use crc32fast::Hasher;
@@ -155,6 +155,18 @@ impl<T> std::ops::DerefMut for AlignedVec<T> {
 /// Eliminates V1/V2 split and scattered allocations
 /// Reference: OPTIMIZATION_PLAN.md Phase 1
 /// 64-byte cache line aligned for better cache efficiency
+/// Packed build output buffered between vector quantisation and the FastScan
+/// batch layout. Keeping binary/ex codes and scalar parameters here lets the
+/// streaming builder append directly without allocating a `QuantizedVector`
+/// per input row.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct BuildPending {
+    pub(crate) ids: Vec<IndexKey>,
+    pub(crate) binary_codes: Vec<u8>,
+    pub(crate) ex_codes: Vec<u8>,
+    pub(crate) params: Vec<QuantizedParams>,
+}
+
 #[repr(C, align(64))]
 #[derive(Debug, Clone)]
 pub(crate) struct ClusterData {
@@ -195,6 +207,8 @@ pub(crate) struct ClusterData {
     /// Version of each pending entry; pending vectors are the newest ones.
     pub(crate) pending_ids_version: Vec<u32>,
     pub(crate) pending_vectors: Vec<QuantizedVector>,
+    /// Streaming-build staging buffers (binary/ex codes and scalar params).
+    pub(crate) build_pending: BuildPending,
 }
 
 impl ClusterData {
@@ -233,6 +247,17 @@ impl ClusterData {
                     + q.ex_code_packed.capacity()
             })
             .sum::<usize>();
+        bytes += self.build_pending.ids.capacity() * std::mem::size_of::<IndexKey>();
+        bytes += self
+            .build_pending
+            .ids
+            .iter()
+            .map(|key| key.heap_bytes())
+            .sum::<usize>();
+        bytes += self.build_pending.binary_codes.capacity();
+        bytes += self.build_pending.ex_codes.capacity();
+        bytes +=
+            self.build_pending.params.capacity() * std::mem::size_of::<QuantizedParams>();
         bytes
     }
 
@@ -401,6 +426,7 @@ impl ClusterData {
             pending_ids: Vec::new(),
             pending_ids_version: Vec::new(),
             pending_vectors: Vec::new(),
+            build_pending: BuildPending::default(),
         }
     }
 
@@ -616,6 +642,7 @@ impl ClusterData {
             pending_ids: Vec::new(),
             pending_ids_version: Vec::new(),
             pending_vectors: Vec::new(),
+            build_pending: BuildPending::default(),
         })
     }
 
@@ -638,6 +665,7 @@ impl ClusterData {
             pending_ids: Vec::new(),
             pending_ids_version: Vec::new(),
             pending_vectors: Vec::new(),
+            build_pending: BuildPending::default(),
         }
     }
 
@@ -657,6 +685,11 @@ impl ClusterData {
             + self.f_rescale_ex.capacity() * 4
             + self.delta.capacity() * 4
             + self.vl.capacity() * 4
+            + self.build_pending.ids.capacity() * std::mem::size_of::<IndexKey>()
+            + self.build_pending.binary_codes.capacity()
+            + self.build_pending.ex_codes.capacity()
+            + self.build_pending.params.capacity()
+                * std::mem::size_of::<QuantizedParams>()
     }
 
     /// Build ClusterData from quantized vectors
@@ -767,6 +800,7 @@ impl ClusterData {
             pending_ids: Vec::new(),
             pending_ids_version: Vec::new(),
             pending_vectors: Vec::new(),
+            build_pending: BuildPending::default(),
         }
     }
 

@@ -8,6 +8,7 @@ mod physical_planner;
 pub mod query_planner;
 pub mod text_score_rule;
 pub mod text_search_rule;
+pub mod update;
 pub mod vector_search_rule;
 
 pub use query_planner::LakeSoulQueryPlanner;

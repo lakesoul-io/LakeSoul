@@ -154,11 +154,31 @@ impl WriteInvariants {
     }
 }
 
+/// A NOT NULL column received a NULL value.
+///
+/// Carried as a typed `DataFusionError::External` so a SQL front end can map
+/// it to PostgreSQL's `23502` instead of a generic internal error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotNullViolation {
+    pub column: String,
+}
+
+impl std::fmt::Display for NotNullViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "null value in column \"{}\" violates not-null constraint",
+            self.column
+        )
+    }
+}
+
+impl std::error::Error for NotNullViolation {}
+
 impl NotNullCheck {
     fn violation(&self) -> Result<()> {
-        Err(DataFusionError::Execution(format!(
-            "NOT NULL constraint violated for column '{}'",
-            self.column
-        )))
+        Err(DataFusionError::External(Box::new(NotNullViolation {
+            column: self.column.clone(),
+        })))
     }
 }

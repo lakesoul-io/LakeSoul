@@ -11,14 +11,15 @@ edition = { workspace = true }
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
 # lakesoul
-lakesoul-build-info = { path = "../lakesoul-build-info" }
 lakesoul-io = { path = "../lakesoul-io" }
 lakesoul-metadata = { path = "../lakesoul-metadata" }
 lakesoul-common = { path = "../lakesoul-common" }
-lakesoul-observability = { path = "../lakesoul-observability" }
 lakesoul-metadata-proto = { path = "../lakesoul-metadata-proto" }
 lakesoul-vector = { path = "../lakesoul-vector" }
 lakesoul-text = { path = "../lakesoul-text" }
+lakesoul-ivm = { path = "../lakesoul-ivm", optional = true, features = [
+  "distributed",
+] }
 # datafusion
 datafusion = { workspace = true }
 datafusion-expr = { workspace = true }
@@ -67,9 +68,13 @@ json = "0.12"
 # tpch
 tpchgen = { git = "https://github.com/clflushopt/tpchgen-rs.git", rev = "46f3dca" }
 tpchgen-arrow = { git = "https://github.com/clflushopt/tpchgen-rs.git", rev = "46f3dca" }
-# adbc
-adbc_core = { version = "0.23.0", optional = true }
-adbc_driver_manager = { version = "0.23.0", optional = true }
+# federation
+datafusion-table-providers-adbc = { version = "=0.14.0", default-features = false }
+datafusion-table-providers-common = { version = "=0.14.0", default-features = false }
+adbc_core = "0.24"
+adbc_driver_manager = "0.24"
+r2d2 = "0.8"
+r2d2_adbc = "0.3.0"
 # observability
 metrics = { workspace = true }
 opentelemetry = { version = "0.32.0", default-features = false, features = [
@@ -79,7 +84,6 @@ tower = "0.5"
 tracing-opentelemetry = "0.33.0"
 # logging
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 log = { workspace = true }
 # error
 rootcause = { workspace = true }
@@ -95,6 +99,7 @@ opentelemetry_sdk = { version = "0.32.1", default-features = false, features = [
   "trace",
 ] }
 test-log = { workspace = true }
+tracing-subscriber = { workspace = true }
 rand = { workspace = true }
 # `Float16` vector storage samples in the vector benchmark.
 half = { workspace = true }
@@ -109,7 +114,8 @@ harness = false
 
 [features]
 ci = []
-adbc = ["dep:adbc_core", "dep:adbc_driver_manager"]
+# Distributed IVM scan/lookup codecs and planner handlers.
+ivm = ["dep:lakesoul-ivm"]
 
 [lints]
 workspace = true

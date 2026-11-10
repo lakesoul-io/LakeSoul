@@ -51,19 +51,266 @@ pub fn multi_agg_state_schema_for(
     Ok(Arc::new(Schema::new(fields)))
 }
 
+/// One aggregate of a multi-aggregate view in the partial-state plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MultiAggPartialKind {
+    /// A `SUM` over raw rows; the partial is a sum and merges with `SUM`.
+    Sum,
+    /// A `COUNT`; the partial is a count and merges with `SUM`.
+    Count,
+    /// A `MIN`; the partial is a min and merges with `MIN`.
+    Min,
+    /// A `MAX`; the partial is a max and merges with `MAX`.
+    Max,
+    /// A scalar expression over the group keys; it needs no partial column
+    /// and is re-evaluated when the partials are merged.
+    Scalar,
+}
+
+/// One column of the partial-state plan.
+#[derive(Debug, Clone)]
+pub(crate) struct MultiAggPartialColumn {
+    /// How the partial is accumulated and merged.
+    pub kind: MultiAggPartialKind,
+    /// The MV output column.
+    pub output: String,
+    /// The partial-state column (absent for a scalar).
+    pub partial: Option<String>,
+    /// The partial column's Arrow type (absent for a scalar).
+    pub data_type: Option<DataType>,
+    /// The original rendered call (used by a scalar merge).
+    pub call: String,
+}
+
+/// The decomposable-aggregate plan of a multi-aggregate view.
+///
+/// Only a view whose aggregates can be split by source partition and merged
+/// back is eligible: `SUM`, `COUNT`, `MIN`, `MAX` and scalar expressions over
+/// the group keys.  Everything else (`AVG`, `DISTINCT`, `ARRAY_AGG`, ...)
+/// keeps the row-level full-read path.
+#[derive(Debug, Clone)]
+pub(crate) struct MultiAggPartialPlan {
+    /// One entry per view aggregate, in output order.
+    pub columns: Vec<MultiAggPartialColumn>,
+}
+
+impl MultiAggPartialPlan {
+    /// The partial-state columns with their types.
+    pub(crate) fn partial_columns(&self) -> Vec<(&str, DataType)> {
+        self.columns
+            .iter()
+            .filter_map(|column| {
+                Some((column.partial.as_deref()?, column.data_type.clone()?))
+            })
+            .collect()
+    }
+
+    /// The `select` entries that compute each partial from a row-state frame.
+    pub(crate) fn partial_select(&self) -> Vec<String> {
+        self.columns
+            .iter()
+            .filter_map(|column| {
+                let partial = column.partial.as_deref()?;
+                let inner = call_inner(&column.call)?;
+                let function = match column.kind {
+                    MultiAggPartialKind::Sum => "sum",
+                    MultiAggPartialKind::Count => "count",
+                    MultiAggPartialKind::Min => "min",
+                    MultiAggPartialKind::Max => "max",
+                    MultiAggPartialKind::Scalar => return None,
+                };
+                Some(format!("{function}({inner}) as {}", quote_ident(partial)))
+            })
+            .collect()
+    }
+
+    /// The expression that merges one partial column back into the MV value.
+    pub(crate) fn merge_call(&self, column: &MultiAggPartialColumn) -> String {
+        match column.kind {
+            MultiAggPartialKind::Sum | MultiAggPartialKind::Count => {
+                format!(
+                    "sum({})",
+                    quote_ident(column.partial.as_deref().unwrap_or_default())
+                )
+            }
+            MultiAggPartialKind::Min => {
+                format!(
+                    "min({})",
+                    quote_ident(column.partial.as_deref().unwrap_or_default())
+                )
+            }
+            MultiAggPartialKind::Max => {
+                format!(
+                    "max({})",
+                    quote_ident(column.partial.as_deref().unwrap_or_default())
+                )
+            }
+            MultiAggPartialKind::Scalar => column.call.clone(),
+        }
+    }
+}
+
+/// Whether a stored partial state still has the layout the current plan
+/// expects.  A state written by an older definition is ignored (the refresh
+/// falls back to the full row-state read) until the next analysis recreates
+/// it.
+fn multi_agg_partial_state_matches(
+    partial: &IvmTable,
+    state: &IvmTable,
+    plan: &MultiAggPartialPlan,
+    group_keys: &[String],
+) -> bool {
+    let mut keys = group_keys.to_vec();
+    for column in &state.range_partition_columns {
+        if !keys.contains(column) {
+            keys.push(column.clone());
+        }
+    }
+    if partial.primary_keys != keys
+        || partial.range_partition_columns != state.range_partition_columns
+        || partial.bucket_columns != group_keys
+    {
+        return false;
+    }
+    let mut expected = Vec::new();
+    for column in &keys {
+        let Ok(field) = state.schema.field_with_name(column) else {
+            return false;
+        };
+        expected.push((field.name().clone(), field.data_type().clone()));
+    }
+    expected.extend(
+        plan.partial_columns()
+            .into_iter()
+            .map(|(column, data_type)| (column.to_string(), data_type)),
+    );
+    expected.push((IVM_ROW_KINDS_COLUMN.to_string(), DataType::Utf8));
+    expected.push((IVM_EPOCH_COLUMN.to_string(), DataType::Int64));
+    expected.len() == partial.schema.fields().len()
+        && expected.iter().zip(partial.schema.fields()).all(
+            |((name, data_type), field)| {
+                field.name() == name && field.data_type() == data_type
+            },
+        )
+}
+
+/// The inside of a rendered aggregate call (`sum(x)` -> `x`).
+fn call_inner(call: &str) -> Option<&str> {
+    let call = call.trim();
+    let open = call.find('(')?;
+    let close = call.rfind(')')?;
+    (close == call.len() - 1 && close > open).then(|| &call[open + 1..close])
+}
+
+/// Build the partial-state plan of a multi-aggregate view, or `None` when an
+/// aggregate is not decomposable.
+pub(crate) fn multi_agg_partial_plan(
+    group_keys: &[String],
+    aggregates: &[(String, String, DataType)],
+    source_schema: &Schema,
+) -> Result<Option<MultiAggPartialPlan>> {
+    let context = refresh_session();
+    let df_schema = DFSchema::try_from(source_schema.clone())
+        .map_err(|error| report!("invalid source schema: {error}"))?;
+    let mut columns = Vec::with_capacity(aggregates.len());
+    let mut has_partial = false;
+    for (index, (call, output, _result)) in aggregates.iter().enumerate() {
+        let call = call.trim();
+        let Some(open) = call.find('(') else {
+            return Ok(None);
+        };
+        let Some(close) = call.rfind(')') else {
+            return Ok(None);
+        };
+        if close != call.len() - 1 || close <= open {
+            return Ok(None);
+        }
+        let name = call[..open].trim().to_ascii_lowercase();
+        let inner = call[open + 1..close].trim();
+        if inner.is_empty() || inner.to_ascii_uppercase().contains("DISTINCT") {
+            return Ok(None);
+        }
+        let kind = match name.as_str() {
+            "sum" => MultiAggPartialKind::Sum,
+            "count" => MultiAggPartialKind::Count,
+            "min" => MultiAggPartialKind::Min,
+            "max" => MultiAggPartialKind::Max,
+            _ => MultiAggPartialKind::Scalar,
+        };
+        if kind == MultiAggPartialKind::Scalar {
+            // A scalar must only reference the group keys; otherwise it is
+            // not constant within a group.  An aggregate or window function
+            // is not decomposable here.
+            let Ok(expression) = context.state().create_logical_expr(call, &df_schema)
+            else {
+                return Ok(None);
+            };
+            let mut has_aggregate = false;
+            let mut column_refs = HashSet::new();
+            expression
+                .apply(|node| {
+                    match node {
+                        datafusion::prelude::Expr::AggregateFunction(_)
+                        | datafusion::prelude::Expr::WindowFunction(_) => {
+                            has_aggregate = true;
+                        }
+                        datafusion::prelude::Expr::Column(column) => {
+                            column_refs.insert(column.name.clone());
+                        }
+                        _ => {}
+                    }
+                    Ok(TreeNodeRecursion::Continue)
+                })
+                .map_err(|_| report!("invalid aggregate expression {call:?}"))?;
+            if has_aggregate
+                || column_refs
+                    .iter()
+                    .any(|column| !group_keys.contains(column))
+            {
+                return Ok(None);
+            }
+            columns.push(MultiAggPartialColumn {
+                kind,
+                output: output.clone(),
+                partial: None,
+                data_type: None,
+                call: call.to_string(),
+            });
+            continue;
+        }
+        let partial = format!("__ivm_partial_{index}");
+        let partial_call = format!("{name}({inner})");
+        let Ok((data_type, _)) = expression_type(source_schema, &partial_call) else {
+            return Ok(None);
+        };
+        columns.push(MultiAggPartialColumn {
+            kind,
+            output: output.clone(),
+            partial: Some(partial),
+            data_type: Some(data_type),
+            call: call.to_string(),
+        });
+        has_partial = true;
+    }
+    if !has_partial {
+        return Ok(None);
+    }
+    Ok(Some(MultiAggPartialPlan { columns }))
+}
+
 /// The schema of the row-level state of a multi-aggregate view.
 ///
-/// It carries every source column (apart from the internal change columns)
-/// plus its own row kind and epoch.  The state primary key is the group keys
-/// followed by the source primary keys, so a group lookup is a PK prefix
-/// lookup and a source-key update is an exact PK upsert.
+/// It carries the source columns the view reads (group keys, aggregate and
+/// filter inputs, and the source primary keys) plus its own row kind and
+/// epoch.  The state primary key is the group keys followed by the source
+/// primary keys, so a group lookup is a PK prefix lookup and a source-key
+/// update is an exact PK upsert.
 pub fn multi_agg_rows_state_schema_for(
     source_schema: &Schema,
     group_keys: &[String],
+    group_exprs: &[String],
 ) -> Result<SchemaRef> {
-    for key in group_keys {
-        source_schema.field_with_name(key)?;
-    }
+    let key_fields = super::group_key_fields(source_schema, group_keys, group_exprs)?;
     let mut fields = source_schema
         .fields()
         .iter()
@@ -75,6 +322,32 @@ pub fn multi_agg_rows_state_schema_for(
             ))
         })
         .collect::<Vec<_>>();
+    for (key, key_field) in group_keys.iter().zip(&key_fields) {
+        match source_schema.field_with_name(key) {
+            Ok(existing) => {
+                if existing.data_type() != key_field.data_type() {
+                    return Err(report!(
+                        "computed group key {key} has a different type than the source column"
+                    ));
+                }
+                let computed = group_exprs
+                    .iter()
+                    .zip(group_keys)
+                    .find(|(_, name)| *name == key)
+                    .is_some_and(|(expr, _)| !expr.is_empty() && expr != key);
+                if computed {
+                    return Err(report!(
+                        "computed group key {key} would overwrite a source column"
+                    ));
+                }
+            }
+            Err(_) => fields.push(Arc::new(Field::new(
+                key,
+                key_field.data_type().clone(),
+                key_field.is_nullable(),
+            ))),
+        }
+    }
     if source_schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_err() {
         fields.push(Arc::new(Field::new(
             IVM_ROW_KINDS_COLUMN,
@@ -2622,7 +2895,7 @@ impl IvmRuntime {
         parts: &RecomputeParts<'_>,
     ) -> Result<Option<i64>> {
         let window = self
-            .collect_source_window(parts.view_id, parts.source)
+            .collect_source_window_for_filter(parts.view_id, parts.source, parts.filter)
             .await?;
         let lookup_window = match &parts.lookup {
             Some(lookup) => Some(
@@ -2811,7 +3084,9 @@ impl IvmRuntime {
         self.metadata.delete_cursors(parts.view_id).await?;
         parts.mv.truncate(&self.client).await?;
 
-        let baseline = self.source_baseline(parts.source).await?;
+        let baseline = self
+            .source_baseline_for_filter(parts.source, parts.filter)
+            .await?;
         let mv_versions_before =
             output_partition_versions(&self.client, parts.mv).await?;
         let record = match self
@@ -3665,7 +3940,11 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::State, state)])
             .await?;
         let window = self
-            .collect_source_window(&view.view_id, &view.source)
+            .collect_source_window_for_filter(
+                &view.view_id,
+                &view.source,
+                view.filter.as_deref(),
+            )
             .await?;
         if window.added_files.is_empty() {
             return Ok(None);
@@ -3920,11 +4199,15 @@ impl IvmRuntime {
                     let write_started = std::time::Instant::now();
                     let state_batches = std::mem::take(&mut state_chunk);
                     let mv_batches = std::mem::take(&mut mv_chunk);
-                    let (state_ids, mv_ids) = futures::future::try_join(
-                        state.append_batches(&self.client, state_batches),
-                        view.mv.append_batches(&self.client, mv_batches),
-                    )
-                    .await?;
+                    let (mv_ids, state_ids) = view
+                        .mv
+                        .append_batches_pair(
+                            &self.client,
+                            mv_batches,
+                            state,
+                            state_batches,
+                        )
+                        .await?;
                     commit_ids.extend(state_ids);
                     commit_ids.extend(mv_ids);
                     write_elapsed += write_started.elapsed();
@@ -3935,11 +4218,10 @@ impl IvmRuntime {
             }
             if !state_chunk.is_empty() {
                 let write_started = std::time::Instant::now();
-                let (state_ids, mv_ids) = futures::future::try_join(
-                    state.append_batches(&self.client, state_chunk),
-                    view.mv.append_batches(&self.client, mv_chunk),
-                )
-                .await?;
+                let (mv_ids, state_ids) = view
+                    .mv
+                    .append_batches_pair(&self.client, mv_chunk, state, state_chunk)
+                    .await?;
                 commit_ids.extend(state_ids);
                 commit_ids.extend(mv_ids);
                 write_elapsed += write_started.elapsed();
@@ -3991,6 +4273,10 @@ impl IvmRuntime {
         };
         let state_groups_by_bucket =
             super::keyed_plan::groups_by_bucket(state_groups, state_bucket_num);
+        #[cfg(feature = "distributed")]
+        let contrib_plan =
+            crate::distributed::without_sink(contrib.create_physical_plan()).await?;
+        #[cfg(not(feature = "distributed"))]
         let contrib_plan = contrib.create_physical_plan().await?;
         let contrib_plan = if state_bucket_num > 1 {
             super::keyed_plan::bucket_repartition(
@@ -4052,15 +4338,15 @@ impl IvmRuntime {
                 state_chunk.push(batch);
                 mv_chunk.push(mv_batch);
                 if chunk_rows >= crate::table::MAX_STATE_APPEND_ROWS {
-                    let (state_ids, mv_ids) = futures::future::try_join(
-                        state.append_batches(
+                    let (mv_ids, state_ids) = view
+                        .mv
+                        .append_batches_pair(
                             &self.client,
+                            std::mem::take(&mut mv_chunk),
+                            state,
                             std::mem::take(&mut state_chunk),
-                        ),
-                        view.mv
-                            .append_batches(&self.client, std::mem::take(&mut mv_chunk)),
-                    )
-                    .await?;
+                        )
+                        .await?;
                     commit_ids.extend(state_ids);
                     commit_ids.extend(mv_ids);
                     state_writes += 1;
@@ -4070,11 +4356,10 @@ impl IvmRuntime {
             }
         }
         if !state_chunk.is_empty() {
-            let (state_ids, mv_ids) = futures::future::try_join(
-                state.append_batches(&self.client, state_chunk),
-                view.mv.append_batches(&self.client, mv_chunk),
-            )
-            .await?;
+            let (mv_ids, state_ids) = view
+                .mv
+                .append_batches_pair(&self.client, mv_chunk, state, state_chunk)
+                .await?;
             commit_ids.extend(state_ids);
             commit_ids.extend(mv_ids);
             state_writes += 1;
@@ -4102,6 +4387,137 @@ impl IvmRuntime {
     /// reads the state rows of the affected groups by a group-key prefix and
     /// recomputes those groups.  Arbitrary aggregates (COUNT, MAX, scalar
     /// group expressions) therefore never scan the full source.
+    /// Populate the partial state from the full row state.  Used once when
+    /// the partial state is first created for an existing populated row
+    /// state (or after a rebuild truncated it).
+    async fn sync_multi_agg_partials(
+        &self,
+        context: &SessionContext,
+        state: &IvmTable,
+        partial: &IvmTable,
+        plan: &MultiAggPartialPlan,
+        keys: &[String],
+        filter: Option<&str>,
+        epoch: i64,
+    ) -> Result<Vec<String>> {
+        let frame = self.current_table_frame(context, state)?;
+        context.register_table("partial_state", frame.into_view())?;
+        let keys_sql = quoted_list(keys);
+        let partial_sql = plan.partial_select().join(", ");
+        let sql = format!(
+            "select {keys_sql}, {partial_sql} from partial_state{} \
+             group by {keys_sql}",
+            filter_where(filter)
+        );
+        let rows = context.sql(&sql).await?;
+        let mut columns = keys.to_vec();
+        columns.extend(
+            plan.partial_columns()
+                .into_iter()
+                .map(|(column, _)| column.to_string()),
+        );
+        let rows = cast_frame_columns(rows, &partial.schema, &columns)?;
+        let mut select = keys.iter().map(|key| col(key.as_str())).collect::<Vec<_>>();
+        select.extend(
+            columns
+                .iter()
+                .skip(keys.len())
+                .map(|column| col(column.as_str())),
+        );
+        let mut sort_exprs = keys.iter().map(|key| column_expr(key)).collect::<Vec<_>>();
+        sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
+        let ops = rows
+            .select(select)?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
+            .sort_by(sort_exprs)?;
+        partial
+            .append_stream(&self.client, ops.execute_stream().await?)
+            .await
+    }
+
+    /// Recompute the partial aggregates of the changed `(group, partition)`
+    /// pairs from the row state of exactly those pairs.
+    async fn multi_agg_partial_rows(
+        &self,
+        context: &SessionContext,
+        changed_state: DataFrame,
+        partial: &IvmTable,
+        plan: &MultiAggPartialPlan,
+        keys: &[String],
+        filter: Option<&str>,
+    ) -> Result<DataFrame> {
+        context.register_table("partial_src", changed_state.into_view())?;
+        let keys_sql = quoted_list(keys);
+        let partial_sql = plan.partial_select().join(", ");
+        let sql = format!(
+            "select {keys_sql}, {partial_sql} from partial_src{} \
+             group by {keys_sql}",
+            filter_where(filter)
+        );
+        let rows = context.sql(&sql).await?;
+        let mut columns = keys.to_vec();
+        columns.extend(
+            plan.partial_columns()
+                .into_iter()
+                .map(|(column, _)| column.to_string()),
+        );
+        cast_frame_columns(rows, &partial.schema, &columns)
+    }
+
+    /// Replace the partial aggregate rows of `pairs` with `rows`; a pair with
+    /// no remaining row state is deleted.
+    async fn update_multi_agg_partials(
+        &self,
+        context: &SessionContext,
+        pairs: DataFrame,
+        rows: DataFrame,
+        partial: &IvmTable,
+        plan: &MultiAggPartialPlan,
+        keys: &[String],
+        epoch: i64,
+    ) -> Result<Vec<String>> {
+        let partial_columns = plan.partial_columns();
+        let key_exprs = keys.iter().map(|key| col(key.as_str())).collect::<Vec<_>>();
+        let mut key_only = Vec::with_capacity(keys.len());
+        for key in keys {
+            key_only.push(col(key.as_str()));
+        }
+        let existing = rows.clone().select(key_exprs.clone())?.distinct()?;
+        let mut deletes = pairs
+            .join(
+                existing,
+                datafusion::prelude::JoinType::LeftAnti,
+                &keys.iter().map(String::as_str).collect::<Vec<_>>(),
+                &keys.iter().map(String::as_str).collect::<Vec<_>>(),
+                None,
+            )?
+            .select(key_only.clone())?;
+        for (column, data_type) in &partial_columns {
+            deletes = deletes.with_column(
+                column,
+                Expr::Literal(ScalarValue::try_from(data_type)?, None),
+            )?;
+        }
+        let mut select = key_only;
+        select.extend(partial_columns.iter().map(|(column, _)| col(*column)));
+        let deletes = deletes
+            .select(select.clone())?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let inserts = rows
+            .select(select)?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let mut sort_exprs = keys.iter().map(|key| column_expr(key)).collect::<Vec<_>>();
+        sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
+        let ops = inserts.union(deletes)?.sort_by(sort_exprs)?;
+        let _ = context;
+        partial
+            .append_stream(&self.client, ops.execute_stream().await?)
+            .await
+    }
+
     async fn refresh_multi_agg_rows(
         &self,
         view: &MultiAggView,
@@ -4111,7 +4527,11 @@ impl IvmRuntime {
         self.register_state_tables(&view.view_id, &[(StateRole::MultiAggRows, state)])
             .await?;
         let window = self
-            .collect_source_window(&view.view_id, &view.source)
+            .collect_source_window_for_filter(
+                &view.view_id,
+                &view.source,
+                view.filter.as_deref(),
+            )
             .await?;
         if window.added_files.is_empty() {
             return Ok(None);
@@ -4129,14 +4549,56 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let context = refresh_session();
+        let partial_plan = if view.having.is_none()
+            && view.having_lookup.is_none()
+            && !view.group_keys.is_empty()
+            && !state.range_partition_columns.is_empty()
+        {
+            multi_agg_partial_plan(
+                &view.group_keys,
+                &view.aggregates,
+                &view.source.schema,
+            )?
+        } else {
+            None
+        };
+        let partial_state = match (
+            partial_plan.as_ref(),
+            self.metadata
+                .get_state(&view.view_id, StateRole::MultiAggPartials)
+                .await?,
+        ) {
+            (Some(plan), Some(existing)) => {
+                let partial = self.open_table_by_id(&existing.table_id).await?;
+                multi_agg_partial_state_matches(&partial, state, plan, &view.group_keys)
+                    .then_some(partial)
+            }
+            _ => None,
+        };
+        if let Some(partial) = &partial_state {
+            self.register_state_tables(
+                &view.view_id,
+                &[(StateRole::MultiAggPartials, partial)],
+            )
+            .await?;
+        }
+        let mut commit_ids: Vec<String> = Vec::new();
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
-        let source_fields = view
-            .source
+        // The state is already projected to the columns the view reads.
+        // Computed group keys are part of its schema as well.  The epoch is
+        // bookkeeping; the source change marker stays because the recompute
+        // SQL reads it.
+        let state_fields = state
             .schema
             .fields()
             .iter()
             .map(|field| field.name().clone())
+            .filter(|column| {
+                column != IVM_EPOCH_COLUMN
+                    && (view.source.schema.field_with_name(column).is_ok()
+                        || view.group_keys.contains(column))
+            })
             .collect::<Vec<_>>();
         let pk_exprs = view
             .source
@@ -4162,9 +4624,39 @@ impl IvmRuntime {
                 .await?;
             filter_deletes(before, change_column(&view.source))?
         };
+        // `before` feeds the old-side state ops, the affected groups and the
+        // SQL old CTE.  Keep one materialized copy so the keyed before-image
+        // lookup runs once per window.
+        let before_batches = before.clone().collect().await?;
+        let before = if before_batches.is_empty() {
+            before
+        } else {
+            context.read_batches(before_batches)?
+        };
         let delta_clean = filter_deletes(delta.clone(), change_column(&view.source))?;
-        let before_data = project_frame(before.clone(), &source_fields)?;
-        let delta_data = project_frame(delta_clean, &source_fields)?;
+        let before_keys = project_group_keys_frame(
+            &context,
+            before.clone(),
+            &view.source.schema,
+            &view.group_keys,
+            &view.group_exprs,
+        )?;
+        let delta_keys = project_group_keys_frame(
+            &context,
+            delta.clone(),
+            &view.source.schema,
+            &view.group_keys,
+            &view.group_exprs,
+        )?;
+        let delta_clean_keys = project_group_keys_frame(
+            &context,
+            delta_clean,
+            &view.source.schema,
+            &view.group_keys,
+            &view.group_exprs,
+        )?;
+        let before_data = project_frame(before_keys.clone(), &state_fields)?;
+        let delta_data = project_frame(delta_clean_keys.clone(), &state_fields)?;
         let before_ops = before_data
             .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
@@ -4179,60 +4671,225 @@ impl IvmRuntime {
             .collect::<Vec<_>>();
         sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
         state_ops = state_ops.sort_by(sort_exprs)?;
-        let mut commit_ids = state
-            .append_stream(&self.client, state_ops.execute_stream().await?)
-            .await?;
+        commit_ids.extend(
+            state
+                .append_stream(&self.client, state_ops.execute_stream().await?)
+                .await?,
+        );
 
-        context.register_table("old", before.clone().into_view())?;
-        context.register_table("delta", delta.clone().into_view())?;
-        let before_groups = project_frame(before, &view.group_keys)?.distinct()?;
-        let delta_groups = project_frame(delta, &view.group_keys)?.distinct()?;
+        context.register_table("old", before_keys.clone().into_view())?;
+        context.register_table("delta", delta_keys.clone().into_view())?;
+        let before_groups =
+            project_frame(before_keys.clone(), &view.group_keys)?.distinct()?;
+        let delta_groups = project_frame(delta_keys, &view.group_keys)?.distinct()?;
         let affected = before_groups.union(delta_groups)?.distinct()?;
-        // A state/MV keyed by the group keys can only hold rows of the
-        // partitions the affected groups belong to.  The window's changed
-        // partitions are exactly those when the range columns are grouped by.
-        let state_partitions = if !state.range_partition_columns.is_empty()
-            && state
-                .range_partition_columns
+        let partial_source;
+        let parts = if let (Some(partial), Some(plan)) = (&partial_state, &partial_plan) {
+            // The row state is partitioned by the source partition; a
+            // partial aggregate is kept per (group, partition), so only the
+            // partitions the window changed are read and recomputed.
+            let mut keys = view.group_keys.clone();
+            for column in &state.range_partition_columns {
+                if !keys.contains(column) {
+                    keys.push(column.clone());
+                }
+            }
+            let project_pairs = |frame: DataFrame| -> Result<DataFrame> {
+                let frame = frame.select(
+                    keys.iter().map(|key| col(key.as_str())).collect::<Vec<_>>(),
+                )?;
+                cast_frame_columns(frame, &state.schema, &keys)
+            };
+            let before_pairs = project_pairs(before_keys.clone())?;
+            let delta_pairs = project_pairs(delta_clean_keys.clone())?;
+            let pairs = before_pairs.union(delta_pairs)?.distinct()?;
+            if !bootstrap
+                && partial.current_files(&self.client).await?.is_empty()
+                && !state.current_files(&self.client).await?.is_empty()
+            {
+                // The partial state was just created for an existing
+                // populated row state: build it once from the full state.
+                crate::observability::note_full_scan(&state.table_name);
+                commit_ids.extend(
+                    self.sync_multi_agg_partials(
+                        &context,
+                        state,
+                        partial,
+                        plan,
+                        &keys,
+                        view.filter.as_deref(),
+                        epoch,
+                    )
+                    .await?,
+                );
+            }
+            let changed_state = self
+                .lookup_source_by_join_keys(
+                    &context,
+                    state,
+                    pairs.clone(),
+                    &keys,
+                    &keys,
+                    true,
+                )
+                .await?;
+            let partial_rows = self
+                .multi_agg_partial_rows(
+                    &context,
+                    changed_state,
+                    partial,
+                    plan,
+                    &keys,
+                    view.filter.as_deref(),
+                )
+                .await?;
+            commit_ids.extend(
+                self.update_multi_agg_partials(
+                    &context,
+                    pairs,
+                    partial_rows,
+                    partial,
+                    plan,
+                    &keys,
+                    epoch,
+                )
+                .await?,
+            );
+            let merge_rows = self
+                .lookup_source_by_join_keys(
+                    &context,
+                    partial,
+                    affected.clone(),
+                    &view.group_keys,
+                    &view.group_keys,
+                    true,
+                )
+                .await?;
+            context.register_table("src", merge_rows.into_view())?;
+            let mut source = partial.clone();
+            // The registered rows are already merged logical partials; hide
+            // the bookkeeping columns from the merge SQL so it does not add a
+            // delete filter intended for raw changelog rows.
+            source.cdc_column = None;
+            let fields = source
+                .schema
+                .fields()
                 .iter()
-                .all(|column| view.group_keys.contains(column))
-        {
-            self.changed_partition_restriction(&window, &state.range_partition_columns)
+                .filter(|field| {
+                    field.name() != IVM_ROW_KINDS_COLUMN
+                        && field.name() != IVM_EPOCH_COLUMN
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            source.schema = Arc::new(Schema::new(fields));
+            partial_source = source;
+            let first = &plan.columns[0];
+            let extra_aggregates = plan.columns[1..]
+                .iter()
+                .map(|column| RecomputeAggregate {
+                    call: plan.merge_call(column),
+                    column: column.output.clone(),
+                })
+                .collect();
+            RecomputeParts {
+                view_id: &view.view_id,
+                source: &partial_source,
+                mv: &view.mv,
+                group_keys: &view.group_keys,
+                group_exprs: &[],
+                aggregate_call: plan.merge_call(first),
+                column: first.output.clone(),
+                extra_aggregates,
+                distinct_columns: None,
+                lookup: None,
+                filter: None,
+                having: None,
+            }
         } else {
-            None
+            let state_partitions = if !state.range_partition_columns.is_empty()
+                && state
+                    .range_partition_columns
+                    .iter()
+                    .all(|column| view.group_keys.contains(column))
+            {
+                self.changed_partition_restriction(
+                    &window,
+                    &state.range_partition_columns,
+                )
+            } else {
+                None
+            };
+            let state_rows = match &state_partitions {
+                Some(restriction) => {
+                    self.lookup_source_by_join_keys_in_partitions(
+                        &context,
+                        state,
+                        affected.clone(),
+                        &view.group_keys,
+                        &view.group_keys,
+                        true,
+                        restriction,
+                    )
+                    .await?
+                }
+                None => {
+                    self.lookup_source_by_join_keys(
+                        &context,
+                        state,
+                        affected.clone(),
+                        &view.group_keys,
+                        &view.group_keys,
+                        true,
+                    )
+                    .await?
+                }
+            };
+            let src = project_frame(state_rows, &state_fields)?;
+            context.register_table("src", src.into_view())?;
+            view.parts()?
         };
-        let state_rows = match &state_partitions {
-            Some(restriction) => {
-                self.lookup_source_by_join_keys_in_partitions(
+        // The row-state refresh already knows the affected groups.  When the
+        // MV is keyed by exactly those groups and there is no lookup column,
+        // probe only those rows instead of scanning the whole MV for the
+        // delete/insert sides.
+        if parts.lookup.is_none() && view.mv.primary_keys == view.group_keys {
+            let mv_rows = self
+                .lookup_source_by_join_keys(
                     &context,
-                    state,
+                    &view.mv,
                     affected.clone(),
                     &view.group_keys,
                     &view.group_keys,
                     true,
-                    restriction,
                 )
-                .await?
-            }
-            None => {
-                self.lookup_source_by_join_keys(
-                    &context,
-                    state,
-                    affected.clone(),
-                    &view.group_keys,
-                    &view.group_keys,
-                    true,
-                )
-                .await?
+                .await?;
+            context.register_table("mv", mv_rows.into_view())?;
+        } else {
+            crate::observability::note_full_scan(&view.mv.table_name);
+            context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
+        }
+        // A bootstrap writes only inserts into an empty MV: the delete side
+        // and its key ordering are unnecessary, and the global ORDER BY would
+        // sort the whole result in one plan.  Rebuild SQL streams the same
+        // groups in whatever order the aggregate produces them.
+        let sql = if bootstrap {
+            recompute_rebuild_sql(&parts, epoch)
+        } else {
+            recompute_refresh_sql(&parts, epoch, false)
+        };
+        let frame = match context.sql(&sql).await {
+            Ok(frame) => frame,
+            Err(error) => {
+                tracing::error!(
+                    %sql,
+                    source = %parts.source.table_name,
+                    cdc = ?parts.source.cdc_column,
+                    partial = ?partial_state.is_some(),
+                    "multi-agg SQL failed"
+                );
+                return Err(error.into());
             }
         };
-        let src = project_frame(state_rows, &source_fields)?;
-        context.register_table("src", src.into_view())?;
-        context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
-        let parts = view.parts()?;
-        let frame = context
-            .sql(&recompute_refresh_sql(&parts, epoch, false))
-            .await?;
         commit_ids.extend(
             view.mv
                 .append_stream(&self.client, frame.execute_stream().await?)
@@ -4263,6 +4920,16 @@ impl IvmRuntime {
             self.metadata.delete_cursors(&view.view_id).await?;
             view.mv.truncate(&self.client).await?;
             state.truncate(&self.client).await?;
+            if let Some(existing) = self
+                .metadata
+                .get_state(&view.view_id, StateRole::MultiAggPartials)
+                .await?
+            {
+                self.open_table_by_id(&existing.table_id)
+                    .await?
+                    .truncate(&self.client)
+                    .await?;
+            }
             let Some(epoch) = self.refresh_multi_agg_rows(view, &state).await? else {
                 return Err(report!(
                     "multi-agg rebuild for {} found no source files (generation {generation})",

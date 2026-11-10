@@ -6,23 +6,71 @@ name: CI with compaction clean e2e Test
 
 on:
   push:
-    paths-ignore:
-      - "javadoc/**"
-      - "website/**"
-      - "cpp/**"
-      - "python/**"
-      - "**.md"
-      - "script/benchmark/**"
+    paths:
+      - ".github/workflows/compaction-clean-e2e.yml"
+      - ".github/actions/**"
+      - ".mvn/**"
+      - "pom.xml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "rust/lakesoul-build-info/**"
+      - "rust/lakesoul-common/**"
+      - "rust/lakesoul-io/**"
+      - "rust/lakesoul-io-c/**"
+      - "rust/lakesoul-metadata/**"
+      - "rust/lakesoul-metadata-c/**"
+      - "rust/lakesoul-metadata-proto/**"
+      - "rust/lakesoul-observability/**"
+      - "script/meta_init.sql"
+      - "script/meta_cleanup.sql"
+      - "script/meta_init_for_local_test.sh"
+      - "script/meta_rbac_init.sql"
+      - "script/meta_rbac_init_for_local_test.sh"
+      - "script/meta_rbac_init_domains_for_test.sql"
+      - "script/meta_rbac_init_users_for_test.sql"
+      - "integrations/lakesoul-common/**"
+      - "integrations/lakesoul-flink/**"
+      - "integrations/lakesoul-spark/**"
+      - "integrations/native-io/**"
+      - "script/ci/**"
+      - "script/get_jar_name.py"
+      - "docker/lakesoul-docker-compose-env/**"
     branches:
       - "main"
   pull_request:
-    paths-ignore:
-      - "javadoc/**"
-      - "website/**"
-      - "cpp/**"
-      - "python/**"
-      - "**.md"
-      - "script/benchmark/**"
+    paths:
+      - ".github/workflows/compaction-clean-e2e.yml"
+      - ".github/actions/**"
+      - ".mvn/**"
+      - "pom.xml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "rust/lakesoul-build-info/**"
+      - "rust/lakesoul-common/**"
+      - "rust/lakesoul-io/**"
+      - "rust/lakesoul-io-c/**"
+      - "rust/lakesoul-metadata/**"
+      - "rust/lakesoul-metadata-c/**"
+      - "rust/lakesoul-metadata-proto/**"
+      - "rust/lakesoul-observability/**"
+      - "script/meta_init.sql"
+      - "script/meta_cleanup.sql"
+      - "script/meta_init_for_local_test.sh"
+      - "script/meta_rbac_init.sql"
+      - "script/meta_rbac_init_for_local_test.sh"
+      - "script/meta_rbac_init_domains_for_test.sql"
+      - "script/meta_rbac_init_users_for_test.sql"
+      - "integrations/lakesoul-common/**"
+      - "integrations/lakesoul-flink/**"
+      - "integrations/lakesoul-spark/**"
+      - "integrations/native-io/**"
+      - "script/ci/**"
+      - "script/get_jar_name.py"
+      - "docker/lakesoul-docker-compose-env/**"
     branches:
       - "main"
       - "release/**"
@@ -46,7 +94,7 @@ jobs:
       LAKESOUL_PG_PASSWORD: lakesoul_test
       LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
@@ -54,10 +102,7 @@ jobs:
           distribution: "temurin"
           cache: maven
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: dtolnay/rust-toolchain@stable
       - uses: ./.github/actions/setup-flatc
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -117,13 +162,13 @@ jobs:
       - name: Install python dependencies
         run: |
           cd python
-          uv sync --no-install-project --python 3.10 --group dev
+          uv sync --no-install-project --python 3.11 --group dev
       - name: Copy jars to work-dir
         run: |
-          FLINK_JAR_NAME="$(python script/get_jar_name.py lakesoul-flink)"
-          SPARK_JAR_NAME="$(python script/get_jar_name.py lakesoul-spark)"
-          cp "./lakesoul-flink/target/$FLINK_JAR_NAME" ./script/benchmark/work-dir
-          cp "./lakesoul-spark/target/$SPARK_JAR_NAME" ./script/benchmark/work-dir
+          FLINK_JAR_NAME="$(python script/get_jar_name.py integrations/lakesoul-flink)"
+          SPARK_JAR_NAME="$(python script/get_jar_name.py integrations/lakesoul-spark)"
+          cp "./integrations/lakesoul-flink/target/$FLINK_JAR_NAME" ./script/benchmark/work-dir
+          cp "./integrations/lakesoul-spark/target/$SPARK_JAR_NAME" ./script/benchmark/work-dir
           echo "FLINK_JAR_NAME=$FLINK_JAR_NAME" >> "$GITHUB_ENV"
           echo "SPARK_JAR_NAME=$SPARK_JAR_NAME" >> "$GITHUB_ENV"
       - name: Run compaction clean e2e

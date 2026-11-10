@@ -3,6 +3,10 @@
 > 状态：基础能力与 IVM 运行时均已合入 upstream/main；本文件保留实施记录并维护
 > 进度总览与后续路线。设计细节见 `EPOCH.md` 与各节实施记录。
 
+> 配置说明（2026-11）：本文中的 `LAKESOUL_IVM_*` 环境变量已移除，等价的
+> 行为配置见 `IvmOptions`，资源/会话配置见 `IvmRuntimeConfig`（README
+> "Runtime configuration"）。下文保留当时的实施记录。
+
 ## 进度总览
 
 ### 已合入的 PR
@@ -251,7 +255,7 @@ hash 桶列 == 合并键 == `TableInfo.partitions` 的 hash 段
 `metadata_client.rs:594-641` 冲突分支为空：read_version != cur_version 时保留当前
 （别人的）snapshot、version+1 提交，**新文件永不发布**（静默丢更新）；
 `transaction_insert_partition_info` 只返回行数，PK 冲突时重试同 payload 最终报
-PG 唯一键错误。JVM 侧有完整实现（`lakesoul-common/src/main/java/com/dmetasoul/lakesoul/meta/DBManager.java:559-711`）。
+PG 唯一键错误。JVM 侧有完整实现（`integrations/lakesoul-common/src/main/java/com/dmetasoul/lakesoul/meta/DBManager.java:559-711`）。
 
 **改动（镜像 JVM）**
 

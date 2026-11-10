@@ -9,7 +9,7 @@ kind: ServiceAccount
 metadata:
   name: lakesoul-prometheus
   namespace: lakesoul
-# Pod discovery reads the mounted token.
+# Pod and node discovery and the kubelet scrape read the mounted token.
 automountServiceAccountToken: true
 imagePullSecrets:
   - name: lakesoul-registry
@@ -29,6 +29,16 @@ metadata:
   name: lakesoul-grafana
   namespace: lakesoul
 automountServiceAccountToken: false
+imagePullSecrets:
+  - name: lakesoul-registry
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lakesoul-kube-state-metrics
+  namespace: lakesoul
+# The namespaced Pod informers read the mounted token.
+automountServiceAccountToken: true
 imagePullSecrets:
   - name: lakesoul-registry
 ---
@@ -56,3 +66,58 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: lakesoul-prometheus-discovery
+---
+# cAdvisor lives on the kubelets, which only node-scoped permissions reach:
+# list/watch nodes to discover the kubelets, and `nodes/metrics`, which the
+# kubelet checks for /metrics/cadvisor. Read-only; deliberately not
+# `nodes/proxy`, which would also open the kubelet's exec/attach endpoints.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lakesoul-prometheus-kubelet
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes/metrics"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lakesoul-prometheus-kubelet
+subjects:
+  - kind: ServiceAccount
+    name: lakesoul-prometheus
+    namespace: lakesoul
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: lakesoul-prometheus-kubelet
+---
+# kube-state-metrics with --namespaces=lakesoul --resources=pods watches the
+# Pods of this namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lakesoul-kube-state-metrics
+  namespace: lakesoul
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lakesoul-kube-state-metrics
+  namespace: lakesoul
+subjects:
+  - kind: ServiceAccount
+    name: lakesoul-kube-state-metrics
+    namespace: lakesoul
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: lakesoul-kube-state-metrics

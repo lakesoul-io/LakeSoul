@@ -7,8 +7,11 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, OnceLock};
+use std::time::Instant;
 
+use ::vortex::io::session::RuntimeSessionExt;
 use ::vortex::layout::scan::memory::{ScanMemoryBudget, ScanMemorySessionExt};
 use ::vortex::{VortexSessionDefault, session::VortexSession};
 use arrow::datatypes::SchemaRef;
@@ -19,12 +22,14 @@ use datafusion::catalog::Session;
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::file_format::{FileFormat, parquet::ParquetFormat};
+use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
 use datafusion::datasource::physical_plan::{
     FileGroup, FileScanConfig, FileScanConfigBuilder, FileSinkConfig, FileSource,
     ParquetSource,
 };
 use datafusion::datasource::table_schema::TableSchema;
+use datafusion::execution::context::SessionConfig;
 use datafusion::physical_expr::utils::{collect_columns, reassign_expr_columns};
 use datafusion::physical_expr::{
     LexRequirement, PhysicalExpr, conjunction_opt, expressions::Column,
@@ -40,15 +45,18 @@ use object_store::{ObjectMeta, ObjectStore};
 use parquet::arrow::parquet_to_arrow_schema;
 use rootcause::compat::boxed_error::IntoBoxedError;
 use rootcause::{Report, bail, report};
+use tokio::sync::{Semaphore, SemaphorePermit};
 use vortex_datafusion::{VortexFormat, VortexTableOptions};
 
 use crate::Result;
+use crate::cache::stats::SchemaInferenceTiming;
 use crate::config::LakeSoulIOConfig;
+use crate::object_store_metrics::SchemaInferenceStore;
 use crate::physical_plan::merge::MergeParquetExec;
 
 pub(crate) mod vortex;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PhysicalFormat {
     Parquet,
     Vortex,
@@ -103,6 +111,34 @@ impl FromStr for PhysicalFormat {
     }
 }
 
+// Sessions may lower their metadata concurrency, but cannot each allocate a
+// separate process-wide budget for the same I/O and blocking pools.
+static METADATA_FETCH_BUDGET: LazyLock<DFResult<Semaphore>> = LazyLock::new(|| {
+    let config = SessionConfig::from_env()?;
+    let limit: usize = config.options().execution.meta_fetch_concurrency.into();
+    if limit > Semaphore::MAX_PERMITS {
+        return Err(DataFusionError::Configuration(format!(
+            "metadata fetch concurrency {limit} exceeds {}",
+            Semaphore::MAX_PERMITS
+        )));
+    }
+    Ok(Semaphore::new(limit))
+});
+
+/// Shares admission between eager metadata preparation and lazy reader
+/// initialization, including HEAD requests for files whose size is unknown.
+pub(crate) async fn acquire_metadata_fetch_permit() -> DFResult<SemaphorePermit<'static>>
+{
+    let budget = METADATA_FETCH_BUDGET.as_ref().map_err(|error| {
+        DataFusionError::Configuration(format!(
+            "invalid process metadata budget: {error}"
+        ))
+    })?;
+    budget.acquire().await.map_err(|error| {
+        DataFusionError::Internal(format!("metadata fetch budget closed: {error}"))
+    })
+}
+
 /// The process-wide budget for decoded Vortex data in flight. Set at most once,
 /// at startup, from the process configuration.
 static VORTEX_DECODE_BUDGET: OnceLock<Arc<ScanMemoryBudget>> = OnceLock::new();
@@ -134,8 +170,15 @@ pub fn install_vortex_decode_budget(bytes: usize) -> Result<()> {
 /// (`lakesoul_datafusion::distributed::codec::user_codecs`), so the coordinator
 /// and the workers decode files with identical codecs, expressions and
 /// coercions. Carries the [`install_vortex_decode_budget`] budget, if any.
+static VORTEX_SCAN_SESSION: LazyLock<VortexSession> =
+    LazyLock::new(|| VortexSession::default().with_tokio());
+
+/// The process-wide [`VortexSession`] every LakeSoul vortex read/write runs
+/// with.  Cloning a session is cheap and shares the registered arrays,
+/// layouts, expressions and kernels, so session initialization happens once
+/// per process instead of once per partition group or lookup source.
 pub fn vortex_scan_session() -> VortexSession {
-    let session = VortexSession::default();
+    let session = VORTEX_SCAN_SESSION.clone();
     match VORTEX_DECODE_BUDGET.get() {
         Some(budget) => session.with_scan_memory_budget(Arc::clone(budget)),
         None => session,
@@ -674,237 +717,305 @@ impl CanCastSchemaBuilder {
 pub async fn flatten_file_scan_config(
     state: &dyn Session,
     format: Arc<ParquetFormat>,
-    conf: FileScanConfig,
+    mut conf: FileScanConfig,
     primary_keys: &[String],
     cdc_column: &str,
     partition_schema: SchemaRef, // use less
     target_schema: SchemaRef,
 ) -> DFResult<Vec<FileScanConfig>> {
     debug!("partition schema: {}", partition_schema);
-    // TODO remove clone
     let store = state.runtime_env().object_store(&conf.object_store_url)?;
-    let file_groups = conf.file_groups.clone();
-    let flatten_configs = futures::stream::iter(file_groups)
-        .map(|files| {
-            let store = store.clone();
-            let format = format.clone();
-            let partition_schema = partition_schema.clone();
-            let target_schema = target_schema.clone();
-            let conf = conf.clone();
-            async move {
-                let configs: Vec<FileScanConfig> = futures::stream::iter(files.files())
-                    .map(|file| {
-                        let store = store.clone();
-                        let format = format.clone();
-                        let partition_schema = partition_schema.clone();
-                        let target_schema = target_schema.clone();
-                        let conf = conf.clone();
-                        async move {
-                            let objects = std::slice::from_ref(&file.object_meta);
-                            let files = vec![file.clone()];
-                            // TODO use schema adapter rewriter?
-                            let file_schema =
-                                format.infer_schema(state, &store, objects).await?;
-                            let file_schema = {
-                                let mut builder = SchemaBuilder::new();
-                                // O(nm), n = number of fields, m = number of partition columns
-                                for field in file_schema.fields() {
-                                    // in file not in partition
-                                    if partition_schema
-                                        .field_with_name(field.name())
-                                        .is_err()
-                                    {
-                                        builder.push(field.clone());
-                                    }
-                                }
-                                SchemaRef::new(builder.finish())
-                            };
-                            debug!("file schema:{}", file_schema);
-                            let cols = conf.table_partition_cols().clone();
-                            debug!("partition cols: {:?}", cols);
-                            debug!("flatten: file_schema: {}", file_schema);
-                            // only file schema
-                            let table_schema =
-                                TableSchema::new(file_schema.clone(), cols.to_vec());
-                            let file_statistics = format
-                                .infer_stats(
-                                    state,
-                                    &store,
-                                    file_schema.clone(),
-                                    &file.object_meta,
-                                )
-                                .await?;
-                            let statistics =
-                                table_statistics(file_statistics, &table_schema);
-                            let physical_target_schema = strip_partition_columns(
-                                target_schema.clone(),
-                                partition_schema.clone(),
-                            );
-                            let projection_indices = compute_project_column_indices(
-                                table_schema.file_schema().clone(),
-                                physical_target_schema,
-                                primary_keys,
-                                cdc_column,
-                            );
-                            let mut parquet_source = format
-                                .file_source(table_schema)
-                                .downcast_ref::<ParquetSource>()
-                                .ok_or(DataFusionError::Internal("file source".into()))?
-                                .clone();
-                            if let Some(predicate) = conf.file_source.filter() {
-                                let rebound = rebind_predicate(
-                                    &predicate,
-                                    conf.file_source.table_schema().table_schema(),
-                                    parquet_source.table_schema().table_schema(),
-                                )?;
-                                if let Some(predicate) = conjunction_opt(rebound) {
-                                    parquet_source =
-                                        parquet_source.with_predicate(predicate);
-                                }
+    let meta_fetch_concurrency: usize = state
+        .config_options()
+        .execution
+        .meta_fetch_concurrency
+        .into();
+    // Keep the template file-free: copying all input groups per file is quadratic.
+    let file_groups = std::mem::take(&mut conf.file_groups);
+    let mut flatten_configs =
+        futures::stream::iter(file_groups.iter().flat_map(FileGroup::files).enumerate())
+            .map(|(index, file): (usize, &PartitionedFile)| {
+                let store = &store;
+                let format = &format;
+                let partition_schema = &partition_schema;
+                let target_schema = &target_schema;
+                let conf = &conf;
+                async move {
+                    let _permit = acquire_metadata_fetch_permit().await?;
+                    let conf = conf.clone();
+                    let objects = std::slice::from_ref(&file.object_meta);
+                    let files = vec![file.clone()];
+                    // TODO use schema adapter rewriter?
+                    let file_schema = format.infer_schema(state, store, objects).await?;
+                    let file_schema = {
+                        let mut builder = SchemaBuilder::new();
+                        // O(nm), n = number of fields, m = number of partition columns
+                        for field in file_schema.fields() {
+                            // in file not in partition
+                            if partition_schema.field_with_name(field.name()).is_err() {
+                                builder.push(field.clone());
                             }
-                            if let Some(metadata_size_hint) = format.metadata_size_hint()
-                            {
-                                parquet_source = parquet_source
-                                    .with_metadata_size_hint(metadata_size_hint);
-                            }
-                            if let Some(reader_factory) = conf
-                                .file_source
-                                .downcast_ref::<ParquetSource>()
-                                .and_then(|source| {
-                                    source.parquet_file_reader_factory().cloned()
-                                })
-                            {
-                                parquet_source = parquet_source
-                                    .with_parquet_file_reader_factory(reader_factory);
-                            }
-                            let config = FileScanConfigBuilder::from(conf)
-                                .with_source(Arc::new(parquet_source))
-                                .with_file_groups(vec![
-                                    FileGroup::new(files)
-                                        .with_statistics(Arc::new(statistics.clone())),
-                                ])
-                                .with_statistics(statistics)
-                                .with_projection_indices(projection_indices)?
-                                .build();
-
-                            Ok::<FileScanConfig, DataFusionError>(config)
                         }
-                    })
-                    .boxed()
-                    .buffered(4)
-                    .try_collect::<Vec<_>>()
-                    .await?;
-                Ok::<Vec<FileScanConfig>, DataFusionError>(configs)
-            }
-        })
-        .boxed()
-        .buffered(4)
-        .try_collect::<Vec<_>>()
+                        SchemaRef::new(builder.finish())
+                    };
+                    debug!("file schema:{}", file_schema);
+                    let cols = conf.table_partition_cols().clone();
+                    debug!("partition cols: {:?}", cols);
+                    debug!("flatten: file_schema: {}", file_schema);
+                    // only file schema
+                    let table_schema =
+                        TableSchema::new(file_schema.clone(), cols.to_vec());
+                    let file_statistics = format
+                        .infer_stats(state, store, file_schema.clone(), &file.object_meta)
+                        .await?;
+                    let statistics = table_statistics(file_statistics, &table_schema);
+                    let physical_target_schema = strip_partition_columns(
+                        target_schema.clone(),
+                        partition_schema.clone(),
+                    );
+                    let projection_indices = compute_project_column_indices(
+                        table_schema.file_schema().clone(),
+                        physical_target_schema,
+                        primary_keys,
+                        cdc_column,
+                    );
+                    let mut parquet_source = format
+                        .file_source(table_schema)
+                        .downcast_ref::<ParquetSource>()
+                        .ok_or(DataFusionError::Internal("file source".into()))?
+                        .clone();
+                    if let Some(predicate) = conf.file_source.filter() {
+                        let rebound = rebind_predicate(
+                            &predicate,
+                            conf.file_source.table_schema().table_schema(),
+                            parquet_source.table_schema().table_schema(),
+                        )?;
+                        if let Some(predicate) = conjunction_opt(rebound) {
+                            parquet_source = parquet_source.with_predicate(predicate);
+                        }
+                    }
+                    if let Some(metadata_size_hint) = format.metadata_size_hint() {
+                        parquet_source =
+                            parquet_source.with_metadata_size_hint(metadata_size_hint);
+                    }
+                    if let Some(reader_factory) = conf
+                        .file_source
+                        .downcast_ref::<ParquetSource>()
+                        .and_then(|source| source.parquet_file_reader_factory().cloned())
+                    {
+                        parquet_source = parquet_source
+                            .with_parquet_file_reader_factory(reader_factory);
+                    }
+                    let config = FileScanConfigBuilder::from(conf)
+                        .with_source(Arc::new(parquet_source))
+                        .with_file_groups(vec![
+                            FileGroup::new(files)
+                                .with_statistics(Arc::new(statistics.clone())),
+                        ])
+                        .with_statistics(statistics)
+                        .with_projection_indices(projection_indices)?
+                        .build();
+
+                    Ok::<(usize, FileScanConfig), DataFusionError>((index, config))
+                }
+            })
+            .boxed() // Workaround https://github.com/rust-lang/rust/issues/64552
+            .buffer_unordered(meta_fetch_concurrency)
+            .try_collect::<Vec<_>>()
+            .await?;
+    // Keep slow files from blocking admission, but preserve merge version order.
+    flatten_configs.sort_unstable_by_key(|(index, _)| *index);
+    Ok(flatten_configs
+        .into_iter()
+        .map(|(_, config)| config)
+        .collect())
+}
+
+/// One file's flattened scan configuration and the time each step took.
+pub(crate) struct FlattenedFileScan {
+    pub config: FileScanConfig,
+    /// Time spent inferring the file's schema.
+    pub schema_ns: u64,
+    /// Time spent inferring the file's statistics.
+    pub stats_ns: u64,
+    /// Time spent on everything else: adapting the source, projecting and
+    /// rebinding predicates.
+    pub build_ns: u64,
+}
+
+/// Builds the single-file scan configuration of `file` on top of the file-free
+/// `template`.
+///
+/// One implementation serves both the eager flatten loop over a whole scan and
+/// the execution-time initialization of a metadata-only scan's work unit, so
+/// the per-file metadata reads, schema adaptation, projection and predicate
+/// rebinding rules cannot drift apart. The template carries the file source of
+/// one physical format for one object store, without file groups: copying all
+/// input groups per file is quadratic.
+///
+/// `schema_timing` is the batch counter handle of an eager flatten loop: when
+/// given, the file's `infer_schema` requests are counted into it through a
+/// schema-only store wrapper. Metadata-only scans pass `None` — their reader
+/// initialization runs one unit at a time and would only repeat the summary.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn flatten_one_file_scan_config(
+    state: &dyn Session,
+    format: Arc<dyn FileFormat>,
+    template: &FileScanConfig,
+    file: PartitionedFile,
+    primary_keys: &[String],
+    cdc_column: &str,
+    partition_schema: SchemaRef,
+    target_schema: SchemaRef,
+    schema_timing: Option<&Arc<SchemaInferenceTiming>>,
+) -> DFResult<FlattenedFileScan> {
+    let _permit = acquire_metadata_fetch_permit().await?;
+    let store = state
+        .runtime_env()
+        .object_store(&template.object_store_url)?;
+    let file_started = Instant::now();
+    let object_meta = file.object_meta.clone();
+    let objects = std::slice::from_ref(&object_meta);
+    let files = vec![file];
+    let schema_started = Instant::now();
+    // The wrapper carries the counters through Vortex's spawned tasks, which
+    // do not inherit task locals; the registered store is unchanged.
+    let schema_store: Arc<dyn ObjectStore> = match schema_timing {
+        Some(timing) => Arc::new(SchemaInferenceStore::new(
+            Arc::clone(&store),
+            Arc::clone(timing),
+        )),
+        None => store.clone(),
+    };
+    let file_schema = format.infer_schema(state, &schema_store, objects).await?;
+    let schema_elapsed = schema_started.elapsed();
+    let file_schema = strip_partition_columns(file_schema, partition_schema.clone());
+    debug!("file schema:{}", file_schema);
+    let cols = template.table_partition_cols().clone();
+    debug!("partition cols: {:?}", cols);
+    let table_schema = TableSchema::new(file_schema, cols.to_vec());
+    let stats_started = Instant::now();
+    let file_statistics = format
+        .infer_stats(
+            state,
+            &store,
+            table_schema.file_schema().clone(),
+            &object_meta,
+        )
         .await?;
-    Ok(flatten_configs.into_iter().flatten().collect())
+    let stats_elapsed = stats_started.elapsed();
+    let statistics = table_statistics(file_statistics, &table_schema);
+    let physical_target_schema = strip_partition_columns(target_schema, partition_schema);
+    let projection_indices = compute_project_column_indices(
+        table_schema.file_schema().clone(),
+        physical_target_schema,
+        primary_keys,
+        cdc_column,
+    );
+    let mut source = format.file_source(table_schema);
+    source = adapt_file_source_for_single_file(source, format.as_ref(), template)?;
+    if let Some(predicate) = template.file_source.filter() {
+        source = push_predicate_into(
+            source,
+            &predicate,
+            template.file_source.table_schema().table_schema(),
+            state,
+        )?;
+    }
+    let config = FileScanConfigBuilder::from(template.clone())
+        .with_source(source)
+        .with_file_groups(vec![
+            FileGroup::new(files).with_statistics(Arc::new(statistics.clone())),
+        ])
+        .with_statistics(statistics)
+        .with_projection_indices(projection_indices)?
+        .build();
+    let build_elapsed = file_started.elapsed() - schema_elapsed - stats_elapsed;
+    Ok(FlattenedFileScan {
+        config,
+        schema_ns: schema_elapsed.as_nanos() as u64,
+        stats_ns: stats_elapsed.as_nanos() as u64,
+        build_ns: build_elapsed.as_nanos() as u64,
+    })
 }
 
 pub async fn flatten_file_scan_config_for_format(
     state: &dyn Session,
     format: Arc<dyn FileFormat>,
-    conf: FileScanConfig,
+    mut conf: FileScanConfig,
     primary_keys: &[String],
     cdc_column: &str,
     partition_schema: SchemaRef,
     target_schema: SchemaRef,
 ) -> Result<Vec<FileScanConfig>> {
-    debug!("partition schema: {}", partition_schema);
-    let store = state.runtime_env().object_store(&conf.object_store_url)?;
-    let file_groups = conf.file_groups.clone();
-    let flatten_configs = futures::stream::iter(file_groups)
-        .map(|files| {
-            let store = store.clone();
-            let format = format.clone();
-            let partition_schema = partition_schema.clone();
-            let target_schema = target_schema.clone();
-            let conf = conf.clone();
-            async move {
-                let configs: Vec<FileScanConfig> = futures::stream::iter(files.files())
-                    .map(|file| {
-                        let store = store.clone();
-                        let format = format.clone();
-                        let partition_schema = partition_schema.clone();
-                        let target_schema = target_schema.clone();
-                        let conf = conf.clone();
-                        async move {
-                            let objects = std::slice::from_ref(&file.object_meta);
-                            let files = vec![file.clone()];
-                            let file_schema =
-                                format.infer_schema(state, &store, objects).await?;
-                            let file_schema = strip_partition_columns(
-                                file_schema,
-                                partition_schema.clone(),
-                            );
-                            debug!("file schema:{}", file_schema);
-                            let cols = conf.table_partition_cols().clone();
-                            debug!("partition cols: {:?}", cols);
-                            debug!("flatten: file_schema: {}", file_schema);
-                            let table_schema =
-                                TableSchema::new(file_schema, cols.to_vec());
-                            let file_statistics = format
-                                .infer_stats(
-                                    state,
-                                    &store,
-                                    table_schema.file_schema().clone(),
-                                    &file.object_meta,
-                                )
-                                .await?;
-                            let statistics =
-                                table_statistics(file_statistics, &table_schema);
-                            let physical_target_schema = strip_partition_columns(
-                                target_schema.clone(),
-                                partition_schema.clone(),
-                            );
-                            let projection_indices = compute_project_column_indices(
-                                table_schema.file_schema().clone(),
-                                physical_target_schema,
-                                primary_keys,
-                                cdc_column,
-                            );
-                            let mut source = format.file_source(table_schema);
-                            source = adapt_file_source_for_single_file(
-                                source,
-                                format.as_ref(),
-                                &conf,
-                            )?;
-                            if let Some(predicate) = conf.file_source.filter() {
-                                source = push_predicate_into(
-                                    source,
-                                    &predicate,
-                                    conf.file_source.table_schema().table_schema(),
-                                    state,
-                                )?;
-                            }
-                            let config = FileScanConfigBuilder::from(conf)
-                                .with_source(source)
-                                .with_file_groups(vec![
-                                    FileGroup::new(files)
-                                        .with_statistics(Arc::new(statistics.clone())),
-                                ])
-                                .with_statistics(statistics)
-                                .with_projection_indices(projection_indices)?
-                                .build();
-
-                            Ok::<FileScanConfig, DataFusionError>(config)
-                        }
-                    })
-                    .boxed()
-                    .buffered(4)
-                    .try_collect::<Vec<_>>()
+    let started = Instant::now();
+    let schema_ns = AtomicU64::new(0);
+    let stats_ns = AtomicU64::new(0);
+    let build_ns = AtomicU64::new(0);
+    // One counter handle for the whole batch: the per-file store wrappers count
+    // into it and the summary is logged once, after every file finished.
+    let schema_timing = Arc::new(SchemaInferenceTiming::default());
+    let meta_fetch_concurrency: usize = state
+        .config_options()
+        .execution
+        .meta_fetch_concurrency
+        .into();
+    // Never copy the scan's complete file list into every single-file template.
+    let file_groups = std::mem::take(&mut conf.file_groups);
+    let file_group_count = file_groups.len();
+    let file_count = file_groups
+        .iter()
+        .map(|group| group.files().len())
+        .sum::<usize>();
+    let mut configs =
+        futures::stream::iter(file_groups.iter().flat_map(FileGroup::files).enumerate())
+            .map(|(index, file)| {
+                let format = &format;
+                let conf = &conf;
+                let partition_schema = &partition_schema;
+                let target_schema = &target_schema;
+                let schema_ns = &schema_ns;
+                let stats_ns = &stats_ns;
+                let build_ns = &build_ns;
+                let schema_timing = &schema_timing;
+                async move {
+                    let flattened = flatten_one_file_scan_config(
+                        state,
+                        Arc::clone(format),
+                        conf,
+                        file.clone(),
+                        primary_keys,
+                        cdc_column,
+                        Arc::clone(partition_schema),
+                        Arc::clone(target_schema),
+                        Some(schema_timing),
+                    )
                     .await?;
-                Ok::<Vec<FileScanConfig>, DataFusionError>(configs)
-            }
-        })
-        .boxed()
-        .buffered(4)
-        .try_collect::<Vec<_>>()
-        .await?;
-    Ok(flatten_configs.into_iter().flatten().collect())
+                    schema_ns.fetch_add(flattened.schema_ns, Ordering::Relaxed);
+                    stats_ns.fetch_add(flattened.stats_ns, Ordering::Relaxed);
+                    build_ns.fetch_add(flattened.build_ns, Ordering::Relaxed);
+                    Ok::<_, DataFusionError>((index, flattened.config))
+                }
+            })
+            .boxed()
+            .buffer_unordered(meta_fetch_concurrency)
+            .try_collect::<Vec<_>>()
+            .await?;
+    // Metadata completion order must not change merge version precedence.
+    configs.sort_unstable_by_key(|(index, _)| *index);
+    schema_timing.log_summary();
+    tracing::info!(
+        wall_ms = started.elapsed().as_secs_f64() * 1000.0,
+        physical_format = %format.get_ext(),
+        file_group_count,
+        file_count,
+        meta_fetch_concurrency,
+        schema_sum_ms = schema_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0,
+        stats_sum_ms = stats_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0,
+        build_sum_ms = build_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0,
+        "scan initialization flatten summary"
+    );
+    Ok(configs.into_iter().map(|(_, config)| config).collect())
 }
 
 pub fn merge_schema_refs(
@@ -919,7 +1030,7 @@ pub fn merge_schema_refs(
     Ok(Arc::new(out_fields.finish()))
 }
 
-fn strip_partition_columns(
+pub(crate) fn strip_partition_columns(
     file_schema: SchemaRef,
     partition_schema: SchemaRef,
 ) -> SchemaRef {
@@ -1133,21 +1244,51 @@ pub fn append_only_scan_exec(
         .table_schema()
         .table_partition_cols()
         .to_vec();
-    let file_schema = Arc::new(Schema::new(
-        merged_schema
-            .fields()
-            .iter()
-            .filter(|field| {
-                !partition_columns
-                    .iter()
-                    .any(|column| column.name() == field.name())
-            })
-            .cloned()
-            .collect::<Vec<FieldRef>>(),
-    ));
-    let table_schema = TableSchema::builder(file_schema)
+    let mut declared = merged_schema
+        .fields()
+        .iter()
+        .filter(|field| {
+            !partition_columns
+                .iter()
+                .any(|column| column.name() == field.name())
+        })
+        .cloned()
+        .collect::<Vec<FieldRef>>();
+    // A pushed-down predicate may reference a column the projection drops
+    // (`SELECT id ... WHERE score > 10`). A file source only evaluates a
+    // conjunct whose columns the leaf's declared schema resolves — the
+    // predicate is rebound by name — so a column outside the projection would
+    // be dropped from the conjunct list and the scan would return unfiltered
+    // rows. Declare the columns every file of this leaf stores as well; the
+    // projection below still trims the output to `merged_schema`. A column
+    // only some files store stays undeclared, so a conjunct on it is dropped
+    // for the whole leaf instead of dropping every row of the files that lack
+    // it.
+    for field in base.file_source.table_schema().file_schema().fields() {
+        let name = field.name();
+        if declared.iter().any(|declared| declared.name() == name)
+            || partition_columns.iter().any(|column| column.name() == name)
+        {
+            continue;
+        }
+        let stored_everywhere = configs.iter().skip(1).all(|config| {
+            config
+                .file_source
+                .table_schema()
+                .file_schema()
+                .field_with_name(name)
+                .is_ok()
+        });
+        if stored_everywhere {
+            declared.push(Arc::clone(field));
+        }
+    }
+    let table_schema = TableSchema::builder(Arc::new(Schema::new(declared)))
         .with_table_partition_cols(partition_columns)
         .build();
+    // The leaf's declared schema: statistics and the final projection both
+    // index it, and it may declare more columns than `merged_schema` projects.
+    let declared_schema = Arc::clone(table_schema.table_schema());
 
     let mut source = format.file_source(table_schema);
     source = adapt_file_source_for_single_file(source, format, base)?;
@@ -1187,7 +1328,9 @@ pub fn append_only_scan_exec(
         .with_file_groups(vec![FileGroup::new(files)])
         // Constraints index the outer table schema, not this leaf's.
         .with_constraints(Constraints::default())
-        .with_statistics(Statistics::new_unknown(merged_schema))
+        // Statistics index the leaf's declared schema, which may declare more
+        // columns than `merged_schema` projects.
+        .with_statistics(Statistics::new_unknown(declared_schema.as_ref()))
         // A declared partitioning describes the outer scan's file groups, not
         // this leaf's single group.
         .with_output_partitioning(None)

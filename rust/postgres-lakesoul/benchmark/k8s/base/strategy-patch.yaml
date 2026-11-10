@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Recreate instead of RollingUpdate: every benchmark deploy starts cold
+# processes, and the shared nodes lack the free requests for surge Pods.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-coordinator
+  namespace: lakesoul
+spec:
+  strategy:
+    type: Recreate
+    rollingUpdate: null
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-worker
+  namespace: lakesoul
+spec:
+  strategy:
+    type: Recreate
+    rollingUpdate: null

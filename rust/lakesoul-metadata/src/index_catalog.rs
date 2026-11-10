@@ -970,8 +970,8 @@ pub fn normalize_index_prefix(path: &str) -> String {
         .to_string()
 }
 
-async fn delete_kind_under_pattern(
-    client: &crate::pooled_client::PgConnection<'_>,
+async fn delete_kind_under_pattern<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
     kind: IndexKind,
     pattern: &str,
 ) -> Result<()> {
@@ -986,8 +986,8 @@ async fn delete_kind_under_pattern(
 }
 
 /// Best-effort cleanup for a table path when `table_info` is already gone.
-pub(crate) async fn clean_for_table_path(
-    client: &crate::pooled_client::PgConnection<'_>,
+pub(crate) async fn clean_for_table_path<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
     table_path: &str,
 ) -> Result<()> {
     let normalized = normalize_index_prefix(table_path);
@@ -1017,7 +1017,7 @@ pub(crate) async fn clean_for_table_id(
         return Ok(());
     };
     let table_path: String = row.get(0);
-    clean_for_table_path(client, &table_path).await
+    clean_for_table_path::<tokio_postgres::Client>(client, &table_path).await
 }
 
 /// Best-effort partition-level cleanup for the drop path.
@@ -1048,7 +1048,8 @@ pub(crate) async fn clean_for_partition(
         format!("{base}/{partition}/")
     };
     for kind in IndexKind::ALL {
-        delete_kind_under_pattern(client, kind, &pattern).await?;
+        delete_kind_under_pattern::<tokio_postgres::Client>(client, kind, &pattern)
+            .await?;
     }
     Ok(())
 }

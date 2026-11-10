@@ -4,8 +4,8 @@ set -ex
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd)
 PROJECT_DIR=$(realpath $SCRIPT_DIR/../..)
-PRESTO_JAR_NAME=$(python $SCRIPT_DIR/../get_jar_name.py $PROJECT_DIR/lakesoul-presto)
-PRESTO_JAR_FILE_PATH=$PROJECT_DIR/lakesoul-presto/target/$PRESTO_JAR_NAME
+PRESTO_JAR_NAME=$(python $SCRIPT_DIR/../get_jar_name.py $PROJECT_DIR/integrations/lakesoul-presto)
+PRESTO_JAR_FILE_PATH=$PROJECT_DIR/integrations/lakesoul-presto/target/$PRESTO_JAR_NAME
 
 COORDINATOR_ETC_DIR=$(realpath $1)
 

@@ -23,6 +23,11 @@ data:
   # Worker (lakesoul-worker), disjoint env names again.
   LAKESOUL_WORKER_PORT: "50051"
   LAKESOUL_WORKER_METRICS_ADDR: "0.0.0.0:19091"
-  # Worker and coordinator runtime tmpDirs: same bin-image, this env var dir is
-  # mounted as scratch emptyDir.
+  # Spill directory of the coordinator and workers: their /var/scratch volume,
+  # a per-Pod PVC (generic ephemeral volume).
   TMPDIR: "/var/scratch"
+  # jemalloc (coordinator and worker): background threads purge freed pages on
+  # the decay schedule, so an idle process returns query memory to the OS
+  # instead of keeping 1-2 GiB per worker until its next query
+  # (benchmark/results/20261027-bgthread-ab-feb90f43).
+  MALLOC_CONF: "background_thread:true"

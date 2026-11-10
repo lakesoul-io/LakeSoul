@@ -11,7 +11,8 @@
 //! idempotent per cursor: the cursor only advances once its delta has been
 //! committed.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use arrow::array::{ArrayRef, BinaryArray, BinaryBuilder};
@@ -21,23 +22,22 @@ use arrow_array::Array;
 
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Column, DFSchema, NullEquality};
-use datafusion::logical_expr::ExprSchemable;
+use datafusion::common::{Column, DFSchema, NullEquality, ScalarValue};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::logical_expr::LogicalPlanBuilder;
 use datafusion::logical_expr::when;
-use datafusion::prelude::{
-    DataFrame, Expr, JoinType, SessionConfig, SessionContext, col, lit,
-};
+use datafusion::logical_expr::{ExprSchemable, Operator};
+use datafusion::prelude::{DataFrame, Expr, JoinType, SessionContext, col, lit};
 use lakesoul_io::constant::DEFAULT_PARTITION_DESC;
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_metadata::transfusion::DataFileInfo;
+use lakesoul_metadata_proto::entity::PartitionInfo;
 use rootcause::report;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::metadata::{
-    BeginEpoch, Consumer, Cursor, EpochRecord, IvmMetadata, PartitionVersion,
+    BeginEpoch, CommitPlan, Consumer, Cursor, EpochRecord, IvmMetadata, PartitionVersion,
     SourceVersionRange, StateRole, StateTable, StateVersion,
 };
 use crate::provider::IvmTableProvider;
@@ -54,6 +54,7 @@ mod fallback;
 pub(crate) mod join_state;
 mod joins;
 pub(crate) mod keyed_plan;
+pub use keyed_plan::{enable_partition_stats, state_partition_stats};
 mod lookup_chain;
 mod multi_join;
 mod recompute;
@@ -280,6 +281,27 @@ pub enum ViewSpec {
         /// (`IS NOT DISTINCT FROM` keys).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         null_safe: bool,
+    },
+    /// A keyed lookup join with several 1:1 right sources that share one
+    /// set of join keys.  The left side keeps one join-key index, so a right
+    /// change maps back to affected left rows without scanning the left table.
+    MultiLookupJoin {
+        /// The view id.
+        view_id: String,
+        /// The left source table id (keyed).
+        left_table_id: String,
+        /// The materialized view table id.
+        mv_table_id: String,
+        /// The join keys, shared by every right source.
+        join_keys: Vec<String>,
+        /// The right sources in output order.
+        rights: Vec<MultiLookupRight>,
+        /// The materialized columns; source 0 is the left, source `i + 1`
+        /// is `rights[i]`.
+        output_columns: Vec<MultiLookupColumn>,
+        /// The refresh interval hint persisted with the view.
+        #[serde(default)]
+        refresh_interval_ms: i64,
     },
     /// `LEFT JOIN` over two keyed sources: every left row with all its
     /// matching right rows (a NULL-padded row when nothing matches).
@@ -1255,6 +1277,7 @@ impl ViewSpec {
             | ViewSpec::MultiJoin { view_id, .. }
             | ViewSpec::MultiAgg { view_id, .. }
             | ViewSpec::LookupJoin { view_id, .. }
+            | ViewSpec::MultiLookupJoin { view_id, .. }
             | ViewSpec::LeftJoin { view_id, .. }
             | ViewSpec::FullJoin { view_id, .. }
             | ViewSpec::CrossJoin { view_id, .. }
@@ -1272,6 +1295,53 @@ impl ViewSpec {
             | ViewSpec::TopK { view_id, .. }
             | ViewSpec::Fallback { view_id, .. }
             | ViewSpec::Sink { view_id, .. } => view_id,
+        }
+    }
+
+    /// The materialized-view table id this spec maintains.
+    pub fn mv_table_id(&self) -> &str {
+        match self {
+            ViewSpec::SumCount { mv_table_id, .. }
+            | ViewSpec::Variance { mv_table_id, .. }
+            | ViewSpec::Median { mv_table_id, .. }
+            | ViewSpec::BoolAgg { mv_table_id, .. }
+            | ViewSpec::ApproxDistinct { mv_table_id, .. }
+            | ViewSpec::ApproxPercentile { mv_table_id, .. }
+            | ViewSpec::ComputedAgg { mv_table_id, .. }
+            | ViewSpec::StringAgg { mv_table_id, .. }
+            | ViewSpec::ArrayAgg { mv_table_id, .. }
+            | ViewSpec::MultiJoin { mv_table_id, .. }
+            | ViewSpec::MultiAgg { mv_table_id, .. }
+            | ViewSpec::MultiLookupJoin { mv_table_id, .. }
+            | ViewSpec::MinMax { mv_table_id, .. }
+            | ViewSpec::DistinctAgg { mv_table_id, .. }
+            | ViewSpec::Window { mv_table_id, .. }
+            | ViewSpec::SemiAnti { mv_table_id, .. }
+            | ViewSpec::LeftAggregate { mv_table_id, .. }
+            | ViewSpec::LookupChain { mv_table_id, .. }
+            | ViewSpec::GroupingSets { mv_table_id, .. }
+            | ViewSpec::Row { mv_table_id, .. }
+            | ViewSpec::UnionAll { mv_table_id, .. }
+            | ViewSpec::UnionDistinct { mv_table_id, .. }
+            | ViewSpec::MultiWindow { mv_table_id, .. }
+            | ViewSpec::TopK { mv_table_id, .. }
+            | ViewSpec::Fallback { mv_table_id, .. }
+            | ViewSpec::Sink { mv_table_id, .. } => mv_table_id,
+            ViewSpec::Join {
+                output_table_id, ..
+            }
+            | ViewSpec::LookupJoin {
+                output_table_id, ..
+            }
+            | ViewSpec::LeftJoin {
+                output_table_id, ..
+            }
+            | ViewSpec::FullJoin {
+                output_table_id, ..
+            }
+            | ViewSpec::CrossJoin {
+                output_table_id, ..
+            } => output_table_id,
         }
     }
 
@@ -1345,6 +1415,14 @@ impl ViewSpec {
             }
             ViewSpec::Fallback { tables, .. } => {
                 ids.extend(tables.iter().map(String::as_str));
+            }
+            ViewSpec::MultiLookupJoin {
+                left_table_id,
+                rights,
+                ..
+            } => {
+                ids.push(left_table_id.as_str());
+                ids.extend(rights.iter().map(|right| right.table_id.as_str()));
             }
             ViewSpec::Join {
                 left_table_id,
@@ -1434,6 +1512,11 @@ impl ViewSpec {
                 ..
             }
             | ViewSpec::MultiJoin {
+                view_id: id,
+                mv_table_id: mv,
+                ..
+            }
+            | ViewSpec::MultiLookupJoin {
                 view_id: id,
                 mv_table_id: mv,
                 ..
@@ -1634,6 +1717,7 @@ impl ViewSpec {
             ViewSpec::MultiJoin { .. } => "multi_join",
             ViewSpec::MultiAgg { .. } => "multi_agg",
             ViewSpec::LookupJoin { .. } => "lookup_join",
+            ViewSpec::MultiLookupJoin { .. } => "multi_lookup_join",
             ViewSpec::LeftJoin { .. } => "left_join",
             ViewSpec::FullJoin { .. } => "full_join",
             ViewSpec::CrossJoin { .. } => "cross_join",
@@ -1653,6 +1737,27 @@ impl ViewSpec {
             ViewSpec::Sink { .. } => "sink",
         }
     }
+}
+
+/// One right source of a [`ViewSpec::MultiLookupJoin`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MultiLookupRight {
+    /// The right table id; its primary key must equal `join_keys`.
+    pub table_id: String,
+    /// An optional filter the right rows must satisfy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+}
+
+/// One materialized column of a [`ViewSpec::MultiLookupJoin`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MultiLookupColumn {
+    /// Source index: 0 is the left, `i + 1` is `rights[i]`.
+    pub source: usize,
+    /// The source column.
+    pub column: String,
+    /// The MV column name.
+    pub name: String,
 }
 
 /// One source of a [`ViewSpec::LookupChain`] (index 0 is the base).
@@ -1723,6 +1828,7 @@ enum SpecView {
     MultiJoin(MultiJoinView),
     MultiAgg(MultiAggView),
     LookupJoin(LookupJoinView),
+    MultiLookupJoin(MultiLookupJoinView),
     LeftJoin(LeftJoinView),
     FullJoin(FullJoinView),
     CrossJoin(CrossJoinView),
@@ -2199,6 +2305,298 @@ fn group_key_fields(
         .collect()
 }
 
+/// One condition on a range-partition column extracted from a view filter.
+#[derive(Debug, Clone)]
+enum PartitionCondition {
+    In {
+        column: String,
+        values: std::collections::BTreeSet<String>,
+    },
+    Cmp {
+        column: String,
+        op: Operator,
+        value: String,
+        number: Option<i128>,
+    },
+}
+
+impl PartitionCondition {
+    fn column(&self) -> &str {
+        match self {
+            Self::In { column, .. } | Self::Cmp { column, .. } => column,
+        }
+    }
+
+    fn matches(&self, value: &str) -> Option<bool> {
+        match self {
+            Self::In { values, .. } => Some(values.contains(value)),
+            Self::Cmp {
+                op,
+                value: expected,
+                number,
+                ..
+            } => {
+                if let Some(number) = number {
+                    let actual = value.parse::<i128>().ok()?;
+                    Some(match op {
+                        Operator::Gt => actual > *number,
+                        Operator::GtEq => actual >= *number,
+                        Operator::Lt => actual < *number,
+                        Operator::LtEq => actual <= *number,
+                        _ => return None,
+                    })
+                } else {
+                    Some(match op {
+                        Operator::Gt => value > expected.as_str(),
+                        Operator::GtEq => value >= expected.as_str(),
+                        Operator::Lt => value < expected.as_str(),
+                        Operator::LtEq => value <= expected.as_str(),
+                        _ => return None,
+                    })
+                }
+            }
+        }
+    }
+}
+
+/// A conjunction of constant partition conditions from a view filter.
+#[derive(Debug, Clone, Default)]
+struct PartitionPredicate {
+    conditions: Vec<PartitionCondition>,
+}
+
+impl PartitionPredicate {
+    fn matches(&self, descriptor: &str, columns: &[String]) -> Option<bool> {
+        let values = crate::table::parse_partition_values(descriptor, columns)?;
+        for condition in &self.conditions {
+            let index = columns
+                .iter()
+                .position(|column| column == condition.column())?;
+            let value = values.get(index)?;
+            if !condition.matches(value)? {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
+}
+
+/// The staged-file plan of the refresh currently running on this task.
+pub(crate) struct CommitPlanContext {
+    metadata: IvmMetadata,
+    record: EpochRecord,
+    plan: CommitPlan,
+    /// The table whose commit completes the refresh.  Every refresh shape
+    /// writes its auxiliary state before its output, so a plan that recorded
+    /// the target commit describes every write of the window.
+    target_table_id: String,
+}
+
+tokio::task_local! {
+    pub(crate) static COMMIT_PLAN: Arc<Mutex<Option<CommitPlanContext>>>;
+}
+
+/// The target table one refresh is maintaining.
+///
+/// A refresh may write state tables and the target; only commits to the
+/// target are checked against other writers and, during a rebuild, published
+/// as one atomic partition replacement instead of truncate-then-append.
+pub(crate) struct TargetWrite {
+    pub(crate) view_id: String,
+    pub(crate) target_table_id: String,
+    pub(crate) atomic: bool,
+    pub(crate) committed: bool,
+    /// A recovery replay after a committed MV must recompute state without
+    /// publishing the target again.
+    pub(crate) skip_target: bool,
+    /// Debug-only tracking of the target whose recovery replay owns this
+    /// scope, used to catch a commit that escaped the task-local.
+    #[cfg(debug_assertions)]
+    recovery_target_id: Option<String>,
+    pub(crate) internal: bool,
+    /// The target partitions this view has published.  A rebuild replaces
+    /// these partitions only; partitions owned by another writer are left
+    /// untouched.
+    pub(crate) owned_partitions: std::collections::HashSet<String>,
+    /// The target partition versions captured when the refresh began, used
+    /// to reject a concurrent commit in the same partition before publishing.
+    pub(crate) begin_partitions: Vec<PartitionInfo>,
+    pub(crate) metadata: IvmMetadata,
+}
+
+/// Whether this refresh replay must not publish target files.
+///
+/// Recovery after a committed MV replays the window to rebuild auxiliary
+/// state; the target commit is suppressed so output rows are not duplicated.
+pub(crate) fn target_writes_suppressed(table_id: &str) -> bool {
+    TARGET_WRITE
+        .try_with(|context| {
+            let guard = context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.skip_target && guard.target_table_id == table_id
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(debug_assertions)]
+fn recovery_targets() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static TARGETS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashSet<String>>,
+    > = std::sync::OnceLock::new();
+    TARGETS.get_or_init(Default::default)
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn register_recovery_target(table_id: &str) {
+    recovery_targets()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(table_id.to_string());
+}
+
+#[cfg(debug_assertions)]
+fn unregister_recovery_target(table_id: &str) {
+    recovery_targets()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(table_id);
+}
+
+/// Debug-only: is this table the target of an active recovery replay?
+#[cfg(debug_assertions)]
+pub(crate) fn recovery_target_active(table_id: &str) -> bool {
+    recovery_targets()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(table_id)
+}
+
+impl Drop for TargetWrite {
+    fn drop(&mut self) {
+        #[cfg(debug_assertions)]
+        if let Some(table_id) = self.recovery_target_id.take() {
+            unregister_recovery_target(&table_id);
+        }
+    }
+}
+
+tokio::task_local! {
+    pub(crate) static TARGET_WRITE: Arc<Mutex<TargetWrite>>;
+    /// The user-visible target table whose rebuild must replace its files in
+    /// one atomic version.  Internal derived/state tables keep the historical
+    /// truncate+append path so their incremental consumers see an append
+    /// commit (a compaction/update commit is not a changelog event).
+    pub(crate) static ATOMIC_TARGET: String;
+}
+
+impl TargetWrite {
+    /// Capture the target partitions this view owns and reject data commits
+    /// written by another engine in them.  Compaction commits are allowed:
+    /// they only rewrite files the IVM already owns.
+    pub(crate) async fn begin(
+        client: &MetaDataClient,
+        metadata: &IvmMetadata,
+        view_id: &str,
+        target_table_id: &str,
+        atomic: bool,
+    ) -> Result<Self> {
+        let internal = client
+            .get_table_info_by_table_id(target_table_id)
+            .await?
+            .and_then(|info| {
+                serde_json::from_str::<serde_json::Value>(&info.properties).ok()
+            })
+            .and_then(|properties| {
+                properties
+                    .get("lakesoul.ivm.internal")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.eq_ignore_ascii_case("true"))
+            })
+            .unwrap_or(false);
+        let owned_partitions = if internal {
+            std::collections::HashSet::new()
+        } else {
+            metadata.view_partitions(view_id).await?
+        };
+        let current =
+            crate::table::latest_partition_info(client, target_table_id).await?;
+        let begin_partitions = if internal {
+            current
+        } else {
+            current
+                .into_iter()
+                .filter(|partition| owned_partitions.contains(&partition.partition_desc))
+                .collect::<Vec<_>>()
+        };
+        if !internal && !begin_partitions.is_empty() {
+            Self::check_external_commits(
+                client,
+                metadata,
+                view_id,
+                target_table_id,
+                &begin_partitions,
+            )
+            .await?;
+        }
+        Ok(Self {
+            view_id: view_id.to_string(),
+            target_table_id: target_table_id.to_string(),
+            atomic,
+            committed: false,
+            skip_target: false,
+            #[cfg(debug_assertions)]
+            recovery_target_id: None,
+            internal,
+            owned_partitions,
+            begin_partitions,
+            metadata: metadata.clone(),
+        })
+    }
+
+    /// Reject a data commit in `partitions` that this view did not write.
+    /// Compaction commits are allowed: they only rewrite files the IVM owns.
+    pub(crate) async fn check_external_commits(
+        client: &MetaDataClient,
+        metadata: &IvmMetadata,
+        view_id: &str,
+        target_table_id: &str,
+        partitions: &[PartitionInfo],
+    ) -> Result<()> {
+        let own = metadata.view_commit_ids(view_id).await?;
+        for partition in partitions {
+            for id in &partition.snapshot {
+                let commit_id = uuid::Uuid::from_u64_pair(id.high, id.low).to_string();
+                if own.contains(&commit_id) {
+                    continue;
+                }
+                let info = client
+                    .get_single_data_commit_info(
+                        target_table_id,
+                        &partition.partition_desc,
+                        &commit_id,
+                    )
+                    .await?;
+                let compaction = info.as_ref().is_some_and(|info| {
+                    info.commit_op
+                        == lakesoul_metadata_proto::entity::CommitOp::CompactionCommit
+                            as i32
+                });
+                if !compaction {
+                    return Err(report!(
+                        "target table {target_table_id} partition {} contains \
+                         commit {commit_id} that was not written by this IVM view; \
+                         stop the other writer or run a batch overwrite before \
+                         refreshing",
+                        partition.partition_desc
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The IVM runtime: a metadata client plus the `ivm` schema access layer.
 pub struct IvmRuntime {
     client: MetaDataClient,
@@ -2208,6 +2606,66 @@ pub struct IvmRuntime {
     /// unique-key chains; unknown after a process restart until the next
     /// rebuild/bootstrap.
     view_rows: Mutex<HashMap<String, u64>>,
+    /// Right-key existence shared by the plain SEMI/ANTI views of one right
+    /// window.  The key is `(right table, right join keys)`, and the value is
+    /// the set of encoded keys already probed plus the subset that exists.
+    /// It is deliberately scoped to one source window: a right change starts
+    /// a new window and invalidates every previous answer.
+    semi_anti_right_keys: Mutex<SemiAntiRightKeyCache>,
+}
+
+/// The shared right-key answers of one source window.
+#[derive(Default)]
+pub(crate) struct SemiAntiRightKeyCache {
+    window: String,
+    tables: HashMap<String, SemiAntiRightKeySet>,
+}
+
+/// The encoded keys a plain SEMI/ANTI view already asked the right side for.
+#[derive(Default)]
+pub(crate) struct SemiAntiRightKeySet {
+    probed: HashSet<Vec<u8>>,
+    present: HashSet<Vec<u8>>,
+}
+
+impl SemiAntiRightKeyCache {
+    /// Start a new window, dropping answers from the previous one.
+    pub(crate) fn begin_window(&mut self, window: &str) {
+        if self.window != window {
+            self.window = window.to_string();
+            self.tables.clear();
+        }
+    }
+
+    /// The keys known present and the keys that still need a probe.
+    pub(crate) fn lookup(
+        &mut self,
+        table: &str,
+        requested: &HashSet<Vec<u8>>,
+    ) -> (HashSet<Vec<u8>>, HashSet<Vec<u8>>) {
+        let entry = self.tables.entry(table.to_string()).or_default();
+        let present = requested
+            .intersection(&entry.present)
+            .cloned()
+            .collect::<HashSet<_>>();
+        let unknown = requested
+            .difference(&entry.probed)
+            .cloned()
+            .collect::<HashSet<_>>();
+        (present, unknown)
+    }
+
+    /// Record one probe of `unknown` that found `present`.
+    pub(crate) fn record(
+        &mut self,
+        table: &str,
+        unknown: &HashSet<Vec<u8>>,
+        present: &HashSet<Vec<u8>>,
+    ) {
+        let entry = self.tables.entry(table.to_string()).or_default();
+        entry.probed.extend(unknown.iter().cloned());
+        entry.present.extend(present.iter().cloned());
+    }
 }
 
 /// The attachment a refresh failure carries when a source partition was
@@ -2245,17 +2703,22 @@ impl std::fmt::Display for PartitionDropped {
 }
 
 /// The changelog window of every partition of one source.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SourceWindow {
-    added_files: Vec<PartitionFiles>,
-    cursors: Vec<Cursor>,
+    pub(crate) added_files: Vec<PartitionFiles>,
+    pub(crate) cursors: Vec<Cursor>,
     /// `(source_table_id, partition_desc, from_version, to_version)` of every
     /// consumed partition; this is the window identity the epoch is keyed by.
-    identity: Vec<(String, String, i64, i64)>,
-    before_timestamp: i64,
+    pub(crate) identity: Vec<(String, String, i64, i64)>,
+    pub(crate) before_timestamp: i64,
     /// `partition_desc -> last consumed version before this window`, for every
     /// partition the window touched (`None` = the partition is first consumed
     /// by this window). Used to read the before state per partition.
-    before_versions: HashMap<String, Option<i64>>,
+    pub(crate) before_versions: HashMap<String, Option<i64>>,
+    /// True when the window was reconstructed from a pending epoch.  Such a
+    /// window must not advance cursors before the epoch is marked.
+    #[serde(skip, default)]
+    pub(crate) barrier: bool,
 }
 
 /// The full current state of one source, as read by a rebuild.
@@ -2603,66 +3066,45 @@ pub(crate) fn cast_frame_columns(
     frame.select(exprs).map_err(Into::into)
 }
 
+tokio::task_local! {
+    /// Epoch of the incremental window the current refresh is applying.
+    /// Writes outside a window (a direct rebuild, for example) leave it unset.
+    static CURRENT_REFRESH_EPOCH: Arc<AtomicI64>;
+}
+
+#[cfg_attr(not(feature = "distributed"), allow(dead_code))]
+pub(crate) fn current_refresh_epoch() -> Option<i64> {
+    CURRENT_REFRESH_EPOCH
+        .try_with(|epoch| {
+            let epoch = epoch.load(Ordering::Relaxed);
+            (epoch >= 0).then_some(epoch)
+        })
+        .ok()
+        .flatten()
+}
+
 /// The session used by full and incremental refreshes.  Keep the partition
 /// count identical on both paths so a bootstrap and its first incremental
 /// windows run with the same parallelism.
-pub(crate) fn refresh_session() -> SessionContext {
-    let target_partitions = std::env::var("LAKESOUL_IVM_TARGET_PARTITIONS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(4);
-    let batch_size = std::env::var("LAKESOUL_IVM_BATCH_SIZE")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(8192)
-        .max(1);
-    let config = SessionConfig::new()
-        .with_target_partitions(target_partitions)
-        .with_batch_size(batch_size);
-    let context = SessionContext::new_with_config_rt(config, refresh_runtime());
-    tracing::debug!(
-        target_partitions,
-        batch_size,
-        "IVM refresh session configured"
-    );
-    context
-}
-
-/// The single SQL execution pool shared by every refresh session.
 ///
-/// A refresh creates a session per view and a few more for helper plans.  A
-/// pool per session made memory scale with the number of live plans; sharing
-/// one pool keeps the configured budget process-wide and lets DataFusion spill
-/// instead of multiplying it.  This pool is intentionally the largest one:
-/// joins, windows and sorts benefit from memory much more than streaming IO
-/// readers do.
-fn refresh_runtime() -> Arc<datafusion::execution::runtime_env::RuntimeEnv> {
-    static RUNTIME: std::sync::OnceLock<
-        Arc<datafusion::execution::runtime_env::RuntimeEnv>,
-    > = std::sync::OnceLock::new();
-    RUNTIME
-        .get_or_init(|| {
-            let limit_mb = std::env::var("LAKESOUL_IVM_MEMORY_LIMIT_MB")
-                .ok()
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(8192);
-            let spill_dir = std::env::var("LAKESOUL_IVM_SPILL_DIR")
-                .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
-            let _ = std::fs::create_dir_all(&spill_dir);
-            let runtime = datafusion::execution::runtime_env::RuntimeEnvBuilder::new()
-                .with_memory_limit(limit_mb * 1024 * 1024, 0.8)
-                .with_temp_file_path(&spill_dir)
-                .with_max_temp_directory_size(100 * 1024 * 1024 * 1024)
-                .build()
-                .expect("ivm refresh runtime env");
-            tracing::debug!(
-                limit_mb,
-                %spill_dir,
-                "IVM refresh runtime configured"
-            );
-            Arc::new(runtime)
-        })
-        .clone()
+/// The config and runtime env come from the [`IvmRuntimeConfig`] installed by
+/// the embedder, so every refresh shares the caller's memory pool and spill
+/// manager instead of creating a second IVM-private runtime.
+pub(crate) fn refresh_session() -> SessionContext {
+    if let Some(factory) = crate::config::session_factory() {
+        match factory.create() {
+            Ok(context) => return context,
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "could not create the configured refresh session; \
+                     falling back to the local session template"
+                );
+            }
+        }
+    }
+    let (config, runtime) = crate::config::session();
+    SessionContext::new_with_config_rt(config, runtime)
 }
 
 /// Encodes the group-key columns of a batch into Arrow's canonical row
@@ -2823,19 +3265,6 @@ pub(crate) struct AppendOutcome {
     pub(crate) deletes: u64,
 }
 
-/// The state table file count at which a refresh compacts it (0 disables).
-///
-/// A state table gains one file set per refresh; compaction rewrites the
-/// current logical state into one file per bucket so the state read (and the
-/// metadata) stays bounded.  The default is a compromise between write
-/// amplification and read latency for a few-minute refresh cadence.
-fn state_compaction_threshold() -> usize {
-    std::env::var("LAKESOUL_IVM_STATE_COMPACT_FILES")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(32)
-}
-
 impl IvmRuntime {
     /// The partition versions of every auxiliary state table of a view.
     ///
@@ -2910,6 +3339,10 @@ impl IvmRuntime {
         &self,
         record: &EpochRecord,
     ) -> Result<()> {
+        #[cfg(debug_assertions)]
+        if std::env::var_os("LAKESOUL_IVM_TEST_SKIP_STATE_CHECKPOINT").is_some() {
+            return Ok(());
+        }
         let state_versions = self.state_versions(&record.view_id).await?;
         self.metadata
             .checkpoint_epoch_state_versions(record, &state_versions)
@@ -2925,6 +3358,7 @@ impl IvmRuntime {
         mv_versions: &[PartitionVersion],
         commit_ids: &[String],
     ) -> Result<()> {
+        finalize_commit_plan().await?;
         let state_versions = self.state_versions(&record.view_id).await?;
         self.metadata
             .mark_epoch_committed_with_states(
@@ -2934,72 +3368,6 @@ impl IvmRuntime {
                 &state_versions,
             )
             .await
-    }
-
-    /// Compact an auxiliary state table when it accumulated enough files.
-    pub(crate) async fn maybe_compact_state(&self, state: &IvmTable) -> Result<()> {
-        let threshold = state_compaction_threshold();
-        if threshold == 0 {
-            return Ok(());
-        }
-        let files = state.current_file_count(&self.client).await?;
-        if files < threshold {
-            return Ok(());
-        }
-        let started = std::time::Instant::now();
-        state.compact(&self.client).await?;
-        tracing::debug!(
-            table = %state.table_name,
-            files,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "state compaction finished"
-        );
-        Ok(())
-    }
-
-    /// Compact every auxiliary state table registered for a view when it has
-    /// accumulated enough files.  This is the single generic compaction entry
-    /// point; operators only write state, they do not own compaction policy.
-    ///
-    /// The MV is compacted only when `LAKESOUL_IVM_MV_COMPACT_FILES` is set to
-    /// a non-zero threshold.  It is disabled by default because rewriting a
-    /// large output is much more expensive than compacting its small auxiliary
-    /// state tables.
-    pub async fn compact_view_states(&self, view_id: &str) -> Result<()> {
-        for state in self.metadata.list_states(view_id).await? {
-            if state.role == StateRole::Mv {
-                continue;
-            }
-            let table = self.open_table_by_id(&state.table_id).await?;
-            self.maybe_compact_state(&table).await?;
-        }
-        self.maybe_compact_mv(view_id).await
-    }
-
-    async fn maybe_compact_mv(&self, view_id: &str) -> Result<()> {
-        let threshold = std::env::var("LAKESOUL_IVM_MV_COMPACT_FILES")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(0);
-        if threshold == 0 {
-            return Ok(());
-        }
-        let Some(state) = self.metadata.get_state(view_id, StateRole::Mv).await? else {
-            return Ok(());
-        };
-        let table = self.open_table_by_id(&state.table_id).await?;
-        let files = table.current_file_count(&self.client).await?;
-        if files >= threshold {
-            let started = std::time::Instant::now();
-            table.compact(&self.client).await?;
-            tracing::debug!(
-                table = %table.table_name,
-                files,
-                elapsed_ms = started.elapsed().as_millis() as u64,
-                "mv compaction finished"
-            );
-        }
-        Ok(())
     }
 
     /// The estimated live row count of a view, when known.
@@ -3048,6 +3416,18 @@ pub(crate) async fn write_dataframe(
     table: &IvmTable,
     frame: DataFrame,
 ) -> Result<WrittenFiles> {
+    #[cfg(feature = "distributed")]
+    if crate::config::session_factory().is_some() {
+        return write_dataframe_distributed(table, frame).await;
+    }
+    write_dataframe_local(table, frame).await
+}
+
+/// Execute a refresh plan on the coordinator and write its batches locally.
+async fn write_dataframe_local(
+    table: &IvmTable,
+    frame: DataFrame,
+) -> Result<WrittenFiles> {
     use futures::StreamExt;
     let mut stream = frame.execute_stream().await?;
     let mut writer = table.writer().await?;
@@ -3078,13 +3458,138 @@ pub(crate) async fn write_dataframe(
         // table stores `Utf8`.  Every write path funnels through here, so cast
         // once instead of relying on each view kind.
         let batch = table.cast_batch(batch)?;
+        let started = std::time::Instant::now();
         writer.write_record_batch(batch).await?;
+        crate::observability::add_write_time(started.elapsed());
     }
+    let started = std::time::Instant::now();
     let outputs = writer.flush_and_close().await?;
+    crate::observability::add_write_time(started.elapsed());
     let files = table.output_files(outputs, written_rows);
     Ok(WrittenFiles {
         files,
         rows: inserts + deletes,
+        inserts,
+        deletes,
+    })
+}
+
+/// Execute a refresh output plan and collect the worker file descriptors.
+///
+/// The physical optimizer rule wraps the plan with `IvmRefreshSinkExec`; the
+/// output is then one small `TaskOutput` row per worker partition instead of
+/// the table rows.  The coordinator commits the returned files through the
+/// normal `append_dataframe` path.
+#[cfg(feature = "distributed")]
+async fn write_dataframe_distributed(
+    table: &IvmTable,
+    frame: DataFrame,
+) -> Result<WrittenFiles> {
+    use futures::StreamExt;
+
+    let expected_epoch = if table.schema.field_with_name(IVM_EPOCH_COLUMN).is_ok() {
+        current_refresh_epoch()
+    } else {
+        None
+    };
+    let sink_spec = crate::distributed::IvmSinkSpec {
+        table: table.clone(),
+        epoch: expected_epoch,
+    };
+    let plan = crate::distributed::IVM_SINK_SPEC
+        .scope(sink_spec, async { frame.create_physical_plan().await })
+        .await?;
+    let sink_applied = plan
+        .schema()
+        .metadata()
+        .get(crate::distributed::IVM_TASK_OUTPUT_SCHEMA_MARKER)
+        .map(String::as_str)
+        == Some("true");
+    if !sink_applied {
+        return write_dataframe_local(table, frame).await;
+    }
+
+    let mut stream =
+        datafusion::physical_plan::execute_stream(plan, frame.task_ctx().into())?;
+    let mut files = Vec::new();
+    let mut rows = 0u64;
+    let mut inserts = 0u64;
+    let mut deletes = 0u64;
+    while let Some(batch) = stream.next().await {
+        let batch = batch?;
+        let schema = batch.schema();
+        let task_index = schema.index_of("task_id")?;
+        let table_index = schema.index_of("table_id")?;
+        let epoch_index = schema.index_of("epoch")?;
+        let files_index = schema.index_of("files")?;
+        let rows_index = schema.index_of("rows")?;
+        let inserts_index = schema.index_of("inserts")?;
+        let deletes_index = schema.index_of("deletes")?;
+        let task_ids = batch
+            .column(task_index)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt32Array>()
+            .ok_or_else(|| rootcause::report!("IVM task output has no task_id"))?;
+        let table_ids = batch
+            .column(table_index)
+            .as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| rootcause::report!("IVM task output has no table_id"))?;
+        let epochs = batch
+            .column(epoch_index)
+            .as_any()
+            .downcast_ref::<arrow_array::Int64Array>()
+            .ok_or_else(|| rootcause::report!("IVM task output has no epoch"))?;
+        let encoded_files = batch
+            .column(files_index)
+            .as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| rootcause::report!("IVM task output has no files"))?;
+        let task_rows = batch
+            .column(rows_index)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .ok_or_else(|| rootcause::report!("IVM task output has no rows"))?;
+        let task_inserts = batch
+            .column(inserts_index)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .ok_or_else(|| rootcause::report!("IVM task output has no inserts"))?;
+        let task_deletes = batch
+            .column(deletes_index)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .ok_or_else(|| rootcause::report!("IVM task output has no deletes"))?;
+        for row in 0..batch.num_rows() {
+            let task_id = task_ids.value(row);
+            let output_table = table_ids.value(row);
+            if output_table != table.table_id {
+                return Err(rootcause::report!(
+                    "IVM task {task_id} wrote table {output_table}, expected {}",
+                    table.table_id
+                ));
+            }
+            if let Some(expected) = expected_epoch
+                && epochs.value(row) != expected
+            {
+                return Err(rootcause::report!(
+                    "IVM task {task_id} wrote epoch {}, expected {expected}",
+                    epochs.value(row)
+                ));
+            }
+            let task_files: Vec<DataFileInfo> =
+                serde_json::from_str(encoded_files.value(row)).map_err(|error| {
+                    rootcause::report!("decode IVM task {task_id} file list: {error}")
+                })?;
+            files.extend(task_files);
+            rows += task_rows.value(row);
+            inserts += task_inserts.value(row);
+            deletes += task_deletes.value(row);
+        }
+    }
+    Ok(WrittenFiles {
+        files,
+        rows,
         inserts,
         deletes,
     })
@@ -3096,6 +3601,16 @@ pub(crate) async fn append_dataframe(
     client: &MetaDataClient,
     frame: DataFrame,
 ) -> Result<AppendOutcome> {
+    if target_writes_suppressed(&table.table_id) {
+        // The MV is already published for this recovery window; skip the
+        // output plan entirely and only let the state writes run.
+        return Ok(AppendOutcome {
+            commit_ids: Vec::new(),
+            rows: 0,
+            inserts: 0,
+            deletes: 0,
+        });
+    }
     let written = write_dataframe(table, frame).await?;
     let commit_ids = table.commit_files(client, written.files).await?;
     Ok(AppendOutcome {
@@ -3104,6 +3619,182 @@ pub(crate) async fn append_dataframe(
         inserts: written.inserts,
         deletes: written.deletes,
     })
+}
+
+/// One table commit recorded in the active refresh plan.
+pub(crate) struct CommitPlanEntryHandle {
+    id: String,
+    is_target: bool,
+    metadata: IvmMetadata,
+    record: EpochRecord,
+    plan: CommitPlan,
+}
+
+/// Persist a table's staged files before their commit.
+///
+/// Called from [`IvmTable::commit_files`] for every table a refresh writes.
+/// The entry is checkpointed before the commit, so a coordinator that dies
+/// between staging and publishing can replay exactly the staged files.
+pub(crate) async fn commit_plan_before_commit(
+    table_id: &str,
+    files: &[DataFileInfo],
+) -> Result<Option<CommitPlanEntryHandle>> {
+    if files.is_empty() {
+        return Ok(None);
+    }
+    let recorded = COMMIT_PLAN
+        .try_with(|slot| {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let context = slot.as_mut()?;
+            let id = context.plan.record(table_id, files.to_vec());
+            let is_target = table_id == context.target_table_id;
+            if is_target {
+                // The target is the last write of the refresh; once its
+                // files are staged the plan describes every write.
+                #[cfg(debug_assertions)]
+                let skip_complete =
+                    std::env::var_os("LAKESOUL_IVM_TEST_SKIP_PLAN_COMPLETE").is_some();
+                #[cfg(not(debug_assertions))]
+                let skip_complete = false;
+                if !skip_complete {
+                    context.plan.complete = true;
+                }
+            } else if context.plan.complete {
+                // A write after the target means the invariant above does
+                // not hold for this shape; keep the plan recoverable only
+                // through the finalize below.
+                context.plan.complete = false;
+            }
+            Some((
+                id,
+                is_target,
+                context.metadata.clone(),
+                context.record.clone(),
+                context.plan.clone(),
+            ))
+        })
+        .ok()
+        .flatten();
+    let Some((id, is_target, metadata, record, plan)) = recorded else {
+        return Ok(None);
+    };
+    metadata
+        .checkpoint_epoch_commit_plan(&record, &plan)
+        .await?;
+    #[cfg(debug_assertions)]
+    if !is_target
+        && std::env::var_os("LAKESOUL_IVM_TEST_ABORT_BEFORE_STATE_COMMIT").is_some()
+    {
+        return Err(rootcause::report!(
+            "injected coordinator crash before state commit for epoch {}",
+            record.epoch
+        ));
+    }
+    #[cfg(debug_assertions)]
+    if is_target {
+        if let Some(path) = std::env::var_os("LAKESOUL_IVM_TEST_PLAN_MARKER") {
+            std::fs::write(path, record.epoch.to_string())?;
+        }
+        if std::env::var_os("LAKESOUL_IVM_TEST_ABORT_AFTER_COMMIT_PLAN").is_some() {
+            return Err(rootcause::report!(
+                "injected coordinator crash after commit plan for epoch {}",
+                record.epoch
+            ));
+        }
+        if std::env::var_os("LAKESOUL_IVM_TEST_PAUSE_AFTER_COMMIT_PLAN").is_some() {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        }
+    }
+    Ok(Some(CommitPlanEntryHandle {
+        id,
+        is_target,
+        metadata,
+        record,
+        plan,
+    }))
+}
+
+/// Mark a recorded entry committed and persist the plan.
+pub(crate) async fn commit_plan_after_commit(
+    handle: Option<CommitPlanEntryHandle>,
+    commit_ids: &[String],
+) -> Result<()> {
+    let Some(handle) = handle else {
+        return Ok(());
+    };
+    let planned = COMMIT_PLAN
+        .try_with(|slot| {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let context = slot.as_mut()?;
+            context.plan.mark_committed(&handle.id, commit_ids.to_vec());
+            Some((
+                context.metadata.clone(),
+                context.record.clone(),
+                context.plan.clone(),
+            ))
+        })
+        .ok()
+        .flatten();
+    let (metadata, record, plan) = match planned {
+        Some(planned) => planned,
+        // The task-local is only cleared between refreshes; fall back to the
+        // handle so a commit already accepted by LakeSoul is still recorded.
+        None => {
+            let mut plan = handle.plan.clone();
+            plan.mark_committed(&handle.id, commit_ids.to_vec());
+            (handle.metadata.clone(), handle.record.clone(), plan)
+        }
+    };
+    metadata
+        .checkpoint_epoch_commit_plan(&record, &plan)
+        .await?;
+    #[cfg(debug_assertions)]
+    if !handle.is_target
+        && std::env::var_os("LAKESOUL_IVM_TEST_ABORT_AFTER_STATE_COMMIT").is_some()
+    {
+        return Err(rootcause::report!(
+            "injected coordinator crash after state commit for epoch {}",
+            record.epoch
+        ));
+    }
+    #[cfg(debug_assertions)]
+    if handle.is_target {
+        if let Some(path) = std::env::var_os("LAKESOUL_IVM_TEST_TARGET_COMMIT_MARKER") {
+            std::fs::write(path, record.epoch.to_string())?;
+        }
+        if std::env::var_os("LAKESOUL_IVM_TEST_PAUSE_AFTER_TARGET_COMMIT").is_some() {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        }
+    }
+    Ok(())
+}
+
+/// Mark the active plan complete once the refresh finished writing.
+///
+/// This covers a refresh whose target write is empty (no files), and is a
+/// second chance for shapes that write something after the target.
+async fn finalize_commit_plan() -> Result<()> {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("LAKESOUL_IVM_TEST_SKIP_PLAN_COMPLETE").is_some() {
+        return Ok(());
+    }
+    let planned = COMMIT_PLAN
+        .try_with(|slot| {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let context = slot.as_mut()?;
+            context.plan.complete = true;
+            Some((
+                context.metadata.clone(),
+                context.record.clone(),
+                context.plan.clone(),
+            ))
+        })
+        .ok()
+        .flatten();
+    let Some((metadata, record, plan)) = planned else {
+        return Ok(());
+    };
+    metadata.checkpoint_epoch_commit_plan(&record, &plan).await
 }
 
 fn apply_filters(mut frame: DataFrame, filters: Vec<Expr>) -> Result<DataFrame> {
@@ -3130,9 +3821,9 @@ fn project_frame(frame: DataFrame, columns: &[String]) -> Result<DataFrame> {
 }
 
 /// Count a lazy frame's rows by draining its stream; nothing is collected.
-/// Log the process RSS at a debug checkpoint when `IVM_DEBUG_RSS` is set.
+/// Log the process RSS at a debug checkpoint when debug logging is enabled.
 pub(crate) fn trace_rss(label: &str) {
-    if std::env::var("IVM_DEBUG_RSS").is_err() {
+    if !tracing::enabled!(tracing::Level::DEBUG) {
         return;
     }
     let rss_mb = std::fs::read_to_string("/proc/self/status")
@@ -3208,7 +3899,7 @@ fn project_schema(schema: &Schema, columns: &[String]) -> Result<SchemaRef> {
 }
 
 /// The plain columns a rendered filter references.
-fn filter_columns(
+pub(crate) fn filter_columns(
     context: &SessionContext,
     schema: &SchemaRef,
     filter: &str,
@@ -3329,13 +4020,67 @@ fn filter_where(filter: Option<&str>) -> String {
 }
 
 impl IvmRuntime {
-    /// Build the runtime from the `LAKESOUL_PG_*` configuration.
-    pub async fn from_env() -> Result<Self> {
-        Ok(Self {
-            client: MetaDataClient::from_env().await?,
-            metadata: IvmMetadata::from_env().await?,
+    /// Build a runtime with the caller's DataFusion session and IVM options.
+    ///
+    /// The config is installed process-wide for the refresh helpers; creating
+    /// a second runtime replaces it.  Build it from an existing
+    /// [`SessionContext`] with [`IvmRuntimeConfig::from_session`] so refreshes
+    /// share that session's memory pool and spill manager.
+    pub fn new(
+        client: MetaDataClient,
+        metadata: IvmMetadata,
+        config: crate::config::IvmRuntimeConfig,
+    ) -> Self {
+        crate::config::install(config);
+        Self {
+            client,
+            metadata,
             view_rows: Mutex::new(HashMap::new()),
-        })
+            semi_anti_right_keys: Mutex::new(SemiAntiRightKeyCache::default()),
+        }
+    }
+
+    /// Build the runtime from the `LAKESOUL_PG_*` configuration and the
+    /// default session/options.
+    pub async fn from_env() -> Result<Self> {
+        Self::from_env_with_config(crate::config::IvmRuntimeConfig::default()).await
+    }
+
+    /// Build the runtime from the `LAKESOUL_PG_*` configuration with an
+    /// explicit session and options.
+    pub async fn from_env_with_config(
+        config: crate::config::IvmRuntimeConfig,
+    ) -> Result<Self> {
+        Ok(Self::new(
+            MetaDataClient::from_env().await?,
+            IvmMetadata::from_env().await?,
+            config,
+        ))
+    }
+
+    /// Validate the target's IVM bookkeeping schema.  A missing `rowKinds`
+    /// cannot be repaired: it is how the target represents retractions.
+    /// A missing `__ivm_epoch` is added to the schema metadata and the target
+    /// is rebuilt so its data gains the column.
+    pub(crate) async fn ensure_target_epoch_column(
+        &self,
+        table: &IvmTable,
+    ) -> Result<(IvmTable, bool)> {
+        if table
+            .schema
+            .field_with_name(crate::table::IVM_ROW_KINDS_COLUMN)
+            .is_err()
+        {
+            return Err(report!(
+                "target table {} has no {} column; an IVM target must carry                  the LakeSoul CDC change column",
+                table.table_name,
+                crate::table::IVM_ROW_KINDS_COLUMN
+            ));
+        }
+        match table.ensure_epoch_column(&self.client).await? {
+            Some(updated) => Ok((updated, true)),
+            None => Ok((table.clone(), false)),
+        }
     }
 
     /// The underlying LakeSoul metadata client.
@@ -3346,6 +4091,11 @@ impl IvmRuntime {
     /// The `ivm` schema access layer.
     pub fn metadata(&self) -> &IvmMetadata {
         &self.metadata
+    }
+
+    /// The shared right-key cache used by plain SEMI/ANTI views.
+    pub(crate) fn semi_anti_right_key_cache(&self) -> &Mutex<SemiAntiRightKeyCache> {
+        &self.semi_anti_right_keys
     }
 
     /// Create the `ivm` schema and tables if they do not exist.
@@ -3587,6 +4337,32 @@ impl IvmRuntime {
                 null_safe: *null_safe,
                 refresh_interval_ms,
             }),
+            ViewSpec::MultiLookupJoin {
+                view_id,
+                left_table_id,
+                mv_table_id,
+                join_keys,
+                rights,
+                output_columns,
+                refresh_interval_ms,
+            } => {
+                let mut opened = Vec::with_capacity(rights.len());
+                for right in rights {
+                    opened.push((
+                        self.open_table_by_id(&right.table_id).await?,
+                        right.filter.clone(),
+                    ));
+                }
+                SpecView::MultiLookupJoin(MultiLookupJoinView {
+                    view_id: view_id.clone(),
+                    left: self.open_table_by_id(left_table_id).await?,
+                    rights: opened,
+                    mv: self.open_table_by_id(mv_table_id).await?,
+                    join_keys: join_keys.clone(),
+                    output_columns: output_columns.clone(),
+                    refresh_interval_ms: *refresh_interval_ms,
+                })
+            }
             ViewSpec::LeftJoin {
                 view_id,
                 left_table_id,
@@ -4272,54 +5048,117 @@ impl IvmRuntime {
         tracing::debug!(
             kind,
             view_id = %spec.view_id(),
+            mv_table_id = %spec.mv_table_id(),
+            sources = ?spec.source_table_ids(),
             "view refresh started"
         );
-        let view = self.spec_view(spec).await;
-        let result = crate::observability::scope_refresh_io(kind, async {
-            match view {
-                Ok(SpecView::SumCount(view)) => self.refresh_sum_count(&view).await,
-                Ok(SpecView::Variance(view)) => self.refresh_variance(&view).await,
-                Ok(SpecView::Median(view)) => self.refresh_median(&view).await,
-                Ok(SpecView::BoolAgg(view)) => self.refresh_bool_agg(&view).await,
-                Ok(SpecView::ApproxDistinct(view)) => {
-                    self.refresh_approx_distinct(&view).await
-                }
-                Ok(SpecView::ApproxPercentile(view)) => {
-                    self.refresh_approx_percentile(&view).await
-                }
-                Ok(SpecView::ComputedAgg(view)) => self.refresh_computed_agg(&view).await,
-                Ok(SpecView::StringAgg(view)) => self.refresh_string_agg(&view).await,
-                Ok(SpecView::ArrayAgg(view)) => self.refresh_array_agg(&view).await,
-                Ok(SpecView::Join(view)) => self.refresh_join(&view).await,
-                Ok(SpecView::MultiJoin(view)) => self.refresh_multi_join(&view).await,
-                Ok(SpecView::MultiAgg(view)) => self.refresh_multi_agg(&view).await,
-                Ok(SpecView::LookupJoin(view)) => self.refresh_lookup_join(&view).await,
-                Ok(SpecView::LeftJoin(view)) => self.refresh_left_join(&view).await,
-                Ok(SpecView::FullJoin(view)) => self.refresh_full_join(&view).await,
-                Ok(SpecView::CrossJoin(view)) => self.refresh_cross_join(&view).await,
-                Ok(SpecView::MinMax(view)) => self.refresh_min_max(&view).await,
-                Ok(SpecView::DistinctAgg(view)) => self.refresh_distinct_agg(&view).await,
-                Ok(SpecView::Window(view)) => self.refresh_window(&view).await,
-                Ok(SpecView::SemiAnti(view)) => self.refresh_semi_anti(&view).await,
-                Ok(SpecView::LeftAggregate(view)) => {
-                    self.refresh_left_aggregate(&view).await
-                }
-                Ok(SpecView::LookupChain(view)) => self.refresh_lookup_chain(&view).await,
-                Ok(SpecView::GroupingSets(view)) => {
-                    self.refresh_grouping_sets(&view).await
-                }
-                Ok(SpecView::Row(view)) => self.refresh_row(&view).await,
-                Ok(SpecView::UnionAll(view)) => self.refresh_union_all(&view).await,
-                Ok(SpecView::UnionDistinct(view)) => {
-                    self.refresh_union_distinct(&view).await
-                }
-                Ok(SpecView::TopK(view)) => self.refresh_top_k(&view).await,
-                Ok(SpecView::MultiWindow(view)) => self.refresh_multi_window(&view).await,
-                Ok(SpecView::Fallback(view)) => self.refresh_fallback(&view).await,
-                Ok(SpecView::Sink(view)) => self.refresh_sink(&view).await,
-                Err(error) => Err(error),
-            }
-        })
+        let scope = TargetWrite::begin(
+            &self.client,
+            &self.metadata,
+            spec.view_id(),
+            spec.mv_table_id(),
+            false,
+        )
+        .await?;
+        let (result, io) = crate::observability::scope_refresh_io(
+            kind,
+            CURRENT_REFRESH_EPOCH.scope(
+                Arc::new(AtomicI64::new(-1)),
+                COMMIT_PLAN.scope(
+                    Arc::new(Mutex::new(None)),
+                    TARGET_WRITE.scope(Arc::new(Mutex::new(scope)), async {
+                        match self.spec_view(spec).await {
+                            Ok(SpecView::SumCount(view)) => {
+                                self.refresh_sum_count(&view).await
+                            }
+                            Ok(SpecView::Variance(view)) => {
+                                self.refresh_variance(&view).await
+                            }
+                            Ok(SpecView::Median(view)) => {
+                                self.refresh_median(&view).await
+                            }
+                            Ok(SpecView::BoolAgg(view)) => {
+                                self.refresh_bool_agg(&view).await
+                            }
+                            Ok(SpecView::ApproxDistinct(view)) => {
+                                self.refresh_approx_distinct(&view).await
+                            }
+                            Ok(SpecView::ApproxPercentile(view)) => {
+                                self.refresh_approx_percentile(&view).await
+                            }
+                            Ok(SpecView::ComputedAgg(view)) => {
+                                self.refresh_computed_agg(&view).await
+                            }
+                            Ok(SpecView::StringAgg(view)) => {
+                                self.refresh_string_agg(&view).await
+                            }
+                            Ok(SpecView::ArrayAgg(view)) => {
+                                self.refresh_array_agg(&view).await
+                            }
+                            Ok(SpecView::Join(view)) => self.refresh_join(&view).await,
+                            Ok(SpecView::MultiJoin(view)) => {
+                                self.refresh_multi_join(&view).await
+                            }
+                            Ok(SpecView::MultiAgg(view)) => {
+                                self.refresh_multi_agg(&view).await
+                            }
+                            Ok(SpecView::LookupJoin(view)) => {
+                                self.refresh_lookup_join(&view).await
+                            }
+                            Ok(SpecView::MultiLookupJoin(view)) => {
+                                self.refresh_multi_lookup_join(&view).await
+                            }
+                            Ok(SpecView::LeftJoin(view)) => {
+                                self.refresh_left_join(&view).await
+                            }
+                            Ok(SpecView::FullJoin(view)) => {
+                                self.refresh_full_join(&view).await
+                            }
+                            Ok(SpecView::CrossJoin(view)) => {
+                                self.refresh_cross_join(&view).await
+                            }
+                            Ok(SpecView::MinMax(view)) => {
+                                self.refresh_min_max(&view).await
+                            }
+                            Ok(SpecView::DistinctAgg(view)) => {
+                                self.refresh_distinct_agg(&view).await
+                            }
+                            Ok(SpecView::Window(view)) => {
+                                self.refresh_window(&view).await
+                            }
+                            Ok(SpecView::SemiAnti(view)) => {
+                                self.refresh_semi_anti(&view).await
+                            }
+                            Ok(SpecView::LeftAggregate(view)) => {
+                                self.refresh_left_aggregate(&view).await
+                            }
+                            Ok(SpecView::LookupChain(view)) => {
+                                self.refresh_lookup_chain(&view).await
+                            }
+                            Ok(SpecView::GroupingSets(view)) => {
+                                self.refresh_grouping_sets(&view).await
+                            }
+                            Ok(SpecView::Row(view)) => self.refresh_row(&view).await,
+                            Ok(SpecView::UnionAll(view)) => {
+                                self.refresh_union_all(&view).await
+                            }
+                            Ok(SpecView::UnionDistinct(view)) => {
+                                self.refresh_union_distinct(&view).await
+                            }
+                            Ok(SpecView::TopK(view)) => self.refresh_top_k(&view).await,
+                            Ok(SpecView::MultiWindow(view)) => {
+                                self.refresh_multi_window(&view).await
+                            }
+                            Ok(SpecView::Fallback(view)) => {
+                                self.refresh_fallback(&view).await
+                            }
+                            Ok(SpecView::Sink(view)) => self.refresh_sink(&view).await,
+                            Err(error) => Err(error),
+                        }
+                    }),
+                ),
+            ),
+        )
         .await;
         crate::observability::record_refresh(
             kind,
@@ -4331,11 +5170,18 @@ impl IvmRuntime {
             view_id = %spec.view_id(),
             applied = matches!(result, Ok(Some(_))),
             elapsed_ms = started.elapsed().as_millis() as u64,
+            full_scan = io.full_scans() > 0,
+            full_scans = io.full_scans(),
+            full_scan_tables = ?io.full_scan_tables(),
+            files_read = io.files_read(),
+            rows_scanned = io.rows_scanned(),
+            rows_written = io.rows_written(),
+            lookup_ms = io.lookup_ms(),
+            lookup_calls = io.lookup_calls(),
+            write_ms = io.write_ms(),
+            write_calls = io.write_calls(),
             "view refresh finished"
         );
-        if result.is_ok() {
-            self.compact_view_states(spec.view_id()).await?;
-        }
         result
     }
 
@@ -4346,58 +5192,120 @@ impl IvmRuntime {
         self.ensure_incremental_upstreams(spec).await?;
         let kind = spec.kind();
         let started = std::time::Instant::now();
-        let view = self.spec_view(spec).await;
-        let result = crate::observability::scope_refresh_io(kind, async {
-            match view {
-                Ok(SpecView::SumCount(view)) => self.rebuild_sum_count(&view).await,
-                Ok(SpecView::Variance(view)) => self.rebuild_variance(&view).await,
-                Ok(SpecView::Median(view)) => self.rebuild_median(&view).await,
-                Ok(SpecView::BoolAgg(view)) => self.rebuild_bool_agg(&view).await,
-                Ok(SpecView::ApproxDistinct(view)) => {
-                    self.rebuild_approx_distinct(&view).await
+        let scope = TargetWrite::begin(
+            &self.client,
+            &self.metadata,
+            spec.view_id(),
+            spec.mv_table_id(),
+            false,
+        )
+        .await?;
+        let (result, io) = crate::observability::scope_refresh_io(
+            kind,
+            TARGET_WRITE.scope(Arc::new(Mutex::new(scope)), async {
+                match self.spec_view(spec).await {
+                    Ok(SpecView::SumCount(view)) => self.rebuild_sum_count(&view).await,
+                    Ok(SpecView::Variance(view)) => self.rebuild_variance(&view).await,
+                    Ok(SpecView::Median(view)) => self.rebuild_median(&view).await,
+                    Ok(SpecView::BoolAgg(view)) => self.rebuild_bool_agg(&view).await,
+                    Ok(SpecView::ApproxDistinct(view)) => {
+                        self.rebuild_approx_distinct(&view).await
+                    }
+                    Ok(SpecView::ApproxPercentile(view)) => {
+                        self.rebuild_approx_percentile(&view).await
+                    }
+                    Ok(SpecView::ComputedAgg(view)) => {
+                        self.rebuild_computed_agg(&view).await
+                    }
+                    Ok(SpecView::StringAgg(view)) => self.rebuild_string_agg(&view).await,
+                    Ok(SpecView::ArrayAgg(view)) => self.rebuild_array_agg(&view).await,
+                    Ok(SpecView::Join(view)) => self.rebuild_join(&view).await,
+                    Ok(SpecView::MultiJoin(view)) => self.rebuild_multi_join(&view).await,
+                    Ok(SpecView::MultiAgg(view)) => self.rebuild_multi_agg(&view).await,
+                    Ok(SpecView::LookupJoin(view)) => {
+                        self.rebuild_lookup_join(&view).await
+                    }
+                    Ok(SpecView::MultiLookupJoin(view)) => {
+                        self.rebuild_multi_lookup_join(&view).await
+                    }
+                    Ok(SpecView::LeftJoin(view)) => self.rebuild_left_join(&view).await,
+                    Ok(SpecView::FullJoin(view)) => self.rebuild_full_join(&view).await,
+                    Ok(SpecView::CrossJoin(view)) => self.rebuild_cross_join(&view).await,
+                    Ok(SpecView::MinMax(view)) => self.rebuild_min_max(&view).await,
+                    Ok(SpecView::DistinctAgg(view)) => {
+                        self.rebuild_distinct_agg(&view).await
+                    }
+                    Ok(SpecView::Window(view)) => self.rebuild_window(&view).await,
+                    Ok(SpecView::SemiAnti(view)) => self.rebuild_semi_anti(&view).await,
+                    Ok(SpecView::LeftAggregate(view)) => {
+                        self.rebuild_left_aggregate(&view).await
+                    }
+                    Ok(SpecView::LookupChain(view)) => {
+                        self.rebuild_lookup_chain(&view).await
+                    }
+                    Ok(SpecView::GroupingSets(view)) => {
+                        self.rebuild_grouping_sets(&view).await
+                    }
+                    Ok(SpecView::Row(view)) => self.rebuild_row(&view).await,
+                    Ok(SpecView::UnionAll(view)) => self.rebuild_union_all(&view).await,
+                    Ok(SpecView::UnionDistinct(view)) => {
+                        self.rebuild_union_distinct(&view).await
+                    }
+                    Ok(SpecView::TopK(view)) => self.rebuild_top_k(&view).await,
+                    Ok(SpecView::MultiWindow(view)) => {
+                        self.rebuild_multi_window(&view).await
+                    }
+                    Ok(SpecView::Fallback(view)) => self.rebuild_fallback(&view).await,
+                    Ok(SpecView::Sink(view)) => self.rebuild_sink(&view).await,
+                    Err(error) => Err(error),
                 }
-                Ok(SpecView::ApproxPercentile(view)) => {
-                    self.rebuild_approx_percentile(&view).await
-                }
-                Ok(SpecView::ComputedAgg(view)) => self.rebuild_computed_agg(&view).await,
-                Ok(SpecView::StringAgg(view)) => self.rebuild_string_agg(&view).await,
-                Ok(SpecView::ArrayAgg(view)) => self.rebuild_array_agg(&view).await,
-                Ok(SpecView::Join(view)) => self.rebuild_join(&view).await,
-                Ok(SpecView::MultiJoin(view)) => self.rebuild_multi_join(&view).await,
-                Ok(SpecView::MultiAgg(view)) => self.rebuild_multi_agg(&view).await,
-                Ok(SpecView::LookupJoin(view)) => self.rebuild_lookup_join(&view).await,
-                Ok(SpecView::LeftJoin(view)) => self.rebuild_left_join(&view).await,
-                Ok(SpecView::FullJoin(view)) => self.rebuild_full_join(&view).await,
-                Ok(SpecView::CrossJoin(view)) => self.rebuild_cross_join(&view).await,
-                Ok(SpecView::MinMax(view)) => self.rebuild_min_max(&view).await,
-                Ok(SpecView::DistinctAgg(view)) => self.rebuild_distinct_agg(&view).await,
-                Ok(SpecView::Window(view)) => self.rebuild_window(&view).await,
-                Ok(SpecView::SemiAnti(view)) => self.rebuild_semi_anti(&view).await,
-                Ok(SpecView::LeftAggregate(view)) => {
-                    self.rebuild_left_aggregate(&view).await
-                }
-                Ok(SpecView::LookupChain(view)) => self.rebuild_lookup_chain(&view).await,
-                Ok(SpecView::GroupingSets(view)) => {
-                    self.rebuild_grouping_sets(&view).await
-                }
-                Ok(SpecView::Row(view)) => self.rebuild_row(&view).await,
-                Ok(SpecView::UnionAll(view)) => self.rebuild_union_all(&view).await,
-                Ok(SpecView::UnionDistinct(view)) => {
-                    self.rebuild_union_distinct(&view).await
-                }
-                Ok(SpecView::TopK(view)) => self.rebuild_top_k(&view).await,
-                Ok(SpecView::MultiWindow(view)) => self.rebuild_multi_window(&view).await,
-                Ok(SpecView::Fallback(view)) => self.rebuild_fallback(&view).await,
-                Ok(SpecView::Sink(view)) => self.rebuild_sink(&view).await,
-                Err(error) => Err(error),
-            }
-        })
+            }),
+        )
         .await;
+        tracing::debug!(
+            kind,
+            view_id = %spec.view_id(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            full_scan = io.full_scans() > 0,
+            full_scans = io.full_scans(),
+            full_scan_tables = ?io.full_scan_tables(),
+            files_read = io.files_read(),
+            rows_scanned = io.rows_scanned(),
+            rows_written = io.rows_written(),
+            lookup_ms = io.lookup_ms(),
+            lookup_calls = io.lookup_calls(),
+            write_ms = io.write_ms(),
+            write_calls = io.write_calls(),
+            "view rebuild finished"
+        );
         if result.is_ok() {
-            self.compact_view_states(spec.view_id()).await?;
             crate::observability::record_rebuild(kind, started.elapsed());
         }
         result
+    }
+
+    /// Refresh a spec whose materialized view is the user-visible target.
+    /// The target's rebuilds publish one atomic replacement version; internal
+    /// derived/state tables keep the append-visible path.
+    pub(crate) async fn refresh_spec_target(
+        &self,
+        spec: &ViewSpec,
+        target_table_id: &str,
+    ) -> Result<Option<i64>> {
+        ATOMIC_TARGET
+            .scope(target_table_id.to_string(), self.refresh_spec(spec))
+            .await
+    }
+
+    /// Rebuild a spec whose materialized view is the user-visible target.
+    pub(crate) async fn rebuild_spec_target(
+        &self,
+        spec: &ViewSpec,
+        target_table_id: &str,
+    ) -> Result<i64> {
+        ATOMIC_TARGET
+            .scope(target_table_id.to_string(), self.rebuild_spec(spec))
+            .await
     }
 
     /// The internal tables registered for a view (see `ivm.states`).
@@ -4469,6 +5377,7 @@ impl IvmRuntime {
         context: &SessionContext,
         table: &IvmTable,
     ) -> Result<DataFrame> {
+        crate::observability::note_full_scan(&table.table_name);
         Ok(context.read_table(Arc::new(self.table_provider(table)))?)
     }
 
@@ -4660,6 +5569,24 @@ impl IvmRuntime {
         })
     }
 
+    /// The source baseline restricted to the partitions a constant filter can
+    /// match.  Cursors and versions still cover every partition, so future
+    /// windows start from the same boundary.
+    async fn source_baseline_for_filter(
+        &self,
+        source: &IvmTable,
+        filter: Option<&str>,
+    ) -> Result<SourceBaseline> {
+        let mut baseline = self.source_baseline(source).await?;
+        if let Some(predicate) = Self::filter_partition_predicate(source, filter) {
+            baseline.groups.retain(|group| {
+                predicate.matches(&group.partition_desc, &source.range_partition_columns)
+                    != Some(false)
+            });
+        }
+        Ok(baseline)
+    }
+
     async fn source_baseline_meta(
         &self,
         source: &IvmTable,
@@ -4833,6 +5760,199 @@ impl IvmRuntime {
     }
 
     /// Read the changelog window of every partition of a source.
+    /// A condition on one range-partition column extracted from a view filter.
+    fn filter_partition_predicate(
+        source: &IvmTable,
+        filter: Option<&str>,
+    ) -> Option<PartitionPredicate> {
+        let filter = filter?;
+        if source.range_partition_columns.is_empty() {
+            return None;
+        }
+        let context = refresh_session();
+        let expression = parse_filter(&context, &source.schema, filter).ok()?;
+        let mut predicate = PartitionPredicate::default();
+        Self::collect_partition_conditions(&expression, source, &mut predicate);
+        (!predicate.conditions.is_empty()).then_some(predicate)
+    }
+
+    fn collect_partition_conditions(
+        expression: &Expr,
+        source: &IvmTable,
+        predicate: &mut PartitionPredicate,
+    ) {
+        match expression {
+            Expr::BinaryExpr(binary) if binary.op == Operator::And => {
+                Self::collect_partition_conditions(&binary.left, source, predicate);
+                Self::collect_partition_conditions(&binary.right, source, predicate);
+            }
+            Expr::BinaryExpr(binary) if binary.op == Operator::Eq => {
+                if let Some((column, literal)) = Self::partition_column_literal(binary)
+                    && source.range_partition_columns.contains(&column.name)
+                {
+                    predicate.conditions.push(PartitionCondition::In {
+                        column: column.name.clone(),
+                        values: [lakesoul_io::helpers::format_scalar_value(literal)]
+                            .into_iter()
+                            .collect(),
+                    });
+                }
+            }
+            Expr::InList(list) if !list.negated => {
+                let Expr::Column(column) = list.expr.as_ref() else {
+                    return;
+                };
+                if !source.range_partition_columns.contains(&column.name) {
+                    return;
+                }
+                let mut values = std::collections::BTreeSet::new();
+                for item in &list.list {
+                    let Some(literal) = Self::partition_literal(item) else {
+                        // A non-literal item makes a partial IN unsound.
+                        return;
+                    };
+                    values.insert(lakesoul_io::helpers::format_scalar_value(literal));
+                }
+                if !values.is_empty() {
+                    predicate.conditions.push(PartitionCondition::In {
+                        column: column.name.clone(),
+                        values,
+                    });
+                }
+            }
+            Expr::BinaryExpr(binary)
+                if matches!(
+                    binary.op,
+                    Operator::Gt | Operator::GtEq | Operator::Lt | Operator::LtEq
+                ) =>
+            {
+                if let Some((column, literal)) = Self::partition_column_literal(binary) {
+                    Self::push_partition_comparison(
+                        source, predicate, column, literal, binary.op,
+                    );
+                }
+            }
+            Expr::Between(between) if !between.negated => {
+                let Expr::Column(column) = between.expr.as_ref() else {
+                    return;
+                };
+                let (Some(low), Some(high)) = (
+                    Self::partition_literal(&between.low),
+                    Self::partition_literal(&between.high),
+                ) else {
+                    return;
+                };
+                Self::push_partition_comparison(
+                    source,
+                    predicate,
+                    column,
+                    low,
+                    Operator::GtEq,
+                );
+                Self::push_partition_comparison(
+                    source,
+                    predicate,
+                    column,
+                    high,
+                    Operator::LtEq,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn push_partition_comparison(
+        source: &IvmTable,
+        predicate: &mut PartitionPredicate,
+        column: &Column,
+        literal: &ScalarValue,
+        op: Operator,
+    ) {
+        if !source.range_partition_columns.contains(&column.name) {
+            return;
+        }
+        let Ok(field) = source.schema.field_with_name(&column.name) else {
+            return;
+        };
+        let value = lakesoul_io::helpers::format_scalar_value(literal);
+        let number = match field.data_type() {
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64 => match value.parse::<i128>() {
+                Ok(number) => Some(number),
+                Err(_) => return,
+            },
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Utf8View
+            | DataType::Date32
+            | DataType::Date64
+            | DataType::Timestamp(_, _) => None,
+            _ => return,
+        };
+        predicate.conditions.push(PartitionCondition::Cmp {
+            column: column.name.clone(),
+            op,
+            value,
+            number,
+        });
+    }
+
+    fn partition_column_literal(
+        binary: &datafusion::logical_expr::BinaryExpr,
+    ) -> Option<(&Column, &ScalarValue)> {
+        match (&*binary.left, &*binary.right) {
+            (Expr::Column(column), other) => {
+                Self::partition_literal(other).map(|literal| (column, literal))
+            }
+            (other, Expr::Column(column)) => {
+                Self::partition_literal(other).map(|literal| (column, literal))
+            }
+            _ => None,
+        }
+    }
+
+    fn partition_literal(expression: &Expr) -> Option<&ScalarValue> {
+        match expression {
+            Expr::Literal(literal, _) => Some(literal),
+            Expr::Cast(cast) => Self::partition_literal(&cast.expr),
+            _ => None,
+        }
+    }
+
+    /// Collect the source window and drop the changed partitions a constant
+    /// filter excludes.  Skipped partitions still advance their cursors; they
+    /// cannot affect this view.
+    async fn collect_source_window_for_filter(
+        &self,
+        view_id: &str,
+        source: &IvmTable,
+        filter: Option<&str>,
+    ) -> Result<SourceWindow> {
+        let mut window = self.collect_source_window(view_id, source).await?;
+        let Some(predicate) = Self::filter_partition_predicate(source, filter) else {
+            return Ok(window);
+        };
+        let columns = &source.range_partition_columns;
+        let keep = |desc: &str| predicate.matches(desc, columns) != Some(false);
+        window
+            .added_files
+            .retain(|group| keep(&group.partition_desc));
+        window.before_versions.retain(|desc, _| keep(desc));
+        window.identity.retain(|(_, desc, _, _)| keep(desc));
+        if window.added_files.is_empty() && !window.cursors.is_empty() && !window.barrier
+        {
+            self.advance_cursors(view_id, window.cursors.clone())
+                .await?;
+        }
+        Ok(window)
+    }
+
     async fn collect_source_window(
         &self,
         view_id: &str,
@@ -4852,15 +5972,107 @@ impl IvmRuntime {
             .max()
             .unwrap_or(0);
 
-        let from_versions = cursors
-            .iter()
-            .map(|(desc, cursor)| (desc.clone(), cursor.last_version))
-            .collect::<HashMap<String, i64>>();
-        let window = self
-            .client
-            .get_table_changelog(&source.table_id, &from_versions)
+        // A pending epoch is a barrier: a retry must reconstruct exactly the
+        // window of that attempt, not fold in source commits that arrived
+        // while it was pending.  Rebuild epochs are not incremental windows
+        // and are left to the executor.
+        let generation = self.metadata.view_generation(view_id).await?;
+        let pending = self
+            .metadata
+            .list_pending_epochs(view_id, generation)
             .await?;
-
+        let barrier = pending
+            .iter()
+            .find(|record| !record.window_key.starts_with("rebuild:"));
+        let pending_ranges = barrier
+            .map(|record| {
+                record
+                    .to_versions
+                    .iter()
+                    .filter(|range| range.source_table_id == source.table_id)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if barrier.is_some() && pending_ranges.is_empty() {
+            // This source contributed nothing to the pending window.
+            return Ok(SourceWindow {
+                added_files: Vec::new(),
+                cursors: Vec::new(),
+                identity: Vec::new(),
+                before_timestamp,
+                before_versions: HashMap::new(),
+                barrier: true,
+            });
+        }
+        let from_versions = match barrier {
+            Some(_) => pending_ranges
+                .iter()
+                .map(|range| (range.partition_desc.clone(), range.from_version))
+                .collect::<HashMap<String, i64>>(),
+            None => cursors
+                .iter()
+                .map(|(desc, cursor)| (desc.clone(), cursor.last_version))
+                .collect::<HashMap<String, i64>>(),
+        };
+        for range in &pending_ranges {
+            let cursor_version = cursors
+                .get(&range.partition_desc)
+                .map(|cursor| cursor.last_version)
+                .unwrap_or(-1);
+            if cursor_version != range.from_version {
+                return Err(report!(
+                    "view {view_id} pending window for source {} partition {} starts at version {}, \
+                     but the cursor is at {cursor_version}",
+                    source.table_id,
+                    range.partition_desc,
+                    range.from_version
+                )
+                .attach(RebuildRequired));
+            }
+        }
+        let window = match barrier {
+            Some(_) => {
+                let to_versions = pending_ranges
+                    .iter()
+                    .map(|range| (range.partition_desc.clone(), range.to_version))
+                    .collect::<HashMap<String, i64>>();
+                let window = self
+                    .client
+                    .get_table_changelog_up_to(
+                        &source.table_id,
+                        &from_versions,
+                        &to_versions,
+                    )
+                    .await?;
+                let returned = window
+                    .partitions
+                    .iter()
+                    .map(|partition| {
+                        (partition.partition_desc.as_str(), partition.to_version)
+                    })
+                    .collect::<HashMap<_, _>>();
+                for range in &pending_ranges {
+                    if returned.get(range.partition_desc.as_str()).copied()
+                        != Some(range.to_version)
+                    {
+                        return Err(report!(
+                            "view {view_id} cannot reconstruct the pending window for source {} \
+                             partition {} at version {}",
+                            source.table_id,
+                            range.partition_desc,
+                            range.to_version
+                        )
+                        .attach(RebuildRequired));
+                    }
+                }
+                window
+            }
+            None => {
+                self.client
+                    .get_table_changelog(&source.table_id, &from_versions)
+                    .await?
+            }
+        };
         let mut added_files = Vec::new();
         let mut new_cursors = Vec::new();
         let mut identity = Vec::new();
@@ -4943,6 +6155,7 @@ impl IvmRuntime {
             identity,
             before_timestamp,
             before_versions,
+            barrier: barrier.is_some(),
         })
     }
 
@@ -4958,6 +6171,113 @@ impl IvmRuntime {
     /// the recomputed window would overlap applied history (a cursor rewind
     /// that is not aligned with a previous window boundary) and a rebuild is
     /// required.
+    /// Commit the target files a previous coordinator staged but did not
+    /// publish.  Entries whose files are already visible in the target are
+    /// treated as committed; LakeSoul commits a batch atomically, so a crash
+    /// cannot leave a partial entry.
+    async fn resume_commit_plan(&self, record: &EpochRecord) -> Result<CommitPlan> {
+        // Recovery commits are not new staged writes; keep them out of any
+        // plan context left over from another attempt on this task.
+        let _ = COMMIT_PLAN.try_with(|slot| {
+            *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        });
+        let mut plan = record.commit_plan.clone();
+        for entry in record.commit_plan.entries.iter() {
+            if entry.committed {
+                continue;
+            }
+            let table = self.open_table_by_id(&entry.table_id).await?;
+            let current = table.current_files(&self.client).await?;
+            let all_visible = entry
+                .files
+                .iter()
+                .all(|file| current.iter().any(|path| path == &file.path));
+            if all_visible {
+                plan.mark_visible(&entry.id);
+            } else {
+                let commit_ids = table
+                    .commit_files(&self.client, entry.files.clone())
+                    .await?;
+                plan.mark_committed(&entry.id, commit_ids);
+            }
+            self.metadata
+                .checkpoint_epoch_commit_plan(record, &plan)
+                .await?;
+        }
+        Ok(plan)
+    }
+
+    fn install_commit_plan_context(&self, record: &EpochRecord, target_table_id: &str) {
+        let _ = COMMIT_PLAN.try_with(|slot| {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *slot = Some(CommitPlanContext {
+                metadata: self.metadata.clone(),
+                record: record.clone(),
+                // An incomplete plan belongs to an attempt that did not
+                // finish writing; re-applying the window stages new files,
+                // so only the new attempt is journaled.
+                plan: CommitPlan::default(),
+                target_table_id: target_table_id.to_string(),
+            });
+        });
+    }
+
+    /// Whether replaying a window can rebuild this view's state in place.
+    ///
+    /// Every state writer is now idempotent for a replayed epoch: append-only
+    /// state writes absolute delete/insert rows, and the multi-aggregate
+    /// measure merge keeps a row already written at this epoch instead of
+    /// adding its delta again.  A view without a persisted spec is treated
+    /// conservatively: only its target can be replayed.
+    async fn state_replay_is_safe(&self, view_id: &str) -> Result<bool> {
+        if self.metadata.get_view_spec(view_id).await?.is_none() {
+            let states = self.metadata.list_states(view_id).await?;
+            return Ok(states.iter().all(|state| state.role == StateRole::Mv));
+        }
+        Ok(true)
+    }
+
+    /// Whether a pending epoch's pre-window state table lost data.
+    ///
+    /// Replaying one window can only repair the window itself; it cannot
+    /// reconstruct the source-derived history of a state table that was
+    /// truncated or dropped.  The epoch records the state partitions that
+    /// existed before the window, so a missing partition or an empty file set
+    /// is a reliable signal to rebuild instead of replaying.
+    async fn pending_state_was_lost(&self, record: &EpochRecord) -> Result<bool> {
+        for before in &record.state_versions_before {
+            if before.versions.is_empty() {
+                continue;
+            }
+            let partitions =
+                match self.client.get_all_partition_info(&before.table_id).await {
+                    Ok(partitions) => partitions,
+                    // A dropped state table cannot be repaired by a window.
+                    Err(_) => return Ok(true),
+                };
+            for version in &before.versions {
+                let Some(partition) = partitions
+                    .iter()
+                    .find(|partition| partition.partition_desc == version.partition_desc)
+                else {
+                    return Ok(true);
+                };
+                if i64::from(partition.version) < version.version {
+                    return Ok(true);
+                }
+                if self
+                    .client
+                    .get_data_files_of_single_partition(partition)
+                    .await?
+                    .is_empty()
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     async fn begin_window(
         &self,
         view_id: &str,
@@ -4997,6 +6317,43 @@ impl IvmRuntime {
             }
             BeginEpoch::Created(record) => record,
             BeginEpoch::Pending(record) => {
+                if record.commit_plan.complete {
+                    let plan = self.resume_commit_plan(&record).await?;
+                    if self.pending_state_was_lost(&record).await? {
+                        return Err(report!(
+                            "view {view_id} window {window_key} lost an auxiliary state table; \
+                             a rebuild is required"
+                        )
+                        .attach(RebuildRequired));
+                    }
+                    let current = output_partition_versions(&self.client, output).await?;
+                    let current_states = self.state_versions(view_id).await?;
+                    let mut commit_ids = record.commit_ids.clone();
+                    commit_ids.extend(plan.commit_ids());
+                    self.metadata
+                        .mark_epoch_committed_with_states(
+                            &record,
+                            &current,
+                            &commit_ids,
+                            &current_states,
+                        )
+                        .await?;
+                    return Ok(WindowStart::AlreadyApplied(record.epoch));
+                }
+                if !record.commit_plan.is_empty() {
+                    // The attempt crashed before its last write, but the
+                    // files it already staged are valid: publish them so the
+                    // pending-state checks below see the real state.  The
+                    // window itself is still replayed or repaired.
+                    self.resume_commit_plan(&record).await?;
+                }
+                if self.pending_state_was_lost(&record).await? {
+                    return Err(report!(
+                        "view {view_id} window {window_key} lost an auxiliary state table; \
+                         a rebuild is required"
+                    )
+                    .attach(RebuildRequired));
+                }
                 let current = output_partition_versions(&self.client, output).await?;
                 if current != record.mv_versions_before {
                     // A previous attempt wrote the MV but did not mark the
@@ -5015,28 +6372,49 @@ impl IvmRuntime {
                             || !current_states.is_empty()
                     };
                     let mut commit_ids = record.commit_ids.clone();
+                    let mut state_incomplete = state_incomplete;
                     if state_incomplete && !record.state_versions.is_empty() {
                         let (repair_ids, repaired_tables) =
                             self.repair_mirror_states(view_id, output).await?;
                         commit_ids.extend(repair_ids);
                         let repaired = self.state_versions(view_id).await?;
-                        let repaired_ok = record.state_versions.iter().all(|expected| {
-                            repaired_tables.contains(&expected.table_id)
-                                || repaired.iter().any(|current| current == expected)
-                        });
-                        if !repaired_ok {
+                        state_incomplete =
+                            !record.state_versions.iter().all(|expected| {
+                                repaired_tables.contains(&expected.table_id)
+                                    || repaired.iter().any(|current| current == expected)
+                            });
+                    }
+                    if state_incomplete {
+                        if !self.state_replay_is_safe(view_id).await? {
                             return Err(report!(
                                 "view {view_id} window {window_key} has a committed MV \
                                  but incomplete auxiliary state; a rebuild is required"
                             )
                             .attach(RebuildRequired));
                         }
-                    } else if state_incomplete {
-                        return Err(report!(
-                            "view {view_id} window {window_key} has a committed MV \
-                             but incomplete auxiliary state; a rebuild is required"
-                        )
-                        .attach(RebuildRequired));
+                        // The MV is already published, so recompute the
+                        // window again but suppress every target commit; the
+                        // state writes are epoch-scoped and repair the missing
+                        // state without duplicating output rows.
+                        let scoped = TARGET_WRITE.try_with(|context| {
+                            let mut guard = context
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            guard.skip_target = true;
+                            #[cfg(debug_assertions)]
+                            {
+                                guard.recovery_target_id = Some(output.table_id.clone());
+                                register_recovery_target(&output.table_id);
+                            }
+                        });
+                        if scoped.is_err() {
+                            return Err(report!(
+                                "view {view_id} window {window_key} has a committed MV \
+                                 but incomplete auxiliary state; a rebuild is required"
+                            )
+                            .attach(RebuildRequired));
+                        }
+                        return Ok(WindowStart::Apply(Box::new(record)));
                     }
                     self.mark_epoch_committed(&record, &current, &commit_ids)
                         .await?;
@@ -5067,6 +6445,10 @@ impl IvmRuntime {
             }
         }
 
+        self.install_commit_plan_context(&record, &output.table_id);
+        let _ = CURRENT_REFRESH_EPOCH.try_with(|epoch| {
+            epoch.store(record.epoch, Ordering::Relaxed);
+        });
         Ok(WindowStart::Apply(Box::new(record)))
     }
 

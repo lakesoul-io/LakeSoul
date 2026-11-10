@@ -29,6 +29,14 @@
 //! the planner drops a boundary between two one-task stages, and a plan left
 //! without any boundary runs on the coordinator as the single-node plan.
 //!
+//! A primary-key scan groups its files into atomic `(range partition, hash
+//! bucket)` work units, preserving version order within each unit. Whole units
+//! are packed across the scan's task budget, so even one range partition (or
+//! a table without range columns) can use several workers when it has several
+//! populated buckets. Each task's merge runs at most `target_partitions` local
+//! lanes, executing further units sequentially. If any file has a missing or
+//! out-of-range bucket ID, its whole range stays one indivisible unit instead.
+//!
 //! DataFusion splits file scans into partitions by a rule of its own, before
 //! the distributed planner runs: `EnforceDistribution` byte-splits a scan of
 //! at least `repartition_file_min_size` bytes, while the distributed planner
@@ -70,7 +78,6 @@ pub mod resolver;
 mod trace_context;
 pub mod worker;
 
-pub use codec::LakeSoulCodec;
 pub use planner::LakeSoulDistributedQueryPlanner;
 pub use resolver::{
     KubernetesDiscovery, StaticWorkerResolver, WorkerDiscovery, WorkerSnapshot,
@@ -84,25 +91,30 @@ pub use resolver::{
 /// # Generations
 ///
 /// The version identifies a *protocol generation*, not just this crate's
-/// release: bump it whenever the physical-plan encoding changes.
+/// release. Bump it for incompatible changes to a released protocol.
 ///
 /// `/1` advertised an unversioned `MergeParquetExecProto`: protobuf decoders
 /// ignore unknown fields rather than rejecting them, so a plan written by this
 /// build would have been silently accepted by a `/1` worker.
 ///
-/// `/2` is the current generation and the first one versioned on the wire: it
-/// carries the explicit [`codec::CODEC_VERSION`] field *and* registers the
-/// vortex scan codec at position 2 of [`codec::user_codecs`]. Both changes are
-/// one generation rather than two because neither format has ever been
-/// released — a `/2` worker from this tree resolves every codec position a
-/// coordinator from it can stamp. Split them the moment one of the two ships on
-/// its own: extension payloads name the *position* of the codec that wrote
-/// them, so a coordinator that can stamp position 2 needs workers that resolve
-/// it.
+/// `/4` is the current non-IVM generation: it extends the ADBC foreign codec
+/// at position 4 of [`codec::user_codecs`] with the worker-side write stage
+/// (`FederationWriteExec`). It carries the explicit [`codec::CODEC_VERSION`]
+/// field and registers the vortex scan codec at position 1, the metadata-only
+/// scan codec at position 2, the write codec at position 3, the federation
+/// codec at position 4 and the IVM refresh codec at position 5 when the `ivm`
+/// feature is enabled. A `/4` worker from this tree resolves every codec
+/// position a non-IVM coordinator from it can stamp; an IVM coordinator
+/// advertises `/5-ivm` so it never dispatches a plan whose position 5 is
+/// unknown to the worker.
 ///
-/// Advertising `/2` filters `/1` workers out at discovery and closes the other
-/// direction at decode time.
-pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2";
+/// `/5-ivm` is the IVM generation. The numeric part tracks
+/// [`codec::CODEC_VERSION`]; the `-ivm` suffix keeps the codec-list
+/// generations apart during discovery.
+#[cfg(feature = "ivm")]
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/5-ivm";
+#[cfg(not(feature = "ivm"))]
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/4";
 
 pub use worker::{
     LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker,

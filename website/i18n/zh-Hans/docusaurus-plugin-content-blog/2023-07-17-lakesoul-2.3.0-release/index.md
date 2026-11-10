@@ -22,7 +22,7 @@ LakeSoul 从 2.1 版本起能够支持数据库整库同步，并提供了 [MySQ
 
 在本次 2.3 版本更新中，我们重构了整库同步时的 DDL 解析方式。具体来说，LakeSoul 在进行整库同步时不再需要上游提供 DDL 事件，或去上游数据库获取表的 Schema 等信息，而是直接从同步的数据中解析是否出现新表、是否已有表的 Schema 发生了变更。遇到新表或 Schema 变更时，会自动在 LakeSoul 湖仓中执行建表或 Schema 变更。
 
-这个改动使得 LakeSoul 可以支持任意类型的数据源入湖，例如 MySQL、Oracle 的 CDC 采集，或者从 Kafka 中消费 CDC 事件。开发者只需要将 CDC 消息解析为 [BinarySourceRecord](https://github.com/lakesoul-io/LakeSoul/blob/main/lakesoul-flink/src/main/java/org/apache/flink/lakesoul/types/BinarySourceRecord.java) 对象，并创建 `DataStream<BinarySourceRecord>`，即可实现整库同步。LakeSoul 已经实现了从 Debezium DML 消息格式到 `BinarySourceRecord` 对象的转换，其他 CDC 格式可以参考实现。
+这个改动使得 LakeSoul 可以支持任意类型的数据源入湖，例如 MySQL、Oracle 的 CDC 采集，或者从 Kafka 中消费 CDC 事件。开发者只需要将 CDC 消息解析为 [BinarySourceRecord](https://github.com/lakesoul-io/LakeSoul/blob/main/integrations/lakesoul-flink/src/main/java/org/apache/flink/lakesoul/types/BinarySourceRecord.java) 对象，并创建 `DataStream<BinarySourceRecord>`，即可实现整库同步。LakeSoul 已经实现了从 Debezium DML 消息格式到 `BinarySourceRecord` 对象的转换，其他 CDC 格式可以参考实现。
 
 ## 全局自动小文件合并（Compaction）服务
 LakeSoul 支持流式、并发的 Upsert 或 Append 操作，每次 Upsert/Append 都会写入一批文件，在读取时自动进行合并（Merge on Read）。

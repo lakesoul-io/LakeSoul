@@ -7,6 +7,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use bytes::Bytes;
 use moka::{future::Cache, notification::RemovalCause, ops::compute};
@@ -16,6 +17,7 @@ use parking_lot::RwLock;
 use uuid::Uuid;
 
 use super::paging::PageCache;
+use super::stats::{CACHE_PUT_STAGE_COUNT, SCHEMA_INFERENCE_TIMING};
 
 pub const DEFAULT_PAGE_SIZE: usize = 16 * 1024;
 const DEFAULT_METADATA_CACHE_SIZE: usize = 32 * 1024 * 1024;
@@ -86,19 +88,103 @@ fn read_all(file: &std::fs::File, size: usize) -> std::io::Result<Vec<u8>> {
     read_range(file, 0, size)
 }
 
+/// Stage order must match `CACHE_PUT_STAGES` in `cache::stats`; the assert
+/// below keeps the two in step when a stage is added or removed.
+#[derive(Clone, Copy)]
+enum PutStage {
+    Prepare,
+    EntryWait,
+    PathPrepare,
+    Copy,
+    BlockingQueue,
+    Open,
+    Write,
+    Resume,
+    Commit,
+    Bookkeeping,
+}
+
+// There is no stable way to count enum variants, so derive the count from the
+// last variant and check it against the shared counter width: adding a stage
+// without growing the counters would silently mislabel the summary.
+const _: () = assert!(PutStage::Bookkeeping as usize + 1 == CACHE_PUT_STAGE_COUNT);
+
+struct PutTiming {
+    started: Instant,
+    phase_started: Instant,
+    stages: [u64; CACHE_PUT_STAGE_COUNT],
+}
+
+impl PutTiming {
+    fn new() -> Self {
+        let started = Instant::now();
+        Self {
+            started,
+            phase_started: started,
+            stages: [0; CACHE_PUT_STAGE_COUNT],
+        }
+    }
+
+    fn mark(&mut self, stage: PutStage) {
+        let now = Instant::now();
+        self.stages[stage as usize] = (now - self.phase_started).as_nanos() as u64;
+        self.phase_started = now;
+    }
+
+    fn resumed(&mut self, blocking: BlockingWriteTiming) {
+        let now = Instant::now();
+        self.stages[PutStage::BlockingQueue as usize] =
+            (blocking.started - self.phase_started).as_nanos() as u64;
+        self.stages[PutStage::Open as usize] = blocking.open_ns;
+        self.stages[PutStage::Write as usize] = blocking.write_ns;
+        self.stages[PutStage::Resume as usize] =
+            (now - blocking.completed).as_nanos() as u64;
+        self.phase_started = now;
+    }
+}
+
+struct BlockingWriteTiming {
+    started: Instant,
+    open_ns: u64,
+    write_ns: u64,
+    completed: Instant,
+}
+
+impl BlockingWriteTiming {
+    fn new() -> Self {
+        let started = Instant::now();
+        Self {
+            started,
+            open_ns: 0,
+            write_ns: 0,
+            completed: started,
+        }
+    }
+}
+
 /// Create + write a file on disk, return the open File handle.
 fn create_and_write(
     path: &std::path::Path,
     data: &[u8],
+    timing: Option<&mut BlockingWriteTiming>,
 ) -> std::io::Result<std::fs::File> {
     use std::io::Write;
+    let open_started = timing.as_ref().map(|_| Instant::now());
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
         .read(true)
         .truncate(true)
         .open(path)?;
+    let write_started = open_started.map(|_| Instant::now());
     file.write_all(data)?;
+    if let (Some(timing), Some(open_started), Some(write_started)) =
+        (timing, open_started, write_started)
+    {
+        timing.completed = Instant::now();
+        timing.open_ns = (write_started - open_started).as_nanos() as u64;
+        timing.write_ns = (timing.completed - write_started).as_nanos() as u64;
+    }
     Ok(file)
 }
 
@@ -299,7 +385,7 @@ impl PageCache for DiskCache {
 
             let file = tokio::task::spawn_blocking({
                 let data = bytes.to_vec();
-                move || create_and_write(&file_path, &data)
+                move || create_and_write(&file_path, &data, None)
             })
             .await
             .map_err(|e| Error::Generic {
@@ -351,12 +437,33 @@ impl PageCache for DiskCache {
     ) -> Result<Bytes> {
         assert!(range.start <= range.end && range.end <= self.page_size());
 
-        if let Some(bytes) = self.get_range(location, page_id, range.clone()).await? {
+        let lookup_started = SCHEMA_INFERENCE_TIMING
+            .try_with(|_| std::time::Instant::now())
+            .ok();
+        let cached = self.get_range(location, page_id, range.clone()).await?;
+        if let Some(started) = lookup_started {
+            let _ = SCHEMA_INFERENCE_TIMING.try_with(|timing| {
+                timing
+                    .lookup_read_ns
+                    .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            });
+        }
+        if let Some(bytes) = cached {
             return Ok(bytes);
         }
 
         let bytes = loader.await?;
+        let write_started = SCHEMA_INFERENCE_TIMING
+            .try_with(|_| std::time::Instant::now())
+            .ok();
         self.put(location, page_id, bytes.clone()).await?;
+        if let Some(started) = write_started {
+            let _ = SCHEMA_INFERENCE_TIMING.try_with(|timing| {
+                timing
+                    .cache_write_ns
+                    .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            });
+        }
         Ok(bytes.slice(range))
     }
 
@@ -404,17 +511,26 @@ impl PageCache for DiskCache {
         if data.is_empty() {
             return Ok(());
         }
+        let timing = SCHEMA_INFERENCE_TIMING.try_with(Arc::clone).ok();
+        let mut put_timing = timing.as_ref().map(|_| PutTiming::new());
 
         let location_id = self.get_location_id(location);
         let key = make_key(location_id, page_id);
 
         let size = data.len() as u64;
         let root = self.root.clone();
+        if let Some(sample) = &mut put_timing {
+            sample.mark(PutStage::Prepare);
+        }
+        let sample = &mut put_timing;
 
         let result = self
             .cache
             .entry(key.clone())
             .and_try_compute_with(|entry| async move {
+                if let Some(sample) = sample.as_mut() {
+                    sample.mark(PutStage::EntryWait);
+                }
                 if entry.is_some() {
                     return Ok::<compute::Op<CacheEntry>, Error>(compute::Op::Nop);
                 }
@@ -423,11 +539,29 @@ impl PageCache for DiskCache {
                 let file_path = root.join(&filename);
 
                 let cleanup_path = file_path.clone();
+                if let Some(sample) = sample.as_mut() {
+                    sample.mark(PutStage::PathPrepare);
+                }
                 let write_result = tokio::task::spawn_blocking({
                     let data = data.to_vec();
-                    move || create_and_write(&file_path, &data)
+                    if let Some(sample) = sample.as_mut() {
+                        sample.mark(PutStage::Copy);
+                    }
+                    let measured = sample.is_some();
+                    move || {
+                        let mut blocking = measured.then(BlockingWriteTiming::new);
+                        let result =
+                            create_and_write(&file_path, &data, blocking.as_mut());
+                        (result, blocking)
+                    }
                 })
-                .await;
+                .await
+                .map(|(result, blocking)| {
+                    if let (Some(sample), Some(blocking)) = (sample.as_mut(), blocking) {
+                        sample.resumed(blocking);
+                    }
+                    result
+                });
 
                 let file = match write_result {
                     Ok(Ok(file)) => file,
@@ -454,11 +588,25 @@ impl PageCache for DiskCache {
                 }))
             })
             .await?;
+        if let Some(sample) = &mut put_timing {
+            sample.mark(PutStage::Commit);
+        }
+        let inserted = matches!(result, compute::CompResult::Inserted(_));
 
-        if matches!(result, compute::CompResult::Inserted(_)) {
+        if inserted {
             self.approximate_size
                 .fetch_add(to_kb(size), Ordering::Relaxed);
             self.register_key(location_id, &key);
+        }
+        if let (Some(timing), Some(mut sample)) = (timing, put_timing) {
+            sample.mark(PutStage::Bookkeeping);
+            let total_ns = (sample.phase_started - sample.started).as_nanos() as u64;
+            let counters = if inserted {
+                &timing.cache_put_writes
+            } else {
+                &timing.cache_put_nops
+            };
+            counters.record(size, total_ns, sample.stages);
         }
 
         Ok(())

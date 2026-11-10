@@ -89,6 +89,24 @@ fn describe_metrics() {
     });
 }
 
+/// Exports every `outcome` series of the statement metrics at zero.
+///
+/// A series that first appears with a nonzero value has no earlier sample to
+/// diff against, so `rate()`/`increase()` miss a short burst of a new outcome
+/// (the first failures after startup). Call once at startup, after installing
+/// the metrics recorder.
+pub fn register_query_metrics() {
+    describe_metrics();
+    for outcome in StatementOutcome::ALL {
+        let label = outcome.as_str();
+        metrics::counter!(QUERY_REQUESTS_TOTAL, "outcome" => label).increment(0);
+        // Registering the handle is enough: the exporter renders an empty
+        // histogram (zero buckets, `_count 0`) for it.
+        let _ = metrics::histogram!(QUERY_DURATION_SECONDS, "outcome" => label);
+        metrics::counter!(QUERY_ROWS_TOTAL, "outcome" => label).increment(0);
+    }
+}
+
 /// `57014 query_canceled`, the SQLSTATE PostgreSQL reports for both a
 /// cancelled statement and an expired `statement_timeout`.
 const QUERY_CANCELED: &str = "57014";
@@ -1242,6 +1260,29 @@ mod tests {
         );
     }
 
+    /// Every outcome of every statement metric is exported at zero before the
+    /// first statement, so the first burst of an outcome shows in `increase()`.
+    #[test]
+    fn query_metrics_start_at_zero_for_every_outcome() {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, register_query_metrics);
+        let rendered = handle.render();
+        for outcome in StatementOutcome::ALL {
+            let label = outcome.as_str();
+            for series in [
+                format!("lakesoul_query_requests_total{{outcome=\"{label}\"}} 0"),
+                format!("lakesoul_query_rows_total{{outcome=\"{label}\"}} 0"),
+                format!("lakesoul_query_duration_seconds_count{{outcome=\"{label}\"}} 0"),
+            ] {
+                assert!(
+                    rendered.lines().any(|line| line == series),
+                    "{series} missing in:\n{rendered}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn cancelled_resolves_through_changed_when_the_flag_flips_later() {
         let token = QueryToken::new();
@@ -1539,6 +1580,40 @@ mod tests {
             .begin_execution("b", "sb", None)
             .expect("statement admitted");
         assert!(!Arc::ptr_eq(&b, &next_b));
+    }
+
+    /// The server-wide limit spans connections and users: a suspended portal on
+    /// one connection keeps its slot, so another user's statement is refused
+    /// until that portal's work ends.
+    #[test]
+    fn the_server_wide_limit_spans_connections_and_users() {
+        let (server, first) = cancellation_with(Limits {
+            max_concurrent_queries: 1,
+            ..Limits::unlimited()
+        });
+        let second = QueryCancellation::new(Arc::clone(&server), "user_b");
+
+        let portal = first
+            .begin_statement(None, Some("c"))
+            .expect("first statement admitted");
+        let refused = second
+            .begin_statement(None, None)
+            .expect_err("the server is at its limit");
+        assert!(matches!(
+            refused,
+            PgWireError::UserError(info) if info.code == crate::limits::CONFIGURATION_LIMIT_EXCEEDED
+        ));
+        assert!(
+            second.begin_parse(None).is_err(),
+            "planning takes a slot as well"
+        );
+
+        portal.end(StatementOutcome::Completed);
+        assert_eq!(server.state().total_query_count(), 0);
+        let admitted = second
+            .begin_statement(None, None)
+            .expect("the slot the portal gave back");
+        admitted.end(StatementOutcome::Completed);
     }
 
     /// The statement a portal runs holds one slot from the first `Execute`

@@ -26,12 +26,13 @@ use datafusion::physical_plan::{Distribution, ExecutionPlan, Partitioning};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_distributed::{
     BroadcastExec, DesiredTaskCountEvent, DesiredTaskCountEventResponse,
-    DistributedConfig, DistributedExt, SessionStateBuilderExt, WorkerResolver,
+    DistributedConfig, DistributedExt, DistributedLeafExec, ScaleUpLeafNodeEvent,
+    ScaleUpLeafNodeEventResponse, SessionStateBuilderExt, WorkerResolver,
 };
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::object_store::{register_hdfs_object_store, register_s3_object_store};
 use lakesoul_io::object_store_metrics::MonitoredObjectStore;
-use lakesoul_io::physical_plan::MergeParquetExec;
+use lakesoul_io::physical_plan::{LakeSoulScanExec, MergeParquetExec};
 use object_store::local::LocalFileSystem;
 use rootcause::{bail, report};
 use std::fmt;
@@ -132,8 +133,11 @@ impl ExecutionMemoryArgs {
         let reserved = metrics::gauge!("lakesoul_memory_pool_reserved_bytes");
         reserved.set(0.0);
         metrics::gauge!("lakesoul_memory_pool_limit_bytes").set(self.memory_limit as f64);
+        // Exported at 0 from startup so the first failures show in
+        // `increase()`; `increment(0)` registers without resetting a counter
+        // an earlier pool in this process already advanced.
         let failures = metrics::counter!("lakesoul_memory_reservation_failures_total");
-        failures.absolute(0);
+        failures.increment(0);
         tracing::info!(
             pool = kind,
             limit_bytes = self.memory_limit,
@@ -246,6 +250,11 @@ pub struct LakeSoulSessionOptions {
     /// Optional DataFusion execution time zone. When omitted, the value from
     /// the factory's [`SessionConfig`] template is preserved.
     pub time_zone: Option<String>,
+    /// Allow ADBC foreign-table writes to run on workers even when only one
+    /// worker is registered. This raises the per-stage task cap to two so the
+    /// write stage keeps a network boundary instead of being elided onto the
+    /// coordinator.
+    pub federation_writes: bool,
 }
 
 impl Default for LakeSoulSessionOptions {
@@ -253,6 +262,7 @@ impl Default for LakeSoulSessionOptions {
         Self {
             default_schema: DEFAULT_SCHEMA.to_string(),
             time_zone: None,
+            federation_writes: false,
         }
     }
 }
@@ -272,24 +282,63 @@ pub enum WarehouseConfig {
 type CatalogDecorator =
     dyn Fn(Arc<LakeSoulCatalog>) -> Arc<dyn CatalogProvider> + Send + Sync;
 
-/// Pins every `MergeParquetExec` to a single distributed task.
+/// Pins every merge-on-read work unit to a single distributed task.
 ///
-/// Every bucket work unit in a range merge must see all its version files.
-/// This distributed-task cap does not limit the merge's local output lanes.
-/// Without it the distributed planner derives the merge subtree's task
-/// count from its file scans (`Desired(N)` for large file sets or a small
-/// `bytes_per_partition`), the children-isolator union allocates several tasks
-/// to one merge, and the leaf scale-up slices every version file into byte
-/// ranges — so the same primary key's versions merge in different tasks and
-/// the scan emits stale or duplicate rows. `Maximum(1)` wins over the scans'
-/// `Desired(N)` during task-count reconciliation, for both the union and the
-/// no-union (single range partition) plan shape; parallelism across merges of
-/// different range partitions and across local bucket lanes is preserved.
-fn merge_parquet_exec_single_task(
+/// A merge-on-read scan holds whole (range partition, bucket) work units,
+/// packed into one metadata-only [`LakeSoulScanExec`] per distributed task of
+/// the scan stage; see `LakeSoulTableProvider::scan`. Every unit must see all
+/// its version files — a contract the node keeps in its own
+/// `is_merge_on_read` flag. This distributed-task cap does not limit the
+/// node's local output lanes. Without it the planner derives the subtree's
+/// task count from the file descriptors (`Desired(N)` for large file sets or a
+/// small `bytes_per_partition`), the children-isolator union allocates several
+/// tasks to one merge node, and the leaf scale-up splits every
+/// version file into byte ranges — so the same primary key's versions merge
+/// in different tasks and the scan emits stale or duplicate rows.
+/// `Maximum(1)` wins over the scans' `Desired(N)` during task-count
+/// reconciliation, for both the union and the no-union (single node) plan
+/// shape; parallelism across merge nodes and across local bucket lanes is
+/// preserved. A [`MergeParquetExec`] built by an independent caller has no wire
+/// form any more, so it can only run where the coordinator executes it; it is
+/// still pinned the same way.
+fn merge_work_unit_single_task(
     ev: DesiredTaskCountEvent<'_>,
 ) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
-    ev.plan.downcast_ref::<MergeParquetExec>()?;
-    Some(Ok(DesiredTaskCountEventResponse::maximum(1)))
+    let merge_on_read = ev.plan.is::<MergeParquetExec>()
+        || ev
+            .plan
+            .downcast_ref::<LakeSoulScanExec>()
+            .is_some_and(|scan| scan.is_merge_on_read());
+    merge_on_read.then(|| Ok(DesiredTaskCountEventResponse::maximum(1)))
+}
+
+/// Metadata publication is coordinator-only. The write stage itself may use
+/// any number of network tasks: each task writes every persisted bucket of its
+/// share, so task count is not tied to `hashBucketNum`.
+fn write_task_budget(
+    ev: DesiredTaskCountEvent<'_>,
+) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
+    use crate::datasource::file_format::{LakeSoulCommitExec, LakeSoulWriteExec};
+    if ev.plan.is::<LakeSoulCommitExec>() {
+        return Some(Ok(DesiredTaskCountEventResponse::maximum(1)));
+    }
+    if let Some(write) = ev
+        .plan
+        .downcast_ref::<crate::federation::FederationWriteExec>()
+    {
+        return Some(Ok(DesiredTaskCountEventResponse::desired(
+            write.parallelism(),
+        )));
+    }
+    let write = ev.plan.downcast_ref::<LakeSoulWriteExec>()?;
+    // A keyed write must run below a stage boundary: its input is a hash
+    // shuffle, and a one-task stage would otherwise absorb the write into the
+    // coordinator's head stage.
+    (!write.primary_keys().is_empty()).then(|| {
+        Ok(DesiredTaskCountEventResponse::desired(
+            crate::distributed::planner::scan_task_budget(ev.session_config),
+        ))
+    })
 }
 
 /// Caps a stage at one task when splitting its scans would break the input
@@ -332,6 +381,165 @@ fn input_distribution_single_task(
         .then(|| Ok(DesiredTaskCountEventResponse::maximum(1)))
 }
 
+/// Asks for one distributed task per readable slice of an append-only scan.
+///
+/// A metadata-only scan carries every file descriptor itself, so the builtin
+/// DataSourceExec handler never sees it and a leaf without a handler defaults
+/// to `Maximum(1)`. The scan knows how many legal slices it can offer
+/// ([`LakeSoulScanExec::splittable_task_limit`] — one per file, more for
+/// Parquet files large enough to range-split; `None` for merge-on-read), and
+/// this handler sizes the stage from the bytes it covers exactly as the
+/// builtin handler does:
+/// `ceil(ceil(bytes / bytes_per_partition) / target_partitions)`, capped by
+/// the slice limit. Files of unknown size ask for one task each. Returning
+/// the count is only a request; reconciliation still applies `Maximum(1)`
+/// handlers ([`merge_work_unit_single_task`],
+/// [`input_distribution_single_task`]) and the worker count.
+///
+/// Merge-on-read scans answer `None`: they keep whole work units for the
+/// merge and are covered by [`merge_work_unit_single_task`].
+fn lazy_scan_desired_task_count(
+    ev: DesiredTaskCountEvent<'_>,
+) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
+    let scan = ev.plan.downcast_ref::<LakeSoulScanExec>()?;
+    if scan.is_merge_on_read() {
+        return None;
+    }
+    let limit = scan.splittable_task_limit()?;
+    if limit == 0 {
+        return None;
+    }
+    let distributed = DistributedConfig::from_session_config(ev.session_config);
+    let Ok(distributed) = distributed else {
+        return None;
+    };
+
+    let mut total_bytes = 0u64;
+    let mut unknown_size = false;
+    for unit in scan.work_units() {
+        for file in &unit.files {
+            match file.size {
+                Some(size) => total_bytes = total_bytes.saturating_add(size),
+                None => unknown_size = true,
+            }
+        }
+    }
+    let desired = if unknown_size || total_bytes == 0 {
+        limit
+    } else {
+        let bytes_per_partition =
+            u64::try_from(distributed.file_scan_config_bytes_per_partition.max(1))
+                .unwrap_or(u64::MAX);
+        let target_partitions =
+            u64::try_from(ev.session_config.target_partitions()).unwrap_or(1);
+        let task_count = total_bytes
+            .div_ceil(bytes_per_partition)
+            .div_ceil(target_partitions);
+        usize::try_from(task_count).unwrap_or(usize::MAX).min(limit)
+    };
+    Some(Ok(DesiredTaskCountEventResponse::desired(desired)))
+}
+
+/// Splits an append-only scan into one variant per task of its stage.
+///
+/// The leaf carries file descriptors rather than file groups, so the builtin
+/// scale-up handler cannot touch it; without this handler the scan stage
+/// would run every file in one task. [`LakeSoulScanExec::split_into_tasks`]
+/// builds disjoint, exhaustive variants (whole files for Vortex, byte ranges
+/// only where the format reads them correctly — Parquet), padding with empty
+/// variants when the stage has more tasks than slices. Each variant keeps the
+/// original schema, output length and partition count, so
+/// [`DistributedLeafExec::try_new`] accepts them and the coordinator can
+/// specialize the leaf by task index.
+///
+/// Merge-on-read scans answer `None`: their units stay packed by
+/// [`merge_work_unit_single_task`] and [`LakeSoulTableProvider::scan`].
+fn lazy_scan_scale_up_leaf_node(
+    ev: ScaleUpLeafNodeEvent<'_>,
+) -> Option<DataFusionResult<ScaleUpLeafNodeEventResponse>> {
+    let scan = ev.plan.downcast_ref::<LakeSoulScanExec>()?;
+    if scan.is_merge_on_read() || ev.task_count <= 1 {
+        return None;
+    }
+    let variants = match scan.split_into_tasks(ev.task_count) {
+        Ok(variants) => variants,
+        Err(error) => return Some(Err(error)),
+    };
+    if variants.len() != ev.task_count {
+        return Some(datafusion::common::internal_err!(
+            "split a {} scan over {} tasks into {} variants",
+            scan.name(),
+            ev.task_count,
+            variants.len()
+        ));
+    }
+    let variants = variants
+        .into_iter()
+        .map(|variant| variant as Arc<dyn ExecutionPlan>);
+    Some(
+        DistributedLeafExec::try_new(Arc::clone(ev.plan), variants)
+            .map(|leaf| ScaleUpLeafNodeEventResponse::new(Arc::new(leaf))),
+    )
+}
+
+/// Asks for one distributed task per bucket group of an IVM scan.
+///
+/// The IVM provider already splits a range partition into one group per
+/// LakeSoul hash bucket; an `IvmStreamExec` is therefore one merge-on-read unit
+/// per partition and can be scaled without splitting a bucket's version files.
+#[cfg(feature = "ivm")]
+fn ivm_scan_desired_task_count(
+    ev: DesiredTaskCountEvent<'_>,
+) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
+    let groups = lakesoul_ivm::distributed::stream_scan_task_count(ev.plan)?;
+    (groups > 1).then(|| Ok(DesiredTaskCountEventResponse::desired(groups)))
+}
+
+/// Caps a keyed IVM lookup stage at the number of state buckets.
+#[cfg(feature = "ivm")]
+fn ivm_lookup_desired_task_count(
+    ev: DesiredTaskCountEvent<'_>,
+) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
+    let buckets = lakesoul_ivm::distributed::lookup_task_count(ev.plan)?;
+    (buckets > 1).then(|| Ok(DesiredTaskCountEventResponse::desired(buckets)))
+}
+
+/// Asks for one sink task per write partition.
+#[cfg(feature = "ivm")]
+fn ivm_sink_desired_task_count(
+    ev: DesiredTaskCountEvent<'_>,
+) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
+    let partitions = lakesoul_ivm::distributed::sink_task_count(ev.plan)?;
+    (partitions > 1).then(|| Ok(DesiredTaskCountEventResponse::desired(partitions)))
+}
+
+/// Splits an IVM scan into disjoint task variants.
+#[cfg(feature = "ivm")]
+fn ivm_scan_scale_up_leaf_node(
+    ev: ScaleUpLeafNodeEvent<'_>,
+) -> Option<DataFusionResult<ScaleUpLeafNodeEventResponse>> {
+    if ev.task_count <= 1 {
+        return None;
+    }
+    let variants =
+        match lakesoul_ivm::distributed::split_stream_scan(ev.plan, ev.task_count) {
+            Ok(Some(variants)) => variants,
+            Ok(None) => return None,
+            Err(error) => return Some(Err(error)),
+        };
+    if variants.len() != ev.task_count {
+        return Some(datafusion::common::internal_err!(
+            "split an IVM scan over {} tasks into {} variants",
+            ev.task_count,
+            variants.len()
+        ));
+    }
+    Some(
+        DistributedLeafExec::try_new(Arc::clone(ev.plan), variants)
+            .map(|leaf| ScaleUpLeafNodeEventResponse::new(Arc::new(leaf))),
+    )
+}
+
 /// Whether `plan` reaches a leaf without crossing a stage boundary of the
 /// distributed planner.
 fn reaches_leaf_within_stage(plan: &Arc<dyn ExecutionPlan>) -> bool {
@@ -371,14 +579,13 @@ fn closes_stage(plan: &dyn ExecutionPlan) -> bool {
 /// `Partial` aggregate on the scan and its `Final` half behind a coalesce or
 /// hash shuffle — and the stage keeps its tasks.
 ///
-/// A plan-shape optimization, not a correctness mechanism: DataFusion keeps a
-/// scan whole for reasons this threshold does not reach (a source labelled
-/// compressed — LakeSoul's Parquet files — or without byte-range support,
-/// exact row statistics of at most one batch, a declared output
-/// partitioning such as a merge-on-read input's, or a `SET` of either knob
-/// after the session was created), and `input_distribution_single_task`
-/// keeps those plans correct. Only ever lowers the threshold, so a template
-/// asking for a smaller one keeps it.
+/// A plan-shape optimization, not a correctness mechanism: DataFusion can
+/// keep scans whole because a source cannot repartition, statistics fit one
+/// batch, output partitioning is fixed (as for MOR), or either knob is changed
+/// by `SET` after session creation. The lazy scan supplies legal Parquet ranges
+/// itself; `input_distribution_single_task` still protects every unsplit plan.
+/// Only ever lowers the threshold, so a template asking for a smaller one
+/// keeps it.
 fn align_repartition_file_min_size(
     config: &mut SessionConfig,
     bytes_per_partition: usize,
@@ -399,6 +606,7 @@ fn align_repartition_file_min_size(
 /// pool, and wires the LakeSoul planner, table factory and catalog into a fresh
 /// context. Object-store registries and TMPDIR-backed spill managers remain
 /// independent per session.
+#[derive(Clone)]
 pub struct LakeSoulSessionFactory {
     meta_client: crate::MetaDataClientRef,
     session_template: SessionConfig,
@@ -566,28 +774,66 @@ impl LakeSoulSessionFactory {
             .with_physical_optimizer_rule(Arc::new(
                 crate::planner::text_score_rule::TextScoreProjectionRule,
             ));
+        #[cfg(feature = "ivm")]
+        {
+            builder = builder.with_physical_optimizer_rule(Arc::new(
+                lakesoul_ivm::distributed::IvmSinkRule,
+            ));
+        }
         if let (Some(dist), Some(resolver)) = (&distributed, &resolver) {
+            // A single-worker deployment should still be able to run a
+            // federation write stage away from the coordinator. Two tasks are
+            // the minimum that keeps the producer/consumer network boundary
+            // from being elided. Only sessions that opt in to foreign writes
+            // raise the cap; other single-worker sessions keep their existing
+            // coordinator placement.
+            let write_tasks = if options.federation_writes {
+                let workers = resolver.get_urls().map(|urls| urls.len()).unwrap_or(0);
+                (workers > 0).then(|| workers.max(2))
+            } else {
+                None
+            };
             builder = builder
                 .with_distributed_worker_resolver(Arc::clone(resolver))
                 .with_distributed_metrics_collection(true)?
-                .with_distributed_desired_task_count_handler(
-                    merge_parquet_exec_single_task,
-                )
+                .with_distributed_desired_task_count_handler(merge_work_unit_single_task)
+                .with_distributed_desired_task_count_handler(lazy_scan_desired_task_count)
+                .with_distributed_desired_task_count_handler(write_task_budget)
                 .with_distributed_desired_task_count_handler(
                     input_distribution_single_task,
+                )
+                .with_distributed_scale_up_leaf_node_handler(
+                    lazy_scan_scale_up_leaf_node,
                 );
+            #[cfg(feature = "ivm")]
+            {
+                builder = builder
+                    .with_distributed_desired_task_count_handler(
+                        ivm_scan_desired_task_count,
+                    )
+                    .with_distributed_desired_task_count_handler(
+                        ivm_lookup_desired_task_count,
+                    )
+                    .with_distributed_desired_task_count_handler(
+                        ivm_sink_desired_task_count,
+                    )
+                    .with_distributed_scale_up_leaf_node_handler(
+                        ivm_scan_scale_up_leaf_node,
+                    );
+            }
             // The codec list is position-addressed on the wire, so it comes
             // from one function the workers call too; see `codec::user_codecs`.
             for codec in crate::distributed::codec::user_codecs() {
                 builder = builder.with_distributed_user_codec_arc(codec);
             }
-            // Merge-work-unit atomicity: a merge-on-read work unit (one
-            // partition's complete file set) is one `MergeParquetExec`, i.e. one
-            // child of the scan's union. The children-isolator union runs each
-            // child whole inside a single task, so a merge never sees only a
-            // subset of its versions — which would duplicate primary keys or
-            // lose the version that should win. Enabled explicitly rather than
-            // relying on the library default.
+            // Merge-work-unit atomicity: whole (range, bucket) units are
+            // packed into one metadata-only scan node per task the scan stage
+            // may get, each one child of the scan's union.
+            // The children-isolator union runs each child whole inside a
+            // single task, so a merge never sees only a subset of its versions
+            // — which would duplicate primary keys or lose the version that
+            // should win. Enabled explicitly rather than relying on the
+            // library default.
             builder = builder.with_distributed_children_isolator_unions(true)?;
             if let Some(bytes_per_partition) = dist.bytes_per_partition {
                 builder = builder.with_distributed_file_scan_config_bytes_per_partition(
@@ -595,6 +841,9 @@ impl LakeSoulSessionFactory {
                 )?;
             }
             builder = builder.with_distributed_planner();
+            if let Some(write_tasks) = write_tasks {
+                builder = builder.with_distributed_max_tasks_per_stage(write_tasks)?;
+            }
 
             // Availability policy gate in front of the distributed planner:
             // fast-fail in production, optional single-node fallback in
@@ -676,6 +925,34 @@ impl LakeSoulSessionFactory {
     }
 }
 
+/// Builds isolated refresh sessions from a LakeSoul factory.
+///
+/// The factory keeps the distributed planner, codecs and task handlers on the
+/// session, while every refresh still gets its own catalog so concurrent views
+/// can register their source views without sharing mutable state.
+#[cfg(feature = "ivm")]
+#[derive(Clone)]
+pub struct IvmRefreshSessionFactory {
+    factory: LakeSoulSessionFactory,
+}
+
+#[cfg(feature = "ivm")]
+impl IvmRefreshSessionFactory {
+    pub fn new(factory: LakeSoulSessionFactory) -> Self {
+        Self { factory }
+    }
+}
+
+#[cfg(feature = "ivm")]
+impl lakesoul_ivm::config::IvmSessionFactory for IvmRefreshSessionFactory {
+    fn create(&self) -> lakesoul_ivm::Result<SessionContext> {
+        self.factory
+            .create_session(&LakeSoulSessionOptions::default())
+            .map(|context| context.as_ref().clone())
+            .map_err(|error| rootcause::report!("create IVM refresh session: {error}"))
+    }
+}
+
 pub(crate) fn parse_warehouse(prefix: Option<&str>) -> Result<WarehouseConfig> {
     let Some(prefix) = prefix else {
         return Ok(WarehouseConfig::Local);
@@ -729,19 +1006,19 @@ fn register_warehouse_object_store(
 }
 
 /// Build a [`RuntimeEnv`] carrying the warehouse object store registered the
-/// same way a coordinator session does it.
+/// same way a coordinator session does it, and executing within `memory_pool`.
 ///
 /// Workers and coordinators must observe identical object-store configuration
 /// for encoded plans to resolve their stores on either side.
 pub fn build_worker_runtime_env(
     args: &CoreArgs,
-    memory: &ExecutionMemoryArgs,
+    memory_pool: Arc<dyn MemoryPool>,
 ) -> Result<Arc<RuntimeEnv>> {
     let warehouse = parse_warehouse(args.warehouse_prefix.as_deref())?;
     let object_store_config =
         LakeSoulIOConfigBuilder::new_with_object_store_options(args.s3_options()).build();
     let runtime = RuntimeEnvBuilder::new()
-        .with_memory_pool(memory.create_pool())
+        .with_memory_pool(memory_pool)
         .build_arc()?;
     register_warehouse_object_store(&warehouse, &object_store_config, &runtime)?;
     Ok(runtime)

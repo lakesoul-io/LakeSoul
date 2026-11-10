@@ -21,21 +21,30 @@ use datafusion::physical_plan::{
 };
 use futures::StreamExt;
 use lakesoul_io::writer::async_writer::WriteInvariants;
-use lakesoul_metadata_proto::entity::PartitionInfo;
 use object_store::ObjectStoreExt;
 
+use crate::write_mode::{ConflictMode, WriteViolation};
+
 #[derive(Clone, Debug)]
-pub(super) struct InsertOnly {
+pub(crate) struct InsertOnly {
     pub existing_keys: Arc<dyn ExecutionPlan>,
-    /// Captured before planning the existing-key scan. Publication must not rebase.
-    pub snapshot: Vec<PartitionInfo>,
     /// Range columns followed by PK columns: LakeSoul keys are partition-local.
     pub key_schema: SchemaRef,
+    /// Whether a conflicting row fails the statement or is dropped from it.
+    pub conflict_mode: ConflictMode,
+    /// Qualified table name used in the error message and the SQLSTATE mapping.
+    pub table_name: String,
 }
 
 impl InsertOnly {
     /// Validate the entire statement before opening any output file. Retain the
     /// input arrays, not copies, and stream historical keys without retaining them.
+    ///
+    /// With [`ConflictMode::Skip`] the conflicting input rows are removed from
+    /// the statement instead of failing it: the first row of a duplicate key
+    /// inside the statement wins, and rows whose key is already committed are
+    /// dropped. The returned streams then contain only the rows to write, so the
+    /// statement's row count is the number of rows actually inserted.
     pub async fn validate(
         &self,
         input: Arc<dyn ExecutionPlan>,
@@ -76,60 +85,121 @@ impl InsertOnly {
             reservation.try_grow(
                 batch.get_array_memory_size() + 2 * std::mem::size_of::<RecordBatch>(),
             )?;
-            let rows = converter.convert_columns(&self.key_columns(&batch)?)?;
-            reservation.try_grow(rows.size())?;
-            for row in rows.iter() {
-                let bytes = row.as_ref();
-                // Include hash-table slots as well as the separately owned key.
-                let size = bytes.len() + 2 * std::mem::size_of::<Vec<u8>>() + 16;
-                reservation.try_grow(size)?;
-                key_bytes += size;
-                if !keys.insert(bytes.to_vec()) {
-                    return Err(DataFusionError::Execution(
-                        "INSERT contains a duplicate primary key; use INSERT OR REPLACE for Upsert"
-                            .into(),
-                    ));
-                }
-            }
-            reservation.shrink(rows.size());
             batches[partition].push(batch);
         }
+        // One mask per buffered batch: `true` keeps the row. A rejected conflict
+        // is only ever observed as an error, so building masks first costs one
+        // pass over the buffered rows in either mode.
+        let mut keep: Vec<Vec<Vec<bool>>> = batches
+            .iter()
+            .map(|batches| {
+                batches
+                    .iter()
+                    .map(|batch| vec![true; batch.num_rows()])
+                    .collect()
+            })
+            .collect();
+        for (partition, batches) in batches.iter().enumerate() {
+            for (batch_index, batch) in batches.iter().enumerate() {
+                let rows = converter.convert_columns(&self.key_columns(batch)?)?;
+                reservation.try_grow(rows.size())?;
+                for (row_index, row) in rows.iter().enumerate() {
+                    let bytes = row.as_ref();
+                    // Include hash-table slots as well as the separately owned key.
+                    let size = bytes.len() + 2 * std::mem::size_of::<Vec<u8>>() + 16;
+                    reservation.try_grow(size)?;
+                    key_bytes += size;
+                    if !keys.insert(bytes.to_vec()) {
+                        match self.conflict_mode {
+                            ConflictMode::Reject => {
+                                return Err(DataFusionError::External(Box::new(
+                                    WriteViolation::DuplicateKey {
+                                        table: self.table_name.clone(),
+                                    },
+                                )));
+                            }
+                            ConflictMode::Skip => {
+                                keep[partition][batch_index][row_index] = false;
+                            }
+                        }
+                    }
+                }
+                reservation.shrink(rows.size());
+            }
+        }
         if !keys.is_empty() {
+            // Only the intersection matters: rows of the statement whose key is
+            // already committed are the ones skipped or rejected.
+            let mut conflicting = HashSet::<Vec<u8>>::new();
             let mut existing = execute_stream(self.existing_keys.clone(), context)?;
             while let Some(batch) = existing.next().await.transpose()? {
                 let rows = converter.convert_columns(&self.key_columns(&batch)?)?;
                 reservation.try_grow(rows.size())?;
-                if rows.iter().any(|row| keys.contains::<[u8]>(row.as_ref())) {
-                    return Err(DataFusionError::Execution(
-                        "INSERT conflicts with an existing primary key; use INSERT OR REPLACE for Upsert"
-                            .into(),
-                    ));
+                for row in rows.iter() {
+                    if !keys.contains::<[u8]>(row.as_ref()) {
+                        continue;
+                    }
+                    match self.conflict_mode {
+                        ConflictMode::Reject => {
+                            return Err(DataFusionError::External(Box::new(
+                                WriteViolation::ExistingKey {
+                                    table: self.table_name.clone(),
+                                },
+                            )));
+                        }
+                        ConflictMode::Skip => {
+                            conflicting.insert(row.as_ref().to_vec());
+                        }
+                    }
                 }
                 reservation.shrink(rows.size());
             }
+            if !conflicting.is_empty() {
+                for (partition, batches) in batches.iter().enumerate() {
+                    for (batch_index, batch) in batches.iter().enumerate() {
+                        let rows =
+                            converter.convert_columns(&self.key_columns(batch)?)?;
+                        for (row_index, row) in rows.iter().enumerate() {
+                            if conflicting.contains::<[u8]>(row.as_ref()) {
+                                keep[partition][batch_index][row_index] = false;
+                            }
+                        }
+                    }
+                }
+            }
+            drop(conflicting);
         }
         drop(keys);
         reservation.shrink(key_bytes);
         // Retain each physical hash bucket and share the reservation until all
         // buffered streams are dropped. No spilling: limits fail before IO.
         let reservation = Arc::new(reservation);
-        Ok(batches
-            .into_iter()
-            .map(|batches| {
-                let stream = futures::stream::unfold(
-                    (batches.into_iter(), reservation.clone()),
-                    |(mut batches, reservation)| async move {
-                        batches
-                            .next()
-                            .map(|batch| (Ok(batch), (batches, reservation)))
-                    },
-                );
+        let mut streams = Vec::with_capacity(partitions);
+        for (batches, keep) in batches.into_iter().zip(keep) {
+            let mut kept = Vec::with_capacity(batches.len());
+            for (batch, keep) in batches.into_iter().zip(keep) {
+                if keep.iter().all(|keep| *keep) {
+                    kept.push(batch);
+                } else if keep.iter().any(|keep| *keep) {
+                    let mask = arrow::array::BooleanArray::from(keep);
+                    kept.push(arrow::compute::filter_record_batch(&batch, &mask)?);
+                }
+            }
+            let stream = futures::stream::unfold(
+                (kept.into_iter(), reservation.clone()),
+                |(mut batches, reservation)| async move {
+                    batches
+                        .next()
+                        .map(|batch| (Ok(batch), (batches, reservation)))
+                },
+            );
+            streams.push(
                 Box::pin(RecordBatchStreamAdapter::new(schema.clone(), stream))
-                    as SendableRecordBatchStream
-            })
-            .collect())
+                    as SendableRecordBatchStream,
+            );
+        }
+        Ok(streams)
     }
-
     fn key_columns(&self, batch: &RecordBatch) -> Result<Vec<arrow::array::ArrayRef>> {
         self.key_schema
             .fields()

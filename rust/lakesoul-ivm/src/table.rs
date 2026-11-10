@@ -16,12 +16,13 @@
 //! the join key while merging on the full row identity.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use arrow::compute::concat_batches;
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
 use arrow_array::Array;
-use arrow_schema::{Field, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::error::DataFusionError;
 use datafusion::prelude::Expr;
 use lakesoul_common::ser::arrow_java::{
@@ -39,7 +40,9 @@ use lakesoul_io::{
 };
 use lakesoul_metadata::{MetaDataClient, transfusion::DataFileInfo};
 use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo, TableInfo};
+use serde::{Deserialize, Serialize};
 
+use crate::config::IvmOptions;
 use crate::error::Result;
 use crate::metadata::PartitionVersion;
 use crate::provider::IvmTableProvider;
@@ -57,59 +60,164 @@ pub(crate) const MAX_STATE_APPEND_ROWS: usize = 262_144;
 /// whole append in memory.
 pub(crate) const MAX_WRITE_FILE_SIZE: u64 = 64 * 1024 * 1024;
 
+/// Rows one append coalesces before handing a batch to the writer.
+///
+/// A refresh can produce one-row batches: a union over per-file delta
+/// partitions, or a sorted delete/insert stream.  Writing each batch as its
+/// own Vortex block leaves a healthy MV/state with hundreds of thousands of
+/// tiny batches after a single window, and every later key lookup then pays
+/// the block overhead.  Coalescing at the sink keeps the write path's batch
+/// granularity independent of the upstream plan's partitioning.
+pub(crate) const APPEND_COALESCE_ROWS: usize = 8192;
+
+/// Coalesce small refresh batches into writer-sized batches.
+struct BatchCoalescer {
+    schema: SchemaRef,
+    target_rows: usize,
+    pending: Vec<RecordBatch>,
+    rows: usize,
+}
+
+impl BatchCoalescer {
+    fn new(schema: SchemaRef, target_rows: usize) -> Self {
+        Self {
+            schema,
+            target_rows: target_rows.max(1),
+            pending: Vec::new(),
+            rows: 0,
+        }
+    }
+
+    /// Add one batch, returning a coalesced batch once the target is reached.
+    fn push(&mut self, batch: RecordBatch) -> crate::error::Result<Option<RecordBatch>> {
+        if batch.num_rows() == 0 {
+            return Ok(None);
+        }
+        self.rows += batch.num_rows();
+        self.pending.push(batch);
+        if self.rows < self.target_rows {
+            return Ok(None);
+        }
+        self.take().map(Some)
+    }
+
+    /// Flush the remaining rows at end of stream.
+    fn finish(&mut self) -> crate::error::Result<Option<RecordBatch>> {
+        if self.pending.is_empty() {
+            return Ok(None);
+        }
+        self.take().map(Some)
+    }
+
+    fn take(&mut self) -> crate::error::Result<RecordBatch> {
+        let pending = std::mem::take(&mut self.pending);
+        self.rows = 0;
+        match pending.len() {
+            0 => Err(rootcause::report!(
+                "coalesce refresh batches: empty pending"
+            )),
+            1 => Ok(pending.into_iter().next().expect("one pending batch")),
+            _ => concat_batches(&self.schema, &pending)
+                .map_err(|error| rootcause::report!("coalesce refresh batches: {error}")),
+        }
+    }
+}
+
+/// Wrap a refresh output stream with [`BatchCoalescer`].
+///
+/// The stream keeps the input order; only batch boundaries change.
+fn coalesce_batch_stream<S>(
+    stream: S,
+    table: IvmTable,
+    target_rows: usize,
+) -> impl futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send
+where
+    S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
+{
+    use futures::StreamExt;
+    let coalescer = BatchCoalescer::new(table.schema.clone(), target_rows);
+    futures::stream::try_unfold(
+        (stream, coalescer, table),
+        |(mut stream, mut coalescer, table)| async move {
+            loop {
+                match stream.next().await {
+                    Some(Ok(batch)) => {
+                        // Cast before concatenating: upstream batches may use
+                        // Utf8View while the table schema stores Utf8.
+                        let batch = table.cast_batch(batch).map_err(|error| {
+                            DataFusionError::Execution(format!(
+                                "coalesce refresh batches: {error:?}"
+                            ))
+                        })?;
+                        let next = coalescer.push(batch).map_err(|error| {
+                            DataFusionError::Execution(format!(
+                                "coalesce refresh batches: {error:?}"
+                            ))
+                        })?;
+                        if let Some(batch) = next {
+                            return Ok(Some((batch, (stream, coalescer, table))));
+                        }
+                    }
+                    Some(Err(error)) => return Err(error),
+                    None => {
+                        let next = coalescer.finish().map_err(|error| {
+                            DataFusionError::Execution(format!(
+                                "coalesce refresh batches: {error:?}"
+                            ))
+                        })?;
+                        return Ok(next.map(|batch| (batch, (stream, coalescer, table))));
+                    }
+                }
+            }
+        },
+    )
+}
+
 /// The in-memory multipart buffer used by the LakeSoul writer.
 pub(crate) const WRITE_MEMORY_BUFFER: usize = 8 * 1024 * 1024;
 
-/// Apply IO threads to a reader.  Readers stream batches and never spill, so
-/// they do not get a private memory pool: a pool per reader multiplied the
-/// refresh's memory by the number of open buckets.  An explicit
-/// `LAKESOUL_IVM_READ_POOL_SIZE` still opts into the old bounded-reader
-/// behavior for deployments that rely on it.
+/// Readers stream batches and never spill, so they do not get a private
+/// memory pool: a pool per reader multiplied the refresh's memory by the
+/// number of open buckets.  The caller's DataFusion memory pool is the only
+/// budget; the reader thread count is likewise owned by the IO layer.
 fn with_reader_io(builder: LakeSoulIOConfigBuilder) -> LakeSoulIOConfigBuilder {
-    let threads = std::env::var("LAKESOUL_IVM_IO_THREADS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(4);
-    let builder = builder.with_thread_num(threads);
-    let Ok(size) = std::env::var("LAKESOUL_IVM_READ_POOL_SIZE") else {
-        return builder;
-    };
-    let directory = std::env::var("LAKESOUL_IVM_SPILL_DIR")
-        .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
-    let _ = std::fs::create_dir_all(&directory);
-    tracing::debug!(size, threads, %directory, "IVM reader spill pool configured");
+    with_object_store_options(builder)
+}
+
+/// Attach the object-store options copied from the caller's session.
+fn with_object_store_options(
+    mut builder: LakeSoulIOConfigBuilder,
+) -> LakeSoulIOConfigBuilder {
+    for (key, value) in crate::config::object_store_options() {
+        builder = builder.with_object_store_option(key, value);
+    }
     builder
-        .with_option(OPTION_KEY_POOL_SIZE, size)
-        .with_option(OPTION_KEY_POOL_DIR, directory)
 }
 
 /// Give a LakeSoul writer its own bounded memory pool and spill directory.
 /// DataFusion's session limit does not automatically apply to the IO layer:
-/// its sort and merge operators create a separate runtime.
-fn with_spill_pool(
+/// its sort and merge operators create a separate runtime.  Both values come
+/// from [`IvmOptions`]; `None` keeps the historical `500mb` pool under the
+/// default spill directory.
+fn with_write_pool(
     builder: LakeSoulIOConfigBuilder,
-    size_env: &str,
-    default_size: &str,
+    options: &IvmOptions,
 ) -> LakeSoulIOConfigBuilder {
-    let size = std::env::var(size_env).unwrap_or_else(|_| default_size.to_string());
-    let threads = std::env::var("LAKESOUL_IVM_IO_THREADS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(4);
-    let directory = std::env::var("LAKESOUL_IVM_SPILL_DIR")
-        .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
+    let size = options
+        .write_pool_size
+        .clone()
+        .unwrap_or_else(|| "500mb".to_string());
+    let directory = options
+        .write_pool_dir
+        .clone()
+        .unwrap_or_else(crate::config::default_spill_dir);
     let _ = std::fs::create_dir_all(&directory);
-    tracing::debug!(
-        size_env,
-        size,
-        threads,
-        %directory,
-        "IVM IO spill pool configured"
-    );
-    builder
-        .with_thread_num(threads)
-        .with_option(OPTION_KEY_POOL_SIZE, size)
-        .with_option(OPTION_KEY_POOL_DIR, directory)
+    tracing::debug!(size, %directory, "IVM IO spill pool configured");
+    with_object_store_options(
+        builder
+            .with_option(OPTION_KEY_POOL_SIZE, size)
+            .with_option(OPTION_KEY_POOL_DIR, directory),
+    )
 }
 
 /// The largest affected-key set a key-filtered state read resolves through the
@@ -131,22 +239,17 @@ pub(crate) const MAX_STATE_KEY_CANDIDATES: usize = 1_000_000;
 /// Parquet stays off by default: a page holds tens of thousands of rows, so at
 /// 0.1%–1% almost every page contains a key and the index cannot skip data —
 /// measured slower than the plain scan (639–674 ms vs 367–422 ms at 10M/0.01%).
-/// `LAKESOUL_IVM_STATE_INDEX=1` forces it on for any format (clustered key sets
-/// and point lookups can still benefit on Parquet).  The index needs the local
+/// `StateIndexMode::Force` enables it for any format (clustered key sets and
+/// point lookups can still benefit on Parquet).  The index needs the local
 /// disk cache (`LAKESOUL_CACHE`); without it the read falls back to a scan.
 fn with_state_key_lookup(
     builder: lakesoul_io::config::LakeSoulIOConfigBuilder,
     file_format: PhysicalFormat,
 ) -> lakesoul_io::config::LakeSoulIOConfigBuilder {
-    let configured = std::env::var("LAKESOUL_IVM_STATE_INDEX").ok();
-    if matches!(
-        configured.as_deref(),
-        Some("0") | Some("false") | Some("off")
-    ) {
-        return builder;
-    }
-    let vortex = !matches!(file_format, PhysicalFormat::Parquet);
-    if !vortex && configured.is_none() {
+    if !crate::config::options()
+        .state_index
+        .enabled_for(file_format)
+    {
         return builder;
     }
     builder
@@ -159,18 +262,10 @@ fn with_state_key_lookup(
 /// Internal state and derived steps are read by point lookups far more often
 /// than by full scans, so they use Vortex even when the user target/source
 /// tables are Parquet.  Vortex's small row blocks let the row-level primary
-/// key locator skip most of a file; `LAKESOUL_IVM_INTERNAL_FILE_FORMAT` can
+/// key locator skip most of a file; [`IvmOptions::internal_file_format`] can
 /// still select parquet or vortex-compact for experiments.
 pub fn internal_file_format() -> PhysicalFormat {
-    match std::env::var("LAKESOUL_IVM_INTERNAL_FILE_FORMAT")
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "parquet" => PhysicalFormat::Parquet,
-        "vortex-compact" | "vortex_compact" => PhysicalFormat::VortexCompact,
-        _ => PhysicalFormat::Vortex,
-    }
+    crate::config::options().internal_file_format
 }
 
 /// The format of keyed auxiliary state tables.  IVM keeps these on Vortex as
@@ -205,6 +300,11 @@ pub struct IvmTable {
     /// not contain them and reads inject their values from the
     /// `partition_desc`.
     pub range_partition_columns: Vec<String>,
+    /// Internal payload columns of a derived step: real source range
+    /// partition columns materialized only so a downstream state can mirror
+    /// the source partitioning.  They are hidden from an implicit `SELECT *`
+    /// over the step and never part of the business output.
+    pub internal_columns: Vec<String>,
     /// The columns the writer buckets on; empty means the merge key.
     pub bucket_columns: Vec<String>,
     /// The number of hash buckets.
@@ -222,7 +322,7 @@ pub struct IvmTable {
 }
 
 /// The data files of one storage partition of a table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartitionFiles {
     /// The `partition_desc` of the group (the LakeSoul default `-5` for an
     /// unpartitioned group).
@@ -325,6 +425,9 @@ pub struct IvmTableOptions {
     /// The range partition columns of the table; they must be part of the
     /// schema and are stripped from the data files.
     pub range_partition_columns: Vec<String>,
+    /// Internal payload columns hidden from an implicit `SELECT *` over the
+    /// table; persisted as the `lakesoul.ivm.internal_columns` property.
+    pub internal_columns: Vec<String>,
     /// The bucket columns; must be a prefix of `primary_keys`.
     pub bucket_columns: Vec<String>,
     /// The number of hash buckets.
@@ -332,8 +435,8 @@ pub struct IvmTableOptions {
     /// The CDC change column of the table, persisted as the
     /// `lakesoul_cdc_change_column` table property.
     pub cdc_column: Option<String>,
-    /// The physical file format of the table (parquet by default; vortex
-    /// enables the row-level primary-key locator).
+    /// The physical file format of the table (vortex by default; parquet and
+    /// vortex-compact remain available as explicit experiments).
     pub file_format: PhysicalFormat,
     /// Whether an unsupported statement shape falls back to a full recompute
     /// (Tier-2) instead of being rejected.
@@ -354,10 +457,11 @@ impl IvmTableOptions {
             schema,
             primary_keys: Vec::new(),
             range_partition_columns: Vec::new(),
+            internal_columns: Vec::new(),
             bucket_columns: Vec::new(),
             hash_bucket_num: "4".to_string(),
             cdc_column: None,
-            file_format: PhysicalFormat::Parquet,
+            file_format: internal_file_format(),
             allow_fallback: true,
         }
     }
@@ -374,6 +478,12 @@ impl IvmTableOptions {
         range_partition_columns: Vec<String>,
     ) -> Self {
         self.range_partition_columns = range_partition_columns;
+        self
+    }
+
+    /// Set the internal payload columns hidden from an implicit `SELECT *`.
+    pub fn with_internal_columns(mut self, internal_columns: Vec<String>) -> Self {
+        self.internal_columns = internal_columns;
         self
     }
 
@@ -395,7 +505,8 @@ impl IvmTableOptions {
         self
     }
 
-    /// Set the physical file format (parquet by default).
+    /// Set the physical file format (vortex by default; parquet and
+    /// vortex-compact remain explicit experiments).
     pub fn with_file_format(mut self, file_format: PhysicalFormat) -> Self {
         self.file_format = file_format;
         self
@@ -491,6 +602,10 @@ pub async fn create_ivm_table(
     }
     properties["lakesoul.ivm.allow_fallback"] =
         serde_json::Value::Bool(options.allow_fallback);
+    if !options.internal_columns.is_empty() {
+        properties["lakesoul.ivm.internal_columns"] =
+            serde_json::Value::String(options.internal_columns.join(","));
+    }
     if let Some(cdc_column) = &options.cdc_column {
         if options.schema.field_with_name(cdc_column).is_err() {
             return Err(rootcause::report!(
@@ -542,6 +657,7 @@ pub async fn create_ivm_table(
         schema: options.schema,
         primary_keys: options.primary_keys,
         range_partition_columns: options.range_partition_columns,
+        internal_columns: options.internal_columns,
         bucket_columns: options.bucket_columns,
         hash_bucket_num: options.hash_bucket_num,
         cdc_column: options.cdc_column,
@@ -599,6 +715,17 @@ impl IvmTable {
                 ));
             }
         }
+        let internal_columns = properties
+            .get("lakesoul.ivm.internal_columns")
+            .and_then(|value| value.as_str())
+            .map(|columns| {
+                columns
+                    .split(',')
+                    .filter(|column| !column.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let bucket_columns = properties
             .get("lakesoul.ivm.bucket_columns")
             .and_then(|value| value.as_str())
@@ -640,6 +767,7 @@ impl IvmTable {
             schema: Arc::new(schema),
             primary_keys,
             range_partition_columns,
+            internal_columns,
             bucket_columns,
             hash_bucket_num,
             cdc_column,
@@ -665,7 +793,8 @@ impl IvmTable {
     }
 
     fn writer_builder(&self) -> LakeSoulIOConfigBuilder {
-        let mut builder = with_spill_pool(
+        let options = crate::config::options();
+        let mut builder = with_write_pool(
             LakeSoulIOConfig::builder()
                 .with_prefix(self.table_path.clone())
                 .with_schema(self.schema.clone())
@@ -675,8 +804,7 @@ impl IvmTable {
                 .with_physical_format(self.file_format)
                 .with_max_file_size(MAX_WRITE_FILE_SIZE)
                 .with_memory_buffer_capacity(WRITE_MEMORY_BUFFER),
-            "LAKESOUL_IVM_WRITE_POOL_SIZE",
-            "500mb",
+            &options,
         );
         if !self.range_partition_columns.is_empty() {
             builder = builder.with_range_partitions(self.range_partition_columns.clone());
@@ -690,20 +818,92 @@ impl IvmTable {
             self.file_format,
             PhysicalFormat::Vortex | PhysicalFormat::VortexCompact
         ) {
-            if let Ok(value) = std::env::var("LAKESOUL_IVM_VORTEX_ROW_BLOCK_SIZE") {
-                builder = builder.with_option(OPTION_KEY_VORTEX_ROW_BLOCK_SIZE, value);
-            }
-            if let Ok(value) = std::env::var("LAKESOUL_IVM_VORTEX_DATA_BLOCK_BYTES") {
-                builder =
-                    builder.with_option(OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES, value);
-            }
+            // IVM keeps the small random-access layout for its internal
+            // tables; the generic Vortex writer default is 8192 / 1 MiB.
+            let row_block_size =
+                options.vortex_row_block_size.as_deref().unwrap_or("1024");
+            builder =
+                builder.with_option(OPTION_KEY_VORTEX_ROW_BLOCK_SIZE, row_block_size);
+            let data_block_bytes = options
+                .vortex_data_block_bytes
+                .as_deref()
+                .unwrap_or("131072");
+            builder = builder
+                .with_option(OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES, data_block_bytes);
         }
         builder
+    }
+
+    /// Add the nullable `__ivm_epoch` bookkeeping column to the table's
+    /// schema metadata when it is missing.  Existing data files do not carry
+    /// the column; the caller must rebuild so future rows write an epoch.
+    pub(crate) async fn ensure_epoch_column(
+        &self,
+        client: &MetaDataClient,
+    ) -> Result<Option<Self>> {
+        if self.schema.field_with_name(IVM_EPOCH_COLUMN).is_ok() {
+            return Ok(None);
+        }
+        let mut fields = self.schema.fields().to_vec();
+        fields.push(Arc::new(Field::new(
+            IVM_EPOCH_COLUMN,
+            DataType::Int64,
+            true,
+        )));
+        let schema = Arc::new(Schema::new_with_metadata(
+            fields,
+            self.schema.metadata().clone(),
+        ));
+        client
+            .update_table_schema(&self.table_id, &schema_to_metadata_str(&schema))
+            .await?;
+        let mut updated = self.clone();
+        updated.schema = schema;
+        Ok(Some(updated))
     }
 
     /// Create one rolling writer for a refresh/compaction output.
     pub(crate) async fn writer(&self) -> Result<SendableWriter> {
         create_writer_with_io_config(self.writer_builder().build()).await
+    }
+
+    /// A clone of this table with a projected schema, for an auxiliary state
+    /// that only needs the primary key, join keys, change marker and range
+    /// partition columns.  Reads through the clone push the projection into the
+    /// native reader instead of materializing every source column.
+    pub(crate) fn projected_state_source(&self, extra: &[String]) -> Result<Self> {
+        let mut names = std::collections::HashSet::new();
+        for name in self
+            .primary_keys
+            .iter()
+            .chain(extra)
+            .chain(self.range_partition_columns.iter())
+            .chain(self.bucket_columns.iter())
+        {
+            names.insert(name.clone());
+        }
+        if let Some(column) = &self.cdc_column {
+            names.insert(column.clone());
+        }
+        for column in [IVM_ROW_KINDS_COLUMN, IVM_EPOCH_COLUMN] {
+            if self.schema.field_with_name(column).is_ok() {
+                names.insert(column.to_string());
+            }
+        }
+        let fields = self
+            .schema
+            .fields()
+            .iter()
+            .filter(|field| names.contains(field.name().as_str()))
+            .map(|field| Arc::new(field.as_ref().clone()))
+            .collect::<Vec<_>>();
+        let schema = Arc::new(Schema::new(fields));
+        let mut projected = self.clone();
+        projected.schema = schema;
+        projected
+            .internal_columns
+            .retain(|column| names.contains(column));
+        Ok(projected)
     }
 
     /// Convert writer outputs to metadata file entries and record metrics.
@@ -791,12 +991,200 @@ impl IvmTable {
         client: &MetaDataClient,
         files: Vec<DataFileInfo>,
     ) -> Result<Vec<String>> {
-        if files.is_empty() {
+        #[cfg(debug_assertions)]
+        if crate::runtime::recovery_target_active(&self.table_id)
+            && !crate::runtime::target_writes_suppressed(&self.table_id)
+        {
+            panic!(
+                "target {} commit escaped the recovery suppression",
+                self.table_id
+            );
+        }
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
             return Ok(Vec::new());
         }
-        let commit_ids = client
-            .commit_data_files(&self.table_name, &self.namespace, files)
+        let journal =
+            crate::runtime::commit_plan_before_commit(&self.table_id, &files).await?;
+        let commit_ids = self.commit_files_inner(client, files).await;
+        if let Ok(ref commit_ids) = commit_ids {
+            crate::runtime::commit_plan_after_commit(journal, commit_ids).await?;
+        }
+        commit_ids
+    }
+
+    async fn commit_files_inner(
+        &self,
+        client: &MetaDataClient,
+        files: Vec<DataFileInfo>,
+    ) -> Result<Vec<String>> {
+        let context = crate::runtime::TARGET_WRITE
+            .try_with(std::sync::Arc::clone)
+            .ok();
+        let Some(context) = context else {
+            if files.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Ok(client
+                .commit_data_files(&self.table_name, &self.namespace, files)
+                .await?);
+        };
+        let (
+            view_id,
+            target_table_id,
+            atomic,
+            committed,
+            skip_target,
+            internal,
+            owned_partitions,
+            begin_partitions,
+            metadata,
+        ) = {
+            let guard = context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            (
+                guard.view_id.clone(),
+                guard.target_table_id.clone(),
+                guard.atomic,
+                guard.committed,
+                guard.skip_target,
+                guard.internal,
+                guard.owned_partitions.clone(),
+                guard.begin_partitions.clone(),
+                guard.metadata.clone(),
+            )
+        };
+        if skip_target && target_table_id == self.table_id {
+            // The MV is already published for this window; the recovery
+            // replay only rebuilds the auxiliary state.
+            return Ok(Vec::new());
+        }
+        if target_table_id != self.table_id {
+            if files.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Ok(client
+                .commit_data_files(&self.table_name, &self.namespace, files)
+                .await?);
+        }
+
+        let written = files
+            .iter()
+            .map(|file| file.partition_desc.clone())
+            .collect::<std::collections::HashSet<_>>();
+        // An incremental refresh with no output does not touch the target.
+        if !atomic && written.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Every target partition this refresh reads or writes is in scope:
+        // owned partitions may be replaced by a rebuild, and written
+        // partitions are about to be committed.  Partitions owned by another
+        // writer are not touched.
+        let current = latest_partition_info(client, &self.table_id).await?;
+        if !internal && !partitions_unchanged(&begin_partitions, &current) {
+            return Err(rootcause::report!(
+                "target table {} changed while the IVM refresh was running: \
+                 another writer committed a partition; retry after it stops",
+                self.table_name
+            ));
+        }
+        // Internal derived/state tables keep the historical whole-table
+        // replacement; only the user-visible target tracks partition
+        // ownership.
+        let scope_partitions = if internal {
+            current
+        } else {
+            current
+                .iter()
+                .filter(|partition| {
+                    owned_partitions.contains(&partition.partition_desc)
+                        || written.contains(&partition.partition_desc)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        if !internal {
+            crate::runtime::TargetWrite::check_external_commits(
+                client,
+                &metadata,
+                &view_id,
+                &target_table_id,
+                &scope_partitions,
+            )
             .await?;
+        }
+
+        let commit_ids = if atomic && !committed {
+            let empty_partitions = scope_partitions
+                .iter()
+                .filter(|partition| {
+                    (internal || owned_partitions.contains(&partition.partition_desc))
+                        && !written.contains(&partition.partition_desc)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            client
+                .commit_update_parts(
+                    &self.table_name,
+                    &self.namespace,
+                    files,
+                    scope_partitions,
+                    empty_partitions,
+                )
+                .await?
+        } else if files.is_empty() {
+            Vec::new()
+        } else {
+            client
+                .commit_data_files(&self.table_name, &self.namespace, files)
+                .await?
+        };
+        if !commit_ids.is_empty() {
+            metadata.record_view_commits(&view_id, &commit_ids).await?;
+        }
+
+        // The first commit of a rebuild replaces the owned set (partitions
+        // that produced no rows were emptied above); later commits add to it.
+        let mut new_owned = if atomic && !committed {
+            std::collections::HashSet::new()
+        } else {
+            owned_partitions
+        };
+        new_owned.extend(written.iter().cloned());
+        if !internal {
+            if atomic && !committed {
+                metadata
+                    .replace_view_partitions(
+                        &view_id,
+                        &new_owned.iter().cloned().collect::<Vec<_>>(),
+                    )
+                    .await?;
+            } else {
+                metadata
+                    .add_view_partitions(
+                        &view_id,
+                        &written.iter().cloned().collect::<Vec<_>>(),
+                    )
+                    .await?;
+            }
+        }
+        let after = latest_partition_info(client, &self.table_id).await?;
+        {
+            let mut guard = context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.committed = true;
+            guard.owned_partitions = new_owned.clone();
+            guard.begin_partitions = if internal {
+                after
+            } else {
+                after
+                    .into_iter()
+                    .filter(|partition| new_owned.contains(&partition.partition_desc))
+                    .collect()
+            };
+        }
         Ok(commit_ids)
     }
 
@@ -811,8 +1199,45 @@ impl IvmTable {
         client: &MetaDataClient,
         batches: Vec<RecordBatch>,
     ) -> Result<Vec<String>> {
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
+            return Ok(Vec::new());
+        }
         let files = self.write_batches(batches).await?;
         self.commit_files(client, files).await
+    }
+
+    /// Publish one refresh output to a state mirror and the target.
+    ///
+    /// Both writers run concurrently, then the mirror commits before the
+    /// target so the target remains the last write of the refresh.
+    pub(crate) async fn append_batches_pair(
+        &self,
+        client: &MetaDataClient,
+        batches: Vec<RecordBatch>,
+        other: &IvmTable,
+        other_batches: Vec<RecordBatch>,
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        let mine_suppressed = crate::runtime::target_writes_suppressed(&self.table_id);
+        let other_suppressed = crate::runtime::target_writes_suppressed(&other.table_id);
+        if mine_suppressed && other_suppressed {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        if mine_suppressed {
+            let other_ids = other.append_batches(client, other_batches).await?;
+            return Ok((Vec::new(), other_ids));
+        }
+        if other_suppressed {
+            let ids = self.append_batches(client, batches).await?;
+            return Ok((ids, Vec::new()));
+        }
+        let (files, other_files) = futures::future::try_join(
+            self.write_batches(batches),
+            other.write_batches(other_batches),
+        )
+        .await?;
+        let other_ids = other.commit_files(client, other_files).await?;
+        let ids = self.commit_files(client, files).await?;
+        Ok((ids, other_ids))
     }
 
     /// Publish a refresh output stream without collecting the whole result.
@@ -823,12 +1248,20 @@ impl IvmTable {
     pub async fn append_stream<S>(
         &self,
         client: &MetaDataClient,
-        mut stream: S,
+        stream: S,
     ) -> Result<Vec<String>>
     where
         S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
     {
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
+            return Ok(Vec::new());
+        }
         use futures::StreamExt;
+        let mut stream = Box::pin(coalesce_batch_stream(
+            stream,
+            self.clone(),
+            APPEND_COALESCE_ROWS,
+        ));
         let mut writer = self.writer().await?;
         let mut rows = 0u64;
         while let Some(batch) = stream.next().await {
@@ -839,11 +1272,82 @@ impl IvmTable {
             }
             let batch = self.cast_batch(batch)?;
             rows += batch.num_rows() as u64;
+            let started = Instant::now();
             writer.write_record_batch(batch).await?;
+            crate::observability::add_write_time(started.elapsed());
         }
+        let started = Instant::now();
         let outputs = writer.flush_and_close().await?;
+        crate::observability::add_write_time(started.elapsed());
         let files = self.output_files(outputs, rows);
         self.commit_files(client, files).await
+    }
+
+    /// Publish one refresh output stream to this table and a mirror table.
+    ///
+    /// A top-k refresh writes the same delete/insert frame to its MV and to
+    /// the mirror state.  Pull the source stream once, coalesce it once, and
+    /// hand each batch to both writers; cloning a `RecordBatch` only clones
+    /// its `Arc` buffers.  Memory stays at one writer batch instead of the
+    /// whole result set.
+    pub(crate) async fn append_stream_pair<S>(
+        &self,
+        client: &MetaDataClient,
+        stream: S,
+        other: &IvmTable,
+    ) -> Result<(Vec<String>, Vec<String>)>
+    where
+        S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
+    {
+        let mine_suppressed = crate::runtime::target_writes_suppressed(&self.table_id);
+        let other_suppressed = crate::runtime::target_writes_suppressed(&other.table_id);
+        if mine_suppressed && other_suppressed {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        if mine_suppressed {
+            let other_ids = other.append_stream(client, stream).await?;
+            return Ok((Vec::new(), other_ids));
+        }
+        if other_suppressed {
+            let ids = self.append_stream(client, stream).await?;
+            return Ok((ids, Vec::new()));
+        }
+        use futures::StreamExt;
+        let mut stream = Box::pin(coalesce_batch_stream(
+            stream,
+            self.clone(),
+            APPEND_COALESCE_ROWS,
+        ));
+        let mut writer = self.writer().await?;
+        let mut other_writer = other.writer().await?;
+        let mut rows = 0u64;
+        while let Some(batch) = stream.next().await {
+            let batch = batch
+                .map_err(|error| rootcause::report!("refresh output batch: {error}"))?;
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            let mine = self.cast_batch(batch.clone())?;
+            let theirs = other.cast_batch(batch)?;
+            rows += mine.num_rows() as u64;
+            let started = Instant::now();
+            writer.write_record_batch(mine).await?;
+            crate::observability::add_write_time(started.elapsed());
+            let started = Instant::now();
+            other_writer.write_record_batch(theirs).await?;
+            crate::observability::add_write_time(started.elapsed());
+        }
+        let started = Instant::now();
+        let outputs = writer.flush_and_close().await?;
+        let other_outputs = other_writer.flush_and_close().await?;
+        crate::observability::add_write_time(started.elapsed());
+        let files = self.output_files(outputs, rows);
+        let other_files = other.output_files(other_outputs, rows);
+        // The target is the last write of a refresh: commit its mirror first
+        // so a persisted target plan always covers every state write.
+        let other_ids = other.commit_files(client, other_files).await?;
+        let ids = self.commit_files(client, files).await?;
+        Ok((ids, other_ids))
     }
 
     /// Publish a stream that is sorted by the table's primary keys, keeping
@@ -857,15 +1361,23 @@ impl IvmTable {
     pub(crate) async fn append_stream_by_key<S>(
         &self,
         client: &MetaDataClient,
-        mut stream: S,
+        stream: S,
     ) -> Result<Vec<String>>
     where
         S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
     {
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
+            return Ok(Vec::new());
+        }
         use futures::StreamExt;
         if self.primary_keys.is_empty() {
             return self.append_stream(client, stream).await;
         }
+        let mut stream = Box::pin(coalesce_batch_stream(
+            stream,
+            self.clone(),
+            APPEND_COALESCE_ROWS,
+        ));
         let key_indices = self
             .primary_keys
             .iter()
@@ -907,7 +1419,9 @@ impl IvmTable {
                             |error| rootcause::report!("merge key batch: {error}"),
                         )?
                     } else {
+                        let started = Instant::now();
                         writer.write_record_batch(previous).await?;
+                        crate::observability::add_write_time(started.elapsed());
                         batch
                     }
                 }
@@ -915,16 +1429,22 @@ impl IvmTable {
             };
             let last_start = last_key_group_start(&converter, &batch, &key_indices)?;
             if last_start > 0 {
+                let started = Instant::now();
                 writer
                     .write_record_batch(batch.slice(0, last_start))
                     .await?;
+                crate::observability::add_write_time(started.elapsed());
             }
             carry = Some(batch.slice(last_start, batch.num_rows() - last_start));
         }
         if let Some(carry) = carry {
+            let started = Instant::now();
             writer.write_record_batch(carry).await?;
+            crate::observability::add_write_time(started.elapsed());
         }
+        let started = Instant::now();
         let outputs = writer.flush_and_close().await?;
+        crate::observability::add_write_time(started.elapsed());
         let files = self.output_files(outputs, rows);
         self.commit_files(client, files).await
     }
@@ -936,12 +1456,19 @@ impl IvmTable {
     ) -> Result<Vec<DataFileInfo>> {
         let mut rows = 0u64;
         let mut writer = self.writer().await?;
+        let mut coalescer =
+            BatchCoalescer::new(self.schema.clone(), APPEND_COALESCE_ROWS);
         for batch in batches {
             if batch.num_rows() == 0 {
                 continue;
             }
             let batch = self.cast_batch(batch)?;
             rows += batch.num_rows() as u64;
+            if let Some(batch) = coalescer.push(batch)? {
+                writer.write_record_batch(batch).await?;
+            }
+        }
+        if let Some(batch) = coalescer.finish()? {
             writer.write_record_batch(batch).await?;
         }
         let outputs = writer.flush_and_close().await?;
@@ -1079,6 +1606,72 @@ impl IvmTable {
     ) -> Result<Vec<RecordBatch>> {
         self.read_groups_with_options(groups, Vec::new(), projection)
             .await
+    }
+
+    /// Reader configuration for one range-partition group.
+    ///
+    /// Mirrors [`Self::stream_files_with_group`] without filters or explicit
+    /// keys.  A persistent lookup source uses the same file list, schema,
+    /// range partitions and default values, and passes the resulting config
+    /// to the merge-on-read execution plan.
+    pub(crate) fn lookup_reader_io(&self, group: &PartitionFiles) -> LakeSoulIOConfig {
+        let schema = self.schema.clone();
+        let range_columns = self
+            .range_partition_columns
+            .iter()
+            .filter(|column| schema.field_with_name(column).is_ok())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut builder = with_reader_io(
+            LakeSoulIOConfig::builder()
+                .with_files(group.files.clone())
+                .with_schema(schema)
+                .with_primary_keys(self.primary_keys.clone())
+                .with_physical_format(self.file_format),
+        );
+        if !range_columns.is_empty() {
+            builder = builder.with_range_partitions(range_columns.clone());
+            if let Some(values) =
+                parse_partition_values(&group.partition_desc, &range_columns)
+            {
+                for (column, value) in range_columns.iter().zip(values) {
+                    builder = builder.with_default_column_value(column.clone(), value);
+                }
+            }
+        }
+        builder.build()
+    }
+
+    /// Open every file of one partition group exactly once for keyed lookup.
+    ///
+    /// Returns the persistent lookup source and the normalized reader config
+    /// (file paths and default partition values) for the merge plan.  `None`
+    /// means the locator is unavailable and the caller must fall back to the
+    /// regular reader path.
+    pub(crate) async fn open_lookup_source(
+        &self,
+        group: &PartitionFiles,
+        columns: &[String],
+        types: &[DataType],
+    ) -> Result<Option<(lakesoul_io::pk_locator::LookupSource, LakeSoulIOConfig)>> {
+        if group.files.is_empty() {
+            return Ok(None);
+        }
+        let session = lakesoul_io::session::LakeSoulIOSession::try_new(
+            self.lookup_reader_io(group),
+        )?;
+        let (configs, _) = session.lookup_scan_configs().await?;
+        let defaults = session.io_config().default_column_values().clone();
+        let source = lakesoul_io::pk_locator::LookupSource::open(
+            &session,
+            &configs,
+            columns,
+            types,
+            &self.schema,
+            &defaults,
+        )
+        .await?;
+        Ok(source.map(|source| (source, session.io_config().clone())))
     }
 
     /// Read explicit partition groups with pushed primary-key filters.
@@ -1588,11 +2181,10 @@ impl IvmTable {
             // The row-level index is only a win on Vortex's small blocks; a
             // Parquet page holds too many rows, and building the index on the
             // fly is much slower than the regular scan.
-            let vortex = !matches!(self.file_format, PhysicalFormat::Parquet);
-            let forced = std::env::var("LAKESOUL_IVM_STATE_INDEX")
-                .ok()
-                .is_some_and(|value| !matches!(value.as_str(), "0" | "false" | "off"));
-            if vortex || forced {
+            if crate::config::options()
+                .state_index
+                .enabled_for(self.file_format)
+            {
                 builder = with_state_key_lookup(builder, self.file_format);
                 builder = builder.with_explicit_pk_keys(columns, keys);
             }
@@ -1922,6 +2514,43 @@ impl IvmTable {
     /// delete commit would reject the following merge/append via the commit
     /// conflict rules, while a compaction leaves the partition writable again.
     pub async fn truncate(&self, client: &MetaDataClient) -> Result<()> {
+        let skip_target = crate::runtime::TARGET_WRITE
+            .try_with(|context| {
+                let guard = context
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.skip_target && guard.target_table_id == self.table_id
+            })
+            .unwrap_or(false);
+        if skip_target {
+            // A recovery replay must not clear an already published target.
+            return Ok(());
+        }
+        let is_user_target = crate::runtime::ATOMIC_TARGET
+            .try_with(|target| target == &self.table_id)
+            .unwrap_or(false);
+        if is_user_target
+            && let Ok(context) =
+                crate::runtime::TARGET_WRITE.try_with(std::sync::Arc::clone)
+            && context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .target_table_id
+                == self.table_id
+        {
+            // A rebuild replaces the user-visible target with one atomic
+            // version; an empty version between truncate and append would be
+            // visible to readers.  The refresh path may start incrementally
+            // and fall back to a rebuild, so the truncate itself selects the
+            // atomic mode.  Internal derived/state tables keep the historical
+            // truncate+append path so their consumers see an append commit.
+            let mut guard = context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.atomic = true;
+            guard.committed = false;
+            return Ok(());
+        }
         let partitions = client.get_all_partition_info(&self.table_id).await?;
         if partitions.is_empty() {
             return Ok(());
@@ -1950,6 +2579,34 @@ impl IvmTable {
             .await?;
         Ok(())
     }
+}
+
+/// The latest version of every partition of a table.
+pub(crate) async fn latest_partition_info(
+    client: &MetaDataClient,
+    table_id: &str,
+) -> Result<Vec<PartitionInfo>> {
+    let mut latest = std::collections::HashMap::<String, PartitionInfo>::new();
+    for partition in client.get_all_partition_info(table_id).await? {
+        let replace = latest
+            .get(&partition.partition_desc)
+            .is_none_or(|current| current.version < partition.version);
+        if replace {
+            latest.insert(partition.partition_desc.clone(), partition);
+        }
+    }
+    Ok(latest.into_values().collect())
+}
+
+/// True when every partition in `before` still has its captured version.
+fn partitions_unchanged(before: &[PartitionInfo], current: &[PartitionInfo]) -> bool {
+    let current = current
+        .iter()
+        .map(|partition| (&partition.partition_desc, partition.version))
+        .collect::<std::collections::HashMap<_, _>>();
+    before.iter().all(|partition| {
+        current.get(&partition.partition_desc).copied() == Some(partition.version)
+    })
 }
 
 /// The first or last key bytes of a batch.
@@ -1990,4 +2647,63 @@ fn last_key_group_start(
         start -= 1;
     }
     Ok(start)
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    use super::*;
+    use arrow_array::Int32Array;
+    use arrow_schema::{DataType, Field};
+
+    fn schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]))
+    }
+
+    fn batch(start: i32, rows: usize) -> RecordBatch {
+        let values = (start..start + rows as i32).collect::<Vec<_>>();
+        RecordBatch::try_new(schema(), vec![Arc::new(Int32Array::from(values))])
+            .expect("test batch")
+    }
+
+    #[test]
+    fn coalesces_small_batches_to_target() {
+        let mut coalescer = BatchCoalescer::new(schema(), 4);
+        assert!(coalescer.push(batch(0, 1)).expect("push").is_none());
+        assert!(coalescer.push(batch(1, 1)).expect("push").is_none());
+        let output = coalescer
+            .push(batch(2, 2))
+            .expect("push")
+            .expect("coalesced batch");
+        assert_eq!(output.num_rows(), 4);
+        assert!(coalescer.finish().expect("finish").is_none());
+    }
+
+    #[test]
+    fn flushes_remainder_at_end_of_stream() {
+        let mut coalescer = BatchCoalescer::new(schema(), 8);
+        assert!(coalescer.push(batch(0, 3)).expect("push").is_none());
+        let output = coalescer
+            .finish()
+            .expect("finish")
+            .expect("remaining batch");
+        assert_eq!(output.num_rows(), 3);
+        assert!(coalescer.finish().expect("finish").is_none());
+    }
+
+    #[test]
+    fn preserves_row_order_across_batches() {
+        let mut coalescer = BatchCoalescer::new(schema(), 5);
+        assert!(coalescer.push(batch(0, 2)).expect("push").is_none());
+        assert!(coalescer.push(batch(2, 2)).expect("push").is_none());
+        let output = coalescer
+            .push(batch(4, 2))
+            .expect("push")
+            .expect("coalesced batch");
+        let values = output
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .expect("int32 column");
+        assert_eq!(values.values(), &[0, 1, 2, 3, 4, 5]);
+    }
 }

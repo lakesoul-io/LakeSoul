@@ -8,12 +8,14 @@ use std::sync::Arc;
 
 use datafusion::catalog::Session;
 use datafusion::common::{DFSchema, SchemaExt};
+use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr, create_physical_expr};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, Partitioning};
@@ -21,6 +23,8 @@ use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 
 use async_trait::async_trait;
 
+use datafusion::datasource::default_table_source::DefaultTableSource;
+use datafusion::logical_expr::TableSource;
 use datafusion::logical_expr::{DmlStatement, WriteOp};
 use lakesoul_io::helpers::{
     column_names_to_physical_expr, column_names_to_physical_sort_expr,
@@ -29,7 +33,27 @@ use lakesoul_io::physical_plan::RepartitionByRangeAndHashExec;
 use rootcause::compat::boxed_error::IntoBoxedError;
 
 use crate::catalog::LakeSoulProviderOptions;
+use crate::datasource::table_provider::LakeSoulTableProvider;
+use crate::federation::FederationTableProvider;
 use crate::lakesoul_table::LakeSoulTable;
+
+/// The LakeSoul provider a DML statement's source was resolved to, if any.
+fn lake_soul_table_source(
+    table_source: &Arc<dyn TableSource>,
+) -> Option<&LakeSoulTableProvider> {
+    let source = table_source.downcast_ref::<DefaultTableSource>()?;
+    let provider: &dyn std::any::Any = source.table_provider.as_ref();
+    provider.downcast_ref::<LakeSoulTableProvider>()
+}
+
+/// The ADBC foreign provider a DML statement targets, if any.
+fn federation_table_source(
+    table_source: &Arc<dyn TableSource>,
+) -> Option<&FederationTableProvider> {
+    let source = table_source.downcast_ref::<DefaultTableSource>()?;
+    let provider: &dyn std::any::Any = source.table_provider.as_ref();
+    provider.downcast_ref::<FederationTableProvider>()
+}
 
 pub struct LakeSoulPhysicalPlanner {
     default_planner: DefaultPhysicalPlanner,
@@ -83,20 +107,48 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
             }
             LogicalPlan::Dml(DmlStatement {
                 table_name,
+                target,
                 op: WriteOp::Insert(insert_op),
                 input,
                 ..
             }) => {
                 debug!("insert into: {}, {}", &table_name, &input);
+                // LakeSoul tables go through the native sink below. An ADBC
+                // foreign table gets its input planned here and then its own
+                // `insert_into`; do not hand the whole DML plan to DataFusion's
+                // physical optimizer, which would remove the hash repartition
+                // that makes the write stage a worker stage. Other writable
+                // providers use the standard DataFusion DML path.
+                if let Some(provider) = federation_table_source(target) {
+                    let physical_input =
+                        self.create_physical_plan(input, session_state).await?;
+                    return provider
+                        .insert_into(session_state, physical_input, *insert_op)
+                        .await;
+                }
+                if lake_soul_table_source(target).is_none() {
+                    return self
+                        .default_planner
+                        .create_physical_plan(logical_plan, session_state)
+                        .await;
+                }
                 let name = table_name.table();
-                let schema = table_name.schema();
-                let lakesoul_table = LakeSoulTable::for_namespace_and_name(
-                    schema.unwrap_or("default"),
-                    name,
-                    None,
-                )
-                .await
-                .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+                // The namespace is the one the catalog resolved while planning,
+                // not the one written in the statement: a PostgreSQL front end
+                // addresses `public.t` and a bare `t` through its own catalog,
+                // and the DML node's table name keeps the SQL spelling. A
+                // LakeSoul provider in the plan is authoritative; the name is
+                // only a fallback for planners that pass a bare source.
+                let namespace = lake_soul_table_source(target)
+                    .map(|provider| provider.table_info().table_namespace.clone())
+                    .or_else(|| table_name.schema().map(str::to_owned))
+                    .unwrap_or_else(|| "default".to_string());
+                let lakesoul_table =
+                    LakeSoulTable::for_namespace_and_name(&namespace, name, None)
+                        .await
+                        .map_err(|report| {
+                            DataFusionError::External(report.into_boxed_error())
+                        })?;
 
                 let provider_options =
                     LakeSoulProviderOptions::from_session(session_state);
@@ -122,9 +174,53 @@ impl PhysicalPlanner for LakeSoulPhysicalPlanner {
                             ));
                         }
 
-                        let physical_input = if !lakesoul_table.primary_keys().is_empty()
-                            || !lakesoul_table.range_partitions().is_empty()
-                        {
+                        // A keyed table - one with primary keys, or with range
+                        // partitions - needs its input shaped before the write:
+                        // rows of one key must reach a single write task.
+                        let keyed_write = !lakesoul_table.primary_keys().is_empty()
+                            || !lakesoul_table.range_partitions().is_empty();
+                        let distributed_write = keyed_write
+                            && crate::distributed::planner::distributed_writes_enabled(
+                                session_state.config(),
+                            );
+                        let physical_input = if distributed_write {
+                            // Distributed write: hash-shuffle the input on the
+                            // primary keys (or the range columns when the table
+                            // has none), so every write task sees a disjoint key
+                            // set and a key can never be written by two tasks.
+                            //
+                            // The worker sorts its own share of the rows and lays
+                            // them out in LakeSoul's buckets at run time; bucket
+                            // numbering uses LakeSoul's hashing of range and
+                            // primary-key columns, not the hash partition index of
+                            // this node, so nothing here is labelled as a LakeSoul
+                            // bucket. This also keeps the write plan serializable:
+                            // a local global sort and the LakeSoul-specific
+                            // range/hash wrapper have no wire form, while the
+                            // standard hash `RepartitionExec` is the stage boundary
+                            // the distributed planner turns into a network shuffle.
+                            let input_dfschema = input.as_ref().schema();
+                            let key_columns = if lakesoul_table.primary_keys().is_empty()
+                            {
+                                lakesoul_table.range_partitions()
+                            } else {
+                                lakesoul_table.primary_keys()
+                            };
+                            let key_expr = column_names_to_physical_expr(
+                                key_columns,
+                                input_dfschema,
+                                session_state,
+                            )
+                            .map_err(|report| {
+                                DataFusionError::External(report.into_boxed_error())
+                            })?;
+                            let shuffle_partitions =
+                                session_state.config().target_partitions().max(1);
+                            Arc::new(RepartitionExec::try_new(
+                                physical_input,
+                                Partitioning::Hash(key_expr, shuffle_partitions),
+                            )?)
+                        } else if keyed_write {
                             let _input_schema = physical_input.schema();
                             let input_dfschema = input.as_ref().schema();
                             let sort_expr = column_names_to_physical_sort_expr(

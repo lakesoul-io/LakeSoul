@@ -32,7 +32,11 @@ use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType, lit};
 use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, PhysicalExpr};
+use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::metrics::{
+    BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet,
+};
 use datafusion::physical_plan::stream::RecordBatchReceiverStreamBuilder;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning,
@@ -290,13 +294,51 @@ impl IvmTableProvider {
         split
     }
 
+    /// Split an append-only scan's files into independent groups so the
+    /// distributed planner can spread them over tasks.  A merge-on-read table
+    /// must keep all versions of a bucket together and never takes this path.
+    fn split_append_only_files(groups: Vec<PartitionFiles>) -> Vec<PartitionFiles> {
+        let mut split = Vec::with_capacity(groups.len());
+        for group in groups {
+            if group.files.len() <= 1 {
+                split.push(group);
+                continue;
+            }
+            for file in group.files {
+                split.push(PartitionFiles {
+                    partition_desc: group.partition_desc.clone(),
+                    files: vec![file],
+                });
+            }
+        }
+        split
+    }
+
+    fn distributed_scan_split() -> bool {
+        #[cfg(feature = "distributed")]
+        {
+            return crate::config::session_factory().is_some();
+        }
+        #[cfg(not(feature = "distributed"))]
+        {
+            false
+        }
+    }
+
     pub(crate) fn stream_plan_groups(
         &self,
         groups: Vec<PartitionFiles>,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let groups = self.split_bucket_groups(groups);
+        let groups = if !self.merge
+            && self.table.primary_keys.is_empty()
+            && Self::distributed_scan_split()
+        {
+            Self::split_append_only_files(groups)
+        } else {
+            self.split_bucket_groups(groups)
+        };
         let (reader_projection, out_schema) = self
             .reader_projection(projection)
             .map_err(|error| DataFusionError::Execution(error.to_string()))?;
@@ -436,7 +478,7 @@ impl IvmTableProvider {
                 .collect::<Vec<_>>(),
         );
         let refresh_io = observability::current_refresh_io();
-        Ok(Arc::new(IvmStreamExec::new(
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(IvmStreamExec::new(
             self.table.clone(),
             Arc::new(groups),
             Arc::new(filters_per_group),
@@ -447,7 +489,11 @@ impl IvmTableProvider {
             partitions,
             refresh_io,
             file_counts,
-        )))
+        ));
+        // State/MV files can produce tiny batches after merge.  Coalescing at
+        // the scan boundary is cheap and keeps every downstream operator from
+        // looping over one-row batches.
+        Ok(Arc::new(CoalesceBatchesExec::new(plan, 8192)))
     }
 }
 
@@ -466,7 +512,7 @@ fn project_schema(schema: &SchemaRef, indices: &[usize]) -> SchemaRef {
 /// The plan owns only plain values and table/file references.  It deliberately
 /// does not capture a closure: the execution configuration must remain
 /// serializable for a future distributed scheduler.
-struct IvmStreamExec {
+pub(crate) struct IvmStreamExec {
     table: IvmTable,
     groups: Arc<Vec<PartitionFiles>>,
     filters_per_group: Arc<Vec<Vec<Expr>>>,
@@ -479,11 +525,13 @@ struct IvmStreamExec {
     refresh_io: Option<Arc<Mutex<RefreshIo>>>,
     file_counts: Arc<Vec<usize>>,
     gate: Arc<tokio::sync::Semaphore>,
+    metrics: ExecutionPlanMetricsSet,
 }
 
+#[allow(dead_code)]
 impl IvmStreamExec {
     #[allow(clippy::too_many_arguments)]
-    fn new(
+    pub(crate) fn new(
         table: IvmTable,
         groups: Arc<Vec<PartitionFiles>>,
         filters_per_group: Arc<Vec<Vec<Expr>>>,
@@ -515,7 +563,116 @@ impl IvmStreamExec {
             gate: Arc::new(tokio::sync::Semaphore::new(
                 crate::runtime::keyed_plan::max_active_tasks(),
             )),
+            metrics: ExecutionPlanMetricsSet::new(),
         }
+    }
+}
+
+#[allow(dead_code)]
+impl IvmStreamExec {
+    /// Number of bucket groups this scan reads.
+    pub(crate) fn group_count(&self) -> usize {
+        self.groups.len()
+    }
+
+    pub(crate) fn table(&self) -> &IvmTable {
+        &self.table
+    }
+
+    pub(crate) fn groups(&self) -> &[PartitionFiles] {
+        &self.groups
+    }
+
+    pub(crate) fn filters_per_group(&self) -> &[Vec<Expr>] {
+        &self.filters_per_group
+    }
+
+    pub(crate) fn reader_projection(&self) -> Option<&SchemaRef> {
+        self.reader_projection.as_ref()
+    }
+
+    pub(crate) fn out_schema(&self) -> &SchemaRef {
+        &self.out_schema
+    }
+
+    pub(crate) fn change_filter(&self) -> Option<&str> {
+        self.change_filter.as_deref()
+    }
+
+    pub(crate) fn merge(&self) -> bool {
+        self.merge
+    }
+
+    /// The plan for one distributed task, reading the same settings but a
+    /// disjoint slice of the bucket groups.
+    fn with_groups(
+        &self,
+        groups: Vec<PartitionFiles>,
+        filters_per_group: Vec<Vec<Expr>>,
+        file_counts: Vec<usize>,
+    ) -> Self {
+        let partitions = groups.len().max(1);
+        Self {
+            table: self.table.clone(),
+            groups: Arc::new(groups),
+            filters_per_group: Arc::new(filters_per_group),
+            reader_projection: self.reader_projection.clone(),
+            out_schema: self.out_schema.clone(),
+            change_filter: self.change_filter.clone(),
+            merge: self.merge,
+            schema: self.schema.clone(),
+            properties: Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(self.schema.clone()),
+                Partitioning::UnknownPartitioning(partitions),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            )),
+            refresh_io: self.refresh_io.clone(),
+            file_counts: Arc::new(file_counts),
+            gate: Arc::new(tokio::sync::Semaphore::new(
+                crate::runtime::keyed_plan::max_active_tasks(),
+            )),
+            metrics: ExecutionPlanMetricsSet::new(),
+        }
+    }
+
+    /// Split the scan into `task_count` variants with disjoint, exhaustive
+    /// bucket groups.  Every variant exposes the same partition count so
+    /// `DistributedLeafExec` accepts them.
+    pub(crate) fn split_for_tasks(
+        &self,
+        task_count: usize,
+    ) -> DataFusionResult<Vec<Arc<dyn ExecutionPlan>>> {
+        let task_count = task_count.max(1).min(self.groups.len().max(1));
+        let per_task = self.groups.len().div_ceil(task_count).max(1);
+        let mut variants = Vec::with_capacity(task_count);
+        for task in 0..task_count {
+            let start = task * per_task;
+            let end = (start + per_task).min(self.groups.len());
+            let mut groups = self.groups[start..end].to_vec();
+            let mut filters = (start..end)
+                .map(|index| {
+                    self.filters_per_group
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>();
+            let mut file_counts = (start..end)
+                .map(|index| self.file_counts.get(index).copied().unwrap_or(0))
+                .collect::<Vec<_>>();
+            while groups.len() < per_task {
+                groups.push(PartitionFiles {
+                    partition_desc: DEFAULT_PARTITION_DESC.to_string(),
+                    files: Vec::new(),
+                });
+                filters.push(Vec::new());
+                file_counts.push(0);
+            }
+            variants.push(Arc::new(self.with_groups(groups, filters, file_counts))
+                as Arc<dyn ExecutionPlan>);
+        }
+        Ok(variants)
     }
 }
 
@@ -568,6 +725,10 @@ impl ExecutionPlan for IvmStreamExec {
 
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -647,17 +808,21 @@ impl ExecutionPlan for IvmStreamExec {
             })
         });
         let input = builder.build();
-        let Some(refresh_io) = &self.refresh_io else {
-            return Ok(input);
+        let input: SendableRecordBatchStream = match &self.refresh_io {
+            None => input,
+            Some(refresh_io) => {
+                let files = self.file_counts.get(partition).copied().unwrap_or(0) as u64;
+                observability::add_files_read_shared(refresh_io, files);
+                let schema = input.schema();
+                Box::pin(RefreshCountingStream {
+                    input,
+                    schema,
+                    refresh_io: refresh_io.clone(),
+                })
+            }
         };
-        let files = self.file_counts.get(partition).copied().unwrap_or(0) as u64;
-        observability::add_files_read_shared(refresh_io, files);
-        let schema = input.schema();
-        Ok(Box::pin(RefreshCountingStream {
-            input,
-            schema,
-            refresh_io: refresh_io.clone(),
-        }))
+        let baseline = BaselineMetrics::new(&self.metrics, partition);
+        Ok(Box::pin(MetricStream { input, baseline }))
     }
 }
 
@@ -691,5 +856,109 @@ impl Stream for RefreshCountingStream {
 impl datafusion::physical_plan::RecordBatchStream for RefreshCountingStream {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+}
+
+/// Records poll time and output rows for one provider scan.
+struct MetricStream {
+    input: SendableRecordBatchStream,
+    baseline: BaselineMetrics,
+}
+
+impl Stream for MetricStream {
+    type Item = DataFusionResult<arrow_array::RecordBatch>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let timer = this.baseline.elapsed_compute().timer();
+        let poll = this.input.as_mut().poll_next(cx);
+        timer.done();
+        this.baseline.record_poll(poll)
+    }
+}
+
+impl datafusion::physical_plan::RecordBatchStream for MetricStream {
+    fn schema(&self) -> SchemaRef {
+        self.input.schema()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_schema::{DataType, Field, Schema};
+
+    fn table(schema: SchemaRef) -> IvmTable {
+        IvmTable {
+            table_id: "table-id".to_string(),
+            table_name: "table".to_string(),
+            namespace: "default".to_string(),
+            table_path: "file:///tmp/table".to_string(),
+            schema,
+            primary_keys: vec!["k".to_string()],
+            range_partition_columns: Vec::new(),
+            internal_columns: Vec::new(),
+            bucket_columns: vec!["k".to_string()],
+            hash_bucket_num: "4".to_string(),
+            cdc_column: None,
+            file_format: lakesoul_io::file_format::PhysicalFormat::Vortex,
+            allow_fallback: true,
+        }
+    }
+
+    #[test]
+    fn append_only_files_become_independent_groups() {
+        let groups = vec![PartitionFiles {
+            partition_desc: "-5".to_string(),
+            files: vec!["a.parquet".to_string(), "b.parquet".to_string()],
+        }];
+        let split = IvmTableProvider::split_append_only_files(groups);
+        assert_eq!(split.len(), 2);
+        assert_eq!(split[0].files, vec!["a.parquet"]);
+        assert_eq!(split[1].files, vec!["b.parquet"]);
+    }
+
+    #[test]
+    fn split_for_tasks_covers_every_group_once() {
+        let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)]));
+        let groups = (0..5)
+            .map(|index| PartitionFiles {
+                partition_desc: "-5".to_string(),
+                files: vec![format!("file-{index}.vortex")],
+            })
+            .collect::<Vec<_>>();
+        let filters = vec![Vec::new(); groups.len()];
+        let file_counts = vec![1; groups.len()];
+        let exec = IvmStreamExec::new(
+            table(schema.clone()),
+            Arc::new(groups),
+            Arc::new(filters),
+            None,
+            schema,
+            None,
+            true,
+            5,
+            None,
+            Arc::new(file_counts),
+        );
+        let variants = exec.split_for_tasks(2).unwrap();
+        assert_eq!(variants.len(), 2);
+        let mut seen = Vec::new();
+        for variant in variants {
+            let variant = variant.downcast_ref::<IvmStreamExec>().unwrap();
+            assert_eq!(variant.groups().len(), 3);
+            for group in variant.groups() {
+                if let Some(file) = group.files.first() {
+                    seen.push(file.clone());
+                }
+            }
+        }
+        seen.sort();
+        assert_eq!(
+            seen,
+            (0..5)
+                .map(|index| format!("file-{index}.vortex"))
+                .collect::<Vec<_>>()
+        );
     }
 }

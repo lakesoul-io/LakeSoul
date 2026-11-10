@@ -23,6 +23,7 @@ members = [
   "rust/lakesoul-es-gateway",
   "python",
   "rust/postgres-lakesoul",
+  "rust/lakesoul-worker",
 ]
 default-members = [
   "rust/lakesoul-build-info",
@@ -31,9 +32,11 @@ default-members = [
   "rust/lakesoul-io",
   "rust/lakesoul-datafusion",
   "rust/lakesoul-console",
+  "rust/lakesoul-worker",
   "rust/lakesoul-common",
   "rust/lakesoul-vector",
 ]
+exclude = ["rust/third_party/sqllogictest"]
 resolver = "3"
 
 [workspace.package]
@@ -58,7 +61,7 @@ strip = false
 
 [profile.profiling]
 inherits = "release"
-debug = true
+debug = "line-tables-only"
 opt-level = 2
 
 [profile.test-fast]
@@ -85,7 +88,8 @@ datafusion-execution = { version = "55" }
 datafusion-datasource = { version = "55" }
 datafusion-datasource-parquet = { version = "55" }
 datafusion-substrait = { version = "55" }
-datafusion-distributed = { version = "4.0.0" }
+# LakeSoul fork branch: Range shuffle support for IVM bucket co-location.
+datafusion-distributed = { git = "https://github.com/lakesoul-io/datafusion-distributed.git", branch = "lakesoul-ivm-range-shuffle" }
 datafusion-proto = { version = "55" }
 # arrow
 arrow = { version = "59", features = ["prettyprint"] }
@@ -109,7 +113,10 @@ vortex-datafusion = { git = "https://github.com/mag1c1an1/vortex.git", rev = "79
 futures = "0.3"
 async-trait = "0.1"
 # async runtime
-tokio = { version = "1", features = ["full"] }
+# tokio 1.54 is required by pg_walstream 0.10; pingora 0.9.1 carries the
+# zero-capacity BufReader fix for tokio 1.54
+# (https://github.com/cloudflare/pingora/issues/1059).
+tokio = { version = "1.54.1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io", "compat"] }
 tokio-stream = "0.1.9"
 # web
@@ -166,8 +173,45 @@ rootcause = "0.13"
 reqwest = "0.13"
 # sync
 parking_lot = "0.12"
+# memory allocator: only executables own `#[global_allocator]` (see
+# rust/postgres-lakesoul, rust/lakesoul-worker and rust/lakesoul-console).
+# `unprefixed_malloc` makes jemalloc serve C `malloc` too; `stats` backs the
+# startup identity log.
+tikv-jemallocator = { version = "0.6.1", features = [
+  "unprefixed_malloc_on_supported_platforms",
+] }
+tikv-jemalloc-ctl = { version = "0.6.1", features = ["stats"] }
 
 [workspace.lints.clippy]
 
 [workspace.lints.rust]
 deprecated = "allow"
+
+# The fork's feature/lakesoul-physical-plan-55.2 branch carries 55.2.0 plus
+# apache/datafusion#24891 (09a2aff7), fixing a RepartitionExec spill-pool
+# deadlock under memory pressure, and a typed ScalarSubqueryCardinalityError
+# so the PostgreSQL wire layer maps multi-row scalar subqueries to 21000.
+# Its physical-plan manifest deliberately retains registry dependencies:
+# patching one crate must not introduce a second Git-sourced DataFusion graph.
+# Drop the spill fix once the consuming release includes it; retain the typed
+# error until an equivalent upstream classification and wire mapping exist.
+[patch.crates-io]
+datafusion-physical-plan = { git = "https://github.com/mag1c1an1/datafusion.git", rev = "e668c7ab1ca6f4e563060d3d1013a03a7e7e2296" }
+
+# object_store's aws feature depends on md-5 with default-features = false,
+# while sqllogictest (a lakesoul-ivm dev-dependency) enables its default
+# features.  Upstream md-5 defaults to ["std"], so building any lakesoul-ivm
+# test target changes the md-5 feature set and rebuilds object_store, parquet,
+# vortex and datafusion.  The vendored sqllogictest declares md-5 with
+# default-features = false, so both users share the same md-5 unit; see
+# rust/third_party/sqllogictest/README.lakesoul.md.
+sqllogictest = { path = "rust/third_party/sqllogictest" }
+
+# datafusion-pg-catalog comes from the pinned datafusion-postgres fork. The
+# fork's lakesoul-shared-static-tables branch drops the obsolete
+# RemoveSubqueryFromProjection rewrite rule, which injected `LIMIT 1` into
+# uncorrelated projection scalar subqueries (silently truncating multi-row
+# results) and replaced correlated/parameterized ones with NULL. DataFusion 55
+# plans both forms, and ScalarSubqueryExec enforces the PostgreSQL
+# zero-or-one-row contract. Bump the `rev` in rust/postgres-lakesoul to pick up
+# further changes; no local copy of the crate is needed.

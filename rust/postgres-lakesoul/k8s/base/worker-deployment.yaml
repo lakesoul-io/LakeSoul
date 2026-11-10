@@ -62,6 +62,12 @@ spec:
                   name: lakesoul-secrets
                   key: aws-secret-access-key
                   optional: false
+            - name: AWS_S3_VIRTUAL_HOST_STYLE
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-s3-virtual-host-style
+                  optional: true
           ports:
             - name: grpc
               containerPort: 50051
@@ -77,7 +83,20 @@ spec:
           volumeMounts:
             - name: scratch
               mountPath: /var/scratch
+      # Scratch (spill files, disk cache) on a per-Pod PVC from the cluster's
+      # default StorageClass: created with the Pod and deleted with it, so it
+      # never fills the node's root disk. Set `storageClassName` here to pick
+      # another class.
       volumes:
         - name: scratch
-          emptyDir:
-            sizeLimit: 40Gi
+          ephemeral:
+            volumeClaimTemplate:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: lakesoul
+                  app.kubernetes.io/component: worker
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                resources:
+                  requests:
+                    storage: 40Gi

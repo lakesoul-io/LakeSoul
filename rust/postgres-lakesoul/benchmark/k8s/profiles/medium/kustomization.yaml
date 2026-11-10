@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# Profile `medium`: 4 cores / 4 GiB limits. Burstable: no shared node has 4 GiB of unrequested memory, so the request stays 2 GiB (same as the base worker).
+# Applied to the coordinator and to every worker.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - path: resources.yaml

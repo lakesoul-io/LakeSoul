@@ -13,7 +13,9 @@ use rayon::prelude::*;
 use crate::rabitq::key::IndexKey;
 use crate::rabitq::kmeans::{KMeansResult, run_kmeans};
 use crate::rabitq::math::{dot, l2_distance_sqr};
-use crate::rabitq::quantizer::{QuantizedVector, RabitqConfig, quantize_with_centroid};
+use crate::rabitq::quantizer::{
+    QuantizedParams, QuantizedVector, RabitqConfig, quantize_with_centroid,
+};
 use crate::rabitq::rotation::{DynamicRotator, RotatorType};
 use crate::rabitq::simd;
 use crate::rabitq::{Metric, RabitqError};
@@ -105,6 +107,59 @@ impl SearchDiagnostics {
         self.extended_evaluations += other.extended_evaluations;
         self.fastscan_ns += other.fastscan_ns;
         self.scalar_ns += other.scalar_ns;
+    }
+}
+
+/// Push a candidate only when it can still enter the top-k. This avoids the
+/// push-then-pop churn of a full heap for candidates that lose immediately.
+#[inline(always)]
+fn push_top_k(heap: &mut BinaryHeap<HeapEntry>, top_k: usize, candidate: HeapCandidate) {
+    if top_k == 0 {
+        return;
+    }
+    if heap.len() < top_k {
+        heap.push(HeapEntry { candidate });
+    } else if heap
+        .peek()
+        .is_some_and(|worst| candidate.distance < worst.candidate.distance)
+    {
+        heap.pop();
+        heap.push(HeapEntry { candidate });
+    }
+}
+
+/// Keep full-width cluster IDs without the tuple's trailing alignment padding.
+/// Reading packed fields by value is safe; never take references to `id`.
+#[derive(Clone, Copy)]
+#[repr(C, packed(4))]
+struct ClusterScore {
+    id: usize,
+    score: f32,
+}
+
+impl ClusterScore {
+    #[inline]
+    fn id(self) -> usize {
+        self.id
+    }
+
+    #[inline]
+    fn score(self) -> f32 {
+        self.score
+    }
+
+    #[inline]
+    fn l2_order(a: &Self, b: &Self) -> std::cmp::Ordering {
+        a.score()
+            .total_cmp(&b.score())
+            .then_with(|| a.id().cmp(&b.id()))
+    }
+
+    #[inline]
+    fn ip_order(a: &Self, b: &Self) -> std::cmp::Ordering {
+        b.score()
+            .total_cmp(&a.score())
+            .then_with(|| a.id().cmp(&b.id()))
     }
 }
 
@@ -443,6 +498,7 @@ impl IvfRabitqIndex {
                 pending_ids: Vec::new(),
                 pending_ids_version: Vec::new(),
                 pending_vectors: Vec::new(),
+                build_pending: BuildPending::default(),
             })
             .collect();
 
@@ -1177,6 +1233,7 @@ impl IvfRabitqIndex {
                 pending_ids: Vec::new(),
                 pending_ids_version: Vec::new(),
                 pending_vectors: Vec::new(),
+                build_pending: BuildPending::default(),
             });
         }
 
@@ -1302,7 +1359,7 @@ impl IvfRabitqIndex {
         // Build LUT for FastScan batch search
         query_precomp.build_lut(self.padded_dim);
 
-        let mut cluster_scores: Vec<(usize, f32)> =
+        let mut cluster_scores: Vec<ClusterScore> =
             Vec::with_capacity(self.clusters.len());
         for (cid, cluster) in self.clusters.iter().enumerate() {
             let score = match self.metric {
@@ -1313,7 +1370,7 @@ impl IvfRabitqIndex {
                     dot(&query_precomp.rotated_query, &cluster.centroid)
                 }
             };
-            cluster_scores.push((cid, score));
+            cluster_scores.push(ClusterScore { id: cid, score });
         }
 
         let nprobe = params.nprobe.max(1).min(self.clusters.len());
@@ -1332,37 +1389,24 @@ impl IvfRabitqIndex {
             match self.metric {
                 Metric::L2 => {
                     // Partition so that the nprobe smallest scores are at the front
-                    // Use cluster ID as tiebreaker for deterministic ordering
-                    cluster_scores.select_nth_unstable_by(nprobe, |a, b| {
-                        a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0))
-                    });
+                    cluster_scores.select_nth_unstable_by(nprobe, ClusterScore::l2_order);
                     // Sort only the first nprobe elements
-                    cluster_scores[..nprobe].sort_unstable_by(|a, b| {
-                        a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0))
-                    });
+                    cluster_scores[..nprobe].sort_unstable_by(ClusterScore::l2_order);
                 }
                 Metric::InnerProduct => {
                     // Partition so that the nprobe largest scores are at the front
-                    // Use cluster ID as tiebreaker for deterministic ordering
-                    cluster_scores.select_nth_unstable_by(nprobe, |a, b| {
-                        b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0))
-                    });
+                    cluster_scores.select_nth_unstable_by(nprobe, ClusterScore::ip_order);
                     // Sort only the first nprobe elements
-                    cluster_scores[..nprobe].sort_unstable_by(|a, b| {
-                        b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0))
-                    });
+                    cluster_scores[..nprobe].sort_unstable_by(ClusterScore::ip_order);
                 }
             }
         } else {
             // If nprobe >= cluster count, sort all (rare case)
-            // Use cluster ID as tiebreaker for deterministic ordering
             match self.metric {
-                Metric::L2 => cluster_scores.sort_unstable_by(|a, b| {
-                    a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0))
-                }),
-                Metric::InnerProduct => cluster_scores.sort_unstable_by(|a, b| {
-                    b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0))
-                }),
+                Metric::L2 => cluster_scores.sort_unstable_by(ClusterScore::l2_order),
+                Metric::InnerProduct => {
+                    cluster_scores.sort_unstable_by(ClusterScore::ip_order)
+                }
             }
         }
 
@@ -1384,9 +1428,9 @@ impl IvfRabitqIndex {
             )
         } else {
             let mut heap: BinaryHeap<HeapEntry> = BinaryHeap::new();
-            for &(cid, _) in cluster_scores.iter().take(nprobe) {
+            for score in cluster_scores.iter().take(nprobe) {
                 self.probe_cluster(
-                    cid,
+                    score.id(),
                     &query_precomp,
                     filter,
                     &mut heap,
@@ -1465,7 +1509,7 @@ impl IvfRabitqIndex {
     /// skewed cluster sizes do not unbalance them.
     fn search_clusters_parallel(
         &self,
-        cluster_scores: &[(usize, f32)],
+        cluster_scores: &[ClusterScore],
         query_precomp: &QueryPrecomputed,
         filter: Option<&HashSet<IndexKey>>,
         params: &SearchParams,
@@ -1474,8 +1518,8 @@ impl IvfRabitqIndex {
         let top_k = params.top_k;
         let groups = params.parallelism.max(1).min(cluster_scores.len());
         let mut assignments: Vec<Vec<usize>> = vec![Vec::new(); groups];
-        for (index, &(cid, _)) in cluster_scores.iter().enumerate() {
-            assignments[index % groups].push(cid);
+        for (index, score) in cluster_scores.iter().enumerate() {
+            assignments[index % groups].push(score.id());
         }
         let collect_diagnostics = diagnostics.is_some();
 
@@ -1541,8 +1585,8 @@ impl IvfRabitqIndex {
         top_k: usize,
         diagnostics: &mut Option<&mut SearchDiagnostics>,
     ) {
-        // Check if we should use high-accuracy mode
-        let use_highacc = self.padded_dim > 2048;
+        // Use the LUT variant selected when the query was prepared.
+        let use_highacc = query_precomp.lut_highacc.is_some();
 
         let lut_view = if use_highacc {
             query_precomp.lut_highacc.as_ref().map(|lut| {
@@ -1633,9 +1677,17 @@ impl IvfRabitqIndex {
                     .map(|entry| entry.candidate.distance)
                     .unwrap_or(f32::INFINITY)
             };
-            let mut mask = crate::rabitq::fastscan_kernel::candidate_mask(
+            // Sanitize non-finite bounds and compare to the batch-start
+            // threshold in one pass. The threshold can only shrink while the
+            // batch is processed, so a lane skipped here could not enter the
+            // heap anyway.
+            let fallback = -(dot_query_centroid + query_precomp.query_norm);
+            let mut mask = simd::sanitized_lower_bound_mask_32_for_dim(
                 &lower_bounds,
                 distk_batch,
+                self.metric,
+                fallback,
+                self.padded_dim,
             );
             if actual_batch_size < simd::FASTSCAN_BATCH_SIZE {
                 mask &= (1u32 << actual_batch_size) - 1;
@@ -1664,30 +1716,8 @@ impl IvfRabitqIndex {
                 // Use pre-computed values (vectorized above)
                 let ip_x0_qr = ip_x0_qr_values[i];
                 let est_distance = est_distances[i];
-                let lower_bound = crate::rabitq::fastscan_kernel::sanitize_lower_bound(
-                    lower_bounds[i],
-                    self.metric,
-                    dot_query_centroid,
-                    query_precomp.query_norm,
-                );
 
-                // Step 3: Check against current k-th distance
-                let distk = if heap.len() < top_k {
-                    f32::INFINITY
-                } else {
-                    heap.peek()
-                        .map(|entry| entry.candidate.distance)
-                        .unwrap_or(f32::INFINITY)
-                };
-
-                if lower_bound >= distk {
-                    if let Some(diag) = diagnostics.as_deref_mut() {
-                        diag.skipped_by_lower_bound += 1;
-                    }
-                    continue;
-                }
-
-                // Step 4: Compute final distance with ex-codes if available
+                // Step 3: Compute final distance with ex-codes if available
                 let mut distance = est_distance;
                 if self.ex_bits > 0 {
                     if let Some(diag) = diagnostics.as_deref_mut() {
@@ -1726,19 +1756,16 @@ impl IvfRabitqIndex {
                     diag.estimated += 1;
                 }
 
-                // Step 7: Update heap
-                heap.push(HeapEntry {
-                    candidate: HeapCandidate {
+                push_top_k(
+                    heap,
+                    top_k,
+                    HeapCandidate {
                         version: cluster.ids_version[global_idx],
                         id: vector_id,
                         distance,
                         score,
                     },
-                });
-
-                if heap.len() > top_k {
-                    heap.pop();
-                }
+                );
             }
 
             if let (Some(t0), Some(t1)) = (t_accumulate, t_scalar) {
@@ -1838,17 +1865,16 @@ impl IvfRabitqIndex {
             if let Some(diag) = diagnostics.as_deref_mut() {
                 diag.estimated += 1;
             }
-            heap.push(HeapEntry {
-                candidate: HeapCandidate {
+            push_top_k(
+                heap,
+                top_k,
+                HeapCandidate {
                     version: u32::MAX,
                     id: vec_id.clone(),
                     distance,
                     score,
                 },
-            });
-            if heap.len() > top_k {
-                heap.pop();
-            }
+            );
         }
     }
 
@@ -1869,19 +1895,19 @@ impl IvfRabitqIndex {
         }
 
         let rotated_query = self.rotator.rotate(query);
-        let mut cluster_scores: Vec<(usize, f32)> =
+        let mut cluster_scores: Vec<ClusterScore> =
             Vec::with_capacity(self.clusters.len());
         for (cid, cluster) in self.clusters.iter().enumerate() {
             let score = match self.metric {
                 Metric::L2 => l2_distance_sqr(&rotated_query, &cluster.centroid),
                 Metric::InnerProduct => dot(&rotated_query, &cluster.centroid),
             };
-            cluster_scores.push((cid, score));
+            cluster_scores.push(ClusterScore { id: cid, score });
         }
 
         match self.metric {
-            Metric::L2 => cluster_scores.sort_by(|a, b| a.1.total_cmp(&b.1)),
-            Metric::InnerProduct => cluster_scores.sort_by(|a, b| b.1.total_cmp(&a.1)),
+            Metric::L2 => cluster_scores.sort_by(ClusterScore::l2_order),
+            Metric::InnerProduct => cluster_scores.sort_by(ClusterScore::ip_order),
         }
 
         let nprobe = params.nprobe.max(1).min(self.clusters.len());
@@ -1890,7 +1916,8 @@ impl IvfRabitqIndex {
         let c1 = -0.5f32;
         let binary_scale = (1 << self.ex_bits) as f32;
         let cb = -((1 << self.ex_bits) as f32 - 0.5);
-        for &(cid, _) in cluster_scores.iter().take(nprobe) {
+        for score in cluster_scores.iter().take(nprobe) {
+            let cid = score.id();
             let cluster = &self.clusters[cid];
             let centroid_dist = l2_distance_sqr(&rotated_query, &cluster.centroid);
             let dot_query_centroid = dot(&rotated_query, &cluster.centroid);
@@ -2334,10 +2361,276 @@ impl ClusterData {
         }
     }
 
+    /// Bytes of packed extended code stored per vector.
+    #[inline]
+    fn ex_code_stride(&self) -> usize {
+        match self.ex_bits {
+            0 => 0,
+            1 => self.padded_dim / 16 * 2,
+            2 => self.padded_dim / 16 * 4,
+            6 => self.padded_dim / 16 * 12,
+            bits => (self.padded_dim * bits).div_ceil(8),
+        }
+    }
+
+    /// Append one already-quantised row to the streaming-build staging buffer.
+    /// This avoids materialising a `QuantizedVector` per input row.
+    pub(crate) fn append_packed_for_build(
+        &mut self,
+        id: IndexKey,
+        binary_code: &[u8],
+        ex_code: &[u8],
+        params: QuantizedParams,
+    ) {
+        debug_assert_eq!(binary_code.len(), self.padded_dim.div_ceil(8));
+        let ex_code = if self.ex_bits == 0 { &[][..] } else { ex_code };
+        debug_assert_eq!(ex_code.len(), self.ex_code_stride());
+        self.build_pending.ids.push(id);
+        self.build_pending
+            .binary_codes
+            .extend_from_slice(binary_code);
+        self.build_pending.ex_codes.extend_from_slice(ex_code);
+        self.build_pending.params.push(params);
+        if self.build_pending.ids.len() == simd::FASTSCAN_BATCH_SIZE {
+            self.flush_build_pending();
+        }
+    }
+
+    /// Flush staged build rows into one padded FastScan batch.
+    fn flush_build_pending(&mut self) {
+        let count = self.build_pending.ids.len();
+        if count == 0 {
+            return;
+        }
+        debug_assert!(count <= simd::FASTSCAN_BATCH_SIZE);
+        debug_assert_eq!(self.num_vectors % simd::FASTSCAN_BATCH_SIZE, 0);
+
+        let stride = Self::batch_stride(self.padded_dim);
+        let old_len = self.batch_data.len();
+        self.batch_data.resize(old_len + stride, 0);
+        let binary_bytes = self.padded_dim * simd::FASTSCAN_BATCH_SIZE / 8;
+        simd::pack_codes(
+            &self.build_pending.binary_codes,
+            count,
+            self.padded_dim / 8,
+            &mut self.batch_data[old_len..old_len + binary_bytes],
+        );
+
+        let f_add_offset = old_len + binary_bytes;
+        let f_rescale_offset =
+            f_add_offset + std::mem::size_of::<f32>() * simd::FASTSCAN_BATCH_SIZE;
+        let f_error_offset =
+            f_rescale_offset + std::mem::size_of::<f32>() * simd::FASTSCAN_BATCH_SIZE;
+        unsafe {
+            let f_add = std::slice::from_raw_parts_mut(
+                self.batch_data[f_add_offset..].as_mut_ptr() as *mut f32,
+                simd::FASTSCAN_BATCH_SIZE,
+            );
+            let f_rescale = std::slice::from_raw_parts_mut(
+                self.batch_data[f_rescale_offset..].as_mut_ptr() as *mut f32,
+                simd::FASTSCAN_BATCH_SIZE,
+            );
+            let f_error = std::slice::from_raw_parts_mut(
+                self.batch_data[f_error_offset..].as_mut_ptr() as *mut f32,
+                simd::FASTSCAN_BATCH_SIZE,
+            );
+            for i in 0..count {
+                let params = self.build_pending.params[i];
+                f_add[i] = params.f_add;
+                f_rescale[i] = params.f_rescale;
+                f_error[i] = params.f_error;
+            }
+        }
+
+        self.ids.extend_from_slice(&self.build_pending.ids);
+        self.ids_version
+            .resize(self.ids_version.len() + count, u32::MAX);
+        let ex_stride = self.ex_code_stride();
+        if ex_stride > 0 {
+            debug_assert_eq!(self.build_pending.ex_codes.len(), count * ex_stride);
+            for chunk in self.build_pending.ex_codes.chunks_exact(ex_stride) {
+                self.ex_codes_packed.push(chunk.to_vec());
+            }
+        } else {
+            for _ in 0..count {
+                self.ex_codes_packed.push(Vec::new());
+            }
+        }
+        for params in &self.build_pending.params {
+            self.f_add_ex.push(params.f_add_ex);
+            self.f_rescale_ex.push(params.f_rescale_ex);
+            self.delta.push(params.delta);
+            self.vl.push(params.vl);
+        }
+        self.num_vectors += count;
+        self.build_pending.ids.clear();
+        self.build_pending.binary_codes.clear();
+        self.build_pending.ex_codes.clear();
+        self.build_pending.params.clear();
+    }
+
+    /// Drop the staging buffers once the fresh build is complete. Their
+    /// capacities are only useful while appending; keeping them would inflate
+    /// the resident index by up to one batch per cluster.
+    pub(crate) fn release_build_buffers(&mut self) {
+        self.build_pending = BuildPending::default();
+    }
+
+    /// Rebuild one packed vector from `batch_data` (used when a partial tail
+    /// batch must be merged with new pending vectors).
+    fn reconstruct_packed_vector(&self, vec_idx: usize) -> QuantizedVector {
+        let padded_dim = self.padded_dim;
+        let dim_bytes = padded_dim / 8;
+        let batch_idx = vec_idx / simd::FASTSCAN_BATCH_SIZE;
+        let in_batch = vec_idx % simd::FASTSCAN_BATCH_SIZE;
+
+        let mut unpacked = vec![0u8; padded_dim];
+        simd::unpack_single_vector(
+            self.batch_bin_codes(batch_idx),
+            in_batch,
+            dim_bytes,
+            &mut unpacked,
+        );
+        let mut binary_code_packed = vec![0u8; padded_dim.div_ceil(8)];
+        simd::pack_binary_code(&unpacked, &mut binary_code_packed, padded_dim);
+
+        QuantizedVector {
+            binary_code_packed,
+            ex_code_packed: if self.ex_bits > 0 {
+                self.ex_codes_packed[vec_idx].clone()
+            } else {
+                Vec::new()
+            },
+            ex_bits: self.ex_bits as u8,
+            dim: padded_dim,
+            delta: self.delta[vec_idx],
+            vl: self.vl[vec_idx],
+            f_add: self.batch_f_add(batch_idx)[in_batch],
+            f_rescale: self.batch_f_rescale(batch_idx)[in_batch],
+            f_error: self.batch_f_error(batch_idx)[in_batch],
+            residual_norm: 0.0,
+            f_add_ex: self.f_add_ex[vec_idx],
+            f_rescale_ex: self.f_rescale_ex[vec_idx],
+        }
+    }
+
+    /// Merge the unaligned tail of `batch_data` with all pending vectors and
+    /// repack both in 32-vector batches. Without this, appending a full batch
+    /// after a partial flush leaves ids and (batch, slot) positions misaligned.
+    fn repack_tail_with_pending(&mut self, tail: usize) {
+        let padded_dim = self.padded_dim;
+        let dim_bytes = padded_dim / 8;
+        let stride = Self::batch_stride(padded_dim);
+        let base_vectors = self.num_vectors - tail;
+
+        let mut combined = Vec::with_capacity(tail + self.pending_ids.len());
+        for vec_idx in base_vectors..self.num_vectors {
+            combined.push(self.reconstruct_packed_vector(vec_idx));
+        }
+        combined.append(&mut self.pending_vectors);
+
+        let new_ids = std::mem::take(&mut self.pending_ids);
+        self.ids.extend_from_slice(&new_ids);
+        let new_versions = std::mem::take(&mut self.pending_ids_version);
+        self.ids_version.extend_from_slice(&new_versions);
+
+        self.batch_data
+            .truncate(base_vectors / simd::FASTSCAN_BATCH_SIZE * stride);
+
+        let ex_stride = self.ex_code_stride();
+        let zero_qvec = QuantizedVector {
+            binary_code_packed: vec![0u8; dim_bytes],
+            ex_code_packed: vec![0u8; ex_stride],
+            ex_bits: self.ex_bits as u8,
+            dim: padded_dim,
+            delta: 0.0,
+            vl: 0.0,
+            f_add: 0.0,
+            f_rescale: 0.0,
+            f_error: 0.0,
+            residual_norm: 0.0,
+            f_add_ex: 0.0,
+            f_rescale_ex: 0.0,
+        };
+
+        let total = combined.len();
+        let mut packed = 0;
+        while packed < total {
+            let n = (total - packed).min(simd::FASTSCAN_BATCH_SIZE);
+            let mut batch_qvecs = combined[packed..packed + n].to_vec();
+            batch_qvecs.resize(simd::FASTSCAN_BATCH_SIZE, zero_qvec.clone());
+
+            let old_len = self.batch_data.len();
+            self.batch_data.resize(old_len + stride, 0u8);
+
+            let mut binary_codes_flat = vec![0u8; simd::FASTSCAN_BATCH_SIZE * dim_bytes];
+            for (i, q) in batch_qvecs.iter().enumerate() {
+                binary_codes_flat[i * dim_bytes..(i + 1) * dim_bytes]
+                    .copy_from_slice(&q.binary_code_packed);
+            }
+            let packed_out = &mut self.batch_data
+                [old_len..old_len + padded_dim * simd::FASTSCAN_BATCH_SIZE / 8];
+            simd::pack_codes(
+                &binary_codes_flat,
+                simd::FASTSCAN_BATCH_SIZE,
+                dim_bytes,
+                packed_out,
+            );
+
+            let f_add_offset = old_len + padded_dim * simd::FASTSCAN_BATCH_SIZE / 8;
+            let f_rescale_offset =
+                f_add_offset + std::mem::size_of::<f32>() * simd::FASTSCAN_BATCH_SIZE;
+            let f_error_offset =
+                f_rescale_offset + std::mem::size_of::<f32>() * simd::FASTSCAN_BATCH_SIZE;
+            unsafe {
+                let f_add = std::slice::from_raw_parts_mut(
+                    self.batch_data[f_add_offset..].as_mut_ptr() as *mut f32,
+                    simd::FASTSCAN_BATCH_SIZE,
+                );
+                let f_rescale = std::slice::from_raw_parts_mut(
+                    self.batch_data[f_rescale_offset..].as_mut_ptr() as *mut f32,
+                    simd::FASTSCAN_BATCH_SIZE,
+                );
+                let f_error = std::slice::from_raw_parts_mut(
+                    self.batch_data[f_error_offset..].as_mut_ptr() as *mut f32,
+                    simd::FASTSCAN_BATCH_SIZE,
+                );
+                for (i, q) in batch_qvecs.iter().enumerate() {
+                    f_add[i] = q.f_add;
+                    f_rescale[i] = q.f_rescale;
+                    f_error[i] = q.f_error;
+                }
+            }
+
+            packed += n;
+        }
+
+        // The tail vectors already own their per-vector entries; only the new
+        // pending vectors append metadata.
+        for q in combined.iter().skip(tail) {
+            self.ex_codes_packed.push(q.ex_code_packed.clone());
+            self.f_add_ex.push(q.f_add_ex);
+            self.f_rescale_ex.push(q.f_rescale_ex);
+            self.delta.push(q.delta);
+            self.vl.push(q.vl);
+        }
+        self.num_vectors += combined.len() - tail;
+    }
+
     /// Flush groups of 32 pending vectors into the batch layout, including
     /// any remainder (< 32) padded with zeros.
     fn flush_pending(&mut self) {
+        self.flush_build_pending();
         if self.pending_ids.is_empty() {
+            return;
+        }
+
+        // A partial tail batch must be repacked with pending vectors; the
+        // search locates vectors by (global_idx / 32, global_idx % 32), so
+        // appending a new batch stride would shift every later vector.
+        let tail = self.num_vectors % simd::FASTSCAN_BATCH_SIZE;
+        if tail > 0 {
+            self.repack_tail_with_pending(tail);
             return;
         }
 
@@ -3073,43 +3366,79 @@ fn assign_batch_to_centroids(
     centroid_col: &[f32],
     centroid_norms: &[f32],
 ) -> Vec<usize> {
+    let mut assignments = Vec::new();
+    assign_batch_to_centroids_into(
+        rotated_batch,
+        batch_n,
+        nlist,
+        padded_dim,
+        centroid_col,
+        centroid_norms,
+        Metric::L2,
+        &mut assignments,
+        &mut Vec::new(),
+        &mut Vec::new(),
+    );
+    assignments
+}
+
+pub(crate) fn assign_batch_to_centroids_into(
+    rotated_batch: &[f32],
+    batch_n: usize,
+    nlist: usize,
+    padded_dim: usize,
+    centroid_col: &[f32],
+    centroid_norms: &[f32],
+    metric: Metric,
+    assignments: &mut Vec<usize>,
+    dot_products: &mut Vec<f32>,
+    norms: &mut Vec<f32>,
+) {
     let k = nlist;
-    let mut dot_products = vec![0.0f32; batch_n * k];
+    dot_products.resize(batch_n * k, 0.0);
     {
         use faer::linalg::matmul::matmul;
         use faer::mat::{MatMut, MatRef};
         use faer::{Accum, Par};
         let a = MatRef::from_row_major_slice(rotated_batch, batch_n, padded_dim);
         let b = MatRef::from_row_major_slice(centroid_col, padded_dim, k);
-        let c = MatMut::from_row_major_slice_mut(&mut dot_products, batch_n, k);
+        // dot_products is consumed as dot_products[i * k + c], so Faer must
+        // write row-major output.
+        let c = MatMut::from_row_major_slice_mut(dot_products, batch_n, k);
         matmul(c, Accum::Replace, a, b, 1.0f32, Par::rayon(0));
     }
-    let norms: Vec<f32> = (0..batch_n)
-        .map(|i| {
-            rotated_batch[i * padded_dim..(i + 1) * padded_dim]
+    assignments.resize(batch_n, 0);
+    if metric == Metric::InnerProduct {
+        // Inner-product assignment only compares -dot(q, centroid); the L2
+        // norm is irrelevant and would add a full extra scan.
+        assignments
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, output)| {
+                let dot_row = &dot_products[i * k..(i + 1) * k];
+                *output = crate::rabitq::assignment::nearest_ip(dot_row);
+            });
+    } else {
+        norms.resize(batch_n, 0.0);
+        norms.par_iter_mut().enumerate().for_each(|(i, norm)| {
+            *norm = rotated_batch[i * padded_dim..(i + 1) * padded_dim]
                 .iter()
                 .map(|x| x * x)
-                .sum()
-        })
-        .collect();
-    let mut assignments = Vec::with_capacity(batch_n);
-    for i in 0..batch_n {
-        let mut best_cid = 0usize;
-        let mut best_dist = f32::INFINITY;
-        for c in 0..k {
-            let dot = dot_products[i * k + c];
-            let mut dist = norms[i] + centroid_norms[c] - 2.0 * dot;
-            if dist < 0.0 {
-                dist = 0.0;
-            }
-            if dist < best_dist {
-                best_dist = dist;
-                best_cid = c;
-            }
-        }
-        assignments.push(best_cid);
+                .sum::<f32>();
+        });
+        assignments
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, output)| {
+                let dot_row = &dot_products[i * k..(i + 1) * k];
+                *output = crate::rabitq::assignment::nearest_l2(
+                    dot_row,
+                    centroid_norms,
+                    norms[i],
+                )
+                .0;
+            });
     }
-    assignments
 }
 
 #[cfg(test)]
@@ -3196,5 +3525,143 @@ mod parallel_probe_tests {
         assert_eq!(results.len(), 5);
         assert_eq!(diag.clusters_probed, 8, "each cluster counted once");
         assert!(diag.vectors_scanned > 0);
+    }
+}
+
+#[cfg(test)]
+mod build_pending_tests {
+    use super::*;
+    use crate::rabitq::quantizer::{
+        QuantizeScratch, RabitqConfig, quantize_with_centroid,
+        quantize_with_centroid_parts_into,
+    };
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    fn random_vectors(count: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        (0..count)
+            .map(|_| (0..dim).map(|_| rng.gen_range(-1.0..1.0)).collect())
+            .collect()
+    }
+
+    fn key(i: usize) -> IndexKey {
+        IndexKey::new((i as u64).to_le_bytes())
+    }
+
+    #[test]
+    fn build_pending_matches_append_vector_layout() {
+        let dim = 64;
+        let centroid: Vec<f32> = (0..dim).map(|i| i as f32 * 0.01 - 0.3).collect();
+        let vectors = random_vectors(53, dim, 481);
+        for total_bits in [1usize, 3, 7] {
+            for metric in [Metric::L2, Metric::InnerProduct] {
+                let config = RabitqConfig::new(total_bits);
+                let mut expected =
+                    ClusterData::new(centroid.clone(), dim, total_bits - 1);
+                let mut actual = ClusterData::new(centroid.clone(), dim, total_bits - 1);
+                let mut scratch = QuantizeScratch::new(dim);
+                for (i, vector) in vectors.iter().enumerate() {
+                    expected.append_vector(
+                        key(i),
+                        quantize_with_centroid(vector, &centroid, &config, metric),
+                    );
+                    let params = quantize_with_centroid_parts_into(
+                        vector,
+                        &centroid,
+                        &config,
+                        metric,
+                        &mut scratch,
+                    );
+                    actual.append_packed_for_build(
+                        key(i),
+                        &scratch.packed_binary,
+                        &scratch.packed_ex,
+                        params,
+                    );
+                }
+                expected.flush_pending();
+                actual.flush_pending();
+                assert_eq!(
+                    actual.ids, expected.ids,
+                    "bits={total_bits} metric={metric:?}"
+                );
+                assert_eq!(
+                    actual.ids_version, expected.ids_version,
+                    "bits={total_bits} metric={metric:?}"
+                );
+                assert_eq!(
+                    actual.batch_data, expected.batch_data,
+                    "bits={total_bits} metric={metric:?}"
+                );
+                assert_eq!(
+                    actual.ex_codes_packed, expected.ex_codes_packed,
+                    "bits={total_bits} metric={metric:?}"
+                );
+                let bits = |values: &[f32]| {
+                    values.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+                };
+                assert_eq!(bits(&actual.f_add_ex), bits(&expected.f_add_ex));
+                assert_eq!(bits(&actual.f_rescale_ex), bits(&expected.f_rescale_ex));
+                assert_eq!(bits(&actual.delta), bits(&expected.delta));
+                assert_eq!(bits(&actual.vl), bits(&expected.vl));
+                assert_eq!(actual.num_vectors, expected.num_vectors);
+            }
+        }
+    }
+
+    #[test]
+    fn partial_flush_then_full_batch_keeps_positions_aligned() {
+        let dim = 64;
+        let centroid: Vec<f32> = (0..dim).map(|i| i as f32 * 0.02 - 0.5).collect();
+        let config = RabitqConfig::new(7);
+        let vectors = random_vectors(37, dim, 997);
+        let quantized: Vec<QuantizedVector> = vectors
+            .iter()
+            .map(|v| quantize_with_centroid(v, &centroid, &config, Metric::L2))
+            .collect();
+
+        let mut cluster = ClusterData::new(centroid, dim, 6);
+        for (i, q) in quantized.iter().take(5).enumerate() {
+            cluster.append_vector(key(i), q.clone());
+        }
+        cluster.flush_pending();
+        assert_eq!(cluster.num_vectors, 5);
+        for (i, q) in quantized.iter().enumerate().skip(5) {
+            cluster.append_vector(key(i), q.clone());
+        }
+        cluster.flush_pending();
+        assert_eq!(cluster.num_vectors, 37);
+        assert_eq!(cluster.ids.len(), 37);
+
+        for (i, want) in quantized.iter().enumerate() {
+            let got = cluster.reconstruct_packed_vector(i);
+            assert_eq!(
+                got.binary_code_packed, want.binary_code_packed,
+                "binary slot {i}"
+            );
+            assert_eq!(got.ex_code_packed, want.ex_code_packed, "ex slot {i}");
+            assert_eq!(got.f_add.to_bits(), want.f_add.to_bits(), "f_add slot {i}");
+            assert_eq!(
+                got.f_rescale.to_bits(),
+                want.f_rescale.to_bits(),
+                "f_rescale slot {i}"
+            );
+            assert_eq!(
+                got.f_error.to_bits(),
+                want.f_error.to_bits(),
+                "f_error slot {i}"
+            );
+            assert_eq!(
+                got.f_add_ex.to_bits(),
+                want.f_add_ex.to_bits(),
+                "f_add_ex slot {i}"
+            );
+            assert_eq!(
+                got.f_rescale_ex.to_bits(),
+                want.f_rescale_ex.to_bits(),
+                "f_rescale_ex slot {i}"
+            );
+        }
     }
 }

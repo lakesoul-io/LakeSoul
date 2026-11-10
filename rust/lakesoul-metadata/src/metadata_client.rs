@@ -62,6 +62,43 @@ impl Debug for MetaDataClient {
 
 pub type MetaDataClientRef = Arc<MetaDataClient>;
 
+/// The parts of a table definition a read-modify-write statement is planned
+/// against. A commit re-reads them under its identity lock and refuses to
+/// publish rows whose schema no longer describes them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TableIdentity {
+    table_name: String,
+    table_namespace: String,
+    table_schema: String,
+    partitions: String,
+    properties: String,
+    schema_hash: String,
+}
+
+impl TableIdentity {
+    fn from_table_info(table_info: &TableInfo) -> Self {
+        Self {
+            table_name: table_info.table_name.clone(),
+            table_namespace: table_info.table_namespace.clone(),
+            table_schema: table_info.table_schema.clone(),
+            partitions: table_info.partitions.clone(),
+            properties: table_info.properties.clone(),
+            schema_hash: table_info.table_schema_arrow_ipc_json_hash.clone(),
+        }
+    }
+
+    fn from_row(row: &tokio_postgres::Row) -> Self {
+        Self {
+            table_name: row.get(1),
+            table_namespace: row.get(2),
+            table_schema: row.get(3),
+            partitions: row.get(4),
+            properties: row.get::<_, serde_json::Value>(5).to_string(),
+            schema_hash: row.get::<_, Option<String>>(6).unwrap_or_default(),
+        }
+    }
+}
+
 /// Observable result of a metadata commit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitOutcome {
@@ -362,7 +399,7 @@ impl MetaDataClient {
     }
 
     /// The shared connection pool backing this client.
-    pub(crate) fn pooled_client(&self) -> Arc<Mutex<PooledClient>> {
+    pub fn pooled_client(&self) -> Arc<Mutex<PooledClient>> {
         self.client.clone()
     }
 
@@ -419,7 +456,6 @@ impl MetaDataClient {
         Ok(())
     }
 
-    // Use transaction?
     pub async fn delete_table_by_table_info_cascade(
         &self,
         table_info: &TableInfo,
@@ -445,17 +481,62 @@ impl MetaDataClient {
         Ok(())
     }
 
+    /// Remove every metadata row of one table in a single transaction.
+    ///
+    /// The `table_info` row is locked `for update` before anything is deleted,
+    /// so publication transactions (which hold it `for share`, see
+    /// [`Self::commit_update`] and [`Self::commit_insert_only`]) serialize with
+    /// the drop: either the drop commits first and a later publication finds no
+    /// row (and publishes nothing), or the publication commits first and this
+    /// transaction removes the rows it added. Writing the five deletes as
+    /// separate transactions would let a publication slip between them and
+    /// leave orphan partition/data-commit rows.
     pub async fn delete_table_by_table_id_cascade(
         &self,
         table_id: &str,
         table_path: &str,
     ) -> Result<()> {
-        self.delete_table_name_id_by_table_id(table_id).await?;
-        self.delete_table_path_id_by_table_id(table_id).await?;
-        self.delete_partition_info_by_table_id(table_id).await?;
-        self.delete_data_commit_info_by_table_id(table_id).await?;
-        self.delete_table_info_by_id_and_path(table_id, table_path)
+        let guard = self.client.lock().await;
+        let mut connection = guard.get(QueryType::RW).await?;
+        let transaction = connection.transaction().await?;
+        transaction
+            .query_opt(
+                "select 1 from table_info where table_id = $1::TEXT for update",
+                &[&table_id],
+            )
             .await?;
+        transaction
+            .execute(
+                "delete from table_name_id where table_id = $1::TEXT",
+                &[&table_id],
+            )
+            .await?;
+        transaction
+            .execute(
+                "delete from table_path_id where table_id = $1::TEXT",
+                &[&table_id],
+            )
+            .await?;
+        transaction
+            .execute(
+                "delete from partition_info where table_id = $1::TEXT",
+                &[&table_id],
+            )
+            .await?;
+        transaction
+            .execute(
+                "delete from data_commit_info where table_id = $1::TEXT",
+                &[&table_id],
+            )
+            .await?;
+        crate::index_catalog::clean_for_table_path(&transaction, table_path).await?;
+        transaction
+            .execute(
+                "delete from table_info where table_id = $1::TEXT and table_path = $2::TEXT",
+                &[&table_id, &table_path],
+            )
+            .await?;
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -1156,8 +1237,10 @@ impl MetaDataClient {
                 continue;
             }
             saw_commit = true;
+            // These are prospective publication IDs: a missing commit means
+            // "not already committed", not an invalid published read snapshot.
             let commits = self
-                .get_data_commit_info_of_single_partition(partition)
+                .get_data_commit_info_of_single_partition(partition, false)
                 .await?;
             if commits.len() != partition.snapshot.len()
                 || commits.iter().any(|commit| !commit.committed)
@@ -1217,6 +1300,105 @@ impl MetaDataClient {
         .await
     }
 
+    /// Publish several partitions' files in one PostgreSQL transaction.
+    ///
+    /// This is the atomic form of [`commit_data_commit_info`](Self::commit_data_commit_info):
+    /// either every partition's snapshot is extended and every data-commit row
+    /// is marked published, or none of them is. Rows whose commit is already
+    /// published are left alone, and rows staged by an earlier attempt are
+    /// reused instead of inserted twice.
+    pub async fn commit_data_commit_infos(
+        &self,
+        data_commit_info_list: Vec<DataCommitInfo>,
+    ) -> Result<CommitOutcome> {
+        let Some(first) = data_commit_info_list.first() else {
+            return Ok(CommitOutcome::AlreadyCommitted);
+        };
+        let table_id = first.table_id.clone();
+        if data_commit_info_list
+            .iter()
+            .any(|info| info.table_id != table_id)
+        {
+            return Err(LakeSoulMetaDataError::Internal(
+                "a data commit batch must belong to one table".to_string(),
+            ));
+        }
+
+        let mut to_stage = Vec::new();
+        let mut to_publish = Vec::new();
+        for data_commit_info in data_commit_info_list {
+            let commit_id =
+                data_commit_info
+                    .commit_id
+                    .ok_or(LakeSoulMetaDataError::Internal(
+                        "commit_id missing".to_string(),
+                    ))?;
+            let commit_id_str =
+                uuid::Uuid::from_u64_pair(commit_id.high, commit_id.low).to_string();
+            match self
+                .get_single_data_commit_info(
+                    &table_id,
+                    &data_commit_info.partition_desc,
+                    &commit_id_str,
+                )
+                .await?
+            {
+                Some(existing) if existing.committed => {}
+                Some(_) => to_publish.push(data_commit_info),
+                None => {
+                    to_stage.push(data_commit_info.clone());
+                    to_publish.push(data_commit_info);
+                }
+            }
+        }
+        if to_publish.is_empty() {
+            return Ok(CommitOutcome::AlreadyCommitted);
+        }
+        // A consistent order avoids opposite-order partition conflicts when
+        // two statements publish the same partition set concurrently.
+        to_stage.sort_by(|left, right| left.partition_desc.cmp(&right.partition_desc));
+        to_publish.sort_by(|left, right| left.partition_desc.cmp(&right.partition_desc));
+        // Stage the new rows in one transaction; publication below flips them
+        // to committed together with the partition versions.
+        if !to_stage.is_empty() {
+            self.transaction_insert_data_commit_info(to_stage).await?;
+        }
+
+        let table_info = self
+            .get_table_info_by_table_id(&table_id)
+            .await?
+            .ok_or_else(|| {
+                LakeSoulMetaDataError::Internal(format!(
+                    "table {table_id} not found while publishing data commits"
+                ))
+            })?;
+        let domain = self.get_table_domain(&table_id).await?.domain;
+        let list_partition = to_publish
+            .iter()
+            .map(|data_commit_info| {
+                let commit_id =
+                    data_commit_info.commit_id.expect("commit id checked above");
+                PartitionInfo {
+                    table_id: table_id.clone(),
+                    partition_desc: data_commit_info.partition_desc.clone(),
+                    commit_op: data_commit_info.commit_op,
+                    domain: domain.clone(),
+                    snapshot: vec![commit_id],
+                    ..Default::default()
+                }
+            })
+            .collect::<Vec<_>>();
+        self.commit_data(
+            MetaInfo {
+                table_info: Some(table_info),
+                list_partition,
+                ..Default::default()
+            },
+            CommitOp::AppendCommit,
+        )
+        .await
+    }
+
     /// Publish files whose keys were validated against `expected_partitions`.
     ///
     /// Capture those partition versions before planning the existing-key scan.
@@ -1226,14 +1408,52 @@ impl MetaDataClient {
     /// data-commit rows are published in one PostgreSQL transaction.
     ///
     /// The next-version unique key also arbitrates with ordinary writers that
-    /// do not use this API. This assumes partition versions are not removed and
-    /// reused while validation is in flight: it does not acquire a GC/read lease
-    /// or serialize against destructive metadata deletion.
+    /// do not use this API. The `table_info` row is share-locked for the whole
+    /// transaction, so a destructive DROP (which locks it exclusively and
+    /// deletes all rows in one transaction) serializes with this publication:
+    /// either the drop committed first and this call fails with `NotFound`
+    /// before publishing, or this call published and the drop removes its
+    /// rows too. Partition versions are not removed and reused while
+    /// validation is in flight beyond that identity lock (no GC/read lease).
+    ///
+    /// The generic [`Self::commit_data`] path stages its partition rows
+    /// through a database function in its own transaction and does not take
+    /// this lock; a DROP concurrent with that path can still leave orphan
+    /// rows. Read-modify-write statements use this method, not that one.
     pub async fn commit_insert_only(
         &self,
         table_info: &TableInfo,
         expected_partitions: &[PartitionInfo],
         files: Vec<DataFileInfo>,
+    ) -> Result<Vec<String>> {
+        self.commit_append_files(table_info, expected_partitions, files, false)
+            .await
+    }
+
+    /// Publish rows that were read from `expected_partitions` and rewritten.
+    ///
+    /// Same per-partition version validation and atomic publication as
+    /// [`Self::commit_insert_only`]; the insert-only "a key must not already
+    /// exist" rule is not part of this method (it lives in the writer). The
+    /// table identity, schema and properties the statement was analysed
+    /// against are re-checked inside the commit transaction, so a DROP or
+    /// rebuild of the same name cannot receive these files.
+    pub async fn commit_update(
+        &self,
+        table_info: &TableInfo,
+        expected_partitions: &[PartitionInfo],
+        files: Vec<DataFileInfo>,
+    ) -> Result<Vec<String>> {
+        self.commit_append_files(table_info, expected_partitions, files, true)
+            .await
+    }
+
+    async fn commit_append_files(
+        &self,
+        table_info: &TableInfo,
+        expected_partitions: &[PartitionInfo],
+        files: Vec<DataFileInfo>,
+        verify_identity: bool,
     ) -> Result<Vec<String>> {
         if files.is_empty() {
             return Ok(Vec::new());
@@ -1246,19 +1466,40 @@ impl MetaDataClient {
         let guard = self.client.lock().await;
         let mut connection = guard.get(QueryType::RW).await?;
         let transaction = connection.transaction().await?;
-        let domain: String = transaction
+        // Share-lock the table identity row. A destructive DROP takes the
+        // same row exclusively (`delete_table_by_table_id_cascade`), so the
+        // two orders are safe: either the DROP committed first and this row
+        // is gone (the statement fails before publishing anything), or this
+        // publication commits first and the DROP then removes its rows too.
+        // Without the lock, a DROP could commit between the read and the
+        // inserts below and leave orphan partition/data-commit rows.
+        let locked = transaction
             .query_opt(
-                "select domain from table_info where table_id = $1::TEXT",
+                "select domain, table_name, table_namespace, table_schema, \
+                 partitions, properties, table_schema_arrow_ipc_json_hash \
+                 from table_info where table_id = $1::TEXT for share",
                 &[&table_info.table_id],
             )
             .await?
             .ok_or_else(|| {
                 LakeSoulMetaDataError::NotFound(format!(
-                    "table {} has no domain row",
+                    "table {} no longer exists",
                     table_info.table_id
                 ))
-            })?
-            .get(0);
+            })?;
+        let domain: String = locked.get(0);
+        if verify_identity {
+            let current = TableIdentity::from_row(&locked);
+            let expected = TableIdentity::from_table_info(table_info);
+            if current != expected {
+                transaction.rollback().await?;
+                return Err(LakeSoulMetaDataError::CommitConflict(format!(
+                    "table {} was redefined while the statement was running; \
+                     retry the statement",
+                    table_info.table_id
+                )));
+            }
+        }
         let mut data_commits = data_commit_info_list_from_files(
             table_info,
             files,
@@ -1337,7 +1578,7 @@ impl MetaDataClient {
             // Do not use ON CONFLICT or retry: another writer may have inserted
             // expected_version + 1 after the read above. Its unique-key conflict
             // must abort every partition and data commit in this transaction.
-            transaction
+            if let Err(error) = transaction
                 .execute(
                     &insert_partition,
                     &[
@@ -1350,7 +1591,22 @@ impl MetaDataClient {
                         &domain,
                     ],
                 )
-                .await?;
+                .await
+            {
+                // Both writers can pass the version read above and then race
+                // on the `(table_id, partition_desc, version)` primary key.
+                // Report that lost race as the retryable metadata conflict
+                // instead of leaking the raw unique violation to the caller.
+                if error.code().is_some_and(|code| code.code() == "23505") {
+                    transaction.rollback().await?;
+                    return Err(LakeSoulMetaDataError::CommitConflict(format!(
+                        "lost the partition version race on table {} partition \
+                         {partition_desc} version {expected_version}",
+                        table_info.table_id
+                    )));
+                }
+                return Err(error.into());
+            }
             let file_ops = data_commit
                 .file_ops
                 .iter()
@@ -1496,7 +1752,71 @@ impl MetaDataClient {
         files: Vec<DataFileInfo>,
         read_partitions: Vec<PartitionInfo>,
     ) -> Result<Vec<String>> {
-        if files.is_empty() {
+        self.commit_compaction_parts(
+            table_name,
+            namespace,
+            files,
+            read_partitions,
+            Vec::new(),
+        )
+        .await
+    }
+
+    /// Atomically replace partitions with new files using `UpdateCommit`.
+    ///
+    /// Unlike a compaction commit, the new snapshot is a logical update: the
+    /// incremental changelog exposes its files to downstream views.  This is
+    /// what an IVM rebuild writes, so a derived step's consumers reprocess it.
+    pub async fn commit_update_parts(
+        &self,
+        table_name: &str,
+        namespace: &str,
+        files: Vec<DataFileInfo>,
+        read_partitions: Vec<PartitionInfo>,
+        empty_partitions: Vec<PartitionInfo>,
+    ) -> Result<Vec<String>> {
+        self.commit_replace_parts(
+            table_name,
+            namespace,
+            files,
+            read_partitions,
+            empty_partitions,
+            CommitOp::UpdateCommit,
+        )
+        .await
+    }
+
+    /// Atomically replace partitions with new files using `CompactionCommit`.
+    /// Partitions in `empty_partitions` are published with an empty snapshot.
+    pub async fn commit_compaction_parts(
+        &self,
+        table_name: &str,
+        namespace: &str,
+        files: Vec<DataFileInfo>,
+        read_partitions: Vec<PartitionInfo>,
+        empty_partitions: Vec<PartitionInfo>,
+    ) -> Result<Vec<String>> {
+        self.commit_replace_parts(
+            table_name,
+            namespace,
+            files,
+            read_partitions,
+            empty_partitions,
+            CommitOp::CompactionCommit,
+        )
+        .await
+    }
+
+    async fn commit_replace_parts(
+        &self,
+        table_name: &str,
+        namespace: &str,
+        files: Vec<DataFileInfo>,
+        read_partitions: Vec<PartitionInfo>,
+        empty_partitions: Vec<PartitionInfo>,
+        commit_op: CommitOp,
+    ) -> Result<Vec<String>> {
+        if files.is_empty() && empty_partitions.is_empty() {
             return Ok(Vec::new());
         }
         let table_info = self
@@ -1512,7 +1832,6 @@ impl MetaDataClient {
             .map_err(|error| LakeSoulMetaDataError::Internal(error.to_string()))?
             .as_millis() as i64;
         let domain = self.get_table_domain(&table_info.table_id).await?.domain;
-        let commit_op = CommitOp::CompactionCommit;
         let data_commit_info_list = data_commit_info_list_from_files(
             &table_info,
             files,
@@ -1527,20 +1846,39 @@ impl MetaDataClient {
             .collect::<Vec<_>>();
         self.transaction_insert_data_commit_info(data_commit_info_list.clone())
             .await?;
+        let file_partitions = data_commit_info_list
+            .iter()
+            .map(|data_commit_info| PartitionInfo {
+                table_id: table_info.table_id.clone(),
+                partition_desc: data_commit_info.partition_desc.clone(),
+                commit_op: commit_op.into(),
+                domain: domain.clone(),
+                snapshot: data_commit_info.commit_id.into_iter().collect(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let file_descs = file_partitions
+            .iter()
+            .map(|partition| partition.partition_desc.clone())
+            .collect::<HashSet<_>>();
+        let mut list_partition = file_partitions;
+        list_partition.extend(
+            empty_partitions
+                .into_iter()
+                .filter(|partition| !file_descs.contains(&partition.partition_desc))
+                .map(|partition| PartitionInfo {
+                    table_id: table_info.table_id.clone(),
+                    partition_desc: partition.partition_desc,
+                    commit_op: commit_op.into(),
+                    domain: domain.clone(),
+                    snapshot: Vec::new(),
+                    ..Default::default()
+                }),
+        );
         self.commit_data(
             MetaInfo {
                 table_info: Some(table_info.clone()),
-                list_partition: data_commit_info_list
-                    .iter()
-                    .map(|data_commit_info| PartitionInfo {
-                        table_id: table_info.table_id.clone(),
-                        partition_desc: data_commit_info.partition_desc.clone(),
-                        commit_op: commit_op.into(),
-                        domain: domain.clone(),
-                        snapshot: data_commit_info.commit_id.into_iter().collect(),
-                        ..Default::default()
-                    })
-                    .collect(),
+                list_partition,
                 read_partition_info: read_partitions,
             },
             commit_op,
@@ -1742,14 +2080,38 @@ impl MetaDataClient {
         partition_info: &PartitionInfo,
     ) -> Result<Vec<String>> {
         let data_commit_info_list = self
-            .get_data_commit_info_of_single_partition(partition_info)
+            .get_data_commit_info_of_single_partition(partition_info, true)
             .await?;
         Ok(active_data_files(&data_commit_info_list))
+    }
+
+    /// Enumerate the active data files described by the selected snapshot of
+    /// `partition_info`.
+    ///
+    /// Only the commit ids in `partition_info.snapshot` are read, so the result
+    /// never reflects a later partition version. File operations are replayed
+    /// in commit order with the same delete-then-add semantics as
+    /// [`MetaDataClient::get_data_files_of_single_partition`], and each
+    /// surviving add keeps its recorded size, `file_exist_cols`, partition
+    /// description and commit timestamp. A recorded size `<= 0` means the
+    /// writer did not know the size; callers must not treat it as known.
+    ///
+    /// Every referenced commit must still exist. Losing any descriptor fails
+    /// with a snapshot conflict instead of returning a partial relation.
+    pub async fn get_data_file_infos_of_single_partition(
+        &self,
+        partition_info: &PartitionInfo,
+    ) -> Result<Vec<DataFileInfo>> {
+        let data_commit_info_list = self
+            .get_data_commit_info_of_single_partition(partition_info, true)
+            .await?;
+        Ok(active_added_files(&data_commit_info_list))
     }
 
     async fn get_data_commit_info_of_single_partition(
         &self,
         partition_info: &PartitionInfo,
+        require_complete: bool,
     ) -> Result<Vec<DataCommitInfo>> {
         if partition_info.snapshot.is_empty() {
             return Ok(Vec::new());
@@ -1775,7 +2137,31 @@ impl MetaDataClient {
             )
             .await
         {
-            Ok(wrapper) => Ok(wrapper.data_commit_info),
+            Ok(wrapper) => {
+                // Replaying only the surviving commits would fabricate a
+                // different relation (or UPDATE 0) after DROP/GC invalidates
+                // a captured snapshot. Fail instead of silently losing rows.
+                if require_complete {
+                    let found = wrapper
+                        .data_commit_info
+                        .iter()
+                        .filter_map(|commit| commit.commit_id.as_ref())
+                        .map(|id| (id.high, id.low))
+                        .collect::<HashSet<_>>();
+                    if partition_info
+                        .snapshot
+                        .iter()
+                        .any(|id| !found.contains(&(id.high, id.low)))
+                    {
+                        return Err(LakeSoulMetaDataError::CommitConflict(format!(
+                            "snapshot commits disappeared for table {table_id} \
+                             partition {partition_desc} version {}; retry the statement",
+                            partition_info.version
+                        )));
+                    }
+                }
+                Ok(wrapper.data_commit_info)
+            }
             Err(e) => Err(e),
         }
     }
@@ -2049,7 +2435,7 @@ impl MetaDataClient {
                 ..Default::default()
             };
             let commits = self
-                .get_data_commit_info_of_single_partition(&snapshot)
+                .get_data_commit_info_of_single_partition(&snapshot, true)
                 .await?;
             changelog.added_files = active_added_files(&commits);
         }
@@ -2116,15 +2502,48 @@ impl MetaDataClient {
         table_id: &str,
         from_versions: &HashMap<String, i64>,
     ) -> Result<IncrementalWindow> {
+        self.get_table_changelog_bounded(table_id, from_versions, None)
+            .await
+    }
+
+    /// The changelog of a table from `from_versions` up to explicit
+    /// `to_versions`, one upper bound per partition.
+    ///
+    /// This is how an IVM refresh reconstructs the exact window of a pending
+    /// epoch: files committed after the failed attempt must not be folded
+    /// into the replayed window.  Partitions that are not listed in
+    /// `to_versions` are ignored, and a version that has no changelog row up
+    /// to the bound reports `requires_rebuild`.
+    pub async fn get_table_changelog_up_to(
+        &self,
+        table_id: &str,
+        from_versions: &HashMap<String, i64>,
+        to_versions: &HashMap<String, i64>,
+    ) -> Result<IncrementalWindow> {
+        self.get_table_changelog_bounded(table_id, from_versions, Some(to_versions))
+            .await
+    }
+
+    async fn get_table_changelog_bounded(
+        &self,
+        table_id: &str,
+        from_versions: &HashMap<String, i64>,
+        to_versions: Option<&HashMap<String, i64>>,
+    ) -> Result<IncrementalWindow> {
         let partitions = self.get_all_partition_info(table_id).await?;
         let changed = partitions
             .iter()
             .filter(|partition| {
-                i64::from(partition.version)
-                    > from_versions
+                let from_version = from_versions
+                    .get(&partition.partition_desc)
+                    .copied()
+                    .unwrap_or(-1);
+                match to_versions {
+                    Some(to_versions) => to_versions
                         .get(&partition.partition_desc)
-                        .copied()
-                        .unwrap_or(-1)
+                        .is_some_and(|to_version| *to_version > from_version),
+                    None => i64::from(partition.version) > from_version,
+                }
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -2165,6 +2584,10 @@ impl MetaDataClient {
                 .get(&partition.partition_desc)
                 .copied()
                 .unwrap_or(-1);
+            let upper_version = to_versions
+                .and_then(|to_versions| to_versions.get(&partition.partition_desc))
+                .copied()
+                .unwrap_or(i64::from(partition.version));
             let mut changelog = PartitionChangelog {
                 partition_desc: partition.partition_desc.clone(),
                 to_version: from_version,
@@ -2189,7 +2612,7 @@ impl MetaDataClient {
                 .iter()
                 .filter(|row| {
                     i64::from(row.version) > from_version
-                        && row.version <= partition.version
+                        && i64::from(row.version) <= upper_version
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -2199,6 +2622,7 @@ impl MetaDataClient {
                     // History below the cursor is gone: the diff cannot be
                     // trusted, so report the bound and ask for a rebuild.
                     changelog.requires_rebuild = true;
+                    changelog.to_version = upper_version;
                     changelog.to_timestamp = partition.timestamp;
                 }
                 changelogs.push(changelog);
@@ -2206,7 +2630,7 @@ impl MetaDataClient {
             }
             if baseline.is_none() && from_version >= 0 {
                 let last = window.last().expect("window is not empty");
-                changelog.to_version = i64::from(last.version);
+                changelog.to_version = upper_version;
                 changelog.to_timestamp = last.timestamp;
                 changelog.requires_rebuild = true;
                 changelogs.push(changelog);
@@ -2240,6 +2664,13 @@ impl MetaDataClient {
                 }
                 changelog.to_version = i64::from(row.version);
                 changelog.to_timestamp = row.timestamp;
+            }
+            if to_versions.is_some() && changelog.to_version < upper_version {
+                // The requested bound has no version row (history was
+                // compacted away); the caller must rebuild instead of
+                // applying a shorter window.
+                changelog.to_version = upper_version;
+                changelog.requires_rebuild = true;
             }
 
             if changelog.requires_rebuild || changelog.partition_deleted {
@@ -2355,6 +2786,17 @@ impl MetaDataClient {
         &self.secret
     }
 
+    /// Replace a table's schema metadata, clearing the Arrow IPC mirror so
+    /// every reader parses the new schema from `table_schema`.
+    pub async fn update_table_schema(&self, table_id: &str, schema: &str) -> Result<()> {
+        self.execute_update(
+            DaoType::UpdateTableInfoById as i32,
+            [table_id, "", "", schema].join(PARAM_DELIM),
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn update_table_properties(
         &self,
         table_id: &str,
@@ -2442,62 +2884,49 @@ impl MetaDataClient {
     }
 }
 
-fn active_data_files(commits: &[DataCommitInfo]) -> Vec<String> {
-    let mut deleted = HashSet::new();
+/// Replay resolved commits into active file operations, mirroring the JVM
+/// `filterFiles` behaviour: the operations are walked backwards so a `del`
+/// suppresses an earlier `add` of the same path, then the commit order is
+/// restored. Only `add` operations are projected by `map`.
+fn replay_active_files<'a, T>(
+    commits: &'a [DataCommitInfo],
+    mut map: impl FnMut(&'a DataCommitInfo, &'a entity::DataFileOp) -> T,
+) -> Vec<T> {
+    let mut deleted_paths = HashSet::new();
     let mut active = Vec::new();
-
-    for file_op in commits
-        .iter()
-        .flat_map(|commit| commit.file_ops.iter())
-        .rev()
-    {
-        match file_op.file_op() {
-            entity::FileOp::Del => {
-                deleted.insert(&file_op.path);
+    for commit in commits.iter().rev() {
+        for file_op in commit.file_ops.iter().rev() {
+            match file_op.file_op() {
+                entity::FileOp::Del => {
+                    deleted_paths.insert(file_op.path.as_str());
+                }
+                entity::FileOp::Add if !deleted_paths.contains(file_op.path.as_str()) => {
+                    active.push(map(commit, file_op));
+                }
+                entity::FileOp::Add => {}
             }
-            entity::FileOp::Add if !deleted.contains(&file_op.path) => {
-                active.push(file_op.path.clone());
-            }
-            entity::FileOp::Add => {}
         }
     }
     active.reverse();
     active
 }
 
-/// Turn resolved commits into added files, mirroring the JVM `filterFiles`
-/// behaviour: the operations are walked backwards so a `del` suppresses an
-/// earlier `add` of the same path, then the commit order is restored. Only
-/// `add` operations are returned.
-fn active_added_files(commits: &[DataCommitInfo]) -> Vec<DataFileInfo> {
-    let operations = commits
-        .iter()
-        .flat_map(|commit| commit.file_ops.iter().map(move |file_op| (commit, file_op)))
-        .collect::<Vec<_>>();
+fn active_data_files(commits: &[DataCommitInfo]) -> Vec<String> {
+    replay_active_files(commits, |_, file_op| file_op.path.clone())
+}
 
-    let mut deleted_paths = HashSet::new();
-    let mut active = Vec::new();
-    for (commit, file_op) in operations.iter().rev() {
-        match file_op.file_op() {
-            entity::FileOp::Del => {
-                deleted_paths.insert(file_op.path.as_str());
-            }
-            entity::FileOp::Add if !deleted_paths.contains(file_op.path.as_str()) => {
-                active.push(DataFileInfo {
-                    partition_desc: commit.partition_desc.clone(),
-                    path: file_op.path.clone(),
-                    file_op: "add".to_string(),
-                    size: file_op.size,
-                    bucket_id: None,
-                    modification_time: commit.timestamp,
-                    file_exist_cols: file_op.file_exist_cols.clone(),
-                });
-            }
-            entity::FileOp::Add => {}
-        }
-    }
-    active.reverse();
-    active
+/// Turn resolved commits into added files, preserving each add's recorded
+/// metadata.
+fn active_added_files(commits: &[DataCommitInfo]) -> Vec<DataFileInfo> {
+    replay_active_files(commits, |commit, file_op| DataFileInfo {
+        partition_desc: commit.partition_desc.clone(),
+        path: file_op.path.clone(),
+        file_op: "add".to_string(),
+        size: file_op.size,
+        bucket_id: None,
+        modification_time: commit.timestamp,
+        file_exist_cols: file_op.file_exist_cols.clone(),
+    })
 }
 
 /// Clamp a partition version into the `i32` range used by the metadata tables.
@@ -2816,7 +3245,7 @@ mod tests {
     }
 
     #[test]
-    fn active_data_files_apply_operations_in_snapshot_order() {
+    fn snapshot_replay_keeps_adds_not_deleted_in_version_order() {
         let file_op = |path: &str, operation: entity::FileOp| entity::DataFileOp {
             path: path.to_string(),
             file_op: operation.into(),
@@ -2847,10 +3276,135 @@ mod tests {
             },
         ];
 
+        let paths = active_added_files(&commits)
+            .into_iter()
+            .map(|file| file.path)
+            .collect::<Vec<_>>();
         assert_eq!(
-            active_data_files(&commits),
+            paths,
             vec!["active.parquet", "readded.parquet", "new.parquet"]
         );
+        assert_eq!(active_data_files(&commits), paths);
+    }
+
+    #[test]
+    fn snapshot_replay_preserves_per_file_size_and_column_metadata() {
+        let file_op =
+            |path: &str, operation: entity::FileOp, size: i64, columns: &str| {
+                entity::DataFileOp {
+                    path: path.to_string(),
+                    file_op: operation.into(),
+                    size,
+                    file_exist_cols: columns.to_string(),
+                }
+            };
+        let commit = |timestamp: i64, file_ops: Vec<entity::DataFileOp>| DataCommitInfo {
+            table_id: "table-id".to_string(),
+            partition_desc: "part=a".to_string(),
+            timestamp,
+            file_ops,
+            ..Default::default()
+        };
+        let commits = vec![
+            commit(
+                100,
+                vec![
+                    file_op("replaced.parquet", entity::FileOp::Add, 10, "id"),
+                    file_op("kept.parquet", entity::FileOp::Add, 20, "id,value"),
+                    file_op("rewritten.parquet", entity::FileOp::Add, 30, "id,value"),
+                ],
+            ),
+            commit(
+                200,
+                vec![
+                    file_op("replaced.parquet", entity::FileOp::Del, 0, ""),
+                    file_op("rewritten.parquet", entity::FileOp::Del, 0, ""),
+                ],
+            ),
+            commit(
+                300,
+                vec![
+                    file_op("rewritten.parquet", entity::FileOp::Add, 31, "id,flag"),
+                    file_op("appended.parquet", entity::FileOp::Add, 40, "id"),
+                ],
+            ),
+        ];
+
+        let files = active_added_files(&commits);
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["kept.parquet", "rewritten.parquet", "appended.parquet"]
+        );
+        assert_eq!(
+            files.iter().map(|file| file.size).collect::<Vec<_>>(),
+            vec![20, 31, 40]
+        );
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.file_exist_cols.as_str())
+                .collect::<Vec<_>>(),
+            vec!["id,value", "id,flag", "id"]
+        );
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.modification_time)
+                .collect::<Vec<_>>(),
+            vec![100, 300, 300]
+        );
+        assert!(files.iter().all(|file| file.partition_desc == "part=a"));
+        assert!(files.iter().all(|file| file.file_op == "add"));
+        assert!(files.iter().all(|file| file.bucket_id.is_none()));
+    }
+
+    #[test]
+    fn snapshot_replay_applies_operation_order_within_a_commit() {
+        let file_op =
+            |path: &str, operation: entity::FileOp, size: i64| entity::DataFileOp {
+                path: path.to_string(),
+                file_op: operation.into(),
+                size,
+                file_exist_cols: "id".to_string(),
+            };
+        let commit = |timestamp: i64, file_ops: Vec<entity::DataFileOp>| DataCommitInfo {
+            partition_desc: "part=a".to_string(),
+            timestamp,
+            file_ops,
+            ..Default::default()
+        };
+        let commits = vec![
+            // The delete follows the add in the same commit, so it removes it.
+            commit(
+                10,
+                vec![
+                    file_op("dropped.parquet", entity::FileOp::Add, 1),
+                    file_op("dropped.parquet", entity::FileOp::Del, 0),
+                ],
+            ),
+            // A later add of an earlier-deleted path is a fresh live version.
+            commit(
+                20,
+                vec![
+                    file_op("kept.parquet", entity::FileOp::Del, 0),
+                    file_op("kept.parquet", entity::FileOp::Add, 5),
+                ],
+            ),
+        ];
+
+        let files = active_added_files(&commits);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "kept.parquet");
+        assert_eq!(files[0].size, 5);
+        assert_eq!(files[0].modification_time, 20);
+    }
+
+    #[test]
+    fn snapshot_replay_of_no_commits_is_empty() {
+        assert!(active_added_files(&[]).is_empty());
     }
 
     #[test]

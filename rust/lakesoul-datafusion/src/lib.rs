@@ -20,15 +20,18 @@ pub mod cli;
 pub mod datasource;
 pub mod distributed;
 mod error;
+pub mod federation;
 pub mod index;
 pub mod index_maintenance;
 pub mod lakesoul_table;
+pub mod pg_assignment;
 pub mod planner;
 pub mod session;
 pub mod text_index;
 pub mod tpch;
 pub mod udf;
 pub mod vector_index;
+pub mod write_mode;
 
 // re export
 pub use lakesoul_common::ser;
@@ -45,12 +48,15 @@ pub fn create_lakesoul_session_ctx(
     )
 }
 
+/// Environment variable that sets single-node sessions' `target_partitions`
+/// (DataFusion's own name for the option, read by [`SessionConfig::from_env`]).
+pub const TARGET_PARTITIONS_ENV: &str = "DATAFUSION_EXECUTION_TARGET_PARTITIONS";
+
 /// Build the default [`SessionConfig`] used by LakeSoul sessions.
 pub fn create_lakesoul_session_config() -> Result<SessionConfig> {
     let mut session_config = SessionConfig::from_env()?
         .with_information_schema(true)
         .with_create_default_catalog_and_schema(false)
-        .with_batch_size(8192)
         .with_default_catalog_and_schema(
             session::DEFAULT_CATALOG.to_string(),
             session::DEFAULT_SCHEMA.to_string(),
@@ -70,7 +76,12 @@ pub fn create_lakesoul_session_config() -> Result<SessionConfig> {
         .execution
         .parquet
         .pushdown_filters = true;
-    session_config.options_mut().execution.target_partitions = 1;
+    // One partition unless `DATAFUSION_EXECUTION_TARGET_PARTITIONS` asks for
+    // more (read by `from_env` above); a session `SET` still overrides both.
+    // Distributed sessions take theirs from `DistributedOptions` instead.
+    if std::env::var_os(TARGET_PARTITIONS_ENV).is_none() {
+        session_config.options_mut().execution.target_partitions = 1;
+    }
     session_config
         .options_mut()
         .execution
@@ -121,10 +132,6 @@ where
 }
 
 type Result<T, E = Report> = std::result::Result<T, E>;
-
-#[cfg(feature = "adbc")]
-#[expect(dead_code)]
-mod adbc;
 
 #[cfg(test)]
 mod tests;

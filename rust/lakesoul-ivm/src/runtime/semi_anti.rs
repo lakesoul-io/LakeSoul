@@ -6,6 +6,7 @@
 //! subset.
 
 use super::*;
+use arrow::array::{Array, BinaryArray};
 
 /// One condition of a [`SemiAntiView`]:
 /// `left.{left_column} {op} right.{right_column}`, or
@@ -225,11 +226,11 @@ pub fn semi_anti_mv_schema_for(
 }
 
 /// The probe view used by the shared keyed join helpers for a semi/anti join.
-fn semi_anti_probe(view: &SemiAntiView) -> JoinView {
+fn semi_anti_probe(view: &SemiAntiView, left: &IvmTable, right: &IvmTable) -> JoinView {
     JoinView {
         view_id: view.view_id.clone(),
-        left: view.left.clone(),
-        right: view.right.clone(),
+        left: left.clone(),
+        right: right.clone(),
         output: view.mv.clone(),
         join_keys: view.join_keys.clone(),
         right_keys: view.right_keys.clone(),
@@ -244,6 +245,61 @@ fn semi_anti_probe(view: &SemiAntiView) -> JoinView {
         state: None,
         refresh_interval_ms: view.refresh_interval_ms,
     }
+}
+
+/// Project both sources to the columns the side states need.  The returned
+/// schemas are also the column lists the refresh materializes, so a rebuild
+/// creates the same state shape as an incremental refresh.
+fn semi_anti_state_sources(
+    context: &SessionContext,
+    view: &SemiAntiView,
+) -> Result<(IvmTable, IvmTable, Vec<String>, Vec<String>)> {
+    let mut left_columns = semi_anti_left_columns(view);
+    if let Some(filter) = view.left_filter.as_deref() {
+        for column in filter_columns(context, &view.left.schema, filter)? {
+            if !left_columns.contains(&column) {
+                left_columns.push(column);
+            }
+        }
+    }
+    if let Some(predicate) = view.match_predicate.as_deref() {
+        let aggregate_type = right_aggregate_type(context, view)?;
+        let schema = match_schema(&view.left.schema, &aggregate_type)?;
+        for column in filter_columns(context, &schema, predicate)? {
+            if column != IVM_RIGHT_AGG_COLUMN && !left_columns.contains(&column) {
+                left_columns.push(column);
+            }
+        }
+    }
+    let mut right_columns = semi_anti_right_columns(view);
+    if let Some(call) = view.right_aggregate.as_deref() {
+        for column in filter_columns(context, &view.right.schema, call)? {
+            if !right_columns.contains(&column) {
+                right_columns.push(column);
+            }
+        }
+    }
+    if let Some(filter) = view.right_filter.as_deref() {
+        for column in filter_columns(context, &view.right.schema, filter)? {
+            if !right_columns.contains(&column) {
+                right_columns.push(column);
+            }
+        }
+    }
+    let left_state_source = view
+        .left
+        .projected_state_source(&left_columns)
+        .map_err(|error| report!("semi/anti left state projection: {error}"))?;
+    let right_state_source = view
+        .right
+        .projected_state_source(&right_columns)
+        .map_err(|error| report!("semi/anti right state projection: {error}"))?;
+    Ok((
+        left_state_source,
+        right_state_source,
+        left_columns,
+        right_columns,
+    ))
 }
 
 /// Validate that a semi/anti view can be maintained.
@@ -391,6 +447,97 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether the right side of a plain SEMI/ANTI view can be reduced to a
+/// shared existence set.  A condition, an aggregate, count mode or a right
+/// filter needs the right row values, not only whether a key exists.
+fn semi_anti_shared_existence_applies(view: &SemiAntiView) -> bool {
+    view.conditions.is_empty()
+        && view.right_aggregate.is_none()
+        && !view.count_mode
+        && view.right_filter.is_none()
+        && !view.null_safe
+        && !view.join_keys.is_empty()
+        && !view.right.primary_keys.is_empty()
+        && right_join_keys(view).len() == view.join_keys.len()
+        && view
+            .join_keys
+            .iter()
+            .zip(right_join_keys(view))
+            .all(|(left, right)| {
+                match (
+                    view.left.schema.field_with_name(left),
+                    view.right.schema.field_with_name(right),
+                ) {
+                    (Ok(left), Ok(right)) => left.data_type() == right.data_type(),
+                    _ => false,
+                }
+            })
+}
+
+/// A one-column batch of encoded join keys.  The column name differs from
+/// the probe's `__ivm_join_key` so the two frames can be joined without an
+/// ambiguous reference.
+const SHARED_RIGHT_KEY_COLUMN: &str = "__ivm_shared_right_key";
+
+fn encoded_key_frame(
+    context: &SessionContext,
+    keys: &std::collections::HashSet<Vec<u8>>,
+) -> Result<DataFrame> {
+    let array = BinaryArray::from_iter_values(keys.iter().map(|key| key.as_slice()));
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        SHARED_RIGHT_KEY_COLUMN,
+        DataType::Binary,
+        false,
+    )]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(array)])?;
+    dataframe(context, vec![batch], &schema)
+}
+
+/// The encoded join keys of materialized batches.
+fn collect_batch_keys(
+    batches: &[RecordBatch],
+) -> Result<std::collections::HashSet<Vec<u8>>> {
+    let mut keys = std::collections::HashSet::new();
+    for batch in batches {
+        let array = batch
+            .column_by_name(super::join_state::IVM_JOIN_KEY_COLUMN)
+            .ok_or_else(|| report!("encoded key frame has no join key column"))?
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or_else(|| report!("encoded join key is not binary"))?;
+        for row in 0..array.len() {
+            if !array.is_null(row) {
+                keys.insert(array.value(row).to_vec());
+            }
+        }
+    }
+    Ok(keys)
+}
+
+/// Drain the encoded key column of a frame into a set.
+async fn collect_encoded_keys(
+    frame: DataFrame,
+) -> Result<std::collections::HashSet<Vec<u8>>> {
+    use futures::StreamExt;
+    let mut keys = std::collections::HashSet::new();
+    let mut stream = frame.execute_stream().await?;
+    while let Some(batch) = stream.next().await {
+        let batch = batch?;
+        let array = batch
+            .column_by_name(super::join_state::IVM_JOIN_KEY_COLUMN)
+            .ok_or_else(|| report!("encoded key frame has no join key column"))?
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or_else(|| report!("encoded join key is not binary"))?;
+        for row in 0..array.len() {
+            if !array.is_null(row) {
+                keys.insert(array.value(row).to_vec());
+            }
+        }
+    }
+    Ok(keys)
 }
 
 /// The left columns materialized by a semi/anti view.
@@ -820,10 +967,18 @@ impl IvmRuntime {
         validate_semi_anti_view(view)?;
 
         let left_window = self
-            .collect_source_window(&view.view_id, &view.left)
+            .collect_source_window_for_filter(
+                &view.view_id,
+                &view.left,
+                view.left_filter.as_deref(),
+            )
             .await?;
         let right_window = self
-            .collect_source_window(&view.view_id, &view.right)
+            .collect_source_window_for_filter(
+                &view.view_id,
+                &view.right,
+                view.right_filter.as_deref(),
+            )
             .await?;
         if left_window.added_files.is_empty() && right_window.added_files.is_empty() {
             return Ok(None);
@@ -853,10 +1008,17 @@ impl IvmRuntime {
         let side_keyed = !view.join_keys.is_empty()
             && !view.left.primary_keys.is_empty()
             && !view.right.primary_keys.is_empty();
+        // Both side states only need the columns this view reads: the
+        // output, the join keys, the primary keys and the change marker.
+        // Keeping the whole source would copy every unused payload column
+        // into the state on each refresh.
+        let context = refresh_session();
+        let (left_state_source, right_state_source, left_columns, right_columns) =
+            semi_anti_state_sources(&context, view)?;
         let left_state = if side_keyed {
             self.ensure_join_side_state_for_view(
                 &view.view_id,
-                &view.left,
+                &left_state_source,
                 &view.join_keys,
                 StateRole::JoinLeft,
                 view.null_safe,
@@ -868,7 +1030,7 @@ impl IvmRuntime {
         let right_state = if side_keyed {
             self.ensure_join_side_state_for_view(
                 &view.view_id,
-                &view.right,
+                &right_state_source,
                 right_join_keys(view),
                 StateRole::JoinRight,
                 view.null_safe,
@@ -879,11 +1041,11 @@ impl IvmRuntime {
         };
         if let Some(state) = &left_state {
             commit_ids.extend(if state.current_files(&self.client).await?.is_empty() {
-                self.sync_join_side_state(&view.left, state, &view.join_keys, &[])
+                self.sync_join_side_state(&left_state_source, state, &view.join_keys, &[])
                     .await?
             } else {
                 self.apply_join_side_delta(
-                    &view.left,
+                    &left_state_source,
                     state,
                     &left_window,
                     &view.join_keys,
@@ -894,11 +1056,16 @@ impl IvmRuntime {
         }
         if let Some(state) = &right_state {
             commit_ids.extend(if state.current_files(&self.client).await?.is_empty() {
-                self.sync_join_side_state(&view.right, state, right_join_keys(view), &[])
-                    .await?
+                self.sync_join_side_state(
+                    &right_state_source,
+                    state,
+                    right_join_keys(view),
+                    &[],
+                )
+                .await?
             } else {
                 self.apply_join_side_delta(
-                    &view.right,
+                    &right_state_source,
                     state,
                     &right_window,
                     right_join_keys(view),
@@ -907,49 +1074,21 @@ impl IvmRuntime {
                 .await?
             });
         }
+        // A plain equality SEMI/ANTI needs only whether a right key exists.
+        // When the right source is already keyed by that key, every view over
+        // it can share one per-window existence set instead of probing the
+        // same keys again.
+        let shared_existence = side_keyed
+            && right_state.is_none()
+            && semi_anti_shared_existence_applies(view);
         self.checkpoint_epoch_states(&record).await?;
 
-        // Project both sides to the columns the view actually needs (the
-        // side filters included).
-        let context = refresh_session();
-        let mut left_columns = semi_anti_left_columns(view);
-        if let Some(filter) = view.left_filter.as_deref() {
-            for column in filter_columns(&context, &view.left.schema, filter)? {
-                if !left_columns.contains(&column) {
-                    left_columns.push(column);
-                }
-            }
-        }
-        if let Some(predicate) = view.match_predicate.as_deref() {
-            let aggregate_type = right_aggregate_type(&context, view)?;
-            let schema = match_schema(&view.left.schema, &aggregate_type)?;
-            for column in filter_columns(&context, &schema, predicate)? {
-                if column != IVM_RIGHT_AGG_COLUMN && !left_columns.contains(&column) {
-                    left_columns.push(column);
-                }
-            }
-        }
-        let mut right_columns = semi_anti_right_columns(view);
-        if let Some(call) = view.right_aggregate.as_deref() {
-            for column in filter_columns(&context, &view.right.schema, call)? {
-                if !right_columns.contains(&column) {
-                    right_columns.push(column);
-                }
-            }
-        }
-        if let Some(filter) = view.right_filter.as_deref() {
-            for column in filter_columns(&context, &view.right.schema, filter)? {
-                if !right_columns.contains(&column) {
-                    right_columns.push(column);
-                }
-            }
-        }
-        let left_projection = project_schema(&view.left.schema, &left_columns)?;
-        let right_projection = project_schema(&view.right.schema, &right_columns)?;
+        let left_projection = project_schema(&left_state_source.schema, &left_columns)?;
+        let right_projection =
+            project_schema(&right_state_source.schema, &right_columns)?;
 
         let mv_partitions =
             super::mv_partitions_for_source(&view.mv, &view.left, &left_window);
-        let context = refresh_session();
         let left_changed = !left_window.added_files.is_empty();
         let right_changed = !right_window.added_files.is_empty();
         let raw_delta_left = self.groups_table_frame(
@@ -962,10 +1101,18 @@ impl IvmRuntime {
             &view.right,
             right_window.added_files.clone(),
         )?;
+        let left_state_fields = left_state_source
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>();
+        let raw_delta_left_state =
+            project_frame(raw_delta_left.clone(), &left_state_fields)?;
         let delta_left = project_frame(raw_delta_left.clone(), &left_columns)?;
         let delta_right = project_frame(raw_delta_right.clone(), &right_columns)?;
         let mv_partitions = if right_changed { None } else { mv_partitions };
-        let probe = semi_anti_probe(view);
+        let probe = semi_anti_probe(view, &left_state_source, &right_state_source);
 
         let left_key_names = view
             .left
@@ -1001,7 +1148,7 @@ impl IvmRuntime {
                         &context,
                         &view.left,
                         &left_window,
-                        &raw_delta_left,
+                        &raw_delta_left_state,
                         &view.join_keys,
                         &[],
                         &view.join_keys,
@@ -1013,6 +1160,7 @@ impl IvmRuntime {
                         &probe,
                         left_state.as_ref(),
                         changed_tuples,
+                        false,
                     )
                     .await?,
                 )
@@ -1039,6 +1187,7 @@ impl IvmRuntime {
                         &probe,
                         left_state.as_ref(),
                         changed_keys,
+                        false,
                     )
                     .await?,
                 )
@@ -1048,7 +1197,7 @@ impl IvmRuntime {
             let affected_from_left = if view.count_mode {
                 // The deleted keys are absent from the current state, so the
                 // delta keys are always part of the affected set.
-                let changed = raw_delta_left
+                let changed = raw_delta_left_state
                     .clone()
                     .select(left_key_exprs.clone())?
                     .distinct()?;
@@ -1063,7 +1212,7 @@ impl IvmRuntime {
                     Some(rows) => {
                         rows.clone().select(left_key_exprs.clone())?.distinct()?
                     }
-                    None => raw_delta_left
+                    None => raw_delta_left_state
                         .clone()
                         .select(left_key_exprs.clone())?
                         .distinct()?,
@@ -1094,20 +1243,23 @@ impl IvmRuntime {
                 rows.distinct()?
             } else {
                 let rows = match right_rows {
-                    Some(right) => raw_delta_left.clone().union(right)?,
-                    None => raw_delta_left.clone(),
+                    Some(right) => raw_delta_left_state.clone().union(right)?,
+                    None => raw_delta_left_state.clone(),
                 };
                 rows.distinct()?
             };
-            let right_now = self
-                .lookup_right_rows_for_left_keys(
+            let right_now = if shared_existence {
+                dataframe(&context, Vec::new(), &right_projection)?
+            } else {
+                self.lookup_right_rows_for_left_keys(
                     &context,
                     &probe,
                     right_state.as_ref(),
                     right_join_keys(view),
                     &left_now,
                 )
-                .await?;
+                .await?
+            };
             (
                 project_frame(left_now, &left_columns)?,
                 project_frame(right_now, &right_columns)?,
@@ -1288,6 +1440,20 @@ impl IvmRuntime {
             &right_projection,
             view.right_filter.as_deref(),
         )?;
+        let shared_match = if shared_existence {
+            Some(
+                self.shared_semi_anti_match(
+                    &context,
+                    view,
+                    &left_now,
+                    &right_state_source,
+                    &right_window,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
 
         // The MV only supplies the old rows for the affected left keys.
         // Read those keys through the shared PK lookup instead of scanning
@@ -1325,7 +1491,9 @@ impl IvmRuntime {
         // Rows that match right now; the ANTI insert takes the difference.
         // The count mode already returns the qualifying rows, so its insert
         // joins semi against them.
-        let (matched_now, insert_join_type) = if view.count_mode {
+        let (matched_now, insert_join_type) = if let Some(rows) = shared_match {
+            (rows.select(left_key_exprs.clone())?.distinct()?, join_type)
+        } else if view.count_mode {
             (
                 semi_count_qualifying(&context, left_now.clone(), right_now, view)
                     .await?,
@@ -1424,6 +1592,111 @@ impl IvmRuntime {
         Ok(Some(epoch))
     }
 
+    /// The left rows of `left` whose right join key exists, using the
+    /// per-window key set shared by every plain SEMI/ANTI view over the same
+    /// right source.  Only keys that no view has probed yet reach the right
+    /// table; a key already answered by another view is served from the set.
+    async fn shared_semi_anti_match(
+        &self,
+        context: &SessionContext,
+        view: &SemiAntiView,
+        left: &DataFrame,
+        right: &IvmTable,
+        right_window: &SourceWindow,
+    ) -> Result<DataFrame> {
+        let join_key = super::join_state::IVM_JOIN_KEY_COLUMN;
+        let right_keys = right_join_keys(view);
+        let aliases = view
+            .join_keys
+            .iter()
+            .zip(right_keys)
+            .map(|(left, right)| col(left.as_str()).alias(right.as_str()))
+            .collect::<Vec<_>>();
+        // Encode the left rows themselves so the matched frame still carries
+        // every column the view materializes.  Eligibility checked that the
+        // left and right key types agree, so the bytes are comparable with the
+        // right keys encoded below.
+        let encoded =
+            encode_join_key_frame(context, left.clone(), &view.left, &view.join_keys)?;
+        // The left rows of a right-only window come from a keyed lookup;
+        // materialize them once so the existence probe and the final match do
+        // not repeat that lookup.
+        let schema: SchemaRef = Arc::new(encoded.schema().as_arrow().clone());
+        let batches = encoded.collect().await?;
+        let requested = collect_batch_keys(&batches)?;
+        let encoded = if batches.is_empty() {
+            dataframe(
+                context,
+                vec![RecordBatch::new_empty(schema.clone())],
+                &schema,
+            )?
+        } else {
+            context.read_batches(batches)?
+        };
+        let table = format!("{}|{}", right.table_id, right_keys.join(","));
+        let window = window_key(&right_window.identity);
+        let (mut present, unknown) = {
+            let mut cache = self
+                .semi_anti_right_key_cache()
+                .lock()
+                .map_err(|_| report!("semi/anti right key cache is poisoned"))?;
+            cache.begin_window(&window);
+            cache.lookup(&table, &requested)
+        };
+        let cached = requested.intersection(&present).count();
+        if !unknown.is_empty() {
+            let missing = encoded.clone().join(
+                encoded_key_frame(context, &unknown)?,
+                JoinType::Inner,
+                &[join_key],
+                &[SHARED_RIGHT_KEY_COLUMN],
+                None,
+            )?;
+            let missing = missing.select(aliases)?;
+            // Only the right keys are read: the existence answer never needs
+            // the payload of the right table.
+            let rows = self
+                .lookup_source_by_join_keys(
+                    context, right, missing, right_keys, right_keys, true,
+                )
+                .await?;
+            let rows = rows.select(
+                right_keys
+                    .iter()
+                    .map(|key| col(key.as_str()))
+                    .collect::<Vec<_>>(),
+            )?;
+            let encoded_rows = encode_join_key_frame(context, rows, right, right_keys)?;
+            let found = collect_encoded_keys(encoded_rows).await?;
+            {
+                let mut cache = self
+                    .semi_anti_right_key_cache()
+                    .lock()
+                    .map_err(|_| report!("semi/anti right key cache is poisoned"))?;
+                cache.record(&table, &unknown, &found);
+            }
+            present.extend(found);
+        }
+        // Every requested key is now either known present or known absent.
+        present.retain(|key| requested.contains(key));
+        tracing::debug!(
+            table = %right.table_name,
+            requested = requested.len(),
+            cached,
+            probed = unknown.len(),
+            present = present.len(),
+            "semi/anti shared right key set"
+        );
+        let matched = encoded.join(
+            encoded_key_frame(context, &present)?,
+            JoinType::LeftSemi,
+            &[join_key],
+            &[SHARED_RIGHT_KEY_COLUMN],
+            None,
+        )?;
+        Ok(matched)
+    }
+
     /// Rebuild a `SEMI`/`ANTI` join from the full state of both sources.
     pub async fn rebuild_semi_anti(&self, view: &SemiAntiView) -> Result<i64> {
         self.register_semi_anti_view(view).await?;
@@ -1436,8 +1709,12 @@ impl IvmRuntime {
         self.metadata.delete_cursors(&view.view_id).await?;
         view.mv.truncate(&self.client).await?;
 
-        let left_baseline = self.source_baseline(&view.left).await?;
-        let right_baseline = self.source_baseline(&view.right).await?;
+        let left_baseline = self
+            .source_baseline_for_filter(&view.left, view.left_filter.as_deref())
+            .await?;
+        let right_baseline = self
+            .source_baseline_for_filter(&view.right, view.right_filter.as_deref())
+            .await?;
         let to_versions = left_baseline
             .to_versions
             .iter()
@@ -1471,27 +1748,56 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        let context = refresh_session();
+        let (left_state_source, right_state_source, _, _) =
+            semi_anti_state_sources(&context, view)?;
         if !view.join_keys.is_empty()
             && !view.left.primary_keys.is_empty()
             && !view.right.primary_keys.is_empty()
         {
-            commit_ids.extend(
-                self.sync_full_join_side_states(
+            let left_state = self
+                .ensure_join_side_state_for_view(
                     &view.view_id,
-                    &view.left,
-                    &view.right,
+                    &left_state_source,
                     &view.join_keys,
-                    right_join_keys(view),
-                    &[],
-                    &[],
+                    StateRole::JoinLeft,
                     view.null_safe,
                 )
-                .await?,
-            );
+                .await?;
+            if let Some(state) = left_state {
+                commit_ids.extend(
+                    self.sync_join_side_state(
+                        &left_state_source,
+                        &state,
+                        &view.join_keys,
+                        &[],
+                    )
+                    .await?,
+                );
+            }
+            let right_state = self
+                .ensure_join_side_state_for_view(
+                    &view.view_id,
+                    &right_state_source,
+                    right_join_keys(view),
+                    StateRole::JoinRight,
+                    view.null_safe,
+                )
+                .await?;
+            if let Some(state) = right_state {
+                commit_ids.extend(
+                    self.sync_join_side_state(
+                        &right_state_source,
+                        &state,
+                        right_join_keys(view),
+                        &[],
+                    )
+                    .await?,
+                );
+            }
             self.checkpoint_epoch_states(&record).await?;
         }
 
-        let context = refresh_session();
         let left = apply_side_filter(
             &context,
             filter_deletes(
@@ -2086,10 +2392,18 @@ impl IvmRuntime {
         validate_left_aggregate_view(view)?;
 
         let left_window = self
-            .collect_source_window(&view.view_id, &view.left)
+            .collect_source_window_for_filter(
+                &view.view_id,
+                &view.left,
+                view.left_filter.as_deref(),
+            )
             .await?;
         let right_window = self
-            .collect_source_window(&view.view_id, &view.right)
+            .collect_source_window_for_filter(
+                &view.view_id,
+                &view.right,
+                view.right_filter.as_deref(),
+            )
             .await?;
         let right_changed = !right_window.added_files.is_empty();
         if left_window.added_files.is_empty() && !right_changed {
@@ -2468,8 +2782,12 @@ impl IvmRuntime {
         self.metadata.delete_cursors(&view.view_id).await?;
         view.mv.truncate(&self.client).await?;
 
-        let left_baseline = self.source_baseline(&view.left).await?;
-        let right_baseline = self.source_baseline(&view.right).await?;
+        let left_baseline = self
+            .source_baseline_for_filter(&view.left, view.left_filter.as_deref())
+            .await?;
+        let right_baseline = self
+            .source_baseline_for_filter(&view.right, view.right_filter.as_deref())
+            .await?;
         let mv_versions_before =
             output_partition_versions(&self.client, &view.mv).await?;
         let mut to_versions = left_baseline.to_versions.clone();
@@ -2502,6 +2820,22 @@ impl IvmRuntime {
             && !view.left.primary_keys.is_empty()
             && !view.right.primary_keys.is_empty()
         {
+            // The left-aggregate side states still keep the full source
+            // schema; only the join views narrow theirs.
+            let left_columns = view
+                .left
+                .schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect::<Vec<_>>();
+            let right_columns = view
+                .right
+                .schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect::<Vec<_>>();
             commit_ids.extend(
                 self.sync_full_join_side_states(
                     &view.view_id,
@@ -2511,6 +2845,8 @@ impl IvmRuntime {
                     left_aggregate_right_keys(view),
                     &[],
                     &[],
+                    &left_columns,
+                    &right_columns,
                     false,
                 )
                 .await?,

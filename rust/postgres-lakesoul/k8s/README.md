@@ -21,7 +21,17 @@ Included:
   coordinator serves, queries fail with `no eligible worker` until a worker
   turns Ready, and the next poll picks it up without a restart. Snapshots
   older than `LAKESOUL_DISCOVERY_MAX_STALENESS_SECONDS` fail newly
-  distributed queries instead of silently planning against outdated workers.
+  distributed queries instead of silently planning against outdated workers;
+- discovery state on the coordinator's metrics endpoint:
+  `lakesoul_worker_discovery_refresh_failures_total{kind}` (`hard`:
+  401/403, token or unparseable response, blocks planning at once;
+  `transient`: transport errors and 5xx, the snapshot serves until stale),
+  `lakesoul_worker_discovery_snapshot_age_seconds` (since the last successful
+  refresh, updated after every attempt, `+Inf` before the first one; alert on
+  it exceeding the staleness limit) and
+  `lakesoul_worker_discovery_eligible_workers` (workers in the last
+  published snapshot, also set by static discovery). The failure counters
+  start at 0, so the first outage shows in `increase()`.
 
 Deliberately **not** included (later phases):
 
@@ -34,6 +44,22 @@ Deliberately **not** included (later phases):
 - discovery does **not** recover in-flight tasks of a dead worker and does
   **not** migrate old queries; queries already running on a worker that then
   leaves fail at dispatch.
+
+## Primary-key scan placement
+
+Primary-key scans distribute whole `(range partition, hash bucket)` work units
+across workers. All version files of a unit stay together, in version order;
+different buckets of the same range can run on different workers, even when
+a query prunes the scan to just that range. This also allows a table without
+range columns to scale out across its populated buckets.
+If any filename in a range has a missing or out-of-range bucket ID, that whole
+range remains one atomic unit.
+
+Units are packed into at most the scan's task budget (by default the discovered
+worker count), with at most `target_partitions` concurrently active merge lanes
+per task. More units run sequentially on those lanes. A local scan keeps one
+merge with the same lane bound. These are per-task bounds, not process-wide
+admission control when a worker serves multiple tasks.
 
 ## Lifecycle
 
@@ -98,9 +124,13 @@ Deliberately **not** included (later phases):
    after `kubectl apply -f rust/postgres-lakesoul/k8s/base/namespace.yaml`:
    - `kubectl -n lakesoul create secret generic lakesoul-secrets --from-literal=...`
      with the keys `pg-url`, `pg-username`, `pg-password`, `warehouse`,
-     `aws-endpoint`, `aws-bucket`, `aws-access-key-id`, `aws-secret-access-key`.
-     Secrets are referenced through `secretKeyRef`, not inline in CLI args, so
-     plain `kubectl describe` does not print credentials.
+     `aws-endpoint`, `aws-bucket`, `aws-access-key-id`, `aws-secret-access-key`,
+     and optionally `aws-s3-virtual-host-style` (`true` for endpoints that
+     reject path-style requests, such as Huawei OBS `VirtualHostDomainRequired`;
+     unset means path style). The bucket in `warehouse` should be `aws-bucket`:
+     `aws-bucket` overrides the bucket of every stored table path. Secrets are
+     referenced through `secretKeyRef`, not inline in CLI args, so plain
+     `kubectl describe` does not print credentials.
    - the image pull Secret, from SWR's long-term login command
      (`docker login -u <region>@<AK> -p <login key> swr...`; temporary login
      keys expire):
@@ -119,26 +149,53 @@ Deliberately **not** included (later phases):
 
 ## Observability (optional overlay)
 
-`observability/` is the base plus Grafana 12.2.5, Prometheus v3.2.1 and Tempo
-2.7.2, the versions and configuration of `docker/observability`. Apply it
-instead of `base/`; the base alone keeps running without it.
+`observability/` is the base plus Grafana 12.2.5, Prometheus v3.2.1, Tempo
+2.7.2 (the versions and configuration of `docker/observability`) and
+kube-state-metrics v2.13.0. Apply it instead of `base/`; the base alone keeps
+running without it.
 
 | Component | What it does |
 |---|---|
 | `lakesoul-tempo` | OTLP ingest (4317 gRPC, 4318 HTTP), 24 h of traces on the `lakesoul-tempo-data` PVC (10Gi), span metrics / service graphs remote-written to Prometheus |
-| `lakesoul-prometheus` | Scrapes every Pod in the namespace labelled `app.kubernetes.io/name: lakesoul` on its `metrics` port (labels `pod`, `role` = container name); receives Tempo's remote writes; 15 d / 8 GB on the `lakesoul-prometheus-data` PVC (10Gi) |
+| `lakesoul-prometheus` | Scrapes every Pod in the namespace labelled `app.kubernetes.io/name: lakesoul` on its `metrics` port (labels `pod`, `role` = container name), every kubelet's cAdvisor and `lakesoul-kube-state-metrics` (below); receives Tempo's remote writes; 15 d / 8 GB on the `lakesoul-prometheus-data` PVC (10Gi) |
+| `lakesoul-kube-state-metrics` | Restart counts and last termination reasons of this namespace's containers (`--namespaces=lakesoul --resources=pods`, namespaced Role) |
 | `lakesoul-grafana` | Datasources Prometheus, Tempo and the cluster's existing Loki (`lakeinsight-loki.lakeinsight`, fed by `lakeinsight-promtail`), plus the *LakeSoul Overview* dashboard shared with `docker/observability` |
 | coordinator and worker patch | `OTEL_EXPORTER_OTLP_ENDPOINT=http://lakesoul-tempo:4317`, `service.instance.id` = Pod name; both Deployments roll on apply |
 
-1. Mirror the three upstream images into the SWR repository the
+The processes cannot see their own OOM kills, restarts or CPU throttling, so
+the overlay's Prometheus collects them next to the process metrics:
+
+- job `kubelet-cadvisor` scrapes `https://<node>:10250/metrics/cadvisor` on
+  every node and keeps `container_memory_rss`,
+  `container_memory_working_set_bytes`, `container_spec_memory_limit_bytes`
+  and `container_cpu_cfs_{,throttled_}periods_total` of the
+  `postgres-lakesoul` and `lakesoul-worker` containers in `lakesoul`. This is
+  the overlay's only cluster-scoped permission (ClusterRole
+  `lakesoul-prometheus-kubelet`: list/watch `nodes`, get `nodes/metrics`;
+  not `nodes/proxy`), so applying it needs rights to create ClusterRoles. The
+  kubelet certificate is not verified (commonly self-signed), the
+  ServiceAccount token authenticates the scrape;
+- job `kube-state-metrics` scrapes the overlay's own kube-state-metrics for
+  `kube_pod_container_status_restarts_total` and
+  `kube_pod_container_status_last_terminated_reason`.
+
+The dashboard panels *Memory: container RSS, process, allocator and execution pool*, *Container
+restarts and OOM kills* and *CPU throttling* read these series and line them
+up with the process metrics by `pod`. OOM kills come from
+`last_terminated_reason{reason="OOMKilled"}`, not cAdvisor's
+`container_oom_events_total`, whose series disappears with the killed
+container.
+
+1. Mirror the upstream images into the SWR repository the
    `images:` entries in `observability/kustomization.yaml` point at (the
    ServiceAccounts reuse the `lakesoul-registry` pull Secret):
 
    ```sh
-   for image in grafana/grafana:12.2.5 prom/prometheus:v3.2.1 grafana/tempo:2.7.2; do
+   for image in grafana/grafana:12.2.5 prom/prometheus:v3.2.1 grafana/tempo:2.7.2 \
+       registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.13.0; do
      docker pull "$image"
-     docker tag "$image" "swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/${image#*/}"
-     docker push "swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/${image#*/}"
+     docker tag "$image" "swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/${image##*/}"
+     docker push "swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/${image##*/}"
    done
    ```
 
@@ -182,6 +239,9 @@ the dashboard panel and the trace-to-logs link are unaffected.
 | coordinator, workers -> `lakesoul-tempo` (4317) | OTLP trace export (observability overlay) |
 | `lakesoul-prometheus` -> coordinator (19090), workers (19091) | metrics scrape, direct to Pod IP; Pod discovery via the API server (443) |
 | `lakesoul-tempo` -> `lakesoul-prometheus` (9090) | span metrics remote write |
+| `lakesoul-prometheus` -> every node's kubelet (10250) | cAdvisor scrape; node discovery via the API server (443) |
+| `lakesoul-prometheus` -> `lakesoul-kube-state-metrics` (8080) | restart / termination-reason scrape, direct to Pod IP |
+| `lakesoul-kube-state-metrics` -> Kubernetes API server (443) | Pod list/watch in `lakesoul` |
 | `lakesoul-grafana` -> Prometheus (9090), Tempo (3200), `lakeinsight-loki.lakeinsight` (3100) | dashboards and Explore |
 
 No LoadBalancer or Ingress is configured: the PG wire endpoint lacks
@@ -218,11 +278,59 @@ Downward API),
 `LAKESOUL_DISTRIBUTED_BYTES_PER_PARTITION`.
 Metadata DB variables (`LAKESOUL_PG_URL/USERNAME/PASSWORD`) are unchanged.
 
+Memory allocator: `postgres-lakesoul` and `lakesoul-worker` (and
+`lakesoul-console`) run on jemalloc 5.3 with its built-in defaults, including
+for C `malloc` (default Cargo feature `jemalloc`, each crate's
+`src/allocator.rs`); heap profiling is not compiled in. The JNI and Python
+libraries keep the system (glibc) allocator. Both server binaries log their
+allocator at startup:
+`memory allocator allocator="jemalloc" version=… config_prof=false … dirty_decay_ms=10000 muzzy_decay_ms=0`;
+`allocator="system"` means a `--no-default-features` build. `MALLOC_CONF`
+(jemalloc syntax) is read once at startup. The ConfigMap sets
+`MALLOC_CONF=background_thread:true`, logged as `background_thread=true`:
+without jemalloc's background threads, an arena purges freed pages only when
+it is used again, so idle workers kept 1.2–1.7 GiB each after a query; with
+them they drop to ~30 MiB within ~6 s, at unchanged latency and throughput
+(`../benchmark/results/20261027-bgthread-ab-feb90f43/`). Coordinator and
+worker peaks during queries were unchanged; in the console, back-to-back
+queries peaked 10–16 % lower because retained pages no longer accumulate.
+Pod memory sizing against the pool limit: see below.
+Measurements: `../benchmark/results/20261025-console-sf10-pk-jemalloc-7100c918/`.
+
+Memory monitoring: each binary samples its own memory in one pass on a
+dedicated thread, so the three views are comparable at one instant:
+
+| Metric | Source | Meaning |
+|---|---|---|
+| `lakesoul_process_resident_memory_bytes` | `/proc/self/status` `VmRSS` | Process RSS (anonymous, file-backed and shared pages). |
+| `lakesoul_process_resident_anon_memory_bytes` | `/proc/self/status` `RssAnon` | Anonymous RSS: the heap, stacks, anonymous mmaps. |
+| `lakesoul_jemalloc_resident_bytes` | jemalloc `stats.resident` | Upper bound on resident jemalloc pages: active pages, metadata and dirty pages not yet purged; never-touched pages count too. |
+| `lakesoul_jemalloc_active_bytes` | jemalloc `stats.active` | Pages holding allocations (allocated plus fragmentation). |
+| `lakesoul_jemalloc_allocated_bytes` | jemalloc `stats.allocated` | Bytes handed out through `malloc`/Rust allocations, including freed objects parked in thread caches. |
+| `lakesoul_memory_pool_reserved_bytes` | DataFusion memory pool | Execution budget in use; updated on every reservation change, not by the sampler. |
+
+Reading the gaps at one sample: RssAnon − jemalloc resident is a lower bound
+on anonymous memory outside jemalloc (stacks, direct `mmap`s); it can be
+negative because `resident` is an upper bound. jemalloc resident − active is
+dirty pages (purged after `dirty_decay_ms`) plus metadata; active − allocated
+is fragmentation. allocated − pool reserved is *not* a measurement of
+untracked memory: reservations are operator estimates, not allocations, and
+can exceed or fall short of what the operator holds. A
+`--no-default-features` (system allocator) build exports no `lakesoul_jemalloc_*`
+series, and non-Linux builds no `lakesoul_process_*` series.
+
+| Memory sampling (coordinator, worker, console) | Default | Meaning |
+|---|---|---|
+| `LAKESOUL_MEMORY_SAMPLE_INTERVAL_MS` / `--memory-sample-interval-ms` | `1000` | Sampling interval, at least 1. Prometheus scrapes every 15 s and sees the latest sample, so peaks between scrapes are lost; use the sample file for them. |
+| `LAKESOUL_MEMORY_SAMPLE_FILE` / `--memory-sample-file` | unset | Truncated at startup, then one JSON line per sample: `{"ts":<unix s>,"rss_bytes","rss_anon_bytes","jemalloc_allocated_bytes","jemalloc_active_bytes","jemalloc_resident_bytes","pool_reserved_bytes"}`; unavailable views are `null`. `lakesoul-console` exports no metrics and samples only with this file. |
+
 | Coordinator execution memory | Default | Meaning |
 |---|---|---|
 | `LAKESOUL_MEMORY_LIMIT` / `--memory-limit` | `0` (unbounded) | Process-wide DataFusion execution budget shared by every connection. Integer bytes or case-insensitive `K/M/G` (decimal), `Ki/Mi/Gi` (binary), e.g. `512Mi`. |
 | `LAKESOUL_MEMORY_POOL` / `--memory-pool` | `fair` | `fair` (FairSpillPool) or `greedy` (GreedyMemoryPool), used only with a nonzero limit. |
 | `LAKESOUL_VORTEX_DECODE_BUDGET` / `--vortex-decode-budget` | ¼ of the memory limit; unbounded when the limit is `0` | Process-wide bytes of decoded Vortex splits in flight, separate from the execution budget. A scan starts decoding a split only once the split's estimated size fits, and a decoded batch counts until it and every slice of it are dropped. Each scan can always have one split in flight, so a full budget slows scans but cannot deadlock them. `0` is unbounded. Same syntax as the memory limit. |
+| `DATAFUSION_EXECUTION_BATCH_SIZE` | `8192` | Rows per execution batch for coordinator and console sessions; `SET datafusion.execution.batch_size` overrides it per session. Batches buffered outside the execution budget (spill merges, IO) scale with it, so a smaller value lowers RSS above `LAKESOUL_MEMORY_LIMIT` (SF10 q09 at a 1Gi budget, glibc malloc: 2.2 GiB peak at 8192, 0.76 GiB at 2048), though not for every query. Workers ignore it, see below. |
+| `DATAFUSION_EXECUTION_TARGET_PARTITIONS` | `1` | Partitions per single-node coordinator and console session: with `LAKESOUL_DISTRIBUTED_DISCOVERY=none`, or in the console without workers. `SET datafusion.execution.target_partitions` overrides it per session. Distributed sessions ignore it and always plan with 4, for the coordinator's own stages too. |
 
 Worker (`/app/lakesoul-worker`): `LAKESOUL_WORKER_BIND` (0.0.0.0),
 `LAKESOUL_WORKER_PORT` (50051), `LAKESOUL_WORKER_METRICS_ADDR`,
@@ -234,10 +342,28 @@ share the `CoreArgs` CLI (`--warehouse-prefix`, `--endpoint`, …).
 | `LAKESOUL_MEMORY_LIMIT` / `--memory-limit` | `0` (unbounded) | Independent per-worker-process DataFusion execution budget shared by every task; same byte/suffix syntax as the coordinator. |
 | `LAKESOUL_MEMORY_POOL` / `--memory-pool` | `fair` | `fair` or `greedy`, used only with a nonzero limit. |
 | `LAKESOUL_VORTEX_DECODE_BUDGET` / `--vortex-decode-budget` | ¼ of the memory limit; unbounded when the limit is `0` | Per-worker-process budget for decoded Vortex splits in flight; same meaning as on the coordinator. |
+| `datafusion.execution.batch_size` | `8192` | Not read from the worker's environment: datafusion-distributed starts every worker task from DataFusion's defaults. The coordinator session's `distributed.shuffle_batch_size` (sent with each task; `0` keeps 8192) overrides it. |
+
+| Local disk cache (coordinator, worker, console) | Default | Meaning |
+|---|---|---|
+| `LAKESOUL_CACHE` | unset (off) | Any value, even `false`, puts the warehouse S3 store behind a read-through page cache (4 MiB pages) on local disk, shared by every session of the process. Also enables the primary-key index cache. |
+| `LAKESOUL_CACHE_SIZE` | `1GiB` | Cache capacity. Must end in `KiB`, `MiB`, `GiB` or `TiB`, e.g. `5GiB`; any other suffix (`5Gi`, `5G`) silently falls back to 1 GiB. |
+| `LAKESOUL_CACHE_PATH` | `lakesoul_cache_dir` in the working directory | Cache directory, emptied at startup. Use the scratch volume, e.g. `/var/scratch/lakesoul-cache`, with a size well below the scratch PVC (20Gi coordinator, 40Gi worker), which also holds spill files. |
 
 These budgets govern DataFusion execution reservations, not process RSS,
 LakeSoul IO pools or writer-internal buffers. Spill files use DataFusion's
 default OS temporary directory (`TMPDIR`, `/var/scratch` in these deployments).
+`/var/scratch` is a generic ephemeral volume: each coordinator and worker Pod
+gets its own `ReadWriteOnce` PVC (`<pod>-scratch`) from the cluster's default
+StorageClass, created with the Pod and deleted with it, so spill and cache
+never fill the node's root disk or count against its ephemeral storage. Set
+`storageClassName` in the Deployments' `volumeClaimTemplate` for another
+class; a zonal disk class needs `WaitForFirstConsumer` binding so the disk is
+created in the Pod's zone.
+Builds use a vendored `datafusion-physical-plan` 55.2.0 with the upstream fix
+for apache/datafusion#24883 (`rust/third_party/`, root `Cargo.toml`
+`[patch.crates-io]`): without it, a query whose hash `RepartitionExec` spills
+under a bounded pool can park every task and hang without an error.
 The runtime still registers the warehouse object store independently per
 coordinator session. Pools report the five largest consumers on bounded
 allocation errors. Prometheus exports `lakesoul_memory_pool_reserved_bytes`,
@@ -246,6 +372,13 @@ allocation errors. Prometheus exports `lakesoul_memory_pool_reserved_bytes`,
 that trigger spilling), without query labels. Unbounded execution retains the
 same allocation policy, with cached metric handles updating reservation
 gauges/counters; it does not pay for bounded consumer tracking.
+
+The failure counter, and every `outcome` series of the coordinator's
+`lakesoul_query_requests_total`, `lakesoul_query_rows_total` and
+`lakesoul_query_duration_seconds` (`completed`, `canceled`, `timed_out`,
+`result_limit`, `failed`, `abandoned`), are exported at 0 from startup, so
+`increase()`/`rate()` see the first burst of an outcome instead of starting
+the series at its first nonzero sample.
 
 Measured sizing (Vortex TPC-H on the medium profile, 4 CPU / 4Gi):
 
@@ -272,6 +405,38 @@ Measured sizing (Vortex TPC-H on the medium profile, 4 CPU / 4Gi):
   exhaust the container. With the fix, 4 × 300 connections settled at
   ~314 MB RSS locally instead of growing by ~1.7 GB per round.
 
+Container limit against the pool, measured with `lakesoul-console` on SF10
+pk tables in Vortex (`vortex-compact`, the default `file_format`) with jemalloc
+background threads, a fair pool, the default Vortex decode budget (¼ of the
+pool) and a 5 GiB disk cache
+(`../benchmark/results/20261027-pool-vs-limit-feb90f43/`):
+
+- Memory outside the pool, decoded Vortex splits included, grows with
+  `target_partitions`, not with the pool. At the RSS peak it was up to
+  0.9 GiB at 2 partitions and 1.51 GiB at 4, and 1.1 GiB at 2 partitions with
+  a 4Gi pool (1Gi decode budget).
+- Provisional limit, fitted to these serial SF10 runs and not validated with
+  a full pool or an explicit decode budget: pool + 0.3 GiB + 0.3 GiB ×
+  `target_partitions` + 0.25 GiB, plus any decode budget above 512 MiB. Set
+  `LAKESOUL_VORTEX_DECODE_BUDGET` explicitly to keep it from growing with the
+  pool. At a 1Gi pool and 2 partitions, 1536Mi was OOMKilled. 1792Mi passed
+  with ~270 MiB to spare, but the worst peak from another run would leave
+  ~40 MiB. 2Gi passed 3/3.
+- A pool of ~512 MiB × `target_partitions` was enough; less failed SF10 sorts
+  with `Not enough memory to continue external sort` (512Mi at 2 partitions,
+  1Gi at 4). Sizes in between were not tested.
+- The pool caps memory only when a query fills it. A pool larger than the
+  container limit passed SF10 one query at a time, but only because SF10 used
+  less than the pool. Concurrent queries or larger data can fill the pool
+  past the limit.
+- The page cache holds the disk cache and spill files. Near the OOM boundary
+  (1792Mi–2560Mi at 2 partitions, 2Gi–3Gi at 4), latency was 1.6–1.8× and
+  2.1–2.5× that at 8Gi, at equal CPU time. Each GiB of limit added back toward
+  ~7 GiB recovers part of it. Either budget the disk cache inside the limit or
+  shrink it.
+- Not measured: coordinator/worker pods in the distributed path, where workers
+  run 4 partitions, and concurrent queries.
+
 ## Verification / acceptance plan (runs against a real cluster; NOT yet
 executed — the manifests and the failure paths are untested beyond `cargo`
 compile/test)
@@ -289,7 +454,7 @@ Scenarios, each with concrete expected state:
    against the new IPs.
 3. **Protocol mismatch**: run one worker with an older build advertising
    `lakesoul-distributed/1`; it must be excluded from the snapshot (only
-   `DISTRIBUTED_PROTOCOL_VERSION` = `lakesoul-distributed/2` eligible) and be
+   `DISTRIBUTED_PROTOCOL_VERSION` = `lakesoul-distributed/4` eligible) and be
    visible in the coordinator logs as a candidate (not eligible).
 4. **RBAC failure**: bind the Role only in a different namespace (or drop
    `get/list`): first sync fails, startup aborts with `403 Forbidden` in the
@@ -298,7 +463,10 @@ Scenarios, each with concrete expected state:
 5. **API unreachable**: block egress to the API server after a successful
    sync: queries keep working against the last snapshot until
    `LAKESOUL_DISCOVERY_MAX_STALENESS_SECONDS` elapse, then fail with the
-   staleness error naming the pending refresh failure.
+   staleness error naming the pending refresh failure. Meanwhile
+   `lakesoul_worker_discovery_refresh_failures_total{kind="transient"}`
+   climbs and `lakesoul_worker_discovery_snapshot_age_seconds` passes the
+   limit.
 6. **Real remote stage**: prepare the data with a writable LakeSoul engine
    (Spark/DataFrame client, or the lakesoul console) — the PG entry exposes
    a read-only projection: INSERT/DDL through the coordinator process are

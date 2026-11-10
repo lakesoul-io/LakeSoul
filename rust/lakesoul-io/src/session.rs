@@ -31,13 +31,13 @@ use datafusion_execution::cache::cache_manager::CacheManagerConfig;
 use datafusion_execution::cache::cache_manager::{CachedFileList, CachedFileMetadata};
 use datafusion_execution::cache::default_cache::DefaultCache;
 use datafusion_execution::config::SessionConfig;
-use datafusion_execution::memory_pool::{FairSpillPool, GreedyMemoryPool};
+use datafusion_execution::memory_pool::{FairSpillPool, GreedyMemoryPool, MemoryPool};
 use datafusion_execution::object_store::ObjectStoreUrl;
 use datafusion_execution::runtime_env::RuntimeEnvBuilder;
 use datafusion_execution::{TaskContext, runtime_env::RuntimeEnv};
 use datafusion_expr::execution_props::ExecutionProps;
 use datafusion_expr::physical_planning_context::PhysicalPlanningContext;
-use datafusion_expr::registry::ExtensionTypeRegistryRef;
+use datafusion_expr::registry::{ExtensionTypeRegistryRef, MemoryExtensionTypeRegistry};
 use datafusion_expr::utils::conjunction;
 use datafusion_expr::{
     AggregateUDF, Expr, HigherOrderUDF, LogicalPlan, Operator, ScalarUDF,
@@ -239,6 +239,8 @@ pub struct LakeSoulIOSession {
     io_config: LakeSoulIOConfig,
     execution_props: ExecutionProps,
     inner: Arc<IOSessionInner>,
+    /// Table-level format options of the session that created this adapter.
+    table_options: TableOptions,
 }
 
 struct ListingMetas {
@@ -253,11 +255,18 @@ struct FormatScanGroup {
     partition_files: Vec<PartitionedFile>,
 }
 
-/// Immutable part of `LakeSoulIOSession`
+/// Immutable session resources. Consumer registries are borrowed through the
+/// task context rather than copied again for each lazy execution lane.
 struct IOSessionInner {
     pub session_id: String,
     pub session_config: SessionConfig,
     pub runtime_env: Arc<RuntimeEnv>,
+    pub scalar_functions: HashMap<String, Arc<ScalarUDF>>,
+    pub higher_order_functions: HashMap<String, Arc<HigherOrderUDF>>,
+    pub aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
+    pub window_functions: HashMap<String, Arc<WindowUDF>>,
+    pub extension_type_registry: ExtensionTypeRegistryRef,
+    pub consumer_context: Option<Arc<TaskContext>>,
     pub listing_metas: OnceCell<ListingMetas>,
     pub file_format: OnceCell<Arc<LakeSoulFormatRegistry>>,
     pub file_schema: OnceCell<Arc<Schema>>,
@@ -266,7 +275,20 @@ struct IOSessionInner {
 }
 
 impl LakeSoulIOSession {
-    pub fn try_new(mut io_config: LakeSoulIOConfig) -> Result<Self, Report> {
+    pub fn try_new(io_config: LakeSoulIOConfig) -> Result<Self, Report> {
+        Self::try_new_with_memory_pool(io_config, None)
+    }
+
+    /// Build an IO session that shares an externally owned memory pool.
+    ///
+    /// The pool bounds the DataFusion spill/sort reservations of every writer
+    /// created from this session. Callers that build several writers (for
+    /// example a parallel initial snapshot) pass the same pool to all of them
+    /// so their combined memory stays within one process-wide limit.
+    pub fn try_new_with_memory_pool(
+        mut io_config: LakeSoulIOConfig,
+        external_memory_pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<Self, Report> {
         info!("Initializing from io config: {:?}", io_config);
         let mut sess_conf = SessionConfig::default()
             .with_batch_size(io_config.batch_size)
@@ -318,7 +340,9 @@ impl LakeSoulIOSession {
             std::fs::create_dir_all(&dir)?;
             runtime_conf = runtime_conf.with_temp_file_path(&dir);
 
-            let mem_pool = Arc::new(GreedyMemoryPool::new(pool_size));
+            let mem_pool = external_memory_pool
+                .clone()
+                .unwrap_or_else(|| Arc::new(GreedyMemoryPool::new(pool_size)));
 
             runtime_conf = runtime_conf.with_memory_pool(mem_pool);
 
@@ -330,6 +354,8 @@ impl LakeSoulIOSession {
                 io_config.mem_limit(),
                 reserve_bytes
             );
+        } else if let Some(mem_pool) = external_memory_pool {
+            runtime_conf = runtime_conf.with_memory_pool(mem_pool);
         }
 
         let runtime = runtime_conf.build()?;
@@ -380,10 +406,18 @@ impl LakeSoulIOSession {
         io_config.files = normalized_filenames;
         info!("NativeIO normalized file names: {:?}", io_config.files);
         info!("NativeIO final config\n{:?}", io_config);
+        let table_options =
+            TableOptions::default_from_session_config(sess_conf.options());
         let inner = IOSessionInner {
             session_id: random_str(8),
             session_config: sess_conf,
             runtime_env: Arc::new(runtime),
+            scalar_functions: HashMap::new(),
+            higher_order_functions: HashMap::new(),
+            aggregate_functions: HashMap::new(),
+            window_functions: HashMap::new(),
+            consumer_context: None,
+            extension_type_registry: Arc::new(MemoryExtensionTypeRegistry::new_empty()),
             listing_metas: OnceCell::new(),
             file_format: OnceCell::new(),
             file_schema: OnceCell::new(),
@@ -394,18 +428,34 @@ impl LakeSoulIOSession {
             io_config,
             inner: Arc::new(inner),
             execution_props: ExecutionProps::new(),
+            table_options,
         })
     }
 
     /// this api is prepared for `lakesoul-datafusion` only
+    ///
+    /// The adapter keeps the consumer's function registries: a plan or
+    /// predicate built through this session must see the same UDFs the
+    /// consumer registered, and [`TaskContext`]s derived from it must carry
+    /// them, too. The extension type registry is DataFusion's default, since a
+    /// [`TaskContext`] does not carry one.
     pub fn from_plain_config_and_context(
         io_config: LakeSoulIOConfig,
         task_ctx: Arc<TaskContext>,
     ) -> Self {
+        let table_options = TableOptions::default_from_session_config(
+            task_ctx.session_config().options(),
+        );
         let inner = Arc::new(IOSessionInner {
-            session_id: task_ctx.session_id().clone(),
+            session_id: task_ctx.session_id(),
             session_config: task_ctx.session_config().clone(),
-            runtime_env: task_ctx.runtime_env().clone(),
+            runtime_env: task_ctx.runtime_env(),
+            scalar_functions: HashMap::new(),
+            higher_order_functions: HashMap::new(),
+            aggregate_functions: HashMap::new(),
+            window_functions: HashMap::new(),
+            consumer_context: Some(task_ctx),
+            extension_type_registry: Arc::new(MemoryExtensionTypeRegistry::new_empty()),
             listing_metas: OnceCell::new(),
             file_format: OnceCell::new(),
             file_schema: OnceCell::new(),
@@ -416,6 +466,7 @@ impl LakeSoulIOSession {
             io_config,
             inner,
             execution_props: ExecutionProps::new(),
+            table_options,
         }
     }
 
@@ -509,6 +560,69 @@ impl LakeSoulIOSession {
         }
 
         Ok(groups)
+    }
+
+    /// Per-file scan configs for a row-level primary-key lookup.
+    ///
+    /// This mirrors the scan projection of [`Self::scan`] but skips filters,
+    /// CDC predicates and index-candidate injection.  The returned configs
+    /// keep the table's commit order, one file per config, so a persistent
+    /// [`crate::pk_locator::LookupSource`] can drive one merge input per file.
+    pub async fn lookup_scan_configs(
+        &self,
+    ) -> crate::Result<(Vec<FileScanConfig>, SchemaRef)> {
+        let scan_schema = self.io_table_schema().await?.table_schema().clone();
+        let configs = self.scan_configs(scan_schema.clone()).await?;
+        Ok((configs, scan_schema))
+    }
+
+    /// Per-file scan configs projected to `target_schema`.
+    ///
+    /// Like [`Self::lookup_scan_configs`], this skips filters, CDC predicates
+    /// and index candidates, and returns one config per input file in commit
+    /// order.  The caller can therefore drive one merge input per file and
+    /// recover which file contributed each surviving row.
+    pub async fn scan_configs(
+        &self,
+        target_schema: SchemaRef,
+    ) -> crate::Result<Vec<FileScanConfig>> {
+        let listing_metas = self.io_listing_metas().await?;
+        if listing_metas.table_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let table_schema = self.io_table_schema().await?;
+        let scan_schema = target_schema;
+        let registry = self.io_file_format().await?;
+        let format_groups = self.format_scan_groups(listing_metas, registry)?;
+        let statistics = Statistics::new_unknown(scan_schema.as_ref());
+        let partition_schema = self.io_partition_schema().await?.clone();
+        let mut configs = Vec::new();
+        for group in format_groups {
+            let file_format = registry.file_format(group.physical_format);
+            let source = file_format.file_source(table_schema.as_ref().clone());
+            let scan_config = FileScanConfigBuilder::new(group.object_store_url, source)
+                .with_file_groups(vec![
+                    FileGroup::new(group.partition_files)
+                        .with_statistics(Arc::new(statistics.clone())),
+                ])
+                .with_file_compression_type(
+                    registry.file_compression_type(group.physical_format),
+                )
+                .with_statistics(statistics.clone())
+                .build();
+            let flattened = flatten_file_scan_config_for_format(
+                self,
+                file_format,
+                scan_config,
+                self.io_config.primary_keys_slice(),
+                &self.io_config.cdc_column(),
+                partition_schema.clone(),
+                scan_schema.clone(),
+            )
+            .await?;
+            configs.extend(flattened);
+        }
+        Ok(configs)
     }
 
     async fn io_file_schema(&self) -> Result<&Arc<Schema>, Report> {
@@ -1023,31 +1137,32 @@ impl LakeSoulIOSession {
         // with row-level candidate inputs (vortex only; otherwise the regular
         // scan path is kept).
         let encoded_inputs = match key_candidates {
-            Some(keys) if !keys.is_empty() => {
-                pk_locator::try_build_key_inputs_encoded(
-                    self,
-                    &self.io_config,
-                    &flatten_configs,
-                    &key_columns,
-                    expected_key_kind,
-                    keys,
-                )
-                .await
-            }
+            Some(keys) if !keys.is_empty() => pk_locator::try_build_key_inputs_encoded(
+                self,
+                &self.io_config,
+                &flatten_configs,
+                &key_columns,
+                expected_key_kind,
+                keys,
+            )
+            .await
+            .map_err(|error| report!(error))?,
             _ => None,
         };
         let candidate_inputs = match encoded_inputs {
             Some(inputs) => Some(inputs),
             None => match &key_constraint {
-                Some(constraint) => {
-                    pk_locator::try_build_key_inputs(
-                        self,
-                        &self.io_config,
-                        &flatten_configs,
-                        constraint,
-                    )
-                    .await
-                }
+                Some(constraint) => pk_locator::try_build_key_inputs(
+                    self,
+                    &self.io_config,
+                    &flatten_configs,
+                    constraint,
+                    // This path flattens every file of the query, so the
+                    // query-wide row threshold applies as it is.
+                    pk_locator::MIN_INDEX_ROWS,
+                )
+                .await
+                .map_err(|error| report!(error))?,
                 None => None,
             },
         };
@@ -1164,6 +1279,7 @@ impl LakeSoulIOSession {
             io_config,
             execution_props: self.execution_props.clone(),
             inner: self.inner.clone(),
+            table_options: self.table_options.clone(),
         }
     }
 
@@ -1207,32 +1323,58 @@ impl Session for LakeSoulIOSession {
     }
     fn create_physical_expr(
         &self,
-        _expr: Expr,
-        _df_schema: &DFSchema,
+        expr: Expr,
+        df_schema: &DFSchema,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        Err(DataFusionError::NotImplemented(
-            "lakesoul session unsupported".into(),
-        ))
+        // Predicate adaptation builds physical expressions from logical ones;
+        // this session's execution properties and the default expression
+        // planners are all that is needed for the expressions a scan carries.
+        datafusion_physical_expr::create_physical_expr(
+            &expr,
+            df_schema,
+            &self.execution_props,
+            &PhysicalPlanningContext::default(),
+        )
     }
 
     fn scalar_functions(&self) -> &HashMap<String, Arc<ScalarUDF>> {
-        unimplemented!("lakesoul session unsupported")
+        self.inner
+            .consumer_context
+            .as_ref()
+            .map_or(&self.inner.scalar_functions, |context| {
+                context.scalar_functions()
+            })
     }
 
     fn aggregate_functions(&self) -> &HashMap<String, Arc<AggregateUDF>> {
-        unimplemented!("lakesoul session unsupported")
+        self.inner
+            .consumer_context
+            .as_ref()
+            .map_or(&self.inner.aggregate_functions, |context| {
+                context.aggregate_functions()
+            })
     }
 
     fn window_functions(&self) -> &HashMap<String, Arc<WindowUDF>> {
-        unimplemented!("lakesoul session unsupported")
+        self.inner
+            .consumer_context
+            .as_ref()
+            .map_or(&self.inner.window_functions, |context| {
+                context.window_functions()
+            })
     }
 
     fn higher_order_functions(&self) -> &HashMap<String, Arc<HigherOrderUDF>> {
-        unimplemented!("lakesoul session unsupported")
+        self.inner
+            .consumer_context
+            .as_ref()
+            .map_or(&self.inner.higher_order_functions, |context| {
+                context.higher_order_functions()
+            })
     }
 
     fn extension_type_registry(&self) -> &ExtensionTypeRegistryRef {
-        unimplemented!("lakesoul session unsupported")
+        &self.inner.extension_type_registry
     }
 
     fn runtime_env(&self) -> &Arc<RuntimeEnv> {
@@ -1248,11 +1390,11 @@ impl Session for LakeSoulIOSession {
     }
 
     fn table_options(&self) -> &TableOptions {
-        unimplemented!("lakesoul session unsupported")
+        &self.table_options
     }
 
     fn table_options_mut(&mut self) -> &mut TableOptions {
-        unimplemented!("lakesoul session unsupported")
+        &mut self.table_options
     }
 
     fn task_ctx(&self) -> Arc<TaskContext> {
@@ -1266,10 +1408,10 @@ impl From<&LakeSoulIOSession> for TaskContext {
             None,
             value.session_id().to_string(),
             value.config().clone(),
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
+            value.scalar_functions().clone(),
+            value.higher_order_functions().clone(),
+            value.aggregate_functions().clone(),
+            value.window_functions().clone(),
             Arc::clone(value.runtime_env()),
         )
     }

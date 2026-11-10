@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out release commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
       - name: Set up JDK 11
@@ -103,9 +103,12 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: validate-release
     runs-on: ubuntu-24.04
+    env:
+      # Match the main Rust CI test cache. Release workflows only restore it.
+      RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
     services:
       postgres:
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         env:
           POSTGRES_PASSWORD: lakesoul_test
           POSTGRES_USER: lakesoul_test
@@ -118,7 +121,7 @@ jobs:
         ports:
           - 5432:5432
       rustfs:
-        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:1.0.0-beta.3
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs:1.0.4
         ports:
           - "9000:9000"
           - "9001:9001"
@@ -138,7 +141,7 @@ jobs:
           docker-images: true
           swap-storage: true
       - name: Check out release commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable action
         with:
@@ -146,15 +149,18 @@ jobs:
           components: rustfmt, clippy
       - uses: ./.github/actions/setup-flatc
       - name: Install protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ github.token }}
+        uses: ./.github/actions/setup-protoc
+      - name: Install lld
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lld
+          command -v ld.lld >/dev/null || sudo ln -s "$(command -v lld)" /usr/local/bin/ld.lld
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ". -> rust/target"
-          key: release-gates
+          shared-key: "rust-test-fast"
+          save-if: false
       - name: Install PostgreSQL client
         run: sudo apt-get update -q && sudo apt-get install -y postgresql-client
       - name: Initialize metadata database
@@ -177,7 +183,7 @@ jobs:
         run: |
           docker run --rm --network host \
             --entrypoint /bin/sh \
-            swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.16 \
+            swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.37 \
             -c '
               set -e
 
@@ -197,57 +203,68 @@ jobs:
       - name: Check Rust formatting
         run: cargo -q fmt --all --check
       - name: Run Clippy with warnings denied
-        env:
-          RUSTFLAGS: -Dwarnings
         run: >-
-          cargo -q clippy --no-deps --all-features
+          cargo -q clippy --profile test-fast --no-deps --all-features
           -p lakesoul-io-c -p lakesoul-metadata-c -p lakesoul-python -p lakesoul-io
+          -- -D warnings
       - name: Run Rust tests with legacy merge
         env:
           RUST_BACKTRACE: full
           RUST_LOG: info
-        run: cargo -q test --profile test-fast --lib --bins --tests --jobs 2
+        run: cargo test --profile test-fast --lib --bins --tests --jobs 2
       - name: Run Rust tests with v2 merge
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
           RUST_BACKTRACE: full
           RUST_LOG: info
-        run: cargo -q test --profile test-fast --lib --bins --tests --jobs 2
+        run: cargo test --profile test-fast --lib --bins --tests --jobs 2
 
   build-native-linux-x86-64:
     name: Build Linux x86_64 native libraries
     needs: validate-release
     runs-on: ubuntu-24.04
+    env:
+      # Match the other native zigbuild jobs and only restore their cache.
+      RUSTFLAGS: "-Awarnings"
     steps:
       - name: Check out release commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ github.token }}
+        uses: ./.github/actions/setup-protoc
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable action
         with:
           toolchain: stable
+      - name: Set up JDK 11
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "11"
+          distribution: temurin
       - uses: ./.github/actions/setup-flatc
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ". -> rust/target"
-      - name: Install cross
+          shared-key: "native-glibc217-v2"
+          save-if: false
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+          use-cache: false
+      - name: Install cargo-zigbuild
         uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2
         with:
-          tool: cross@0.2.5
+          tool: cargo-zigbuild@0.18.3
       - name: Build Linux x86_64 native libraries
-        # `cross` builds inside its own container, which has no flatc: share the binary the
-        # setup-flatc step installed. The release binary is static, so the container's older
-        # glibc is not a problem.
         env:
-          CROSS_CONTAINER_OPTS: "--volume /usr/local/bin/flatc:/usr/local/bin/flatc:ro"
-        run: >-
-          cross -q build --target x86_64-unknown-linux-gnu --release --all-features
-          --package lakesoul-io-c --package lakesoul-metadata-c
+          CARGO_PROFILE_RELEASE_STRIP: none
+        run: |
+          unset HADOOP_HOME HDFS_LIB_DIR
+          sudo ln -sfn "$JAVA_HOME" /opt/lakesoul-jdk
+          export JAVA_HOME=/opt/lakesoul-jdk
+          cargo -q zigbuild --release --target x86_64-unknown-linux-gnu.2.17 --all-features \
+            --package lakesoul-io-c --package lakesoul-metadata-c
       - name: Stage native libraries
         run: |
           mkdir -p rust/target/release
@@ -268,7 +285,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         env:
           POSTGRES_PASSWORD: lakesoul_test
           POSTGRES_USER: lakesoul_test
@@ -282,7 +299,7 @@ jobs:
           - 5432:5432
     steps:
       - name: Check out release commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Download Linux x86_64 native libraries
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -321,10 +338,7 @@ jobs:
           wait_dfs
           "$HADOOP_HOME/bin/hadoop" fs -chmod -R 777 /
       - name: Install protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ github.token }}
+        uses: ./.github/actions/setup-protoc
       - name: Generate ephemeral artifact-signing key
         run: |
           cat > /tmp/release-signing-key <<'KEY'
@@ -382,10 +396,10 @@ jobs:
       - name: Verify packaged native libraries
         run: |
           python script/verify_native_jars.py \
-            "lakesoul-spark/target/$(python script/get_jar_name.py lakesoul-spark)" \
-            "lakesoul-flink/target/$(python script/get_jar_name.py lakesoul-flink)" \
-            "lakesoul-presto/target/$(python script/get_jar_name.py lakesoul-presto)" \
-            "lakesoul-spark-gluten/target/$(python script/get_jar_name.py lakesoul-spark-gluten)"
+            "integrations/lakesoul-spark/target/$(python script/get_jar_name.py integrations/lakesoul-spark)" \
+            "integrations/lakesoul-flink/target/$(python script/get_jar_name.py integrations/lakesoul-flink)" \
+            "integrations/lakesoul-presto/target/$(python script/get_jar_name.py integrations/lakesoul-presto)" \
+            "integrations/lakesoul-spark-gluten/target/$(python script/get_jar_name.py integrations/lakesoul-spark-gluten)"
       - name: Verify JARs, sources, Javadoc, and detached signatures
         run: python script/verify_release_artifacts.py artifacts --signatures
       - name: Upload dry-run release JARs
@@ -393,11 +407,11 @@ jobs:
         with:
           name: core-release-jars
           path: |
-            lakesoul-common/target/lakesoul-common-*.jar
-            native-io/lakesoul-io-java/target/lakesoul-io-java-*.jar
-            lakesoul-spark/target/lakesoul-spark-3.5_2.12-*.jar
-            lakesoul-flink/target/lakesoul-flink-1.20_2.12-*.jar
-            lakesoul-presto/target/lakesoul-presto-0.296-*.jar
+            integrations/lakesoul-common/target/lakesoul-common-*.jar
+            integrations/native-io/lakesoul-io-java/target/lakesoul-io-java-*.jar
+            integrations/lakesoul-spark/target/lakesoul-spark-3.5_2.12-*.jar
+            integrations/lakesoul-flink/target/lakesoul-flink-1.20_2.12-*.jar
+            integrations/lakesoul-presto/target/lakesoul-presto-0.296-*.jar
           if-no-files-found: error
       - name: Upload GitHub Release asset inputs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -416,7 +430,7 @@ jobs:
       attestations: write
     steps:
       - name: Check out release commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Download assembled connector assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -466,11 +480,12 @@ jobs:
     needs: [validate-release, build-native-linux-x86-64, metadata-migration]
     runs-on: ubuntu-24.04
     env:
+      RUSTFLAGS: "-Awarnings"
       LAKESOUL_PG_USERNAME: lakesoul_test
       LAKESOUL_PG_PASSWORD: lakesoul_test
     services:
       postgres:
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         env:
           POSTGRES_PASSWORD: lakesoul_test
           POSTGRES_USER: lakesoul_test
@@ -494,7 +509,7 @@ jobs:
           docker-images: true
           swap-storage: true
       - name: Check out release commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
       - name: Download Linux x86_64 native libraries
@@ -507,10 +522,7 @@ jobs:
       - name: Initialize metadata database
         run: ./script/meta_init_for_local_test.sh -j 2
       - name: Install protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ github.token }}
+        uses: ./.github/actions/setup-protoc
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable action
         with:
@@ -520,6 +532,8 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ". -> rust/target"
+          shared-key: "native-glibc217-v2"
+          save-if: false
       - name: Set up JDK 11 for Spark and Flink
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
@@ -530,10 +544,10 @@ jobs:
         run: >-
           mvn -q -B install -pl :lakesoul-spark-3.5_2.12,:lakesoul-flink-1.20_2.12
           -am -Pcross-build -DskipTests --file pom.xml
-      - name: Set up Python 3.10
+      - name: Set up Python 3.11
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
       - name: Install uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
@@ -545,7 +559,7 @@ jobs:
       - name: Build Python compatibility environment
         working-directory: python
         run: |
-          uv sync --python 3.10 --group dev --extra pandas --extra ray --extra daft --extra pyspark
+          uv sync --python 3.11 --group dev --extra pandas --extra ray --extra daft --extra pyspark
           uv run maturin develop --release
       - name: Prepare core compatibility test data
         if: github.event_name != 'pull_request'
@@ -640,7 +654,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         env:
           POSTGRES_PASSWORD: lakesoul_test
           POSTGRES_USER: lakesoul_test
@@ -654,7 +668,7 @@ jobs:
           - 5432:5432
     steps:
       - name: Check out release history
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
       - name: Install PostgreSQL client
@@ -680,7 +694,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         env:
           POSTGRES_PASSWORD: lakesoul_test
           POSTGRES_USER: lakesoul_test
@@ -694,7 +708,7 @@ jobs:
           - 5432:5432
     steps:
       - name: Check out release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
@@ -708,10 +722,7 @@ jobs:
       - name: Initialize metadata database
         run: ./script/meta_init_for_local_test.sh -j 2
       - name: Install protoc
-        uses: arduino/setup-protoc@a8b67ba40b37d35169e222f3bb352603327985b6 # v2 branch
-        with:
-          version: "23.x"
-          repo-token: ${{ github.token }}
+        uses: ./.github/actions/setup-protoc
       - name: Set up JDK 11 and Maven Central credentials
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
@@ -751,7 +762,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         env:
           POSTGRES_PASSWORD: lakesoul_test
           POSTGRES_USER: lakesoul_test
@@ -765,7 +776,7 @@ jobs:
           - 5432:5432
     steps:
       - name: Check out release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.tag }}
       - name: Set up JDK 11 and release signing key
@@ -817,7 +828,7 @@ jobs:
       contents: write
     steps:
       - name: Check out release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.tag }}
       - name: Download immutable release assets
@@ -847,7 +858,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           version="${RELEASE_TAG#v}"
-          notes="docs/release/release-${version}.md"
+          notes="dev/release/release-${version}.md"
           test -f "$notes"
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-assets/* --clobber

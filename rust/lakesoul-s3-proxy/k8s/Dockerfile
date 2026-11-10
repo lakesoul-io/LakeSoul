@@ -1,5 +1,5 @@
 # Experimental component; not part of LakeSoul Core GA.
-FROM ubuntu:22.04
+FROM swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/ubuntu:22.04
 
 RUN sed -i "s@http://.*archive.ubuntu.com@http://mirrors.huaweicloud.com@g" /etc/apt/sources.list && \
     sed -i "s@http://.*security.ubuntu.com@http://mirrors.huaweicloud.com@g" /etc/apt/sources.list

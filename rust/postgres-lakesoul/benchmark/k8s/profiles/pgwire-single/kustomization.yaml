@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# Profile `pgwire-single`: `pgwire` with the coordinator planning single-node
+# (deploy with `--workers 0`). Kubernetes discovery with no Ready worker
+# refuses to plan, and `LAKESOUL_DISTRIBUTED_DISCOVERY=none` rejects any
+# Kubernetes service/namespace setting (lakesoul-datafusion `cli.rs`), so this
+# turns discovery off and removes both.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../pgwire
+patches:
+  - path: discovery-off.yaml

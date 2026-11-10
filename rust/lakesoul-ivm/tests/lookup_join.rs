@@ -17,7 +17,8 @@ use datafusion::datasource::memory::MemTable;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmTable, IvmTableOptions, JoinKeyExprs,
-    LookupJoinView, lookup_join_view_schema_for,
+    LookupJoinView, MultiLookupColumn, MultiLookupJoinView, StateRole,
+    lookup_join_view_schema_for, multi_lookup_join_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -516,6 +517,407 @@ async fn lookup_join_retracts_both_sides_in_one_window() {
         lookup_rows(runtime, output).await,
         full_lookup_rows(runtime, left, right).await
     );
+
+    fixture.cleanup().await;
+}
+
+type MultiLookupRow = (
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+);
+
+fn collect_multi_lookup_rows(batches: &[RecordBatch]) -> Vec<MultiLookupRow> {
+    let mut rows = Vec::new();
+    for batch in batches {
+        let schema = batch.schema();
+        let ids = batch
+            .column(schema.index_of("id").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let keys = batch
+            .column(schema.index_of("jk").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let values = batch
+            .column(schema.index_of("lv").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let first = batch
+            .column(schema.index_of("rv1").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let second = batch
+            .column(schema.index_of("rv2").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let kinds = schema.index_of(IVM_ROW_KINDS_COLUMN).ok().map(|index| {
+            batch
+                .column(index)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+        });
+        for index in 0..batch.num_rows() {
+            if kinds.is_some_and(|kinds| kinds.value(index) != "insert") {
+                continue;
+            }
+            rows.push((
+                ids.value(index),
+                (!keys.is_null(index)).then(|| keys.value(index).to_string()),
+                (!values.is_null(index)).then(|| values.value(index).to_string()),
+                (!first.is_null(index)).then(|| first.value(index)),
+                (!second.is_null(index)).then(|| second.value(index)),
+            ));
+        }
+    }
+    rows.sort();
+    rows
+}
+
+async fn multi_lookup_rows(
+    runtime: &IvmRuntime,
+    output: &IvmTable,
+) -> Vec<MultiLookupRow> {
+    let batches = output.read_current(runtime.client()).await.unwrap();
+    collect_multi_lookup_rows(&batches)
+}
+
+/// The SQL semantics of the same chain of two 1:1 left lookups.
+async fn full_multi_lookup_rows(
+    runtime: &IvmRuntime,
+    left: &IvmTable,
+    first: &IvmTable,
+    second: &IvmTable,
+) -> Vec<MultiLookupRow> {
+    let context = SessionContext::new();
+    for (name, table) in [("l", left), ("r1", first), ("r2", second)] {
+        register(
+            &context,
+            name,
+            table.read_current(runtime.client()).await.unwrap(),
+            &table.schema,
+        );
+    }
+    let batches = context
+        .sql(&format!(
+            "select l.id, l.jk, l.lv, r1.rv as rv1, r2.rv as rv2 from \
+             (select * from l where \"{CHANGE_COLUMN}\" <> 'delete') l \
+             left join (select * from r1 where \"{CHANGE_COLUMN}\" <> 'delete') r1 \
+             on l.jk = r1.jk \
+             left join (select * from r2 where \"{CHANGE_COLUMN}\" <> 'delete') r2 \
+             on l.jk = r2.jk order by l.id"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    collect_multi_lookup_rows(&batches)
+}
+
+struct MultiLookupFixture {
+    runtime: IvmRuntime,
+    dir: tempfile::TempDir,
+    left: IvmTable,
+    first: IvmTable,
+    second: IvmTable,
+    output: IvmTable,
+    view: MultiLookupJoinView,
+}
+
+impl MultiLookupFixture {
+    async fn cleanup(self) {
+        for table in [&self.left, &self.first, &self.second, &self.output] {
+            self.runtime
+                .client()
+                .drop_table(&table.table_name, "default")
+                .await
+                .unwrap();
+        }
+        drop(self.dir);
+    }
+}
+
+async fn multi_lookup_setup() -> MultiLookupFixture {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_multi_left_{suffix}"),
+                table_path(&dir, "left"),
+                left_schema(),
+            )
+            .with_primary_keys(vec!["id".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let first = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_multi_first_{suffix}"),
+                table_path(&dir, "first"),
+                right_schema(),
+            )
+            .with_primary_keys(vec!["jk".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let second = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_multi_second_{suffix}"),
+                table_path(&dir, "second"),
+                right_schema(),
+            )
+            .with_primary_keys(vec!["jk".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let output_columns = vec![
+        MultiLookupColumn {
+            source: 0,
+            column: "jk".to_string(),
+            name: "jk".to_string(),
+        },
+        MultiLookupColumn {
+            source: 0,
+            column: "lv".to_string(),
+            name: "lv".to_string(),
+        },
+        MultiLookupColumn {
+            source: 1,
+            column: "rv".to_string(),
+            name: "rv1".to_string(),
+        },
+        MultiLookupColumn {
+            source: 2,
+            column: "rv".to_string(),
+            name: "rv2".to_string(),
+        },
+        MultiLookupColumn {
+            source: 0,
+            column: "id".to_string(),
+            name: "id".to_string(),
+        },
+    ];
+    let output = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_multi_out_{suffix}"),
+                table_path(&dir, "out"),
+                multi_lookup_join_mv_schema_for(
+                    &left_schema(),
+                    &[right_schema(), right_schema()],
+                    &["id".to_string()],
+                    &["jk".to_string()],
+                    &output_columns,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["id".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = MultiLookupJoinView {
+        view_id: format!("multi_lookup_{suffix}"),
+        left: left.clone(),
+        rights: vec![(first.clone(), None), (second.clone(), None)],
+        mv: output.clone(),
+        join_keys: vec!["jk".to_string()],
+        output_columns,
+        refresh_interval_ms: 0,
+    };
+    MultiLookupFixture {
+        runtime,
+        dir,
+        left,
+        first,
+        second,
+        output,
+        view,
+    }
+}
+
+#[test_log::test(tokio::test)]
+async fn multi_lookup_join_refreshes_every_right_source() {
+    let fixture = multi_lookup_setup().await;
+    let runtime = &fixture.runtime;
+    let (left, first, second, output, view) = (
+        &fixture.left,
+        &fixture.first,
+        &fixture.second,
+        &fixture.output,
+        &fixture.view,
+    );
+
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[
+            (1, Some("a"), "L1", "insert"),
+            (2, Some("b"), "L2", "insert"),
+            (3, None, "L3", "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    first
+        .append_batch(
+            runtime.client(),
+            right_batch(&[("a", 10, "insert"), ("b", 20, "insert")]),
+        )
+        .await
+        .unwrap();
+    second
+        .append_batch(runtime.client(), right_batch(&[("a", 100, "insert")]))
+        .await
+        .unwrap();
+    runtime
+        .refresh_multi_lookup_join(view)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        multi_lookup_rows(runtime, output).await,
+        full_multi_lookup_rows(runtime, left, first, second).await
+    );
+
+    // The join-key index only stores the left identity and keys: the right
+    // payload must not be copied into the side state.
+    let state = runtime
+        .metadata()
+        .list_states(&view.view_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|state| state.role == StateRole::JoinLeft)
+        .expect("multi lookup join state");
+    let state_table = runtime.open_table_by_id(&state.table_id).await.unwrap();
+    assert!(state_table.schema.field_with_name("id").is_ok());
+    assert!(state_table.schema.field_with_name("lv").is_err());
+
+    // A left-only update must keep both right payloads.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[(2, Some("b"), "L2x", "insert")]),
+    )
+    .await
+    .unwrap();
+    runtime
+        .refresh_multi_lookup_join(view)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        multi_lookup_rows(runtime, output).await,
+        full_multi_lookup_rows(runtime, left, first, second).await
+    );
+
+    // A change in only one right source rewrites the affected left rows.
+    first
+        .append_batch(runtime.client(), right_batch(&[("a", 11, "insert")]))
+        .await
+        .unwrap();
+    runtime
+        .refresh_multi_lookup_join(view)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        multi_lookup_rows(runtime, output).await,
+        full_multi_lookup_rows(runtime, left, first, second).await
+    );
+
+    // A right delete clears only that source's payload.
+    second
+        .append_batch(runtime.client(), right_batch(&[("a", 100, "delete")]))
+        .await
+        .unwrap();
+    runtime
+        .refresh_multi_lookup_join(view)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        multi_lookup_rows(runtime, output).await,
+        full_multi_lookup_rows(runtime, left, first, second).await
+    );
+
+    // Left, both rights and a left key change in one window.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[(3, Some("b"), "L3", "insert")]),
+    )
+    .await
+    .unwrap();
+    first
+        .append_batch(
+            runtime.client(),
+            right_batch(&[("b", 21, "insert"), ("c", 30, "insert")]),
+        )
+        .await
+        .unwrap();
+    second
+        .append_batch(
+            runtime.client(),
+            right_batch(&[("a", 101, "insert"), ("b", 200, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime
+        .refresh_multi_lookup_join(view)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        multi_lookup_rows(runtime, output).await,
+        full_multi_lookup_rows(runtime, left, first, second).await
+    );
+
+    // A left delete removes the row.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[(2, Some("b"), "L2x", "delete")]),
+    )
+    .await
+    .unwrap();
+    runtime
+        .refresh_multi_lookup_join(view)
+        .await
+        .unwrap()
+        .unwrap();
+    let expected = full_multi_lookup_rows(runtime, left, first, second).await;
+    assert_eq!(multi_lookup_rows(runtime, output).await, expected);
+
+    // A right delete clears only that source's payload.
+    first
+        .append_batch(runtime.client(), right_batch(&[("a", 11, "delete")]))
+        .await
+        .unwrap();
+    runtime
+        .refresh_multi_lookup_join(view)
+        .await
+        .unwrap()
+        .unwrap();
+    let expected = full_multi_lookup_rows(runtime, left, first, second).await;
+    assert_eq!(multi_lookup_rows(runtime, output).await, expected);
+
+    // The rebuild agrees with the incremental state.
+    runtime.rebuild_multi_lookup_join(view).await.unwrap();
+    assert_eq!(multi_lookup_rows(runtime, output).await, expected);
 
     fixture.cleanup().await;
 }

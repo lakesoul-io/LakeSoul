@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::env;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Instant;
 
-use arrow::compute::SortOptions;
 use arrow::datatypes::{DataType, Field, Schema, SchemaBuilder, SchemaRef};
 use arrow::error::ArrowError;
 use async_trait::async_trait;
@@ -18,21 +18,15 @@ use datafusion::common::{Constraint, DFSchema, Statistics, ToDFSchema, project_s
 use datafusion::datasource::TableProvider;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion::datasource::listing::{ListingOptions, ListingTableUrl, PartitionedFile};
-use datafusion::datasource::physical_plan::{
-    FileGroup, FileScanConfig, FileScanConfigBuilder, FileSinkConfig,
-};
-use datafusion::datasource::table_schema::TableSchema;
+use datafusion::datasource::physical_plan::{FileGroup, FileSinkConfig};
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::logical_expr::dml::InsertOp;
-use datafusion::logical_expr::expr::Sort;
 use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion::logical_expr::utils::split_conjunction;
 use datafusion::logical_expr::{
     CreateExternalTable, TableProviderFilterPushDown, TableType,
 };
-use datafusion::physical_expr::{
-    LexOrdering, PhysicalExpr, PhysicalSortExpr, create_physical_expr,
-};
+use datafusion::physical_expr::{PhysicalExpr, create_physical_expr};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::filter::FilterExec;
@@ -40,26 +34,25 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::prelude::{ident, lit};
 use datafusion::scalar::ScalarValue;
-use datafusion::{
-    execution::{context::SessionState, object_store::ObjectStoreUrl},
-    logical_expr::Expr,
-};
+use datafusion::{execution::context::SessionState, logical_expr::Expr};
 use datafusion_datasource::file_sink_config::FileOutputMode;
 use futures::StreamExt;
+use futures::TryStreamExt;
 use futures::stream::FuturesUnordered;
 
-use lakesoul_io::config::LakeSoulIOConfig;
-use lakesoul_io::file_format::{
-    LakeSoulFormatRegistry, PhysicalFormat, append_only_scan_exec,
-    compute_project_column_indices, flatten_file_scan_config_for_format,
+use lakesoul_io::config::{
+    DEFAULT_VECTOR_DATA_BLOCK_TARGET_BYTES, DEFAULT_VECTOR_ROW_BLOCK_SIZE,
+    LakeSoulIOConfig,
 };
-use lakesoul_io::helpers::{
-    listing_sink_table_from_lakesoul_io_config,
-    listing_source_table_from_lakesoul_io_config, partition_desc_from_file_scan_config,
+use lakesoul_io::file_format::{LakeSoulFormatRegistry, compute_project_column_indices};
+use lakesoul_io::physical_plan::lakesoul_scan::{
+    LakeSoulScanConfig, LakeSoulScanExec, ScanFile, ScanWorkUnit,
 };
 use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::error::LakeSoulMetaDataError;
+use lakesoul_metadata::transfusion::DataFileInfo;
 use lakesoul_metadata::utils::qualify_path;
-use lakesoul_metadata_proto::entity::TableInfo;
+use lakesoul_metadata_proto::entity::{PartitionInfo, TableInfo};
 use rootcause::compat::boxed_error::IntoBoxedError;
 use rootcause::prelude::ResultExt;
 use rootcause::report;
@@ -71,14 +64,15 @@ use crate::catalog::{
 };
 use crate::lakesoul_table::helpers::{
     case_fold_column_name, case_fold_table_name,
-    create_io_config_builder_from_table_info, listing_partition_info,
-    parse_partitions_for_partition_desc, prune_partitions,
+    create_io_config_builder_from_table_info, listing_partition_file_infos,
+    listing_partition_info, parse_partitions_for_partition_desc, prune_partitions,
 };
 use lakesoul_common::ser::arrow_java::{
     schema_from_table_info_metadata, schema_to_metadata_parts,
 };
 
 use super::file_format::LakeSoulMetaDataFormat;
+use crate::write_mode::UpdateUnsupported;
 
 const SCAN_STRATEGY_TOTAL: &str = "lakesoul_table_scan_strategy_total";
 const INDEX_PLANNING_TOTAL: &str = "lakesoul_index_planning_total";
@@ -126,12 +120,6 @@ fn record_index_fallback(index_type: &'static str, reason: &'static str) {
         "reason" => reason,
     )
     .increment(1);
-}
-
-struct FormatScanGroup {
-    object_store_url: ObjectStoreUrl,
-    physical_format: PhysicalFormat,
-    partitioned_file_lists: Vec<Vec<PartitionedFile>>,
 }
 
 /// Reads data from LakeSoul
@@ -187,22 +175,15 @@ impl LakeSoulTableProvider {
             .any(|(target, merged)| target.name() != merged.name())
     }
 
-    /// A MOR read describes merged rows, not the schema of any one upsert.
-    ///
-    /// Value columns may have no contribution for a key (partial updates or
-    /// schema evolution), or an explicit NULL contribution. The stored field
-    /// declaration therefore cannot promise non-null merged values. Expose
-    /// this before logical optimization, not only while building the scan.
-    /// Keys and injected range constants retain their declared nullability;
-    /// append-only tables do not have these partial-update semantics.
+    /// Read schemas describe rows from all selected file versions, including
+    /// schema evolution. Without file inspection, an ordinary value column
+    /// may be missing even if its current metadata declaration is NOT NULL.
+    /// Keys and injected range constants retain their declared nullability.
     fn read_schema(
         schema: SchemaRef,
         primary_keys: &[String],
         range_partitions: &[String],
     ) -> SchemaRef {
-        if primary_keys.is_empty() {
-            return schema;
-        }
         let mut fields = None;
         for (index, field) in schema.fields().iter().enumerate() {
             if !field.is_nullable()
@@ -225,22 +206,19 @@ impl LakeSoulTableProvider {
         logical_schema: SchemaRef,
         range_partitions: &[String],
     ) -> Result<(SchemaRef, SchemaRef)> {
-        let mut range_partition_projection = Vec::with_capacity(range_partitions.len());
-        let mut file_schema_projection =
-            Vec::with_capacity(logical_schema.fields().len() - range_partitions.len());
-        // O(nm), n = number of table fields, m = number of range partitions
+        let mut projection = Vec::with_capacity(logical_schema.fields().len());
         for (idx, field) in logical_schema.fields().iter().enumerate() {
-            match range_partitions.contains(field.name()) {
-                true => range_partition_projection.push(idx),
-                false => file_schema_projection.push(idx),
-            };
+            if !range_partitions.contains(field.name()) {
+                projection.push(idx);
+            }
         }
-
-        let file_schema = Arc::new(logical_schema.project(&file_schema_projection)?);
-        let scan_schema =
-            Arc::new(logical_schema.project(
-                &[file_schema_projection, range_partition_projection].concat(),
-            )?);
+        let file_schema = Arc::new(logical_schema.project(&projection)?);
+        // File scans append injected partition constants in metadata order,
+        // which need not match their order in the logical table schema.
+        for partition in range_partitions {
+            projection.push(logical_schema.index_of(partition)?);
+        }
+        let scan_schema = Arc::new(logical_schema.project(&projection)?);
         Ok((file_schema, scan_schema))
     }
 
@@ -281,6 +259,248 @@ impl LakeSoulTableProvider {
         )
     }
 
+    /// Lists the selected partitions' file descriptors from metadata only.
+    ///
+    /// The exact `PartitionInfo::snapshot` chosen before pruning is replayed;
+    /// this function never asks the metadata client for a newer version and
+    /// never opens the object store. Results stay in partition order so file
+    /// version order and mixed-format order are deterministic.
+    async fn list_partition_file_infos_for_scan(
+        &self,
+        ctx: &SessionState,
+        partition_filters: &[Expr],
+        snapshot: Option<Arc<Vec<PartitionInfo>>>,
+    ) -> Result<Vec<(PartitionInfo, Vec<DataFileInfo>)>> {
+        // A fixed snapshot came from the primary. Its commit descriptors must
+        // come from the same authority: a lagging replica could silently omit
+        // those commits and turn a real update into UPDATE 0.
+        let client = if snapshot.is_some() {
+            Arc::new(self.client.primary_only().await)
+        } else {
+            self.client()
+        };
+        let all_partition_info = match snapshot {
+            // A read-modify-write statement replays the versions it captured
+            // before planning this scan; it must never refresh to a newer view.
+            Some(partitions) => (*partitions).clone(),
+            None => self
+                .client
+                .get_all_partition_info(self.table_id())
+                .await
+                .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?,
+        };
+        let prune_partition_info = prune_partitions(
+            all_partition_info,
+            partition_filters,
+            self.table_partition_cols(),
+        )
+        .await
+        .map_err(|report| report.attach(self.table_info().table_name.clone()))?;
+        let concurrency: usize =
+            ctx.config_options().execution.meta_fetch_concurrency.into();
+        let concurrency = concurrency.max(1);
+        let mut listed = futures::stream::iter(prune_partition_info)
+            .map(|partition| {
+                let client = client.clone();
+                async move { listing_partition_file_infos(partition, client).await }
+            })
+            .buffered(concurrency)
+            .try_collect::<Vec<_>>()
+            .await?;
+        listed.sort_by(|left, right| {
+            left.0
+                .partition_desc
+                .cmp(&right.0.partition_desc)
+                .then_with(|| left.0.version.cmp(&right.0.version))
+        });
+        Ok(listed)
+    }
+
+    fn scan_file_from_info(&self, info: &DataFileInfo) -> DFResult<ScanFile> {
+        let physical_format =
+            self.format_registry
+                .physical_format_for_path(&info.path)
+                .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+        Ok(ScanFile {
+            path: info.path.clone(),
+            // `<= 0` is the writer's unknown-size sentinel. It must stay
+            // `None`; execution may HEAD the file after its first poll.
+            size: (info.size > 0).then_some(info.size as u64),
+            physical_format,
+            range: None,
+        })
+    }
+
+    fn partition_default_values(
+        partition: &PartitionInfo,
+        table_partition_cols: &[(String, DataType)],
+    ) -> DFResult<HashMap<String, String>> {
+        if table_partition_cols.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let parsed = parse_partitions_for_partition_desc(
+            &partition.partition_desc,
+            table_partition_cols.iter().map(|(name, _)| name.as_str()),
+        )
+        .ok_or_else(|| {
+            DataFusionError::Internal(format!(
+                "partition `{}` does not match the table's partition columns",
+                partition.partition_desc
+            ))
+        })?;
+        let mut defaults = HashMap::with_capacity(parsed.len());
+        for ((name, data_type), value) in table_partition_cols.iter().zip(parsed) {
+            let value = ScalarValue::try_from_string(value.to_string(), data_type)?;
+            defaults.insert(name.clone(), value.to_string());
+        }
+        Ok(defaults)
+    }
+
+    /// Builds this partition's atomic descriptor units.
+    ///
+    /// A merge table groups its files by `(range partition, bucket)` while
+    /// keeping the snapshot's version order inside each bucket. A single
+    /// untrusted or out-of-range bucket id makes the whole range one unit, so
+    /// a key's versions can never be split across lanes. An append-only table
+    /// keeps one unit per range partition with the original mixed-format
+    /// order intact.
+    fn lazy_work_units_for_partition(
+        &self,
+        partition: &PartitionInfo,
+        files: &[DataFileInfo],
+    ) -> DFResult<Vec<ScanWorkUnit>> {
+        if files.is_empty() {
+            return Ok(Vec::new());
+        }
+        let defaults =
+            Self::partition_default_values(partition, self.table_partition_cols())?;
+        let scan_files = files
+            .iter()
+            .map(|info| self.scan_file_from_info(info))
+            .collect::<DFResult<Vec<_>>>()?;
+        if self.primary_keys.is_empty() {
+            // One unit per contiguous same-format run. Files stay in snapshot
+            // order, so a mixed-format range keeps its original sequence.
+            let mut units: Vec<ScanWorkUnit> = Vec::new();
+            let mut current_format = None;
+            let mut current_files = Vec::new();
+            for file in scan_files {
+                if current_format.is_some_and(|format| format != file.physical_format) {
+                    units.push(ScanWorkUnit {
+                        files: std::mem::take(&mut current_files),
+                        default_column_value: defaults.clone(),
+                        lane: 0,
+                    });
+                }
+                current_format = Some(file.physical_format);
+                current_files.push(file);
+            }
+            if !current_files.is_empty() {
+                units.push(ScanWorkUnit {
+                    files: current_files,
+                    default_column_value: defaults,
+                    lane: 0,
+                });
+            }
+            return Ok(units);
+        }
+
+        let bucket_count = self.io_config.hash_bucket_num();
+        let buckets = files
+            .iter()
+            .map(|info| {
+                lakesoul_io::helpers::extract_hash_bucket_id(&info.path)
+                    .filter(|bucket| (*bucket as usize) < bucket_count)
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(buckets) = buckets else {
+            // Untrusted file names make the whole range partition atomic.
+            return Ok(vec![ScanWorkUnit {
+                files: scan_files,
+                default_column_value: defaults,
+                lane: 0,
+            }]);
+        };
+
+        let mut order = Vec::new();
+        let mut groups: HashMap<u32, Vec<ScanFile>> = HashMap::new();
+        for (file, bucket) in scan_files.into_iter().zip(buckets) {
+            if !groups.contains_key(&bucket) {
+                order.push(bucket);
+            }
+            groups.entry(bucket).or_default().push(file);
+        }
+        Ok(order
+            .into_iter()
+            .map(|bucket| ScanWorkUnit {
+                files: groups.remove(&bucket).unwrap_or_default(),
+                default_column_value: defaults.clone(),
+                lane: 0,
+            })
+            .collect())
+    }
+
+    /// Packs work units into at most `task_budget` nodes.
+    ///
+    /// A unit — one (range partition, hash bucket) work unit — is never
+    /// divided, and units move to nodes round-robin in scan order, so a node
+    /// may serve units of several range partitions while every unit still sees
+    /// all its own version files. The node count is bounded by the unit count,
+    /// not by the number of range partitions: a month-partitioned table must
+    /// spread its (month, bucket) units over the tasks the stage may get
+    /// instead of stopping at the month count. An empty budget still yields one
+    /// node.
+    fn pack_lazy_units(
+        partition_units: Vec<Vec<ScanWorkUnit>>,
+        task_budget: usize,
+    ) -> Vec<Vec<ScanWorkUnit>> {
+        let unit_count: usize = partition_units.iter().map(Vec::len).sum();
+        if unit_count == 0 {
+            return Vec::new();
+        }
+        let node_count = task_budget.max(1).min(unit_count);
+        let mut packed = (0..node_count)
+            .map(|_| Vec::new())
+            .collect::<Vec<Vec<ScanWorkUnit>>>();
+        let mut unit_index = 0;
+        for units in partition_units {
+            for unit in units {
+                packed[unit_index % node_count].push(unit);
+                unit_index += 1;
+            }
+        }
+        packed
+    }
+
+    fn lazy_scan_config(
+        &self,
+        table_schema: &SchemaRef,
+        output_schema: &SchemaRef,
+        partition_schema: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
+        key_constraint: Option<lakesoul_io::pk_locator::KeyConstraint>,
+        parquet_force_view_types: bool,
+        read_options: &HashMap<String, String>,
+        limit: Option<usize>,
+        min_index_rows: u64,
+    ) -> LakeSoulScanConfig {
+        let mut io_config = self.io_config.clone();
+        // Files belong to the descriptor units, not to a shared config.
+        io_config.set_files(Vec::new());
+        LakeSoulScanConfig {
+            table_schema: table_schema.clone(),
+            output_schema: output_schema.clone(),
+            partition_schema,
+            io_config,
+            predicate,
+            key_constraint,
+            parquet_force_view_types,
+            read_options: read_options.clone(),
+            limit,
+            min_index_rows,
+        }
+    }
+
     /// Build a source provider using the current session for object-store
     /// access and file-schema inference.
     pub async fn try_new(
@@ -289,8 +509,10 @@ impl LakeSoulTableProvider {
         lakesoul_io_config: LakeSoulIOConfig,
         table_info: Arc<TableInfo>,
     ) -> Result<Self> {
+        // The table schema comes from metadata; no object-store access is
+        // needed to construct the provider. The session only supplies read
+        // semantics that `scan` captures when it builds a lazy descriptor.
         Self::try_new_inner(
-            Some(session),
             LakeSoulProviderOptions::from_session(session),
             client,
             lakesoul_io_config,
@@ -307,14 +529,8 @@ impl LakeSoulTableProvider {
         lakesoul_io_config: LakeSoulIOConfig,
         table_info: Arc<TableInfo>,
     ) -> Result<Self> {
-        Self::try_new_inner(
-            None,
-            provider_options,
-            client,
-            lakesoul_io_config,
-            table_info,
-        )
-        .await
+        Self::try_new_inner(provider_options, client, lakesoul_io_config, table_info)
+            .await
     }
 
     #[instrument(
@@ -324,12 +540,10 @@ impl LakeSoulTableProvider {
         fields(
             table_id = %table_info.table_id.as_str(),
             table_name = %table_info.table_name.as_str(),
-            session_available = source_session.is_some(),
         ),
         err
     )]
     async fn try_new_inner(
-        source_session: Option<&dyn Session>,
         provider_options: LakeSoulProviderOptions,
         client: MetaDataClientRef,
         lakesoul_io_config: LakeSoulIOConfig,
@@ -373,23 +587,31 @@ impl LakeSoulTableProvider {
             format_registry.clone(),
         )?);
 
-        let (_, listing_table) = match source_session {
-            Some(session) => {
-                listing_source_table_from_lakesoul_io_config(
-                    session,
-                    lakesoul_io_config.clone(),
-                    file_format,
-                )
-                .await?
-            }
-            None => listing_sink_table_from_lakesoul_io_config(
-                lakesoul_io_config.clone(),
-                file_format,
-            )?,
+        // The provider already has the authoritative logical schema from
+        // metadata. Building a `ListingTable` here used to HEAD every file
+        // (and infer a schema from them) before the scan even began, which
+        // made provider construction part of the eager object-store plan
+        // path. Only the listing options and the table prefix are needed:
+        // the ordinary scan reads its file descriptors from metadata, while
+        // the sink writes under the table prefix.
+        let table_partition_cols = range_partitions
+            .iter()
+            .map(|name| {
+                logical_schema
+                    .field_with_name(name)
+                    .map(|field| (name.clone(), field.data_type().clone()))
+            })
+            .collect::<Result<Vec<_>, ArrowError>>()?;
+        let listing_options = ListingOptions::new(file_format)
+            .with_table_partition_cols(table_partition_cols);
+        let listing_table_paths = if lakesoul_io_config.prefix().is_empty() {
+            vec![]
+        } else {
+            vec![
+                ListingTableUrl::parse(lakesoul_io_config.prefix())
+                    .map_err(|error| report!(error))?,
+            ]
         };
-
-        let listing_options = listing_table.options().clone();
-        let listing_table_paths = listing_table.table_paths().clone();
         let text_index_configs =
             crate::text_index::parse_text_index_from_table_properties(
                 &table_info.properties,
@@ -479,6 +701,17 @@ impl LakeSoulTableProvider {
             (None, None)
         };
 
+        // The PostgreSQL front end passes plain option keys; the management
+        // `CREATE EXTERNAL TABLE` path uses `format.`-prefixed ones. Fill the
+        // property from whichever form is present. The PG front end has
+        // already resolved the change column against the declared schema.
+        let use_cdc = cmd.options.get("use_cdc").cloned().or(use_cdc);
+        let cdc_column = cmd
+            .options
+            .get("lakesoul_cdc_change_column")
+            .cloned()
+            .or(cdc_column);
+
         let logical_schema = Arc::new(schema_builder.finish());
 
         // The `vector_index_columns` option declares vector indexes at
@@ -543,6 +776,62 @@ impl LakeSoulTableProvider {
                 })?;
         }
 
+        // Optional Vortex layout for the columns declared in
+        // `vector_index_columns`. The values are stored as table properties and
+        // applied to those columns only; a vector table without them gets the
+        // small random-access layout that keeps candidate reads cheap.
+        let has_vector_index = vector_index_columns.is_some();
+        let vortex_row_block_size = cmd
+            .options
+            .get("format.vortex_row_block_size")
+            .or_else(|| cmd.options.get("vortex_row_block_size"))
+            .cloned()
+            .or_else(|| {
+                has_vector_index.then(|| DEFAULT_VECTOR_ROW_BLOCK_SIZE.to_string())
+            });
+        if let Some(value) = &vortex_row_block_size {
+            value
+                .parse::<usize>()
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    report!(
+                        "invalid vortex_row_block_size option '{value}': \
+                         expects a positive integer"
+                    )
+                })?;
+        }
+        let vortex_data_block_target_bytes = cmd
+            .options
+            .get("format.vortex_data_block_target_bytes")
+            .or_else(|| cmd.options.get("vortex_data_block_target_bytes"))
+            .cloned()
+            .or_else(|| {
+                has_vector_index
+                    .then(|| DEFAULT_VECTOR_DATA_BLOCK_TARGET_BYTES.to_string())
+            });
+        if let Some(value) = &vortex_data_block_target_bytes {
+            value
+                .parse::<u64>()
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    report!(
+                        "invalid vortex_data_block_target_bytes option '{value}': \
+                         expects a positive integer"
+                    )
+                })?;
+        }
+
+        // `appendOnly` (the Spark/Flink table property). Persisted as-is so
+        // an engine that enforces append-only semantics reads the same value;
+        // the PG layer only stores it.
+        let append_only = cmd
+            .options
+            .get("format.append_only")
+            .or_else(|| cmd.options.get("append_only"))
+            .cloned();
+
         let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
             schema_to_metadata_parts(logical_schema.as_ref());
 
@@ -573,9 +862,12 @@ impl LakeSoulTableProvider {
                 },
                 cdc_change_column: cdc_column,
                 use_cdc,
+                append_only,
                 vector_index_columns,
                 text_index_columns,
                 file_format,
+                vortex_row_block_size,
+                vortex_data_block_target_bytes,
                 ..Default::default()
             })
             .unwrap(),
@@ -607,13 +899,14 @@ impl LakeSoulTableProvider {
             object_store_options,
         )?
         .build();
+        let parquet_force_view_types = session_state
+            .config_options()
+            .execution
+            .parquet
+            .schema_force_view_types;
         let format_registry = Arc::new(LakeSoulFormatRegistry::new(
             io_config.clone(),
-            session_state
-                .config_options()
-                .execution
-                .parquet
-                .schema_force_view_types,
+            parquet_force_view_types,
         )?);
         let vector_index_configs =
             crate::vector_index::parse_vector_index_from_table_properties(
@@ -660,6 +953,178 @@ impl LakeSoulTableProvider {
         self.client.clone()
     }
 
+    /// The partition versions of this table as read from the primary metadata
+    /// store. A read-modify-write statement captures these once and binds both
+    /// its old-row scan and its commit validation to them.
+    pub async fn primary_snapshot(&self) -> Result<Arc<Vec<PartitionInfo>>> {
+        let client = self.client.primary_only().await;
+        let partitions = client
+            .get_all_partition_info(self.table_id())
+            .await
+            .map_err(|error| report!(error))?;
+        Ok(Arc::new(partitions))
+    }
+
+    /// The table's durable definition, read from the primary metadata store.
+    ///
+    /// Catalog providers may be built from a replica or a cached view; a
+    /// read-modify-write statement re-reads the definition it is about to use
+    /// so CDC/append-only/schema checks reflect the committed configuration
+    /// even for `WHERE false` and empty tables.
+    pub async fn primary_table_info(
+        &self,
+    ) -> std::result::Result<TableInfo, LakeSoulMetaDataError> {
+        let client = self.client.primary_only().await;
+        client
+            .get_table_info_by_table_id(self.table_id())
+            .await?
+            .ok_or_else(|| {
+                LakeSoulMetaDataError::NotFound(format!(
+                    "table {} not found",
+                    self.table_id()
+                ))
+            })
+    }
+
+    /// Why `UPDATE` cannot run, judged from a table definition.
+    pub fn update_unsupported_for(
+        table_info: &TableInfo,
+        custom_merge_operators: bool,
+    ) -> Option<UpdateUnsupported> {
+        let (_, primary_keys) =
+            parse_table_info_partitions(&table_info.partitions).ok()?;
+        if primary_keys.iter().all(|column| column.trim().is_empty()) {
+            return Some(UpdateUnsupported::NoPrimaryKey);
+        }
+        if custom_merge_operators {
+            return Some(UpdateUnsupported::CustomMergeOperator);
+        }
+        let properties =
+            serde_json::from_str::<LakeSoulTableProperty>(&table_info.properties).ok();
+        let use_cdc = properties
+            .as_ref()
+            .and_then(|properties| properties.use_cdc.as_deref())
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+        let change_column = properties
+            .as_ref()
+            .and_then(|properties| properties.cdc_change_column.as_deref())
+            .is_some_and(|value| !value.trim().is_empty());
+        if use_cdc || change_column {
+            return Some(UpdateUnsupported::Cdc);
+        }
+        let append_only = properties
+            .as_ref()
+            .and_then(|properties| properties.append_only.as_deref())
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+        if append_only {
+            return Some(UpdateUnsupported::AppendOnly);
+        }
+        None
+    }
+
+    /// The primary-key columns of this table.
+    pub fn primary_key_columns(&self) -> &[String] {
+        &self.primary_keys
+    }
+
+    /// The range-partition columns of this table.
+    pub fn range_partition_columns(&self) -> &[String] {
+        &self.range_partitions
+    }
+
+    /// Whether this table has a non-overwrite merge operator configured.
+    ///
+    /// `UseLast` (the default, also when configured explicitly) replaces a
+    /// row's value with the newest version, which is exactly SQL `SET`;
+    /// everything else (`UseLastNotNull`, `SumAll`, `SumLast`, joined
+    /// variants) changes what the new value would mean.
+    pub fn has_custom_merge_operators(&self) -> bool {
+        self.io_config
+            .merge_operators()
+            .values()
+            .any(|operator| operator != "UseLast")
+    }
+
+    /// Why a SQL `UPDATE` cannot run against this table, if it cannot.
+    ///
+    /// The verdict uses the effective configuration the scan/write path reads
+    /// (table properties plus io config), not column names.
+    pub fn update_unsupported(&self) -> Option<UpdateUnsupported> {
+        if self.primary_keys.is_empty() {
+            return Some(UpdateUnsupported::NoPrimaryKey);
+        }
+        if self.has_custom_merge_operators() {
+            return Some(UpdateUnsupported::CustomMergeOperator);
+        }
+        let properties =
+            serde_json::from_str::<LakeSoulTableProperty>(&self.table_info.properties)
+                .ok();
+        let use_cdc = properties
+            .as_ref()
+            .and_then(|properties| properties.use_cdc.as_deref())
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+        if use_cdc || !self.io_config.cdc_column().trim().is_empty() {
+            return Some(UpdateUnsupported::Cdc);
+        }
+        let append_only = properties
+            .as_ref()
+            .and_then(|properties| properties.append_only.as_deref())
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+        if append_only {
+            return Some(UpdateUnsupported::AppendOnly);
+        }
+        None
+    }
+
+    /// The snapshot a scan of this provider must replay, if one is fixed.
+    ///
+    /// The per-statement handle applies to scans of the same table. A scan
+    /// of the same name bound to a different `table_id` is a recreated table
+    /// and is refused rather than read from the stale snapshot.
+    fn scan_snapshot(
+        &self,
+        session_state: &SessionState,
+    ) -> DFResult<Option<Arc<Vec<PartitionInfo>>>> {
+        let Some(fixed) =
+            crate::write_mode::LakeSoulFixedSnapshot::from_session(session_state)
+        else {
+            return Ok(None);
+        };
+        if fixed.table_id == self.table_info.table_id {
+            if !crate::write_mode::same_table_definition(
+                &fixed.table_info,
+                &self.table_info,
+            ) {
+                return Err(DataFusionError::External(Box::new(
+                    crate::write_mode::WriteConflict {
+                        detail: format!(
+                            "table {} changed while the statement was running; \
+                             retry the statement",
+                            self.table_info.table_id
+                        ),
+                    },
+                )));
+            }
+            return Ok(Some(Arc::clone(&fixed.partitions)));
+        }
+        if fixed
+            .table_name
+            .eq_ignore_ascii_case(&self.table_info.table_name)
+            && fixed.table_namespace == self.table_info.table_namespace
+        {
+            return Err(DataFusionError::External(Box::new(
+                crate::write_mode::WriteConflict {
+                    detail: format!(
+                        "table {}.{} was dropped and recreated while the statement \
+                         was running; retry the statement",
+                        self.table_info.table_namespace, self.table_info.table_name
+                    ),
+                },
+            )));
+        }
+        Ok(None)
+    }
+
     fn _primary_keys(&self) -> &[String] {
         &self.primary_keys
     }
@@ -700,40 +1165,6 @@ impl LakeSoulTableProvider {
         &self.options().table_partition_cols
     }
 
-    /// If file_sort_order is specified, creates the appropriate physical expressions
-    pub fn try_create_output_ordering(&self) -> Result<Vec<LexOrdering>> {
-        let mut all_sort_orders = vec![];
-
-        for exprs in &self.options().file_sort_order {
-            // Construct PhsyicalSortExpr objects from Expr objects:
-            let sort_exprs = exprs
-                .iter()
-                .map(|sort| {
-                    let Sort { expr, asc, nulls_first } = sort;
-                    if let Expr::Column(col) = expr {
-                        let expr = datafusion::physical_plan::expressions::col(&col.name, self.schema().as_ref())?;
-                        Ok(PhysicalSortExpr {
-                            expr,
-                            options: SortOptions {
-                                descending: !asc,
-                                nulls_first: *nulls_first,
-                            },
-                        })
-                    } else {
-                        Err(DataFusionError::Plan(
-                            // Return an error if the schema of the input query does not match with the table schema.
-                            format!("Expected single column references in output_ordering, got {}", expr),
-                        ))
-                    }
-                })
-                .collect::<Result<Vec<_>,DataFusionError>>()?;
-            if let Some(ordering) = LexOrdering::new(sort_exprs) {
-                all_sort_orders.push(ordering);
-            }
-        }
-        Ok(all_sort_orders)
-    }
-
     /// Lists the work units that survive `partition_filters`.
     ///
     /// The caller hands in predicates that classify as
@@ -768,11 +1199,22 @@ impl LakeSoulTableProvider {
             return Ok((vec![], Statistics::new_unknown(&self.file_schema())));
         };
 
-        let all_partition_info = self
-            .client
-            .get_all_partition_info(self.table_id())
-            .await
-            .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?;
+        let snapshot = self.scan_snapshot(ctx).map_err(|error| {
+            report!(error).attach(self.table_info().table_name.clone())
+        })?;
+        let client = if snapshot.is_some() {
+            Arc::new(self.client.primary_only().await)
+        } else {
+            self.client()
+        };
+        let all_partition_info = match snapshot {
+            Some(partitions) => (*partitions).clone(),
+            None => self
+                .client
+                .get_all_partition_info(self.table_id())
+                .await
+                .map_err(|e| report!(e).attach(self.table_info().table_name.clone()))?,
+        };
         let total_partition_count = all_partition_info.len();
         let prune_partition_info = prune_partitions(
             all_partition_info,
@@ -795,7 +1237,7 @@ impl LakeSoulTableProvider {
             futures.push(listing_partition_info(
                 partition,
                 store.as_ref(),
-                self.client(),
+                client.clone(),
             ))
         }
 
@@ -1146,156 +1588,6 @@ impl LakeSoulTableProvider {
         Ok(Some(Arc::new(exec)))
     }
 
-    /// The file format a work unit's files are read with.
-    ///
-    /// `format_scan_groups` derived it from the first file's extension when it
-    /// built the work unit's per-file scan configs, and a work unit holds files
-    /// of one format group.
-    fn work_unit_format(
-        &self,
-        configs: &[FileScanConfig],
-    ) -> DFResult<Option<Arc<dyn FileFormat>>> {
-        let Some(path) = configs
-            .first()
-            .and_then(|config| config.file_groups.first())
-            .and_then(|group| group.files().first())
-            .map(|file| file.object_meta.location.as_ref())
-        else {
-            return Ok(None);
-        };
-        Ok(Some(
-            self.format_registry.file_format(
-                self.format_registry
-                    .physical_format_for_path(path)
-                    .map_err(|report| {
-                        DataFusionError::External(report.into_boxed_error())
-                    })?,
-            ),
-        ))
-    }
-
-    fn format_scan_groups(
-        format_registry: &LakeSoulFormatRegistry,
-        object_store_url: ObjectStoreUrl,
-        partitioned_file_lists: Vec<Vec<PartitionedFile>>,
-    ) -> Result<Vec<FormatScanGroup>> {
-        let mut groups: Vec<FormatScanGroup> = vec![];
-
-        for partitioned_files in partitioned_file_lists {
-            let mut current_format = None;
-            let mut current_files = vec![];
-
-            for file in partitioned_files {
-                let physical_format = format_registry
-                    .physical_format_for_path(file.object_meta.location.as_ref())?;
-
-                match current_format {
-                    Some(format) if format == physical_format => {
-                        current_files.push(file);
-                    }
-                    Some(format) => {
-                        Self::push_format_scan_group(
-                            &mut groups,
-                            object_store_url.clone(),
-                            format,
-                            std::mem::take(&mut current_files),
-                        );
-                        current_format = Some(physical_format);
-                        current_files.push(file);
-                    }
-                    None => {
-                        current_format = Some(physical_format);
-                        current_files.push(file);
-                    }
-                }
-            }
-
-            if let Some(physical_format) = current_format {
-                Self::push_format_scan_group(
-                    &mut groups,
-                    object_store_url.clone(),
-                    physical_format,
-                    current_files,
-                );
-            }
-        }
-
-        Ok(groups)
-    }
-
-    fn push_format_scan_group(
-        groups: &mut Vec<FormatScanGroup>,
-        object_store_url: ObjectStoreUrl,
-        physical_format: PhysicalFormat,
-        files: Vec<PartitionedFile>,
-    ) {
-        if files.is_empty() {
-            return;
-        }
-
-        if let Some(group) = groups.last_mut().filter(|group| {
-            group.object_store_url == object_store_url
-                && group.physical_format == physical_format
-        }) {
-            group.partitioned_file_lists.push(files);
-        } else {
-            groups.push(FormatScanGroup {
-                object_store_url,
-                physical_format,
-                partitioned_file_lists: vec![files],
-            });
-        }
-    }
-
-    /// Regroup aligned file/input pairs without changing version order within
-    /// a bucket. Untrusted filenames make the whole range partition atomic:
-    /// an unknown file may contain versions of keys from any known bucket.
-    fn bucket_merge_work_units(
-        inputs: Vec<Arc<dyn ExecutionPlan>>,
-        files: Vec<String>,
-        defaults: Arc<HashMap<String, String>>,
-        bucket_count: usize,
-        lane_budget: usize,
-    ) -> (
-        Vec<Arc<dyn ExecutionPlan>>,
-        Vec<lakesoul_io::physical_plan::merge::MergeWorkUnit>,
-        usize,
-    ) {
-        let buckets: Option<Vec<_>> = files
-            .iter()
-            .map(|file| {
-                lakesoul_io::helpers::extract_hash_bucket_id(file)
-                    .filter(|bucket| (*bucket as usize) < bucket_count)
-            })
-            .collect();
-        let buckets = buckets.unwrap_or_else(|| vec![0; files.len()]);
-        let mut positions = HashMap::new();
-        let mut groups = Vec::new();
-        for ((input, file), bucket) in inputs.into_iter().zip(files).zip(buckets) {
-            let next = groups.len();
-            let index = *positions.entry(bucket).or_insert(next);
-            if index == groups.len() {
-                groups.push((Vec::<Arc<dyn ExecutionPlan>>::new(), Vec::<String>::new()));
-            }
-            groups[index].0.push(input);
-            groups[index].1.push(file);
-        }
-        let lanes = lane_budget.max(1).min(groups.len().max(1));
-        let mut inputs = Vec::new();
-        let mut units = Vec::with_capacity(groups.len());
-        for (index, (group_inputs, files)) in groups.into_iter().enumerate() {
-            let start = inputs.len();
-            inputs.extend(group_inputs);
-            units.push(lakesoul_io::physical_plan::merge::MergeWorkUnit {
-                input_range: start..inputs.len(),
-                files,
-                default_column_value: defaults.clone(),
-                lane: index % lanes,
-            });
-        }
-        (inputs, units, lanes)
-    }
-
     fn build_partitioned_exec(
         partitioned_execs: Vec<Arc<dyn ExecutionPlan>>,
         empty_schema: SchemaRef,
@@ -1304,41 +1596,6 @@ impl LakeSoulTableProvider {
             0 => Ok(Arc::new(EmptyExec::new(empty_schema))),
             1 => Ok(partitioned_execs[0].clone()),
             _ => UnionExec::try_new(partitioned_execs),
-        }
-    }
-
-    fn empty_partitioned_exec_schema(
-        _scan_schema: SchemaRef,
-        merged_schema: SchemaRef,
-    ) -> SchemaRef {
-        merged_schema
-    }
-
-    fn merged_schema_with_input_nullability(
-        merged_schema: SchemaRef,
-        inputs: &[Arc<dyn ExecutionPlan>],
-        partition_columns: &[String],
-    ) -> SchemaRef {
-        let mut fields = None;
-        for (index, field) in merged_schema.fields().iter().enumerate() {
-            // The append-only scan pads genuinely absent fields with NULLs;
-            // nullable file metadata alone does not widen its read contract.
-            if !field.is_nullable()
-                && !partition_columns.contains(field.name())
-                && inputs
-                    .iter()
-                    .any(|input| input.schema().column_with_name(field.name()).is_none())
-            {
-                fields.get_or_insert_with(|| merged_schema.fields().to_vec())[index] =
-                    Arc::new(field.as_ref().clone().with_nullable(true));
-            }
-        }
-        match fields {
-            Some(fields) => Arc::new(Schema::new_with_metadata(
-                fields,
-                merged_schema.metadata().clone(),
-            )),
-            None => merged_schema,
         }
     }
 }
@@ -1519,6 +1776,7 @@ impl TableProvider for LakeSoulTableProvider {
         filters: &[Expr], // TODO
         limit: Option<usize>,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        let scan_started = Instant::now();
         let session_state = session_state
             .as_any()
             .downcast_ref::<SessionState>()
@@ -1527,6 +1785,7 @@ impl TableProvider for LakeSoulTableProvider {
         // Both index pushdowns are optimizations: they only need the
         // partition-pruning half of the filters to enumerate candidate work
         // units, so they receive `classified.partition_pruning` below.
+        let classify_started = Instant::now();
         let vector_search =
             crate::udf::vector_search_marker::parse_vector_search_request(filters);
         let filters: Vec<Expr> = filters
@@ -1561,6 +1820,7 @@ impl TableProvider for LakeSoulTableProvider {
             text_search = text_search.is_some(),
             "classified scan filters"
         );
+        let classify_ms = classify_started.elapsed().as_secs_f64() * 1000.0;
 
         // Vector search pushdown: when the optimizer annotated the scan
         // with the vector-search marker, read only the index candidates
@@ -1600,6 +1860,7 @@ impl TableProvider for LakeSoulTableProvider {
             return Ok(exec);
         }
 
+        let key_constraint_started = Instant::now();
         // Finite primary-key predicates (or a finite prefix of a composite
         // key) let the scan fetch only the matching rows (vortex only); the
         // optimizer keeps re-applying the filter above the scan, so a
@@ -1630,14 +1891,31 @@ impl TableProvider for LakeSoulTableProvider {
                 "extracted primary-key candidates"
             );
         }
+        let key_constraint_ms = key_constraint_started.elapsed().as_secs_f64() * 1000.0;
 
-        let (partitioned_file_lists, statistics) = self
-            .list_files_for_scan(session_state, &classified.partition_pruning, limit)
+        // Metadata-only listing: the selected `PartitionInfo::snapshot` is
+        // replayed through the metadata client. No object-store HEAD, GET,
+        // range or list request is issued, and the provider builds descriptors
+        // rather than per-file scan plans.
+        let list_started = Instant::now();
+        let fixed_snapshot = self.scan_snapshot(session_state)?;
+        let partition_file_infos = self
+            .list_partition_file_infos_for_scan(
+                session_state,
+                &classified.partition_pruning,
+                fixed_snapshot,
+            )
             .await
-            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
+            .map_err(|report| match report.downcast_report::<DataFusionError>() {
+                Ok(report) => report.into_current_context(),
+                Err(report) => DataFusionError::External(report.into_boxed_error()),
+            })?;
+        let list_ms = list_started.elapsed().as_secs_f64() * 1000.0;
 
-        // if no files need to be read, return an `EmptyExec`
-        if partitioned_file_lists.is_empty() {
+        if partition_file_infos
+            .iter()
+            .all(|(_, files)| files.is_empty())
+        {
             record_scan_strategy("empty");
             debug!(strategy = "empty", "selected scan strategy");
             let schema = self.schema();
@@ -1645,63 +1923,53 @@ impl TableProvider for LakeSoulTableProvider {
             return Ok(Arc::new(EmptyExec::new(projected_schema)));
         }
 
-        // extract types of partition columns
-        // O(nm), n = number of partitions, m = number of columns
+        // The full logical read schema, including range-partition columns;
+        // predicates are bound to this schema exactly as before. The lazy
+        // node receives this fixed contract, not a per-file derived schema.
+        let work_units_started = Instant::now();
+        let full_table_schema = self.scan_schema();
         let table_partition_cols = self
-            .options()
-            .table_partition_cols
+            .table_partition_cols()
             .iter()
-            .map(|col| {
-                Ok(Arc::new(
-                    self.scan_schema().field_with_name(&col.0)?.clone(),
-                ))
+            .map(|(name, _)| {
+                Ok(Arc::new(full_table_schema.field_with_name(name)?.clone()))
             })
             .collect::<Result<Vec<_>, ArrowError>>()?;
-        let table_schema =
-            TableSchema::new(self.file_schema.clone(), table_partition_cols.clone());
-        let statistics = Arc::new(statistics);
-
-        let object_store_url = if let Some(url) = self.table_paths().first() {
-            url.object_store()
-        } else {
-            return Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))));
-        };
+        let partition_schema = Arc::new(Schema::new(table_partition_cols));
 
         let projection_indices = self.scan_projection(projection)?;
         let scan_schema =
-            project_schema(table_schema.table_schema(), projection_indices.as_ref())?;
+            project_schema(&full_table_schema, projection_indices.as_ref())?;
         let merged_projection = compute_project_column_indices(
-            table_schema.table_schema().clone(),
+            full_table_schema.clone(),
             scan_schema.clone(),
             self.primary_keys.as_slice(),
             &self.io_config.cdc_column(),
         );
         let merged_schema =
-            project_schema(table_schema.table_schema(), merged_projection.as_ref())?;
+            project_schema(&full_table_schema, merged_projection.as_ref())?;
 
-        // Only the pre-merge subset reaches the file sources, and only when
-        // row-level pushdown is enabled (the classification already applied
-        // the flag). A non-key predicate must never be evaluated on a single
-        // version below the merge: filtering `v = 1` before the merge can
-        // keep an old `(id=1, v=1)` file while the new `(id=1, v=100)`
-        // version is dropped, resurrecting a superseded row. DataFusion's
-        // upper `FilterExec` evaluates those predicates on the merged rows.
+        // Only the pre-merge subset is forwarded to the lazy scan, and only
+        // when row-level pushdown is enabled (the classification already
+        // applied the flag). A non-key predicate must never be evaluated on
+        // a single version below the merge: filtering `v = 1` before the
+        // merge can keep an old `(id=1, v=1)` file while the new
+        // `(id=1, v=100)` version is dropped, resurrecting a superseded row.
+        // DataFusion's upper `FilterExec` evaluates those predicates on the
+        // merged rows.
         //
-        // The conjuncts are offered to the source one by one. A file source
-        // judges every predicate on its own, and the common `part = .. AND
-        // v = ..` shape mixes a partition column - which has no file-schema
-        // entry - with file columns, so a conjunction judged as a whole is
-        // refused outright and takes the file columns' pushdown with it.
-        let pushed_filters: Vec<Arc<dyn PhysicalExpr>> =
+        // The conjuncts are combined into one physical predicate bound to the
+        // full logical schema. The execution side offers that predicate to
+        // each per-file source, which judges it before evaluating it.
+        let predicate: Option<Arc<dyn PhysicalExpr>> =
             if classified.pre_merge_pushdown.is_empty() {
-                Vec::new()
+                None
             } else {
                 // Filters are evaluated before projection and may reference
                 // partition columns or columns omitted from the output
                 // projection.
-                let table_df_schema =
-                    table_schema.table_schema().as_ref().clone().to_dfschema()?;
-                classified
+                let table_df_schema = full_table_schema.as_ref().clone().to_dfschema()?;
+                let predicates = classified
                     .pre_merge_pushdown
                     .iter()
                     .map(|expr| {
@@ -1712,218 +1980,112 @@ impl TableProvider for LakeSoulTableProvider {
                             &PhysicalPlanningContext::default(),
                         )
                     })
-                    .collect::<DFResult<Vec<_>>>()?
+                    .collect::<DFResult<Vec<_>>>()?;
+                Some(datafusion::physical_expr::utils::conjunction(predicates))
             };
 
-        let partition_schema = Arc::new(Schema::new(table_partition_cols));
-        let output_ordering = self
-            .try_create_output_ordering()
-            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
-        let format_groups = Self::format_scan_groups(
-            self.format_registry.as_ref(),
-            object_store_url,
-            partitioned_file_lists,
-        )
-        .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
-
-        let format_group_count = format_groups.len();
-        let mut flatten_configs = vec![];
-        for group in format_groups {
-            let file_format = self.format_registry.file_format(group.physical_format);
-            let mut file_source = file_format.file_source(table_schema.clone());
-            if !pushed_filters.is_empty() {
-                let result = file_source.try_pushdown_filters(
-                    pushed_filters.clone(),
-                    session_state.config_options(),
-                )?;
-                if let Some(updated_source) = result.updated_node {
-                    file_source = updated_source;
-                }
-            }
-
-            let scan_config =
-                FileScanConfigBuilder::new(group.object_store_url, file_source)
-                    .with_file_groups(
-                        group
-                            .partitioned_file_lists
-                            .into_iter()
-                            .map(|files| {
-                                FileGroup::new(files).with_statistics(statistics.clone())
-                            })
-                            .collect(),
-                    )
-                    .with_statistics((*statistics).clone())
-                    .with_projection_indices(projection_indices.clone())?
-                    .with_limit(limit)
-                    .with_output_ordering(output_ordering.clone())
-                    .with_file_compression_type(
-                        self.format_registry
-                            .file_compression_type(group.physical_format),
-                    )
-                    .build();
-
-            let group_flatten_configs = flatten_file_scan_config_for_format(
-                session_state,
-                file_format,
-                scan_config,
-                self.primary_keys.as_slice(),
-                &self.io_config.cdc_column(),
-                partition_schema.clone(),
-                scan_schema.clone(),
-            )
-            .await
-            .map_err(|report| DataFusionError::External(report.into_boxed_error()))?;
-            flatten_configs.extend(group_flatten_configs);
-        }
-        debug!(
-            format_group_count,
-            file_scan_config_count = flatten_configs.len(),
-            "built file scan configurations"
-        );
-
-        let candidate_inputs = match &key_constraint {
-            Some(constraint) => {
-                let candidate_count = constraint.values.len();
-                let inputs = lakesoul_io::pk_locator::try_build_key_inputs(
-                    session_state,
-                    &self.io_config,
-                    &flatten_configs,
-                    constraint,
-                )
-                .await;
-                debug!(
-                    candidate_count,
-                    locator_applied = inputs.is_some(),
-                    "evaluated primary-key locator"
-                );
-                inputs
-            }
-            None => None,
-        };
-
-        let mut inputs_map: HashMap<
-            String,
-            (
-                Arc<HashMap<String, String>>,
-                (
-                    Vec<Arc<dyn ExecutionPlan>>,
-                    Vec<String>,
-                    Vec<FileScanConfig>,
-                ),
-            ),
-        > = HashMap::new();
-        let mut all_inputs = Vec::<Arc<dyn ExecutionPlan>>::new();
-
-        for (index, config) in flatten_configs.into_iter().enumerate() {
-            let (partition_desc, partition_values) =
-                partition_desc_from_file_scan_config(&config).map_err(|report| {
-                    DataFusionError::External(report.into_boxed_error())
-                })?;
-            let partition_values = Arc::new(partition_values);
-            let file_path = config.file_groups[0].files()[0].path().to_string();
-            let input: Arc<dyn ExecutionPlan> = match &candidate_inputs {
-                Some(inputs) => Arc::clone(&inputs[index]),
-                None => lakesoul_io::physical_plan::merge::merge_input_scan(
-                    config.clone(),
-                    &self.primary_keys,
-                ),
-            };
-            all_inputs.push(input.clone());
-            if let Some((_, inputs)) = inputs_map.get_mut(&partition_desc) {
-                inputs.0.push(input);
-                inputs.1.push(file_path);
-                inputs.2.push(config);
-            } else {
-                inputs_map.insert(
-                    partition_desc,
-                    (
-                        partition_values,
-                        (vec![input], vec![file_path], vec![config]),
-                    ),
-                );
+        // Descriptor-level units, kept grouped per range partition: files stay
+        // in the order the selected snapshot produced them, and each unit keeps
+        // every version of its own keys together.
+        let mut partition_units = Vec::<Vec<ScanWorkUnit>>::new();
+        for (partition, files) in &partition_file_infos {
+            let units = self.lazy_work_units_for_partition(partition, files)?;
+            if !units.is_empty() {
+                partition_units.push(units);
             }
         }
-
-        let merged_schema = if self.primary_keys.is_empty() {
-            Self::merged_schema_with_input_nullability(
-                merged_schema,
-                &all_inputs,
-                &self.range_partitions,
-            )
+        let unit_count: usize = partition_units.iter().map(Vec::len).sum();
+        debug_assert!(unit_count > 0);
+        // The key lookup runs per work unit but the decision it makes is the
+        // query's, so the planner splits `MIN_INDEX_ROWS` over the scan's
+        // units here, where the whole query is still visible.
+        let min_index_rows = lakesoul_io::pk_locator::min_index_rows_per_unit(unit_count);
+        let target_lanes = session_state.config().target_partitions().max(1);
+        let parquet_force_view_types = session_state
+            .config_options()
+            .execution
+            .parquet
+            .schema_force_view_types;
+        let read_options =
+            lakesoul_io::physical_plan::lakesoul_scan::capture_read_options(
+                session_state.config_options(),
+            );
+        // A leaf may stop reading at the consumer's `LIMIT` only when the scan
+        // itself drops no rows: a pre-merge predicate, the CDC tombstone filter
+        // and the pk-locator candidate set each remove rows above the leaf's
+        // output, so a leaf that stopped early could not be topped up and the
+        // query would return too few rows.
+        let pushdown_limit = if predicate.is_none()
+            && self.io_config.cdc_column().is_empty()
+            && key_constraint.is_none()
+        {
+            limit
         } else {
-            merged_schema
+            None
         };
-
-        let mut partitioned_execs = Vec::new();
-        // Keep range merges as separate distributed subtrees. Dividing the
-        // lane budget prevents every range from claiming target_partitions.
-        let range_count = inputs_map.len().max(1);
-        let lane_budget =
-            (session_state.config().target_partitions() / range_count).max(1);
-        for (_, (partition_values, (inputs, file_paths, configs))) in inputs_map {
-            // A work unit of a table without primary keys never merges
-            // (`merge_stream` concatenates), so it is served by a plain scan
-            // leaf: same rows, but the distributed planner can split it over
-            // worker tasks, which a `MergeParquetExec` cannot allow. Only a
-            // work unit whose files cannot be read by one leaf keeps the merge
-            // operator.
-            let leaf = if self.io_config.primary_keys_slice().is_empty() {
-                match self.work_unit_format(&configs)? {
-                    Some(format) => append_only_scan_exec(
-                        session_state,
-                        format.as_ref(),
-                        &configs,
-                        &merged_schema,
-                    )
-                    .map_err(|report| {
-                        DataFusionError::External(report.into_boxed_error())
-                    })?,
-                    None => None,
+        let work_units_ms = work_units_started.elapsed().as_secs_f64() * 1000.0;
+        let scan_execs_started = Instant::now();
+        let mut partitioned_execs = Vec::<Arc<dyn ExecutionPlan>>::new();
+        if self.primary_keys.is_empty() {
+            // Append-only: one lazy node for the whole scan. Its units are
+            // contiguous same-format runs; the distributed planner's task
+            // variants split unit file lists, never a single unit across
+            // tasks with overlapping files.
+            let mut scan_units = partition_units.concat();
+            let lanes = target_lanes.min(scan_units.len()).max(1);
+            for (index, unit) in scan_units.iter_mut().enumerate() {
+                unit.lane = index % lanes;
+            }
+            let config = self.lazy_scan_config(
+                &full_table_schema,
+                &merged_schema,
+                partition_schema.clone(),
+                predicate.clone(),
+                key_constraint.clone(),
+                parquet_force_view_types,
+                &read_options,
+                pushdown_limit,
+                min_index_rows,
+            );
+            partitioned_execs.push(Arc::new(LakeSoulScanExec::try_new(
+                config, scan_units, lanes,
+            )?));
+        } else {
+            // Merge-on-read: pack whole work units into at most one node per
+            // distributed task the scan's stage may get. A node is pinned to
+            // one task, and a lane runs its units one after another, so a task
+            // holds at most `target_partitions` open units at a time. Units of
+            // one range partition may land on different nodes; each unit still
+            // holds every version of its own keys.
+            let task_budget =
+                crate::distributed::planner::scan_task_budget(session_state.config());
+            for mut units in Self::pack_lazy_units(partition_units, task_budget) {
+                let lanes = target_lanes.min(units.len()).max(1);
+                for (index, unit) in units.iter_mut().enumerate() {
+                    unit.lane = index % lanes;
                 }
-            } else {
-                None
-            };
-            let work_unit_exec = match leaf {
-                Some(exec) => exec,
-                None => {
-                    let mut io_config = self.io_config.clone();
-                    io_config.set_files(file_paths.clone());
-                    let bucket_count = if self.primary_keys.is_empty() {
-                        // Mixed-format append-only fallback concatenates one range.
-                        0
-                    } else {
-                        self.io_config.hash_bucket_num()
-                    };
-                    let (inputs, units, lanes) = Self::bucket_merge_work_units(
-                        inputs,
-                        file_paths,
-                        partition_values,
-                        bucket_count,
-                        lane_budget,
-                    );
-                    Arc::new(
-                        lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
-                            merged_schema.clone(),
-                            inputs,
-                            io_config,
-                            units,
-                            lanes,
-                        )
-                        .map_err(|report| {
-                            DataFusionError::External(report.into_boxed_error())
-                        })?,
-                    ) as Arc<dyn ExecutionPlan>
-                }
-            };
-            partitioned_execs.push(work_unit_exec);
+                let config = self.lazy_scan_config(
+                    &full_table_schema,
+                    &merged_schema,
+                    partition_schema.clone(),
+                    predicate.clone(),
+                    key_constraint.clone(),
+                    parquet_force_view_types,
+                    &read_options,
+                    // A merge has to see every version of a key, so its inputs
+                    // can never stop early.
+                    None,
+                    min_index_rows,
+                );
+                partitioned_execs
+                    .push(Arc::new(LakeSoulScanExec::try_new(config, units, lanes)?));
+            }
         }
-
-        let empty_exec_schema = Self::empty_partitioned_exec_schema(
-            scan_schema.clone(),
-            merged_schema.clone(),
-        );
-        let work_unit_count = partitioned_execs.len();
-        let exec = Self::build_partitioned_exec(partitioned_execs, empty_exec_schema)?;
+        let scan_node_count = partitioned_execs.len();
+        let exec =
+            Self::build_partitioned_exec(partitioned_execs, merged_schema.clone())?;
+        let scan_execs_ms = scan_execs_started.elapsed().as_secs_f64() * 1000.0;
+        let finish_started = Instant::now();
 
         let cdc_column = self.io_config.cdc_column();
         let cdc_filter_enabled = !cdc_column.is_empty();
@@ -1942,7 +2104,7 @@ impl TableProvider for LakeSoulTableProvider {
             exec
         };
 
-        let scan_strategy = if candidate_inputs.is_some() {
+        let scan_strategy = if key_constraint.is_some() {
             "pk_locator"
         } else if self.primary_keys.is_empty() {
             "append_only"
@@ -1955,14 +2117,14 @@ impl TableProvider for LakeSoulTableProvider {
             Self::needs_output_projection(&scan_schema, &merged_schema);
         debug!(
             strategy = scan_strategy,
-            work_unit_count,
-            input_count = all_inputs.len(),
+            scan_node_count,
+            unit_count,
             cdc_filter = cdc_filter_enabled,
             needs_output_projection,
             "built table scan physical plan"
         );
 
-        if needs_output_projection {
+        let result: DFResult<Arc<dyn ExecutionPlan>> = if needs_output_projection {
             let mut projection_expr = vec![];
             for field in scan_schema.fields() {
                 projection_expr.push((
@@ -1976,7 +2138,21 @@ impl TableProvider for LakeSoulTableProvider {
             Ok(Arc::new(ProjectionExec::try_new(projection_expr, exec)?))
         } else {
             Ok(exec)
-        }
+        };
+        info!(
+            table_name = %self._table_name(),
+            wall_ms = scan_started.elapsed().as_secs_f64() * 1000.0,
+            classify_ms,
+            key_constraint_ms,
+            list_ms,
+            work_units_ms,
+            scan_execs_ms,
+            finish_ms = finish_started.elapsed().as_secs_f64() * 1000.0,
+            unit_count,
+            scan_node_count,
+            "scan planning table summary"
+        );
+        result
     }
 
     fn supports_filters_pushdown(
@@ -2111,386 +2287,6 @@ fn is_vector_type(data_type: &DataType) -> bool {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
-    use chrono::TimeZone;
-    use datafusion::execution::TaskContext;
-    use datafusion::physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlanProperties, PlanProperties,
-        RecordBatchStream, SendableRecordBatchStream,
-    };
-    use object_store::{ObjectMeta, path::Path};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    #[derive(Debug)]
-    struct LaneProbe {
-        input: Arc<dyn ExecutionPlan>,
-        opened: Arc<AtomicUsize>,
-        active: Arc<AtomicUsize>,
-    }
-
-    impl DisplayAs for LaneProbe {
-        fn fmt_as(
-            &self,
-            _: DisplayFormatType,
-            f: &mut std::fmt::Formatter,
-        ) -> std::fmt::Result {
-            write!(f, "LaneProbe")
-        }
-    }
-
-    impl ExecutionPlan for LaneProbe {
-        fn name(&self) -> &str {
-            "LaneProbe"
-        }
-        fn properties(&self) -> &Arc<PlanProperties> {
-            self.input.properties()
-        }
-        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-            vec![&self.input]
-        }
-        fn apply_expressions(
-            &self,
-            _f: &mut dyn FnMut(
-                &Arc<dyn PhysicalExpr>,
-            ) -> DFResult<
-                datafusion_common::tree_node::TreeNodeRecursion,
-            >,
-        ) -> DFResult<datafusion_common::tree_node::TreeNodeRecursion> {
-            Ok(datafusion_common::tree_node::TreeNodeRecursion::Continue)
-        }
-        fn with_new_children(
-            self: Arc<Self>,
-            children: Vec<Arc<dyn ExecutionPlan>>,
-        ) -> DFResult<Arc<dyn ExecutionPlan>> {
-            Ok(Arc::new(Self {
-                input: children[0].clone(),
-                opened: self.opened.clone(),
-                active: self.active.clone(),
-            }))
-        }
-        fn execute(
-            &self,
-            partition: usize,
-            context: Arc<TaskContext>,
-        ) -> DFResult<SendableRecordBatchStream> {
-            assert_eq!(partition, 0, "merge children always execute partition zero");
-            assert_eq!(
-                self.active.fetch_add(1, Ordering::SeqCst),
-                0,
-                "a later unit opened before the previous child stream was dropped"
-            );
-            self.opened.fetch_add(1, Ordering::SeqCst);
-            Ok(Box::pin(LaneProbeStream {
-                inner: self.input.execute(partition, context)?,
-                active: self.active.clone(),
-            }))
-        }
-    }
-
-    struct LaneProbeStream {
-        inner: SendableRecordBatchStream,
-        active: Arc<AtomicUsize>,
-    }
-    impl futures::Stream for LaneProbeStream {
-        type Item = DFResult<arrow::record_batch::RecordBatch>;
-        fn poll_next(
-            mut self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Option<Self::Item>> {
-            self.inner.as_mut().poll_next(cx)
-        }
-    }
-    impl RecordBatchStream for LaneProbeStream {
-        fn schema(&self) -> SchemaRef {
-            self.inner.schema()
-        }
-    }
-    impl Drop for LaneProbeStream {
-        fn drop(&mut self) {
-            self.active.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
-
-    fn object_meta(location: &str) -> ObjectMeta {
-        ObjectMeta {
-            location: Path::from(location),
-            last_modified: chrono::Utc.timestamp_nanos(0),
-            size: 100,
-            e_tag: None,
-            version: None,
-        }
-    }
-    async fn bucket_test_input(id: i32, value: i32) -> Arc<dyn ExecutionPlan> {
-        use arrow::array::Int32Array;
-        use arrow::record_batch::RecordBatch;
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("value", DataType::Int32, true),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(Int32Array::from(vec![id])),
-                Arc::new(Int32Array::from(vec![value])),
-            ],
-        )
-        .unwrap();
-        datafusion::prelude::SessionContext::new()
-            .read_batch(batch)
-            .unwrap()
-            .create_physical_plan()
-            .await
-            .unwrap()
-    }
-
-    fn bucket_test_schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("value", DataType::Int32, true),
-            Field::new("part", DataType::Utf8, false),
-        ]))
-    }
-
-    async fn collect_bucket_rows(
-        exec: Arc<dyn ExecutionPlan>,
-    ) -> Vec<(i32, i32, String)> {
-        use arrow::array::{Int32Array, StringArray};
-        let batches = datafusion::physical_plan::collect(
-            exec,
-            Arc::new(datafusion::execution::TaskContext::default()),
-        )
-        .await
-        .unwrap();
-        let mut rows = Vec::new();
-        for batch in batches {
-            let ids = batch
-                .column(0)
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .unwrap();
-            let values = batch
-                .column(1)
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .unwrap();
-            let parts = batch
-                .column(2)
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap();
-            rows.extend((0..batch.num_rows()).map(|row| {
-                (
-                    ids.value(row),
-                    values.value(row),
-                    parts.value(row).to_string(),
-                )
-            }));
-        }
-        rows.sort();
-        rows
-    }
-
-    #[tokio::test]
-    async fn bucket_merge_lanes_preserve_file_versions_and_all_buckets() {
-        let originals = vec![
-            bucket_test_input(2, 20).await,
-            bucket_test_input(1, 10).await,
-            bucket_test_input(2, 22).await,
-            bucket_test_input(1, 11).await,
-        ];
-        let (inputs, units, lanes) = LakeSoulTableProvider::bucket_merge_work_units(
-            originals.clone(),
-            [
-                "part-a_0001.parquet",
-                "part-b_0000.parquet",
-                "part-c_0001.parquet",
-                "part-d_0000.parquet",
-            ]
-            .map(String::from)
-            .to_vec(),
-            Arc::new(HashMap::from([("part".into(), "range-a".into())])),
-            2,
-            8,
-        );
-        assert_eq!(lanes, 2);
-        assert_eq!(units.len(), 2);
-        // PK locator inputs were selected in the original file order before
-        // regrouping; pointer identity verifies the aligned associations.
-        for (input, original_index) in inputs.iter().zip([0, 2, 1, 3]) {
-            assert!(Arc::ptr_eq(input, &originals[original_index]));
-        }
-        assert_eq!(
-            units[0].files,
-            ["part-a_0001.parquet", "part-c_0001.parquet"]
-        );
-        let config = lakesoul_io::config::LakeSoulIOConfigBuilder::new()
-            .with_primary_keys(vec!["id".into()])
-            .build();
-        let exec = Arc::new(
-            lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
-                bucket_test_schema(),
-                inputs,
-                config,
-                units,
-                lanes,
-            )
-            .unwrap(),
-        );
-        assert_eq!(exec.output_partitioning().partition_count(), 2);
-        assert!(exec.output_ordering().is_none());
-        assert_eq!(
-            collect_bucket_rows(exec).await,
-            vec![(1, 11, "range-a".into()), (2, 22, "range-a".into()),]
-        );
-    }
-
-    #[tokio::test]
-    async fn bucket_merge_unknown_or_out_of_range_file_keeps_whole_range_atomic() {
-        for untrusted in ["unknown.parquet", "part-a_0002.parquet"] {
-            let originals = vec![
-                bucket_test_input(1, 10).await,
-                bucket_test_input(1, 11).await,
-                bucket_test_input(1, 12).await,
-            ];
-            let (inputs, units, lanes) = LakeSoulTableProvider::bucket_merge_work_units(
-                originals.clone(),
-                vec![
-                    "part-a_0000.parquet".into(),
-                    untrusted.into(),
-                    "part-c_0001.parquet".into(),
-                ],
-                Arc::new(HashMap::from([("part".into(), "range-a".into())])),
-                2,
-                8,
-            );
-            assert_eq!(lanes, 1);
-            assert_eq!(units.len(), 1);
-            assert_eq!(units[0].input_range, 0..3);
-            for (actual, expected) in inputs.iter().zip(&originals) {
-                assert!(Arc::ptr_eq(actual, expected));
-            }
-            let config = lakesoul_io::config::LakeSoulIOConfigBuilder::new()
-                .with_primary_keys(vec!["id".into()])
-                .build();
-            let exec = Arc::new(
-                lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
-                    bucket_test_schema(),
-                    inputs,
-                    config,
-                    units,
-                    lanes,
-                )
-                .unwrap(),
-            );
-            assert_eq!(
-                collect_bucket_rows(exec).await,
-                vec![(1, 12, "range-a".into())]
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn bucket_merge_sequential_units_keep_partition_constants() {
-        use lakesoul_io::physical_plan::merge::MergeWorkUnit;
-        let inputs = vec![
-            bucket_test_input(1, 10).await,
-            bucket_test_input(2, 20).await,
-            bucket_test_input(3, 30).await,
-        ];
-        let units = ["range-a", "range-a", "range-b"]
-            .into_iter()
-            .enumerate()
-            .map(|(index, part)| MergeWorkUnit {
-                input_range: index..index + 1,
-                files: vec![format!("part-{index}_0000.parquet")],
-                default_column_value: Arc::new(HashMap::from([(
-                    "part".into(),
-                    part.into(),
-                )])),
-                lane: 0,
-            })
-            .collect();
-        let config = lakesoul_io::config::LakeSoulIOConfigBuilder::new()
-            .with_primary_keys(vec!["id".into()])
-            .build();
-        let exec = Arc::new(
-            lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
-                bucket_test_schema(),
-                inputs,
-                config,
-                units,
-                1,
-            )
-            .unwrap(),
-        );
-        assert_eq!(
-            collect_bucket_rows(exec).await,
-            vec![
-                (1, 10, "range-a".into()),
-                (2, 20, "range-a".into()),
-                (3, 30, "range-b".into()),
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn bucket_merge_lane_opens_and_drops_units_lazily() {
-        use lakesoul_io::physical_plan::merge::MergeWorkUnit;
-        let opened = Arc::new(AtomicUsize::new(0));
-        let active = Arc::new(AtomicUsize::new(0));
-        let mut inputs = Vec::new();
-        let mut units = Vec::new();
-        for index in 0..3 {
-            inputs.push(Arc::new(LaneProbe {
-                input: bucket_test_input(index as i32, index as i32).await,
-                opened: opened.clone(),
-                active: active.clone(),
-            }) as Arc<dyn ExecutionPlan>);
-            units.push(MergeWorkUnit {
-                input_range: index..index + 1,
-                files: vec![format!("part-{index}_0000.parquet")],
-                default_column_value: Arc::new(HashMap::from([(
-                    "part".into(),
-                    "range-a".into(),
-                )])),
-                lane: 0,
-            });
-        }
-        let config = lakesoul_io::config::LakeSoulIOConfigBuilder::new()
-            .with_primary_keys(vec!["id".into()])
-            .build();
-        let exec = lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
-            bucket_test_schema(),
-            inputs,
-            config,
-            units,
-            1,
-        )
-        .unwrap();
-        let mut stream = exec.execute(0, Arc::new(TaskContext::default())).unwrap();
-        assert_eq!(
-            opened.load(Ordering::SeqCst),
-            0,
-            "execute only creates a lazy lane"
-        );
-        assert_eq!(stream.next().await.unwrap().unwrap().num_rows(), 1);
-        assert_eq!(opened.load(Ordering::SeqCst), 1);
-        let mut rows = 1;
-        while let Some(batch) = stream.next().await {
-            rows += batch.unwrap().num_rows();
-        }
-        assert_eq!(rows, 3);
-        assert_eq!(opened.load(Ordering::SeqCst), 3);
-        assert_eq!(active.load(Ordering::SeqCst), 0);
-
-        // Dropping a partially consumed lane closes only its current unit and
-        // never opens children belonging to the remaining units.
-        opened.store(0, Ordering::SeqCst);
-        let mut stream = exec.execute(0, Arc::new(TaskContext::default())).unwrap();
-        stream.next().await.unwrap().unwrap();
-        drop(stream);
-        assert_eq!(opened.load(Ordering::SeqCst), 1);
-        assert_eq!(active.load(Ordering::SeqCst), 0);
-    }
 
     #[test]
     fn logical_projection_maps_to_scan_schema_order() {
@@ -2708,181 +2504,79 @@ mod tests {
         );
     }
 
-    #[test]
-    fn format_scan_groups_split_mixed_physical_formats() {
-        let registry =
-            LakeSoulFormatRegistry::new(LakeSoulIOConfig::default(), false).unwrap();
-        let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
-        let groups = LakeSoulTableProvider::format_scan_groups(
-            &registry,
-            object_store_url,
-            vec![vec![
-                PartitionedFile::from(object_meta("part-000.parquet")),
-                PartitionedFile::from(object_meta("part-001.vortex")),
-            ]],
-        )
-        .unwrap();
+    fn lazy_unit(partition: &str, bucket: u32) -> ScanWorkUnit {
+        ScanWorkUnit {
+            files: vec![ScanFile {
+                path: format!("{partition}_{bucket:04}.parquet"),
+                physical_format: lakesoul_io::file_format::PhysicalFormat::Parquet,
+                size: None,
+                range: None,
+            }],
+            default_column_value: HashMap::from([(
+                String::from("part"),
+                String::from(partition),
+            )]),
+            lane: 0,
+        }
+    }
 
-        assert_eq!(groups.len(), 2);
-        assert_eq!(
-            groups
+    /// Units — not whole range partitions — are packed: unit `i` joins node
+    /// `i % n`, so a range partition's units can be served by different tasks,
+    /// and the node count follows the unit count, not the partition count.
+    #[test]
+    fn pack_lazy_units_distributes_units_and_bounds_nodes() {
+        let ranges = || -> Vec<Vec<ScanWorkUnit>> {
+            (0..3)
+                .map(|range| {
+                    (0..2)
+                        .map(|bucket| lazy_unit(&format!("r{range}"), bucket))
+                        .collect()
+                })
+                .collect()
+        };
+        let paths = |packed: &[Vec<ScanWorkUnit>]| -> Vec<Vec<String>> {
+            packed
                 .iter()
-                .find(|group| group.physical_format == PhysicalFormat::Parquet)
-                .unwrap()
-                .partitioned_file_lists[0]
-                .len(),
-            1
-        );
+                .map(|units| {
+                    units
+                        .iter()
+                        .map(|unit| unit.files[0].path.clone())
+                        .collect()
+                })
+                .collect()
+        };
+
+        // Two tasks, six units: the buckets of one range partition land on
+        // different nodes instead of capping the spread at the range count.
+        let packed = LakeSoulTableProvider::pack_lazy_units(ranges(), 2);
+        assert_eq!(packed.len(), 2);
         assert_eq!(
-            groups
-                .iter()
-                .find(|group| group.physical_format == PhysicalFormat::Vortex)
-                .unwrap()
-                .partitioned_file_lists[0]
-                .len(),
-            1
-        );
-    }
-
-    #[test]
-    fn format_scan_groups_preserve_non_adjacent_format_order() {
-        let registry =
-            LakeSoulFormatRegistry::new(LakeSoulIOConfig::default(), false).unwrap();
-        let object_store_url = ObjectStoreUrl::parse("file://").unwrap();
-        let groups = LakeSoulTableProvider::format_scan_groups(
-            &registry,
-            object_store_url,
-            vec![vec![
-                PartitionedFile::from(object_meta("part-000.parquet")),
-                PartitionedFile::from(object_meta("part-001.vortex")),
-                PartitionedFile::from(object_meta("part-002.parquet")),
-            ]],
-        )
-        .unwrap();
-
-        assert_eq!(groups.len(), 3);
-        assert_eq!(groups[0].physical_format, PhysicalFormat::Parquet);
-        assert_eq!(groups[1].physical_format, PhysicalFormat::Vortex);
-        assert_eq!(groups[2].physical_format, PhysicalFormat::Parquet);
-        assert_eq!(
-            groups[2].partitioned_file_lists[0][0]
-                .object_meta
-                .location
-                .as_ref(),
-            "part-002.parquet"
-        );
-    }
-
-    #[test]
-    fn build_partitioned_exec_returns_empty_exec_for_empty_partitions() {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
-
-        let exec = LakeSoulTableProvider::build_partitioned_exec(vec![], schema.clone())
-            .unwrap();
-
-        assert!(exec.is::<EmptyExec>());
-        assert_eq!(exec.schema(), schema);
-    }
-
-    #[test]
-    fn build_empty_partitioned_exec_preserves_cdc_column_for_filtering() {
-        let scan_schema =
-            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
-        let merged_schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, true),
-            Field::new("op", DataType::Utf8, true),
-        ]));
-
-        let empty_schema = LakeSoulTableProvider::empty_partitioned_exec_schema(
-            scan_schema,
-            merged_schema.clone(),
-        );
-        let exec =
-            LakeSoulTableProvider::build_partitioned_exec(vec![], empty_schema).unwrap();
-
-        assert!(exec.schema().field_with_name("op").is_ok());
-        assert_eq!(exec.schema(), merged_schema);
-    }
-
-    #[test]
-    fn partitioned_merge_execs_share_nullable_schema_after_evolution() {
-        let merged_schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("evolved", DataType::Utf8, false),
-        ]));
-        let old_file_schema =
-            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-        let new_file_schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("evolved", DataType::Utf8, false),
-        ]));
-        let old_input =
-            Arc::new(EmptyExec::new(old_file_schema)) as Arc<dyn ExecutionPlan>;
-        let new_input =
-            Arc::new(EmptyExec::new(new_file_schema)) as Arc<dyn ExecutionPlan>;
-        let merged_schema = LakeSoulTableProvider::merged_schema_with_input_nullability(
-            merged_schema,
-            &[old_input.clone(), new_input.clone()],
-            &[],
-        );
-
-        let (bucket_inputs, bucket_units, lanes) =
-            LakeSoulTableProvider::bucket_merge_work_units(
-                vec![old_input.clone(), new_input.clone()],
+            paths(&packed),
+            vec![
                 vec![
-                    "part-old_0000.parquet".into(),
-                    "part-new_0001.parquet".into(),
+                    "r0_0000.parquet".to_string(),
+                    "r1_0000.parquet".to_string(),
+                    "r2_0000.parquet".to_string(),
                 ],
-                Arc::new(HashMap::new()),
-                2,
-                2,
-            );
-        let bucket_partition =
-            lakesoul_io::physical_plan::MergeParquetExec::new_with_work_units(
-                merged_schema.clone(),
-                bucket_inputs,
-                LakeSoulIOConfig::default(),
-                bucket_units,
-                lanes,
-            )
-            .unwrap();
-        assert_eq!(bucket_partition.output_partitioning().partition_count(), 2);
-        assert_eq!(bucket_partition.schema(), merged_schema);
-
-        let old_partition = Arc::new(
-            lakesoul_io::physical_plan::MergeParquetExec::new_with_inputs(
-                merged_schema.clone(),
-                vec![old_input],
-                LakeSoulIOConfig::default(),
-                Arc::new(HashMap::new()),
-            )
-            .unwrap(),
-        ) as Arc<dyn ExecutionPlan>;
-        let new_partition = Arc::new(
-            lakesoul_io::physical_plan::MergeParquetExec::new_with_inputs(
-                merged_schema,
-                vec![new_input],
-                LakeSoulIOConfig::default(),
-                Arc::new(HashMap::new()),
-            )
-            .unwrap(),
-        ) as Arc<dyn ExecutionPlan>;
-
-        assert!(
-            old_partition
-                .schema()
-                .field_with_name("evolved")
-                .unwrap()
-                .is_nullable()
+                vec![
+                    "r0_0001.parquet".to_string(),
+                    "r1_0001.parquet".to_string(),
+                    "r2_0001.parquet".to_string(),
+                ],
+            ]
         );
-        assert!(
-            new_partition
-                .schema()
-                .field_with_name("evolved")
-                .unwrap()
-                .is_nullable(),
-            "all partition execs must advertise the globally nullable schema"
-        );
-        assert_eq!(old_partition.schema(), new_partition.schema());
+
+        // More task slots than units: one node per unit, in scan order.
+        let packed = LakeSoulTableProvider::pack_lazy_units(ranges(), 8);
+        assert_eq!(packed.len(), 6);
+        assert!(packed.iter().all(|units| units.len() == 1));
+
+        // No budget still yields one node holding every unit.
+        let packed = LakeSoulTableProvider::pack_lazy_units(ranges(), 0);
+        assert_eq!(packed.len(), 1);
+        assert_eq!(packed[0].len(), 6);
+
+        // No units at all: no node, so the caller falls back to an empty exec.
+        assert!(LakeSoulTableProvider::pack_lazy_units(Vec::new(), 4).is_empty());
     }
 }

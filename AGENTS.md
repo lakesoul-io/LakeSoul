@@ -27,14 +27,15 @@ LakeSoul/
 │   ├── lakesoul-s3-proxy/       # S3 proxy (workspace-disabled, WIP)
 │   └── lakesoul-console/        # CLI console (workspace-disabled, WIP)
 │
-├── native-io/
-│   └── lakesoul-io-java/        # Java JNI bridge (loads liblakesoul_io_c.so / .dylib)
-│
-├── lakesoul-common/             # Shared Java utilities (protobuf, config, etc.)
-├── lakesoul-spark/              # Apache Spark 3.3 integration (Scala 2.12)
-├── lakesoul-flink/              # Apache Flink integration (Java + Scala)
-├── lakesoul-presto/             # Presto/Trino integration
-├── lakesoul-spark-gluten/       # Spark + Gluten/Velox integration (optional Maven profile)
+├── integrations/                # JVM integrations and shared Java code
+│   ├── lakesoul-common/         # Shared Java utilities (protobuf, config, etc.)
+│   ├── lakesoul-spark/          # Apache Spark 3.5 integration (Scala 2.12)
+│   ├── lakesoul-spark-gluten/   # Spark + Gluten/Velox integration (optional Maven profile)
+│   ├── lakesoul-flink/          # Apache Flink integration (Java + Scala)
+│   ├── lakesoul-presto/         # Presto/Trino integration
+│   ├── native-io/
+│   │   └── lakesoul-io-java/    # Java JNI bridge (loads liblakesoul_io_c.so / .dylib)
+│   └── javadoc/
 │
 ├── python/                      # Python bindings (maturin/PyO3, pyproject.toml)
 │
@@ -130,17 +131,17 @@ and placed at `rust/target/release/`.
 mvn -q -B clean package -DskipTests --file pom.xml
 
 # Run Spark tests (subset 1)
-mvn -q -B clean test -pl lakesoul-spark -am -Pcross-build -Pparallel-test \
+mvn -q -B clean test -pl integrations/lakesoul-spark -am -Pcross-build -Pparallel-test \
     -Dtest='UpdateScalaSuite,ReadSuite,...' -Dsurefire.failIfNoSpecifiedTests=false
 
 # Run Flink tests
-mvn -q -B clean test -pl lakesoul-flink -am -Pcross-build
+mvn -q -B clean test -pl integrations/lakesoul-flink -am -Pcross-build
 
 # Enable Gluten/Velox profile
 mvn -q -B clean package -Pgluten -DskipTests
 
 # Generate test report
-mvn surefire-report:report-only -pl lakesoul-spark -am
+mvn surefire-report:report-only -pl integrations/lakesoul-spark -am
 ```
 
 ---
@@ -185,18 +186,18 @@ uv run maturin build --release
 - `LakeSoulReader` (`src/reader.rs`) and async writer (`src/writer/`) are the primary public APIs.
 - Parquet is the underlying file format.
 
-### Java JNI Bridge (`native-io/lakesoul-io-java`)
+### Java JNI Bridge (`integrations/native-io/lakesoul-io-java`)
 - Loads native shared libraries at runtime from the classpath.
 - Provides Java-callable wrappers for `LakeSoulReader`, `LakeSoulWriter`, and metadata operations.
 
-### Spark Integration (`lakesoul-spark`)
+### Spark Integration (`integrations/lakesoul-spark`)
 - `LakeSoulSparkSessionExtension` registers custom rules and strategies.
 - `LakeSoulTable` is the DataFrame/SQL API entry point (similar to Delta's `DeltaTable`).
 - `SparkMetaVersion` bridges Spark to the metadata client via JNI.
 - Custom ANTLR4 grammar extends Spark SQL with LakeSoul-specific syntax.
 - Compaction service lives under `spark/compaction/`.
 
-### Flink Integration (`lakesoul-flink`)
+### Flink Integration (`integrations/lakesoul-flink`)
 - Provides `TableSource` and `TableSink` for both batch and streaming.
 - Supports Flink CDC with auto DDL sync and exactly-once semantics.
 
@@ -211,7 +212,7 @@ uv run maturin build --release
 | `RUSTFLAGS` | Set to `-Awarnings` in CI to suppress warnings as errors |
 
 Local config files:
-- `lakesoul.properties` — default runtime properties
+- `dev/lakesoul.properties` — local docker-compose test runtime properties
 - `pg.property` — PostgreSQL connection details for local dev
 
 ---

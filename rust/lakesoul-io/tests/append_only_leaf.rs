@@ -28,7 +28,9 @@ use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use futures::TryStreamExt;
-use lakesoul_io::file_format::append_only_scan_exec;
+use lakesoul_io::file_format::{
+    append_only_scan_exec, flatten_file_scan_config, flatten_file_scan_config_for_format,
+};
 use object_store::ObjectMeta;
 use parquet::arrow::ArrowWriter;
 
@@ -292,4 +294,83 @@ async fn append_only_leaf_keeps_mixed_type_partition_columns_aligned() {
         vec!["8".to_string(), "8".to_string()],
         "p2 reads its own value although p1 has another type"
     );
+}
+
+/// Flattening a range scan must retain every file in version order and keep
+/// its partition values, including when an intervening range group is empty.
+#[tokio::test]
+async fn flattened_range_scans_preserve_file_order_and_partition_values() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_schema: SchemaRef =
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let partition_cols = vec![Arc::new(Field::new("month", DataType::Int32, false))];
+    let partition_schema = Arc::new(Schema::new(partition_cols.clone()));
+    let merged = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("month", DataType::Int32, false),
+    ]));
+    let mut files = vec![];
+    for (name, ids, month) in [
+        ("part-z.parquet", vec![30, 31], 7),
+        ("part-a.parquet", vec![10, 11], 7),
+        ("part-m.parquet", vec![20, 21], 8),
+    ] {
+        let batch = RecordBatch::try_new(
+            file_schema.clone(),
+            vec![Arc::new(Int32Array::from(ids))],
+        )
+        .expect("batch");
+        let config = file_config(
+            dir.path(),
+            name,
+            &batch,
+            &partition_cols,
+            vec![ScalarValue::Int32(Some(month))],
+        );
+        files.push(config.file_groups[0].files()[0].clone());
+    }
+    let last_range = files.split_off(2);
+    let format = Arc::new(ParquetFormat::default());
+    let config = FileScanConfigBuilder::new(
+        ObjectStoreUrl::local_filesystem(),
+        format.file_source(TableSchema::new(file_schema.clone(), partition_cols)),
+    )
+    .with_file_groups(vec![
+        FileGroup::new(files),
+        FileGroup::new(vec![]),
+        FileGroup::new(last_range),
+    ])
+    .build();
+    let state = SessionContext::new().state();
+
+    for generic in [false, true] {
+        let configs = if generic {
+            flatten_file_scan_config_for_format(
+                &state,
+                format.clone(),
+                config.clone(),
+                &[],
+                "",
+                partition_schema.clone(),
+                file_schema.clone(),
+            )
+            .await
+            .expect("flatten generic scan")
+        } else {
+            flatten_file_scan_config(
+                &state,
+                format.clone(),
+                config.clone(),
+                &[],
+                "",
+                partition_schema.clone(),
+                file_schema.clone(),
+            )
+            .await
+            .expect("flatten parquet scan")
+        };
+        let batches = read_leaf(&configs, &merged).await;
+        assert_eq!(i32_column(&batches, 0), vec![30, 31, 10, 11, 20, 21]);
+        assert_eq!(i32_column(&batches, 1), vec![7, 7, 7, 7, 8, 8]);
+    }
 }

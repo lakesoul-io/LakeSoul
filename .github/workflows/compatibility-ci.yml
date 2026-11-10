@@ -23,10 +23,10 @@ on:
       - "rust/lakesoul-vector/**"
       - "python/**"
       - "pom.xml"
-      - "lakesoul-common/**"
-      - "lakesoul-spark/**"
-      - "lakesoul-flink/**"
-      - "native-io/**"
+      - "integrations/lakesoul-common/**"
+      - "integrations/lakesoul-spark/**"
+      - "integrations/lakesoul-flink/**"
+      - "integrations/native-io/**"
       - "script/meta_cleanup.sql"
       - "script/meta_init.sql"
       - "script/meta_init_for_local_test.sh"
@@ -85,7 +85,7 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.storage == 'file' || inputs.storage == 'all' }}
     services:
       postgres:
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         env:
           POSTGRES_PASSWORD: lakesoul_test
           POSTGRES_USER: lakesoul_test
@@ -99,27 +99,24 @@ jobs:
         ports:
           - 5432:5432
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
           java-version: "11"
           distribution: "temurin"
           cache: maven
-      - name: Set up Python 3.10
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
       - uses: ./.github/actions/setup-flatc
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - name: Install uv
         uses: astral-sh/setup-uv@v6
       - uses: Swatinem/rust-cache@v2
@@ -156,7 +153,7 @@ jobs:
         working-directory: python
         run: |
           cp ../rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_python.so src/lakesoul/_lib.abi3.so
-          uv sync --no-install-project --python 3.10 --extra pandas --extra ray --extra daft --extra pyspark
+          uv sync --no-install-project --python 3.11 --extra pandas --extra ray --extra daft --extra pyspark
       - name: Run compatibility matrix
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
@@ -202,7 +199,7 @@ jobs:
     if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.storage == 'rustfs' || inputs.storage == 'all')) }}
     services:
       postgres:
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         env:
           POSTGRES_PASSWORD: lakesoul_test
           POSTGRES_USER: lakesoul_test
@@ -216,7 +213,7 @@ jobs:
         ports:
           - 5432:5432
       rustfs:
-        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:1.0.0-beta.3
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs:1.0.4
         ports:
           - "9000:9000"
           - "9001:9001"
@@ -242,7 +239,7 @@ jobs:
         run: |
           docker run --rm --network host \
             --entrypoint /bin/sh \
-            swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.16 \
+            swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.37 \
             -c '
               set -e
               until rc alias set rustfs http://127.0.0.1:9000 rustfsadmin rustfsadmin; do
@@ -254,27 +251,24 @@ jobs:
                 sleep 2
               done
             '
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up JDK 11
         uses: actions/setup-java@v5
         with:
           java-version: "11"
           distribution: "temurin"
           cache: maven
-      - name: Set up Python 3.10
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
       - uses: ./.github/actions/setup-flatc
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - name: Install uv
         uses: astral-sh/setup-uv@v6
       - uses: Swatinem/rust-cache@v2
@@ -311,7 +305,7 @@ jobs:
         working-directory: python
         run: |
           cp ../rust/target/x86_64-unknown-linux-gnu/release/liblakesoul_python.so src/lakesoul/_lib.abi3.so
-          uv sync --no-install-project --python 3.10 --extra pandas --extra ray --extra daft --extra pyspark
+          uv sync --no-install-project --python 3.11 --extra pandas --extra ray --extra daft --extra pyspark
       - name: Run RustFS compatibility matrix
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}

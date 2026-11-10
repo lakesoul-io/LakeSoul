@@ -2322,9 +2322,6 @@ impl IvmRuntime {
     /// at high change ratios), so pruning its projection keeps the scan to the
     /// columns the refresh consumes instead of the whole table schema.
     fn sum_count_source_projection(view: &SumCountView) -> Result<Option<SchemaRef>> {
-        if std::env::var("LAKESOUL_IVM_NO_PROJECTION").is_ok() {
-            return Ok(None);
-        }
         let mut columns = view.source.primary_keys.clone();
         if let Some(change) = change_column(&view.source) {
             columns.push(change.to_string());
@@ -2368,7 +2365,11 @@ impl IvmRuntime {
         validate_sum_count_view(view)?;
 
         let window = self
-            .collect_source_window(&view.view_id, &view.source)
+            .collect_source_window_for_filter(
+                &view.view_id,
+                &view.source,
+                view.filter.as_deref(),
+            )
             .await?;
         if window.added_files.is_empty() {
             return Ok(None);
@@ -2869,7 +2870,9 @@ impl IvmRuntime {
         self.metadata.delete_cursors(&view.view_id).await?;
         view.mv.truncate(&self.client).await?;
 
-        let baseline = self.source_baseline(&view.source).await?;
+        let baseline = self
+            .source_baseline_for_filter(&view.source, view.filter.as_deref())
+            .await?;
         let mv_versions_before =
             output_partition_versions(&self.client, &view.mv).await?;
         let record = match self
@@ -3058,7 +3061,7 @@ impl IvmRuntime {
         view.agg.result_type(&value_type)?;
 
         let window = self
-            .collect_source_window(view.view_id, view.source)
+            .collect_source_window_for_filter(view.view_id, view.source, view.filter)
             .await?;
         if window.added_files.is_empty() {
             return Ok(None);
@@ -3311,7 +3314,9 @@ impl IvmRuntime {
         view.mv.truncate(&self.client).await?;
         view.state.truncate(&self.client).await?;
 
-        let baseline = self.source_baseline(view.source).await?;
+        let baseline = self
+            .source_baseline_for_filter(view.source, view.filter)
+            .await?;
         let mv_versions_before = output_partition_versions(&self.client, view.mv).await?;
         let record = match self
             .metadata

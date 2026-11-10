@@ -16,13 +16,14 @@ use datafusion::datasource::provider_as_source;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::{
     arrow::record_batch::RecordBatch, dataframe::DataFrame, datasource::TableProvider,
-    execution::context::SessionContext, logical_expr::LogicalPlanBuilder,
+    execution::context::SessionContext, execution::memory_pool::MemoryPool,
+    logical_expr::LogicalPlanBuilder,
 };
 use datafusion_common::TableReference;
 use helpers::{case_fold_table_name, create_io_config_builder_from_table_info};
 use lakesoul_io::config::OPTION_KEY_MEM_LIMIT;
 use lakesoul_io::file_format::LakeSoulFormatRegistry;
-use lakesoul_io::session::create_session_context_with_planner;
+use lakesoul_io::session::{LakeSoulIOSession, create_session_context_with_planner};
 use lakesoul_io::writer::async_writer::{
     AsyncBatchWriter, AsyncSendableMutableLakeSoulWriter, FlushOutput,
 };
@@ -233,6 +234,28 @@ impl LakeSoulTable {
         &self,
         object_store_options: SecretMap,
     ) -> Result<Box<dyn AsyncBatchWriter + Send>> {
+        self.build_writer(object_store_options, None).await
+    }
+
+    /// Build a writer whose spill/sort reservations come from `memory_pool`.
+    ///
+    /// A parallel snapshot creates several writers; passing one shared pool to
+    /// all of them keeps their combined memory under a single process-wide
+    /// limit instead of N independent 1 GiB limits.
+    pub async fn get_writer_with_memory_pool(
+        &self,
+        object_store_options: SecretMap,
+        memory_pool: Arc<dyn MemoryPool>,
+    ) -> Result<Box<dyn AsyncBatchWriter + Send>> {
+        self.build_writer(object_store_options, Some(memory_pool))
+            .await
+    }
+
+    async fn build_writer(
+        &self,
+        object_store_options: SecretMap,
+        memory_pool: Option<Arc<dyn MemoryPool>>,
+    ) -> Result<Box<dyn AsyncBatchWriter + Send>> {
         let mut builder = create_io_config_builder(
             self.client.clone(),
             Some(self.table_name()),
@@ -247,7 +270,11 @@ impl LakeSoulTable {
         .await?;
         builder = builder.with_prefix(self.table_info.table_path.clone());
         let config = builder.build();
-        let writer = AsyncSendableMutableLakeSoulWriter::from_io_config(config).await?;
+        let session = Arc::new(LakeSoulIOSession::try_new_with_memory_pool(
+            config,
+            memory_pool,
+        )?);
+        let writer = AsyncSendableMutableLakeSoulWriter::try_new(session).await?;
         Ok(Box::new(writer))
     }
 

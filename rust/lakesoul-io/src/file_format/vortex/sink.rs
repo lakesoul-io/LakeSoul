@@ -53,20 +53,9 @@ use vortex::layout::layouts::compressed::CompressorPlugin;
 use vortex::session::VortexSession;
 use vortex::utils::aliases::hash_set::HashSet;
 
-use crate::config::ColumnPolicy;
-
-/// Row block size every column of a vortex file is written with.
-///
-/// Random row access reads a row block per column, so smaller blocks make
-/// candidate and pk lookups much cheaper; the writer default of 8192 rows
-/// would read most of a wide payload column for a scattered candidate set.
-/// `vortex_row_block_size` overrides it.
-const DEFAULT_ROW_BLOCK_SIZE: usize = 1024;
-
-/// Target uncompressed bytes per data block, the smallest unit a random read
-/// fetches.  The writer default of 1 MiB reads far more than a candidate row
-/// needs; `vortex_data_block_target_bytes` overrides it.
-const DEFAULT_DATA_BLOCK_TARGET_BYTES: u64 = 128 * 1024;
+use crate::config::{
+    ColumnPolicy, DEFAULT_VECTOR_DATA_BLOCK_TARGET_BYTES, DEFAULT_VECTOR_ROW_BLOCK_SIZE,
+};
 
 /// The array encodings the session's enabled editions permit, derived the same
 /// way the default Vortex file writer does (`vortex-file`'s
@@ -105,23 +94,31 @@ fn is_blob_dtype(dtype: &DataType) -> bool {
 }
 
 /// Resolve the effective layout of every column that deviates from the
-/// defaults: binary/blob columns skip compression and explicit policies
-/// override the row block size, the data block target and compression.
+/// defaults: binary/blob columns skip compression, vector columns get the small
+/// random-access layout, and explicit policies override the row block size,
+/// the data block target and compression.
 fn resolve_column_overrides(
     schema: &SchemaRef,
     policies: &HashMap<String, ColumnPolicy>,
+    vector_columns: &[String],
+    vector_row_block_size: usize,
+    vector_data_block_target_bytes: u64,
 ) -> HashMap<String, ColumnOverride> {
     let mut overrides = HashMap::new();
     for field in schema.fields() {
         let name = field.name();
         let policy = policies.get(name);
+        let is_vector = vector_columns.iter().any(|column| column == name);
         let default_compress = !is_blob_dtype(field.data_type());
         let compress = policy
             .and_then(|policy| policy.compress)
             .unwrap_or(default_compress);
-        let row_block_size = policy.and_then(|policy| policy.row_block_size);
-        let data_block_target_bytes =
-            policy.and_then(|policy| policy.data_block_target_bytes);
+        let row_block_size = policy
+            .and_then(|policy| policy.row_block_size)
+            .or(is_vector.then_some(vector_row_block_size));
+        let data_block_target_bytes = policy
+            .and_then(|policy| policy.data_block_target_bytes)
+            .or(is_vector.then_some(vector_data_block_target_bytes));
         let default_override = ColumnOverride {
             compress: true,
             row_block_size: None,
@@ -152,10 +149,10 @@ pub struct VortexSink {
     schema: SchemaRef,
     session: VortexSession,
     is_compact: bool,
-    /// Row block size every column is written with.
-    row_block_size: usize,
-    /// Target uncompressed bytes of a data block.
-    data_block_target_bytes: u64,
+    /// Global row block size override; `None` keeps the Vortex writer default.
+    row_block_size: Option<usize>,
+    /// Global data block target override; `None` keeps the Vortex writer default.
+    data_block_target_bytes: Option<u64>,
     /// Effective per-column write layout, keyed by column name.
     column_overrides: HashMap<String, ColumnOverride>,
     /// The Mutex is only used to allow inserting to HashMap from behind borrowed reference in DataSink::write_all.
@@ -175,9 +172,23 @@ impl VortexSink {
         is_compact: bool,
         row_block_size: Option<usize>,
         data_block_target_bytes: Option<u64>,
+        vector_row_block_size: Option<usize>,
+        vector_data_block_target_bytes: Option<u64>,
+        vector_columns: &[String],
         column_policies: &HashMap<String, ColumnPolicy>,
     ) -> Self {
-        let column_overrides = resolve_column_overrides(&schema, column_policies);
+        let column_overrides = resolve_column_overrides(
+            &schema,
+            column_policies,
+            vector_columns,
+            vector_row_block_size
+                .or(row_block_size)
+                .unwrap_or(DEFAULT_VECTOR_ROW_BLOCK_SIZE),
+            vector_data_block_target_bytes
+                .or(data_block_target_bytes)
+                .unwrap_or(DEFAULT_VECTOR_DATA_BLOCK_TARGET_BYTES),
+        );
+
         let metrics = ExecutionPlanMetricsSet::new();
         let rows_written = MetricBuilder::new(&metrics)
             .with_category(MetricCategory::Rows)
@@ -190,9 +201,8 @@ impl VortexSink {
             schema,
             session,
             is_compact,
-            row_block_size: row_block_size.unwrap_or(DEFAULT_ROW_BLOCK_SIZE),
-            data_block_target_bytes: data_block_target_bytes
-                .unwrap_or(DEFAULT_DATA_BLOCK_TARGET_BYTES),
+            row_block_size,
+            data_block_target_bytes,
             column_overrides,
             written: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             metrics,
@@ -201,9 +211,9 @@ impl VortexSink {
         }
     }
 
-    /// Build the write strategy: the default strategy with the small row
-    /// blocks random access needs, optionally with the compact compressor,
-    /// plus per-column overrides for policy columns and blobs.
+    /// Build the write strategy: the Vortex default layout (or the global
+    /// overrides), optionally with the compact compressor, plus per-column
+    /// overrides for vector columns, policy columns and blobs.
     fn write_strategy(&self) -> Arc<dyn vortex::layout::LayoutStrategy> {
         // The custom strategy replaces the default one, which would normally
         // restrict BtrBlocks schemes to the encodings permitted by the
@@ -219,10 +229,16 @@ impl VortexSink {
             } else {
                 BtrBlocksCompressorBuilder::default()
             };
-            WriteStrategyBuilder::default()
-                .with_btrblocks_builder(compressor.retain_allowed_encodings(&allowed))
-                .with_row_block_size(self.row_block_size)
-                .with_data_block_target_bytes(Some(self.data_block_target_bytes))
+            let mut builder = WriteStrategyBuilder::default()
+                .with_btrblocks_builder(compressor.retain_allowed_encodings(&allowed));
+            if let Some(row_block_size) = self.row_block_size {
+                builder = builder.with_row_block_size(row_block_size);
+            }
+            if let Some(data_block_target_bytes) = self.data_block_target_bytes {
+                builder =
+                    builder.with_data_block_target_bytes(Some(data_block_target_bytes));
+            }
+            builder
         };
 
         let mut builder = make_builder();
@@ -441,10 +457,16 @@ mod tests {
 
     #[test]
     fn blob_columns_are_the_only_default_overrides() {
-        let overrides = resolve_column_overrides(&test_schema(), &HashMap::new());
+        let overrides = resolve_column_overrides(
+            &test_schema(),
+            &HashMap::new(),
+            &[],
+            DEFAULT_VECTOR_ROW_BLOCK_SIZE,
+            DEFAULT_VECTOR_DATA_BLOCK_TARGET_BYTES,
+        );
 
-        // Row block size and data block target are global (the write
-        // strategy), so plain columns carry no override at all.
+        // Without vector columns, row block size and data block target are
+        // global (the write strategy), so plain columns carry no override.
         assert!(!overrides.contains_key("id"));
         assert!(!overrides.contains_key("embedding"));
         assert_eq!(
@@ -494,7 +516,13 @@ mod tests {
             ),
         ]);
 
-        let overrides = resolve_column_overrides(&test_schema(), &policies);
+        let overrides = resolve_column_overrides(
+            &test_schema(),
+            &policies,
+            &["embedding".to_string()],
+            DEFAULT_VECTOR_ROW_BLOCK_SIZE,
+            DEFAULT_VECTOR_DATA_BLOCK_TARGET_BYTES,
+        );
 
         // Re-enabling compression equals the global default, so no field
         // override is emitted for `frame`.
@@ -522,6 +550,30 @@ mod tests {
                 row_block_size: None,
                 data_block_target_bytes: None,
             })
+        );
+    }
+
+    #[test]
+    fn vector_columns_get_the_small_layout_by_default() {
+        let overrides = resolve_column_overrides(
+            &test_schema(),
+            &HashMap::new(),
+            &["embedding".to_string()],
+            DEFAULT_VECTOR_ROW_BLOCK_SIZE,
+            DEFAULT_VECTOR_DATA_BLOCK_TARGET_BYTES,
+        );
+
+        assert_eq!(
+            overrides.get("embedding"),
+            Some(&ColumnOverride {
+                compress: true,
+                row_block_size: Some(DEFAULT_VECTOR_ROW_BLOCK_SIZE),
+                data_block_target_bytes: Some(DEFAULT_VECTOR_DATA_BLOCK_TARGET_BYTES),
+            })
+        );
+        assert!(
+            !overrides.contains_key("id"),
+            "non-vector columns must keep the writer defaults"
         );
     }
 }

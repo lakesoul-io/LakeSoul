@@ -12,20 +12,22 @@
 //!
 //! - the [`RuntimeEnv`] with the S3/HDFS/local warehouse object store
 //!   registered (same URL prefix and options as the coordinator);
-//! - the same user codecs as the coordinator ([`user_codecs`]): LakeSoul's own
-//!   node codec for [`MergeParquetExec`] stages and the vortex scan codec, so
-//!   both parquet and vortex stages decode;
+//! - the same user codecs as the coordinator ([`user_codecs`]): the node codecs
+//!   for metadata-only scans and distributed writes, plus the vortex scan codec,
+//!   so every payload the coordinator can stamp has a decoder here;
 //! - the LakeSoul UDFs, so pushed-down physical expressions resolve.
 //!
 //! The advertised protocol version pins coordinator↔worker compatibility:
 //! see [`crate::distributed::DISTRIBUTED_PROTOCOL_VERSION`].
 //!
 //! [`user_codecs`]: crate::distributed::codec::user_codecs
-//! [`MergeParquetExec`]: lakesoul_io::physical_plan::MergeParquetExec
+
+use std::sync::Arc;
 
 use datafusion::common::Result as DFResult;
 use datafusion::execution::FunctionRegistry;
 use datafusion::execution::SessionState;
+use datafusion::execution::memory_pool::MemoryPool;
 use datafusion_distributed::{
     DistributedExt, Worker, WorkerQueryContext, WorkerSessionBuilder,
 };
@@ -76,25 +78,49 @@ impl WorkerSessionBuilder for LakeSoulWorkerSessionBuilder {
 }
 
 /// Options for building a LakeSoul worker.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LakeSoulWorkerOptions {
     /// Object-store / warehouse configuration. Must match the coordinator's
     /// (`CoreArgs` is shared exactly for this reason).
     pub core_args: CoreArgs,
-    /// One execution memory budget shared by all tasks in this worker.
-    pub memory: crate::session::ExecutionMemoryArgs,
+    /// One execution memory budget shared by all tasks in this worker; see
+    /// [`ExecutionMemoryArgs::create_pool`](crate::session::ExecutionMemoryArgs::create_pool).
+    pub memory_pool: Arc<dyn MemoryPool>,
 }
 
 /// Builds a LakeSoul [`Worker`]: RuntimeEnv with warehouse object stores, the
 /// LakeSoul codec, and the UDF registry, advertising
 /// [`DISTRIBUTED_PROTOCOL_VERSION`].
 pub fn lakesoul_worker(options: &LakeSoulWorkerOptions) -> crate::Result<Worker> {
-    options.memory.install_vortex_decode_budget()?;
-    let runtime =
-        crate::session::build_worker_runtime_env(&options.core_args, &options.memory)?;
+    let runtime = crate::session::build_worker_runtime_env(
+        &options.core_args,
+        Arc::clone(&options.memory_pool),
+    )?;
+    #[cfg(feature = "ivm")]
+    install_ivm_worker_config(&options.core_args, &runtime);
     Ok(Worker::from_session_builder(LakeSoulWorkerSessionBuilder)
         .with_runtime_env(runtime)
         .with_version(DISTRIBUTED_PROTOCOL_VERSION))
+}
+
+/// Install the object-store options and IVM limits scan/write nodes use.
+///
+/// IVM's reader and writer build their own `LakeSoulIOConfig`; unlike a
+/// coordinator session they do not read the session's `LakeSoulIOConfig`
+/// extension.  The worker therefore installs the same `CoreArgs` credentials
+/// once at start-up.
+#[cfg(feature = "ivm")]
+fn install_ivm_worker_config(
+    core_args: &CoreArgs,
+    runtime: &Arc<datafusion::execution::runtime_env::RuntimeEnv>,
+) {
+    let mut config = lakesoul_ivm::IvmRuntimeConfig::new(
+        datafusion::prelude::SessionConfig::new(),
+        Arc::clone(runtime),
+    );
+    config.object_store_options = core_args.s3_options();
+    config.options.max_active_tasks = Some(4);
+    lakesoul_ivm::config::install(config);
 }
 
 /// Convenience: spawn a LakeSoul worker gRPC server on `listener`.

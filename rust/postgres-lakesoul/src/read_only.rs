@@ -13,8 +13,9 @@
 //! [`ReadOnlyStatementGuard`] is installed as the *last* statement hook of
 //! the connection-local `DfSessionService`, after the upstream
 //! cursor/set-show/transaction hooks: those keep handling their statements
-//! and can still short-circuit (e.g. with PostgreSQL's "current transaction
-//! is aborted" error) before the guard sees anything else. Rejections happen
+//! and can still short-circuit (e.g. with [`FailedTransactionGuard`]'s
+//! PostgreSQL "current transaction is aborted" error) before the guard sees
+//! anything else. Rejections happen
 //!
 //! - in the simple protocol: per statement, before `SessionContext::sql`
 //!   executes it;
@@ -25,6 +26,16 @@
 //! A simple-protocol batch runs its statements before the first rejected
 //! one; those can only be reads or session-local control statements, so no
 //! persistent state changes before the error.
+//!
+//! One hook runs between the transaction hook and the upstream `SET` hook:
+//! `SessionSettingsHook` claims `SET TIME ZONE` (whose upstream branch writes
+//! through a discarded `SessionContext::state()` clone), `RESET` and `DISCARD
+//! ALL`, i.e. the connection-local settings and their restoration. It is
+//! installed after `TransactionStatementHook`, so a failed transaction
+//! rejects these statements with `25P02` before any setting is changed, and
+//! after [`ReadCommittedOnlyGuard`], so isolation assignments keep their own
+//! validation. It still precedes `SetShowHook` so the broken upstream branch
+//! never sees a time-zone assignment.
 //!
 //! Transaction *isolation* is checked by [`ReadCommittedOnlyGuard`], which
 //! runs before the upstream transaction hook: the session has no
@@ -44,8 +55,8 @@ use datafusion::common::ParamValues;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::{
-    CloseCursor, Expr, ObjectName, Set, Statement, TransactionIsolationLevel,
-    TransactionMode,
+    CloseCursor, DiscardObject, Expr, ObjectName, ObjectType, Query, Set, SetExpr,
+    Statement, TransactionIsolationLevel, TransactionMode,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::hooks::HookClient;
@@ -57,27 +68,61 @@ use pgwire::api::ClientInfo;
 use pgwire::api::results::Response;
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 
+use crate::failed_transaction::FailedTransactionGuard;
 use crate::server::ConnectionSession;
+use crate::session_settings::SessionSettingsHook;
 
 /// SQLSTATE for rejected statements (read-only error mapping).
 const FEATURE_NOT_SUPPORTED: &str = "0A000";
 
 /// Statement hooks executed by every connection-local service.
 ///
+/// The hooks of one connection, with `connection_hooks` spliced in after the
+/// transaction hook.
+///
 /// The read-only guard runs last so the upstream hooks keep first claim on
 /// cursor, `SET`/`SHOW` and transaction statements; the isolation guard runs
 /// first because it must see `BEGIN`/`SET TRANSACTION` before the transaction
-/// hook answers them.
-pub(crate) fn statement_hooks() -> Vec<Arc<dyn QueryHook>> {
-    vec![
+/// hook answers them. [`FailedTransactionGuard`] sits immediately in front of
+/// [`TransactionStatementHook`], so a failed transaction block is rejected with
+/// PostgreSQL's `25P02` by the in-repo guard instead of the upstream `25P01`,
+/// and only `COMMIT`/`ROLLBACK` still reach the upstream hook.
+/// [`SessionSettingsHook`] runs after the transaction hook so a failed
+/// transaction (`25P02`) is reported before any `SET TIME ZONE`/`RESET`/
+/// `DISCARD ALL` could mutate session state, and before `SetShowHook` so the
+/// broken upstream `SET TIME ZONE` branch never runs.
+///
+/// A hook that answers `SET`/`SHOW` itself must sit behind
+/// [`FailedTransactionGuard`] and [`TransactionStatementHook`]: a failed
+/// transaction has to reject the statement with `25P02` before the hook could
+/// mutate session state, and in front of [`SetShowHook`] so it keeps first
+/// claim on its own variables.
+pub(crate) fn statement_hooks_with(
+    connection_hooks: Vec<Arc<dyn QueryHook>>,
+) -> Vec<Arc<dyn QueryHook>> {
+    let mut hooks: Vec<Arc<dyn QueryHook>> = vec![
         Arc::new(ReadCommittedOnlyGuard),   // new
         Arc::new(UncancellableCursorGuard), // new
         Arc::new(PortalCloseCleanup),       // new
         Arc::new(CursorStatementHook),
-        Arc::new(SetShowHook),
+        Arc::new(FailedTransactionGuard), // new
         Arc::new(TransactionStatementHook),
+    ];
+    hooks.extend(connection_hooks);
+    hooks.extend([
+        // A write nested in a CTE has no supported execution path; refuse it
+        // with `0A000` before DataFusion reports its planner gap as `XX000`.
+        Arc::new(ModifyingCteGuard) as Arc<dyn QueryHook>, // new
+        // After the transaction hook (a failed transaction must reject these
+        // statements with `25P02` rather than apply them) and before the
+        // upstream `SetShowHook`: that hook's `SET TIME ZONE` branch writes
+        // through an owned `SessionContext::state()` clone and discards the
+        // write, and its generic `SET` fallback ignores errors.
+        Arc::new(SessionSettingsHook) as Arc<dyn QueryHook>, // new
+        Arc::new(SetShowHook),
         Arc::new(ReadOnlyStatementGuard), // new
-    ]
+    ]);
+    hooks
 }
 
 /// Removes the cancellation state of portals closed through SQL.
@@ -389,14 +434,103 @@ impl QueryHook for ReadCommittedOnlyGuard {
     }
 }
 
+/// Rejects a query whose CTE body modifies data.
+///
+/// `WITH changed AS (UPDATE ... RETURNING ...) SELECT ...` is valid
+/// PostgreSQL but LakeSoul cannot execute a write nested in a CTE: the write
+/// is claimed only as a top-level statement. Refusing the query here keeps the
+/// failure a stable `0A000` instead of the planner's internal
+/// `Query UPDATE ... not implemented yet` (`XX000`).
+struct ModifyingCteGuard;
+
+impl ModifyingCteGuard {
+    fn modifies(statement: &Statement) -> bool {
+        let query = match statement {
+            Statement::Query(query) => query,
+            Statement::Explain {
+                statement: inner, ..
+            } => match &**inner {
+                Statement::Query(query) => query,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        query_has_modifying_cte(query)
+    }
+}
+
+fn query_has_modifying_cte(query: &Query) -> bool {
+    query.with.as_ref().is_some_and(|with| {
+        with.cte_tables
+            .iter()
+            .any(|cte| query_has_modifying_cte(&cte.query))
+    }) || body_has_modifying_cte(query.body.as_ref())
+}
+
+fn body_has_modifying_cte(body: &SetExpr) -> bool {
+    match body {
+        SetExpr::Insert(_)
+        | SetExpr::Update(_)
+        | SetExpr::Delete(_)
+        | SetExpr::Merge(_) => true,
+        SetExpr::Select(_) | SetExpr::Values(_) | SetExpr::Table(_) => false,
+        SetExpr::Query(query) => query_has_modifying_cte(query),
+        SetExpr::SetOperation { left, right, .. } => {
+            body_has_modifying_cte(left) || body_has_modifying_cte(right)
+        }
+    }
+}
+
+#[async_trait]
+impl QueryHook for ModifyingCteGuard {
+    async fn handle_simple_query(
+        &self,
+        statement: &Statement,
+        _session_context: &SessionContext,
+        _client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        Self::modifies(statement).then(|| Err(modifying_cte_error()))
+    }
+
+    async fn handle_extended_parse_query(
+        &self,
+        statement: &Statement,
+        _session_context: &SessionContext,
+        _client: &(dyn ClientInfo + Send + Sync),
+    ) -> Option<PgWireResult<LogicalPlan>> {
+        Self::modifies(statement).then(|| Err(modifying_cte_error()))
+    }
+
+    async fn handle_extended_query(
+        &self,
+        statement: &Statement,
+        _logical_plan: &LogicalPlan,
+        _params: &ParamValues,
+        _session_context: &SessionContext,
+        _client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        Self::modifies(statement).then(|| Err(modifying_cte_error()))
+    }
+}
+
+fn modifying_cte_error() -> PgWireError {
+    PgWireError::UserError(Box::new(ErrorInfo::new(
+        "ERROR".to_string(),
+        FEATURE_NOT_SUPPORTED.to_string(),
+        "a data-modifying statement inside a CTE is not supported: run the \
+         modifying statement and the query separately"
+            .to_string(),
+    )))
+}
+
 /// Rejects every statement the read-only server does not support.
 struct ReadOnlyStatementGuard;
 
 impl ReadOnlyStatementGuard {
     /// Statements the server accepts: queries, `DESCRIBE <table>`,
-    /// session-local `SET`/`SHOW` and transaction control. Cursors are refused
-    /// by [`UncancellableCursorGuard`]; `EXPLAIN` is allowed only for a query,
-    /// so `EXPLAIN INSERT` is rejected like the
+    /// session-local `SET`/`SHOW`, `RESET`/`DISCARD ALL` and transaction
+    /// control. Cursors are refused by [`UncancellableCursorGuard`]; `EXPLAIN`
+    /// is allowed only for a query, so `EXPLAIN INSERT` is rejected like the
     /// statement it wraps.
     fn allow(statement: &Statement) -> bool {
         match statement {
@@ -421,7 +555,25 @@ impl ReadOnlyStatementGuard {
             | Statement::StartTransaction { .. }
             | Statement::Commit { .. }
             | Statement::Rollback { .. }
-            | Statement::Close { .. } => true,
+            | Statement::Close { .. }
+            // Session settings can be restored; `SessionSettingsHook` applies
+            // them (and refuses the untracked parameter / `DISCARD` variants
+            // with their own SQLSTATE).
+            | Statement::Reset(_) => true,
+            // Writes are claimed by `InsertStatementHook` / `UpdateStatementHook`,
+            // which execute them and map their violations to PostgreSQL
+            // SQLSTATEs.
+            Statement::Insert(_) => true,
+            Statement::Update(_) => true,
+            // DDL is claimed by `DdlStatementHook`, which refuses the
+            // unsupported clauses itself.
+            Statement::CreateTable(_) => true,
+            Statement::Drop { object_type, .. } => {
+                matches!(object_type, ObjectType::Table)
+            }
+            Statement::Discard { object_type } => {
+                matches!(object_type, DiscardObject::ALL)
+            }
             Statement::Explain {
                 statement: inner, ..
             } => {
@@ -458,6 +610,12 @@ fn verb(statement: &Statement) -> &'static str {
         Statement::CreateDatabase { .. } => "CREATE DATABASE",
         Statement::CreateIndex { .. } => "CREATE INDEX",
         Statement::AlterTable { .. } => "ALTER TABLE",
+        Statement::Discard { object_type } => match object_type {
+            DiscardObject::ALL => "DISCARD ALL",
+            DiscardObject::PLANS => "DISCARD PLANS",
+            DiscardObject::SEQUENCES => "DISCARD SEQUENCES",
+            DiscardObject::TEMP => "DISCARD TEMP",
+        },
         _ => "this statement",
     }
 }
@@ -553,7 +711,7 @@ mod tests {
     fn service() -> DfSessionService {
         DfSessionService::new_with_hooks(
             Arc::new(SessionContext::new()),
-            statement_hooks(),
+            statement_hooks_with(Vec::new()),
         )
     }
 
@@ -578,18 +736,13 @@ mod tests {
     }
 
     const REJECTED: &[&str] = &[
-        "INSERT INTO t VALUES (1)",
-        "UPDATE t SET a = 1",
         "DELETE FROM t",
         "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET a = 1",
         "COPY t TO STDOUT",
         "COPY t FROM STDIN",
         "TRUNCATE t",
-        "CREATE TABLE t (a INT)",
-        "CREATE TABLE t AS SELECT 1",
         "CREATE VIEW v AS SELECT 1",
         "CREATE SCHEMA s",
-        "DROP TABLE t",
         "ALTER TABLE t ADD COLUMN b INT",
         "GRANT SELECT ON t TO u",
         "REVOKE SELECT ON t FROM u",
@@ -600,6 +753,11 @@ mod tests {
         "START TRANSACTION ISOLATION LEVEL SERIALIZABLE",
         "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
         "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+        // Accepted by the read-only guard but refused by the session-settings
+        // hook: these PostgreSQL behaviours are not implemented.
+        "DISCARD PLANS",
+        "DISCARD SEQUENCES",
+        "DISCARD TEMP",
     ];
 
     const ALLOWED: &[&str] = &[
@@ -611,6 +769,10 @@ mod tests {
         "EXPLAIN ANALYZE SELECT 1",
         "SET a = 1",
         "SET TIME ZONE 'UTC'",
+        "RESET ALL",
+        "RESET timezone",
+        "RESET statement_timeout",
+        "DISCARD ALL",
         "SHOW server_version",
         "BEGIN",
         "BEGIN TRANSACTION READ ONLY",
@@ -651,6 +813,60 @@ mod tests {
         }
     }
 
+    /// `INSERT` and `UPDATE` are answered by their own hooks, which refuse
+    /// the unsupported clauses themselves, so the guard must not claim them;
+    /// DELETE and `EXPLAIN INSERT` stay rejected.
+    #[test]
+    fn writes_are_left_to_their_hooks() {
+        use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
+        use datafusion::sql::sqlparser::parser::Parser;
+
+        for (sql, allowed) in [
+            ("INSERT INTO t VALUES (1)", true),
+            ("INSERT INTO t (a) SELECT a FROM s", true),
+            ("INSERT INTO t VALUES (1) ON CONFLICT (id) DO NOTHING", true),
+            ("UPDATE t SET a = 1", true),
+            ("DELETE FROM t", false),
+            ("EXPLAIN INSERT INTO t VALUES (1)", false),
+        ] {
+            let statements = Parser::parse_sql(&PostgreSqlDialect {}, sql)
+                .unwrap_or_else(|error| panic!("{sql}: {error}"));
+            assert_eq!(
+                ReadOnlyStatementGuard::allow(&statements[0]),
+                allowed,
+                "sql: {sql}"
+            );
+        }
+    }
+
+    /// `CREATE TABLE`/`DROP TABLE` are answered by `DdlStatementHook`, which
+    /// refuses the unsupported clauses itself, so the guard must not claim
+    /// them; every other DDL statement stays rejected.
+    #[test]
+    fn ddl_is_left_to_the_ddl_hook() {
+        use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
+        use datafusion::sql::sqlparser::parser::Parser;
+
+        for (sql, allowed) in [
+            ("CREATE TABLE t (a INT)", true),
+            ("CREATE TABLE t AS SELECT 1", true),
+            ("DROP TABLE t", true),
+            ("DROP TABLE IF EXISTS t", true),
+            ("DROP VIEW v", false),
+            ("DROP INDEX i", false),
+            ("ALTER TABLE t ADD COLUMN b INT", false),
+            ("CREATE SCHEMA s", false),
+        ] {
+            let statements = Parser::parse_sql(&PostgreSqlDialect {}, sql)
+                .unwrap_or_else(|error| panic!("{sql}: {error}"));
+            assert_eq!(
+                ReadOnlyStatementGuard::allow(&statements[0]),
+                allowed,
+                "sql: {sql}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn extended_parse_rejects_writes_and_ddl() {
         let service = service();
@@ -676,11 +892,7 @@ mod tests {
         let mut client = MockClient::new();
         // The trailing statement of a batch is rejected as well, so no
         // statement after the first rejected one can ever execute.
-        for sql in [
-            "INSERT INTO t VALUES (1)",
-            "CREATE TABLE t (a INT)",
-            "SELECT 1; DELETE FROM t",
-        ] {
+        for sql in ["ALTER TABLE t ADD COLUMN b INT", "SELECT 1; DELETE FROM t"] {
             let error = <DfSessionService as SimpleQueryHandler>::do_query(
                 &service,
                 &mut client,
@@ -794,7 +1006,7 @@ mod tests {
         // Second line of defense behind the parse hook: feed a write
         // statement straight into the execute-phase hook.
         let statements = PostgresCompatibilityParser::new()
-            .parse("INSERT INTO t VALUES (1)")
+            .parse("DELETE FROM t")
             .expect("parse");
         let statement = statements.first().expect("statement");
         let mut client = MockClient::new();

@@ -29,6 +29,7 @@ use std::sync::{Arc, Once};
 use std::task::{Context, Poll};
 use std::time::Instant;
 
+use crate::cache::stats::{SCHEMA_INFERENCE_TIMING, SchemaInferenceTiming};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
@@ -38,6 +39,7 @@ use object_store::{
     ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult,
     RenameOptions, Result, UploadPart, path::Path,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{Instrument, Level, Span};
 
 const REQUESTS_TOTAL: &str = "lakesoul_object_store_requests_total";
@@ -470,6 +472,165 @@ impl ObjectStore for MonitoredObjectStore {
         record_request(self.kind, "rename", started, &result);
         record_span_request(&span, &result);
         result
+    }
+}
+
+/// Schema-only wrapper: carry counters across Vortex's task/runtime boundaries
+/// without changing the registered store, request options or cache behavior.
+///
+/// One instance wraps one input file (see `file_format`), so `read_seen` makes
+/// `files_with_reads` count files rather than reads. Streamed payloads are
+/// counted when the stream ends, so a stream that is dropped before it ends
+/// contributes no `store_read_ns`.
+#[derive(Debug)]
+pub(crate) struct SchemaInferenceStore {
+    inner: Arc<dyn ObjectStore>,
+    timing: Arc<SchemaInferenceTiming>,
+    read_seen: AtomicBool,
+}
+
+impl SchemaInferenceStore {
+    pub(crate) fn new(
+        inner: Arc<dyn ObjectStore>,
+        timing: Arc<SchemaInferenceTiming>,
+    ) -> Self {
+        Self {
+            inner,
+            timing,
+            read_seen: AtomicBool::new(false),
+        }
+    }
+
+    fn mark_read(&self) {
+        if !self.read_seen.swap(true, Ordering::Relaxed) {
+            self.timing.files_with_reads.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+impl std::fmt::Display for SchemaInferenceStore {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SchemaInferenceStore({})", self.inner)
+    }
+}
+
+#[async_trait]
+#[deny(clippy::missing_trait_methods)]
+impl ObjectStore for SchemaInferenceStore {
+    async fn put_opts(
+        &self,
+        location: &Path,
+        payload: PutPayload,
+        options: PutOptions,
+    ) -> Result<PutResult> {
+        self.inner.put_opts(location, payload, options).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &Path,
+        options: PutMultipartOptions,
+    ) -> Result<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, options).await
+    }
+
+    async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
+        let head = options.head;
+        if !head {
+            self.mark_read();
+        }
+        let started = Instant::now();
+        let mut result = SCHEMA_INFERENCE_TIMING
+            .scope(self.timing.clone(), self.inner.get_opts(location, options))
+            .await?;
+        result.payload = match result.payload {
+            GetResultPayload::Stream(mut stream) if !head => {
+                let timing = self.timing.clone();
+                let mut finished = false;
+                GetResultPayload::Stream(
+                    futures::stream::poll_fn(move |cx| {
+                        let next = SCHEMA_INFERENCE_TIMING
+                            .sync_scope(timing.clone(), || stream.as_mut().poll_next(cx));
+                        if matches!(next, Poll::Ready(None)) && !finished {
+                            timing.store_read_ns.fetch_add(
+                                started.elapsed().as_nanos() as u64,
+                                Ordering::Relaxed,
+                            );
+                            finished = true;
+                        }
+                        next
+                    })
+                    .boxed(),
+                )
+            }
+            payload => {
+                if !head {
+                    self.timing.store_read_ns.fetch_add(
+                        started.elapsed().as_nanos() as u64,
+                        Ordering::Relaxed,
+                    );
+                }
+                payload
+            }
+        };
+        Ok(result)
+    }
+
+    async fn get_ranges(
+        &self,
+        location: &Path,
+        ranges: &[Range<u64>],
+    ) -> Result<Vec<Bytes>> {
+        self.mark_read();
+        let started = Instant::now();
+        let result = SCHEMA_INFERENCE_TIMING
+            .scope(self.timing.clone(), self.inner.get_ranges(location, ranges))
+            .await;
+        self.timing
+            .store_read_ns
+            .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        result
+    }
+
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, Result<Path>>,
+    ) -> BoxStream<'static, Result<Path>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    fn list_with_offset(
+        &self,
+        prefix: Option<&Path>,
+        offset: &Path,
+    ) -> BoxStream<'static, Result<ObjectMeta>> {
+        self.inner.list_with_offset(prefix, offset)
+    }
+
+    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        options: CopyOptions,
+    ) -> Result<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+
+    async fn rename_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        options: RenameOptions,
+    ) -> Result<()> {
+        self.inner.rename_opts(from, to, options).await
     }
 }
 
@@ -915,6 +1076,57 @@ mod tests {
             ),
             "list metric missing in:\n{rendered}"
         );
+    }
+
+    /// Vortex polls its reads on a separate runtime, so the wrapper exists to
+    /// re-establish the schema-inference task local around each request and
+    /// stream poll. Without it every cache and read-through counter would stay
+    /// at zero during schema inference.
+    #[tokio::test]
+    async fn schema_wrapper_propagates_timing_across_tasks() {
+        use crate::cache::disk_cache::DiskCache;
+        use crate::cache::read_through::ReadThroughCache;
+        use object_store::local::LocalFileSystem;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), b"hello world").unwrap();
+        let inner: Arc<dyn ObjectStore> =
+            Arc::new(LocalFileSystem::new_with_prefix(dir.path()).unwrap());
+        let cache = Arc::new(DiskCache::with_path(
+            64 * 1024 * 1024,
+            16 * 1024,
+            dir.path().join("cache"),
+        ));
+        let read_through: Arc<dyn ObjectStore> =
+            Arc::new(ReadThroughCache::new(inner, cache));
+        let timing = Arc::new(SchemaInferenceTiming::default());
+        let store = SchemaInferenceStore::new(read_through, timing.clone());
+        let path = Path::from("data.bin");
+
+        let get = store.get_opts(&path, GetOptions::default()).await.unwrap();
+        let GetResultPayload::Stream(stream) = get.payload else {
+            panic!("read-through reads are streamed");
+        };
+        // A fresh task has none of this task's locals; only the wrapper's scope
+        // around the poll can make the read-through counters visible.
+        let chunks =
+            tokio::spawn(async move { stream.try_collect::<Vec<Bytes>>().await })
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(chunks, vec![Bytes::from_static(b"hello world")]);
+
+        assert_eq!(timing.files_with_reads.load(Ordering::Relaxed), 1);
+        assert_eq!(timing.range_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(timing.page_misses.load(Ordering::Relaxed), 1);
+        assert_eq!(timing.page_hits.load(Ordering::Relaxed), 0);
+        assert!(timing.store_read_ns.load(Ordering::Relaxed) > 0);
+
+        // A head request transfers nothing and must not count as a read.
+        let read_ns = timing.store_read_ns.load(Ordering::Relaxed);
+        assert_eq!(store.head(&path).await.unwrap().size, 11);
+        assert_eq!(timing.files_with_reads.load(Ordering::Relaxed), 1);
+        assert_eq!(timing.store_read_ns.load(Ordering::Relaxed), read_ns);
     }
 
     /// A layer that only remembers the name of every span it is told about.
