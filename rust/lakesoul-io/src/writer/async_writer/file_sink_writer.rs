@@ -139,12 +139,20 @@ impl FileSinkWriter {
         let task_ctx = Self::sink_task_ctx(io_session.task_ctx())?;
         let sink_for_task = Arc::clone(&sink);
 
-        let task = SpawnedTask::spawn(async move {
-            match FileSink::write_all(sink_for_task.as_ref(), data, &task_ctx).await {
-                Ok(row_count) => Ok(row_count),
-                Err(DataFusionError::Internal(msg)) if msg == "external abort" => Ok(0),
-                Err(e) => Err(e.into()),
-            }
+        // The writer task can outlive the span of the refresh/task that
+        // created it; DataFusion's SpawnedTask captures the current tracing
+        // span, and cloning a closed span ID panics.  Start it detached from
+        // the caller's span.
+        let task = tracing::Span::none().in_scope(|| {
+            SpawnedTask::spawn(async move {
+                match FileSink::write_all(sink_for_task.as_ref(), data, &task_ctx).await {
+                    Ok(row_count) => Ok(row_count),
+                    Err(DataFusionError::Internal(msg)) if msg == "external abort" => {
+                        Ok(0)
+                    }
+                    Err(e) => Err(e.into()),
+                }
+            })
         });
 
         let blob_columns = blob::parse_blob_policies(io_session.io_config().options())?;

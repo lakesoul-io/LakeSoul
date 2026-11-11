@@ -291,13 +291,9 @@ impl IvmRuntime {
         let frame = delta
             .sort(sort_exprs)?
             .select(view.projection(epoch, false)?)?;
-        let stream = frame.execute_stream().await?;
         drop(context);
-        commit_ids.extend(
-            view.target
-                .append_stream_by_key(&self.client, stream)
-                .await?,
-        );
+        let outcome = append_dataframe(&view.target, &self.client, frame).await?;
+        commit_ids.extend(outcome.commit_ids);
 
         let target_versions =
             output_partition_versions(&self.client, &view.target).await?;
@@ -355,9 +351,9 @@ impl IvmRuntime {
         let context = refresh_session();
         let frame = self.current_table_frame(&context, &view.source)?;
         let frame = frame.select(view.projection(epoch, true)?)?;
-        let stream = frame.execute_stream().await?;
         drop(context);
-        commit_ids.extend(view.target.append_stream(&self.client, stream).await?);
+        let outcome = append_dataframe(&view.target, &self.client, frame).await?;
+        commit_ids.extend(outcome.commit_ids);
 
         let target_versions =
             output_partition_versions(&self.client, &view.target).await?;

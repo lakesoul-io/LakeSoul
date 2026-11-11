@@ -21,9 +21,10 @@ use std::sync::Arc;
 
 use clap::Parser;
 use lakesoul_common::misc::JiffTime;
-use lakesoul_datafusion::cli::CoreArgs;
+use lakesoul_datafusion::cli::{CoreArgs, IvmArgs};
 use lakesoul_datafusion::distributed::{
-    DISTRIBUTED_PROTOCOL_VERSION, LakeSoulWorkerOptions, spawn_lakesoul_worker,
+    DISTRIBUTED_PROTOCOL_VERSION, LakeSoulWorkerOptions, set_ivm_worker_options,
+    spawn_lakesoul_worker,
 };
 use lakesoul_datafusion::session::ExecutionMemoryArgs;
 use lakesoul_observability::{
@@ -60,6 +61,10 @@ struct Args {
     #[command(flatten)]
     core: CoreArgs,
 
+    /// IVM refresh-engine options; pass the coordinator's values unchanged.
+    #[command(flatten)]
+    ivm_runtime: IvmArgs,
+
     #[command(flatten)]
     memory: ExecutionMemoryArgs,
 
@@ -73,6 +78,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         port,
         metrics_addr,
         core,
+        ivm_runtime,
         memory,
         memory_sampling,
     } = Args::parse();
@@ -141,6 +147,16 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     })?;
                 info!("federation ADBC pools registered");
             }
+            let ivm_options = ivm_runtime.options();
+            info!(
+                view_parallelism = ivm_options.view_parallelism,
+                max_active_tasks = ?ivm_options.max_active_tasks,
+                max_derived_steps = ivm_options.max_derived_steps,
+                state_index = ?ivm_options.state_index,
+                internal_file_format = ivm_options.internal_file_format.name(),
+                "IVM refresh options"
+            );
+            set_ivm_worker_options(ivm_options);
             let options = LakeSoulWorkerOptions {
                 core_args: core,
                 memory_pool,

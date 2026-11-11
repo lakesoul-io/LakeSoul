@@ -34,6 +34,8 @@ use crate::distributed::resolver::{
     KubernetesDiscovery, KubernetesWorkerResolver, StaticWorkerResolver,
 };
 use crate::distributed::{DistributedOptions, WorkerDiscovery};
+#[cfg(feature = "ivm")]
+use lakesoul_ivm::{IvmOptions, PhysicalFormat, StateIndexMode};
 
 pub const DEFAULT_DISCOVERY_POLL_INTERVAL: Duration = Duration::from_secs(5);
 pub const DEFAULT_DISCOVERY_MAX_STALENESS: Duration = Duration::from_secs(30);
@@ -231,6 +233,17 @@ pub struct DistributedArgs {
     /// partitions keeps scans up to 64 MiB on the coordinator.
     #[clap(long, env = "LAKESOUL_DISTRIBUTED_BYTES_PER_PARTITION")]
     pub distributed_bytes_per_partition: Option<usize>,
+
+    /// `target_partitions` applied to distributed sessions.  The physical
+    /// planner only emits the hash/range repartitions that become distributed
+    /// stage boundaries when this is greater than 1, so it is forced to at
+    /// least 2.
+    #[clap(
+        long,
+        env = "LAKESOUL_DISTRIBUTED_TARGET_PARTITIONS",
+        default_value_t = 4
+    )]
+    pub distributed_target_partitions: usize,
 }
 
 impl DistributedArgs {
@@ -382,9 +395,18 @@ impl DistributedArgs {
                 bail!("shared worker resolver cannot be configured from the CLI")
             }
         };
+        // `DistributedArgs::default()` leaves the field at 0; the CLI default
+        // is 4.  Keep both paths on the library default while still forcing
+        // the minimum of 2 that makes distributed stages possible.
+        let target_partitions = if self.distributed_target_partitions == 0 {
+            4
+        } else {
+            self.distributed_target_partitions.max(2)
+        };
         let options = DistributedOptions {
             discovery: WorkerDiscovery::Shared(resolver),
             fallback_to_local: self.distributed_fallback_local,
+            target_partitions,
             ..DistributedOptions::default()
         };
         let options = match self.distributed_bytes_per_partition {
@@ -408,6 +430,190 @@ impl fmt::Display for DiscoveryMode {
     }
 }
 
+/// Runtime options of the IVM refresh engine.
+///
+/// The library itself never reads environment variables; a coordinator and
+/// every distributed worker build the same [`IvmOptions`] from these flags
+/// (directly or through the matching environment variables) and install them
+/// in their own process.
+#[cfg(feature = "ivm")]
+#[derive(Parser, Debug, Clone)]
+pub struct IvmArgs {
+    /// Number of independent views a chain refresh may run concurrently.
+    #[clap(
+        long = "ivm-view-parallelism",
+        env = "LAKESOUL_IVM_VIEW_PARALLELISM",
+        default_value_t = 1
+    )]
+    pub view_parallelism: usize,
+
+    /// Maximum keyed state streams one lookup plan may expand at once;
+    /// 0 leaves the gate unbounded.
+    #[clap(
+        long = "ivm-max-active-tasks",
+        env = "LAKESOUL_IVM_MAX_ACTIVE_TASKS",
+        default_value_t = 4
+    )]
+    pub max_active_tasks: usize,
+
+    /// Maximum number of derived views one statement may materialize.
+    #[clap(
+        long = "ivm-max-derived-steps",
+        env = "LAKESOUL_IVM_MAX_DERIVED_STEPS",
+        default_value_t = 64
+    )]
+    pub max_derived_steps: usize,
+
+    /// Row-level primary-key index policy for key-filtered state reads.
+    #[clap(
+        long = "ivm-state-index",
+        env = "LAKESOUL_IVM_STATE_INDEX",
+        value_enum,
+        default_value = "auto"
+    )]
+    pub state_index: IvmStateIndexArg,
+
+    /// Change ratio (percent of estimated live rows) above which a refresh
+    /// rebuilds instead of replaying.
+    #[clap(long = "ivm-rebuild-ratio", env = "LAKESOUL_IVM_REBUILD_RATIO")]
+    pub rebuild_ratio: Option<u64>,
+
+    /// Per-frame budget for materializing a top-k frame; 0 disables it.
+    #[clap(
+        long = "ivm-topk-materialize-bytes",
+        env = "LAKESOUL_IVM_TOPK_MATERIALIZE_BYTES"
+    )]
+    pub topk_materialize_bytes: Option<usize>,
+
+    /// Physical format of newly created IVM-internal tables.
+    #[clap(
+        long = "ivm-internal-file-format",
+        env = "LAKESOUL_IVM_INTERNAL_FILE_FORMAT",
+        value_enum,
+        default_value = "vortex"
+    )]
+    pub internal_file_format: IvmFileFormatArg,
+
+    /// Bounded memory pool for one streaming writer.
+    #[clap(long = "ivm-write-pool-size", env = "LAKESOUL_IVM_WRITE_POOL_SIZE")]
+    pub write_pool_size: Option<String>,
+
+    /// Spill directory of the writer pool.
+    #[clap(long = "ivm-write-pool-dir", env = "LAKESOUL_IVM_WRITE_POOL_DIR")]
+    pub write_pool_dir: Option<String>,
+
+    /// Override of the Vortex row-block size for internal tables.
+    #[clap(
+        long = "ivm-vortex-row-block-size",
+        env = "LAKESOUL_IVM_VORTEX_ROW_BLOCK_SIZE"
+    )]
+    pub vortex_row_block_size: Option<String>,
+
+    /// Override of the Vortex data-block target bytes for internal tables.
+    #[clap(
+        long = "ivm-vortex-data-block-bytes",
+        env = "LAKESOUL_IVM_VORTEX_DATA_BLOCK_BYTES"
+    )]
+    pub vortex_data_block_bytes: Option<String>,
+
+    /// Materialize keyed lookups on the coordinator instead of embedding
+    /// their range-shuffle plan in the distributed refresh plan.
+    #[clap(
+        long = "ivm-distributed-keyed-local",
+        env = "LAKESOUL_IVM_DISTRIBUTED_KEYED_LOCAL",
+        value_parser = BoolValueParser::new(),
+        action = ArgAction::Set,
+        num_args(0..=1),
+        require_equals(true),
+        default_value("false"),
+        default_missing_value("true")
+    )]
+    pub distributed_keyed_local: bool,
+
+    /// Lease TTL for the per-view refresh lock, in milliseconds.
+    #[clap(
+        long = "ivm-refresh-lock-ttl-ms",
+        env = "LAKESOUL_IVM_REFRESH_LOCK_TTL_MS",
+        default_value_t = 1_800_000
+    )]
+    pub refresh_lock_ttl_ms: u64,
+}
+
+#[cfg(feature = "ivm")]
+#[derive(ValueEnum, Debug, Clone, Copy, Default)]
+#[clap(rename_all = "kebab-case")]
+pub enum IvmStateIndexArg {
+    /// Index Vortex state, scan Parquet state.
+    #[default]
+    Auto,
+    /// Index every state format.
+    Force,
+    /// Never use the row-level index.
+    Off,
+}
+
+#[cfg(feature = "ivm")]
+#[derive(ValueEnum, Debug, Clone, Copy, Default)]
+#[clap(rename_all = "kebab-case")]
+pub enum IvmFileFormatArg {
+    Parquet,
+    #[default]
+    Vortex,
+    VortexCompact,
+}
+
+#[cfg(feature = "ivm")]
+impl Default for IvmArgs {
+    fn default() -> Self {
+        Self {
+            view_parallelism: 1,
+            max_active_tasks: 4,
+            max_derived_steps: 64,
+            state_index: IvmStateIndexArg::Auto,
+            rebuild_ratio: None,
+            topk_materialize_bytes: None,
+            internal_file_format: IvmFileFormatArg::Vortex,
+            write_pool_size: None,
+            write_pool_dir: None,
+            vortex_row_block_size: None,
+            vortex_data_block_bytes: None,
+            distributed_keyed_local: false,
+            refresh_lock_ttl_ms: 1_800_000,
+        }
+    }
+}
+
+#[cfg(feature = "ivm")]
+impl IvmArgs {
+    /// The behaviour options this process installs.
+    pub fn options(&self) -> IvmOptions {
+        IvmOptions {
+            max_active_tasks: (self.max_active_tasks > 0)
+                .then_some(self.max_active_tasks),
+            view_parallelism: self.view_parallelism.max(1),
+            max_derived_steps: self.max_derived_steps.max(1),
+            state_index: match self.state_index {
+                IvmStateIndexArg::Auto => StateIndexMode::Auto,
+                IvmStateIndexArg::Force => StateIndexMode::Force,
+                IvmStateIndexArg::Off => StateIndexMode::Off,
+            },
+            rebuild_ratio: self.rebuild_ratio,
+            topk_materialize_bytes: self.topk_materialize_bytes,
+            internal_file_format: match self.internal_file_format {
+                IvmFileFormatArg::Parquet => PhysicalFormat::Parquet,
+                IvmFileFormatArg::Vortex => PhysicalFormat::Vortex,
+                IvmFileFormatArg::VortexCompact => PhysicalFormat::VortexCompact,
+            },
+            write_pool_size: self.write_pool_size.clone(),
+            write_pool_dir: self.write_pool_dir.clone(),
+            vortex_row_block_size: self.vortex_row_block_size.clone(),
+            vortex_data_block_bytes: self.vortex_data_block_bytes.clone(),
+            distributed_keyed_local: self.distributed_keyed_local,
+            refresh_lock_ttl_ms: self.refresh_lock_ttl_ms.max(1000),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,5 +629,50 @@ mod tests {
             args.s3_options().get("fs.s3a.endpoint").map(String::as_str),
             Some("http://127.0.0.1:9000")
         );
+    }
+
+    #[cfg(feature = "ivm")]
+    #[test]
+    fn ivm_args_map_to_options() {
+        let defaults = IvmArgs::default().options();
+        assert_eq!(defaults.view_parallelism, 1);
+        assert_eq!(defaults.max_active_tasks, Some(4));
+        assert_eq!(defaults.max_derived_steps, 64);
+        assert!(matches!(defaults.state_index, StateIndexMode::Auto));
+        assert!(matches!(
+            defaults.internal_file_format,
+            PhysicalFormat::Vortex
+        ));
+
+        let args = IvmArgs {
+            view_parallelism: 2,
+            max_active_tasks: 0,
+            max_derived_steps: 128,
+            state_index: IvmStateIndexArg::Off,
+            internal_file_format: IvmFileFormatArg::Parquet,
+            ..IvmArgs::default()
+        };
+        let options = args.options();
+        assert_eq!(options.view_parallelism, 2);
+        assert_eq!(options.max_active_tasks, None);
+        assert_eq!(options.max_derived_steps, 128);
+        assert!(matches!(options.state_index, StateIndexMode::Off));
+        assert!(matches!(
+            options.internal_file_format,
+            PhysicalFormat::Parquet
+        ));
+    }
+
+    #[test]
+    fn distributed_target_partitions_are_forced_above_one() {
+        let args = DistributedArgs {
+            distributed_workers: vec!["http://127.0.0.1:50051".to_string()],
+            distributed_target_partitions: 1,
+            ..DistributedArgs::default()
+        };
+        let options = futures::executor::block_on(args.resolve_distributed_options())
+            .unwrap()
+            .unwrap();
+        assert_eq!(options.target_partitions, 2);
     }
 }

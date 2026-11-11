@@ -406,7 +406,7 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
         }
     }
     if view.left_filter.is_some() || view.right_filter.is_some() {
-        let context = refresh_session();
+        let context = refresh_session_local();
         if let Some(filter) = &view.left_filter {
             parse_filter(&context, &view.left.schema, filter)?;
         }
@@ -426,7 +426,7 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
             let predicate = view.match_predicate.as_deref().ok_or_else(|| {
                 report!("semi/anti view {} has no aggregate predicate", view.view_id)
             })?;
-            let context = refresh_session();
+            let context = refresh_session_local();
             let aggregate_type = right_aggregate_type(&context, view)?;
             let schema = match_schema(&view.left.schema, &aggregate_type)?;
             parse_filter(&context, &schema, predicate).map_err(|error| {
@@ -857,7 +857,10 @@ fn null_safe_semi_join(
             NullEquality::NullEqualsNull,
         )?
         .build()?;
-    Ok(DataFrame::new(refresh_session().state().clone(), plan))
+    Ok(DataFrame::new(
+        refresh_session_local().state().clone(),
+        plan,
+    ))
 }
 
 /// Join `left` against `right` with a semi/anti view's predicate.
@@ -933,7 +936,10 @@ fn semi_anti_join(
             NullEquality::NullEqualsNull,
         )?
         .build()?;
-    Ok(DataFrame::new(refresh_session().state().clone(), plan))
+    Ok(DataFrame::new(
+        refresh_session_local().state().clone(),
+        plan,
+    ))
 }
 
 impl IvmRuntime {
@@ -1012,7 +1018,7 @@ impl IvmRuntime {
         // output, the join keys, the primary keys and the change marker.
         // Keeping the whole source would copy every unused payload column
         // into the state on each refresh.
-        let context = refresh_session();
+        let context = refresh_session_local();
         let (left_state_source, right_state_source, left_columns, right_columns) =
             semi_anti_state_sources(&context, view)?;
         let left_state = if side_keyed {
@@ -1750,7 +1756,7 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
-        let context = refresh_session();
+        let context = refresh_session_local();
         let (left_state_source, right_state_source, _, _) =
             semi_anti_state_sources(&context, view)?;
         if !view.join_keys.is_empty()
@@ -2240,7 +2246,7 @@ fn validate_left_aggregate_view(view: &LeftAggregateView) -> Result<()> {
             )
         })?;
     }
-    let context = refresh_session();
+    let context = refresh_session_local();
     let df_schema = DFSchema::try_from(view.right.schema.as_ref().clone())
         .map_err(|error| report!("invalid source schema: {error}"))?;
     context
@@ -2270,7 +2276,7 @@ fn left_aggregate_left_columns(view: &LeftAggregateView) -> Result<Vec<String>> 
             columns.push(key.clone());
         }
     }
-    let context = refresh_session();
+    let context = refresh_session_local();
     if let Some(filter) = &view.left_filter {
         for column in filter_columns(&context, &view.left.schema, filter)? {
             if !columns.contains(&column) {
@@ -2492,7 +2498,7 @@ impl IvmRuntime {
         }
         self.checkpoint_epoch_states(&record).await?;
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let left_columns = left_aggregate_left_columns(view)?;
         let right_columns = left_aggregate_right_columns(view, &context)?;
         let left_projection = project_schema(&view.left.schema, &left_columns)?;
@@ -2858,7 +2864,7 @@ impl IvmRuntime {
             self.checkpoint_epoch_states(&record).await?;
         }
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let left = apply_side_filter(
             &context,
             filter_deletes(

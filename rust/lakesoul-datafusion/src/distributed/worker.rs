@@ -103,6 +103,26 @@ pub fn lakesoul_worker(options: &LakeSoulWorkerOptions) -> crate::Result<Worker>
         .with_version(DISTRIBUTED_PROTOCOL_VERSION))
 }
 
+/// IVM behaviour options configured for this worker process.
+///
+/// A worker builds its IVM configuration once at start-up, before any task
+/// arrives.  The standalone binary installs the operator-provided options
+/// here; an embedded worker that never sets them keeps the previous defaults
+/// (`max_active_tasks = 4`).
+#[cfg(feature = "ivm")]
+static IVM_WORKER_OPTIONS: std::sync::OnceLock<lakesoul_ivm::IvmOptions> =
+    std::sync::OnceLock::new();
+
+/// Install the IVM options this worker process serves tasks with.
+///
+/// Must be called before [`spawn_lakesoul_worker`].  The coordinator and every
+/// worker must receive the same options so a refresh that crosses a stage
+/// boundary observes one configuration.
+#[cfg(feature = "ivm")]
+pub fn set_ivm_worker_options(options: lakesoul_ivm::IvmOptions) {
+    let _ = IVM_WORKER_OPTIONS.set(options);
+}
+
 /// Install the object-store options and IVM limits scan/write nodes use.
 ///
 /// IVM's reader and writer build their own `LakeSoulIOConfig`; unlike a
@@ -119,7 +139,11 @@ fn install_ivm_worker_config(
         Arc::clone(runtime),
     );
     config.object_store_options = core_args.s3_options();
-    config.options.max_active_tasks = Some(4);
+    config.options = IVM_WORKER_OPTIONS.get().cloned().unwrap_or_else(|| {
+        let mut options = lakesoul_ivm::IvmOptions::default();
+        options.max_active_tasks = Some(4);
+        options
+    });
     lakesoul_ivm::config::install(config);
 }
 

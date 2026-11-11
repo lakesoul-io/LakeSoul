@@ -213,7 +213,7 @@ pub(crate) fn multi_agg_partial_plan(
     aggregates: &[(String, String, DataType)],
     source_schema: &Schema,
 ) -> Result<Option<MultiAggPartialPlan>> {
-    let context = refresh_session();
+    let context = refresh_session_local();
     let df_schema = DFSchema::try_from(source_schema.clone())
         .map_err(|error| report!("invalid source schema: {error}"))?;
     let mut columns = Vec::with_capacity(aggregates.len());
@@ -2701,11 +2701,11 @@ pub(super) fn validate_recompute_view(parts: &RecomputeParts<'_>) -> Result<()> 
         parts.group_exprs,
     )?;
     if let Some(filter) = parts.filter {
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &parts.source.schema, filter)?;
     }
     if let Some(having) = parts.having {
-        let context = refresh_session();
+        let context = refresh_session_local();
         let mut schema = parts.mv.schema.fields().iter().cloned().collect::<Vec<_>>();
         if let Some(lookup) = &parts.lookup {
             // The lookup value is joined into the recompute and referenced by
@@ -2931,9 +2931,8 @@ impl IvmRuntime {
             .collect::<Vec<_>>();
         sort.push(column_expr(IVM_ROW_KINDS_COLUMN));
         rows = rows.sort_by(sort)?;
-        index
-            .append_stream(self.client(), rows.execute_stream().await?)
-            .await
+        let outcome = append_dataframe(index, self.client(), rows).await?;
+        Ok(outcome.commit_ids)
     }
 
     /// The current source rows of the affected keys, resolved through one
@@ -3002,9 +3001,8 @@ impl IvmRuntime {
         let rows = project_frame(frame, &fields)?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-        index
-            .append_stream(self.client(), rows.execute_stream().await?)
-            .await
+        let outcome = append_dataframe(index, self.client(), rows).await?;
+        Ok(outcome.commit_ids)
     }
 
     async fn ensure_recomputed_index(
@@ -3252,7 +3250,7 @@ impl IvmRuntime {
             // single row without a primary key, so the aggregate is
             // recomputed over the current source and the MV is rewritten
             // wholesale.
-            let context = refresh_session();
+            let context = refresh_session_local();
             context.register_table("src", Arc::new(self.table_provider(parts.source)))?;
             if let Some(lookup) = &parts.lookup {
                 context.register_table(
@@ -3263,12 +3261,8 @@ impl IvmRuntime {
             parts.mv.truncate(&self.client).await?;
             let sql = recompute_global_sql(parts, epoch);
             let frame = context.sql(&sql).await?;
-            commit_ids.extend(
-                parts
-                    .mv
-                    .append_stream(&self.client, frame.execute_stream().await?)
-                    .await?,
-            );
+            let outcome = append_dataframe(parts.mv, &self.client, frame).await?;
+            commit_ids.extend(outcome.commit_ids);
             let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
             self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                 .await?;
@@ -3280,7 +3274,7 @@ impl IvmRuntime {
             return Ok(Some(epoch));
         }
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let delta = project_group_keys_frame(
             &context,
             self.groups_table_frame(&context, parts.source, window.added_files.clone())?,
@@ -3467,12 +3461,12 @@ impl IvmRuntime {
         let frame = context
             .sql(&recompute_refresh_sql(parts, epoch, lookup_changed))
             .await?;
-        let stream = frame.execute_stream().await?;
         // The plan and its streaming readers are no longer needed: drop the
         // session before the metadata commit so no reader task/pooled
         // connection is still alive when we ask for a commit connection.
         drop(context);
-        commit_ids.extend(parts.mv.append_stream(&self.client, stream).await?);
+        let outcome = append_dataframe(parts.mv, &self.client, frame).await?;
+        commit_ids.extend(outcome.commit_ids);
 
         self.checkpoint_epoch_states(&record).await?;
         let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
@@ -3559,7 +3553,7 @@ impl IvmRuntime {
         if parts.group_keys.is_empty() {
             // A global aggregate is recomputed over the baseline into the
             // single MV row.
-            let context = refresh_session();
+            let context = refresh_session_local();
             context.register_table(
                 "src",
                 Arc::new(
@@ -3574,12 +3568,12 @@ impl IvmRuntime {
             }
             let sql = recompute_global_sql(parts, epoch);
             let frame = context.sql(&sql).await?;
-            commit_ids.extend(
-                parts
-                    .mv
-                    .append_stream(&self.client, frame.execute_stream().await?)
-                    .await?,
-            );
+            // The plan and its streaming readers are no longer needed: drop the
+            // session before the metadata commit so no reader task/pooled
+            // connection is still alive when we ask for a commit connection.
+            drop(context);
+            let outcome = append_dataframe(parts.mv, &self.client, frame).await?;
+            commit_ids.extend(outcome.commit_ids);
             let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
             self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                 .await?;
@@ -3588,7 +3582,7 @@ impl IvmRuntime {
             return Ok(epoch);
         }
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let frame =
             self.groups_table_frame(&context, parts.source, baseline.groups.clone())?;
         let frame = project_group_keys_frame(
@@ -3610,12 +3604,8 @@ impl IvmRuntime {
                 .register_table("lookup", Arc::new(self.table_provider(lookup.table)))?;
         }
         let frame = context.sql(&recompute_rebuild_sql(parts, epoch)).await?;
-        commit_ids.extend(
-            parts
-                .mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
-        );
+        let outcome = append_dataframe(parts.mv, &self.client, frame).await?;
+        commit_ids.extend(outcome.commit_ids);
 
         let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -4048,7 +4038,7 @@ impl IvmRuntime {
         } else {
             provider
         };
-        let lookup_context = refresh_session();
+        let lookup_context = refresh_session_local();
         lookup_context.register_table("source_before", Arc::new(provider))?;
         let mut before_frame = lookup_context.table("source_before").await?;
         for filter in filters {
@@ -4140,7 +4130,7 @@ impl IvmRuntime {
         let stage_guard = StageGuard {
             dir: stage_dir.clone(),
         };
-        let context = refresh_session();
+        let context = refresh_session_local();
         let encoder = Arc::new(GroupKeyRowEncoder::new(
             &view.source.schema,
             &view.group_keys,
@@ -4415,7 +4405,7 @@ impl IvmRuntime {
             WindowStart::Apply(record) => record,
         };
         let epoch = record.epoch;
-        let context = refresh_session();
+        let context = refresh_session_local();
         // The bootstrap is the whole current source; read it through the
         // provider instead of materialising every initial file here.  A new
         // view has no cursors, and `before_versions` still contains the
@@ -4585,33 +4575,12 @@ impl IvmRuntime {
              group by {keys}",
             filter = filter_where(view.filter.as_deref())
         );
-        let encoder = Arc::new(GroupKeyRowEncoder::new(
-            &view.source.schema,
-            &view.group_keys,
-        )?);
         let mut input_types = Vec::with_capacity(view.group_keys.len());
         for key in &view.group_keys {
             input_types
                 .push(view.source.schema.field_with_name(key)?.data_type().clone());
         }
-        let udf_encoder = encoder.clone();
-        let group_row_udf = datafusion::logical_expr::create_udf(
-            "ivm_group_row",
-            input_types,
-            DataType::Binary,
-            datafusion::logical_expr::Volatility::Immutable,
-            Arc::new(move |args: &[datafusion::logical_expr::ColumnarValue]| {
-                let arrays =
-                    datafusion::logical_expr::ColumnarValue::values_to_arrays(args)?;
-                let rows = udf_encoder
-                    .encode_columns(&arrays)
-                    .map_err(|error| DataFusionError::Execution(error.to_string()))?;
-                Ok(datafusion::logical_expr::ColumnarValue::Array(Arc::new(
-                    rows,
-                )))
-            }),
-        );
-        context.register_udf(group_row_udf);
+        context.register_udf(crate::runtime::group_row_udf_for_types(input_types)?);
         if bootstrap {
             use futures::StreamExt;
             let frame = context.sql(&contrib_sql).await?;
@@ -4766,7 +4735,7 @@ impl IvmRuntime {
                 measure_columns,
                 epoch,
             )?);
-        let merge_context = refresh_session();
+        let merge_context = refresh_session_local();
         let streams = datafusion::physical_plan::execute_stream_partitioned(
             merge_plan,
             merge_context.task_ctx(),
@@ -4885,9 +4854,8 @@ impl IvmRuntime {
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
             .sort_by(sort_exprs)?;
-        partial
-            .append_stream(&self.client, ops.execute_stream().await?)
-            .await
+        let outcome = append_dataframe(partial, &self.client, ops).await?;
+        Ok(outcome.commit_ids)
     }
 
     /// Recompute the partial aggregates of the changed `(group, partition)`
@@ -4967,9 +4935,8 @@ impl IvmRuntime {
         sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
         let ops = inserts.union(deletes)?.sort_by(sort_exprs)?;
         let _ = context;
-        partial
-            .append_stream(&self.client, ops.execute_stream().await?)
-            .await
+        let outcome = append_dataframe(partial, &self.client, ops).await?;
+        Ok(outcome.commit_ids)
     }
 
     async fn refresh_multi_agg_rows(
@@ -5002,7 +4969,7 @@ impl IvmRuntime {
             WindowStart::Apply(record) => record,
         };
         let epoch = record.epoch;
-        let context = refresh_session();
+        let context = refresh_session_local();
         let partial_plan = if view.having.is_none()
             && view.having_lookup.is_none()
             && !view.group_keys.is_empty()
@@ -5125,11 +5092,8 @@ impl IvmRuntime {
             .collect::<Vec<_>>();
         sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
         state_ops = state_ops.sort_by(sort_exprs)?;
-        commit_ids.extend(
-            state
-                .append_stream(&self.client, state_ops.execute_stream().await?)
-                .await?,
-        );
+        let state_outcome = append_dataframe(state, &self.client, state_ops).await?;
+        commit_ids.extend(state_outcome.commit_ids);
 
         context.register_table("old", before_keys.clone().into_view())?;
         context.register_table("delta", delta_keys.clone().into_view())?;
@@ -5356,11 +5320,8 @@ impl IvmRuntime {
                 return Err(error.into());
             }
         };
-        commit_ids.extend(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
-        );
+        let mv_outcome = append_dataframe(&view.mv, &self.client, frame).await?;
+        commit_ids.extend(mv_outcome.commit_ids);
         self.checkpoint_epoch_states(&record).await?;
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)

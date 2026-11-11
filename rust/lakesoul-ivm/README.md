@@ -644,8 +644,11 @@ let runtime = IvmRuntime::from_env_with_config(config).await?;
 memory pool and spill directory.  In a datafusion-distributed deployment each
 coordinator and executor sets the same values from its own deployment config.
 The coordinator and every IVM worker must also use the same `IvmOptions`
-(`state_index`, writer pool, internal layout and task limits): the refresh
-sessions are built independently on each process.
+(`--ivm-view-parallelism`, `--ivm-max-active-tasks`,
+`--ivm-max-derived-steps`, `--ivm-state-index`, `--ivm-internal-file-format`,
+and the writer/vortex options): the refresh sessions are built independently
+on each process, and a worker never inherits the coordinator's process-local
+options from the serialized plan.
 `IvmRuntime::from_env()` remains as a test/example convenience and uses the
 default session, but production code should pass its own config.
 

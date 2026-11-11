@@ -1941,7 +1941,7 @@ fn lookup_join_projection(
     view: &LookupJoinView,
 ) -> Result<DataFrame> {
     let wide = !view.output_columns.is_empty();
-    let context = refresh_session();
+    let context = refresh_session_local();
     let mut left_columns = join_side_key_columns(
         &context,
         left.schema(),
@@ -2124,7 +2124,7 @@ fn validate_cross_join_view(view: &CrossJoinView) -> Result<()> {
         wide_output_fields(&view.left.schema, &view.right.schema, &view.output_columns)?;
     }
     if view.left_filter.is_some() || view.right_filter.is_some() {
-        let context = refresh_session();
+        let context = refresh_session_local();
         if let Some(filter) = &view.left_filter {
             parse_filter(&context, &view.left.schema, filter)?;
         }
@@ -2275,7 +2275,7 @@ fn validate_left_join_view(view: &LeftJoinView) -> Result<()> {
         )?;
     }
     if view.left_filter.is_some() || view.right_filter.is_some() {
-        let context = refresh_session();
+        let context = refresh_session_local();
         if let Some(filter) = &view.left_filter {
             parse_filter(&context, &view.left.schema, filter)?;
         }
@@ -2457,7 +2457,7 @@ fn validate_multi_lookup_join_view(view: &MultiLookupJoinView) -> Result<()> {
     }
     for (right, filter) in &view.rights {
         if let Some(filter) = filter {
-            let context = refresh_session();
+            let context = refresh_session_local();
             parse_filter(&context, &right.schema, filter)?;
         }
         let mut primary = right.primary_keys.clone();
@@ -2556,11 +2556,11 @@ fn validate_lookup_join_view(view: &LookupJoinView) -> Result<()> {
         ));
     }
     if let Some(filter) = &view.left_filter {
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &view.left.schema, filter)?;
     }
     if let Some(filter) = &view.right_filter {
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &view.right.schema, filter)?;
     }
     if view.left.primary_keys.is_empty() || view.right.primary_keys.is_empty() {
@@ -2662,7 +2662,7 @@ fn validate_pair_filter(
         Field::new("left_value", field_type(&left.schema, left_value)?, true),
         Field::new("right_value", field_type(&right.schema, right_value)?, true),
     ]));
-    let context = refresh_session();
+    let context = refresh_session_local();
     parse_filter(&context, &schema, filter)?;
     Ok(())
 }
@@ -2689,7 +2689,7 @@ fn validate_wide_pair_filter(
         fields.push(Field::new(alias, field_type(schema, &column.column)?, true));
     }
     let schema = Arc::new(Schema::new(fields));
-    let context = refresh_session();
+    let context = refresh_session_local();
     parse_filter(&context, &schema, filter)?;
     Ok(())
 }
@@ -2703,7 +2703,7 @@ fn validate_join_view(view: &JoinView) -> Result<()> {
         ));
     }
     if view.left_filter.is_some() || view.right_filter.is_some() {
-        let context = refresh_session();
+        let context = refresh_session_local();
         if let Some(filter) = &view.left_filter {
             parse_filter(&context, &view.left.schema, filter)?;
         }
@@ -2977,7 +2977,7 @@ fn join_side_state_columns(
     side: JoinSide,
     filter: Option<&str>,
 ) -> Result<Vec<String>> {
-    let context = refresh_session();
+    let context = refresh_session_local();
     let mut columns = source.primary_keys.clone();
     for (index, key) in join_keys.iter().enumerate() {
         if let Some(expression) = key_exprs.get(index).filter(|expr| !expr.is_empty()) {
@@ -3107,7 +3107,7 @@ pub(super) fn apply_pair_filter(
 ) -> Result<DataFrame> {
     match filter {
         Some(filter) => {
-            let context = refresh_session();
+            let context = refresh_session_local();
             let expression = context
                 .state()
                 .create_logical_expr(filter, joined.schema())
@@ -4673,6 +4673,47 @@ impl IvmRuntime {
         table_columns: &[String],
         multi_match: bool,
     ) -> Result<DataFrame> {
+        if crate::config::options().distributed_keyed_local
+            && crate::config::session_factory().is_some()
+        {
+            // The pinned datafusion-distributed range shuffle cannot nest a
+            // keyed plan inside the outer refresh plan: the worker waits for
+            // a producer plan the coordinator never publishes.  Plan and run
+            // the lookup in a local session, then hand the materialized rows
+            // to the outer (possibly distributed) plan as a memory table.
+            let local = crate::runtime::refresh_session_local();
+            let contribution_schema = Arc::new(contribution.schema().as_arrow().clone());
+            let batches = contribution.collect().await?;
+            let batches = if batches.is_empty() {
+                vec![datafusion::arrow::record_batch::RecordBatch::new_empty(
+                    contribution_schema,
+                )]
+            } else {
+                batches
+            };
+            let local_contribution = local.read_batches(batches)?;
+            let local_rows = self
+                .lookup_source_by_join_keys_impl(
+                    &local,
+                    table,
+                    local_contribution,
+                    input_columns,
+                    table_columns,
+                    multi_match,
+                    None,
+                )
+                .await?;
+            let schema = Arc::new(local_rows.schema().as_arrow().clone());
+            let batches = local_rows.collect().await?;
+            let batches = if batches.is_empty() {
+                vec![datafusion::arrow::record_batch::RecordBatch::new_empty(
+                    schema,
+                )]
+            } else {
+                batches
+            };
+            return Ok(context.read_batches(batches)?);
+        }
         self.lookup_source_by_join_keys_impl(
             context,
             table,
@@ -5187,7 +5228,7 @@ impl IvmRuntime {
         output: &IvmTable,
         state: &IvmTable,
     ) -> Result<Vec<String>> {
-        let context = refresh_session();
+        let context = refresh_session_local();
         let frame = self.current_table_frame(&context, output)?;
         state.truncate(&self.client).await?;
         Ok(append_dataframe(state, &self.client, frame)
@@ -5359,7 +5400,7 @@ impl IvmRuntime {
         output: &IvmTable,
         index: &IvmTable,
     ) -> Result<Vec<String>> {
-        let context = refresh_session();
+        let context = refresh_session_local();
         let frame = self.current_table_frame(&context, output)?;
         let fields = index
             .schema
@@ -5549,7 +5590,7 @@ impl IvmRuntime {
             commit_ids.extend(ids);
         }
         self.checkpoint_epoch_states(&record).await?;
-        let context = refresh_session();
+        let context = refresh_session_local();
         if keyed {
             let delta_left = self.groups_table_frame(
                 &context,
@@ -6102,7 +6143,7 @@ impl IvmRuntime {
             );
         }
         self.checkpoint_epoch_states(&record).await?;
-        let context = refresh_session();
+        let context = refresh_session_local();
         let left_changed = !left_window.added_files.is_empty();
         let right_changed = !right_window.added_files.is_empty();
         // A projected side state returns only its payload columns; keep the
@@ -6668,7 +6709,7 @@ impl IvmRuntime {
         }
         self.checkpoint_epoch_states(&record).await?;
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let left_changed = !left_window.added_files.is_empty();
         let left_pks = view.left.primary_keys.clone();
         let pk_exprs = left_pks
@@ -6984,7 +7025,7 @@ impl IvmRuntime {
             );
         }
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let left_now = filter_deletes(
             self.groups_table_frame(&context, &view.left, left_baseline.groups)?,
             change_column(&view.left),
@@ -7097,7 +7138,7 @@ impl IvmRuntime {
             );
         }
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let mut left_now = filter_deletes(
             self.groups_table_frame(&context, &view.left, left_baseline.groups.clone())?,
             change_column(&view.left),
@@ -7303,7 +7344,7 @@ impl IvmRuntime {
         }
         self.checkpoint_epoch_states(&record).await?;
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let delta_left = if !left_window.added_files.is_empty() {
             Some(self.groups_table_frame(
                 &context,
@@ -7676,7 +7717,7 @@ impl IvmRuntime {
         );
         self.checkpoint_epoch_states(&record).await?;
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let left_now = apply_side_filter(
             &context,
             filter_deletes(
@@ -7884,7 +7925,7 @@ impl IvmRuntime {
         }
         self.checkpoint_epoch_states(&record).await?;
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let delta_left = if !left_window.added_files.is_empty() {
             Some(self.groups_table_frame(
                 &context,
@@ -8670,7 +8711,7 @@ impl IvmRuntime {
         );
         self.checkpoint_epoch_states(&record).await?;
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let left_now = apply_side_filter(
             &context,
             filter_deletes(
@@ -8800,7 +8841,7 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
-        let context = refresh_session();
+        let context = refresh_session_local();
 
         let left_now = apply_side_filter(
             &context,
@@ -9046,7 +9087,7 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let left_now = apply_side_filter(
             &context,
             filter_deletes(
@@ -9228,7 +9269,7 @@ impl IvmRuntime {
             }
         }
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let left_empty = left_baseline
             .groups
             .iter()
@@ -9389,7 +9430,7 @@ mod identity_encoding_tests {
             ],
         )
         .unwrap();
-        let context = refresh_session();
+        let context = refresh_session_local();
         context
             .register_table(
                 "t",

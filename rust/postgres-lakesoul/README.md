@@ -57,11 +57,19 @@ INSERT INTO target ...;
 
   ```sh
   postgres-lakesoul --ivm \
-    --distributed-workers http://worker-0:50051,http://worker-1:50051
+    --discovery static \
+    --distributed-workers http://worker-0:50051,http://worker-1:50051 \
+    --distributed-target-partitions 8 \
+    --ivm-view-parallelism 2 \
+    --ivm-max-active-tasks 4
+
+  lakesoul-worker --bind 0.0.0.0 --port 50051 \
+    --ivm-view-parallelism 2 \
+    --ivm-max-active-tasks 4
   ```
 
-  Workers must use the same protocol generation (`lakesoul-distributed/3-ivm`) with IVM enabled; mixed versions fail during discovery/decode. With no worker available, refresh still runs locally on the coordinator, and `--distributed-fallback-local` lets non-distributable refreshes fall back.
-- Distributed IVM's Range bucket shuffle needs the matching datafusion-distributed Range shuffle support; with upstream crates.io 4.0.0 not yet carrying it, keyed lookups stay on the coordinator and single-node semantics are unaffected.
+  Workers must use the same protocol generation (`lakesoul-distributed/7-ivm`) with IVM enabled; mixed versions fail during discovery/decode. The coordinator and every worker must install the same `--ivm-*` options (`view_parallelism`, `max_active_tasks`, `max_derived_steps`, `state_index`, `internal_file_format`, and the writer/vortex options); these are process-local and workers do not inherit them from the coordinator's plan. With no worker available, or with `--distributed-fallback-local`, refresh runs on the coordinator.
+- Distributed IVM's keyed lookup uses datafusion-distributed's Range bucket shuffle. This repository pins the `lakesoul-ivm-range-shuffle` branch, so the range repartition can run on workers; external deployments on a datafusion-distributed version without Range shuffle keep that stage on the coordinator, with unchanged single-node semantics.
 
 ## Data path, isolation, and adjudication
 

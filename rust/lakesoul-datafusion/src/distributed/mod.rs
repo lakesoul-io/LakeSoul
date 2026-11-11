@@ -123,6 +123,8 @@ pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2-ivm";
 #[cfg(not(feature = "ivm"))]
 pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2";
 
+#[cfg(feature = "ivm")]
+pub use worker::set_ivm_worker_options;
 pub use worker::{
     LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker,
     spawn_lakesoul_worker,

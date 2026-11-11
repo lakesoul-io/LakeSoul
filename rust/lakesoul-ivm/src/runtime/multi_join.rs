@@ -467,7 +467,7 @@ fn validate_multi_join_view(view: &MultiJoinView) -> Result<()> {
             view.view_id
         ));
     }
-    let context = refresh_session();
+    let context = refresh_session_local();
     let keyed = view.keyed();
     for (index, source) in view.sources.iter().enumerate() {
         if keyed != !source.primary_keys.is_empty() {
@@ -1290,7 +1290,7 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
-        let context = refresh_session();
+        let context = refresh_session_local();
         for (spec, index) in &index_states {
             let source = &view.sources[spec.source];
             if index.current_files(&self.client).await?.is_empty() {
@@ -1730,7 +1730,7 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
-        let context = refresh_session();
+        let context = refresh_session_local();
         for (spec, index) in &index_states {
             let source = &view.sources[spec.source];
             let current = filter_deletes(

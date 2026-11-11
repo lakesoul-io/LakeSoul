@@ -10,6 +10,7 @@
 //! [`SessionContext`] on each call. PostgreSQL connection identity and settings
 //! are intentionally kept in the `postgres-lakesoul` crate.
 
+use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
 use datafusion::catalog::{CatalogProvider, TableProviderFactory};
 use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::SessionStateBuilder;
@@ -691,6 +692,29 @@ impl LakeSoulSessionFactory {
         self
     }
 
+    /// Build a session with the same catalog, object stores and memory pool
+    /// but no distributed planner.
+    ///
+    /// IVM uses this for keyed lookup plans: the pinned distributed range
+    /// shuffle deadlocks when such a plan is nested inside the outer refresh
+    /// plan, so the lookup is executed locally and materialized.
+    pub fn create_local_session(&self) -> Result<Arc<SessionContext>> {
+        let local = Self {
+            meta_client: Arc::clone(&self.meta_client),
+            session_template: self.session_template.clone(),
+            object_store_config: self.object_store_config.clone(),
+            warehouse: self.warehouse.clone(),
+            memory_pool: Arc::clone(&self.memory_pool),
+            planner: Arc::clone(&self.planner),
+            table_factory: Arc::clone(&self.table_factory),
+            catalog_decorator: self.catalog_decorator.clone(),
+            distributed: None,
+            target_partitions: self.target_partitions,
+            catalog_snapshot: Arc::clone(&self.catalog_snapshot),
+        };
+        local.create_session(&LakeSoulSessionOptions::default())
+    }
+
     /// Build a fresh [`SessionContext`].
     pub fn create_session(
         &self,
@@ -946,11 +970,69 @@ impl IvmRefreshSessionFactory {
 #[cfg(feature = "ivm")]
 impl lakesoul_ivm::config::IvmSessionFactory for IvmRefreshSessionFactory {
     fn create(&self) -> lakesoul_ivm::Result<SessionContext> {
-        self.factory
+        let context = self
+            .factory
             .create_session(&LakeSoulSessionOptions::default())
-            .map(|context| context.as_ref().clone())
-            .map_err(|error| rootcause::report!("create IVM refresh session: {error}"))
+            .map_err(|error| rootcause::report!("create IVM refresh session: {error}"))?;
+        let context = refresh_session_with_memory_catalog(context).map_err(|error| {
+            rootcause::report!("prepare IVM refresh session: {error}")
+        })?;
+        Ok(context.as_ref().clone())
     }
+
+    fn create_local(&self) -> lakesoul_ivm::Result<SessionContext> {
+        let context = self.factory.create_local_session().map_err(|error| {
+            rootcause::report!("create local IVM refresh session: {error}")
+        })?;
+        let context = refresh_session_with_memory_catalog(context).map_err(|error| {
+            rootcause::report!("prepare local IVM refresh session: {error}")
+        })?;
+        Ok(context.as_ref().clone())
+    }
+}
+
+/// Private catalog an IVM refresh session registers its temporary frames
+/// (`src`, `delta`, `mv`, ...) in.
+///
+/// A coordinator session's default catalog is the LakeSoul catalog, whose
+/// `SchemaProvider::register_table` only accepts LakeSoul tables.  Refresh
+/// frames are `IvmTableProvider`/`ViewTable` values, so they need a writable
+/// in-memory catalog.  Scans still use the LakeSoul providers the runtime
+/// registers; only temporary names resolve through the memory catalog.
+#[cfg(feature = "ivm")]
+const IVM_REFRESH_CATALOG: &str = "ivm_refresh";
+#[cfg(feature = "ivm")]
+const IVM_REFRESH_SCHEMA: &str = "public";
+
+#[cfg(feature = "ivm")]
+fn refresh_session_with_memory_catalog(
+    session: Arc<SessionContext>,
+) -> Result<Arc<SessionContext>> {
+    let state = session.state();
+    let mut config = state.config().clone();
+    // The distributed planner handles hash joins; a sort-merge join becomes a
+    // coordinator `SortPreservingMergeExec` over worker tasks and can deadlock
+    // while the final refresh stream is written locally.
+    config.options_mut().optimizer.prefer_hash_join = true;
+    let config = config.with_default_catalog_and_schema(
+        IVM_REFRESH_CATALOG.to_string(),
+        IVM_REFRESH_SCHEMA.to_string(),
+    );
+    let state = SessionStateBuilder::new_from_existing(state)
+        .with_config(config)
+        .build();
+    let context = SessionContext::new_with_state(state);
+    context.register_catalog(
+        IVM_REFRESH_CATALOG.to_string(),
+        Arc::new(MemoryCatalogProvider::new()),
+    );
+    let catalog = context
+        .catalog(IVM_REFRESH_CATALOG)
+        .ok_or_else(|| report!("IVM refresh catalog was not installed"))?;
+    catalog
+        .register_schema(IVM_REFRESH_SCHEMA, Arc::new(MemorySchemaProvider::new()))
+        .map_err(|error| report!("register IVM refresh schema: {error}"))?;
+    Ok(Arc::new(context))
 }
 
 pub(crate) fn parse_warehouse(prefix: Option<&str>) -> Result<WarehouseConfig> {

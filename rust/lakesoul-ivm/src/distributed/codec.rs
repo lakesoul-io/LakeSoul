@@ -10,6 +10,7 @@ use arrow_schema::{Schema, SchemaRef};
 use datafusion::common::Result as DFResult;
 use datafusion::common::{exec_err, internal_err};
 use datafusion::execution::TaskContext;
+use datafusion::logical_expr::{ScalarUDF, TypeSignature};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::physical_expr::proto_decode::PhysicalExprDecodeCtx;
 use datafusion::physical_expr_common::physical_expr::proto_encode::PhysicalExprEncodeCtx;
@@ -300,6 +301,38 @@ impl PhysicalExtensionCodec for IvmRefreshCodec {
             ))),
             kind => internal_err!("unknown IVM bucket expression kind {kind}"),
         }
+    }
+    fn try_encode_udf(&self, node: &ScalarUDF, buf: &mut Vec<u8>) -> DFResult<()> {
+        if node.name() != crate::runtime::GROUP_ROW_UDF {
+            return Ok(());
+        }
+        if let TypeSignature::Exact(types) = &node.signature().type_signature {
+            let encoded = serde_json::to_vec(types).map_err(|error| {
+                datafusion::error::DataFusionError::Internal(format!(
+                    "encode ivm_group_row types: {error}"
+                ))
+            })?;
+            buf.extend_from_slice(&encoded);
+        }
+        Ok(())
+    }
+
+    fn try_decode_udf(&self, name: &str, buf: &[u8]) -> DFResult<Arc<ScalarUDF>> {
+        if name != crate::runtime::GROUP_ROW_UDF {
+            return internal_err!("no IVM UDF codec for {name}");
+        }
+        let types: Vec<arrow_schema::DataType> =
+            serde_json::from_slice(buf).map_err(|error| {
+                datafusion::error::DataFusionError::Internal(format!(
+                    "decode ivm_group_row types: {error}"
+                ))
+            })?;
+        let udf = crate::runtime::group_row_udf_for_types(types).map_err(|error| {
+            datafusion::error::DataFusionError::Internal(format!(
+                "rebuild ivm_group_row: {error:?}"
+            ))
+        })?;
+        Ok(Arc::new(udf))
     }
 }
 

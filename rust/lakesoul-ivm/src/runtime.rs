@@ -21,6 +21,8 @@ use arrow::row::{RowConverter, SortField};
 use arrow_array::Array;
 
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
+use datafusion::catalog::CatalogProvider;
+use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Column, DFSchema, NullEquality, ScalarValue};
 use datafusion::logical_expr::LogicalPlan;
@@ -3106,7 +3108,58 @@ pub(crate) fn refresh_session() -> SessionContext {
         }
     }
     let (config, runtime) = crate::config::session();
-    SessionContext::new_with_config_rt(config, runtime)
+    let context = SessionContext::new_with_config_rt(config, runtime);
+    ensure_memory_default_catalog(&context);
+    context
+}
+
+/// Make sure the refresh session's default catalog/schema can hold the
+/// temporary `IvmTableProvider`/`ViewTable` frames.
+///
+/// A bare `SessionContext` has only the `datafusion` memory catalog.  A
+/// session template from a coordinator may name the LakeSoul catalog as its
+/// default; its `SchemaProvider::register_table` rejects non-LakeSoul tables.
+/// Register a memory catalog under that name instead.  Sessions built by
+/// [`crate::config::IvmSessionFactory`] are already rewritten to a private
+/// memory catalog by the coordinator implementation.
+fn ensure_memory_default_catalog(context: &SessionContext) {
+    let state = context.state();
+    let options = state.config().options();
+    let catalog_name = options.catalog.default_catalog.clone();
+    let schema_name = options.catalog.default_schema.clone();
+    let Some(catalog) = context.catalog(&catalog_name) else {
+        let catalog = std::sync::Arc::new(MemoryCatalogProvider::new());
+        let _ = catalog.register_schema(
+            &schema_name,
+            std::sync::Arc::new(MemorySchemaProvider::new()),
+        );
+        let _ = context.register_catalog(catalog_name, catalog);
+        return;
+    };
+    if catalog.schema(&schema_name).is_none() {
+        let _ = catalog.register_schema(
+            &schema_name,
+            std::sync::Arc::new(MemorySchemaProvider::new()),
+        );
+    }
+}
+
+/// A refresh session without the distributed planner, for keyed lookup
+/// subplans that the pinned distributed range shuffle cannot nest safely.
+pub(crate) fn refresh_session_local() -> SessionContext {
+    if let Some(factory) = crate::config::session_factory() {
+        match factory.create_local() {
+            Ok(context) => return context,
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "could not create the local refresh session; \
+                     falling back to the configured refresh session"
+                );
+            }
+        }
+    }
+    refresh_session()
 }
 
 /// Encodes the group-key columns of a batch into Arrow's canonical row
@@ -3118,7 +3171,49 @@ pub(crate) struct GroupKeyRowEncoder {
     converter: RowConverter,
 }
 
+/// Build the `ivm_group_row` UDF for a set of group-key input types.
+///
+/// The encoder only depends on the Arrow types, so a distributed worker can
+/// rebuild the same function from the types serialized next to the UDF name.
+pub(crate) const GROUP_ROW_UDF: &str = "ivm_group_row";
+
+pub(crate) fn group_row_udf_for_types(
+    input_types: Vec<DataType>,
+) -> Result<datafusion::logical_expr::ScalarUDF> {
+    let encoder = Arc::new(GroupKeyRowEncoder::from_types(&input_types)?);
+    Ok(datafusion::logical_expr::create_udf(
+        "ivm_group_row",
+        input_types,
+        DataType::Binary,
+        datafusion::logical_expr::Volatility::Immutable,
+        Arc::new(move |args: &[datafusion::logical_expr::ColumnarValue]| {
+            let arrays = datafusion::logical_expr::ColumnarValue::values_to_arrays(args)?;
+            let rows = encoder.encode_columns(&arrays).map_err(|error| {
+                datafusion::error::DataFusionError::Execution(error.to_string())
+            })?;
+            Ok(datafusion::logical_expr::ColumnarValue::Array(Arc::new(
+                rows,
+            )))
+        }),
+    ))
+}
+
 impl GroupKeyRowEncoder {
+    pub(crate) fn from_types(types: &[DataType]) -> Result<Self> {
+        let fields = types
+            .iter()
+            .enumerate()
+            .map(|(index, data_type)| {
+                Field::new(format!("c{index}"), data_type.clone(), true)
+            })
+            .collect::<Vec<_>>();
+        let schema = Schema::new(fields);
+        let keys = (0..types.len())
+            .map(|index| format!("c{index}"))
+            .collect::<Vec<_>>();
+        Self::new(&schema, &keys)
+    }
+
     pub(crate) fn new(schema: &Schema, group_keys: &[String]) -> Result<Self> {
         let mut sort_fields = Vec::with_capacity(group_keys.len());
         for key in group_keys {

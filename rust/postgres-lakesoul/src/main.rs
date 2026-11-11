@@ -13,9 +13,9 @@ use datafusion_postgres::{
     ServerOptions, TcpKeepalive, auth::AuthManager, serve_with_handlers,
 };
 use lakesoul_common::misc::JiffTime;
-use lakesoul_datafusion::cli::{CoreArgs, DistributedArgs};
+use lakesoul_datafusion::cli::{CoreArgs, DistributedArgs, IvmArgs};
 use lakesoul_datafusion::session::{ExecutionMemoryArgs, IvmRefreshSessionFactory};
-use lakesoul_ivm::{IvmOptions, IvmRuntimeConfig};
+use lakesoul_ivm::IvmRuntimeConfig;
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_observability::{
     LogFormat, MemorySamplingArgs, PrometheusMetricsConfig, TracingConfig, TracingGuard,
@@ -79,6 +79,10 @@ struct Cli {
 
     #[command(flatten)]
     pub distributed: DistributedArgs,
+
+    /// IVM refresh-engine options shared by the coordinator and its workers.
+    #[command(flatten)]
+    pub ivm_runtime: IvmArgs,
 
     #[command(flatten)]
     pub memory: ExecutionMemoryArgs,
@@ -305,11 +309,17 @@ async fn main_inner(cli: Cli) -> Result<()> {
             );
         }
         let template = session_factory.create_template_session()?;
+        let ivm_options = cli.ivm_runtime.options();
+        info!(
+            view_parallelism = ivm_options.view_parallelism,
+            max_active_tasks = ?ivm_options.max_active_tasks,
+            max_derived_steps = ivm_options.max_derived_steps,
+            state_index = ?ivm_options.state_index,
+            internal_file_format = ivm_options.internal_file_format.name(),
+            "IVM refresh options"
+        );
         let mut config =
-            IvmRuntimeConfig::from_session(&template).with_options(IvmOptions {
-                max_active_tasks: Some(4),
-                ..IvmOptions::default()
-            });
+            IvmRuntimeConfig::from_session(&template).with_options(ivm_options);
         if distributed_enabled {
             config = config.with_session_factory(Arc::new(
                 IvmRefreshSessionFactory::new(session_factory.refresh_session_factory()),

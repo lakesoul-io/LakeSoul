@@ -1030,7 +1030,7 @@ fn multi_window_state_rows(
 /// Validate that a multi-window view can be maintained.
 fn validate_multi_window_view(view: &MultiWindowView) -> Result<()> {
     if let Some(filter) = &view.filter {
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &view.source.schema, filter)?;
     }
     for column in &view.payload_columns {
@@ -1087,7 +1087,7 @@ fn validate_multi_window_view(view: &MultiWindowView) -> Result<()> {
             if view.source.schema.field_with_name(column).is_ok() {
                 continue;
             }
-            let context = refresh_session();
+            let context = refresh_session_local();
             parse_filter(&context, &view.source.schema, column).map_err(|error| {
                 report!(
                     "window view {}: order column {column} is not in the source \
@@ -1303,7 +1303,7 @@ fn top_k_materialized_columns(
 /// Validate that a window view can be maintained.
 fn validate_window_view(view: &WindowView) -> Result<()> {
     if let Some(filter) = &view.filter {
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &view.source.schema, filter)?;
     }
     if view.columns.is_empty() {
@@ -1354,7 +1354,7 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
             continue;
         }
         // A computed ordering item is a rendered expression over the source.
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &view.source.schema, column).map_err(|error| {
             report!(
                 "window view {}: order column {column} is not in the source \
@@ -1410,7 +1410,7 @@ fn validate_window_column(
                 "window view {view_id}: FILTER needs an aggregate window function"
             ));
         }
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &source.schema, filter)?;
     }
     match column.function {
@@ -1802,7 +1802,7 @@ fn top_k_computed_cte(view: &TopKView, source_alias: &str) -> String {
     let mut order = order_items(&view.order_by, &view.order_keys);
     order.extend(view.source.primary_keys.iter().map(|key| quote_ident(key)));
     let orders = order.join(", ");
-    let context = refresh_session();
+    let context = refresh_session_local();
     let names = top_k_output_columns(view);
     let unparser = Unparser::default();
     // The unparser drops aliases, so every item carries its own `AS name`.
@@ -1933,7 +1933,7 @@ fn top_k_output_columns(view: &TopKView) -> Vec<String> {
 /// Validate that a top-k view can be maintained.
 fn validate_top_k_view(view: &TopKView) -> Result<()> {
     if let Some(filter) = &view.filter {
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &view.source.schema, filter)?;
     }
     if view.limit <= 0 {
@@ -1960,7 +1960,7 @@ fn validate_top_k_view(view: &TopKView) -> Result<()> {
                 view.view_id
             ));
         }
-        let context = refresh_session();
+        let context = refresh_session_local();
         let df_schema = DFSchema::try_from(view.source.schema.as_ref().clone())
             .map_err(|error| report!("invalid source schema: {error}"))?;
         for expression in &view.output_exprs {
@@ -2008,7 +2008,7 @@ fn validate_top_k_view(view: &TopKView) -> Result<()> {
             continue;
         }
         // A computed ordering item is a rendered expression over the source.
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &view.source.schema, column).map_err(|error| {
             report!(
                 "top-k view {}: order column {column} is not in the source \
@@ -2314,7 +2314,7 @@ impl IvmRuntime {
                 .iter()
                 .chain(view.source.primary_keys.iter()),
         );
-        let rank_columns = window_rank_columns(view, &refresh_session())?;
+        let rank_columns = window_rank_columns(view, &refresh_session_local())?;
         let rank_state = self
             .ensure_rank_state(
                 &view.view_id,
@@ -2354,7 +2354,7 @@ impl IvmRuntime {
         // source key cannot move between them).
         let mv_partitions =
             super::mv_partitions_for_source(&view.mv, &view.source, &window);
-        let context = refresh_session();
+        let context = refresh_session_local();
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
         let pk_exprs = view
@@ -2722,7 +2722,7 @@ impl IvmRuntime {
         if view.source.current_files(&self.client).await?.is_empty() {
             return Ok(Vec::new());
         }
-        let context = refresh_session();
+        let context = refresh_session_local();
         let source = apply_side_filter(
             &context,
             self.current_table_frame(&context, &view.source)?,
@@ -2746,7 +2746,7 @@ impl IvmRuntime {
         if window.added_files.is_empty() {
             return Ok(Vec::new());
         }
-        let context = refresh_session();
+        let context = refresh_session_local();
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
         let contribution = delta
@@ -3047,7 +3047,7 @@ impl IvmRuntime {
             self.checkpoint_epoch_states(&record).await?;
         }
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
         context.register_table("delta", delta.into_view())?;
@@ -3167,7 +3167,7 @@ impl IvmRuntime {
             self.checkpoint_epoch_states(&record).await?;
         }
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         context.register_table(
             "src",
             Arc::new(self.table_provider_groups(&view.source, baseline.groups.clone())),
@@ -3201,7 +3201,7 @@ impl IvmRuntime {
         let generation = self.metadata.bump_generation(&view.view_id).await?;
         self.metadata.delete_cursors(&view.view_id).await?;
         let state = self.ensure_window_state(view).await?;
-        let rank_columns = window_rank_columns(view, &refresh_session())?;
+        let rank_columns = window_rank_columns(view, &refresh_session_local())?;
         let rank_state = self
             .ensure_rank_state(
                 &view.view_id,
@@ -3246,7 +3246,7 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         context.register_table(
             "src",
             Arc::new(self.table_provider_groups(&view.source, baseline.groups.clone())),
@@ -3519,7 +3519,7 @@ impl IvmRuntime {
         if source.current_files(&self.client).await?.is_empty() {
             return Ok(Vec::new());
         }
-        let context = refresh_session();
+        let context = refresh_session_local();
         context.register_table("src", Arc::new(self.table_provider(source)))?;
         let columns = state
             .schema
@@ -3625,7 +3625,7 @@ impl IvmRuntime {
                 .iter()
                 .chain(view.source.primary_keys.iter()),
         );
-        let rank_columns = top_k_rank_columns(view, &refresh_session())?;
+        let rank_columns = top_k_rank_columns(view, &refresh_session_local())?;
         let rank_state = self
             .ensure_rank_state(
                 &view.view_id,
@@ -3660,7 +3660,7 @@ impl IvmRuntime {
             };
         }
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let mv_partitions =
             super::mv_partitions_for_source(&view.mv, &view.source, &window);
         let delta =
@@ -3983,7 +3983,7 @@ impl IvmRuntime {
         let generation = self.metadata.bump_generation(&view.view_id).await?;
         self.metadata.delete_cursors(&view.view_id).await?;
         let state = self.ensure_top_k_state(view).await?;
-        let rank_columns = top_k_rank_columns(view, &refresh_session())?;
+        let rank_columns = top_k_rank_columns(view, &refresh_session_local())?;
         let rank_state = self
             .ensure_rank_state(
                 &view.view_id,
@@ -4028,7 +4028,7 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         context.register_table(
             "src",
             Arc::new(self.table_provider_groups(&view.source, baseline.groups.clone())),
