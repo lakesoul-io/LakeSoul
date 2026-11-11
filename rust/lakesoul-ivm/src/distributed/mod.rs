@@ -21,7 +21,7 @@ pub use descriptor::{
 };
 pub use plan::{
     dual_sink_task_count, lookup_task_count, sink_task_count, split_stream_scan,
-    stream_scan_task_count,
+    state_merge_task_count, stream_scan_task_count,
 };
 pub use sink::{
     IVM_DUAL_SINK_SPEC, IVM_SINK_SPEC, IVM_TASK_OUTPUT_SCHEMA_MARKER, IvmDualSinkExec,

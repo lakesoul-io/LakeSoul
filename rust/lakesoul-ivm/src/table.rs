@@ -1290,6 +1290,7 @@ impl IvmTable {
     /// hand each batch to both writers; cloning a `RecordBatch` only clones
     /// its `Arc` buffers.  Memory stays at one writer batch instead of the
     /// whole result set.
+    #[allow(dead_code)]
     pub(crate) async fn append_stream_pair<S>(
         &self,
         client: &MetaDataClient,
@@ -1358,6 +1359,7 @@ impl IvmTable {
     /// put them in different files, and merge-on-read then resolves the same
     /// key ambiguously.  Buffering only the trailing key group of each batch
     /// keeps the pair together without collecting the whole delta.
+    #[allow(dead_code)]
     pub(crate) async fn append_stream_by_key<S>(
         &self,
         client: &MetaDataClient,

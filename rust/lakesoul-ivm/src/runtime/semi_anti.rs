@@ -1018,7 +1018,7 @@ impl IvmRuntime {
         // output, the join keys, the primary keys and the change marker.
         // Keeping the whole source would copy every unused payload column
         // into the state on each refresh.
-        let context = refresh_session_local();
+        let context = refresh_session();
         let (left_state_source, right_state_source, left_columns, right_columns) =
             semi_anti_state_sources(&context, view)?;
         let left_state = if side_keyed {
@@ -1756,7 +1756,7 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
-        let context = refresh_session_local();
+        let context = refresh_session();
         let (left_state_source, right_state_source, _, _) =
             semi_anti_state_sources(&context, view)?;
         if !view.join_keys.is_empty()
@@ -2498,7 +2498,7 @@ impl IvmRuntime {
         }
         self.checkpoint_epoch_states(&record).await?;
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         let left_columns = left_aggregate_left_columns(view)?;
         let right_columns = left_aggregate_right_columns(view, &context)?;
         let left_projection = project_schema(&view.left.schema, &left_columns)?;
@@ -2864,7 +2864,7 @@ impl IvmRuntime {
             self.checkpoint_epoch_states(&record).await?;
         }
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         let left = apply_side_filter(
             &context,
             filter_deletes(

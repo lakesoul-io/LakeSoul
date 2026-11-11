@@ -2502,9 +2502,9 @@ impl IvmRuntime {
             let sql = sum_count_rebuild_sql(view, keyed, epoch);
             let frame = context.sql(&sql).await?;
             commit_ids.extend(
-                view.mv
-                    .append_stream(&self.client, frame.execute_stream().await?)
-                    .await?,
+                append_dataframe(&view.mv, &self.client, frame)
+                    .await?
+                    .commit_ids,
             );
             let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
             self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -2669,9 +2669,9 @@ impl IvmRuntime {
         let frame = context.sql(&sql).await?;
         crate::runtime::trace_rss("sum_count planned");
         commit_ids.extend(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
+            append_dataframe(&view.mv, &self.client, frame)
+                .await?
+                .commit_ids,
         );
 
         crate::runtime::trace_rss("sum_count appended");
@@ -2967,9 +2967,9 @@ impl IvmRuntime {
         context.register_table("mv", mv.into_view())?;
         let frame = context.sql(&grouping_sets_refresh_sql(view, epoch)).await?;
         commit_ids.extend(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
+            append_dataframe(&view.mv, &self.client, frame)
+                .await?
+                .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -3061,9 +3061,9 @@ impl IvmRuntime {
         context.register_table("src", frame.into_view())?;
         let frame = context.sql(&grouping_sets_rebuild_sql(view, epoch)).await?;
         commit_ids.extend(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
+            append_dataframe(&view.mv, &self.client, frame)
+                .await?
+                .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -3131,9 +3131,9 @@ impl IvmRuntime {
             .sql(&sum_count_rebuild_sql(view, rebuild_keyed, epoch))
             .await?;
         commit_ids.extend(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
+            append_dataframe(&view.mv, &self.client, frame)
+                .await?
+                .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -3240,9 +3240,9 @@ impl IvmRuntime {
             let sql = value_count_global_sql(view, epoch);
             let frame = context.sql(&sql).await?;
             commit_ids.extend(
-                view.mv
-                    .append_stream(&self.client, frame.execute_stream().await?)
-                    .await?,
+                append_dataframe(&view.mv, &self.client, frame)
+                    .await?
+                    .commit_ids,
             );
             let mv_versions = output_partition_versions(&self.client, view.mv).await?;
             self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -3335,9 +3335,9 @@ impl IvmRuntime {
             ))
             .await?;
         commit_ids.extend(
-            view.state
-                .append_stream(&self.client, state_frame.execute_stream().await?)
-                .await?,
+            append_dataframe(&view.state, &self.client, state_frame)
+                .await?
+                .commit_ids,
         );
         self.checkpoint_epoch_states(&record).await?;
 
@@ -3386,9 +3386,9 @@ impl IvmRuntime {
         context.register_table("mv", mv.into_view())?;
         let frame = context.sql(&value_count_mv_sql(view, epoch)).await?;
         commit_ids.extend(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
+            append_dataframe(&view.mv, &self.client, frame)
+                .await?
+                .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, view.mv).await?;
@@ -3498,9 +3498,9 @@ impl IvmRuntime {
             let sql = value_count_global_sql(view, epoch);
             let frame = context.sql(&sql).await?;
             commit_ids.extend(
-                view.mv
-                    .append_stream(&self.client, frame.execute_stream().await?)
-                    .await?,
+                append_dataframe(&view.mv, &self.client, frame)
+                    .await?
+                    .commit_ids,
             );
             let mv_versions = output_partition_versions(&self.client, view.mv).await?;
             self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -3558,9 +3558,9 @@ impl IvmRuntime {
         };
         let state_frame = context.sql(&state_sql).await?;
         commit_ids.extend(
-            view.state
-                .append_stream(&self.client, state_frame.execute_stream().await?)
-                .await?,
+            append_dataframe(&view.state, &self.client, state_frame)
+                .await?
+                .commit_ids,
         );
         self.checkpoint_epoch_states(&record).await?;
 
@@ -3580,9 +3580,9 @@ impl IvmRuntime {
         };
         let mv_frame = context.sql(&mv_sql).await?;
         commit_ids.extend(
-            view.mv
-                .append_stream(&self.client, mv_frame.execute_stream().await?)
-                .await?,
+            append_dataframe(&view.mv, &self.client, mv_frame)
+                .await?
+                .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, view.mv).await?;

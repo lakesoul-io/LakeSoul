@@ -244,6 +244,16 @@ pub struct DistributedArgs {
         default_value_t = 4
     )]
     pub distributed_target_partitions: usize,
+
+    /// Maximum tasks per distributed stage. 0 keeps the library default, the
+    /// number of workers, which runs one task on each worker and leaves its
+    /// other execution threads idle.
+    #[clap(
+        long,
+        env = "LAKESOUL_DISTRIBUTED_MAX_TASKS_PER_STAGE",
+        default_value_t = 0
+    )]
+    pub distributed_max_tasks_per_stage: usize,
 }
 
 impl DistributedArgs {
@@ -407,6 +417,7 @@ impl DistributedArgs {
             discovery: WorkerDiscovery::Shared(resolver),
             fallback_to_local: self.distributed_fallback_local,
             target_partitions,
+            max_tasks_per_stage: self.distributed_max_tasks_per_stage,
             ..DistributedOptions::default()
         };
         let options = match self.distributed_bytes_per_partition {

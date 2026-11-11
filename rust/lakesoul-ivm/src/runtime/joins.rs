@@ -3734,37 +3734,23 @@ fn join_is_keyed(view: &JoinView) -> bool {
 pub(crate) fn encode_join_key_frame(
     context: &SessionContext,
     frame: DataFrame,
-    source: &IvmTable,
+    _source: &IvmTable,
     join_keys: &[String],
 ) -> Result<DataFrame> {
     let schema = frame.schema().as_arrow();
-    let input_types = join_keys
-        .iter()
-        .map(|key| Ok(schema.field_with_name(key)?.data_type().clone()))
-        .collect::<Result<Vec<_>>>()?;
-    let encoder = Arc::new(super::join_state::JoinKeyEncoder::new_with_schema(
-        source, schema, join_keys,
-    )?);
-    let name = format!("ivm_join_key_probe_{}", uuid::Uuid::new_v4().simple());
-    let udf = datafusion::logical_expr::create_udf(
-        &name,
-        input_types,
-        arrow::datatypes::DataType::Binary,
-        datafusion::logical_expr::Volatility::Immutable,
-        Arc::new(move |args: &[datafusion::logical_expr::ColumnarValue]| {
-            let arrays = datafusion::logical_expr::ColumnarValue::values_to_arrays(args)?;
-            Ok(datafusion::logical_expr::ColumnarValue::Array(
-                encoder.encode_columns(&arrays)?,
-            ))
-        }),
-    );
+    // Validate the key columns before planning; the UDF itself rebuilds its
+    // encoder from the argument types so a worker can resolve it by name.
+    for key in join_keys {
+        schema.field_with_name(key)?;
+    }
+    let udf = super::worker_join_key_udf();
     let key = udf.call(
         join_keys
             .iter()
             .map(|key| col(key.as_str()))
             .collect::<Vec<_>>(),
     );
-    context.register_udf(udf);
+    context.register_udf((*udf).clone());
     Ok(frame.with_column(super::join_state::IVM_JOIN_KEY_COLUMN, key)?)
 }
 
@@ -6143,7 +6129,7 @@ impl IvmRuntime {
             );
         }
         self.checkpoint_epoch_states(&record).await?;
-        let context = refresh_session_local();
+        let context = refresh_session();
         let left_changed = !left_window.added_files.is_empty();
         let right_changed = !right_window.added_files.is_empty();
         // A projected side state returns only its payload columns; keep the
@@ -6709,7 +6695,7 @@ impl IvmRuntime {
         }
         self.checkpoint_epoch_states(&record).await?;
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         let left_changed = !left_window.added_files.is_empty();
         let left_pks = view.left.primary_keys.clone();
         let pk_exprs = left_pks
@@ -7025,7 +7011,7 @@ impl IvmRuntime {
             );
         }
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         let left_now = filter_deletes(
             self.groups_table_frame(&context, &view.left, left_baseline.groups)?,
             change_column(&view.left),
@@ -7138,7 +7124,7 @@ impl IvmRuntime {
             );
         }
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         let mut left_now = filter_deletes(
             self.groups_table_frame(&context, &view.left, left_baseline.groups.clone())?,
             change_column(&view.left),
@@ -7344,7 +7330,7 @@ impl IvmRuntime {
         }
         self.checkpoint_epoch_states(&record).await?;
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         let delta_left = if !left_window.added_files.is_empty() {
             Some(self.groups_table_frame(
                 &context,
@@ -7717,7 +7703,7 @@ impl IvmRuntime {
         );
         self.checkpoint_epoch_states(&record).await?;
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         let left_now = apply_side_filter(
             &context,
             filter_deletes(
@@ -7925,7 +7911,7 @@ impl IvmRuntime {
         }
         self.checkpoint_epoch_states(&record).await?;
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         let delta_left = if !left_window.added_files.is_empty() {
             Some(self.groups_table_frame(
                 &context,
@@ -8711,7 +8697,7 @@ impl IvmRuntime {
         );
         self.checkpoint_epoch_states(&record).await?;
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         let left_now = apply_side_filter(
             &context,
             filter_deletes(
@@ -8841,7 +8827,7 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
-        let context = refresh_session_local();
+        let context = refresh_session();
 
         let left_now = apply_side_filter(
             &context,
@@ -9087,7 +9073,7 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         let left_now = apply_side_filter(
             &context,
             filter_deletes(
@@ -9269,7 +9255,7 @@ impl IvmRuntime {
             }
         }
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         let left_empty = left_baseline
             .groups
             .iter()
@@ -9430,7 +9416,7 @@ mod identity_encoding_tests {
             ],
         )
         .unwrap();
-        let context = refresh_session_local();
+        let context = refresh_session();
         context
             .register_table(
                 "t",

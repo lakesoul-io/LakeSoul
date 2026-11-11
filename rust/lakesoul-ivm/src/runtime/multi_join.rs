@@ -1158,9 +1158,9 @@ impl IvmRuntime {
         let rows = project_frame(frame, &fields)?
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-        index
-            .append_stream(self.client(), rows.execute_stream().await?)
+        append_dataframe(index, self.client(), rows)
             .await
+            .map(|outcome| outcome.commit_ids)
     }
 
     /// Apply the changed source rows to one join-key index: retract the old
@@ -1207,9 +1207,9 @@ impl IvmRuntime {
             .collect::<Vec<_>>();
         sort.push(column_expr(IVM_ROW_KINDS_COLUMN));
         rows = rows.sort_by(sort)?;
-        index
-            .append_stream(self.client(), rows.execute_stream().await?)
+        append_dataframe(index, self.client(), rows)
             .await
+            .map(|outcome| outcome.commit_ids)
     }
 
     /// Refresh a multi-way inner join view.
@@ -1290,7 +1290,7 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
-        let context = refresh_session_local();
+        let context = refresh_session();
         for (spec, index) in &index_states {
             let source = &view.sources[spec.source];
             if index.current_files(&self.client).await?.is_empty() {
@@ -1730,7 +1730,7 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
-        let context = refresh_session_local();
+        let context = refresh_session();
         for (spec, index) in &index_states {
             let source = &view.sources[spec.source];
             let current = filter_deletes(
@@ -1803,9 +1803,9 @@ impl IvmRuntime {
                 joined.with_column(IVM_EPOCH_COLUMN, lit(epoch))?
             };
             commit_ids.extend(
-                view.mv
-                    .append_stream(&self.client, joined.execute_stream().await?)
-                    .await?,
+                append_dataframe(&view.mv, &self.client, joined)
+                    .await?
+                    .commit_ids,
             );
         }
 

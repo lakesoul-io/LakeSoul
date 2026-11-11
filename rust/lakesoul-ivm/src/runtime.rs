@@ -3324,6 +3324,82 @@ pub fn worker_group_row_udf() -> Arc<datafusion::logical_expr::ScalarUDF> {
     ))
 }
 
+/// Stable name of the encoded join-key UDF.
+///
+/// The UDF only needs its argument types to rebuild the row encoder, so a
+/// single name lets a worker resolve it from the plan without a per-plan
+/// function name or a serialized closure.
+pub(crate) const JOIN_KEY_UDF: &str = "ivm_join_key";
+
+/// Name-resolved encoded join-key UDF.
+///
+/// The coordinator and its workers both build this implementation; the plan
+/// codec carries no payload because the argument types in the physical
+/// expression are enough to reconstruct the encoder.
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct WorkerJoinKeyUdf {
+    signature: datafusion::logical_expr::Signature,
+}
+
+impl Default for WorkerJoinKeyUdf {
+    fn default() -> Self {
+        Self {
+            signature: datafusion::logical_expr::Signature::variadic_any(
+                datafusion::logical_expr::Volatility::Immutable,
+            ),
+        }
+    }
+}
+
+impl datafusion::logical_expr::ScalarUDFImpl for WorkerJoinKeyUdf {
+    fn name(&self) -> &str {
+        JOIN_KEY_UDF
+    }
+
+    fn signature(&self) -> &datafusion::logical_expr::Signature {
+        &self.signature
+    }
+
+    fn return_type(
+        &self,
+        _arg_types: &[DataType],
+    ) -> datafusion::error::Result<DataType> {
+        Ok(DataType::Binary)
+    }
+
+    fn invoke_with_args(
+        &self,
+        args: datafusion::logical_expr::ScalarFunctionArgs,
+    ) -> datafusion::error::Result<datafusion::logical_expr::ColumnarValue> {
+        let arrays =
+            datafusion::logical_expr::ColumnarValue::values_to_arrays(&args.args)?;
+        let types = arrays
+            .iter()
+            .map(|array| array.data_type().clone())
+            .collect::<Vec<_>>();
+        let encoder = GroupKeyRowEncoder::from_types(&types).map_err(|error| {
+            datafusion::error::DataFusionError::Execution(format!(
+                "rebuild ivm_join_key encoder: {error:?}"
+            ))
+        })?;
+        let rows = encoder.encode_columns(&arrays).map_err(|error| {
+            datafusion::error::DataFusionError::Execution(format!(
+                "encode ivm_join_key: {error:?}"
+            ))
+        })?;
+        Ok(datafusion::logical_expr::ColumnarValue::Array(Arc::new(
+            rows,
+        )))
+    }
+}
+
+/// The name-resolved encoded join-key UDF a worker registers before decoding.
+pub fn worker_join_key_udf() -> Arc<datafusion::logical_expr::ScalarUDF> {
+    Arc::new(datafusion::logical_expr::ScalarUDF::new_from_impl(
+        WorkerJoinKeyUdf::default(),
+    ))
+}
+
 impl GroupKeyRowEncoder {
     pub(crate) fn from_types(types: &[DataType]) -> Result<Self> {
         let fields = types
@@ -3736,6 +3812,7 @@ async fn write_dataframe_distributed(
     let plan = crate::distributed::IVM_SINK_SPEC
         .scope(sink_spec, async { frame.create_physical_plan().await })
         .await?;
+    trace_distributed_plan("single sink", &plan);
     let sink_applied = plan
         .schema()
         .metadata()
@@ -3830,6 +3907,19 @@ async fn write_dataframe_distributed(
         inserts,
         deletes,
     })
+}
+
+#[cfg(feature = "distributed")]
+fn trace_distributed_plan(
+    label: &str,
+    plan: &Arc<dyn datafusion::physical_plan::ExecutionPlan>,
+) {
+    tracing::debug!(
+        target: "lakesoul_ivm::plan",
+        pid = std::process::id(),
+        "{label} plan:\n{}",
+        datafusion_distributed::display_plan_ascii(plan.as_ref(), false)
+    );
 }
 
 /// One state/MV pair written by a keyed refresh output.
@@ -3946,6 +4036,7 @@ async fn write_dataframe_dual_distributed(
     let plan = crate::distributed::IVM_DUAL_SINK_SPEC
         .scope(spec, async { frame.create_physical_plan().await })
         .await?;
+    trace_distributed_plan("dual sink", &plan);
     let applied = plan
         .schema()
         .metadata()

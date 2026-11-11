@@ -974,41 +974,19 @@ fn multi_window_index_primary_keys(source: &IvmTable) -> Vec<String> {
 fn add_multi_window_partition_key(
     context: &SessionContext,
     frame: DataFrame,
-    source: &IvmTable,
+    _source: &IvmTable,
     partition_keys: &[String],
 ) -> Result<DataFrame> {
-    let encoder = Arc::new(GroupKeyRowEncoder::new(
-        source.schema.as_ref(),
-        partition_keys,
-    )?);
-    let input_types = partition_keys
-        .iter()
-        .map(|key| Ok(source.schema.field_with_name(key)?.data_type().clone()))
-        .collect::<Result<Vec<_>>>()?;
-    let name = format!("ivm_mw_partition_{}", uuid::Uuid::new_v4().simple());
-    let udf_encoder = encoder.clone();
-    let udf = datafusion::logical_expr::create_udf(
-        &name,
-        input_types,
-        DataType::Binary,
-        datafusion::logical_expr::Volatility::Immutable,
-        Arc::new(move |args: &[datafusion::logical_expr::ColumnarValue]| {
-            let arrays = datafusion::logical_expr::ColumnarValue::values_to_arrays(args)?;
-            let rows = udf_encoder.encode_columns(&arrays).map_err(|error| {
-                datafusion::error::DataFusionError::Execution(error.to_string())
-            })?;
-            Ok(datafusion::logical_expr::ColumnarValue::Array(Arc::new(
-                rows,
-            )))
-        }),
-    );
+    // Same encoding as `ivm_group_row`; the stable, worker-resolvable name
+    // lets a distributed multi-window state write ship this expression.
+    let udf = crate::runtime::worker_group_row_udf();
     let key = udf.call(
         partition_keys
             .iter()
             .map(|key| col(key.as_str()))
             .collect::<Vec<_>>(),
     );
-    context.register_udf(udf);
+    context.register_udf((*udf).clone());
     Ok(frame.with_column(IVM_MW_PARTITION, key)?)
 }
 
@@ -2354,7 +2332,7 @@ impl IvmRuntime {
         // source key cannot move between them).
         let mv_partitions =
             super::mv_partitions_for_source(&view.mv, &view.source, &window);
-        let context = refresh_session_local();
+        let context = refresh_session();
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
         let pk_exprs = view
@@ -2598,44 +2576,19 @@ impl IvmRuntime {
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&window_refresh_sql(view, epoch)).await?;
         if state.table_id == view.mv.table_id {
-            // The target MV is also the state: one stream feeds it once.
+            // The target MV is also the state: one write serves both.
             commit_ids.extend(
-                view.mv
-                    .append_stream(&self.client, frame.execute_stream().await?)
-                    .await?,
+                append_dataframe(&view.mv, &self.client, frame)
+                    .await?
+                    .commit_ids,
             );
         } else {
-            // Execute the SQL once and tee each batch into the MV and its
-            // separate mirror state.
-            use futures::StreamExt;
-            let mut output = frame.execute_stream().await?;
-            let mut mv_writer = view.mv.writer().await?;
-            let mut state_writer = state.writer().await?;
-            let mut written_rows = 0u64;
-            while let Some(batch) = output.next().await {
-                let batch = batch?;
-                if batch.num_rows() == 0 {
-                    continue;
-                }
-                written_rows += batch.num_rows() as u64;
-                mv_writer
-                    .write_record_batch(view.mv.cast_batch(batch.clone())?)
-                    .await?;
-                state_writer
-                    .write_record_batch(state.cast_batch(batch)?)
-                    .await?;
-            }
-            let mv_files = view
-                .mv
-                .output_files(mv_writer.flush_and_close().await?, written_rows);
-            let state_files =
-                state.output_files(state_writer.flush_and_close().await?, written_rows);
-            // The mirror commits before the target so a persisted target plan
-            // covers the state write too.
-            let state_ids = state.commit_files(&self.client, state_files).await?;
-            let mv_ids = view.mv.commit_files(&self.client, mv_files).await?;
-            commit_ids.extend(mv_ids);
-            commit_ids.extend(state_ids);
+            // One distributed plan writes the MV and its separate mirror
+            // state, so the coordinator only collects file descriptors.
+            let outcome =
+                write_dataframe_dual(&state, &view.mv, &self.client, frame).await?;
+            commit_ids.extend(outcome.mv_ids);
+            commit_ids.extend(outcome.state_ids);
         }
         self.checkpoint_epoch_states(&record).await?;
         phase_done!("sql_execute_and_append");
@@ -2722,7 +2675,7 @@ impl IvmRuntime {
         if view.source.current_files(&self.client).await?.is_empty() {
             return Ok(Vec::new());
         }
-        let context = refresh_session_local();
+        let context = refresh_session();
         let source = apply_side_filter(
             &context,
             self.current_table_frame(&context, &view.source)?,
@@ -2731,9 +2684,9 @@ impl IvmRuntime {
         )?;
         let rows =
             multi_window_state_rows(&context, source, &view.source, spec, "insert")?;
-        state
-            .append_stream(&self.client, rows.execute_stream().await?)
+        append_dataframe(state, &self.client, rows)
             .await
+            .map(|outcome| outcome.commit_ids)
     }
 
     async fn apply_multi_window_index_delta(
@@ -2746,7 +2699,7 @@ impl IvmRuntime {
         if window.added_files.is_empty() {
             return Ok(Vec::new());
         }
-        let context = refresh_session_local();
+        let context = refresh_session();
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
         let contribution = delta
@@ -2778,24 +2731,9 @@ impl IvmRuntime {
         let old =
             multi_window_state_rows(&context, before, &view.source, spec, "delete")?;
         let new = multi_window_state_rows(&context, delta, &view.source, spec, "insert")?;
-        use futures::StreamExt;
-        let streams: Vec<
-            std::pin::Pin<
-                Box<
-                    dyn futures::Stream<Item = datafusion::error::Result<RecordBatch>>
-                        + Send,
-                >,
-            >,
-        > = vec![
-            Box::pin(old.execute_stream().await?),
-            Box::pin(new.execute_stream().await?),
-        ];
-        state
-            .append_stream(
-                &self.client,
-                Box::pin(futures::stream::iter(streams).flatten()),
-            )
+        append_dataframe(state, &self.client, old.union(new)?)
             .await
+            .map(|outcome| outcome.commit_ids)
     }
 
     async fn multi_window_index_pks(
@@ -3047,7 +2985,7 @@ impl IvmRuntime {
             self.checkpoint_epoch_states(&record).await?;
         }
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         let delta =
             self.groups_table_frame(&context, &view.source, window.added_files.clone())?;
         context.register_table("delta", delta.into_view())?;
@@ -3103,9 +3041,9 @@ impl IvmRuntime {
         }
         let frame = context.sql(&multi_window_refresh_sql(view, epoch)).await?;
         commit_ids.extend(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
+            append_dataframe(&view.mv, &self.client, frame)
+                .await?
+                .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -3167,16 +3105,16 @@ impl IvmRuntime {
             self.checkpoint_epoch_states(&record).await?;
         }
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         context.register_table(
             "src",
             Arc::new(self.table_provider_groups(&view.source, baseline.groups.clone())),
         )?;
         let frame = context.sql(&multi_window_rebuild_sql(view, epoch)).await?;
         commit_ids.extend(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
+            append_dataframe(&view.mv, &self.client, frame)
+                .await?
+                .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -3246,7 +3184,7 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         context.register_table(
             "src",
             Arc::new(self.table_provider_groups(&view.source, baseline.groups.clone())),
@@ -3254,19 +3192,15 @@ impl IvmRuntime {
         let frame = context.sql(&window_rebuild_sql(view, epoch)).await?;
         if shared_state {
             commit_ids.extend(
-                view.mv
-                    .append_stream(&self.client, frame.execute_stream().await?)
-                    .await?,
+                append_dataframe(&view.mv, &self.client, frame)
+                    .await?
+                    .commit_ids,
             );
         } else {
-            let (mv_ids, state_ids) = futures::future::try_join(
-                view.mv
-                    .append_stream(&self.client, frame.clone().execute_stream().await?),
-                state.append_stream(&self.client, frame.execute_stream().await?),
-            )
-            .await?;
-            commit_ids.extend(mv_ids);
-            commit_ids.extend(state_ids);
+            let outcome =
+                write_dataframe_dual(&state, &view.mv, &self.client, frame).await?;
+            commit_ids.extend(outcome.mv_ids);
+            commit_ids.extend(outcome.state_ids);
         }
         self.checkpoint_epoch_states(&record).await?;
         if let Some(rank) = &rank_state {
@@ -3660,7 +3594,7 @@ impl IvmRuntime {
             };
         }
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         let mv_partitions =
             super::mv_partitions_for_source(&view.mv, &view.source, &window);
         let delta =
@@ -3933,32 +3867,19 @@ impl IvmRuntime {
         let frame = context.sql(&top_k_refresh_sql(view, epoch)).await?;
         phase_done!("sql_plan");
         let (mv_ids, state_ids) = if state.table_id == view.mv.table_id {
-            // The target MV is also the state: one stream feeds it once.
-            let mv_ids = view
-                .mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?;
+            // The target MV is also the state: one write serves both.
+            let commit_ids = append_dataframe(&view.mv, &self.client, frame)
+                .await?
+                .commit_ids;
             self.checkpoint_epoch_states(&record).await?;
-            (mv_ids, Vec::new())
-        } else if view.group_keys.is_empty() {
-            // A global top-k with a separate mirror state can rewrite the
-            // whole state; keep the streaming path and tee the batches.
-            let (mv_ids, state_ids) = view
-                .mv
-                .append_stream_pair(&self.client, frame.execute_stream().await?, &state)
-                .await?;
-            self.checkpoint_epoch_states(&record).await?;
-            (mv_ids, state_ids)
+            (commit_ids, Vec::new())
         } else {
-            // Execute the refresh SQL once and feed both the MV and its mirror
-            // state from the same stream.  Two independent streams re-ran
-            // every keyed lookup inside the plan (including before-image).
-            let (mv_ids, state_ids) = view
-                .mv
-                .append_stream_pair(&self.client, frame.execute_stream().await?, &state)
-                .await?;
+            // The refresh SQL runs once and the dual sink writes the MV and
+            // its mirror state on the workers.
+            let outcome =
+                write_dataframe_dual(&state, &view.mv, &self.client, frame).await?;
             self.checkpoint_epoch_states(&record).await?;
-            (mv_ids, state_ids)
+            (outcome.mv_ids, outcome.state_ids)
         };
         commit_ids.extend(mv_ids);
         commit_ids.extend(state_ids);
@@ -4028,28 +3949,24 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
 
-        let context = refresh_session_local();
+        let context = refresh_session();
         context.register_table(
             "src",
             Arc::new(self.table_provider_groups(&view.source, baseline.groups.clone())),
         )?;
         let frame = context.sql(&top_k_rebuild_sql(view, epoch)).await?;
         if shared_state {
-            // The state is the MV: one append serves both.
+            // The state is the MV: one write serves both.
             commit_ids.extend(
-                view.mv
-                    .append_stream(&self.client, frame.execute_stream().await?)
-                    .await?,
+                append_dataframe(&view.mv, &self.client, frame)
+                    .await?
+                    .commit_ids,
             );
         } else {
-            let (mv_ids, state_ids) = futures::future::try_join(
-                view.mv
-                    .append_stream(&self.client, frame.clone().execute_stream().await?),
-                state.append_stream(&self.client, frame.execute_stream().await?),
-            )
-            .await?;
-            commit_ids.extend(mv_ids);
-            commit_ids.extend(state_ids);
+            let outcome =
+                write_dataframe_dual(&state, &view.mv, &self.client, frame).await?;
+            commit_ids.extend(outcome.mv_ids);
+            commit_ids.extend(outcome.state_ids);
         }
         self.checkpoint_epoch_states(&record).await?;
         if let Some(rank) = &rank_state {

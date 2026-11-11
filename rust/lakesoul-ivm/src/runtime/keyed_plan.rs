@@ -486,6 +486,13 @@ impl ExecutionPlan for IvmBucketProjectionExec {
         partition: usize,
         context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
+        tracing::debug!(
+            target: "lakesoul_ivm::keyed_plan",
+            pid = std::process::id(),
+            partition,
+            partitions = self.partitions,
+            "executing bucket projection"
+        );
         let expr = self.bucket_expr()?;
         let schema = self.schema.clone();
         let stream = self.split.execute(partition, context)?.map(move |batch| {
@@ -2083,6 +2090,16 @@ impl IvmPkLookupExec {
         partition: usize,
         context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
+        let task = lookup_task(&context);
+        tracing::debug!(
+            target: "lakesoul_ivm::keyed_plan",
+            pid = std::process::id(),
+            table = %self.table.table_name,
+            partition,
+            task_index = task.index,
+            task_count = task.count,
+            "executing keyed lookup"
+        );
         let input = self.sorted_input.execute(partition, context.clone())?;
         let groups =
             Arc::new(self.groups_for_partition(partition, lookup_task(&context))?);
@@ -3145,6 +3162,11 @@ impl IvmStateMergeExec {
         self.epoch
     }
 
+    /// Number of output partitions; one per input bucket.
+    pub(crate) fn output_partition_count(&self) -> usize {
+        self.properties.partitioning.partition_count()
+    }
+
     pub(crate) fn new(
         input: Arc<dyn ExecutionPlan>,
         state_schema: SchemaRef,
@@ -3259,6 +3281,12 @@ impl ExecutionPlan for IvmStateMergeExec {
         partition: usize,
         context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
+        tracing::debug!(
+            target: "lakesoul_ivm::keyed_plan",
+            pid = std::process::id(),
+            partition,
+            "executing state merge"
+        );
         let input = self.input.execute(partition, context)?;
         let state_schema = self.state_schema.clone();
         let group_keys = self.group_keys.clone();

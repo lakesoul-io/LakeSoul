@@ -4875,7 +4875,7 @@ impl IvmRuntime {
             WindowStart::Apply(record) => record,
         };
         let epoch = record.epoch;
-        let context = refresh_session_local();
+        let context = refresh_session();
         let partial_plan = if view.having.is_none()
             && view.having_lookup.is_none()
             && !view.group_keys.is_empty()

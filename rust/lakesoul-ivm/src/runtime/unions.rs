@@ -1219,9 +1219,9 @@ impl IvmRuntime {
         let sql = union_distinct_refresh_sql(view, keyed, epoch)?;
         let frame = context.sql(&sql).await?;
         commit_ids.extend(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
+            append_dataframe(&view.mv, &self.client, frame)
+                .await?
+                .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -1297,9 +1297,9 @@ impl IvmRuntime {
         let sql = union_distinct_rebuild_sql(view, epoch)?;
         let frame = context.sql(&sql).await?;
         commit_ids.extend(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
+            append_dataframe(&view.mv, &self.client, frame)
+                .await?
+                .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;

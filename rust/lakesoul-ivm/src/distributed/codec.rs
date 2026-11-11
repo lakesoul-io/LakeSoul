@@ -401,6 +401,11 @@ impl PhysicalExtensionCodec for IvmRefreshCodec {
         }
     }
     fn try_encode_udf(&self, node: &ScalarUDF, buf: &mut Vec<u8>) -> DFResult<()> {
+        if node.name() == crate::runtime::JOIN_KEY_UDF {
+            // The worker rebuilds the encoder from the physical argument
+            // types; there is no per-plan payload.
+            return Ok(());
+        }
         if node.name() != crate::runtime::GROUP_ROW_UDF {
             return Ok(());
         }
@@ -416,6 +421,9 @@ impl PhysicalExtensionCodec for IvmRefreshCodec {
     }
 
     fn try_decode_udf(&self, name: &str, buf: &[u8]) -> DFResult<Arc<ScalarUDF>> {
+        if name == crate::runtime::JOIN_KEY_UDF {
+            return Ok(crate::runtime::worker_join_key_udf());
+        }
         if name != crate::runtime::GROUP_ROW_UDF {
             return internal_err!("no IVM UDF codec for {name}");
         }

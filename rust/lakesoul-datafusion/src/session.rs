@@ -28,8 +28,9 @@ use datafusion::physical_plan::{Distribution, ExecutionPlan, Partitioning};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_distributed::{
     BroadcastExec, DesiredTaskCountEvent, DesiredTaskCountEventResponse,
-    DistributedConfig, DistributedExt, DistributedLeafExec, ScaleUpLeafNodeEvent,
-    ScaleUpLeafNodeEventResponse, SessionStateBuilderExt, WorkerResolver,
+    DistributedConfig, DistributedExt, DistributedLeafExec, NetworkBoundaryExt,
+    ScaleUpLeafNodeEvent, ScaleUpLeafNodeEventResponse, SessionStateBuilderExt,
+    WorkerResolver,
 };
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::object_store::{register_hdfs_object_store, register_s3_object_store};
@@ -506,6 +507,15 @@ fn ivm_lookup_desired_task_count(
     (buckets > 1).then(|| Ok(DesiredTaskCountEventResponse::desired(buckets)))
 }
 
+/// Asks for one state-merge task per bucket partition.
+#[cfg(feature = "ivm")]
+fn ivm_state_merge_desired_task_count(
+    ev: DesiredTaskCountEvent<'_>,
+) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
+    let partitions = lakesoul_ivm::distributed::state_merge_task_count(ev.plan)?;
+    (partitions > 1).then(|| Ok(DesiredTaskCountEventResponse::desired(partitions)))
+}
+
 /// Asks for one sink task per write partition.
 #[cfg(feature = "ivm")]
 fn ivm_dual_sink_desired_task_count(
@@ -564,7 +574,14 @@ fn reaches_leaf_within_stage(plan: &Arc<dyn ExecutionPlan>) -> bool {
 /// Whether the distributed planner ends a stage at `plan`, handing its
 /// consumer an input that is distributed across tasks as declared.
 fn closes_stage(plan: &dyn ExecutionPlan) -> bool {
-    plan.is::<BroadcastExec>()
+    // A boundary the distributed planner already injected ends the stage:
+    // the work below it runs on a worker, so an operator above it does not
+    // reach that stage's leaves.  Without this arm, `IvmPkLookupExec`'s
+    // `KeyPartitioned` requirement would cap its stage at one task even though
+    // the bucket shuffle below it is a network boundary, and the lookup would
+    // then run on the coordinator.
+    plan.is_network_boundary()
+        || plan.is::<BroadcastExec>()
         || plan.is::<CoalescePartitionsExec>()
         || plan.is::<SortPreservingMergeExec>()
         || plan
@@ -852,6 +869,9 @@ impl LakeSoulSessionFactory {
                         ivm_lookup_desired_task_count,
                     )
                     .with_distributed_desired_task_count_handler(
+                        ivm_state_merge_desired_task_count,
+                    )
+                    .with_distributed_desired_task_count_handler(
                         ivm_sink_desired_task_count,
                     )
                     .with_distributed_desired_task_count_handler(
@@ -881,6 +901,10 @@ impl LakeSoulSessionFactory {
                 )?;
             }
             builder = builder.with_distributed_planner();
+            if dist.max_tasks_per_stage > 0 {
+                builder = builder
+                    .with_distributed_max_tasks_per_stage(dist.max_tasks_per_stage)?;
+            }
             if let Some(write_tasks) = write_tasks {
                 builder = builder.with_distributed_max_tasks_per_stage(write_tasks)?;
             }

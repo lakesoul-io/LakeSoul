@@ -73,7 +73,10 @@ impl WorkerSessionBuilder for LakeSoulWorkerSessionBuilder {
         state.register_udf(crate::udf::vector_search_marker::marker_udf())?;
         state.register_udf(crate::udf::vector_search_marker::multi_marker_udf())?;
         #[cfg(feature = "ivm")]
-        state.register_udf(lakesoul_ivm::runtime::worker_group_row_udf())?;
+        {
+            state.register_udf(lakesoul_ivm::runtime::worker_group_row_udf())?;
+            state.register_udf(lakesoul_ivm::runtime::worker_join_key_udf())?;
+        }
 
         Ok(state)
     }

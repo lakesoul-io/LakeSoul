@@ -33,6 +33,15 @@ pub fn lookup_task_count(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
         .map(|exec| exec.bucket_count())
 }
 
+/// How many tasks a state merge can use.
+///
+/// The merge keeps one output partition per input bucket, so it can run on as
+/// many tasks as the bucket shuffle feeding it.
+pub fn state_merge_task_count(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
+    plan.downcast_ref::<crate::runtime::keyed_plan::IvmStateMergeExec>()
+        .map(|exec| exec.output_partition_count())
+}
+
 /// How many tasks a distributed write sink can use.
 ///
 /// The sink writes one input partition per task.  Without this hint the sink

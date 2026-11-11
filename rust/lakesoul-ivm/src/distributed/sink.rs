@@ -17,9 +17,11 @@ use arrow::record_batch::RecordBatch;
 use datafusion::common::Result as DFResult;
 use datafusion::common::config::ConfigOptions;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion::physical_expr::expressions::Column as PhysicalColumn;
+use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
@@ -99,14 +101,84 @@ pub async fn without_sink<F: std::future::Future>(future: F) -> F::Output {
     IVM_SINK_DISABLED.scope(true, future).await
 }
 
+/// Columns whose values must stay together in one write task.
+///
+/// The writer assigns a row to a hash bucket from these columns; keeping every
+/// row with the same value in one task means a delete and its replacement
+/// insert land in the same write.  The columns come from the state table and
+/// the MV so a dual sink groups both sides.
+fn sink_key_columns(table: &IvmTable, mv: Option<&IvmTable>) -> Vec<String> {
+    let mut keys = Vec::new();
+    for table in std::iter::once(table).chain(mv) {
+        let source = if table.bucket_columns.is_empty() {
+            &table.primary_keys
+        } else {
+            &table.bucket_columns
+        };
+        for key in source {
+            if !keys.contains(key) {
+                keys.push(key.clone());
+            }
+        }
+    }
+    keys
+}
+
+/// Hash-partition a write input by its merge key.
+///
+/// A sink whose input stays on one partition is folded into the coordinator's
+/// head stage together with every operator above the last shuffle: the keyed
+/// lookup, state merge and the write itself then all run on the coordinator.
+/// Repartitioning by the writer's key columns gives the sink its own
+/// multi-task stage, so the distributed planner can place it on workers and
+/// keep each key's changelog in one task.
+fn partition_for_write(
+    input: Arc<dyn ExecutionPlan>,
+    table: &IvmTable,
+    mv: Option<&IvmTable>,
+) -> DFResult<Arc<dyn ExecutionPlan>> {
+    let keys = sink_key_columns(table, mv);
+    if keys.is_empty() {
+        return Ok(input);
+    }
+    let mut expressions = Vec::with_capacity(keys.len());
+    for key in &keys {
+        match input.schema().index_of(key) {
+            Ok(index) => expressions
+                .push(Arc::new(PhysicalColumn::new(key, index)) as Arc<dyn PhysicalExpr>),
+            Err(_) => return Ok(input),
+        }
+    }
+    let input_partitions = input.output_partitioning().partition_count();
+    // The writer already splits rows into `hash_bucket_num` buckets.  A sink
+    // with far more partitions than that opens many writers and produces many
+    // tiny files, so cap the write fan-out at the bucket count while keeping
+    // at least two partitions to retain the network boundary.
+    let bucket_count = table
+        .hash_bucket_num
+        .parse::<usize>()
+        .ok()
+        .filter(|count| *count > 0)
+        .unwrap_or(input_partitions);
+    let partitions = input_partitions.min(bucket_count).max(2);
+    Ok(Arc::new(RepartitionExec::try_new(
+        input,
+        Partitioning::Hash(expressions, partitions),
+    )?))
+}
+
 /// Wrap `plan` so its output partitions are written on workers.
 pub fn sink_plan(
     plan: Arc<dyn ExecutionPlan>,
     spec: IvmSinkSpec,
 ) -> Arc<dyn ExecutionPlan> {
+    let input = {
+        let original = Arc::clone(&plan);
+        partition_for_write(plan, &spec.table, None).unwrap_or(original)
+    };
     Arc::new(
         datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec::new(
-            Arc::new(IvmRefreshSinkExec::new(plan, spec)),
+            Arc::new(IvmRefreshSinkExec::new(input, spec)),
         ),
     )
 }
@@ -239,6 +311,13 @@ impl ExecutionPlan for IvmRefreshSinkExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
+        tracing::debug!(
+            target: "lakesoul_ivm::sink",
+            pid = std::process::id(),
+            partition,
+            table = %self.table.table_name,
+            "executing refresh sink"
+        );
         let input = self.input.execute(partition, context)?;
         let table = self.table.clone();
         let epoch = self.epoch;
@@ -457,6 +536,14 @@ impl ExecutionPlan for IvmDualSinkExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
+        tracing::debug!(
+            target: "lakesoul_ivm::sink",
+            pid = std::process::id(),
+            partition,
+            state = %self.spec.state.table_name,
+            mv = %self.spec.mv.table_name,
+            "executing dual sink"
+        );
         let input = self.input.execute(partition, context)?;
         let spec = self.spec.clone();
         let schema = self.schema.clone();
@@ -597,9 +684,10 @@ impl PhysicalOptimizerRule for IvmDualSinkRule {
         {
             return Ok(plan);
         }
+        let input = partition_for_write(plan, &spec.state, Some(&spec.mv))?;
         Ok(Arc::new(
             datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec::new(
-                Arc::new(IvmDualSinkExec::new(plan, spec)),
+                Arc::new(IvmDualSinkExec::new(input, spec)),
             ),
         ))
     }
@@ -653,5 +741,67 @@ impl PhysicalOptimizerRule for IvmSinkRule {
     fn schema_check(&self) -> bool {
         // The sink intentionally changes the output schema to task descriptors.
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::array::Int64Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use datafusion::prelude::SessionContext;
+
+    use super::*;
+
+    fn table() -> IvmTable {
+        IvmTable {
+            table_id: "target".to_string(),
+            table_name: "target".to_string(),
+            namespace: "default".to_string(),
+            table_path: "file:///tmp/target".to_string(),
+            schema: Arc::new(Schema::new(vec![
+                Field::new("k", DataType::Int64, false),
+                Field::new("v", DataType::Int64, true),
+            ])),
+            primary_keys: vec!["k".to_string()],
+            range_partition_columns: Vec::new(),
+            internal_columns: Vec::new(),
+            bucket_columns: vec!["k".to_string()],
+            hash_bucket_num: "4".to_string(),
+            cdc_column: None,
+            file_format: lakesoul_io::file_format::PhysicalFormat::Vortex,
+            allow_fallback: true,
+        }
+    }
+
+    /// A one-partition write input is repartitioned by the merge key, so the
+    /// sink gets its own multi-task stage instead of running on the
+    /// coordinator's head stage.
+    #[tokio::test]
+    async fn write_input_is_hash_partitioned_by_merge_key() -> DFResult<()> {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("k", DataType::Int64, false),
+                Field::new("v", DataType::Int64, true),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+                Arc::new(Int64Array::from(vec![10, 20, 30, 40])),
+            ],
+        )?;
+        let context = SessionContext::new();
+        let plan = context.read_batch(batch)?.create_physical_plan().await?;
+        assert_eq!(plan.output_partitioning().partition_count(), 1);
+        let plan = partition_for_write(plan, &table(), None)?;
+        assert_eq!(plan.output_partitioning().partition_count(), 2);
+        match plan.output_partitioning() {
+            Partitioning::Hash(expressions, 2) => {
+                assert_eq!(expressions.len(), 1);
+            }
+            other => panic!("write input is not hash partitioned: {other:?}"),
+        }
+        Ok(())
     }
 }
