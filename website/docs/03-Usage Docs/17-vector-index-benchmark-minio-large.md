@@ -1,5 +1,7 @@
 # Large-Scale Vector Benchmark (MinIO)
 
+> This page uses **L1 8GiB / L2 16GiB**; the **L1 512MiB / L2 1GiB** version is [17-vector-index-benchmark-minio-large-512m1g.md](17-vector-index-benchmark-minio-large-512m1g.md).
+>
 > Single query uses **200 query vectors**; batch uses **all query vectors**
 > (10,000 for SIFT/GloVe/Deep, 1,000 for GIST). MinIO storage, build+search only.
 

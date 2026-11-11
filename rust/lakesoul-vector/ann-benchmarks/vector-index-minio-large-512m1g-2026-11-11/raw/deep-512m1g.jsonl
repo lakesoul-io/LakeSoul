@@ -1,0 +1,2 @@
+{"dataset": "deep", "kind": "setup", "storage": "minio", "rows": 9990000, "dim": 96, "write_s": 55.618120012804866, "write_rss_mb": 10933.41015625}
+{"dataset": "deep", "kind": "build", "storage": "minio", "nlist": 1024, "bits": 7, "build_s": 147.42781189642847, "build_rss_mb": 1397.1640625, "status": "ok"}

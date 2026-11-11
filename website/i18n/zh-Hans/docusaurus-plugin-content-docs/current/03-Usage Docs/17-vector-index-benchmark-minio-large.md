@@ -1,5 +1,7 @@
 # 向量索引大规模基准（MinIO）
 
+> 本页是 **L1 8GiB / L2 16GiB** 版本；**L1 512MiB / L2 1GiB** 版本见 [17-vector-index-benchmark-minio-large-512m1g.md](17-vector-index-benchmark-minio-large-512m1g.md)。
+>
 > 单查使用 **200 条 query**；batch 使用 **全部 query**
 > （SIFT/GloVe/Deep 10,000 条，GIST 1,000 条）。只测 MinIO 构建 + 检索。
 
