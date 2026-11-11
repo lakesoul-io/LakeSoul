@@ -2,6 +2,7 @@
 
 > 2026-11 MinIO 基准；只测构建和检索，不测 upsert。
 > 本地文件系统完整参数扫描见 [17-vector-index-benchmark-local-file.md](17-vector-index-benchmark-local-file.md)。
+> 大规模测试（单查 200 条、batch 全量、P50/P90/P99）见 [17-vector-index-benchmark-minio-large.md](17-vector-index-benchmark-minio-large.md)。
 
 ## 1. 结果一览
 

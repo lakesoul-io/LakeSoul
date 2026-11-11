@@ -2,6 +2,7 @@
 
 > MinIO benchmark, November 2026. Build and search only; no upserts.
 > Local-filesystem full parameter sweep: [17-vector-index-benchmark-local-file.md](17-vector-index-benchmark-local-file.md).
+> Large-scale test (200 single queries, full batch, P50/P90/P99): [17-vector-index-benchmark-minio-large.md](17-vector-index-benchmark-minio-large.md).
 
 ## 1. Results at a glance
 
