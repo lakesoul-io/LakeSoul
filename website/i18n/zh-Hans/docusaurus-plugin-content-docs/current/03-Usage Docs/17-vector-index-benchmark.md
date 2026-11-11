@@ -45,7 +45,7 @@
 | glove | 1024 | 1 | 13.6 | 685 | 7.8 |
 | glove | 1024 | 7 | 14.0 | 763 | 7.8 |
 | glove | 2048 | 7 | 24.3 | 770 | 7.8 |
-| glove | 4096 | 7 | 53.4 | 791 | 7.8 |
+| glove | 4096 | 7 | 53.0 | 790 | 7.8 |
 | gist | 256 | 1 | 34.1 | 791 | 30.1 |
 | gist | 256 | 7 | 37.1 | 1077 | 30.1 |
 | gist | 1024 | 1 | 51.2 | 638 | 30.1 |
@@ -184,7 +184,7 @@
 SIFT 的 0.970 配置为 nlist=256,bits=7,nprobe=64；
 GloVe 的 0.970 附近配置为 nlist=2048,bits=7,nprobe=1024（NQ=20 时为 0.973，
 本轮缓存表 NQ=10 为 0.966）；若需要 GloVe 明确 ≥0.97，可使用
-nlist=4096,bits=7,nprobe=2048（recall 0.977，单查 132.8 / batch 800.2）。
+nlist=4096,bits=7,nprobe=2048（recall 0.972–0.977），见 6.1 节。
 GIST 为 nlist=256,bits=7,nprobe=32；Deep 为 nlist=1024,bits=7,nprobe=32。
 
 ## 6. 缓存大小与缓存关闭
@@ -228,9 +228,30 @@ GIST 为 nlist=256,bits=7,nprobe=32；Deep 为 nlist=1024,bits=7,nprobe=32。
 | off | 21.9 / 45.57 / 540 / 0.971 | 29.9 / 33.45 / 623 / 0.971 | — | — |
 
 
-缓存关闭的 exact batch 在 SIFT 上返回
-`exact batch search could not open data file`，当前实现不支持无 L2 的 native exact batch；
-exact 单查可以走 fallback。
+缓存关闭时 exact 单查可以走 fallback（GloVe 高 recall 配置约 1 QPS，recall 0.998）；
+但 native exact batch 返回
+`exact batch search could not open data file`，当前实现不支持无 L2 的 native exact batch。
+
+
+## 6.1 GloVe 0.977 配置（nlist=4096, bits=7, nprobe=2048）
+
+| cache | index 单查 | index batch | exact 单查 | exact batch |
+|---|---|---|---|---|
+| 512m | 95.6 / 10.46 / 585 / 0.972 | 595.2 / 1.68 / 587 / 0.972 | 10.0 / 99.83 / 999 / 0.993 | 34.2 / 29.28 / 1210 / 0.993 |
+| 1g | 95.0 / 10.52 / 587 / 0.972 | 600.1 / 1.67 / 588 / 0.972 | 15.0 / 66.52 / 1093 / 0.993 | 142.0 / 7.04 / 1282 / 0.993 |
+| 8g | 114.1 / 8.77 / 586 / 0.972 | 591.5 / 1.69 / 588 / 0.972 | 15.4 / 64.74 / 1257 / 0.993 | 477.5 / 2.09 / 1260 / 0.993 |
+| off | 2.16 / 461.9 / 585 / 0.972 | 21.1 / 47.4 / 588 / 0.972 | 1.00 / 998.4 / 865 / 0.998（单查 fallback） | 不支持 |
+
+接口（cache 8GiB）：
+
+| 接口 | index 单查 | index batch | exact 单查 | exact batch | 服务端 RSS MB |
+|---|---|---|---|---|---|
+| Python native | 114.1 QPS | 591.5 | 15.4 | 477.5 | — |
+| DataFusion | 145.1 | 154.5 | 15.8 | 132.4 | — |
+| pgvector | 130.9 | 148.8 | 15.5 | 74.0 | 506 / 1495 |
+
+pgvector 1GiB：index 90.2 / 100.7，exact 8.1 / 12.0；
+512MiB：index 98.8 / 40.8，exact 2.1 / 2.1。
 
 ## 7. 接口对比（目标配置，cache 8GiB）
 
@@ -308,7 +329,7 @@ SIFT，目标配置，Python native，cache 8GiB：
    - GIST exact batch 从 13.7 提升到 1019；
    - Deep exact batch 从 7.1 提升到 139。
 5. **缓存关闭**时 index-only 仍可工作，但 SIFT 单查约 5 QPS、batch 约 106；
-   exact batch 不支持。
+   exact 单查可走 fallback（GloVe 高 recall 配置约 1 QPS），exact batch 不支持。
 6. **接口**：DataFusion 单查通常接近 Python native；pgvector 额外有协议/服务端开销，
    exact batch 最慢。pgvector exact 服务端 RSS 可达数 GB。
 7. **bucket_num=4 + eager（小索引）/lazy（Deep）** 是本轮达到高 QPS 的关键；
@@ -319,6 +340,7 @@ SIFT，目标配置，Python native，cache 8GiB：
 - [raw/sift_query.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/sift_query.jsonl)
 - [raw/glove.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove.jsonl)
 - [raw/glove_target.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_target.jsonl)
+- [raw/glove_hi.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_hi.jsonl)
 - [raw/gist.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/gist.jsonl)
 - [raw/deep.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/deep.jsonl)
 
