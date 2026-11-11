@@ -43,10 +43,32 @@ runs:
           CMD=
         fi
 
+        # GitHub's release CDN (release-assets.githubusercontent.com) intermittently
+        # answers 504/502 to asset downloads, so retry the transfer instead of
+        # failing the job on the first hiccup.
+        fetch() {
+          curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 180 \
+            --retry-all-errors --connect-timeout 15 -o "$2" "$1"
+        }
+
         # The archive ships bin/protoc and include/google/protobuf, so extracting
         # it under /usr/local puts both on the default PATH / include path.
-        curl -fsSL -o /tmp/protoc.zip \
-          "https://github.com/protocolbuffers/protobuf/releases/download/v${VERSION}/protoc-${VERSION}-${ASSET}.zip"
-        $CMD unzip -o -q /tmp/protoc.zip -d /usr/local
-        rm -f /tmp/protoc.zip
+        ZIP_URL="https://github.com/protocolbuffers/protobuf/releases/download/v${VERSION}/protoc-${VERSION}-${ASSET}.zip"
+        if fetch "$ZIP_URL" /tmp/protoc.zip; then
+          $CMD unzip -o -q /tmp/protoc.zip -d /usr/local
+          rm -f /tmp/protoc.zip
+        else
+          # Fall back to the same compiler binary published on Maven Central, which
+          # is served by different infrastructure. It only contains the executable
+          # (no include/ headers), which is fine because entity.proto does not
+          # import any google/protobuf/*.proto.
+          MAJOR="${VERSION%%.*}"
+          if [ "$MAJOR" -lt 24 ]; then MVN_VERSION="3.${VERSION}"; else MVN_VERSION="4.${VERSION}"; fi
+          echo "::warning::${ZIP_URL} is unreachable, falling back to com.google.protobuf:protoc:${MVN_VERSION}"
+          fetch "https://repo1.maven.org/maven2/com/google/protobuf/protoc/${MVN_VERSION}/protoc-${MVN_VERSION}-${ASSET}.exe" \
+            /tmp/protoc.bin
+          $CMD install -m 0755 /tmp/protoc.bin /usr/local/bin/protoc
+          rm -f /tmp/protoc.bin
+        fi
+
         protoc --version
