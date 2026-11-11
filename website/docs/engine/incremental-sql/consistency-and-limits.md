@@ -65,7 +65,7 @@ source state.
 | **`INSERT ... SELECT` only** | `INSERT ... VALUES` is always a normal insert |
 | **Keyed sources** | A source without a primary key is rejected |
 | **Keyed target** | The target needs a primary key, `rowKinds`, and `use_cdc = true` |
-| **Distributed execution** | `--ivm` can run with distributed workers; every worker must be built with the IVM feature and the same protocol generation. The coordinator resolves source windows and commits the files workers write. |
+| **Distributed execution** | The IVM entry can run with distributed workers; every worker must be built with the IVM feature and the same protocol generation. The coordinator resolves source windows and commits the files workers write. |
 | **Supported shapes** | A shape outside the list reports `unsupported incremental view shape` and writes nothing |
 
 ## Failure modes

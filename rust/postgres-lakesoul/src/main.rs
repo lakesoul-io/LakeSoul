@@ -166,10 +166,6 @@ struct Cli {
     #[clap(long, env = "LAKESOUL_PG_TCP_KEEPALIVE_RETRIES", default_value_t = 6)]
     tcp_keepalive_retries: u32,
 
-    /// Enable IVM maintenance through `INSERT ... SELECT`
-    #[clap(long, env = "LAKESOUL_PG_IVM")]
-    ivm: bool,
-
     /// Maximum number of detached queries running at once, 0 for unlimited
     #[clap(long, env = "LAKESOUL_PG_MAX_JOBS", default_value_t = 4)]
     max_jobs: usize,
@@ -301,35 +297,30 @@ async fn main_inner(cli: Cli) -> Result<()> {
     };
 
     let distributed_enabled = distributed.is_some();
-    let session_factory = if cli.ivm {
-        if distributed_enabled {
-            info!(
-                "IVM distributed refresh enabled; workers must be built with the \
-                 IVM feature and the same protocol generation"
-            );
-        }
-        let template = session_factory.create_template_session()?;
-        let ivm_options = cli.ivm_runtime.options();
+    if distributed_enabled {
         info!(
-            view_parallelism = ivm_options.view_parallelism,
-            max_active_tasks = ?ivm_options.max_active_tasks,
-            max_derived_steps = ivm_options.max_derived_steps,
-            state_index = ?ivm_options.state_index,
-            internal_file_format = ivm_options.internal_file_format.name(),
-            "IVM refresh options"
+            "IVM distributed refresh enabled; workers must be built with the \
+             IVM feature and the same protocol generation"
         );
-        let mut config =
-            IvmRuntimeConfig::from_session(&template).with_options(ivm_options);
-        if distributed_enabled {
-            config = config.with_session_factory(Arc::new(
-                IvmRefreshSessionFactory::new(session_factory.refresh_session_factory()),
-            ));
-        }
-        let service = IvmService::new(Arc::clone(&meta_client), config).await?;
-        session_factory.with_ivm(Arc::new(service))
-    } else {
-        session_factory
-    };
+    }
+    let template = session_factory.create_template_session()?;
+    let ivm_options = cli.ivm_runtime.options();
+    info!(
+        view_parallelism = ivm_options.view_parallelism,
+        max_active_tasks = ?ivm_options.max_active_tasks,
+        max_derived_steps = ivm_options.max_derived_steps,
+        state_index = ?ivm_options.state_index,
+        internal_file_format = ivm_options.internal_file_format.name(),
+        "IVM refresh options"
+    );
+    let mut config = IvmRuntimeConfig::from_session(&template).with_options(ivm_options);
+    if distributed_enabled {
+        config = config.with_session_factory(Arc::new(IvmRefreshSessionFactory::new(
+            session_factory.refresh_session_factory(),
+        )));
+    }
+    let service = IvmService::new(Arc::clone(&meta_client), config).await?;
+    let session_factory = session_factory.with_ivm(Arc::new(service));
 
     let job_config = jobs::JobConfig {
         max_jobs: cli.max_jobs,
@@ -534,7 +525,7 @@ mod cli_probe_tests {
             "port": cli.port,
             "metrics_addr": cli.metrics_addr.to_string(),
             "max_connections": cli.max_connections,
-            "ivm": cli.ivm,
+            "ivm_view_parallelism": cli.ivm_runtime.view_parallelism,
             "distributed_workers": cli.distributed.distributed_workers,
             "max_concurrent_queries": cli.max_concurrent_queries,
             "tcp_keepalive_idle_secs": cli.tcp_keepalive_idle_secs,
@@ -598,9 +589,14 @@ mod cli_probe_tests {
     fn ivm_and_distributed_flags_can_be_combined() {
         let combined = probe(
             &[],
-            &["--ivm", "--distributed-workers", "http://127.0.0.1:50051"],
+            &[
+                "--ivm-view-parallelism",
+                "2",
+                "--distributed-workers",
+                "http://127.0.0.1:50051",
+            ],
         );
-        assert_eq!(combined["ivm"], true);
+        assert_eq!(combined["ivm_view_parallelism"], 2);
         assert_eq!(combined["distributed_workers"][0], "http://127.0.0.1:50051");
     }
 

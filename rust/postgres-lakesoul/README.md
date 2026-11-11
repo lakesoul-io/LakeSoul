@@ -35,7 +35,7 @@ The workspace `default-members` is unchanged. The default result includes two **
 
 ## IVM incremental entry point
 
-When the service starts with `--ivm`, both ordinary `INSERT` and IVM incremental maintenance can coexist for the same user table:
+The service always installs the IVM runtime; both ordinary `INSERT` and IVM incremental maintenance can coexist for the same user table:
 
 ```sql
 -- Airflow IVM task
@@ -53,10 +53,10 @@ INSERT INTO target ...;
 - A rebuild happens automatically when the definition changes or the state is empty or dirty. A rebuild uses a single atomic `UpdateCommit` against the user-visible target and does not truncate first, so readers never see an empty table.
 - The target table can use `PARTITIONED BY`. IVM records the partitions it has published; a rebuild replaces only those partitions and leaves all others untouched.
 - If an external engine produces a data commit in a partition IVM owns or is writing in this run, IVM detects it at refresh start and before commit and reports an error; compaction commits are allowed. Ordinary batch/streaming writes on different partitions can coexist with IVM.
-- `--ivm` can be started together with distributed mode (experimental). The coordinator owns refresh orchestration, epochs, and commits; workers execute serializable scan/lookup/write stages, writing only staged files and never `ivm.epochs`. Example:
+- IVM works together with distributed mode (experimental). The coordinator owns refresh orchestration, epochs, and commits; workers execute serializable scan/lookup/write stages, writing only staged files and never `ivm.epochs`. Example:
 
   ```sh
-  postgres-lakesoul --ivm \
+  postgres-lakesoul \
     --discovery static \
     --distributed-workers http://worker-0:50051,http://worker-1:50051 \
     --distributed-target-partitions 8 \
