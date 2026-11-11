@@ -1,337 +1,250 @@
-# Vector Index Benchmark
+# Vector Index Benchmark (MinIO / Three-Tier Cache)
 
-> Rewritten in November 2026 from fresh builds and retrievals. The old upsert/rebuild results are retired.
-> This benchmark covers **build + index search only**; it does not test upserts.
+> Fresh MinIO benchmark, November 2026. Build and search only; upserts are not tested.
+> The local-filesystem variant is kept separately in [17-vector-index-benchmark-local-file.md](17-vector-index-benchmark-local-file.md).
 
 ## 1. Summary
 
-The four standard ANN datasets all reach **recall@100 ≥ 0.97** with RaBitQ `bits=7`, at the cost of a larger `nprobe`.
-The main trade-offs are: `bits=7` vs `bits=1`, cache size (especially for exact re-rank), and interface.
-
-| Dataset | Config | recall | index single QPS | index batch QPS |
-|---|---|---:|---:|---:|
-| SIFT-128 | nlist=256, bits=7, nprobe=64 | 0.970 | 379.4 | 4128.9 |
-| GloVe-200 | nlist=4096, bits=7, nprobe=2048 | 0.972 | 114.1 | 591.5 |
-| GIST-960 | nlist=256, bits=7, nprobe=32 | 0.974 | 157.7 | 1709.2 |
-| Deep-Image-96 | nlist=1024, bits=7, nprobe=32 | 0.971 | 22.9 | 121.7 |
-
-## 2. Method
-
-| Item | Value |
-|---|---|
-| Storage | local file store (not MinIO/S3) |
-| Index | IVF + RaBitQ, `hash_bucket_num=4` |
-| top_k | 100 |
-| recall | recall@100 against HDF5 ground truth |
-| RSS | build/query process `VmRSS`; pgvector service RSS reported separately |
-| Build | separate process, excludes write-phase peak |
-| Cleanup | drop table and delete the local index/cache after each dataset |
-
-| Dataset | Base | Queries | GT | dim | metric |
-|---|---:|---:|---:|---:|---|
-| SIFT-128 | 1,000,000 | 10,000 | 100-NN | 128 | L2 |
-| GloVe-200 | 1,183,514 | 10,000 | 100-NN | 200 | cosine |
-| GIST-960 | 1,000,000 | 1,000 | 100-NN | 960 | L2 |
-| Deep-Image-96 | 9,990,000 | 10,000 | 100-NN | 96 | cosine |
-
-`QPS / mean ms / RSS MB / recall` is the cell format in the cache and interface tables.
-Single-query QPS is steady-state: the first query is timed separately; batch QPS is the average of two rounds.
-
-## 3. Build
-
-| Dataset | nlist | bits | build s | build RSS MB | write s |
-|---|---:|---:|---:|---:|---:|
-| SIFT-128 | 256 | 1 | 3.6 | 481 | 3.0 |
-| SIFT-128 | 256 | 7 | 4.1 | 542 | 3.0 |
-| SIFT-128 | 1024 | 1 | 6.2 | 325 | 3.0 |
-| SIFT-128 | 1024 | 7 | 7.2 | 385 | 3.0 |
-| GloVe-200 | 256 | 1 | 8.3 | 703 | 7.8 |
-| GloVe-200 | 256 | 7 | 9.3 | 767 | 7.8 |
-| GloVe-200 | 1024 | 1 | 13.6 | 685 | 7.8 |
-| GloVe-200 | 1024 | 7 | 14.0 | 763 | 7.8 |
-| GloVe-200 | 2048 | 7 | 24.3 | 770 | 7.8 |
-| GloVe-200 | 4096 | 7 | 53.0 | 790 | 7.8 |
-| GIST-960 | 256 | 1 | 34.1 | 791 | 30.1 |
-| GIST-960 | 256 | 7 | 37.1 | 1077 | 30.1 |
-| GIST-960 | 1024 | 1 | 51.2 | 638 | 30.1 |
-| GIST-960 | 1024 | 7 | 54.2 | 804 | 30.1 |
-| Deep-Image-96 | 1024 | 1 | 93.9 | 1207 | 31.4 |
-| Deep-Image-96 | 1024 | 7 | 97.1 | 1442 | 31.4 |
-| Deep-Image-96 | 4096 | 1 | 136.4 | 1038 | 31.4 |
-| Deep-Image-96 | 4096 | 7 | 138.5 | 1207 | 31.4 |
-
-Build RSS is the build process only. GloVe/Deep use row-normalized vectors; SIFT/GIST use raw L2.
-
-## 4. Retrieval quality and throughput
-
-`bits=1` is compact but cannot reach 0.97 recall at these nprobe values.
-`bits=7` reaches 0.97 with a larger nprobe. Full sweeps are in Appendix A.
-
-### Target configurations
+LakeSoul's three-tier cache is exercised here with the table data and index in MinIO,
+the local disk cache in `/tmp`, and the in-memory index/block caches in the query process.
 
 | Dataset | Config | recall | index single | index batch | exact single | exact batch |
 |---|---|---:|---:|---:|---:|---:|
-| SIFT-128 | nlist=256, bits=7, nprobe=64 | 0.970 | 379.4 | 4128.9 | 50.1 | 2307.1 |
-| GloVe-200 | nlist=4096, bits=7, nprobe=2048 | 0.972 | 114.1 | 591.5 | 15.4 | 477.5 |
-| GIST-960 | nlist=256, bits=7, nprobe=32 | 0.974 | 157.7 | 1709.2 | 13.4 | 1019.1 |
-| Deep-Image-96 | nlist=1024, bits=7, nprobe=32 | 0.971 | 22.9 | 121.7 | 8.6 | 138.9 |
+| SIFT-128 | nlist=256, bits=7, nprobe=64 | 0.975 | 363.9 | 2757.8 | 14.6 | 1793.8 |
+| GloVe-200 | nlist=1024, bits=7, nprobe=448 | 0.971 | 161.2 | 1235.3 | 11.0 | 916.3 |
+| GIST-960 | nlist=256, bits=7, nprobe=32 | 0.974 | 164.0 | 1731.5 | 6.2 | 1027.2 |
+| Deep-Image-96 | nlist=1024, bits=7, nprobe=32 | 0.971 | 15.9 | 119.0 | 4.3 | 141.1 |
 
-SIFT: `nlist=256,bits=7,nprobe=64`; GloVe: `nlist=4096,bits=7,nprobe=2048`;
-GIST: `nlist=256,bits=7,nprobe=32`; Deep: `nlist=1024,bits=7,nprobe=32`.
+The target column is the **smallest nprobe found by scanning upward from 8**
+that reached recall@100 >= 0.97 for the chosen nlist, not the maximum nprobe.
 
-## 5. Cache size
+## 2. Three-tier cache
 
-Format: **single QPS / mean ms / RSS MB / recall**; batch uses the same format.
-All four use the target config above.
+| Tier | Location | Contents |
+|---|---|---|
+| L1 | process memory | whole index/cluster cache, decoded block/snapshot caches |
+| L2 | local SSD directory (`LAKESOUL_CACHE_PATH`) | index segments, decoded vector blocks, snapshots |
+| L3 | MinIO (`s3://lakesoul-bench2`) | table data files and index segments |
+
+- `LAKESOUL_CACHE_SIZE=0` disables L2; `LAKESOUL_VECTOR_MEMORY_BYTES=0` disables the L1 budget.
+- L1 only still benefits index-only because the index is re-read from MinIO on first use and then kept in memory.
+- L2 only does not help index-only: the index cache is in L1. It does help exact re-rank because decoded vector blocks are cached on disk.
+- L1+L2 is the normal production configuration.
+- First-query latency includes the MinIO read/promotion; steady-state QPS is measured after it.
+
+## 3. Method
+
+| Item | Value |
+|---|---|
+| Storage | MinIO `lakesoul-bench2`, endpoint `http://127.0.0.1:9000` |
+| Index | IVF + RaBitQ, `hash_bucket_num=4` |
+| top_k | 100 |
+| recall | HDF5 ground truth, recall@100 |
+| Cache matrix | off, L1-only, L2-only, 512 MiB, 1 GiB, 8 GiB |
+| Cleanup | drop table and delete MinIO prefix + local cache after each dataset |
+
+| Dataset | Base | Queries | dim | metric |
+|---|---:|---:|---:|---|
+| SIFT-128 | 1,000,000 | 10,000 | 128 | L2 |
+| GloVe-200 | 1,183,514 | 10,000 | 200 | cosine |
+| GIST-960 | 1,000,000 | 1,000 | 960 | L2 |
+| Deep-Image-96 | 9,990,000 | 10,000 | 96 | cosine |
+
+## 4. Build
+
+| Dataset | nlist | bits | build s | build RSS MB | write s |
+|---|---:|---:|---:|---:|---:|
+| SIFT-128 | 256 | 7 | 15.5 | 515 | 3.1 |
+| GloVe-200 | 1024 | 7 | 55.5 | 804 | 12.9 |
+| GIST-960 | 256 | 7 | 53.5 | 1040 | 42.3 |
+| Deep-Image-96 | 1024 | 7 | 153.6 | 1447 | 56.1 |
+
+Build reads/writes go through MinIO; compare with the local-file page for the storage effect.
+
+## 5. Cache results
+
+Cells are `QPS / first ms / RSS MB / recall`. `first ms` is the first query (cold);
+steady-state QPS follows.
 
 ### SIFT-128
 
-| cache | index single | index batch | exact single | exact batch |
-|---|---|---|---|---|
-| 512m | 332.1 / 3.01 / 381 / 0.970 | 4201.3 / 0.24 / 383 / 0.970 | 43.0 / 23.24 / 731 / 1.000 | 148.3 / 6.74 / 1059 / 1.000 |
-| 1g | 326.4 / 3.06 / 381 / 0.970 | 4232.3 / 0.24 / 383 / 0.970 | 46.4 / 21.57 / 818 / 1.000 | 223.1 / 4.48 / 1188 / 1.000 |
-| 8g | 379.4 / 2.64 / 380 / 0.970 | 4128.9 / 0.24 / 382 / 0.970 | 50.1 / 19.98 / 887 / 1.000 | 2307.1 / 0.43 / 890 / 1.000 |
-| off | 5.4 / 185.91 / 381 / 0.970 | 106.6 / 9.38 / 383 / 0.970 | — | — |
+**Index only**
+
+| cache | L1 / L2 | single (QPS / first ms / RSS MB / recall) | batch (QPS / first ms / RSS MB / recall) |
+|---|---|---|---|
+| off |  | 4.0 / 340 / 383 / 0.975 | 39.0 / 256 / 384 / 0.975 |
+| L1 only | 8GiB / L2 0 | 339.3 / 313 / 387 / 0.975 | 3002.7 / 4 / 389 / 0.975 |
+| L2 only | L1 0 / 16GiB | 3.9 / 338 / 384 / 0.975 | 39.4 / 252 / 386 / 0.975 |
+| L1+L2 512MiB | 512MiB / 512MiB | 300.3 / 311 / 386 / 0.975 | 3082.3 / 4 / 388 / 0.975 |
+| L1+L2 1GiB | 1GiB / 1GiB | 278.7 / 987 / 384 / 0.975 | 3171.7 / 4 / 386 / 0.975 |
+| L1+L2 8GiB | 8GiB / 16GiB | 363.9 / 318 / 384 / 0.975 | 2757.8 / 4 / 387 / 0.975 |
+
+**Exact re-rank**
+
+| cache | L1 / L2 | single (QPS / first ms / RSS MB / recall) | batch (QPS / first ms / RSS MB / recall) |
+|---|---|---|---|
+| off |  | 2.8 / 427 / 582 / 1.000 | — |
+| L1 only | 8GiB / L2 0 | 4.0 / 399 / 562 / 1.000 | — |
+| L2 only | L1 0 / 16GiB | 3.1 / 620 / 447 / 1.000 | 29.2 / 334 / 453 / 1.000 |
+| L1+L2 512MiB | 512MiB / 512MiB | 11.9 / 597 / 640 / 1.000 | 177.7 / 68 / 770 / 1.000 |
+| L1+L2 1GiB | 1GiB / 1GiB | 14.5 / 641 / 775 / 1.000 | 311.4 / 34 / 901 / 1.000 |
+| L1+L2 8GiB | 8GiB / 16GiB | 14.6 / 609 / 812 / 1.000 | 1793.8 / 7 / 815 / 1.000 |
 
 ### GloVe-200
 
-| cache | index single | index batch | exact single | exact batch |
-|---|---|---|---|---|
-| 512m | 95.6 / 10.46 / 585 / 0.972 | 595.2 / 1.68 / 587 / 0.972 | 10.0 / 99.83 / 999 / 0.993 | 34.2 / 29.28 / 1210 / 0.993 |
-| 1g | 95.0 / 10.52 / 587 / 0.972 | 600.1 / 1.67 / 588 / 0.972 | 15.0 / 66.52 / 1093 / 0.993 | 142.0 / 7.04 / 1282 / 0.993 |
-| 8g | 114.1 / 8.77 / 586 / 0.972 | 591.5 / 1.69 / 588 / 0.972 | 15.4 / 64.74 / 1257 / 0.993 | 477.5 / 2.09 / 1260 / 0.993 |
-| off | 2.2 / 461.97 / 585 / 0.972 | 21.1 / 47.42 / 588 / 0.972 | — | — |
+**Index only**
+
+| cache | L1 / L2 | single (QPS / first ms / RSS MB / recall) | batch (QPS / first ms / RSS MB / recall) |
+|---|---|---|---|
+| off |  | 2.0 / 654 / 568 / 0.971 | 39.0 / 544 / 571 / 0.971 |
+| L1 only | 8GiB / L2 0 | 180.0 / 615 / 564 / 0.971 | 1257.4 / 17 / 568 / 0.971 |
+| L2 only | L1 0 / 16GiB | 2.0 / 664 / 569 / 0.971 | 38.7 / 516 / 571 / 0.971 |
+| L1+L2 512MiB | 512MiB / 512MiB | 69.4 / 625 / 661 / 0.971 | 1269.7 / 19 / 663 / 0.971 |
+| L1+L2 1GiB | 1GiB / 1GiB | 151.8 / 661 / 565 / 0.971 | 1254.0 / 18 / 568 / 0.971 |
+| L1+L2 8GiB | 8GiB / 16GiB | 161.2 / 643 / 567 / 0.971 | 1235.3 / 17 / 568 / 0.971 |
+
+**Exact re-rank**
+
+| cache | L1 / L2 | single (QPS / first ms / RSS MB / recall) | batch (QPS / first ms / RSS MB / recall) |
+|---|---|---|---|
+| off |  | 1.4 / 940 / 632 / 0.988 | — |
+| L1 only | 8GiB / L2 0 | 13.3 / 889 / 1413 / 0.988 | — |
+| L2 only | L1 0 / 16GiB | 1.6 / 1009 / 639 / 0.988 | 27.3 / 713 / 645 / 0.988 |
+| L1+L2 512MiB | 512MiB / 512MiB | 5.7 / 1000 / 1050 / 0.988 | 12.1 / 1619 / 1303 / 0.988 |
+| L1+L2 1GiB | 1GiB / 1GiB | 10.9 / 1013 / 1037 / 0.988 | 123.9 / 172 / 1447 / 0.988 |
+| L1+L2 8GiB | 8GiB / 16GiB | 11.0 / 1012 / 1417 / 0.988 | 916.3 / 26 / 1420 / 0.988 |
 
 ### GIST-960
 
-| cache | index single | index batch | exact single | exact batch |
-|---|---|---|---|---|
-| 512m | 75.5 / 13.25 / 1117 / 0.974 | 1732.8 / 0.58 / 1118 / 0.974 | 5.2 / 190.49 / 1686 / 0.990 | 13.7 / 73.12 / 1950 / 0.990 |
-| 1g | 160.3 / 6.24 / 1115 / 0.974 | 1762.8 / 0.57 / 1117 / 0.974 | 6.7 / 148.45 / 1890 / 0.990 | 58.9 / 16.97 / 2154 / 0.990 |
-| 8g | 157.7 / 6.34 / 1113 / 0.974 | 1709.2 / 0.59 / 1115 / 0.974 | 13.4 / 74.68 / 1990 / 0.990 | 1019.1 / 0.98 / 1993 / 0.990 |
-| off | 3.1 / 327.81 / 1128 / 0.974 | 31.2 / 32.04 / 1132 / 0.974 | — | — |
+**Index only**
+
+| cache | L1 / L2 | single (QPS / first ms / RSS MB / recall) | batch (QPS / first ms / RSS MB / recall) |
+|---|---|---|---|
+| off |  | 2.0 / 811 / 1104 / 0.974 | 20.1 / 492 / 1107 / 0.974 |
+| L1 only | 8GiB / L2 0 | 160.9 / 794 / 1099 / 0.974 | 1678.4 / 7 / 1101 / 0.974 |
+| L2 only | L1 0 / 16GiB | 2.0 / 831 / 1106 / 0.974 | 20.2 / 488 / 1107 / 0.974 |
+| L1+L2 512MiB | 512MiB / 512MiB | 16.2 / 811 / 1327 / 0.974 | 1617.0 / 239 / 1330 / 0.974 |
+| L1+L2 1GiB | 1GiB / 1GiB | 56.0 / 803 / 1103 / 0.974 | 1730.2 / 7 / 1105 / 0.974 |
+| L1+L2 8GiB | 8GiB / 16GiB | 164.0 / 805 / 1097 / 0.974 | 1731.5 / 7 / 1100 / 0.974 |
+
+**Exact re-rank**
+
+| cache | L1 / L2 | single (QPS / first ms / RSS MB / recall) | batch (QPS / first ms / RSS MB / recall) |
+|---|---|---|---|
+| off |  | 0.4 / 2489 / 1407 / 0.990 | — |
+| L1 only | 8GiB / L2 0 | 0.5 / 2449 / 1353 / 0.990 | — |
+| L2 only | L1 0 / 16GiB | 1.5 / 1157 / 1170 / 0.990 | 16.2 / 619 / 1180 / 0.990 |
+| L1+L2 512MiB | 512MiB / 512MiB | 2.4 / 1152 / 1671 / 0.990 | 5.7 / 1868 / 1909 / 0.990 |
+| L1+L2 1GiB | 1GiB / 1GiB | 3.3 / 1660 / 1772 / 0.990 | 35.1 / 223 / 2016 / 0.990 |
+| L1+L2 8GiB | 8GiB / 16GiB | 6.2 / 1136 / 1982 / 0.990 | 1027.2 / 13 / 1985 / 0.990 |
 
 ### Deep-Image-96
 
-| cache | index single | index batch | exact single | exact batch |
-|---|---|---|---|---|
-| 512m | 20.9 / 47.77 / 967 / 0.971 | 22.8 / 43.85 / 1722 / 0.971 | 8.5 / 118.06 / 1300 / 0.989 | 7.1 / 141.38 / 1991 / 0.989 |
-| 1g | 21.0 / 47.56 / 1064 / 0.971 | 127.8 / 7.82 / 1095 / 0.971 | 9.0 / 111.68 / 1556 / 0.989 | 63.3 / 15.79 / 1858 / 0.989 |
-| 8g | 22.9 / 43.72 / 1042 / 0.971 | 121.7 / 8.22 / 1052 / 0.971 | 8.6 / 115.94 / 1870 / 0.989 | 138.9 / 7.20 / 1987 / 0.989 |
-| off | 21.9 / 45.57 / 540 / 0.971 | 29.9 / 33.45 / 623 / 0.971 | — | — |
+**Index only**
 
-Observations:
+| cache | L1 / L2 | single (QPS / first ms / RSS MB / recall) | batch (QPS / first ms / RSS MB / recall) |
+|---|---|---|---|
+| off |  | 14.9 / 374 / 287 / 0.971 | 16.5 / 612 / 386 / 0.971 |
+| L1 only | 8GiB / L2 0 | 15.7 / 405 / 867 / 0.971 | 108.8 / 103 / 930 / 0.971 |
+| L2 only | L1 0 / 16GiB | 15.1 / 370 / 285 / 0.971 | 16.3 / 620 / 360 / 0.971 |
+| L1+L2 512MiB | 512MiB / 512MiB | 15.4 / 395 / 612 / 0.971 | 15.3 / 678 / 1404 / 0.971 |
+| L1+L2 1GiB | 1GiB / 1GiB | 16.0 / 393 / 868 / 0.971 | 118.4 / 97 / 969 / 0.971 |
+| L1+L2 8GiB | 8GiB / 16GiB | 15.9 / 907 / 869 / 0.971 | 119.0 / 104 / 922 / 0.971 |
 
-- Index-only is not very sensitive to cache size, except that 512 MiB can add latency.
-- Exact re-rank is dominated by the block cache: 512 MiB -> 1 GiB -> 8 GiB gives large batch gains (SIFT 148 -> 223 -> 2307 QPS; GIST 14 -> 59 -> 1019; Deep 7.1 -> 63 -> 139).
-- Without any cache, index-only still works; exact single-query falls back (GloVe high-recall config ~1 QPS), but native exact batch is not implemented (`exact batch search could not open data file`).
+**Exact re-rank**
+
+| cache | L1 / L2 | single (QPS / first ms / RSS MB / recall) | batch (QPS / first ms / RSS MB / recall) |
+|---|---|---|---|
+| off |  | 0.7 / 1852 / 2598 / 0.989 | — |
+| L1 only | 8GiB / L2 0 | 1.4 / 1748 / 2542 / 0.989 | — |
+| L2 only | L1 0 / 16GiB | 4.3 / 1520 / 589 / 0.989 | 14.5 / 702 / 690 / 0.989 |
+| L1+L2 512MiB | 512MiB / 512MiB | 4.3 / 1531 / 1292 / 0.989 | 4.2 / 2357 / 1992 / 0.989 |
+| L1+L2 1GiB | 1GiB / 1GiB | 4.3 / 1551 / 1441 / 0.989 | 57.0 / 192 / 1743 / 0.989 |
+| L1+L2 8GiB | 8GiB / 16GiB | 4.3 / 2206 / 1873 / 0.989 | 141.1 / 101 / 1967 / 0.989 |
+
+### Cache findings
+
+- SIFT index-only: cache off 4.0 QPS; L1-only 339 QPS; L1+L2 up to 364 QPS.
+- GloVe: cache off 2.0 QPS; L1-only 180 QPS; L1+L2 161 QPS (nprobe=448 reads many clusters).
+- GIST: cache off 2.0 QPS; L1-only 161 QPS; L1+L2 164 QPS.
+- Deep-Image is lazy-indexed: cache off 14.9 QPS, L1-only 15.7, L1+L2 15.9;
+  the working set is already dominated by the nprobe cluster load.
+- Exact is where L2 matters: SIFT exact batch 1794 (8 GiB) vs no cache measured in the
+  local fallback test at 15.7 QPS; GIST 1027; GloVe 916; Deep 141.
+- The first query is much slower than steady state on MinIO; L2 cold-fill is visible in `first ms`.
+
+### Exact batch without cache
+
+After the `pk_locator` fallback change, native exact batch no longer fails when
+`LAKESOUL_VECTOR_CACHE=0`: it builds a one-shot key index and reads decoded blocks
+straight from the data files. Local SIFT nprobe=64, NQ=5: **15.7 QPS, recall 1.0**
+(was `exact batch search could not open data file`). MinIO cache-off exact batch
+was not re-measured after the change; the table marks those cells `—`.
 
 ## 6. Interfaces
 
-Target configuration, cache 8 GiB; format **single QPS / mean ms / RSS MB / recall**.
-DataFusion batch means a loop of SQL queries; Python batch is the native batch entry.
+Target configuration, L1+L2 8 GiB. `DataFusion` batch is a SQL loop; Python is the
+native batch entry. pgvector is a separate service process.
 
 ### SIFT-128
 
-| Interface | rerank | single | batch | server RSS MB |
-|---|---|---|---|---:|
-| python | index | 379.4 / 2.64 / 380 / 0.970 | 4128.9 / 0.24 / 382 / 0.970 | — |
-| python | exact | 50.1 / 19.98 / 887 / 1.000 | 2307.1 / 0.43 / 890 / 1.000 | — |
-| datafusion | index | 450.7 / 2.22 / 381 / 0.970 | 478.6 / 2.09 / 381 / 0.970 | — |
-| datafusion | exact | 49.9 / 20.06 / 874 / 1.000 | 396.8 / 2.52 / 874 / 1.000 | — |
-| pgvector | index | 390.6 / 2.56 / 64 / 0.970 | 440.2 / 2.27 / 65 / 0.970 | 304 |
-| pgvector | exact | 100.0 / 10.00 / 64 / 1.000 | 189.6 / 5.27 / 65 / 1.000 | 853 |
+| Interface | rerank | single QPS | batch QPS | server RSS MB |
+|---|---|---:|---:|---:|
+| python | index | 363.9 | 2757.8 | — |
+| python | exact | 14.6 | 1793.8 | — |
+| datafusion | index | 427.9 | 496.2 | — |
+| datafusion | exact | 14.2 | 381.8 | — |
+| pgvector | index | 392.7 | 452.4 | 312 |
+| pgvector | exact | 32.2 | 178.3 | 850 |
 
 ### GloVe-200
 
-| Interface | rerank | single | batch | server RSS MB |
-|---|---|---|---|---:|
-| python | index | 114.1 / 8.77 / 586 / 0.972 | 591.5 / 1.69 / 588 / 0.972 | — |
-| python | exact | 15.4 / 64.74 / 1257 / 0.993 | 477.5 / 2.09 / 1260 / 0.993 | — |
-| datafusion | index | 145.1 / 6.89 / 585 / 0.972 | 154.5 / 6.47 / 587 / 0.972 | — |
-| datafusion | exact | 15.8 / 63.45 / 1243 / 0.993 | 132.4 / 7.56 / 1244 / 0.993 | — |
-| pgvector | index | 130.9 / 7.64 / 67 / 0.968 | 148.8 / 6.72 / 67 / 0.968 | 506 |
-| pgvector | exact | 15.5 / 64.56 / 67 / 1.000 | 74.0 / 13.52 / 67 / 1.000 | 1495 |
+| Interface | rerank | single QPS | batch QPS | server RSS MB |
+|---|---|---:|---:|---:|
+| python | index | 161.2 | 1235.3 | — |
+| python | exact | 11.0 | 916.3 | — |
+| datafusion | index | 192.5 | 214.0 | — |
+| datafusion | exact | 11.4 | 210.5 | — |
+| pgvector | index | 201.4 | 222.4 | 484 |
+| pgvector | exact | 24.2 | 102.0 | 1472 |
 
 ### GIST-960
 
-| Interface | rerank | single | batch | server RSS MB |
-|---|---|---|---|---:|
-| python | index | 157.7 / 6.34 / 1113 / 0.974 | 1709.2 / 0.59 / 1115 / 0.974 | — |
-| python | exact | 13.4 / 74.68 / 1990 / 0.990 | 1019.1 / 0.98 / 1993 / 0.990 | — |
-| datafusion | index | 170.9 / 5.85 / 1114 / 0.974 | 182.8 / 5.47 / 1115 / 0.974 | — |
-| datafusion | exact | 13.6 / 73.80 / 1990 / 0.990 | 159.9 / 6.26 / 1992 / 0.990 | — |
-| pgvector | index | 190.5 / 5.25 / 60 / 0.974 | 217.6 / 4.60 / 60 / 0.974 | 1046 |
-| pgvector | exact | 4.1 / 243.59 / 60 / 0.990 | 33.6 / 29.73 / 60 / 0.990 | 3949 |
+| Interface | rerank | single QPS | batch QPS | server RSS MB |
+|---|---|---:|---:|---:|
+| python | index | 164.0 | 1731.5 | — |
+| python | exact | 6.2 | 1027.2 | — |
+| datafusion | index | 170.9 | 182.5 | — |
+| datafusion | exact | 5.7 | 154.0 | — |
+| pgvector | index | 208.8 | 229.2 | 1035 |
+| pgvector | exact | 1.8 | 28.7 | 3853 |
 
 ### Deep-Image-96
 
-| Interface | rerank | single | batch | server RSS MB |
-|---|---|---|---|---:|
-| python | index | 22.9 / 43.72 / 1042 / 0.971 | 121.7 / 8.22 / 1052 / 0.971 | — |
-| python | exact | 8.6 / 115.94 / 1870 / 0.989 | 138.9 / 7.20 / 1987 / 0.989 | — |
-| datafusion | index | 21.7 / 46.04 / 1053 / 0.971 | 96.6 / 10.36 / 1125 / 0.971 | — |
-| datafusion | exact | 8.4 / 119.75 / 1890 / 0.989 | 88.8 / 11.26 / 2200 / 0.989 | — |
-| pgvector | index | 22.3 / 44.81 / 63 / 0.971 | 94.0 / 10.64 / 63 / 0.971 | 902 |
-| pgvector | exact | 4.2 / 238.81 / 63 / 0.989 | 11.9 / 84.30 / 63 / 0.989 | 3825 |
+| Interface | rerank | single QPS | batch QPS | server RSS MB |
+|---|---|---:|---:|---:|
+| python | index | 15.9 | 119.0 | — |
+| python | exact | 4.3 | 141.1 | — |
+| datafusion | index | 16.2 | 105.1 | — |
+| datafusion | exact | 4.3 | 100.0 | — |
+| pgvector | index | 16.0 | 100.5 | 791 |
+| pgvector | exact | 1.8 | 11.4 | 3795 |
 
-pgvector is a separate service process (`postgres-lakesoul`, 4 worker threads).
-Python and DataFusion are in-process. pgvector exact re-rank needs much more service RSS,
-reaching about 3.9 GB for GIST and 3.8 GB for Deep.
+## 7. Conclusions
 
-## 7. Parallelism and bucket count
+1. With data/index in MinIO, the three tiers are distinguishable:
+   cache off is 4 QPS (SIFT index), L1-only is 339, L1+L2 is 164–364 depending on table.
+2. L2 matters most for exact: exact batch grows to 141–1794 QPS with L1+L2, versus
+   roughly 15 QPS for the uncached reader fallback.
+3. L1 is still required for index-only; L2 alone does not cache the loaded index.
+4. MinIO build time is storage-bound: SIFT 15.5 s, GloVe 55.5 s, GIST 53.5 s,
+   Deep 153.6 s; build RSS stays 0.5–1.45 GB.
+5. The target configurations all reach recall>=0.97 with nprobe found by an upward scan;
+   GloVe uses nlist=1024,nprobe=448, not the rejected nlist=4096,nprobe=2048.
 
-SIFT, target config, Python native, cache 8 GiB, NQ=20:
+## 8. Raw results
 
-| parallelism | index single QPS | index batch QPS |
-|---:|---:|---:|
-| 1 | 378.6 | 4301.7 |
-| 2 | 325.4 | 2643.1 |
-| 4 | 379.4 | 3190.7 |
+- [minio.jsonl](/benchmark-data/vector-index-minio-2026-11-11/minio.jsonl)
 
-The native batch path already probes buckets in parallel; extra `parallelism` oversubscribes
-the short batch. Keep `hash_bucket_num × vector_search.parallelism` near the CPU count.
-
-## 8. Recommendations
-
-| Goal | Recommendation |
-|---|---|
-| best recall / QPS balance | bits=7, nprobe at the 0.97 knee; see target table |
-| minimum memory | 512 MiB cache: index-only works, exact is slow |
-| exact re-rank | 8 GiB L1/L2 cache; 512 MiB is not enough for batch |
-| Python native | use `batch_search`; set `parallelism=1` for short batches |
-| SQL | DataFusion single-query is close to native; batch through SQL is slower than native batch |
-| pgvector | convenient service interface, but exact is expensive and needs several GB RSS |
-
-## 9. Limitations
-
-- Local file store, not S3/MinIO; absolute QPS differs from remote-storage runs.
-- NQ is 10 for most result tables (SIFT parameter sweep uses 20); QPS is steady-state.
-- The GloVe high-recall config measures 0.972 at NQ=10 and 0.977 in the larger NQ=20 sweep.
-- pgvector cache sizes were measured only on the GloVe high-recall config (512 MiB/1 GiB/8 GiB);
-  other pgvector interface rows use 8 GiB.
-- Reported `index_bytes` is omitted because old index generations were still on disk
-  while building multiple configurations; build time/RSS are not affected.
-- The English and Chinese pages share this data set; regenerate both from the raw JSONL if needed.
-
-## 10. Raw results
-
-- [raw/sift_query.jsonl](/benchmark-data/vector-index-2026-11-11/sift_query.jsonl)
-- [raw/glove.jsonl](/benchmark-data/vector-index-2026-11-11/glove.jsonl)
-- [raw/glove_target.jsonl](/benchmark-data/vector-index-2026-11-11/glove_target.jsonl)
-- [raw/glove_hi.jsonl](/benchmark-data/vector-index-2026-11-11/glove_hi.jsonl)
-- [raw/gist.jsonl](/benchmark-data/vector-index-2026-11-11/gist.jsonl)
-- [raw/deep.jsonl](/benchmark-data/vector-index-2026-11-11/deep.jsonl)
-
-## Appendix A: full index-only parameter sweep
-
-Cache 8 GiB, Python native, `nprobe` sweep. Values are QPS / recall.
-
-### SIFT-128
-
-| nlist | bits | nprobe | recall | single QPS | batch QPS |
-|---:|---:|---:|---:|---:|---:|
-| 256 | 1 | 8 | 0.517 | 506.8 | 7999.1 |
-| 256 | 1 | 16 | 0.531 | 488.0 | 7457.1 |
-| 256 | 1 | 32 | 0.524 | 475.8 | 6616.4 |
-| 256 | 1 | 64 | 0.524 | 445.3 | 5573.8 |
-| 256 | 1 | 128 | 0.524 | 434.6 | 4498.9 |
-| 256 | 7 | 8 | 0.862 | 457.2 | 6445.2 |
-| 256 | 7 | 16 | 0.949 | 409.8 | 5508.6 |
-| 256 | 7 | 32 | 0.967 | 395.1 | 4849.1 |
-| 256 | 7 | 64 | 0.970 | 391.1 | 4214.7 |
-| 256 | 7 | 128 | 0.970 | 359.9 | 3308.2 |
-| 1024 | 1 | 8 | 0.495 | 508.0 | 7490.5 |
-| 1024 | 1 | 16 | 0.529 | 509.0 | 7217.4 |
-| 1024 | 1 | 32 | 0.553 | 438.6 | 5931.0 |
-| 1024 | 1 | 64 | 0.551 | 437.1 | 5993.7 |
-| 1024 | 1 | 128 | 0.549 | 441.8 | 5520.5 |
-| 1024 | 7 | 8 | 0.675 | 467.9 | 6185.5 |
-| 1024 | 7 | 16 | 0.826 | 430.1 | 6102.4 |
-| 1024 | 7 | 32 | 0.932 | 430.2 | 5361.2 |
-| 1024 | 7 | 64 | 0.964 | 379.3 | 4702.7 |
-| 1024 | 7 | 128 | 0.972 | 355.7 | 4203.0 |
-
-### GloVe-200
-
-| nlist | bits | nprobe | recall | single QPS | batch QPS |
-|---:|---:|---:|---:|---:|---:|
-| 256 | 1 | 8 | 0.404 | 411.4 | 6585.8 |
-| 256 | 1 | 16 | 0.442 | 389.8 | 5870.8 |
-| 256 | 1 | 32 | 0.451 | 375.8 | 5000.8 |
-| 256 | 1 | 64 | 0.455 | 335.9 | 3908.0 |
-| 256 | 1 | 128 | 0.452 | 292.5 | 2868.2 |
-| 256 | 1 | 256 | 0.448 | 245.1 | 1995.2 |
-| 256 | 7 | 8 | 0.691 | 343.0 | 4220.1 |
-| 256 | 7 | 16 | 0.799 | 316.3 | 3258.1 |
-| 256 | 7 | 32 | 0.878 | 267.2 | 2478.8 |
-| 256 | 7 | 64 | 0.940 | 229.5 | 1827.7 |
-| 256 | 7 | 128 | 0.969 | 185.3 | 1337.1 |
-| 256 | 7 | 256 | 0.975 | 146.2 | 1016.5 |
-| 1024 | 1 | 8 | 0.425 | 391.3 | 5869.6 |
-| 1024 | 1 | 16 | 0.444 | 389.4 | 5658.9 |
-| 1024 | 1 | 32 | 0.461 | 380.3 | 5164.5 |
-| 1024 | 1 | 64 | 0.468 | 371.3 | 4678.9 |
-| 1024 | 1 | 128 | 0.466 | 334.5 | 3903.0 |
-| 1024 | 1 | 256 | 0.463 | 311.6 | 3022.2 |
-| 1024 | 7 | 8 | 0.634 | 334.1 | 5011.2 |
-| 1024 | 7 | 16 | 0.709 | 338.5 | 4309.6 |
-| 1024 | 7 | 32 | 0.802 | 290.7 | 2586.0 |
-| 1024 | 7 | 64 | 0.876 | 283.6 | 2760.0 |
-| 1024 | 7 | 128 | 0.926 | 239.8 | 2142.5 |
-| 1024 | 7 | 256 | 0.957 | 192.2 | 1550.4 |
-| 2048 | 7 | 256 | 0.927 | 228.8 | 1868.7 |
-| 2048 | 7 | 512 | 0.959 | 187.5 | 1358.0 |
-| 2048 | 7 | 1024 | 0.973 | 152.9 | 1049.6 |
-| 4096 | 7 | 512 | 0.939 | 195.6 | 1381.6 |
-| 4096 | 7 | 1024 | 0.969 | 156.6 | 1087.5 |
-| 4096 | 7 | 2048 | 0.977 | 132.8 | 800.2 |
-
-### GIST-960
-
-| nlist | bits | nprobe | recall | single QPS | batch QPS |
-|---:|---:|---:|---:|---:|---:|
-| 1024 | 7 | 64 | 0.966 | 146.4 | 1747.5 |
-| 1024 | 7 | 128 | 0.980 | 144.3 | 1475.1 |
-| 1024 | 7 | 256 | 0.981 | 120.8 | 1095.8 |
-| 1024 | 7 | 512 | 0.981 | 108.2 | 801.3 |
-| 1024 | 7 | 1024 | 0.981 | 91.2 | 587.9 |
-| 256 | 1 | 8 | 0.681 | 225.3 | 3055.8 |
-| 256 | 1 | 16 | 0.721 | 213.5 | 2729.8 |
-| 256 | 1 | 32 | 0.740 | 192.8 | 2170.9 |
-| 256 | 1 | 64 | 0.742 | 176.0 | 1604.4 |
-| 256 | 1 | 128 | 0.744 | 141.3 | 1137.9 |
-| 256 | 7 | 8 | 0.827 | 184.3 | 2511.4 |
-| 256 | 7 | 16 | 0.932 | 169.9 | 2039.0 |
-| 256 | 7 | 32 | 0.974 | 163.5 | 1788.7 |
-| 256 | 7 | 64 | 0.980 | 136.3 | 1342.3 |
-| 256 | 7 | 128 | 0.981 | 122.6 | 1007.9 |
-| 1024 | 1 | 8 | 0.588 | 210.3 | 2688.7 |
-| 1024 | 1 | 16 | 0.681 | 188.8 | 2583.1 |
-| 1024 | 1 | 32 | 0.735 | 193.9 | 2434.3 |
-| 1024 | 1 | 64 | 0.758 | 188.5 | 2096.3 |
-| 1024 | 1 | 128 | 0.764 | 168.3 | 1692.0 |
-| 1024 | 7 | 8 | 0.635 | 164.0 | 2354.8 |
-| 1024 | 7 | 16 | 0.790 | 166.6 | 2236.9 |
-| 1024 | 7 | 32 | 0.905 | 152.6 | 1493.4 |
-
-### Deep-Image-96
-
-| nlist | bits | nprobe | recall | single QPS | batch QPS |
-|---:|---:|---:|---:|---:|---:|
-| 1024 | 1 | 8 | 0.522 | 113.3 | 1104.6 |
-| 1024 | 1 | 16 | 0.527 | 67.3 | 587.4 |
-| 1024 | 1 | 32 | 0.530 | 36.7 | 303.2 |
-| 1024 | 1 | 64 | 0.529 | 21.6 | 179.3 |
-| 1024 | 7 | 8 | 0.904 | 66.8 | 437.3 |
-| 1024 | 7 | 16 | 0.943 | 34.9 | 225.3 |
-| 1024 | 7 | 32 | 0.971 | 21.4 | 115.8 |
-| 1024 | 7 | 64 | 0.975 | 13.2 | 65.3 |
-| 4096 | 1 | 8 | 0.514 | 72.0 | 1669.1 |
-| 4096 | 1 | 16 | 0.538 | 40.1 | 1268.6 |
-| 4096 | 1 | 32 | 0.550 | 23.2 | 860.0 |
-| 4096 | 1 | 64 | 0.552 | 12.5 | 534.7 |
-| 4096 | 7 | 8 | 0.809 | 65.5 | 1041.4 |
-| 4096 | 7 | 16 | 0.898 | 36.3 | 682.9 |
-| 4096 | 7 | 32 | 0.952 | 20.3 | 347.3 |
-| 4096 | 7 | 64 | 0.967 | 11.2 | 190.1 |
+The local-filesystem full parameter sweep remains at
+[17-vector-index-benchmark-local-file.md](17-vector-index-benchmark-local-file.md).
