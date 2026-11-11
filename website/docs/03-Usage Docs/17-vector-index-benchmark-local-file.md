@@ -37,6 +37,12 @@ The main trade-offs are: `bits=7` vs `bits=1`, cache size (especially for exact 
 `QPS / mean ms / RSS MB / recall` is the cell format in the cache and interface tables.
 Single-query QPS is steady-state: the first query is timed separately; batch QPS is the average of two rounds.
 
+**What NQ means**: NQ is the number of query vectors per measurement (the first
+NQ test queries). Recall is the top-100 average over those queries and
+`QPS = NQ / elapsed`. NQ is neither a concurrency setting nor a batch size.
+This run uses NQ=10 for SIFT/GIST/Deep and NQ=20 for GloVe; larger NQ is more
+stable but slower.
+
 
 ### Machine and measured resources
 

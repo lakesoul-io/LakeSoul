@@ -38,6 +38,13 @@ separate sections.
 | GIST-960 | 1,000,000 | 1,000 | 960 | L2 |
 | Deep-Image-96 | 9,990,000 | 10,000 | 96 | cosine |
 
+**What NQ means**:
+
+- NQ is the number of query vectors used in one measurement (the first NQ test queries), not a concurrency setting;
+- recall is averaged over the top-100 results of those NQ queries against ground truth;
+- QPS = `NQ / elapsed`; batch runs two rounds and averages them;
+- larger NQ is more stable but slower. This run uses NQ=10 for SIFT/GIST/Deep and NQ=20 for GloVe.
+
 ### Three-tier cache
 
 | Tier | Location | Contents |

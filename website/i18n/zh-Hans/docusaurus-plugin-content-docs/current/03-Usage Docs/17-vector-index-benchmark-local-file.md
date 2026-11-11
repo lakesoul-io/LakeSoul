@@ -37,6 +37,11 @@
 缓存/接口表中每格格式为 **单查 QPS / 平均 ms / RSS MB / recall**。
 单查 QPS 是去掉首次查询后的稳定值；batch QPS 是两轮平均。
 
+**NQ 的定义**：NQ 是每次测量使用的 query 向量数（测试集前 NQ 条），
+recall 是这些 query 的 top-100 平均，`QPS = NQ / 耗时`。
+NQ 不是并发数，也不是 batch size；本轮 SIFT/GIST/Deep 用 NQ=10，
+GloVe 用 NQ=20，NQ 越大越稳定但越慢。
+
 
 ### 机器与实测资源
 

@@ -37,6 +37,13 @@
 | GIST-960 | 1,000,000 | 1,000 | 960 | L2 |
 | Deep-Image-96 | 9,990,000 | 10,000 | 96 | cosine |
 
+**NQ 的定义**：
+
+- NQ 是每次测量实际使用的 query 向量数，取测试集前 NQ 条，不是并发数；
+- recall 是这 NQ 条 query 的 top-100 结果与 ground truth 的平均；
+- QPS = `NQ / 耗时`；batch 会跑两轮再平均；
+- NQ 越大结果越稳定，但测试越慢；本轮 SIFT/GIST/Deep 用 NQ=10，GloVe 用 NQ=20。
+
 ### 三级缓存
 
 | 层级 | 位置 | 内容 |
