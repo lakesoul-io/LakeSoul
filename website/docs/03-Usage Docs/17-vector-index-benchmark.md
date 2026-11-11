@@ -1,660 +1,337 @@
 # Vector Index Benchmark
 
-LakeSoul's vector search is built on an **IVF+RaBitQ** index that is maintained
-incrementally as data is written.  New vectors are appended as immutable
-*delta segments*; when the accumulated deltas indicate that a cluster's
-centroid no longer represents its data, a shard can be **rebuilt** from all of
-its data files (fresh k-means, published as a new index generation).  This page
-documents the benchmark suite used to quantify that behaviour, the results
-obtained on the standard ANN datasets, and what each experiment tells us.
+> Rewritten in November 2026 from fresh builds and retrievals. The old upsert/rebuild results are retired.
+> This benchmark covers **build + index search only**; it does not test upserts.
 
-The benchmark is a self-contained Rust scenario runner
-(`rust/lakesoul-datafusion/benches/vector_rebuild_bench.rs`) orchestrated by
-`script/benchmark/vector/run.sh`, with reporting in
-`script/benchmark/vector/plot.py`.
+## 1. Summary
 
-## What the benchmark answers
+The four standard ANN datasets all reach **recall@100 ≥ 0.97** with RaBitQ `bits=7`, at the cost of a larger `nprobe`.
+The main trade-offs are: `bits=7` vs `bits=1`, cache size (especially for exact re-rank), and interface.
 
-| # | Experiment | Question it answers |
-|---|------------|---------------------|
-| **E1** | Policy × drift quality/cost | As updates accumulate along different distributions, how does recall@k evolve, and when does a rebuild pay off relative to its cost? |
-| **E2** | Fresh build scaling | How do build time, peak memory and on-disk index size scale with vector count, dimension and `nlist`? |
-| **E3** | Per-cluster vs shard trigger | Does per-cluster drift detection fire earlier and more precisely than the old whole-shard `delta/base` ratio? |
-| **E4** | Search by index state | How do recall and QPS differ between a fresh index, one with accumulated deltas, and one that has just been rebuilt? |
-| **E5** | End-to-end DataFusion SQL | What do QPS and recall look like when the data is written with SQL `INSERT` and searched with `ORDER BY array_distance(...) LIMIT k` (index candidates + exact re-rank)? |
-| **E6** | f32 vs f16 vector storage | How much disk, memory and query latency does storing half-precision vectors buy, and what does it cost in recall? |
-| **E7** | Index-only ordering | How do recall and latency change when the candidates are ordered by the quantized distance from the index instead of an exact re-rank, and does the vector column still have to be read? |
+| Dataset | Config | recall | index single QPS | index batch QPS |
+|---|---|---:|---:|---:|
+| SIFT-128 | nlist=256, bits=7, nprobe=64 | 0.970 | 379.4 | 4128.9 |
+| GloVe-200 | nlist=4096, bits=7, nprobe=2048 | 0.972 | 114.1 | 591.5 |
+| GIST-960 | nlist=256, bits=7, nprobe=32 | 0.974 | 157.7 | 1709.2 |
+| Deep-Image-96 | nlist=1024, bits=7, nprobe=32 | 0.971 | 22.9 | 121.7 |
 
-## Test environment
+## 2. Method
 
 | Item | Value |
-|------|-------|
-| Machine | Linux, 32 CPU cores, 62 GB RAM, local NVMe SSD |
-| Build | `cargo bench` release profile, 16 worker threads (`RAYON_NUM_THREADS=16`) |
-| Storage | local filesystem; all scenarios write LakeSoul table data as **vortex** files (`PhysicalFormat::Vortex`; the SQL scenario selects it through the `file_format` table option) |
-| Distance metric | L2 |
-| Vector storage | `Float32` in every experiment except E6, which compares `Float32` with `Float16` |
-| Index config | `nlist = 256`, `total_bits = 7`, `top_k = 10`, search `nprobe = 64` (E4 sweeps 1–256) |
-| Queries per checkpoint | 100 |
-| Random seed | 42 (fixed; the workload is deterministic) |
-
-### Datasets
-
-| Dataset | Dimension | Base | Queries | Ground truth | Update pool |
-|---------|-----------|------|---------|--------------|-------------|
-| GIST1M | 960 | 1,000,000 | 1,000 | 100-NN | 500K `gist_learn` vectors |
-| GloVe-200d | 200 | 1,183,514 | 10,000 | 100-NN | base vectors (no separate learn set) |
-
-GIST vectors are unnormalised; GloVe-200d vectors are unit-normalised, so L2
-ranking is equivalent to angular ranking.  The datasets are standard ANN
-benchmarks and are read directly from local `fvecs`/`ivecs` files — no download
-is performed by the harness.
-
-## How the benchmark works
-
-### Workload
-
-For E1/E3/E4 the runner uses **100,000 base vectors** and applies **10 update
-rounds of 10,000 vectors** (a 100% growth in 10 steps).  Each round writes its
-new vectors as a LakeSoul vortex data file and then calls the production
-`auto_build_vector_index` policy with the new file plus the table's active
-files, exactly as a write commit does.
-
-### Rebuild policies
-
-| Policy | Behaviour |
-|--------|-----------|
-| `none` | Incremental delta segments only (`rebuild_mode: "none"`). |
-| `auto` | Real production policy: rebuild a shard when any of its clusters satisfies `delta_vectors / base_vectors > max_delta_ratio` (default `1.0`). |
-| `periodic` | Incremental, with a forced rebuild every 3 rounds. |
-| `always` | Forced rebuild on every round (upper bound on quality, worst case cost). |
-
-`periodic` and `always` are expressed through the same `auto_build_vector_index`
-call with a tiny `max_delta_ratio`, so no separate code path is measured.
-
-### Update (drift) modes
-
-Each round's vectors are sampled according to one of the following modes:
-
-| Mode | Description |
-|------|-------------|
-| `uniform` | Vectors drawn uniformly from the update pool — no distribution change. |
-| `skew` | Vectors drawn from the closest 5% of the pool to a random anchor — growth concentrated in a small region. |
-| `shift` | Pool vectors translated by a fixed offset of `3.0 × mean vector norm` along a random unit direction — the data distribution moves. |
-
-By default the **checkpoint queries follow the same drift** as the updates
-(shared skew region / shift direction, different random stream), so recall
-reflects the workload users actually issue after the data has changed.
-`--static-queries` restores the fixed dataset queries for comparison.
-
-### Metrics
-
-- **recall@10** — overlap between the returned top-10 and the exact top-10
-  computed by brute force over the vectors currently stored in the index
-  (base + all deltas).
-- **QPS** — throughput of the batched search path; **p50/p99** — per-query
-  latency of the single-threaded search path.
-- **build / update time** — wall time of a fresh build, of an incremental
-  delta flush, and of a rebuild.
-- **peak RSS** — process peak memory (`VmHWM`).
-- **index size** — bytes on disk under `_vector_index/`.
-- **drift signals** — per-cluster max `delta/base` ratio and the shard-level
-  `delta/base` ratio read from the manifest.
-- **generation** — manifest generation; a bump means a rebuild happened.
-
-## Results
-
-### E1 — rebuild policy vs update distribution
-
-**Goal.** Find out when rebuilding pays off: does recall degrade as deltas
-accumulate, and can a cheaper policy (per-cluster `auto`, periodic) match an
-always-rebuild policy?
-
-**Method.** 100K base + 10 × 10K updates for each `(policy, drift)` pair.
-Recall@10 is checked every round (GloVe) or every two rounds (GIST, which is
-more expensive to brute-force), using drifted queries.
-
-**GIST1M — `shift` drift (distribution move):**
-
-| Policy | Min recall@10 | Final recall@10 | Rebuilds | Index update time |
-|--------|--------------:|----------------:|---------:|------------------:|
-| `none` | 0.769 | 0.769 | 0 | 3.6 s |
-| `auto@1.0` | **0.929** | **0.938** | 3 | 10.2 s |
-| `periodic` (every 3) | 0.786 | 0.933 | 3 | 10.7 s |
-| `always` | 0.927 | 0.938 | 5 | 15.5 s |
-
-![E1 GIST shift](/img/vector-benchmark/e1_recall_gist_shift.png)
-
-**What it tells us.** When the distribution actually moves, incremental-only
-maintenance loses ~16 recall points (0.77 vs 0.93), and rebuilding is the only
-way to recover them.  The per-cluster `auto` policy with the default
-`max_delta_ratio = 1.0` reaches *always*-rebuild quality with **3 rebuilds and
-2/3 of the index time** — the first rebuild fires as soon as a cluster's deltas
-exceed its base, before recall has fallen far.
-
-**All drifts, minimum recall@10 (key policies):**
-
-| Dataset | Drift | `none` | `auto@1.0` | `periodic` | `always` |
-|---------|-------|-------:|-----------:|-----------:|---------:|
-| GIST1M | uniform | 0.966 | 0.966 | 0.962 | 0.969 |
-| GIST1M | skew | 0.903 | 0.897 | 0.902 | 0.897 |
-| GIST1M | shift | 0.769 | **0.929** | 0.786 | 0.927 |
-| GloVe-200d | uniform | 0.880 | 0.880 | 0.881 | 0.881 |
-| GloVe-200d | skew | 0.741 | 0.604 | 0.708 | 0.740 |
-| GloVe-200d | shift | 0.868 | 0.890 | 0.890 | 0.890 |
-
-![E1 GIST skew](/img/vector-benchmark/e1_recall_gist_skew.png)
-![E1 quality vs cost](/img/vector-benchmark/e1_quality_cost_gist.png)
-
-**What it tells us.**
-- **Uniform growth**: recall stays high with no rebuilds; rebuilding buys
-  nothing and only costs time.  (The `auto` policy mostly stays at 0 rebuilds
-  for `max_delta_ratio ≥ 1`.)
-- **Skewed growth**: concentrating updates in a region already covered by
-  existing clusters does not require retraining; per-cluster rebuilds add cost
-  without a recall benefit (they can even lower it slightly, because the
-  retrained centroids introduce run-to-run variance while the data itself did
-  not move).
-- **Distribution shift**: rebuilding is necessary and the per-cluster `auto`
-  policy is the best cost/quality compromise.
-
-### E2 — fresh build scaling
-
-**Goal.** Quantify the cost of the full (re)build that `auto`/manual rebuild
-performs, as a function of dataset size, dimension and `nlist`.
-
-**Method.** Fresh index build on a subset of each dataset with the provided
-ground truth; no incremental updates.  Time is the `build()` wall time, peak
-RSS is the process high-water mark, and index size is the on-disk total.
-
-| Dataset | Vectors | nlist | Build time | Peak RSS | Index size |
-|---------|--------:|------:|-----------:|---------:|-----------:|
-| GIST1M (960d) | 100,000 | 256 | 2.3 s | 3.3 GB | 86 MB |
-| GIST1M (960d) | 300,000 | 256 | 4.6 s | 5.7 GB | 254 MB |
-| GIST1M (960d) | 1,000,000 | 256 | 18.2 s | 13.4 GB | 845 MB |
-| GIST1M (960d) | 1,000,000 | 1024 | 60.8 s | 14.1 GB | 849 MB |
-| GloVe-200d | 100,000 | 256 | 0.7 s | 0.4 GB | 26 MB |
-| GloVe-200d | 1,000,000 | 256 | 4.2 s | 2.6 GB | 256 MB |
-| GloVe-200d | 1,000,000 | 1024 | 8.8 s | 2.7 GB | 257 MB |
-| GloVe-200d | 1,000,000 | 4096 | 36.0 s | 2.7 GB | 263 MB |
-
-![E2 GIST build](/img/vector-benchmark/e2_build_gist.png)
-![E2 GloVe build](/img/vector-benchmark/e2_build_glove.png)
-
-**What it tells us.**
-- Build time scales roughly linearly with the vector count and with `nlist`
-  (k-means iterations dominate: GIST 1M goes from 18 s at `nlist=256` to 61 s
-  at `nlist=1024`).  Index size is dominated by the quantised codes and grows
-  linearly with `N` in both dimensions.
-- Memory is dominated by the raw vectors being processed; 1M × 960-d needs
-  ~13–14 GB peak.  A rebuild of a billion-scale shard should be planned as an
-  offline/background operation with this budget.
-- The numbers also give the *cost* side of E1: for GIST 1M a rebuild is tens
-  of seconds, which is why triggering it only when drift is real (E3) matters.
-
-### E3 — per-cluster vs shard-level trigger
-
-**Goal.** The auto-rebuild trigger changed from a whole-shard
-`delta/base` ratio to *any cluster* crossing `max_delta_ratio`.  How much
-earlier does the new rule fire, and at what recall?
-
-**Method.** Run the same stream with `none` (no rebuilds) and record, each
-round, the maximum per-cluster `delta/base` ratio and the shard-level ratio.
-For each threshold, report the first round at which each rule would fire and
-the recall at that point.
-
-Excerpt (GIST1M):
-
-| Drift | Threshold | Per-cluster fires | Recall there | Shard-level fires | Recall there |
-|-------|----------:|------------------:|-------------:|------------------:|-------------:|
-| shift | 1.0 | round 1 | 0.813 | never (≤ 0.6 after 10 rounds) | – |
-| shift | 0.5 | round 1 | 0.813 | round 6 | 0.793 |
-| skew | 1.0 | round 2 | 0.968 | never | – |
-| uniform | 1.0 | round 6 | 0.982 | never | – |
-
-![E3 trigger GIST](/img/vector-benchmark/e3_trigger_gist.png)
-*Per-cluster (red) and shard-level (blue) drift signals vs recall (green) for
-the three drift modes.*
-
-**What it tells us.** Under distribution shift, the shard-level ratio stays
-below 0.6 for the whole run — the old rule would *never* rebuild, even though
-recall has already dropped to ~0.8.  The per-cluster rule fires in the first
-rounds, which is exactly the behaviour that keeps E1's `auto` policy close to
-`always` in quality.  Under uniform growth the cluster rule fires late (round
-6 at threshold 1.0), so it does not cause spurious rebuilds on healthy data.
-
-### E4 — search across index states
-
-**Goal.** Confirm that accumulating deltas (and rebuilding) does not degrade
-search quality or throughput in an unexpected way.
-
-**Method.** Build an index on the base data, then measure a full `nprobe`
-sweep (1, 4, 16, 64, 128, 256) for three states: **fresh** (base only),
-**delta** (after 6 rounds × 5K uniform updates, no rebuild), and **rebuilt**
-(the same data after a forced rebuild).  Ground truth is brute-forced over the
-vectors actually present in each index state.
-
-| Dataset | State | Index load | Best recall@10 | QPS at that point |
-|---------|-------|-----------:|---------------:|------------------:|
-| GIST1M | fresh | 57 ms | 0.977 (@nprobe 128) | 19,359 |
-| GIST1M | delta | 217 ms | 0.971 (@nprobe 64) | 21,377 |
-| GIST1M | rebuilt | 71 ms | 0.971 (@nprobe 128) | 14,691 |
-| GloVe-200d | fresh | 25 ms | 0.970 (@nprobe 256) | 17,318 |
-| GloVe-200d | delta | 89 ms | 0.949 (@nprobe 256) | 12,647 |
-| GloVe-200d | rebuilt | 31 ms | 0.951 (@nprobe 256) | 12,662 |
-
-![E4 GIST recall vs QPS](/img/vector-benchmark/e4_recall_qps_gist.png)
-
-**What it tells us.**
-- Search quality and throughput remain comparable across the three states;
-  delta segments do not break the recall/QPS trade-off (GloVe's small
-  regression recovers after rebuild).
-- The visible cost of accumulated deltas is **index load time** (GloVe
-  25 → 89 ms, GIST 57 → 217 ms with six delta generations), because every
-  segment must be read and merged when the index is opened.  Rebuilding folds
-  the deltas back into one base segment and removes that overhead.
-- Why opening a multi-segment index is slower, and what was done about it:
-  each segment pads its final FastScan batch to 32 vectors, so merging
-  segments requires extracting and re-packing every vector's codes (a single
-  freshly-built or rebuilt index needs none of this).  The loader now
-  reuses single-segment clusters as-is, concatenates already-aligned
-  segments directly, and re-packs the rest in parallel across batches while
-  reading clusters concurrently.  Compared with the first implementation this
-  cuts index open by **4–5× for delta-heavy indexes** (GIST 1.31 s → 0.27 s)
-  and **up to ~12× for fresh indexes** (GIST 0.69 s → 0.06 s).
-- Because search keeps working across states, rebuilds can be scheduled
-  independently of query serving; readers switch to the new generation when
-  the metadata catalog resolves the refreshed commit.
-
-### E5 — end-to-end DataFusion SQL (write + search)
-
-**Goal.** Measure the complete SQL path: create a table with the vector index
-property, write vectors with `INSERT ... SELECT` (DataFusion sink + the
-post-commit auto index build), then search with
-`ORDER BY array_distance(vec, ARRAY[...]) LIMIT k`.  This path is served by
-the index (candidate ids) plus an **exact re-rank of the candidate rows inside
-DataFusion**, so it exercises the integration rather than the index in
-isolation.  The scenario requires PostgreSQL metadata.
-
-**Method.**
-- `CREATE EXTERNAL TABLE ... OPTIONS ('vector_index_columns' ..., '
-  file_format' 'vortex')` declares the index and the write format; the base
-  100K vectors are inserted from an in-memory table registered in a separate
-  catalog, followed by 10 further `INSERT` rounds of 10K uniform vectors (200K
-  rows written in total).  The table's rebuild policy runs during these SQL
-  writes.
-- Search runs one SQL statement per query (including SQL planning) with
-  `nprobe = 64`; recall is computed against the exact top-10 over all written
-  vectors, and `EXPLAIN VERBOSE` is checked for `LakeSoulVectorSearchExec`.
-
-| Dataset | Rows written | Base insert | Recall@10 | QPS | Mean latency | p99 | Index (live generation) |
-|---------|-------------:|------------:|----------:|----:|-------------:|----:|-------------------------|
-| GloVe-200d | 200,000 | 1.3 s (+10 rounds, median 0.3 s) | 0.899 | 38.9 | 25.7 ms | 29.2 ms | 1 shard, 108 MB, 190K base + 10K delta, gen 2 |
-| GIST1M (960d) | 200,000 | 4.7 s (+10 rounds, median 0.7 s incl. rebuilds) | 0.980 | 23.3 | 43.0 ms | 64.4 ms | 1 shard, 432 MB, 170K base + 30K delta, gen 3 |
-
-These numbers are measured with the index cache, the single-shard fixes and
-the row-level pk locator described below.  The same workload written as **parquet** measured
-3.73 QPS / 268 ms (GloVe) and 1.03 QPS / 967 ms (GIST) at identical recall in
-an earlier run (before the index cache and shard fixes) — vortex was ~1.9×
-(GloVe) and ~3.1× (GIST) faster per SQL query.
-
-**Index cache.**  A process-wide cache keeps the merged in-memory index per
-`(object store, index prefix)` and reuses it while the manifest still resolves
-to the same commit; a rebuild or delta commit publishes a new manifest, so the
-next query loads the new generation and replaces the entry.  The same E5
-workload with and without the cache (identical recall, single hash bucket):
-
-| Dataset | Live index size | Cache off | Cache on | Speedup |
-|---------|----------------:|----------:|---------:|--------:|
-| GloVe-200d | 107 MB | 7.04 QPS / 142.0 ms | 24.74 QPS / 40.4 ms | 3.5× |
-| GIST1M (960d) | 432 MB | 3.19 QPS / 313.6 ms | 15.72 QPS / 63.6 ms | 4.9× |
-
-The cache is bounded by a byte budget
-(`LAKESOUL_VECTOR_INDEX_CACHE_BYTES`, default 512 MiB, `0` disables it) and
-evicts by weighted LRU.
-
-**Row-level primary-key locator.**  With the index cached, the remaining cost
-was the candidate scan: the pushed `pk IN (...)` filter is evaluated row by row
-over every file (~28 ms GloVe, ~47 ms GIST), and random candidate ids defeat
-zone-map pruning.  Two changes remove it:
-
-- *Candidate locator.*  A process-wide, per-file `pk -> row` map answers
-  `pk = v` and `pk IN (...)` filters (including the candidate list injected by
-  the vector search) by fetching only the matching rows through vortex row
-  indices.  The map is built lazily from the file's primary-key column and
-  keyed by the file location alone — data files are immutable, so an entry
-  never goes stale (a compacted or rewritten file has a new location).  The
-  candidate set is capped at 10,000 keys; parquet files and non-integer
-  primary keys fall back to the regular scan.  This is a generic primary-key
-  pushdown, not a vector-search special case.  Budget:
-  `LAKESOUL_PK_CACHE_BYTES` (default 256 MiB, `0` disables it).
-- *Small row blocks for vector columns.*  Vortex reads random rows at
-  row-block granularity, so the writer gives every column declared in the
-  table's `vector_index_columns` property 1024-row blocks instead of the
-  default 8192.  Fetching 100 scattered candidates then reads ~1/8 of the
-  bytes, and full-column scans are also slightly faster for these wide
-  columns.
-
-Together they cut execution from 34.3 ms to 20.4 ms (GloVe) and 53.5 ms to
-31.3 ms (GIST): the candidate fetch is now ~4 ms (GloVe) / ~7 ms (GIST) warm,
-and reads only the candidate rows.
-
-![E5 SQL end-to-end](/img/vector-benchmark/e5_sql_end_to_end.png)
-
-**What it tells us.**
-- **Functional correctness end to end:** `EXPLAIN VERBOSE` picks
-  `LakeSoulVectorSearchExec`, and SQL recall matches the index-level
-  measurements (0.90 for GloVe, 0.98 for GIST).  The candidate-then-rerank
-  path returns exact top-k among the retrieved candidates.
-- **SQL writes maintain the index:** each `INSERT` commits data files and the
-  post-commit hook updates (or rebuilds) the index; the manifest generation
-  reached 2 (GloVe) and 3 (GIST) across the ten update rounds.
-- **The candidate scan was the dominant cost and is now ~50× faster.**  The
-  query plan is `Filter(pk IN candidates)` above `MergeParquetExec`, and the
-  merge used to read and merge *every* row of every data file before the
-  filter ran (1.7 s per GIST query for 200K rows).  Two things were needed to
-  fix it: enable `file_filter_pushdown` for the vector-search reader
-  (`supports_filters_pushdown` classifies the pk filter as an Inexact pushdown
-  only when this option is set) and build the injected filter as a single
-  `pk IN (...)` instead of a chain of `OR`s — the OR-chain made vortex's
-  filter pushdown hang, while the IN list is evaluated and pushed cheaply.
-  With the filter applied inside each file scan, the merge only sees the
-  ~100 candidate rows: the scan dropped from ~1.7 s to ~10–30 ms.
-- **Index open was the dominant remaining cost and is now cached.**  After the
-  E4 loader optimizations every query still re-opened and re-merged the shard
-  (~0.10 s GloVe, ~0.27 s GIST) versus only ~6–30 ms of candidate scan.  The
-  process-level cache above removes that cost; together with the shard fixes
-  and the pk locator below the E5 workload now reaches 38.9 QPS (GloVe) /
-  23.3 QPS (GIST).
-- **`hashBucketNum` was silently ignored by SQL DDL.**  DataFusion lower-cases
-  `OPTIONS` keys and prefixes namespace-less keys with `format.`, so the
-  Spark/Flink spelling `'hashBucketNum' '1'` arrived as
-  `format.hashbucketnum` and the provider fell back to the default of 4
-  buckets.  Every query then probed 4 index shards and scanned 4× the data
-  files.  The option is now honored (the SQL test asserts the stored
-  property), and a single bucket is the fastest configuration for this
-  workload (24.7 vs 14.1 QPS for 4 buckets on GloVe).
-- **Buckets are read in parallel.**  `LakeSoulVectorSearchExec` used to drive
-  each hash bucket's reader sequentially; buckets are independent (separate
-  indexes and files), so they now run on one scoped thread each.  On a 4-bucket
-  GloVe table this cut execution from 92.6 ms to 61.5 ms per query.
-- **The candidate scan was the last bottleneck and is now row-level.**  The
-  pushed `pk IN (...)` predicate was evaluated across every row of every file
-  (~28 ms GloVe, ~47 ms GIST), because random candidate ids defeat zone-map
-  pruning.  The pk locator above replaces it with a per-file `pk -> row` map
-  and a row-index fetch: the scan itself is now sub-millisecond and the
-  fetch is ~4 ms (GloVe) / ~7 ms (GIST) with warm caches.  With it, the
-  per-query split is SQL planning ~2–4 ms, physical planning ~3–8 ms, index
-  probe ~6–11 ms and candidate fetch the rest.
-- **The write format matters.**  The SQL sink used to hard-code a parquet-only
-  multipart writer and ignored the table's `file_format`; it now uses the
-  format-aware writer, so tables can be created with
-  `file_format = "vortex"`.  At identical recall vortex is ~1.9×
-  (GloVe) and ~3.1× (GIST) faster per SQL query than parquet, because the
-  vortex candidate scan prunes faster.
-- **Index files are garbage-collected:** the commit history and reader leases
-  live in the metadata database (`vector_index_*` tables), and after every
-  write the superseded generations are collected once they are older than a
-  grace period (`gc_grace_seconds`, default 1 h, `vector_index_columns` JSON
-  property) and no reader holds a lease.  An explicit `gc_vector_index` API
-  (also exposed on `LakeSoulTable`) sweeps on demand and removes the
-  control-plane rows of dropped partitions.
-
-### E6 — f32 vs f16 vector storage
-
-**Goal.** The exact re-rank above the candidate scan reads the vector column of
-the ~100 candidate rows, so the element type of that column sets how many bytes
-each query fetches.  Half precision (`Float16` instead of `Float32`) halves the
-raw bytes at the cost of rounding every stored vector.  This experiment writes
-the *same* `f32` source vectors in either element type and scores recall against
-the **original `f32`** ground truth, so the only difference is the stored
-precision.
-
-**Method.**
-- The SQL scenario gains `--vector-type f32|f16`.  Because SQL DDL cannot spell
-  half precision, the table is created from an explicit Arrow schema
-  (`List<Float32>` or `List<Float16>`) through the metadata client; the
-  `vector_index_columns` property, the `INSERT ... SELECT` path, the post-commit
-  auto index build and the search SQL are unchanged, and both runs take the same
-  code path.
-- Both runs write the same 100K base + 10 × 10K uniform update rounds (single
-  hash bucket, `nlist = 256`, `nprobe = 64`, top-10, fixed seed), so the stored
-  vectors differ only by the `f32` → `f16` rounding.
-- `script/benchmark/vector/run.sh e6` runs the paired `f32`/`f16` measurements
-  on both datasets.
-
-| Dataset | Type | Data files | Live index | Recall@10 | QPS | Mean / p50 / p99 | Peak RSS |
-|---------|------|-----------:|-----------:|----------:|----:|------------------|---------:|
-| GloVe-200d | `f32` | 140.5 MB | 106.8 MB | 0.899 | 22.8 | 43.9 / 44.9 / 61.0 ms | 1271 MB |
-| GloVe-200d | `f16` | 80.1 MB | 104.1 MB | 0.907 | 21.7 | 46.0 / 45.7 / 59.3 ms | 944 MB |
-| GIST-960d | `f32` | 304.2 MB | 431.4 MB | 0.980 | 17.7 | 56.5 / 55.9 / 74.6 ms | 5522 MB |
-| GIST-960d | `f16` | 289.4 MB | 431.5 MB | 0.976 | 17.6 | 56.9 / 55.3 / 85.7 ms | 4725 MB |
-
-**What it tells us.**
-- **Half precision works end to end.**  `EXPLAIN VERBOSE` still picks
-  `LakeSoulVectorSearchExec`; `array_distance` coerces the `List<Float16>` column
-  to `List<Float64>` for the exact re-rank, and recall stays within run-to-run
-  noise of `f32` (GloVe 0.899 → 0.907, GIST 0.980 → 0.976).
-- **The disk win is data- and format-dependent, not a guaranteed 2×.**  GIST
-  vectors are integer-valued floats, and vortex's float compression already
-  shrinks the `f32` column to about the size of its `f16` encoding
-  (304 MB → 289 MB, −5%); on the unit-normalised GloVe vectors the saving is
-  real (140 MB → 80 MB, −43%).
-- **Query latency does not move.**  The re-rank fetches only the candidate rows,
-  so halving a few hundred KB is invisible next to index probing and planning:
-  QPS, p50 and execution time are the same within noise on both datasets.
-- **The index size is unchanged.**  RaBitQ stores quantised bits derived from
-  the data, not the stored `f32` values, so its footprint does not depend on the
-  column precision.  The lower peak RSS of the `f16` runs is incidental and not
-  a guaranteed memory reduction.
-
-**Takeaway:** half precision is a storage option, useful when disk or scanned
-bytes are the constraint and the vectors do not already compress well (dense
-unit-normalised embeddings such as GloVe).  It is not a retrieval-latency
-optimisation: the candidate-then-rerank path is dominated by index probing and
-planning, not by the precision of the candidate rows.
-
-### E7 — index-only ordering (no exact re-rank)
-
-**Goal.** E4–E6 order the candidates with an **exact re-rank**: the index
-returns candidate primary keys, the scan reads their stored vector column, and
-DataFusion sorts the rows by `array_distance`.  E7 instead orders by the
-quantized distance the index already computed and never reads the stored
-vector column, trading a small amount of recall for fewer bytes, less CPU and
-a simpler plan.  The mode is a session option — `exact` (default) or `index` —
-so a session or a single query can switch it on with SQL:
-
-```sql
-SET lakesoul_vector_search.rerank = 'index';
-```
-
-**Method.**
-- Same SQL scenario and index configuration as E5, but with a fresh index and
-  no update rounds (`--rounds 0`), so the comparison isolates the ordering.
-- Each dataset is run twice — `--rerank exact` and `--rerank index` — with the
-  table and index rebuilt for each run (100K base vectors, `nlist = 256`,
-  `nprobe = 64`, `top_k = 10` and the same fixed seed); the tables below are
-  medians over two runs.
-- In `index` mode each bucket only needs its own top-k (a globally top-k row
-  is always within its bucket's top-k), so the per-bucket candidate margin
-  drops from the exact re-rank's 10x (minimum 100 rows) to 2x.  A filter
-  between the scan and the sort keeps the 10x margin.
-- Recall is measured against the exact top-10 over the written vectors (not
-  the original dataset files, so the index state is the ground truth) and
-  `EXPLAIN` is checked for the ordered exec node
-  (`LakeSoulVectorSearchExec(vec=vec, top_k=10, metric=L2, order_by=true)`).
-  With `rerank = index` the physical plan has no `SortExec`, and the native
-  reader's plan shows `projection=[id]` — the vector column is not read.
-- `E7_TABLE_ROOT=s3://bucket/prefix` points the same pair at object storage
-  (RustFS here), with the endpoint and credentials from the `AWS_*`
-  environment variables.
-- `script/benchmark/vector/run.sh e7` runs the paired measurements on both
-  datasets.
-
-Local NVMe:
-
-| Dataset | Rerank | Recall@10 | QPS | Mean | p50 | p99 | Exec mean |
-|---------|--------|----------:|----:|-----:|----:|----:|----------:|
-| GloVe-200d | `exact` | **0.919** | 40.9 | 24.5 ms | 23.8 ms | 34.4 ms | 19.5 ms |
-| GloVe-200d | `index` | 0.898 | 97.7 | 10.3 ms | 10.1 ms | 13.9 ms | 7.0 ms |
-| GIST-960d (`LIMIT 100`) | `exact` | **1.000** | 20.8 | 48.1 ms | 46.5 ms | 65.7 ms | 40.9 ms |
-| GIST-960d (`LIMIT 100`) | `index` | 0.985 | 34.6 | 28.9 ms | 27.1 ms | 36.2 ms | 22.9 ms |
-
-Object storage (RustFS, same data and configuration):
-
-| Dataset | Rerank | Recall@10 | QPS | Mean | p50 | p99 | Exec mean |
-|---------|--------|----------:|----:|-----:|----:|----:|----------:|
-| GloVe-200d | `exact` | **0.919** | 17.1 | 58.6 ms | 57.9 ms | 88.7 ms | 52.0 ms |
-| GloVe-200d | `index` | 0.898 | 34.7 | 28.9 ms | 29.0 ms | 38.2 ms | 23.2 ms |
-| GIST-960d | `exact` | **1.000** | 17.9 | 57.1 ms | 52.5 ms | 139.7 ms | 46.9 ms |
-| GIST-960d | `index` | 0.976 | 28.6 | 35.0 ms | 36.2 ms | 87.6 ms | 24.8 ms |
-| GIST-960d (`LIMIT 100`) | `exact` | **1.000** | 10.4 | 96.4 ms | 91.9 ms | 194.7 ms | 86.8 ms |
-| GIST-960d (`LIMIT 100`) | `index` | 0.985 | 13.1 | 76.3 ms | 69.9 ms | 162.9 ms | 65.0 ms |
-
-**What it tells us.**
-- **The vector column really is gone.**  `EXPLAIN VERBOSE` shows the re-rank
-  and its `SortExec` removed, the exec node reports `order_by=true`, and the
-  reader plan contains `projection=[id]` instead of `projection=[id, vec]`.
-  For GIST with `LIMIT 100` (the scan fetches ~1,000 candidate rows) this
-  removes ~3.8 MB of vector reads per query; the primary-key column alone is
-  8 KB.  The exact plan additionally casts every candidate vector to
-  `List<Float64>` and evaluates `array_distance` over it.
-- **The candidate margin was the first-order cost, not the re-rank.**  With
-  the exact-mode margin (10x the limit, minimum 100 rows) the index-only scan
-  fetched an order of magnitude more rows than it could ever return, which
-  cancelled the saved vector bytes — on GloVe `index` was even slower than
-  `exact`.  With the 2x margin, index-only is 1.7–2.4x faster locally and
-  1.3–2.0x faster on object storage, and the gap grows with the vector width
-  and the limit (`LIMIT 100` scans 200 instead of 1,000 candidates).
-- **Object storage doubles the latency of both modes and keeps the ranking.**
-  The exact path pays for every candidate vector over the network; the
-  index-only path skips those reads, so its advantage is largest in absolute
-  terms (`LIMIT 100` on GIST: 194.7 ms → 162.9 ms p99).  Even GloVe, where the
-  stored vectors are small, goes from 0.919/58.6 ms (exact) to 0.898/28.9 ms
-  (index) once the candidate margin is right.
-- **Recall drops to the index-accuracy bound.**  Ordering by the quantized
-  distance gives up the re-rank's correction: GloVe 0.919 → 0.899 and GIST
-  1.000 → 0.976, matching the E4 observation that the re-rank only recovers
-  the last fraction of a point.  For k-NN search where the index estimate is
-  acceptable, that is a fair trade; the re-rank stays the default.
-
-**Caveats.**
-- Only L2 is supported today.  The inner-product estimate is not directly
-  comparable with `inner_product`, so `ORDER BY inner_product(...)` always
-  stays exact.
-- When the distance expression is also projected (`SELECT
-  array_distance(vec, q)`), the vector column has to be read anyway; the rule
-  then keeps the exact plan.
-- The ordered scan still reads the primary key, the payload and the CDC column
-  so that merge-on-read (upserts and deletes) remains exact; only the vector
-  column drops out.
-- If a key is present in several delta segments, the newest segment's score is
-  the one used, so an upserted vector is ranked by its updated value.
-
-## Recommendations
-
-1. Keep the default `rebuild_mode = "auto"` with `max_delta_ratio = 1.0` for
-   general workloads: it never rebuilds under uniform growth, detects real
-   distribution shifts within the first update rounds, and reaches
-   always-rebuild quality at roughly two thirds of the cost.
-2. For workloads with strong, continuous drift, lower `max_delta_ratio`
-   (e.g. `0.5`) or call the manual rebuild API during off-peak windows.
-3. For uniform or mildly skewed ingestion, `rebuild_mode = "none"` is
-   sufficient and avoids rebuild cost entirely.
-4. Budget rebuilds from the E2 table (GIST 1M: ~18 s at `nlist=256`, ~14 GB
-   peak RSS); make sure the trigger and rebuild run in the background.
-5. Store half-precision vector columns only when disk or scanned bytes are the
-   constraint and the data does not already compress well (E6): recall is
-   unchanged but so is query latency, and vortex's float compression can already
-   match the `f16` size for integer-valued vectors like GIST.
-6. Consider `SET lakesoul_vector_search.rerank = 'index'` when the stored
-   vector column is expensive to fetch (remote object storage, very wide
-   vectors) or the candidate set is large (E7): it removes the vector-column
-   reads and the exact distance computation and, with the 2x candidate margin,
-   is 1.7–2.4x faster than the exact re-rank on local storage and 1.3–2.0x
-   faster on object storage, at the cost of a small recall drop (GloVe
-   0.919 → 0.898, GIST 1.000 → 0.976 on the 100K benchmark).  Keep the default
-   `exact` only when the last fraction of a point of recall matters more than
-   the latency.
-
-## Reproducing the benchmark
-
-The harness reads local `fvecs`/`ivecs` datasets; adjust `DATA_DIR` or pass the
-dataset paths directly to the bench.
-
-```bash
-# Run every experiment on both datasets (writes JSON + logs under the
-# gitignored benchmark-results/ directory)
-DATA_DIR=~/program/opensource/rabitq-rs/data \
-  script/benchmark/vector/run.sh all --results /tmp/vector-bench
-
-# Or one experiment at a time
-script/benchmark/vector/run.sh e1 --results /tmp/vector-bench
-script/benchmark/vector/run.sh e6 --results /tmp/vector-bench
-script/benchmark/vector/run.sh e7 --results /tmp/vector-bench
-
-# Render the plots (matplotlib is fetched ephemerally by uv)
-uv run --with matplotlib python script/benchmark/vector/plot.py \
-  --results /tmp/vector-bench
-```
-
-`run.sh` supports `QUICK=1` for a small smoke run, and `THREADS=<n>` to set the
-worker thread count.  Each run writes one JSON file with the per-round metrics,
-a `logs/` file with the raw runner output, and `plots/*.png` with the figures
-used above.  The runner can also be invoked directly:
-
-### Search-stage instrumentation
-
-`--search-stats` prints and records the per-stage counters of one index search
-at `--nprobe` (clusters probed, FastScan batches, vectors scanned, lower-bound
-prunes, refinements, heap pushes) plus diagnostics-only timers for the SIMD
-accumulation and the scalar per-vector loop:
-
-```bash
-cargo bench -p lakesoul-datafusion --bench vector_rebuild_bench --   --scenario search --reuse --search-stats --nprobe 64   --base gist_base.fvecs --query gist_query.fvecs --work-dir /tmp/vector-bench
-```
-
-```bash
-# Per-operation kernel cost (one batch accumulation, distance
-# post-processing, one 6-bit refinement, the query LUT build)
-cargo bench -p lakesoul-vector --bench fastscan_kernel
-```
-
-Counters x kernel cost attribute a query to its stages: at 1M vectors /
-`nprobe = 64` they showed the scalar per-vector loop was 4.4 ms of a 6.5 ms
-search (GIST-960d) although only 223 of 399K scanned vectors survived the
-lower bound.  A batch-level AVX2 pruning mask plus lazy key materialization
-cut that loop to 0.5 ms and the single-query p50 to 2.69 ms (GIST-960d) and
-1.19 ms (GloVe-200d), with recall unchanged at every nprobe.
-
-### Cluster parallelism
-
-The probed clusters are independent, so they can be partitioned into groups
-that each keep their own top-k and are merged afterwards; the merge keeps the
-global top-k by the same estimator, so the result set is unchanged.  The
-session option `lakesoul_vector_search.parallelism` (default 1 = sequential)
-enables it, as does `--search-parallelism` in the search scenario:
-
-```sql
-SET lakesoul_vector_search.parallelism = 8;
-```
-
-| Dataset | nprobe | sequential | 4 groups | 8 groups | Recall@10 |
-|---------|-------:|-----------:|---------:|---------:|-----------|
-| GIST-960d 100K | 64 | 0.67 ms | 0.22 ms | 0.20 ms | 0.976 (unchanged) |
-| GloVe-200d 100K | 64 | 0.24 ms | 0.19 ms | 0.18 ms | 0.905 → 0.907 (tie order) |
-| GIST-960d 1M | 64 | 2.85 ms | 1.25 ms | 1.17 ms | 0.968 → 0.970 (tie order) |
-| GIST-960d 1M | 128 | 5.01 ms | 2.14 ms | 2.00 ms | 0.968 → 0.970 (tie order) |
-
-The groups share the thread pool, so batch throughput (`batch_search` with
-many queries in parallel) is highest with the sequential probe: enable the
-groups for latency-sensitive single-query workloads (interactive k-NN, the
-gateway) and keep `1` when many queries run concurrently.
-
-```bash
-cargo bench -p lakesoul-datafusion --bench vector_rebuild_bench -- \
-  --scenario stream --base gist_base.fvecs --query gist_query.fvecs \
-  --learn gist_learn.fvecs --policy auto --max-delta-ratio 1.0 \
-  --drift shift --drift-strength 3.0 --rounds 10 --per-round 10000 \
-  --work-dir /tmp/vector-bench/work/gist-shift
-```
+|---|---|
+| Storage | local file store (not MinIO/S3) |
+| Index | IVF + RaBitQ, `hash_bucket_num=4` |
+| top_k | 100 |
+| recall | recall@100 against HDF5 ground truth |
+| RSS | build/query process `VmRSS`; pgvector service RSS reported separately |
+| Build | separate process, excludes write-phase peak |
+| Cleanup | drop table and delete the local index/cache after each dataset |
+
+| Dataset | Base | Queries | GT | dim | metric |
+|---|---:|---:|---:|---:|---|
+| SIFT-128 | 1,000,000 | 10,000 | 100-NN | 128 | L2 |
+| GloVe-200 | 1,183,514 | 10,000 | 100-NN | 200 | cosine |
+| GIST-960 | 1,000,000 | 1,000 | 100-NN | 960 | L2 |
+| Deep-Image-96 | 9,990,000 | 10,000 | 100-NN | 96 | cosine |
+
+`QPS / mean ms / RSS MB / recall` is the cell format in the cache and interface tables.
+Single-query QPS is steady-state: the first query is timed separately; batch QPS is the average of two rounds.
+
+## 3. Build
+
+| Dataset | nlist | bits | build s | build RSS MB | write s |
+|---|---:|---:|---:|---:|---:|
+| SIFT-128 | 256 | 1 | 3.6 | 481 | 3.0 |
+| SIFT-128 | 256 | 7 | 4.1 | 542 | 3.0 |
+| SIFT-128 | 1024 | 1 | 6.2 | 325 | 3.0 |
+| SIFT-128 | 1024 | 7 | 7.2 | 385 | 3.0 |
+| GloVe-200 | 256 | 1 | 8.3 | 703 | 7.8 |
+| GloVe-200 | 256 | 7 | 9.3 | 767 | 7.8 |
+| GloVe-200 | 1024 | 1 | 13.6 | 685 | 7.8 |
+| GloVe-200 | 1024 | 7 | 14.0 | 763 | 7.8 |
+| GloVe-200 | 2048 | 7 | 24.3 | 770 | 7.8 |
+| GloVe-200 | 4096 | 7 | 53.0 | 790 | 7.8 |
+| GIST-960 | 256 | 1 | 34.1 | 791 | 30.1 |
+| GIST-960 | 256 | 7 | 37.1 | 1077 | 30.1 |
+| GIST-960 | 1024 | 1 | 51.2 | 638 | 30.1 |
+| GIST-960 | 1024 | 7 | 54.2 | 804 | 30.1 |
+| Deep-Image-96 | 1024 | 1 | 93.9 | 1207 | 31.4 |
+| Deep-Image-96 | 1024 | 7 | 97.1 | 1442 | 31.4 |
+| Deep-Image-96 | 4096 | 1 | 136.4 | 1038 | 31.4 |
+| Deep-Image-96 | 4096 | 7 | 138.5 | 1207 | 31.4 |
+
+Build RSS is the build process only. GloVe/Deep use row-normalized vectors; SIFT/GIST use raw L2.
+
+## 4. Retrieval quality and throughput
+
+`bits=1` is compact but cannot reach 0.97 recall at these nprobe values.
+`bits=7` reaches 0.97 with a larger nprobe. Full sweeps are in Appendix A.
+
+### Target configurations
+
+| Dataset | Config | recall | index single | index batch | exact single | exact batch |
+|---|---|---:|---:|---:|---:|---:|
+| SIFT-128 | nlist=256, bits=7, nprobe=64 | 0.970 | 379.4 | 4128.9 | 50.1 | 2307.1 |
+| GloVe-200 | nlist=4096, bits=7, nprobe=2048 | 0.972 | 114.1 | 591.5 | 15.4 | 477.5 |
+| GIST-960 | nlist=256, bits=7, nprobe=32 | 0.974 | 157.7 | 1709.2 | 13.4 | 1019.1 |
+| Deep-Image-96 | nlist=1024, bits=7, nprobe=32 | 0.971 | 22.9 | 121.7 | 8.6 | 138.9 |
+
+SIFT: `nlist=256,bits=7,nprobe=64`; GloVe: `nlist=4096,bits=7,nprobe=2048`;
+GIST: `nlist=256,bits=7,nprobe=32`; Deep: `nlist=1024,bits=7,nprobe=32`.
+
+## 5. Cache size
+
+Format: **single QPS / mean ms / RSS MB / recall**; batch uses the same format.
+All four use the target config above.
+
+### SIFT-128
+
+| cache | index single | index batch | exact single | exact batch |
+|---|---|---|---|---|
+| 512m | 332.1 / 3.01 / 381 / 0.970 | 4201.3 / 0.24 / 383 / 0.970 | 43.0 / 23.24 / 731 / 1.000 | 148.3 / 6.74 / 1059 / 1.000 |
+| 1g | 326.4 / 3.06 / 381 / 0.970 | 4232.3 / 0.24 / 383 / 0.970 | 46.4 / 21.57 / 818 / 1.000 | 223.1 / 4.48 / 1188 / 1.000 |
+| 8g | 379.4 / 2.64 / 380 / 0.970 | 4128.9 / 0.24 / 382 / 0.970 | 50.1 / 19.98 / 887 / 1.000 | 2307.1 / 0.43 / 890 / 1.000 |
+| off | 5.4 / 185.91 / 381 / 0.970 | 106.6 / 9.38 / 383 / 0.970 | — | — |
+
+### GloVe-200
+
+| cache | index single | index batch | exact single | exact batch |
+|---|---|---|---|---|
+| 512m | 95.6 / 10.46 / 585 / 0.972 | 595.2 / 1.68 / 587 / 0.972 | 10.0 / 99.83 / 999 / 0.993 | 34.2 / 29.28 / 1210 / 0.993 |
+| 1g | 95.0 / 10.52 / 587 / 0.972 | 600.1 / 1.67 / 588 / 0.972 | 15.0 / 66.52 / 1093 / 0.993 | 142.0 / 7.04 / 1282 / 0.993 |
+| 8g | 114.1 / 8.77 / 586 / 0.972 | 591.5 / 1.69 / 588 / 0.972 | 15.4 / 64.74 / 1257 / 0.993 | 477.5 / 2.09 / 1260 / 0.993 |
+| off | 2.2 / 461.97 / 585 / 0.972 | 21.1 / 47.42 / 588 / 0.972 | — | — |
+
+### GIST-960
+
+| cache | index single | index batch | exact single | exact batch |
+|---|---|---|---|---|
+| 512m | 75.5 / 13.25 / 1117 / 0.974 | 1732.8 / 0.58 / 1118 / 0.974 | 5.2 / 190.49 / 1686 / 0.990 | 13.7 / 73.12 / 1950 / 0.990 |
+| 1g | 160.3 / 6.24 / 1115 / 0.974 | 1762.8 / 0.57 / 1117 / 0.974 | 6.7 / 148.45 / 1890 / 0.990 | 58.9 / 16.97 / 2154 / 0.990 |
+| 8g | 157.7 / 6.34 / 1113 / 0.974 | 1709.2 / 0.59 / 1115 / 0.974 | 13.4 / 74.68 / 1990 / 0.990 | 1019.1 / 0.98 / 1993 / 0.990 |
+| off | 3.1 / 327.81 / 1128 / 0.974 | 31.2 / 32.04 / 1132 / 0.974 | — | — |
+
+### Deep-Image-96
+
+| cache | index single | index batch | exact single | exact batch |
+|---|---|---|---|---|
+| 512m | 20.9 / 47.77 / 967 / 0.971 | 22.8 / 43.85 / 1722 / 0.971 | 8.5 / 118.06 / 1300 / 0.989 | 7.1 / 141.38 / 1991 / 0.989 |
+| 1g | 21.0 / 47.56 / 1064 / 0.971 | 127.8 / 7.82 / 1095 / 0.971 | 9.0 / 111.68 / 1556 / 0.989 | 63.3 / 15.79 / 1858 / 0.989 |
+| 8g | 22.9 / 43.72 / 1042 / 0.971 | 121.7 / 8.22 / 1052 / 0.971 | 8.6 / 115.94 / 1870 / 0.989 | 138.9 / 7.20 / 1987 / 0.989 |
+| off | 21.9 / 45.57 / 540 / 0.971 | 29.9 / 33.45 / 623 / 0.971 | — | — |
+
+Observations:
+
+- Index-only is not very sensitive to cache size, except that 512 MiB can add latency.
+- Exact re-rank is dominated by the block cache: 512 MiB -> 1 GiB -> 8 GiB gives large batch gains (SIFT 148 -> 223 -> 2307 QPS; GIST 14 -> 59 -> 1019; Deep 7.1 -> 63 -> 139).
+- Without any cache, index-only still works; exact single-query falls back (GloVe high-recall config ~1 QPS), but native exact batch is not implemented (`exact batch search could not open data file`).
+
+## 6. Interfaces
+
+Target configuration, cache 8 GiB; format **single QPS / mean ms / RSS MB / recall**.
+DataFusion batch means a loop of SQL queries; Python batch is the native batch entry.
+
+### SIFT-128
+
+| Interface | rerank | single | batch | server RSS MB |
+|---|---|---|---|---:|
+| python | index | 379.4 / 2.64 / 380 / 0.970 | 4128.9 / 0.24 / 382 / 0.970 | — |
+| python | exact | 50.1 / 19.98 / 887 / 1.000 | 2307.1 / 0.43 / 890 / 1.000 | — |
+| datafusion | index | 450.7 / 2.22 / 381 / 0.970 | 478.6 / 2.09 / 381 / 0.970 | — |
+| datafusion | exact | 49.9 / 20.06 / 874 / 1.000 | 396.8 / 2.52 / 874 / 1.000 | — |
+| pgvector | index | 390.6 / 2.56 / 64 / 0.970 | 440.2 / 2.27 / 65 / 0.970 | 304 |
+| pgvector | exact | 100.0 / 10.00 / 64 / 1.000 | 189.6 / 5.27 / 65 / 1.000 | 853 |
+
+### GloVe-200
+
+| Interface | rerank | single | batch | server RSS MB |
+|---|---|---|---|---:|
+| python | index | 114.1 / 8.77 / 586 / 0.972 | 591.5 / 1.69 / 588 / 0.972 | — |
+| python | exact | 15.4 / 64.74 / 1257 / 0.993 | 477.5 / 2.09 / 1260 / 0.993 | — |
+| datafusion | index | 145.1 / 6.89 / 585 / 0.972 | 154.5 / 6.47 / 587 / 0.972 | — |
+| datafusion | exact | 15.8 / 63.45 / 1243 / 0.993 | 132.4 / 7.56 / 1244 / 0.993 | — |
+| pgvector | index | 130.9 / 7.64 / 67 / 0.968 | 148.8 / 6.72 / 67 / 0.968 | 506 |
+| pgvector | exact | 15.5 / 64.56 / 67 / 1.000 | 74.0 / 13.52 / 67 / 1.000 | 1495 |
+
+### GIST-960
+
+| Interface | rerank | single | batch | server RSS MB |
+|---|---|---|---|---:|
+| python | index | 157.7 / 6.34 / 1113 / 0.974 | 1709.2 / 0.59 / 1115 / 0.974 | — |
+| python | exact | 13.4 / 74.68 / 1990 / 0.990 | 1019.1 / 0.98 / 1993 / 0.990 | — |
+| datafusion | index | 170.9 / 5.85 / 1114 / 0.974 | 182.8 / 5.47 / 1115 / 0.974 | — |
+| datafusion | exact | 13.6 / 73.80 / 1990 / 0.990 | 159.9 / 6.26 / 1992 / 0.990 | — |
+| pgvector | index | 190.5 / 5.25 / 60 / 0.974 | 217.6 / 4.60 / 60 / 0.974 | 1046 |
+| pgvector | exact | 4.1 / 243.59 / 60 / 0.990 | 33.6 / 29.73 / 60 / 0.990 | 3949 |
+
+### Deep-Image-96
+
+| Interface | rerank | single | batch | server RSS MB |
+|---|---|---|---|---:|
+| python | index | 22.9 / 43.72 / 1042 / 0.971 | 121.7 / 8.22 / 1052 / 0.971 | — |
+| python | exact | 8.6 / 115.94 / 1870 / 0.989 | 138.9 / 7.20 / 1987 / 0.989 | — |
+| datafusion | index | 21.7 / 46.04 / 1053 / 0.971 | 96.6 / 10.36 / 1125 / 0.971 | — |
+| datafusion | exact | 8.4 / 119.75 / 1890 / 0.989 | 88.8 / 11.26 / 2200 / 0.989 | — |
+| pgvector | index | 22.3 / 44.81 / 63 / 0.971 | 94.0 / 10.64 / 63 / 0.971 | 902 |
+| pgvector | exact | 4.2 / 238.81 / 63 / 0.989 | 11.9 / 84.30 / 63 / 0.989 | 3825 |
+
+pgvector is a separate service process (`postgres-lakesoul`, 4 worker threads).
+Python and DataFusion are in-process. pgvector exact re-rank needs much more service RSS,
+reaching about 3.9 GB for GIST and 3.8 GB for Deep.
+
+## 7. Parallelism and bucket count
+
+SIFT, target config, Python native, cache 8 GiB, NQ=20:
+
+| parallelism | index single QPS | index batch QPS |
+|---:|---:|---:|
+| 1 | 378.6 | 4301.7 |
+| 2 | 325.4 | 2643.1 |
+| 4 | 379.4 | 3190.7 |
+
+The native batch path already probes buckets in parallel; extra `parallelism` oversubscribes
+the short batch. Keep `hash_bucket_num × vector_search.parallelism` near the CPU count.
+
+## 8. Recommendations
+
+| Goal | Recommendation |
+|---|---|
+| best recall / QPS balance | bits=7, nprobe at the 0.97 knee; see target table |
+| minimum memory | 512 MiB cache: index-only works, exact is slow |
+| exact re-rank | 8 GiB L1/L2 cache; 512 MiB is not enough for batch |
+| Python native | use `batch_search`; set `parallelism=1` for short batches |
+| SQL | DataFusion single-query is close to native; batch through SQL is slower than native batch |
+| pgvector | convenient service interface, but exact is expensive and needs several GB RSS |
+
+## 9. Limitations
+
+- Local file store, not S3/MinIO; absolute QPS differs from remote-storage runs.
+- NQ is 10 for most result tables (SIFT parameter sweep uses 20); QPS is steady-state.
+- The GloVe high-recall config measures 0.972 at NQ=10 and 0.977 in the larger NQ=20 sweep.
+- pgvector cache sizes were measured only on the GloVe high-recall config (512 MiB/1 GiB/8 GiB);
+  other pgvector interface rows use 8 GiB.
+- Reported `index_bytes` is omitted because old index generations were still on disk
+  while building multiple configurations; build time/RSS are not affected.
+- The English and Chinese pages share this data set; regenerate both from the raw JSONL if needed.
+
+## 10. Raw results
+
+- [raw/sift_query.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/sift_query.jsonl)
+- [raw/glove.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove.jsonl)
+- [raw/glove_target.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_target.jsonl)
+- [raw/glove_hi.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_hi.jsonl)
+- [raw/gist.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/gist.jsonl)
+- [raw/deep.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/deep.jsonl)
+
+## Appendix A: full index-only parameter sweep
+
+Cache 8 GiB, Python native, `nprobe` sweep. Values are QPS / recall.
+
+### SIFT-128
+
+| nlist | bits | nprobe | recall | single QPS | batch QPS |
+|---:|---:|---:|---:|---:|---:|
+| 256 | 1 | 8 | 0.517 | 506.8 | 7999.1 |
+| 256 | 1 | 16 | 0.531 | 488.0 | 7457.1 |
+| 256 | 1 | 32 | 0.524 | 475.8 | 6616.4 |
+| 256 | 1 | 64 | 0.524 | 445.3 | 5573.8 |
+| 256 | 1 | 128 | 0.524 | 434.6 | 4498.9 |
+| 256 | 7 | 8 | 0.862 | 457.2 | 6445.2 |
+| 256 | 7 | 16 | 0.949 | 409.8 | 5508.6 |
+| 256 | 7 | 32 | 0.967 | 395.1 | 4849.1 |
+| 256 | 7 | 64 | 0.970 | 391.1 | 4214.7 |
+| 256 | 7 | 128 | 0.970 | 359.9 | 3308.2 |
+| 1024 | 1 | 8 | 0.495 | 508.0 | 7490.5 |
+| 1024 | 1 | 16 | 0.529 | 509.0 | 7217.4 |
+| 1024 | 1 | 32 | 0.553 | 438.6 | 5931.0 |
+| 1024 | 1 | 64 | 0.551 | 437.1 | 5993.7 |
+| 1024 | 1 | 128 | 0.549 | 441.8 | 5520.5 |
+| 1024 | 7 | 8 | 0.675 | 467.9 | 6185.5 |
+| 1024 | 7 | 16 | 0.826 | 430.1 | 6102.4 |
+| 1024 | 7 | 32 | 0.932 | 430.2 | 5361.2 |
+| 1024 | 7 | 64 | 0.964 | 379.3 | 4702.7 |
+| 1024 | 7 | 128 | 0.972 | 355.7 | 4203.0 |
+
+### GloVe-200
+
+| nlist | bits | nprobe | recall | single QPS | batch QPS |
+|---:|---:|---:|---:|---:|---:|
+| 256 | 1 | 8 | 0.404 | 411.4 | 6585.8 |
+| 256 | 1 | 16 | 0.442 | 389.8 | 5870.8 |
+| 256 | 1 | 32 | 0.451 | 375.8 | 5000.8 |
+| 256 | 1 | 64 | 0.455 | 335.9 | 3908.0 |
+| 256 | 1 | 128 | 0.452 | 292.5 | 2868.2 |
+| 256 | 1 | 256 | 0.448 | 245.1 | 1995.2 |
+| 256 | 7 | 8 | 0.691 | 343.0 | 4220.1 |
+| 256 | 7 | 16 | 0.799 | 316.3 | 3258.1 |
+| 256 | 7 | 32 | 0.878 | 267.2 | 2478.8 |
+| 256 | 7 | 64 | 0.940 | 229.5 | 1827.7 |
+| 256 | 7 | 128 | 0.969 | 185.3 | 1337.1 |
+| 256 | 7 | 256 | 0.975 | 146.2 | 1016.5 |
+| 1024 | 1 | 8 | 0.425 | 391.3 | 5869.6 |
+| 1024 | 1 | 16 | 0.444 | 389.4 | 5658.9 |
+| 1024 | 1 | 32 | 0.461 | 380.3 | 5164.5 |
+| 1024 | 1 | 64 | 0.468 | 371.3 | 4678.9 |
+| 1024 | 1 | 128 | 0.466 | 334.5 | 3903.0 |
+| 1024 | 1 | 256 | 0.463 | 311.6 | 3022.2 |
+| 1024 | 7 | 8 | 0.634 | 334.1 | 5011.2 |
+| 1024 | 7 | 16 | 0.709 | 338.5 | 4309.6 |
+| 1024 | 7 | 32 | 0.802 | 290.7 | 2586.0 |
+| 1024 | 7 | 64 | 0.876 | 283.6 | 2760.0 |
+| 1024 | 7 | 128 | 0.926 | 239.8 | 2142.5 |
+| 1024 | 7 | 256 | 0.957 | 192.2 | 1550.4 |
+| 2048 | 7 | 256 | 0.927 | 228.8 | 1868.7 |
+| 2048 | 7 | 512 | 0.959 | 187.5 | 1358.0 |
+| 2048 | 7 | 1024 | 0.973 | 152.9 | 1049.6 |
+| 4096 | 7 | 512 | 0.939 | 195.6 | 1381.6 |
+| 4096 | 7 | 1024 | 0.969 | 156.6 | 1087.5 |
+| 4096 | 7 | 2048 | 0.977 | 132.8 | 800.2 |
+
+### GIST-960
+
+| nlist | bits | nprobe | recall | single QPS | batch QPS |
+|---:|---:|---:|---:|---:|---:|
+| 1024 | 7 | 64 | 0.966 | 146.4 | 1747.5 |
+| 1024 | 7 | 128 | 0.980 | 144.3 | 1475.1 |
+| 1024 | 7 | 256 | 0.981 | 120.8 | 1095.8 |
+| 1024 | 7 | 512 | 0.981 | 108.2 | 801.3 |
+| 1024 | 7 | 1024 | 0.981 | 91.2 | 587.9 |
+| 256 | 1 | 8 | 0.681 | 225.3 | 3055.8 |
+| 256 | 1 | 16 | 0.721 | 213.5 | 2729.8 |
+| 256 | 1 | 32 | 0.740 | 192.8 | 2170.9 |
+| 256 | 1 | 64 | 0.742 | 176.0 | 1604.4 |
+| 256 | 1 | 128 | 0.744 | 141.3 | 1137.9 |
+| 256 | 7 | 8 | 0.827 | 184.3 | 2511.4 |
+| 256 | 7 | 16 | 0.932 | 169.9 | 2039.0 |
+| 256 | 7 | 32 | 0.974 | 163.5 | 1788.7 |
+| 256 | 7 | 64 | 0.980 | 136.3 | 1342.3 |
+| 256 | 7 | 128 | 0.981 | 122.6 | 1007.9 |
+| 1024 | 1 | 8 | 0.588 | 210.3 | 2688.7 |
+| 1024 | 1 | 16 | 0.681 | 188.8 | 2583.1 |
+| 1024 | 1 | 32 | 0.735 | 193.9 | 2434.3 |
+| 1024 | 1 | 64 | 0.758 | 188.5 | 2096.3 |
+| 1024 | 1 | 128 | 0.764 | 168.3 | 1692.0 |
+| 1024 | 7 | 8 | 0.635 | 164.0 | 2354.8 |
+| 1024 | 7 | 16 | 0.790 | 166.6 | 2236.9 |
+| 1024 | 7 | 32 | 0.905 | 152.6 | 1493.4 |
+
+### Deep-Image-96
+
+| nlist | bits | nprobe | recall | single QPS | batch QPS |
+|---:|---:|---:|---:|---:|---:|
+| 1024 | 1 | 8 | 0.522 | 113.3 | 1104.6 |
+| 1024 | 1 | 16 | 0.527 | 67.3 | 587.4 |
+| 1024 | 1 | 32 | 0.530 | 36.7 | 303.2 |
+| 1024 | 1 | 64 | 0.529 | 21.6 | 179.3 |
+| 1024 | 7 | 8 | 0.904 | 66.8 | 437.3 |
+| 1024 | 7 | 16 | 0.943 | 34.9 | 225.3 |
+| 1024 | 7 | 32 | 0.971 | 21.4 | 115.8 |
+| 1024 | 7 | 64 | 0.975 | 13.2 | 65.3 |
+| 4096 | 1 | 8 | 0.514 | 72.0 | 1669.1 |
+| 4096 | 1 | 16 | 0.538 | 40.1 | 1268.6 |
+| 4096 | 1 | 32 | 0.550 | 23.2 | 860.0 |
+| 4096 | 1 | 64 | 0.552 | 12.5 | 534.7 |
+| 4096 | 7 | 8 | 0.809 | 65.5 | 1041.4 |
+| 4096 | 7 | 16 | 0.898 | 36.3 | 682.9 |
+| 4096 | 7 | 32 | 0.952 | 20.3 | 347.3 |
+| 4096 | 7 | 64 | 0.967 | 11.2 | 190.1 |
