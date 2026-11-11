@@ -454,7 +454,8 @@ Scenarios, each with concrete expected state:
    against the new IPs.
 3. **Protocol mismatch**: run one worker with an older build advertising
    `lakesoul-distributed/1`; it must be excluded from the snapshot (only
-   `DISTRIBUTED_PROTOCOL_VERSION` = `lakesoul-distributed/4` eligible) and be
+   `DISTRIBUTED_PROTOCOL_VERSION` = `lakesoul-distributed/2`, or
+   `lakesoul-distributed/2-ivm` with the `ivm` feature, eligible) and be
    visible in the coordinator logs as a candidate (not eligible).
 4. **RBAC failure**: bind the Role only in a different namespace (or drop
    `get/list`): first sync fails, startup aborts with `403 Forbidden` in the

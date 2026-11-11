@@ -174,7 +174,7 @@ jobs:
         env:
           LAKESOUL_IO_USE_V2_MERGE: "false"
           RUST_BACKTRACE: full
-        run: cargo test --profile test-fast $TEST_PKGS --bins --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test update_contract --jobs 4 -- --nocapture
+        run: cargo test --profile test-fast $TEST_PKGS --bins --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test update_contract --test upsert_contract --jobs 4 -- --nocapture
       - name: Test v2 merge
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
@@ -190,7 +190,7 @@ jobs:
         env:
           LAKESOUL_IO_USE_V2_MERGE: "true"
           RUST_BACKTRACE: full
-        run: cargo test --profile test-fast $TEST_PKGS --bins --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test update_contract --jobs 4 -- --nocapture
+        run: cargo test --profile test-fast $TEST_PKGS --bins --test sql_compat --test session_contract --test storage_contract --test catalog_contract --test vector_contract --test tpch_contract --test ddl_contract --test insert_contract --test update_contract --test upsert_contract --jobs 4 -- --nocapture
 
       # IVM tests use their own package selection but must reuse the shared
       # dependency build of the main test steps.  The script builds the core

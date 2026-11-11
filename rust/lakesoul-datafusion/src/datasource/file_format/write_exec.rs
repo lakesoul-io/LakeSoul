@@ -185,18 +185,44 @@ fn violation_report(error: &DataFusionError) -> Option<DFResult<RecordBatch>> {
     use crate::write_mode::{NotNullViolation, WriteViolation};
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
     while let Some(current) = source {
-        let payload = if let Some(violation) = current.downcast_ref::<WriteViolation>() {
+        let payload: Option<(&'static str, String)> = if let Some(violation) =
+            current.downcast_ref::<WriteViolation>()
+        {
             Some(match violation {
                 WriteViolation::DuplicateKey { table } => {
-                    ("duplicate_key", table.as_str())
+                    ("duplicate_key", table.clone())
                 }
-                WriteViolation::ExistingKey { table } => ("existing_key", table.as_str()),
-                WriteViolation::NotNull { column } => ("not_null", column.as_str()),
+                WriteViolation::ExistingKey { table } => ("existing_key", table.clone()),
+                WriteViolation::NotNull { column } => ("not_null", column.clone()),
+                WriteViolation::DuplicateUpsertRow { table } => {
+                    ("duplicate_upsert_row", table.clone())
+                }
+                WriteViolation::InvalidText { message } => {
+                    ("invalid_text", message.clone())
+                }
+                WriteViolation::DivisionByZero { message } => {
+                    ("division_by_zero", message.clone())
+                }
             })
+        } else if let Some(violation) = current.downcast_ref::<NotNullViolation>() {
+            Some(("not_null", violation.column.clone()))
         } else {
+            // A value that failed to convert at run time is PostgreSQL's
+            // `22P02`. The concrete Arrow error does not survive the Flight
+            // boundary, so report it with the same typed channel as a
+            // writer violation.
             current
-                .downcast_ref::<NotNullViolation>()
-                .map(|violation| ("not_null", violation.column.as_str()))
+                .downcast_ref::<datafusion::arrow::error::ArrowError>()
+                .and_then(|error| match error {
+                    datafusion::arrow::error::ArrowError::CastError(_)
+                    | datafusion::arrow::error::ArrowError::ParseError(_) => {
+                        Some(("invalid_text", error.to_string()))
+                    }
+                    datafusion::arrow::error::ArrowError::DivideByZero => {
+                        Some(("division_by_zero", error.to_string()))
+                    }
+                    _ => None,
+                })
         };
         if let Some((kind, detail)) = payload {
             return Some(
@@ -210,7 +236,7 @@ fn violation_report(error: &DataFusionError) -> Option<DFResult<RecordBatch>> {
                         Arc::new(Int64Array::from(vec![0])) as ArrayRef,
                         Arc::new(StringArray::from(vec![""])) as ArrayRef,
                         Arc::new(StringArray::from(vec![kind])) as ArrayRef,
-                        Arc::new(StringArray::from(vec![detail])) as ArrayRef,
+                        Arc::new(StringArray::from(vec![detail.as_str()])) as ArrayRef,
                     ],
                 )
                 .map_err(Into::into),
@@ -273,6 +299,11 @@ fn collect_reports(
                 "duplicate_key" => WriteViolation::DuplicateKey { table: detail },
                 "existing_key" => WriteViolation::ExistingKey { table: detail },
                 "not_null" => WriteViolation::NotNull { column: detail },
+                "duplicate_upsert_row" => {
+                    WriteViolation::DuplicateUpsertRow { table: detail }
+                }
+                "invalid_text" => WriteViolation::InvalidText { message: detail },
+                "division_by_zero" => WriteViolation::DivisionByZero { message: detail },
                 kind => {
                     return Err(DataFusionError::Internal(format!(
                         "unknown write report violation {kind}"

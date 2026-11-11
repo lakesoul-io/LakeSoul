@@ -1485,18 +1485,6 @@ async fn refusal_matrix_changes_nothing(h: &Harness) -> Result<()> {
             "non-primary-key conflict target",
         ),
         (
-            "INSERT INTO pk_items (id, val, label) VALUES (1, 1, 'x') \
-             ON CONFLICT (id) DO UPDATE SET val = EXCLUDED.val",
-            "0A000",
-            "partial DO UPDATE assignment set",
-        ),
-        (
-            "INSERT INTO pk_items (id, val, label) VALUES (1, 1, 'x') \
-             ON CONFLICT (id) DO UPDATE SET label = 'constant'",
-            "0A000",
-            "DO UPDATE without EXCLUDED",
-        ),
-        (
             "INSERT INTO missing_table (id) VALUES (1)",
             "42P01",
             "missing table",

@@ -98,6 +98,12 @@ pub enum WriteViolation {
     ExistingKey { table: String },
     /// A NOT NULL column received NULL.
     NotNull { column: String },
+    /// The upsert source would affect a row this command already modified.
+    DuplicateUpsertRow { table: String },
+    /// A value failed to convert while the statement was running.
+    InvalidText { message: String },
+    /// An arithmetic expression divided by zero while executing.
+    DivisionByZero { message: String },
 }
 
 impl WriteViolation {
@@ -106,6 +112,9 @@ impl WriteViolation {
         match self {
             Self::DuplicateKey { .. } | Self::ExistingKey { .. } => "23505",
             Self::NotNull { .. } => "23502",
+            Self::DuplicateUpsertRow { .. } => "21000",
+            Self::InvalidText { .. } => "22P02",
+            Self::DivisionByZero { .. } => "22012",
         }
     }
 }
@@ -129,11 +138,67 @@ impl fmt::Display for WriteViolation {
                     "null value in column \"{column}\" violates not-null constraint"
                 )
             }
+            Self::DuplicateUpsertRow { table } => write!(
+                f,
+                "ON CONFLICT DO UPDATE command cannot affect row a second time \
+                 (table '{table}')"
+            ),
+            Self::InvalidText { message } => f.write_str(message),
+            Self::DivisionByZero { message } => f.write_str(message),
         }
     }
 }
 
 impl std::error::Error for WriteViolation {}
+
+/// Marker prefix carried through transports that flatten errors to text.
+pub const VIOLATION_MARKER: &str = "LakeSoul statement violation ";
+
+/// A [`WriteViolation`] whose `Display` carries its SQLSTATE.
+///
+/// A distributed stage boundary re-encodes an error as text, so a typed
+/// downcast no longer reaches the coordinator. The marker keeps the SQLSTATE
+/// recoverable without matching user-facing prose. The wrapped violation stays
+/// available as the error source for in-process callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodedViolation {
+    pub violation: WriteViolation,
+}
+
+impl EncodedViolation {
+    pub fn new(violation: WriteViolation) -> Self {
+        Self { violation }
+    }
+
+    /// Recover the SQLSTATE from a flattened marker message.
+    pub fn sqlstate_of(message: &str) -> Option<&'static str> {
+        let rest = message.split(VIOLATION_MARKER).nth(1)?;
+        match rest.get(..5)? {
+            "21000" => Some("21000"),
+            "23502" => Some("23502"),
+            "22P02" => Some("22P02"),
+            "22012" => Some("22012"),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for EncodedViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{VIOLATION_MARKER}{}: {}",
+            self.violation.sqlstate(),
+            self.violation
+        )
+    }
+}
+
+impl std::error::Error for EncodedViolation {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.violation)
+    }
+}
 
 /// A write that lost a race with a concurrent writer.
 ///

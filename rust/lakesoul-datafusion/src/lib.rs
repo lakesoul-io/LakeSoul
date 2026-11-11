@@ -25,6 +25,7 @@ pub mod index;
 pub mod index_maintenance;
 pub mod lakesoul_table;
 pub mod pg_assignment;
+pub mod pg_insert_analysis;
 pub mod planner;
 pub mod session;
 pub mod text_index;

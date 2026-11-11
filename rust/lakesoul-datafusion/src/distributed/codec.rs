@@ -81,6 +81,7 @@ use rootcause::compat::boxed_error::IntoBoxedError;
 use vortex_datafusion::{VortexScanCodec, VortexSource};
 
 use crate::datasource::file_format::{InsertOnly, LakeSoulCommitExec, LakeSoulWriteExec};
+use crate::datasource::upsert_exec::{UpsertExec, UpsertMode};
 use crate::federation::external_file::{ExternalFileScanCodec, ExternalFileWriteCodec};
 use crate::write_mode::ConflictMode;
 
@@ -96,19 +97,20 @@ use crate::write_mode::ConflictMode;
 /// The generation also covers the *list* of codecs (see [`user_codecs`]): its
 /// order decides which codec reads an extension payload, so registering a
 /// codec a worker does not know is a protocol change even when no existing
-/// message layout moved. Generation 4 extends the ADBC foreign codec at
-/// position 4 with the write stage (`FederationWriteExec`) after
-/// [`VortexScanCodec`], [`LakeSoulScanCodec`] and [`LakeSoulWriteCodec`].
-/// Generation 5 appends the IVM refresh codec at position 5 when the `ivm`
-/// feature is enabled. Generation 6 appends [`ExternalFileScanCodec`], which
-/// carries an external-file store configuration and a nested scan plan.
-/// Generation 7 appends [`ExternalFileWriteCodec`] for append-only writes.
-/// Split them the moment one ships alone. The merge-on-read payload that `/1`
-/// implied lost its codec, which is the same kind of list change.
-#[cfg(feature = "ivm")]
-pub const CODEC_VERSION: u32 = 7;
-#[cfg(not(feature = "ivm"))]
-pub const CODEC_VERSION: u32 = 6;
+/// message layout moved. The distributed format is still unreleased, so the
+/// generation stays at 2 while the list grows: every coordinator and worker
+/// must run the same build. Do not bump it for an unreleased change, including
+/// registering a new codec: append the codec to [`user_codecs`] and keep the
+/// number at 2. Bump it only once a wire format has shipped or two
+/// independently deployed builds must interoperate. It covers the vortex scan
+/// codec at position 1, the metadata-only scan codec at position 2, the write
+/// codec at position 3, the federation codec at position 4, the IVM refresh
+/// codec at position 5 when the `ivm` feature is enabled, then
+/// [`ExternalFileScanCodec`], [`ExternalFileWriteCodec`] and
+/// [`UpsertExecCodec`] for the ordered per-key upsert state machine. The
+/// merge-on-read payload that `/1` implied lost its codec, which is the same
+/// kind of list change.
+pub const CODEC_VERSION: u32 = 2;
 
 /// Wire format for the metadata-only [`LakeSoulScanExec`].
 ///
@@ -362,6 +364,281 @@ pub struct WriteSortRequirementProto {
     pub nulls_first: Option<bool>,
 }
 
+/// Wire format for [`UpsertExec`], the sequential upsert state machine.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpsertExecProto {
+    #[prost(uint32, tag = "1")]
+    pub codec_version: u32,
+    #[prost(message, optional, tag = "2")]
+    pub output_schema: Option<datafusion_proto::protobuf::Schema>,
+    #[prost(uint64, repeated, tag = "3")]
+    pub key_columns: Vec<u64>,
+    #[prost(uint64, repeated, tag = "4")]
+    pub old_columns: Vec<u64>,
+    #[prost(uint64, repeated, tag = "5")]
+    pub new_columns: Vec<u64>,
+    /// `-1` means the source has no match marker (legacy insert-only mode).
+    #[prost(int64, tag = "6")]
+    pub matched_column: i64,
+    #[prost(uint64, repeated, tag = "7")]
+    pub not_null_columns: Vec<u64>,
+    #[prost(string, repeated, tag = "8")]
+    pub not_null_names: Vec<String>,
+    #[prost(message, optional, tag = "9")]
+    pub where_expr: Option<datafusion_proto::protobuf::PhysicalExprNode>,
+    #[prost(message, repeated, tag = "10")]
+    pub assignments: Vec<UpsertAssignmentProto>,
+    #[prost(string, tag = "11")]
+    pub table_name: String,
+    #[prost(enumeration = "UpsertModeProto", tag = "12")]
+    pub mode: i32,
+    #[prost(uint64, optional, tag = "13")]
+    pub order_column: Option<u64>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpsertAssignmentProto {
+    #[prost(bool, tag = "1")]
+    pub present: bool,
+    #[prost(message, optional, tag = "2")]
+    pub expr: Option<datafusion_proto::protobuf::PhysicalExprNode>,
+}
+
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration,
+)]
+#[repr(i32)]
+pub enum UpsertModeProto {
+    Update = 0,
+    LegacyInsertOnly = 1,
+}
+
+/// [`PhysicalExtensionCodec`] for [`UpsertExec`].
+#[derive(Debug, Clone, Default)]
+pub struct UpsertExecCodec;
+
+impl PhysicalExtensionCodec for UpsertExecCodec {
+    fn try_decode(
+        &self,
+        buf: &[u8],
+        inputs: &[Arc<dyn ExecutionPlan>],
+        ctx: &TaskContext,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        let proto = UpsertExecProto::decode(buf).map_err(|err| {
+            DataFusionError::Internal(format!("decode UpsertExec: {err}"))
+        })?;
+        if proto.codec_version != CODEC_VERSION {
+            return Err(DataFusionError::Internal(format!(
+                "UpsertExec plan encoded with codec version {} but this build \
+                 speaks {CODEC_VERSION}: coordinator and workers must run \
+                 compatible LakeSoul builds",
+                proto.codec_version
+            )));
+        }
+        let [input] = inputs else {
+            return Err(DataFusionError::Internal(
+                "UpsertExec requires exactly one input".to_string(),
+            ));
+        };
+        let output_schema: SchemaRef = Arc::new(
+            proto
+                .output_schema
+                .as_ref()
+                .ok_or_else(|| {
+                    DataFusionError::Internal(
+                        "UpsertExec is missing output_schema".to_string(),
+                    )
+                })?
+                .try_into()?,
+        );
+        let decode_ctx = PhysicalPlanDecodeContext::new(ctx, self);
+        let where_expr = proto_converter
+            .proto_to_physical_expr(
+                proto.where_expr.as_ref().ok_or_else(|| {
+                    DataFusionError::Internal(
+                        "UpsertExec is missing where_expr".to_string(),
+                    )
+                })?,
+                input.schema().as_ref(),
+                &decode_ctx,
+            )
+            .map_err(|err| {
+                DataFusionError::Internal(format!("decode UpsertExec where_expr: {err}"))
+            })?;
+        let mut assignments = Vec::with_capacity(proto.assignments.len());
+        for assignment in &proto.assignments {
+            let expression = match (&assignment.expr, assignment.present) {
+                (Some(expr), true) => Some(
+                    proto_converter
+                        .proto_to_physical_expr(
+                            expr,
+                            input.schema().as_ref(),
+                            &decode_ctx,
+                        )
+                        .map_err(|err| {
+                            DataFusionError::Internal(format!(
+                                "decode UpsertExec assignment: {err}"
+                            ))
+                        })?,
+                ),
+                (None, false) => None,
+                _ => {
+                    return Err(DataFusionError::Internal(
+                        "UpsertExec assignment flag/expression mismatch".to_string(),
+                    ));
+                }
+            };
+            assignments.push(expression);
+        }
+        if proto.not_null_columns.len() != proto.not_null_names.len() {
+            return Err(DataFusionError::Internal(
+                "UpsertExec not-null index/name length mismatch".to_string(),
+            ));
+        }
+        let not_null = proto
+            .not_null_columns
+            .iter()
+            .zip(proto.not_null_names.iter())
+            .map(|(index, name)| {
+                Ok((
+                    usize::try_from(*index).map_err(|_| {
+                        DataFusionError::Internal(
+                            "UpsertExec not-null index does not fit usize".to_string(),
+                        )
+                    })?,
+                    name.clone(),
+                ))
+            })
+            .collect::<DFResult<Vec<_>>>()?;
+        let matched_column = if proto.matched_column == -1 {
+            None
+        } else if proto.matched_column < -1 {
+            return Err(DataFusionError::Internal(
+                "UpsertExec match marker must be -1 or a column index".into(),
+            ));
+        } else {
+            Some(usize::try_from(proto.matched_column).map_err(|_| {
+                DataFusionError::Internal(
+                    "UpsertExec matched column does not fit usize".to_string(),
+                )
+            })?)
+        };
+        let mode = UpsertModeProto::try_from(proto.mode).map_err(|_| {
+            DataFusionError::Internal(format!("unknown UpsertExec mode {}", proto.mode))
+        })?;
+        let mode = match mode {
+            UpsertModeProto::Update => UpsertMode::Update,
+            UpsertModeProto::LegacyInsertOnly => UpsertMode::LegacyInsertOnly,
+        };
+        let decode = |name: &str, values: &[u64]| {
+            values
+                .iter()
+                .map(|value| {
+                    usize::try_from(*value).map_err(|_| {
+                        DataFusionError::Internal(format!(
+                            "UpsertExec {name} index does not fit usize"
+                        ))
+                    })
+                })
+                .collect::<DFResult<Vec<_>>>()
+        };
+        let exec = UpsertExec::try_new(
+            Arc::clone(input),
+            output_schema,
+            decode("key", &proto.key_columns)?,
+            usize::try_from(proto.order_column.ok_or_else(|| {
+                DataFusionError::Internal(
+                    "UpsertExec is missing its source-order column".into(),
+                )
+            })?)
+            .map_err(|_| {
+                DataFusionError::Internal(
+                    "UpsertExec source-order index does not fit usize".into(),
+                )
+            })?,
+            decode("old", &proto.old_columns)?,
+            decode("new", &proto.new_columns)?,
+            matched_column,
+            not_null,
+            where_expr,
+            assignments,
+            proto.table_name,
+            mode,
+        )?;
+        Ok(Arc::new(exec))
+    }
+
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        proto_converter: &dyn PhysicalProtoConverterExtension,
+    ) -> DFResult<()> {
+        let Some(exec) = node.downcast_ref::<UpsertExec>() else {
+            return exec_err!("UpsertExecCodec cannot encode {}", node.name());
+        };
+        let output_schema = exec.output_schema().as_ref().try_into().map_err(|err| {
+            DataFusionError::Internal(format!("encode UpsertExec output_schema: {err}"))
+        })?;
+        let where_expr = proto_converter
+            .physical_expr_to_proto(exec.where_expr(), self)
+            .map_err(|err| {
+                DataFusionError::Internal(format!("encode UpsertExec where_expr: {err}"))
+            })?;
+        let mut assignments = Vec::with_capacity(exec.assignments().len());
+        for assignment in exec.assignments() {
+            let expression = match assignment {
+                Some(expression) => Some(
+                    proto_converter
+                        .physical_expr_to_proto(expression, self)
+                        .map_err(|err| {
+                            DataFusionError::Internal(format!(
+                                "encode UpsertExec assignment: {err}"
+                            ))
+                        })?,
+                ),
+                None => None,
+            };
+            assignments.push(UpsertAssignmentProto {
+                present: expression.is_some(),
+                expr: expression,
+            });
+        }
+        let proto = UpsertExecProto {
+            codec_version: CODEC_VERSION,
+            output_schema: Some(output_schema),
+            key_columns: exec.key_columns().iter().map(|v| *v as u64).collect(),
+            order_column: Some(exec.order_column() as u64),
+            old_columns: exec.old_columns().iter().map(|v| *v as u64).collect(),
+            new_columns: exec.new_columns().iter().map(|v| *v as u64).collect(),
+            matched_column: exec.matched_column().map_or(-1, |v| v as i64),
+            not_null_columns: exec
+                .not_null_columns()
+                .iter()
+                .map(|(index, _)| *index as u64)
+                .collect(),
+            not_null_names: exec
+                .not_null_columns()
+                .iter()
+                .map(|(_, name)| name.clone())
+                .collect(),
+            where_expr: Some(where_expr),
+            assignments,
+            table_name: exec.table_name().to_string(),
+            mode: match exec.mode() {
+                UpsertMode::Update => UpsertModeProto::Update as i32,
+                UpsertMode::LegacyInsertOnly => UpsertModeProto::LegacyInsertOnly as i32,
+            },
+        };
+        buf.reserve(proto.encoded_len());
+        proto.encode(buf).map_err(|err| {
+            DataFusionError::Internal(format!("encode UpsertExec: {err}"))
+        })?;
+        Ok(())
+    }
+}
+
 /// [`PhysicalExtensionCodec`] for [`LakeSoulWriteExec`], the worker-side write
 /// node of an INSERT.
 ///
@@ -386,7 +663,8 @@ const MAX_WRITE_ID_LEN: usize = 64;
 /// position 3 [`LakeSoulWriteCodec`] (distributed write stages), position 4
 /// [`crate::federation::FederationPlanCodec`] (ADBC foreign scans and writes),
 /// position 5 the IVM refresh codec when the `ivm` feature is enabled, then
-/// [`ExternalFileScanCodec`] and [`ExternalFileWriteCodec`]. A worker that
+/// [`ExternalFileScanCodec`], [`ExternalFileWriteCodec`] and finally
+/// [`UpsertExecCodec`] for the ordered per-key upsert state machine. A worker
 /// registers a different list either fails to decode a stage or would hand a
 /// payload to the wrong codec, so the list is part of the wire generation
 /// ([`CODEC_VERSION`]).
@@ -406,6 +684,7 @@ pub fn user_codecs() -> Vec<Arc<dyn PhysicalExtensionCodec>> {
     codecs.push(Arc::new(lakesoul_ivm::distributed::IvmRefreshCodec));
     codecs.push(Arc::new(ExternalFileScanCodec));
     codecs.push(Arc::new(ExternalFileWriteCodec));
+    codecs.push(Arc::new(UpsertExecCodec));
     codecs
 }
 
