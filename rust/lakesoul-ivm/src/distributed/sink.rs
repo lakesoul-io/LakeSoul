@@ -21,6 +21,7 @@ use datafusion::physical_expr::expressions::Column as PhysicalColumn;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -101,37 +102,34 @@ pub async fn without_sink<F: std::future::Future>(future: F) -> F::Output {
     IVM_SINK_DISABLED.scope(true, future).await
 }
 
-/// Columns whose values must stay together in one write task.
+/// Columns whose hash selects the writer bucket.
 ///
-/// The writer assigns a row to a hash bucket from these columns; keeping every
-/// row with the same value in one task means a delete and its replacement
-/// insert land in the same write.  The columns come from the state table and
-/// the MV so a dual sink groups both sides.
+/// Keeping every row with the same values in one writer partition means a
+/// delete and its replacement insert land in the same write.  A dual sink
+/// uses the state table's keys; the MV is a projection of the same rows.
 fn sink_key_columns(table: &IvmTable, mv: Option<&IvmTable>) -> Vec<String> {
-    let mut keys = Vec::new();
+    // Prefer the state/primary table's keys: every state row must land in its
+    // one writer partition.  The MV is a projection of the same rows and
+    // shares those keys in every IVM view.
     for table in std::iter::once(table).chain(mv) {
         let source = if table.bucket_columns.is_empty() {
             &table.primary_keys
         } else {
             &table.bucket_columns
         };
-        for key in source {
-            if !keys.contains(key) {
-                keys.push(key.clone());
-            }
+        if !source.is_empty() {
+            return source.clone();
         }
     }
-    keys
+    Vec::new()
 }
 
-/// Hash-partition a write input by its merge key.
+/// Partition a write input so each writer owns distinct LakeSoul buckets.
 ///
 /// A sink whose input stays on one partition is folded into the coordinator's
-/// head stage together with every operator above the last shuffle: the keyed
-/// lookup, state merge and the write itself then all run on the coordinator.
-/// Repartitioning by the writer's key columns gives the sink its own
-/// multi-task stage, so the distributed planner can place it on workers and
-/// keep each key's changelog in one task.
+/// head stage; partitioning by the business key alone still makes every sink
+/// partition open one writer per bucket, which leaves many tiny files.  The
+/// bucket id gives each writer a disjoint bucket set.
 fn partition_for_write(
     input: Arc<dyn ExecutionPlan>,
     table: &IvmTable,
@@ -150,16 +148,52 @@ fn partition_for_write(
         }
     }
     let input_partitions = input.output_partitioning().partition_count();
-    // The writer already splits rows into `hash_bucket_num` buckets.  A sink
-    // with far more partitions than that opens many writers and produces many
-    // tiny files, so cap the write fan-out at the bucket count while keeping
-    // at least two partitions to retain the network boundary.
     let bucket_count = table
         .hash_bucket_num
         .parse::<usize>()
         .ok()
         .filter(|count| *count > 0)
         .unwrap_or(input_partitions);
+
+    // Align sink partitions with the writer's buckets.  A hash repartition by
+    // key does not do that: every sink partition still contains rows of every
+    // bucket, so every partition opens one writer per bucket and a small view
+    // leaves dozens of tiny files.  Adding the LakeSoul bucket id and range
+    // partitioning on it gives each bucket exactly one sink partition; the
+    // writer then emits one file per bucket and range partition.
+    if bucket_count > 1 {
+        use crate::runtime::keyed_plan::{
+            IVM_BUCKET_COLUMN, bucket_repartition_by_columns,
+        };
+        let key_columns = sink_key_columns(table, mv);
+        if !key_columns.is_empty() {
+            // Hash on the LakeSoul bucket id, not on the business key: the
+            // writer hashes each row to one of `bucket_count` buckets, so
+            // every bucket gets exactly one sink partition and one writer.
+            let with_bucket =
+                bucket_repartition_by_columns(input, &key_columns, bucket_count)
+                    .map_err(|error| {
+                        datafusion::error::DataFusionError::Execution(error.to_string())
+                    })?;
+            let bucket_index = with_bucket.schema().index_of(IVM_BUCKET_COLUMN)?;
+            let schema = with_bucket.schema();
+            let keep = schema
+                .fields()
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != bucket_index)
+                .map(|(index, field)| {
+                    (
+                        Arc::new(PhysicalColumn::new(field.name(), index))
+                            as Arc<dyn PhysicalExpr>,
+                        field.name().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            return Ok(Arc::new(ProjectionExec::try_new(keep, with_bucket)?));
+        }
+    }
+
     let partitions = input_partitions.min(bucket_count).max(2);
     Ok(Arc::new(RepartitionExec::try_new(
         input,

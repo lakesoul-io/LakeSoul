@@ -3107,8 +3107,16 @@ pub(crate) fn current_refresh_epoch() -> Option<i64> {
 /// manager instead of creating a second IVM-private runtime.
 pub(crate) fn refresh_session() -> SessionContext {
     if let Some(factory) = crate::config::session_factory() {
+        let started = std::time::Instant::now();
         match factory.create() {
-            Ok(context) => return context,
+            Ok(context) => {
+                tracing::debug!(
+                    target: "lakesoul_ivm::runtime",
+                    elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                    "refresh session created"
+                );
+                return context;
+            }
             Err(error) => {
                 tracing::error!(
                     %error,
@@ -3204,8 +3212,16 @@ fn ensure_memory_default_catalog(context: &SessionContext) {
 /// subplans that the pinned distributed range shuffle cannot nest safely.
 pub(crate) fn refresh_session_local() -> SessionContext {
     if let Some(factory) = crate::config::session_factory() {
+        let started = std::time::Instant::now();
         match factory.create_local() {
-            Ok(context) => return context,
+            Ok(context) => {
+                tracing::debug!(
+                    target: "lakesoul_ivm::runtime",
+                    elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                    "local refresh session created"
+                );
+                return context;
+            }
             Err(error) => {
                 tracing::error!(
                     %error,
@@ -3809,6 +3825,7 @@ async fn write_dataframe_distributed(
         table: table.clone(),
         epoch: expected_epoch,
     };
+    let plan_started = std::time::Instant::now();
     let plan = crate::distributed::IVM_SINK_SPEC
         .scope(sink_spec, async { frame.create_physical_plan().await })
         .await?;
@@ -3822,7 +3839,9 @@ async fn write_dataframe_distributed(
     if !sink_applied {
         return write_dataframe_local(table, frame).await;
     }
+    let plan_ms = plan_started.elapsed().as_secs_f64() * 1000.0;
 
+    let execute_started = std::time::Instant::now();
     let mut stream =
         datafusion::physical_plan::execute_stream(plan, frame.task_ctx().into())?;
     let mut files = Vec::new();
@@ -3901,6 +3920,15 @@ async fn write_dataframe_distributed(
             deletes += task_deletes.value(row);
         }
     }
+    let execute_ms = execute_started.elapsed().as_secs_f64() * 1000.0;
+    tracing::debug!(
+        target: "lakesoul_ivm::runtime",
+        table = %table.table_name,
+        plan_ms,
+        execute_ms,
+        rows = inserts + deletes,
+        "distributed write timings"
+    );
     Ok(WrittenFiles {
         files,
         rows,
@@ -4033,6 +4061,7 @@ async fn write_dataframe_dual_distributed(
         mv_schema: mv.schema.clone(),
         epoch: expected_epoch,
     };
+    let plan_started = std::time::Instant::now();
     let plan = crate::distributed::IVM_DUAL_SINK_SPEC
         .scope(spec, async { frame.create_physical_plan().await })
         .await?;
@@ -4046,6 +4075,8 @@ async fn write_dataframe_dual_distributed(
     if !applied {
         return write_dataframe_dual_local(state, mv, client, frame).await;
     }
+    let plan_ms = plan_started.elapsed().as_secs_f64() * 1000.0;
+    let execute_started = std::time::Instant::now();
 
     let mut stream =
         datafusion::physical_plan::execute_stream(plan, frame.task_ctx().into())?;
@@ -4116,6 +4147,8 @@ async fn write_dataframe_dual_distributed(
             }
         }
     }
+    let execute_ms = execute_started.elapsed().as_secs_f64() * 1000.0;
+    let commit_started = std::time::Instant::now();
     let state_ids = if state_suppressed {
         Vec::new()
     } else {
@@ -4126,6 +4159,18 @@ async fn write_dataframe_dual_distributed(
     } else {
         mv.commit_files(client, mv_files).await?
     };
+    let commit_ms = commit_started.elapsed().as_secs_f64() * 1000.0;
+    tracing::debug!(
+        target: "lakesoul_ivm::runtime",
+        state = %state.table_name,
+        mv = %mv.table_name,
+        plan_ms,
+        execute_ms,
+        commit_ms,
+        state_rows,
+        mv_rows,
+        "distributed dual write timings"
+    );
     Ok(DualWriteOutcome {
         mv_ids,
         state_ids,
