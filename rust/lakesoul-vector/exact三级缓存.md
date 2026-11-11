@@ -236,3 +236,19 @@ rm -rf "$LAKESOUL_CACHE_PATH"
 
 block 缓存、PK index、原始数据页都在 `LAKESOUL_CACHE_PATH` 下，统一删除即可；
 不再有独立 payload 目录需要清理。
+
+## 兼容性：旧部署的默认值
+
+只有显式使用统一变量（`LAKESOUL_VECTOR_CACHE` / `LAKESOUL_VECTOR_MEMORY_BYTES`）
+时，才按 60/10/30 重新分配 L1 预算。只设置旧变量的部署保持原有默认：
+
+- loaded-index 内存缓存：默认 512 MiB；
+- snapshot cache：默认 512 MiB；
+- decoded-block cache：默认 256 MiB；
+- block rows：默认固定 256，不启用自适应的约 256 KiB 目标；
+- 通用 DiskCache：`LAKESOUL_CACHE_SIZE` 全量给通用缓存；index-SSD cache
+  默认关闭，除非显式设置 `LAKESOUL_INDEX_SSD_BYTES`；
+- `LAKESOUL_INDEX_SSD_DIR` 仍按旧语义直接使用，不再自动追加 `/index-cache`。
+
+统一模式才会把 `LAKESOUL_CACHE_SIZE` 按 50/50 分给通用 DiskCache 和
+index-SSD，并按 `LAKESOUL_VECTOR_MEMORY_BYTES` 派生 cluster/snapshot/block。

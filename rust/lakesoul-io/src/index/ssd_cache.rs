@@ -59,10 +59,7 @@ use object_store::{
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
 
-const ENV_BYTES: &str = "LAKESOUL_INDEX_SSD_BYTES";
-const ENV_DIR: &str = "LAKESOUL_INDEX_SSD_DIR";
 const ENV_KIND: &str = "LAKESOUL_INDEX_SSD_KIND";
-const ENV_CACHE_PATH: &str = "LAKESOUL_CACHE_PATH";
 const DEFAULT_KIND: &str = "index-v1";
 const TEMP_SUFFIX: &str = ".tmp";
 
@@ -423,24 +420,12 @@ impl ObjectStore for IndexCachedStore {
 /// Process-wide cache configured from the environment.
 pub fn global() -> Option<Arc<IndexSsdCache>> {
     static CACHE: LazyLock<Option<Arc<IndexSsdCache>>> = LazyLock::new(|| {
-        let capacity = std::env::var(ENV_BYTES)
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .unwrap_or(0);
+        let config = lakesoul_vector::cache_config::config();
+        let capacity = config.index_ssd_bytes() as u64;
         if capacity == 0 {
             return None;
         }
-        let root = std::env::var(ENV_DIR)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var(ENV_CACHE_PATH)
-                    .ok()
-                    .filter(|value| !value.trim().is_empty())
-                    .map(|value| PathBuf::from(value).join("index-cache"))
-            })
-            .unwrap_or_else(|| std::env::temp_dir().join("lakesoul-index-cache"));
+        let root = PathBuf::from(config.index_ssd_path());
         let kind = std::env::var(ENV_KIND)
             .ok()
             .filter(|value| !value.trim().is_empty())
