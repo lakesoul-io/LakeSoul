@@ -36,7 +36,10 @@ default-members = [
   "rust/lakesoul-common",
   "rust/lakesoul-vector",
 ]
-exclude = ["rust/third_party/sqllogictest"]
+# Local checkouts of forked dependencies (gitignored), used through a `[patch]`
+# while developing them. Excluded so their crates resolve against their own
+# workspace instead of becoming members of this one.
+exclude = ["rust/third_party/sqllogictest", "vendor"]
 resolver = "3"
 
 [workspace.package]

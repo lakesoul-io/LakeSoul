@@ -9,7 +9,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use datafusion_postgres::{ServerOptions, auth::AuthManager, serve_with_handlers};
+use datafusion_postgres::{
+    ServerOptions, TcpKeepalive, auth::AuthManager, serve_with_handlers,
+};
 use lakesoul_common::misc::JiffTime;
 use lakesoul_datafusion::cli::{CoreArgs, DistributedArgs};
 use lakesoul_datafusion::session::{ExecutionMemoryArgs, IvmRefreshSessionFactory};
@@ -135,6 +137,30 @@ struct Cli {
     /// Maximum encoded size a statement's result may reach, 0 for unlimited
     #[clap(long, env = "LAKESOUL_PG_MAX_RESULT_BYTES", default_value_t = 0)]
     max_result_bytes: usize,
+
+    /// Seconds a client connection may be idle before TCP keepalive probes
+    /// start, 0 to leave keepalive off. Without it, a client that vanishes
+    /// without closing its socket keeps its connection - and every slot it
+    /// holds - open indefinitely.
+    #[clap(
+        long,
+        env = "LAKESOUL_PG_TCP_KEEPALIVE_IDLE_SECS",
+        default_value_t = 60
+    )]
+    tcp_keepalive_idle_secs: u64,
+
+    /// Seconds between unanswered TCP keepalive probes, 0 for the OS default
+    #[clap(
+        long,
+        env = "LAKESOUL_PG_TCP_KEEPALIVE_INTERVAL_SECS",
+        default_value_t = 10
+    )]
+    tcp_keepalive_interval_secs: u64,
+
+    /// Unanswered TCP keepalive probes before a connection is dropped, 0 for
+    /// the OS default
+    #[clap(long, env = "LAKESOUL_PG_TCP_KEEPALIVE_RETRIES", default_value_t = 6)]
+    tcp_keepalive_retries: u32,
 
     /// Enable IVM maintenance through `INSERT ... SELECT`
     #[clap(long, env = "LAKESOUL_PG_IVM")]
@@ -342,7 +368,9 @@ async fn main_inner(cli: Cli) -> Result<()> {
 
     let server_opts = ServerOptions::new()
         .with_host(cli.bind.clone())
-        .with_port(cli.port);
+        .with_port(cli.port)
+        .with_tcp_keepalive(tcp_keepalive(&cli));
+    info!(tcp_keepalive = ?server_opts.tcp_keepalive(), "client connection keepalive");
 
     let limits = Limits {
         max_connections: cli.max_connections,
@@ -427,9 +455,63 @@ fn main() -> Result<()> {
     rt.block_on(main_inner(cli))?;
     Ok(())
 }
+
+/// The keepalive the CLI asks for on client connections: none when the idle
+/// time is 0; an interval or probe count of 0 leaves that parameter to the
+/// operating system.
+fn tcp_keepalive(cli: &Cli) -> Option<TcpKeepalive> {
+    let nonzero = |secs: u64| (secs > 0).then(|| std::time::Duration::from_secs(secs));
+    Some(TcpKeepalive {
+        idle: nonzero(cli.tcp_keepalive_idle_secs)?,
+        interval: nonzero(cli.tcp_keepalive_interval_secs),
+        retries: (cli.tcp_keepalive_retries > 0).then_some(cli.tcp_keepalive_retries),
+    })
+}
+
 #[cfg(test)]
 mod cli_probe_tests {
     use super::*;
+
+    fn keepalive_for(args: &[&str]) -> Option<TcpKeepalive> {
+        let cli = Cli::try_parse_from(std::iter::once("pg").chain(args.iter().copied()))
+            .expect("parse");
+        tcp_keepalive(&cli)
+    }
+
+    #[test]
+    fn tcp_keepalive_follows_the_cli() {
+        let secs = std::time::Duration::from_secs;
+        assert_eq!(
+            keepalive_for(&[
+                "--tcp-keepalive-idle-secs=60",
+                "--tcp-keepalive-interval-secs=10",
+                "--tcp-keepalive-retries=6",
+            ]),
+            Some(TcpKeepalive {
+                idle: secs(60),
+                interval: Some(secs(10)),
+                retries: Some(6),
+            })
+        );
+        assert_eq!(
+            keepalive_for(&["--tcp-keepalive-idle-secs=0"]),
+            None,
+            "an idle time of 0 leaves keepalive off"
+        );
+        assert_eq!(
+            keepalive_for(&[
+                "--tcp-keepalive-idle-secs=30",
+                "--tcp-keepalive-interval-secs=0",
+                "--tcp-keepalive-retries=0",
+            ]),
+            Some(TcpKeepalive {
+                idle: secs(30),
+                interval: None,
+                retries: None,
+            }),
+            "0 leaves the interval and the probe count to the OS"
+        );
+    }
 
     const PROBE_FILTER: &str = "pg_cli_probe";
     const PROBE_ARGV: &str = "LAKESOUL_PG_CLI_PROBE_ARGV";
@@ -445,6 +527,9 @@ mod cli_probe_tests {
             "ivm": cli.ivm,
             "distributed_workers": cli.distributed.distributed_workers,
             "max_concurrent_queries": cli.max_concurrent_queries,
+            "tcp_keepalive_idle_secs": cli.tcp_keepalive_idle_secs,
+            "tcp_keepalive_interval_secs": cli.tcp_keepalive_interval_secs,
+            "tcp_keepalive_retries": cli.tcp_keepalive_retries,
         })
     }
 
@@ -467,6 +552,9 @@ mod cli_probe_tests {
         assert_eq!(defaults["port"], 5432);
         assert_eq!(defaults["max_connections"], 0);
         assert_eq!(defaults["max_concurrent_queries"], 0);
+        assert_eq!(defaults["tcp_keepalive_idle_secs"], 60);
+        assert_eq!(defaults["tcp_keepalive_interval_secs"], 10);
+        assert_eq!(defaults["tcp_keepalive_retries"], 6);
 
         let via_env = probe(
             &[
@@ -474,6 +562,7 @@ mod cli_probe_tests {
                 ("LAKESOUL_PG_PORT", "15432"),
                 ("LAKESOUL_PG_MAX_CONNECTIONS", "64"),
                 ("LAKESOUL_PG_MAX_CONCURRENT_QUERIES", "32"),
+                ("LAKESOUL_PG_TCP_KEEPALIVE_IDLE_SECS", "0"),
             ],
             &[],
         );
@@ -481,6 +570,7 @@ mod cli_probe_tests {
         assert_eq!(via_env["port"], 15432);
         assert_eq!(via_env["max_connections"], 64);
         assert_eq!(via_env["max_concurrent_queries"], 32);
+        assert_eq!(via_env["tcp_keepalive_idle_secs"], 0);
 
         // Explicitly passed values that equal the defaults still beat env.
         let via_cli = probe(
