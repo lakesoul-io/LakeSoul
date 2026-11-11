@@ -55,6 +55,11 @@ separate sections.
 
 `LAKESOUL_CACHE_SIZE=0` disables L2. L1-only helps index; L2-only mainly helps exact.
 
+**Why index-only needs L1:** L2 stores serialized bytes/segments, not the
+queryable index structures. Centroids, RaBitQ codes and the segment map must be
+materialised in L1 memory. With L2 only, every query still reads and deserializes
+segments from disk, so QPS is close to cache-off (SIFT about 3.9 vs 4.0).
+
 ## 3. Build
 
 | Dataset | nlist | bits | build s | build RSS MB | write s |

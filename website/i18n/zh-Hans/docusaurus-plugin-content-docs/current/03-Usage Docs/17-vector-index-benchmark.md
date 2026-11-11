@@ -54,6 +54,11 @@
 
 `LAKESOUL_CACHE_SIZE=0` 关闭 L2。L1-only 对 index 有效；L2-only 主要服务 exact。
 
+**为什么 index-only 需要 L1：** L2 缓存的是序列化 bytes/segment，
+不是可直接计算的索引结构。centroid、RaBitQ code、segment map 必须先在
+L1 里构建成内存索引；L2-only 时每次查询仍要从磁盘取 segment、反序列化，
+所以 QPS 与 cache off 接近（SIFT 约 3.9 vs 4.0）。
+
 ## 3. 构建
 
 | 数据集 | nlist | bits | build s | build RSS MB | 写表 s |
