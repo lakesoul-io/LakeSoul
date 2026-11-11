@@ -10,7 +10,7 @@
 //! execution belongs to the job runner.
 //!
 //! The tables live next to the other server-side metadata schemas (`ivm`,
-//! `subscription`). `script/metadata-migrations/V4000006__query_jobs.sql`
+//! `subscription`). `script/metadata-migrations/V4000007__query_jobs.sql`
 //! carries the same DDL for deployments that apply migrations up front; the
 //! `create ... if not exists` statements here keep a fresh test database
 //! usable without the migration tool.
