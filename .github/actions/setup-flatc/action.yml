@@ -55,12 +55,30 @@ runs:
         fi
 
         RELEASE="https://github.com/google/flatbuffers/releases/download/v${VERSION}"
+
+        # GitHub's release CDN (release-assets.githubusercontent.com) intermittently
+        # answers 504/502 to asset downloads. Retry first, then fall back to the
+        # source build below rather than failing the job.
+        fetch() {
+          curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 180 \
+            --retry-all-errors --connect-timeout 15 -o "$2" "$1"
+        }
+
+        HAVE_BINARY=0
         if [ -n "$ASSET" ]; then
-          curl -fsSL -o /tmp/flatc.zip "${RELEASE}/${ASSET}"
-          unzip -o /tmp/flatc.zip -d /tmp/flatc
-          rm -f /tmp/flatc.zip
-        else
-          echo "No official flatc binary for ${OS}/${ARCH}; building ${VERSION} from source"
+          if fetch "${RELEASE}/${ASSET}" /tmp/flatc.zip; then
+            unzip -o /tmp/flatc.zip -d /tmp/flatc
+            rm -f /tmp/flatc.zip
+            HAVE_BINARY=1
+          else
+            rm -f /tmp/flatc.zip
+            echo "::warning::${RELEASE}/${ASSET} is unreachable, building flatc ${VERSION} from source"
+          fi
+        fi
+
+        if [ "$HAVE_BINARY" -ne 1 ]; then
+          echo "Building flatc ${VERSION} from source"
+          rm -rf /tmp/flatbuffers
           git clone --depth 1 --branch "v${VERSION}" \
             https://github.com/google/flatbuffers.git /tmp/flatbuffers
           cmake -S /tmp/flatbuffers -B /tmp/flatbuffers/build \
