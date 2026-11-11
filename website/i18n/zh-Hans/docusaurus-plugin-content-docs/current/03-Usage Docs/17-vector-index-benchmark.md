@@ -217,12 +217,12 @@ native batch 已经按 bucket 并行探测；短 batch 再增加 `parallelism` �
 
 ## 10. 原始结果
 
-- [raw/sift_query.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/sift_query.jsonl)
-- [raw/glove.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove.jsonl)
-- [raw/glove_target.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_target.jsonl)
-- [raw/glove_hi.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/glove_hi.jsonl)
-- [raw/gist.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/gist.jsonl)
-- [raw/deep.jsonl](rust/lakesoul-vector/ann-benchmarks/vector-index-2026-11-11/raw/deep.jsonl)
+- [raw/sift_query.jsonl](/benchmark-data/vector-index-2026-11-11/sift_query.jsonl)
+- [raw/glove.jsonl](/benchmark-data/vector-index-2026-11-11/glove.jsonl)
+- [raw/glove_target.jsonl](/benchmark-data/vector-index-2026-11-11/glove_target.jsonl)
+- [raw/glove_hi.jsonl](/benchmark-data/vector-index-2026-11-11/glove_hi.jsonl)
+- [raw/gist.jsonl](/benchmark-data/vector-index-2026-11-11/gist.jsonl)
+- [raw/deep.jsonl](/benchmark-data/vector-index-2026-11-11/deep.jsonl)
 
 ## 附录 A：完整 index-only 参数扫描
 
