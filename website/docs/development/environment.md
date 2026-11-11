@@ -12,7 +12,7 @@ LakeSoul combines Rust, Java/Scala, Python, native JNI libraries, PostgreSQL, an
 
 | Approach | Provides | Use it when |
 |---|---|---|
-| Nix Flake | Pinned compiler support libraries, Java, Hadoop, PostgreSQL client, language servers, and all repository formatters | Developing on x86_64 Linux with Nix. This is the recommended reproducible shell. |
+| Nix Flake | Rust toolchain, pinned compiler support libraries, Java, Hadoop, PostgreSQL client, language servers, and all repository formatters | Developing on x86_64 Linux with Nix. This is the recommended reproducible shell. |
 | Devenv services | Repository-configured PostgreSQL 14 and RustFS processes with persistent local state | Tests need metadata or S3-compatible object storage. It can be used with either the Nix shell or a manually prepared toolchain. |
 | Manual toolchain | Tools installed by the operating system or a version manager | Nix is unavailable, or the developer needs an environment matching a specific deployment. |
 
@@ -35,6 +35,13 @@ nix develop .#formatter
 ```
 
 The default and FHS shells configure `JAVA_HOME`, `HADOOP_HOME`, `HADOOP_CONF_DIR`, `CLASSPATH`, `LIBCLANG_PATH`, `LD_LIBRARY_PATH`, `MAVEN_OPTS`, and UTC timezone data.
+
+Both shells provide Rust and Cargo through `rust-overlay`, using the channel,
+profile, and components in `rust-toolchain.toml` (currently stable with rustfmt,
+Clippy, and rust-analyzer). No separately installed Rust toolchain is required.
+The stable release is resolved from the `rust-overlay` revision pinned in
+`flake.lock`, rather than the host's rustup installation. The formatter-only shell
+continues to use nixpkgs' standalone rustfmt.
 
 The Flake is the source of truth for packages it provides. Component package managers are still used inside the shell: Cargo for Rust, Maven for JVM modules, `uv` for Python, and npm for the website. If a component command is not present in the selected shell, install that tool separately or add it to `flake.nix`; do not silently rely on a different system version in CI-sensitive work.
 

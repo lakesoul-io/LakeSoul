@@ -11,8 +11,8 @@
     crane.url = "github:ipetkov/crane";
 
     # The workspace tracks `rust-toolchain.toml` (`channel = "stable"`) and
-    # uses APIs newer than nixpkgs' rustc; the image build takes that channel
-    # from here.
+    # uses APIs newer than nixpkgs' rustc; development shells and image builds
+    # take that channel from here.
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -36,6 +36,9 @@
     unstable = import nixpkgs-unstable {
       inherit system;
     };
+
+    rustDevToolchain =
+      (rust-overlay.lib.mkRustBin {} pkgs).fromRustupToolchainFile ./rust-toolchain.toml;
 
     hadoopVersion = "3.3.6";
     hadoop = pkgs.stdenvNoCC.mkDerivation {
@@ -67,7 +70,6 @@
       google-java-format
       prettier
       ruff
-      rustfmt
       scalafmt
       taplo
       treefmt
@@ -75,6 +77,7 @@
 
     commonPackages =
       formatterPackages
+      ++ [rustDevToolchain]
       ++ (with pkgs; [
         actionlint
 
@@ -109,6 +112,7 @@
 
     fhsPackages =
       formatterPackages
+      ++ [rustDevToolchain]
       ++ (with pkgs; [
         actionlint
 
@@ -365,7 +369,7 @@
   in {
     devShells.${system} = {
       formatter = pkgs.mkShell {
-        packages = formatterPackages;
+        packages = formatterPackages ++ [pkgs.rustfmt];
       };
 
       #
