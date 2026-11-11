@@ -207,9 +207,11 @@ exact 自动回退 reader，结果正确但慢。
 - snapshot cache：默认 512 MiB；
 - decoded-block cache：默认 256 MiB；
 - block rows：默认固定 256，不启用自适应的约 256 KiB 目标；
-- 通用 DiskCache：`LAKESOUL_CACHE_SIZE` 全量给通用缓存；index-SSD cache
-  默认关闭，除非显式设置 `LAKESOUL_INDEX_SSD_BYTES`；
+- 通用 DiskCache：`LAKESOUL_CACHE_SIZE` 在所有模式下都完整给通用缓存；
+  index-SSD cache 是独立预算，默认关闭，只有显式设置
+  `LAKESOUL_INDEX_SSD_BYTES` 才启用，不会挤占通用页缓存；
 - `LAKESOUL_INDEX_SSD_DIR` 仍按旧语义直接使用，不再自动追加 `/index-cache`。
 
-统一模式才会把 `LAKESOUL_CACHE_SIZE` 按 50/50 分给通用 DiskCache 和
-index-SSD，并按 `LAKESOUL_VECTOR_MEMORY_BYTES` 派生 cluster/snapshot/block。
+统一模式只重新分配 **L1**（cluster/snapshot/block，按
+`LAKESOUL_VECTOR_MEMORY_BYTES` 派生）；L2 不会把 `LAKESOUL_CACHE_SIZE`
+分给向量索引。混合 workload 的原有 LakeSoul 页缓存/PK index 容量保持不变。

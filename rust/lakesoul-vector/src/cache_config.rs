@@ -178,11 +178,13 @@ impl VectorCacheConfig {
         let block_rows_override = expert_bytes("LAKESOUL_VECTOR_BLOCK_ROWS");
         let block_source_cache = !std::env::var("LAKESOUL_VECTOR_BLOCK_SOURCE_CACHE")
             .is_ok_and(|value| value == "0");
+        // The vector index segment cache is a separate, explicitly sized
+        // layer.  It must not carve capacity out of the generic DiskCache:
+        // `LAKESOUL_INDEX_SSD_BYTES` stays the opt-in switch (old default 0).
         let index_ssd_bytes = if !enabled {
             0
         } else {
-            expert_bytes("LAKESOUL_INDEX_SSD_BYTES")
-                .unwrap_or(if unified { disk_bytes / 2 } else { 0 })
+            expert_bytes("LAKESOUL_INDEX_SSD_BYTES").unwrap_or(0)
         };
         // Legacy `LAKESOUL_INDEX_SSD_DIR` was used verbatim; the unified
         // surface puts the index cache under `<LAKESOUL_CACHE_PATH>/index-cache`.
@@ -238,16 +240,13 @@ impl VectorCacheConfig {
         self.disk_bytes
     }
 
-    /// Generic DiskCache gets half of the L2 budget; the index-file SSD cache
-    /// gets the other half.  This keeps both within `LAKESOUL_CACHE_SIZE`.
+    /// Capacity of the generic LakeSoul `DiskCache` (parquet pages, PK index,
+    /// decoded blocks).  This deliberately receives the *whole*
+    /// `LAKESOUL_CACHE_SIZE` in every mode: a table shared by vector and
+    /// non-vector queries must not lose the cache capacity the rest of
+    /// LakeSoul was designed for.
     pub fn block_disk_bytes(&self) -> usize {
-        if self.unified {
-            self.disk_bytes / 2
-        } else {
-            // Preserve the old LakeSoul DiskCache capacity for deployments
-            // that only set LAKESOUL_CACHE_SIZE / LAKESOUL_CACHE_PATH.
-            self.disk_bytes
-        }
+        self.disk_bytes
     }
 
     pub fn index_ssd_bytes(&self) -> usize {
@@ -463,8 +462,8 @@ mod tests {
         assert_eq!(config.cluster_bytes(), 1_073_741_824 * 6 / 10);
         assert_eq!(config.snapshot_bytes(), 1_073_741_824 / 10);
         assert_eq!(config.block_bytes(), 1_073_741_824 * 3 / 10);
-        assert_eq!(config.block_disk_bytes(), 4 * 1024 * 1024 * 1024);
-        assert_eq!(config.index_ssd_bytes(), 4 * 1024 * 1024 * 1024);
+        assert_eq!(config.block_disk_bytes(), 8 * 1024 * 1024 * 1024);
+        assert_eq!(config.index_ssd_bytes(), 0);
         assert_eq!(config.index_ssd_path(), "/tmp/unified-cache/index-cache");
         assert!(config.block_rows(960) > 256);
     }
