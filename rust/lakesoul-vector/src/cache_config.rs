@@ -100,10 +100,17 @@ impl VectorCacheConfig {
         };
         let explicit_disk = env_bytes(ENV_DISK_BYTES)
             .or_else(|| env_bytes("LAKESOUL_INDEX_SSD_BYTES"));
-        let disk_configured = explicit_disk.is_some()
-            || std::env::var(ENV_DISK_PATH).is_ok()
-            || std::env::var("LAKESOUL_INDEX_SSD_DIR").is_ok()
-            || matches!(legacy_enabled.as_deref(), Some("1") | Some("true"));
+        // Old deployments only enabled the generic L2 cache when the
+        // LAKESOUL_CACHE switch was set; size/path alone were inert.  The
+        // unified surface deliberately makes size/path sufficient.
+        let legacy_switch_on = matches!(legacy_enabled.as_deref(), Some("1") | Some("true"));
+        let disk_configured = if unified {
+            explicit_disk.is_some()
+                || std::env::var(ENV_DISK_PATH).is_ok()
+                || std::env::var("LAKESOUL_INDEX_SSD_DIR").is_ok()
+        } else {
+            legacy_switch_on
+        };
         let disk_bytes = if !enabled
             || !disk_configured
             || matches!(legacy_enabled.as_deref(), Some("0") | Some("false"))
@@ -409,6 +416,7 @@ mod tests {
         clear();
         unsafe {
             std::env::set_var("LAKESOUL_INDEX_MEMORY_BYTES", "64MiB");
+            std::env::set_var("LAKESOUL_CACHE", "1");
             std::env::set_var("LAKESOUL_CACHE_SIZE", "4GiB");
             std::env::set_var("LAKESOUL_INDEX_SSD_BYTES", "1MiB");
             std::env::set_var("LAKESOUL_INDEX_SSD_DIR", "/tmp/legacy-index");
@@ -419,6 +427,25 @@ mod tests {
         assert_eq!(config.index_ssd_bytes(), 1024 * 1024);
         assert_eq!(config.index_ssd_path(), "/tmp/legacy-index");
         assert_eq!(config.block_rows(128), 256);
+    }
+
+    #[test]
+    fn legacy_disk_size_without_switch_is_inert() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear();
+        unsafe {
+            std::env::set_var("LAKESOUL_CACHE_SIZE", "4GiB");
+            std::env::set_var("LAKESOUL_CACHE_PATH", "/tmp/legacy-path");
+        }
+        let config = VectorCacheConfig::from_env();
+        assert!(!config.disk_enabled());
+        assert_eq!(config.index_ssd_bytes(), 0);
+        unsafe {
+            std::env::set_var("LAKESOUL_CACHE", "1");
+        }
+        let config = VectorCacheConfig::from_env();
+        assert!(config.disk_enabled());
+        assert_eq!(config.block_disk_bytes(), 4 * 1024 * 1024 * 1024);
     }
 
     #[test]
