@@ -254,6 +254,57 @@ impl IvmRuntime {
             }
         }
 
+        // Internal views beyond the numbered steps: `__ivm_state` and any
+        // `<target>__ivm_*` view the executor registered for this target.
+        // They are not part of the target's `ivm.states` rows, so the state
+        // sweep above cannot see them.
+        if options.drop_derived
+            && let Some(target) = target
+        {
+            let prefix = format!("{}__ivm_", target.table_name);
+            let mut internal = Vec::new();
+            for info in self.metadata().list_views().await? {
+                if info.view_id == view_id {
+                    continue;
+                }
+                let Ok(table) = self.open_table_by_id(&info.view_id).await else {
+                    continue;
+                };
+                if table.namespace == target.namespace
+                    && table.table_name.starts_with(&prefix)
+                    && !table.table_name.contains("__ivm_step")
+                {
+                    internal.push(table);
+                }
+            }
+            for table in internal {
+                report.derived_views.push(table.table_name.clone());
+                if options.dry_run {
+                    continue;
+                }
+                let mut internal_report = DropViewReport {
+                    view_id: table.table_id.clone(),
+                    target_table_id: table.table_id.clone(),
+                    target_table_name: Some(table.table_name.clone()),
+                    ..DropViewReport::default()
+                };
+                Box::pin(self.drop_view_artifacts(
+                    &table.table_id,
+                    &table.table_id,
+                    Some(&table),
+                    false,
+                    options,
+                    &mut internal_report,
+                ))
+                .await?;
+                self.metadata().delete_view(&table.table_id).await?;
+                let _ = self
+                    .client()
+                    .drop_table(&table.table_name, &table.namespace)
+                    .await;
+            }
+        }
+
         if !options.dry_run {
             self.metadata().delete_view(view_id).await?;
             report.dropped = true;

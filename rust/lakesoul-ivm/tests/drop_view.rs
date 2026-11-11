@@ -130,6 +130,13 @@ async fn drop_by_target_removes_state_but_keeps_the_target() {
             .is_none()
     );
     assert!(runtime.list_states(&view_id).await.unwrap().is_empty());
+    assert!(
+        runtime
+            .open_table(&format!("{}__ivm_state", mv.table_name), "default")
+            .await
+            .is_err(),
+        "the target's internal __ivm_state view must be removed"
+    );
     for table in [&src, &mv] {
         runtime
             .client()
