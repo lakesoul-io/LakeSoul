@@ -8095,6 +8095,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "mysql_async",
  "mysql_common",
+ "object_store",
  "parking_lot 0.12.5",
  "parquet",
  "pg_walstream",

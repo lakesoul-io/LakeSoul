@@ -650,6 +650,12 @@ pub(crate) fn connection_statement_hooks(
     hooks.push(Arc::new(crate::ivm::IvmSettingsHook));
     hooks.push(Arc::new(crate::ivm::IvmInsertHook));
     hooks.push(Arc::new(crate::insert::InsertStatementHook));
+    if let Some(jobs) = factory.jobs() {
+        hooks.push(Arc::new(crate::jobs::JobStatementHook::new(Arc::clone(
+            jobs,
+        ))));
+        hooks.push(Arc::new(crate::jobs::JobIdentityGuard));
+    }
     if let Some(supervisor) = factory.subscriptions() {
         hooks.push(Arc::new(
             crate::subscribe::sql::SubscriptionStatementHook::new(
