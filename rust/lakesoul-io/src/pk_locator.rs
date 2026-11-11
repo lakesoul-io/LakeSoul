@@ -60,6 +60,7 @@ use datafusion_datasource::file_scan_config::FileScanConfig;
 use datafusion_datasource::memory::MemorySourceConfig;
 use datafusion_expr::{Expr, Operator};
 use futures::StreamExt;
+use lakesoul_vector::cache_config::config as vector_cache_config;
 use lakesoul_vector::IndexKey;
 use memmap2::Mmap;
 use moka::future::Cache;
@@ -120,7 +121,6 @@ const MAX_INDEX_CACHE_RATIO: u64 = 8;
 /// Environment variable that switches on the shared local disk cache.  The pk
 /// index has no switch of its own: it shares the cache instance, directory and
 /// capacity of the object-store page cache (`LAKESOUL_CACHE_SIZE`).
-const ENV_CACHE_ENABLED: &str = "LAKESOUL_CACHE";
 
 static HITS: AtomicU64 = AtomicU64::new(0);
 static MISSES: AtomicU64 = AtomicU64::new(0);
@@ -154,7 +154,7 @@ static REJECTED: LazyLock<Cache<String, ()>> = LazyLock::new(|| {
 
 /// The shared local disk cache, when enabled by `LAKESOUL_CACHE`.
 fn index_disk_cache() -> Option<Arc<crate::cache::disk_cache::DiskCache>> {
-    if std::env::var(ENV_CACHE_ENABLED).is_err() {
+    if !vector_cache_config().disk_enabled() {
         return None;
     }
     let cache = get_lakesoul_cache();
@@ -1536,7 +1536,6 @@ async fn get_or_load_file(
     defaults: &HashMap<String, String>,
     session: &mut Option<VortexSession>,
 ) -> Option<Arc<CachedFile>> {
-    let cache = index_disk_cache()?;
     // The handle the take path needs.  Vortex has to open the file; parquet
     // only needs its size for the reader's metadata fetch.
     let source = match format {
@@ -1558,24 +1557,113 @@ async fn get_or_load_file(
     let kind = lookup_index_kind(columns, types, defaults);
     let kind_hash = index_kind_hash(&kind);
     let source_hash = index_source_hash(&location);
-    let rejected_key = format!("{location}#{kind}");
-    if REJECTED.get(&rejected_key).await.is_some() {
-        return None;
-    }
 
-    if let Some((entry, size)) = cache.get_file_entry(&location, &kind).await {
-        if let Some(index) = MmapIndex::open(entry, size, kind_hash, source_hash) {
-            HITS.fetch_add(1, AtomicOrdering::Relaxed);
-            return Some(Arc::new(CachedFile {
-                index: Arc::new(index),
-                source,
-            }));
+    // Cached build: probe/populate the L2 key-index cache.  Without L2 the
+    // exact re-rank still needs a key index; build one into a temporary file
+    // and mmap it directly (see the uncached branch below).
+    if let Some(cache) = index_disk_cache() {
+        let rejected_key = format!("{location}#{kind}");
+        if REJECTED.get(&rejected_key).await.is_some() {
+            return None;
         }
-        warn!("corrupt pk index for {location}; rebuilding");
+
+        if let Some((entry, size)) = cache.get_file_entry(&location, &kind).await {
+            if let Some(index) = MmapIndex::open(entry, size, kind_hash, source_hash) {
+                HITS.fetch_add(1, AtomicOrdering::Relaxed);
+                return Some(Arc::new(CachedFile {
+                    index: Arc::new(index),
+                    source,
+                }));
+            }
+            warn!("corrupt pk index for {location}; rebuilding");
+        }
+
+        let max_bytes = (cache.capacity_bytes() / MAX_INDEX_CACHE_RATIO).max(1);
+        let temp = cache.temporary_path();
+        let built = match &source {
+            FileSource::Vortex { file, session } => {
+                build_index_file(
+                    file,
+                    &location,
+                    columns,
+                    types,
+                    defaults,
+                    session,
+                    &temp,
+                    kind_hash,
+                    source_hash,
+                    max_bytes,
+                )
+                .await
+            }
+            FileSource::Parquet {
+                store,
+                location: parquet_location,
+                ..
+            } => {
+                build_parquet_index_file(
+                    store,
+                    parquet_location,
+                    columns,
+                    types,
+                    defaults,
+                    &temp,
+                    kind_hash,
+                    source_hash,
+                    max_bytes,
+                )
+                .await
+            }
+        };
+        let size = match built {
+            Ok(size) => size,
+            Err(error) => {
+                let _ = std::fs::remove_file(&temp);
+                warn!("failed to build pk index for {location}: {error}");
+                REJECTED.insert(rejected_key, ()).await;
+                return None;
+            }
+        };
+        let (entry, size, built) = match cache
+            .insert_file_entry(&location, &kind, temp.clone(), size)
+            .await
+        {
+            Ok(entry) => entry,
+            Err(error) => {
+                let _ = std::fs::remove_file(&temp);
+                warn!("failed to store pk index for {location}: {error}");
+                return None;
+            }
+        };
+        let index = match MmapIndex::open(entry, size, kind_hash, source_hash) {
+            Some(index) => index,
+            None => {
+                warn!("stored pk index for {location} is unreadable");
+                REJECTED.insert(rejected_key, ()).await;
+                return None;
+            }
+        };
+        if built {
+            MISSES.fetch_add(1, AtomicOrdering::Relaxed);
+        } else {
+            HITS.fetch_add(1, AtomicOrdering::Relaxed);
+        }
+        return Some(Arc::new(CachedFile {
+            index: Arc::new(index),
+            source,
+        }));
     }
 
-    let max_bytes = (cache.capacity_bytes() / MAX_INDEX_CACHE_RATIO).max(1);
-    let temp = cache.temporary_path();
+    // Uncached fallback: no L2 exists when `LAKESOUL_VECTOR_CACHE=0`.  The
+    // key index is still required to map candidate keys to rows; build it into
+    // a one-shot temporary file and remove it after the mmap is established.
+    static UNCACHED_SEQ: AtomicU64 = AtomicU64::new(0);
+    let temp = std::env::temp_dir().join(format!(
+        "lakesoul-pk-index-{}-{}.idx",
+        std::process::id(),
+        UNCACHED_SEQ.fetch_add(1, AtomicOrdering::Relaxed)
+    ));
+    let max_bytes = 512 * 1024 * 1024;
     let built = match &source {
         FileSource::Vortex { file, session } => {
             build_index_file(
@@ -1615,35 +1703,21 @@ async fn get_or_load_file(
         Ok(size) => size,
         Err(error) => {
             let _ = std::fs::remove_file(&temp);
-            warn!("failed to build pk index for {location}: {error}");
-            REJECTED.insert(rejected_key, ()).await;
+            warn!("failed to build uncached pk index for {location}: {error}");
             return None;
         }
     };
-    let (entry, size, built) = match cache
-        .insert_file_entry(&location, &kind, temp.clone(), size)
-        .await
-    {
-        Ok(entry) => entry,
+    let file = match std::fs::File::open(&temp) {
+        Ok(file) => Arc::new(file),
         Err(error) => {
             let _ = std::fs::remove_file(&temp);
-            warn!("failed to store pk index for {location}: {error}");
+            warn!("failed to open uncached pk index for {location}: {error}");
             return None;
         }
     };
-    let index = match MmapIndex::open(entry, size, kind_hash, source_hash) {
-        Some(index) => index,
-        None => {
-            warn!("stored pk index for {location} is unreadable");
-            REJECTED.insert(rejected_key, ()).await;
-            return None;
-        }
-    };
-    if built {
-        MISSES.fetch_add(1, AtomicOrdering::Relaxed);
-    } else {
-        HITS.fetch_add(1, AtomicOrdering::Relaxed);
-    }
+    let index = MmapIndex::open(file, size, kind_hash, source_hash);
+    let _ = std::fs::remove_file(&temp);
+    let index = index?;
     Some(Arc::new(CachedFile {
         index: Arc::new(index),
         source,
@@ -2222,17 +2296,13 @@ pub fn vector_exact_block_cache_enabled() -> bool {
 /// `DiskCache` (the same S3->SSD cache used by `LAKESOUL_CACHE`) and in a small
 /// in-memory LRU, then reused by later candidate reads.  It never materializes
 /// a full vector column.
-const ENV_BLOCK_ROWS: &str = "LAKESOUL_VECTOR_BLOCK_ROWS";
-const ENV_BLOCK_MEMORY_BYTES: &str = "LAKESOUL_VECTOR_BLOCK_CACHE_BYTES";
-const DEFAULT_BLOCK_ROWS: usize = 256;
-const DEFAULT_BLOCK_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
-
 static BLOCK_MEMORY: LazyLock<Option<moka::sync::Cache<(u64, u64, u32), Arc<[u8]>>>> =
     LazyLock::new(|| {
-        let capacity = std::env::var(ENV_BLOCK_MEMORY_BYTES)
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .unwrap_or(DEFAULT_BLOCK_MEMORY_BYTES);
+        let config = vector_cache_config();
+        if !config.enabled() {
+            return None;
+        }
+        let capacity = config.block_bytes() as u64;
         if capacity == 0 {
             return None;
         }
@@ -2246,17 +2316,18 @@ static BLOCK_MEMORY: LazyLock<Option<moka::sync::Cache<(u64, u64, u32), Arc<[u8]
         )
     });
 
-fn block_rows() -> usize {
-    std::env::var(ENV_BLOCK_ROWS)
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_BLOCK_ROWS)
+fn block_rows_for(row_bytes: usize) -> usize {
+    vector_cache_config().block_rows(row_bytes)
 }
 
 fn block_source_enabled() -> bool {
-    !std::env::var("LAKESOUL_VECTOR_BLOCK_CACHE").is_ok_and(|value| value == "0")
-        && index_disk_cache().is_some()
+    // The decoded-block source has a direct object-store fallback: when the
+    // disk/memory cache is disabled, `BlockSource::get_block` decodes the
+    // requested block straight from the data file instead of promoting it
+    // through the L2 cache.  Keeping the source available in uncached mode is
+    // what lets exact batch re-rank fall back to the normal reader path
+    // instead of failing with "could not open data file".
+    vector_cache_config().block_source_cache()
 }
 
 /// Decode a contiguous row range of one vector column into raw little-endian
@@ -2358,7 +2429,7 @@ impl BlockSource {
             dim,
             row_bytes: dim * elem.size(),
             rows,
-            block_rows: block_rows(),
+            block_rows: block_rows_for(dim * elem.size()),
             source_hash,
             field_hash,
             block_location,
