@@ -91,6 +91,10 @@ GloVe 用 NQ=20，NQ 越大越稳定但越慢。
 
 构建 RSS 为独立 build 进程。GloVe/Deep 使用逐行归一化向量；SIFT/GIST 使用原始 L2 向量。
 
+**`build s` 的口径**：从 `build_table_index` 调用开始计时，包含读取表数据、
+KMeans/量化、index segment 写入和 PG index commit/lease；
+**不包含**前面的 `write_arrow` 写表时间；写表时间单列为 `写表 s`。
+
 ## 4. 检索质量与吞吐
 
 `bits=1` 体积小，但在这些 nprobe 下达不到 0.97 recall。

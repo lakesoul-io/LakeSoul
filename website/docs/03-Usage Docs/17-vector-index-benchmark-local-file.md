@@ -93,6 +93,11 @@ Notes:
 
 Build RSS is the build process only. GloVe/Deep use row-normalized vectors; SIFT/GIST use raw L2.
 
+**What `build s` includes**: timing starts at `build_table_index` and covers
+reading the table, KMeans/quantisation, index segment writes and the PG index
+commit/lease. It **does not include** the preceding `write_arrow` table write;
+that is the separate `write s` column.
+
 ## 4. Retrieval quality and throughput
 
 `bits=1` is compact but cannot reach 0.97 recall at these nprobe values.

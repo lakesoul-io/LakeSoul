@@ -68,6 +68,12 @@ L1 里构建成内存索引；L2-only 时每次查询仍要从磁盘取 segment�
 | GIST-960 | 256 | 7 | 53.5 | 1040 | 42.3 |
 | Deep-Image-96 | 1024 | 7 | 153.6 | 1447 | 56.1 |
 
+**`build s` 的口径**：从 `build_table_index` 调用开始计时，包含读取表数据、
+KMeans/量化、把 index segment 写到 MinIO、以及 PG index commit/lease；
+**不包含**前面的 `write_arrow` 写表时间，写表时间单独列在 `写表 s`。
+因此 MinIO 的 build 比本地 file store 慢，主要是 S3 段写入和读取开销，
+不是把写表时间混进去了。
+
 ## 4. Python native 接口
 
 每个数据集参数固定，recall 与缓存配置无关。

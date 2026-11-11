@@ -69,6 +69,13 @@ segments from disk, so QPS is close to cache-off (SIFT about 3.9 vs 4.0).
 | GIST-960 | 256 | 7 | 53.5 | 1040 | 42.3 |
 | Deep-Image-96 | 1024 | 7 | 153.6 | 1447 | 56.1 |
 
+**What `build s` includes**: timing starts at `build_table_index` and covers
+reading the table, KMeans/quantisation, writing index segments to MinIO and the
+PG index commit/lease. It **does not include** the preceding `write_arrow` table
+write; that is the separate `write s` column. The MinIO build is slower than the
+local-file build because of S3 segment reads/writes, not because table write time
+is mixed in.
+
 ## 4. Python native
 
 Cache matrix at fixed per-dataset parameters; recall does not depend on cache.
