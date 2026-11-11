@@ -29,18 +29,21 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
 use async_trait::async_trait;
-use datafusion::catalog::{Session, TableProvider};
+use datafusion::catalog::Session;
 use datafusion::common::{
-    JoinType, NullEquality, ScalarValue, tree_node::TreeNodeRecursion,
+    DFSchema, DFSchemaRef, JoinType, NullEquality, ScalarValue,
+    tree_node::TreeNodeRecursion,
 };
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
-use datafusion::logical_expr::TableType;
+use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
+use datafusion::logical_expr::{
+    Expr, Extension, LogicalPlan, UserDefinedLogicalNode, UserDefinedLogicalNodeCore,
+};
 use datafusion::physical_expr::expressions::CastExpr;
 use datafusion::physical_expr::expressions::Column as PhysicalColumn;
 use datafusion::physical_expr::{
-    EquivalenceProperties, LexOrdering, PhysicalExpr, PhysicalSortExpr,
+    Distribution, EquivalenceProperties, LexOrdering, PhysicalExpr, PhysicalSortExpr,
 };
-use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::joins::SortMergeJoinExec;
 use datafusion::physical_plan::projection::ProjectionExec;
@@ -52,10 +55,12 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning,
     PlanProperties, SendableRecordBatchStream,
 };
-use datafusion::physical_plan::{RangePartitioning, SplitPoint};
+use datafusion::physical_planner::{
+    DefaultPhysicalPlanner, ExtensionPlanner, PhysicalPlanner,
+};
 #[cfg(test)]
 use datafusion::prelude::lit;
-use datafusion::prelude::{DataFrame, col};
+use datafusion::prelude::{DataFrame, SessionContext, col};
 use futures::StreamExt;
 use lakesoul_io::config::{LakeSoulIOConfig, LakeSoulIOConfigBuilder};
 use lakesoul_io::helpers::transform::make_default_array;
@@ -285,8 +290,225 @@ impl PhysicalExpr for LakeSoulColumnsBucketExpr {
     }
 }
 
-/// Add a LakeSoul bucket-id column, range-repartition into exactly one
-/// execution partition per bucket, then remove the helper column.
+/// The key columns a [`IvmBucketProjectionExec`] hashes.
+#[derive(Debug, Clone)]
+pub(crate) enum BucketKey {
+    Single(String),
+    Columns(Vec<String>),
+}
+
+/// Append the hidden `__ivm_bucket` column to a stream.
+///
+/// The bucket id is a LakeSoul-specific hash.  Keeping the hash inside a
+/// dedicated execution node, instead of a `ProjectionExec` with a custom
+/// physical expression, matters for distributed execution: the plan codec
+/// forwards user *nodes* but not user *expressions*, so a bare custom
+/// expression cannot cross the wire.  The node is rebuilt from its key
+/// columns on the worker and the shuffle then hashes a plain column.
+pub(crate) struct IvmBucketProjectionExec {
+    input: Arc<dyn ExecutionPlan>,
+    /// Local split of the contribution; the projection must not advertise a
+    /// single partition, otherwise `EnsureRequirements` treats the bucket
+    /// shuffle above it as redundant and drops it.
+    split: Arc<dyn ExecutionPlan>,
+    partitions: usize,
+    key: BucketKey,
+    bucket_count: u32,
+    schema: SchemaRef,
+    properties: Arc<PlanProperties>,
+}
+
+impl IvmBucketProjectionExec {
+    pub(crate) fn new(
+        input: Arc<dyn ExecutionPlan>,
+        key: BucketKey,
+        bucket_count: usize,
+    ) -> DataFusionResult<Self> {
+        let input_schema = input.schema();
+        let mut fields = input_schema.fields().iter().cloned().collect::<Vec<_>>();
+        fields.push(Arc::new(Field::new(
+            IVM_BUCKET_COLUMN,
+            DataType::UInt32,
+            true,
+        )));
+        let schema = Arc::new(Schema::new_with_metadata(
+            fields,
+            input_schema.metadata().clone(),
+        ));
+        let input_partitions = input.output_partitioning().partition_count();
+        let partitions = input_partitions.max(2);
+        let split = if input_partitions < partitions {
+            Arc::new(RepartitionExec::try_new(
+                Arc::clone(&input),
+                Partitioning::RoundRobinBatch(partitions),
+            )?) as Arc<dyn ExecutionPlan>
+        } else {
+            Arc::clone(&input)
+        };
+        let properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(schema.clone()),
+            Partitioning::UnknownPartitioning(partitions),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        Ok(Self {
+            input,
+            split,
+            partitions,
+            key,
+            bucket_count: bucket_count.max(2) as u32,
+            schema,
+            properties,
+        })
+    }
+
+    #[cfg_attr(not(feature = "distributed"), allow(dead_code))]
+    pub(crate) fn key(&self) -> &BucketKey {
+        &self.key
+    }
+
+    #[cfg_attr(not(feature = "distributed"), allow(dead_code))]
+    pub(crate) fn bucket_count(&self) -> u32 {
+        self.bucket_count
+    }
+
+    fn bucket_expr(&self) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        let schema = self.input.schema();
+        Ok(match &self.key {
+            BucketKey::Single(name) => {
+                let index = schema.index_of(name)?;
+                Arc::new(LakeSoulBucketExpr {
+                    key: Arc::new(PhysicalColumn::new(name, index)),
+                    bucket_count: self.bucket_count,
+                }) as Arc<dyn PhysicalExpr>
+            }
+            BucketKey::Columns(names) => {
+                let keys = names
+                    .iter()
+                    .map(|name| {
+                        Ok(Arc::new(PhysicalColumn::new(name, schema.index_of(name)?))
+                            as Arc<dyn PhysicalExpr>)
+                    })
+                    .collect::<DataFusionResult<Vec<_>>>()?;
+                Arc::new(LakeSoulColumnsBucketExpr {
+                    keys,
+                    bucket_count: self.bucket_count,
+                }) as Arc<dyn PhysicalExpr>
+            }
+        })
+    }
+}
+
+impl std::fmt::Debug for IvmBucketProjectionExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IvmBucketProjectionExec")
+    }
+}
+
+impl DisplayAs for IvmBucketProjectionExec {
+    fn fmt_as(
+        &self,
+        _format: DisplayFormatType,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        write!(
+            f,
+            "IvmBucketProjection buckets={} partitions={} key={:?}",
+            self.bucket_count, self.partitions, self.key
+        )
+    }
+}
+
+impl ExecutionPlanProperties for IvmBucketProjectionExec {
+    fn output_partitioning(&self) -> &Partitioning {
+        &self.properties.partitioning
+    }
+
+    fn output_ordering(&self) -> Option<&LexOrdering> {
+        None
+    }
+
+    fn boundedness(&self) -> Boundedness {
+        Boundedness::Bounded
+    }
+
+    fn pipeline_behavior(&self) -> EmissionType {
+        EmissionType::Incremental
+    }
+
+    fn equivalence_properties(&self) -> &EquivalenceProperties {
+        &self.properties.eq_properties
+    }
+}
+
+impl ExecutionPlan for IvmBucketProjectionExec {
+    fn name(&self) -> &str {
+        "IvmBucketProjectionExec"
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if children.len() != 1 {
+            return Err(DataFusionError::Internal(
+                "IvmBucketProjectionExec expects one child".to_string(),
+            ));
+        }
+        Ok(Arc::new(Self::new(
+            children[0].clone(),
+            self.key.clone(),
+            self.bucket_count as usize,
+        )?))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<datafusion::execution::TaskContext>,
+    ) -> DataFusionResult<SendableRecordBatchStream> {
+        let expr = self.bucket_expr()?;
+        let schema = self.schema.clone();
+        let stream = self.split.execute(partition, context)?.map(move |batch| {
+            let batch = batch?;
+            let buckets = expr.evaluate(&batch)?.into_array(batch.num_rows())?;
+            let mut columns = batch.columns().to_vec();
+            columns.push(buckets);
+            RecordBatch::try_new(schema.clone(), columns).map_err(Into::into)
+        });
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.schema.clone(),
+            stream,
+        )))
+    }
+}
+
+/// Add a LakeSoul bucket-id column and hash-partition the stream on it.
+///
+/// The hidden bucket id stays in the stream.  A distributed planner rewrites
+/// the hash partition count to `bucket_count * tasks`; the downstream lookup
+/// recovers which buckets a `(task, partition)` owns from the same hash and
+/// opens only those state files.  The lookup drops the helper column from its
+/// output.
 pub(crate) fn bucket_repartition(
     input: Arc<dyn ExecutionPlan>,
     key_name: &str,
@@ -295,42 +517,7 @@ pub(crate) fn bucket_repartition(
     if bucket_count < 2 {
         return Ok(input);
     }
-    let input_schema = input.schema();
-    let key_index = input_schema.index_of(key_name)?;
-    let key = Arc::new(PhysicalColumn::new(key_name, key_index)) as Arc<dyn PhysicalExpr>;
-    let bucket = Arc::new(LakeSoulBucketExpr {
-        key,
-        bucket_count: bucket_count as u32,
-    }) as Arc<dyn PhysicalExpr>;
-
-    let mut projected = Vec::with_capacity(input_schema.fields().len() + 1);
-    for (index, field) in input_schema.fields().iter().enumerate() {
-        projected.push((
-            Arc::new(PhysicalColumn::new(field.name(), index)) as Arc<dyn PhysicalExpr>,
-            field.name().clone(),
-        ));
-    }
-    projected.push((bucket, IVM_BUCKET_COLUMN.to_string()));
-    let with_bucket = Arc::new(ProjectionExec::try_new(projected, input)?);
-
-    let bucket_index = with_bucket.schema().index_of(IVM_BUCKET_COLUMN)?;
-    let ordering = LexOrdering::new(vec![PhysicalSortExpr::new(
-        Arc::new(PhysicalColumn::new(IVM_BUCKET_COLUMN, bucket_index)),
-        SortOptions::default(),
-    )])
-    .ok_or_else(|| DataFusionError::Internal("empty bucket ordering".to_string()))?;
-    let split_points = (1..bucket_count)
-        .map(|bucket| SplitPoint::new(vec![ScalarValue::UInt32(Some(bucket as u32))]))
-        .collect();
-    let range = RangePartitioning::try_new(ordering, split_points)?;
-    // Keep `__ivm_bucket` in the stream: a distributed planner may scale this
-    // range partition to the worker count, and the downstream lookup derives
-    // its contiguous bucket range from the partitioning metadata.  The lookup
-    // drops the helper column from its output.
-    Ok(Arc::new(RepartitionExec::try_new(
-        with_bucket,
-        Partitioning::Range(range),
-    )?))
+    bucket_repartition_keys(input, BucketKey::Single(key_name.to_string()), bucket_count)
 }
 
 /// Bucket-repartition contribution rows by one or more real key columns using
@@ -344,53 +531,29 @@ pub(crate) fn bucket_repartition_by_columns(
     if bucket_count < 2 || key_columns.is_empty() {
         return Ok(input);
     }
-    let input_schema = input.schema();
-    let keys = key_columns
-        .iter()
-        .map(|column| {
-            let index = input_schema.index_of(column)?;
-            Ok(Arc::new(PhysicalColumn::new(column, index)) as Arc<dyn PhysicalExpr>)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let bucket = Arc::new(LakeSoulColumnsBucketExpr {
-        keys,
-        bucket_count: bucket_count as u32,
-    }) as Arc<dyn PhysicalExpr>;
-    bucket_repartition_with_expr(input, bucket, bucket_count)
+    bucket_repartition_keys(
+        input,
+        BucketKey::Columns(key_columns.to_vec()),
+        bucket_count,
+    )
 }
 
-fn bucket_repartition_with_expr(
+fn bucket_repartition_keys(
     input: Arc<dyn ExecutionPlan>,
-    bucket: Arc<dyn PhysicalExpr>,
+    key: BucketKey,
     bucket_count: usize,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     if bucket_count < 2 {
         return Ok(input);
     }
-    let input_schema = input.schema();
-    let mut projected = Vec::with_capacity(input_schema.fields().len() + 1);
-    for (index, field) in input_schema.fields().iter().enumerate() {
-        projected.push((
-            Arc::new(PhysicalColumn::new(field.name(), index)) as Arc<dyn PhysicalExpr>,
-            field.name().clone(),
-        ));
-    }
-    projected.push((bucket, IVM_BUCKET_COLUMN.to_string()));
-    let with_bucket = Arc::new(ProjectionExec::try_new(projected, input)?);
-
+    let with_bucket = Arc::new(IvmBucketProjectionExec::new(input, key, bucket_count)?)
+        as Arc<dyn ExecutionPlan>;
     let bucket_index = with_bucket.schema().index_of(IVM_BUCKET_COLUMN)?;
-    let ordering = LexOrdering::new(vec![PhysicalSortExpr::new(
-        Arc::new(PhysicalColumn::new(IVM_BUCKET_COLUMN, bucket_index)),
-        SortOptions::default(),
-    )])
-    .ok_or_else(|| DataFusionError::Internal("empty bucket ordering".to_string()))?;
-    let split_points = (1..bucket_count)
-        .map(|bucket| SplitPoint::new(vec![ScalarValue::UInt32(Some(bucket as u32))]))
-        .collect();
-    let range = RangePartitioning::try_new(ordering, split_points)?;
+    let bucket_expr = Arc::new(PhysicalColumn::new(IVM_BUCKET_COLUMN, bucket_index))
+        as Arc<dyn PhysicalExpr>;
     Ok(Arc::new(RepartitionExec::try_new(
         with_bucket,
-        Partitioning::Range(range),
+        Partitioning::Hash(vec![bucket_expr], bucket_count),
     )?))
 }
 
@@ -416,6 +579,37 @@ pub(crate) fn max_active_tasks() -> usize {
         .max(1)
 }
 
+/// How a lookup maps execution streams to state buckets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BucketOwnership {
+    /// The input is hash-shuffled on `__ivm_bucket`; each stream owns the
+    /// buckets that hash to its slot.
+    Hash,
+    /// The input is not bucket-shuffled; every stream probes every bucket.
+    All,
+}
+
+/// The slice of a distributed stage a keyed lookup is running in.
+#[derive(Clone, Copy, Debug)]
+struct LookupTask {
+    index: usize,
+    count: usize,
+}
+
+#[cfg(feature = "distributed")]
+fn lookup_task(context: &Arc<datafusion::execution::TaskContext>) -> LookupTask {
+    let task = datafusion_distributed::DistributedTaskContext::from_ctx(context);
+    LookupTask {
+        index: task.task_index,
+        count: task.task_count,
+    }
+}
+
+#[cfg(not(feature = "distributed"))]
+fn lookup_task(_context: &Arc<datafusion::execution::TaskContext>) -> LookupTask {
+    LookupTask { index: 0, count: 1 }
+}
+
 /// Sort each bucket's contribution by the lookup key before a persistent
 /// lookup consumes it.
 ///
@@ -424,11 +618,7 @@ pub(crate) fn max_active_tasks() -> usize {
 /// LakeSoul merge.  The sort must preserve the bucket partitioning; a plain
 /// `SortExec` coalesces to one partition and would collapse all buckets into
 /// a single task.
-fn sort_lookup_input(
-    input: Arc<dyn ExecutionPlan>,
-    key: &PkLookupKey,
-) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-    let schema = input.schema();
+fn lookup_ordering(schema: &Schema, key: &PkLookupKey) -> DataFusionResult<LexOrdering> {
     let columns = match key {
         PkLookupKey::Columns {
             input_columns,
@@ -445,9 +635,16 @@ fn sort_lookup_input(
             })
         })
         .collect::<DataFusionResult<Vec<_>>>()?;
-    let ordering = LexOrdering::new(expressions).ok_or_else(|| {
+    LexOrdering::new(expressions).ok_or_else(|| {
         DataFusionError::Internal("persistent lookup sort key is empty".to_string())
-    })?;
+    })
+}
+
+fn sort_lookup_input(
+    input: Arc<dyn ExecutionPlan>,
+    key: &PkLookupKey,
+) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+    let ordering = lookup_ordering(&input.schema(), key)?;
     Ok(Arc::new(
         SortExec::new(ordering, input).with_preserve_partitioning(true),
     ))
@@ -1485,25 +1682,43 @@ fn build_persistent_join(
     projected.execute(0, context)
 }
 
-/// A physical scan of one bucket's state files, left-joined onto the
-/// contribution rows by group-row primary key.
+/// A physical scan of the state buckets owned by one execution stream,
+/// left-joined onto the contribution rows by primary key.
 ///
 /// The plan is intentionally made of plain table/file descriptors: the
 /// execution-time concurrency gate is process-local and is not part of the
-/// serializable descriptor.  One execution partition corresponds to one
-/// LakeSoul bucket after [`bucket_repartition`].
+/// serializable descriptor.  Each `(task, partition)` owns the buckets that
+/// hash to its slot of the bucket shuffle; [`IvmPkLookupExec::bucket_indices`]
+/// derives them from the same hash the shuffle uses.
 pub(crate) struct IvmPkLookupExec {
+    /// The bucket shuffle this lookup consumes.  It is the plan child, so the
+    /// distributed planner can split it into a worker stage.
     input: Arc<dyn ExecutionPlan>,
+    /// `input` sorted by the lookup key, kept out of the plan tree.
+    ///
+    /// The per-file index cursor needs each partition ordered by key.  A
+    /// `SortExec` in the tree is removed by `EnforceSorting` when the input
+    /// has one partition, which also drops the bucket shuffle underneath it.
+    /// Keeping the sort private to this node leaves the shuffle intact.
+    sorted_input: Arc<dyn ExecutionPlan>,
     table: IvmTable,
     groups_by_bucket: Arc<Vec<Vec<PartitionFiles>>>,
     key: PkLookupKey,
+    /// Number of state buckets (the writer's hash bucket count).
     bucket_count: usize,
+    /// Partition count of the bucket shuffle the lookup consumes, or 0 when
+    /// the input is not hash-partitioned on `__ivm_bucket`.
+    ///
+    /// `EnforceDistribution` may replace the inserted repartition with one
+    /// sized by `target_partitions`; the slot mapping follows the actual
+    /// shuffle count, not the writer's bucket count.
+    shuffle_partitions: usize,
     schema: SchemaRef,
     gate: Arc<Semaphore>,
     multi_match: bool,
     emit_unmatched: bool,
-    /// The hidden bucket column kept in the input stream so a distributed
-    /// range shuffle can be scaled without losing the bucket-to-partition map.
+    /// The hidden bucket column kept in the input stream so the lookup can
+    /// recover which buckets its execution stream owns.
     bucket_column: Option<String>,
     /// Full lookup output, including the hidden bucket column.
     full_schema: SchemaRef,
@@ -1562,9 +1777,42 @@ impl IvmPkLookupExec {
         key: PkLookupKey,
         bucket_count: usize,
     ) -> DataFusionResult<Self> {
-        let input = sort_lookup_input(input, &key)?;
+        Self::build_with_input(input, table, groups_by_bucket, key, bucket_count)
+    }
+
+    /// Rebuild around an already shaped input.
+    ///
+    /// Physical optimizers and the distributed planner replace children of a
+    /// plan that already carries the lookup sort.  Sorting again here would
+    /// stack a second `SortExec` above the first one on every rewrite.
+    fn build_with_input(
+        input: Arc<dyn ExecutionPlan>,
+        table: IvmTable,
+        groups_by_bucket: Vec<Vec<PartitionFiles>>,
+        key: PkLookupKey,
+        bucket_count: usize,
+    ) -> DataFusionResult<Self> {
         let bucket_count = bucket_count.max(1);
-        let input_partitions = input.output_partitioning().partition_count();
+        let sorted_input = sort_lookup_input(Arc::clone(&input), &key)?;
+        let input_partitions = sorted_input.output_partitioning().partition_count();
+        let expected_bucket_expr: Option<Arc<dyn PhysicalExpr>> = sorted_input
+            .schema()
+            .index_of(IVM_BUCKET_COLUMN)
+            .ok()
+            .map(|index| {
+                Arc::new(PhysicalColumn::new(IVM_BUCKET_COLUMN, index))
+                    as Arc<dyn PhysicalExpr>
+            });
+        let shuffle_partitions =
+            match (&expected_bucket_expr, input.output_partitioning()) {
+                (Some(expected), Partitioning::Hash(expressions, count))
+                    if expressions.len() == 1
+                        && expressions[0].as_ref().eq(expected.as_ref()) =>
+                {
+                    *count
+                }
+                _ => 0,
+            };
         let bucket_column = input
             .schema()
             .field_with_name(IVM_BUCKET_COLUMN)
@@ -1577,7 +1825,7 @@ impl IvmPkLookupExec {
             )));
         }
         let output_partitions = input_partitions;
-        let full_schema = state_output_schema(&input.schema(), &table.schema);
+        let full_schema = state_output_schema(&sorted_input.schema(), &table.schema);
         let (schema, output_projection) = match bucket_column.as_ref() {
             Some(column) => {
                 let bucket_index = full_schema.index_of(column)?;
@@ -1601,10 +1849,12 @@ impl IvmPkLookupExec {
         ));
         Ok(Self {
             input,
+            sorted_input,
             table,
             groups_by_bucket: Arc::new(groups_by_bucket),
             key,
             bucket_count,
+            shuffle_partitions,
             bucket_column,
             full_schema,
             output_projection,
@@ -1653,6 +1903,41 @@ impl IvmPkLookupExec {
     ) -> Self {
         self.profile_io = profile_io;
         self
+    }
+
+    /// Re-apply the bucket shuffle when a physical optimizer removed it.
+    ///
+    /// `EnforceDistribution` removes explicit repartitions and may satisfy the
+    /// lookup's key requirement with a single partition, where every bucket
+    /// would have to be opened.  This runs after the stock optimizers and
+    /// restores the exact bucket shuffle; the distributed planner then sees a
+    /// normal stage boundary.
+    fn ensure_bucket_shuffle(&self) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
+        if self.bucket_count <= 1 || self.shuffle_partitions > 0 {
+            return Ok(None);
+        }
+        let Some(column) = self.bucket_column.as_ref() else {
+            return Ok(None);
+        };
+        let index = self.input.schema().index_of(column)?;
+        let bucket_expr =
+            Arc::new(PhysicalColumn::new(column, index)) as Arc<dyn PhysicalExpr>;
+        let repartition = Arc::new(RepartitionExec::try_new(
+            Arc::clone(&self.input),
+            Partitioning::Hash(vec![bucket_expr], self.bucket_count),
+        )?) as Arc<dyn ExecutionPlan>;
+        let mut plan = Self::build_with_input(
+            repartition,
+            self.table.clone(),
+            self.groups_by_bucket.as_ref().clone(),
+            self.key.clone(),
+            self.bucket_count,
+        )?;
+        plan.gate = Arc::clone(&self.gate);
+        plan.multi_match = self.multi_match;
+        plan.emit_unmatched = self.emit_unmatched;
+        plan.profile_io = self.profile_io.clone();
+        Ok(Some(Arc::new(plan)))
     }
     /// Join-side lookup mode: emit every matching state row and drop a
     /// contribution row without a match (inner-join semantics).
@@ -1707,56 +1992,84 @@ impl ExecutionPlanProperties for IvmPkLookupExec {
 }
 
 impl IvmPkLookupExec {
-    /// The contiguous state-bucket range this execution partition owns.
+    /// The buckets this `(task, partition)` owns.
     ///
-    /// `bucket_repartition` keeps the hidden bucket column, so the input
-    /// partitioning still names the range boundaries after a distributed
-    /// planner merges adjacent buckets for a smaller worker set.  The lookup
-    /// opens only the buckets in that range; it never probes a bucket based on
-    /// the rows it happens to see.
-    fn bucket_range(&self, partition: usize) -> (usize, usize) {
-        let buckets = self.groups_by_bucket.len().max(1);
-        if self.bucket_count <= 1 {
-            return (0, buckets);
-        }
-        if self.bucket_column.is_some()
-            && let Partitioning::Range(range) = self.input.output_partitioning()
-        {
-            let split_points = range.split_points();
-            let value = |index: usize| {
-                split_points
-                    .get(index)
-                    .and_then(|point| point.values().first())
-                    .and_then(|value| match value {
-                        ScalarValue::UInt32(Some(value)) => Some(*value as usize),
-                        _ => None,
-                    })
-            };
-            let lower = if partition == 0 {
-                0
-            } else {
-                value(partition - 1).unwrap_or(partition)
-            };
-            let upper = if partition >= split_points.len() {
-                buckets
-            } else {
-                value(partition).unwrap_or(partition + 1)
-            };
-            if lower <= upper && upper <= buckets {
-                return (lower, upper);
+    /// The contribution is hash-shuffled on the deterministic bucket id.  A
+    /// distributed planner scales that hash partition to
+    /// `bucket_count * task_count`; consumer task `i` reads the global slots
+    /// `[P*i, P*(i+1))` and its local partition `p` is slot `P*i + p`.  The
+    /// same hash modulo `P * C` recovers the buckets of every local partition,
+    /// so each bucket is opened by exactly one execution stream.
+    /// Whether the input is actually shuffled on the hidden bucket column.
+    ///
+    /// `EnforceSorting` can delete an explicit bucket repartition when the
+    /// input already has one partition.  In that case every execution stream
+    /// sees the whole contribution and must probe every bucket; using the
+    /// hash ownership would silently drop rows.  The same conservative
+    /// fallback covers any repartition key the optimizer put in its place.
+    fn bucket_ownership(&self) -> BucketOwnership {
+        if self.shuffle_partitions > 0 {
+            BucketOwnership::Hash
+        } else {
+            if self.bucket_count > 1 {
+                tracing::debug!(
+                    table = %self.table.table_name,
+                    bucket_count = self.bucket_count,
+                    input = %self.input.name(),
+                    partitioning = %self.input.output_partitioning(),
+                    "keyed lookup has no bucket shuffle; opening every state bucket"
+                );
             }
+            BucketOwnership::All
         }
-        (partition, (partition + 1).min(buckets))
     }
 
-    fn groups_for_partition(&self, partition: usize) -> Vec<PartitionFiles> {
-        let (lower, upper) = self.bucket_range(partition);
-        let buckets = self.groups_by_bucket.len();
-        self.groups_by_bucket[lower.min(buckets)..upper.min(buckets)]
-            .iter()
-            .flatten()
-            .cloned()
-            .collect()
+    fn bucket_indices(
+        &self,
+        partition: usize,
+        task: LookupTask,
+    ) -> DataFusionResult<Vec<usize>> {
+        let buckets = self.groups_by_bucket.len().max(1);
+        if self.bucket_count <= 1 || self.bucket_ownership() == BucketOwnership::All {
+            return Ok((0..buckets).collect());
+        }
+        let task_count = task.count.max(1);
+        let shuffle_partitions = self.shuffle_partitions.max(1);
+        let total = shuffle_partitions.saturating_mul(task_count).max(1);
+        let values: ArrayRef = Arc::new(UInt32Array::from_iter_values(
+            (0..self.bucket_count as u32).collect::<Vec<_>>(),
+        ));
+        let mut hashes = vec![0u64; self.bucket_count];
+        datafusion::common::hash_utils::create_hashes(
+            [values.as_ref()],
+            datafusion::physical_plan::repartition::REPARTITION_RANDOM_STATE
+                .random_state(),
+            &mut hashes,
+        )
+        .map_err(|error| {
+            DataFusionError::Execution(format!("hash IVM bucket ids: {error}"))
+        })?;
+        Ok((0..self.bucket_count.min(buckets))
+            .filter(|bucket| {
+                let slot = (hashes[*bucket] % total as u64) as usize;
+                slot / shuffle_partitions == task.index
+                    && slot % shuffle_partitions == partition
+            })
+            .collect())
+    }
+
+    fn groups_for_partition(
+        &self,
+        partition: usize,
+        task: LookupTask,
+    ) -> DataFusionResult<Vec<PartitionFiles>> {
+        let mut groups = Vec::new();
+        for bucket in self.bucket_indices(partition, task)? {
+            if let Some(files) = self.groups_by_bucket.get(bucket) {
+                groups.extend(files.iter().cloned());
+            }
+        }
+        Ok(groups)
     }
 
     /// Resolve one bucket through persistent per-file lookup sources.
@@ -1770,8 +2083,9 @@ impl IvmPkLookupExec {
         partition: usize,
         context: Arc<datafusion::execution::TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
-        let input = self.input.execute(partition, context.clone())?;
-        let groups = Arc::new(self.groups_for_partition(partition));
+        let input = self.sorted_input.execute(partition, context.clone())?;
+        let groups =
+            Arc::new(self.groups_for_partition(partition, lookup_task(&context))?);
         let table = self.table.clone();
         let key = self.key.clone();
         let state_schema = self.table.schema.clone();
@@ -1926,6 +2240,26 @@ impl ExecutionPlan for IvmPkLookupExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
+    /// The bucket repartition is part of the lookup's contract, not an
+    /// optional optimization.  DataFusion strips explicit repartitions whose
+    /// output distribution no parent requires, so ask for the bucket key
+    /// explicitly; `EnforceDistribution` then keeps the existing shuffle
+    /// instead of adding another one.
+    fn required_input_distribution(&self) -> Vec<Distribution> {
+        match self.bucket_column.as_ref() {
+            Some(column) => {
+                match self.input.schema().index_of(column) {
+                    Ok(index) => vec![Distribution::KeyPartitioned(vec![Arc::new(
+                        PhysicalColumn::new(column, index),
+                    )
+                        as Arc<dyn PhysicalExpr>])],
+                    Err(_) => vec![Distribution::UnspecifiedDistribution],
+                }
+            }
+            None => vec![Distribution::UnspecifiedDistribution],
+        }
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
@@ -1935,7 +2269,7 @@ impl ExecutionPlan for IvmPkLookupExec {
                 "keyed state lookup expects one child".to_string(),
             ));
         }
-        let mut plan = Self::new_with_key(
+        let mut plan = Self::build_with_input(
             children[0].clone(),
             self.table.clone(),
             self.groups_by_bucket.as_ref().clone(),
@@ -1958,12 +2292,6 @@ impl ExecutionPlan for IvmPkLookupExec {
     }
 }
 
-/// A lazy table provider for a keyed lookup.
-///
-/// The contribution plan is rebuilt on every scan.  A refresh query may
-/// reference the same lookup frame more than once (for example a join's
-/// `already` and `deletes` sides); reusing one physical lookup plan would
-/// consume its input partitions on the first execution.
 /// The `(partition column, contribution column)` pairs a lookup can prune
 /// by.  `None` means at least one partition column is not part of the lookup
 /// key, so the read must keep every partition.
@@ -2199,7 +2527,17 @@ impl IvmLookupTable {
         partition_restriction_from_batches(&batches, &pairs)
     }
 
-    async fn build_plan(&self) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+    /// Turn this provider into a keyed-lookup logical node.
+    ///
+    /// The contribution stays a logical child, so the session's physical
+    /// planner (and the distributed planner layered on it) can split the
+    /// bucket shuffle into a normal worker stage.  Only the small
+    /// range-partition restriction is resolved here; the keyed read itself is
+    /// planned and executed as part of the outer refresh plan.
+    pub(crate) async fn into_dataframe(
+        self,
+        context: &SessionContext,
+    ) -> DataFusionResult<DataFrame> {
         let groups_by_bucket = if self.prepruned {
             self.groups_by_bucket.clone()
         } else {
@@ -2238,45 +2576,26 @@ impl IvmLookupTable {
             self.groups_by_bucket.iter().flatten().count(),
             groups_by_bucket.iter().flatten().count(),
         );
-        #[cfg(feature = "distributed")]
-        let plan =
-            crate::distributed::without_sink(self.contribution.create_physical_plan())
-                .await?;
-        #[cfg(not(feature = "distributed"))]
-        let plan = self.contribution.create_physical_plan().await?;
-        let plan = if let Some(columns) = self.route_columns.as_deref() {
-            bucket_repartition_by_columns(plan, columns, self.bucket_count)
-                .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?
-        } else if let Some(key) = self.bucket_key.as_deref() {
-            bucket_repartition(plan, key, self.bucket_count)
-                .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?
-        } else {
-            plan
-        };
-        let lookup = match self.key.clone() {
-            PkLookupKey::BinaryRow { column } => IvmPkLookupExec::new(
-                plan,
-                self.table.clone(),
-                groups_by_bucket.clone(),
-                column,
-                self.bucket_count,
-            )?,
-            PkLookupKey::Columns {
-                input_columns,
-                table_columns,
-            } => IvmPkLookupExec::new_with_columns(
-                plan,
-                self.table.clone(),
+        let schema = self.schema.clone();
+        let node = IvmKeyedLookupNode {
+            spec: Arc::new(IvmKeyedLookupSpec {
+                table: self.table,
                 groups_by_bucket,
-                input_columns,
-                table_columns,
-                self.bucket_count,
-            )?,
+                key: self.key,
+                bucket_count: self.bucket_count,
+                route_columns: self.route_columns,
+                bucket_key: self.bucket_key,
+                multi_match: self.multi_match,
+                profile_io: self.profile_io,
+            }),
+            contribution: self.contribution.logical_plan().clone(),
+            schema: Arc::new(DFSchema::try_from(schema)?),
         };
-        Ok(Arc::new(
-            lookup
-                .with_multi_match(self.multi_match)
-                .with_profile(self.profile_io.clone()),
+        Ok(DataFrame::new(
+            context.state(),
+            LogicalPlan::Extension(Extension {
+                node: Arc::new(node),
+            }),
         ))
     }
 }
@@ -2371,128 +2690,424 @@ impl ExecutionPlan for BucketPartitionedExec {
     }
 }
 
-/// A one-partition plan that hides its inner plan from physical optimizers.
-struct IvmHiddenPlanExec {
-    plan: Arc<dyn ExecutionPlan>,
-    properties: Arc<PlanProperties>,
+/// Serializable specification of one keyed state lookup.
+pub(crate) struct IvmKeyedLookupSpec {
+    table: IvmTable,
+    groups_by_bucket: Vec<Vec<PartitionFiles>>,
+    key: PkLookupKey,
+    bucket_count: usize,
+    route_columns: Option<Vec<String>>,
+    bucket_key: Option<String>,
+    multi_match: bool,
+    profile_io: Option<crate::observability::ProfileHandle>,
 }
 
-impl IvmHiddenPlanExec {
-    fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
-        let schema = plan.schema();
-        let properties = Arc::new(PlanProperties::new(
-            EquivalenceProperties::new(schema),
-            Partitioning::UnknownPartitioning(1),
-            EmissionType::Incremental,
-            Boundedness::Bounded,
-        ));
-        Self { plan, properties }
-    }
-}
-
-impl std::fmt::Debug for IvmHiddenPlanExec {
+impl std::fmt::Debug for IvmKeyedLookupSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "IvmHiddenPlanExec")
+        write!(
+            f,
+            "IvmKeyedLookupSpec(table={}, buckets={}, key={})",
+            self.table.table_name,
+            self.bucket_count,
+            self.key.display(),
+        )
     }
 }
 
-impl DisplayAs for IvmHiddenPlanExec {
-    fn fmt_as(
-        &self,
-        _format: DisplayFormatType,
-        f: &mut std::fmt::Formatter<'_>,
-    ) -> std::fmt::Result {
-        write!(f, "IvmHiddenPlanExec")
+/// Logical node for a keyed state lookup of `contribution`.
+///
+/// The contribution is a logical child of this node, not a plan embedded in
+/// a `TableProvider::scan`.  That distinction is what makes the bucket
+/// shuffle a first-class stage: the session plans the contribution and the
+/// lookup once, then the distributed planner can inject a network boundary
+/// above the bucket repartition and run `IvmPkLookupExec` on workers.
+///
+/// A nested physical plan built inside `scan` carries its own
+/// `DistributedExec`; workers can never resolve the stages of that inner
+/// query, which is the deadlock this node removes.
+pub(crate) struct IvmKeyedLookupNode {
+    spec: Arc<IvmKeyedLookupSpec>,
+    contribution: LogicalPlan,
+    schema: DFSchemaRef,
+}
+
+impl std::fmt::Debug for IvmKeyedLookupNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IvmKeyedLookupNode")
     }
 }
 
-impl ExecutionPlan for IvmHiddenPlanExec {
+impl PartialEq for IvmKeyedLookupNode {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.spec, &other.spec)
+    }
+}
+
+impl Eq for IvmKeyedLookupNode {}
+
+impl std::hash::Hash for IvmKeyedLookupNode {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (Arc::as_ptr(&self.spec) as usize).hash(state);
+    }
+}
+
+impl PartialOrd for IvmKeyedLookupNode {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for IvmKeyedLookupNode {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (Arc::as_ptr(&self.spec) as usize).cmp(&(Arc::as_ptr(&other.spec) as usize))
+    }
+}
+
+impl UserDefinedLogicalNodeCore for IvmKeyedLookupNode {
     fn name(&self) -> &str {
-        "IvmHiddenPlanExec"
+        "IvmKeyedLookup"
     }
 
-    fn schema(&self) -> SchemaRef {
-        self.plan.schema()
+    fn inputs(&self) -> Vec<&LogicalPlan> {
+        vec![&self.contribution]
     }
 
-    fn properties(&self) -> &Arc<PlanProperties> {
-        &self.properties
+    fn schema(&self) -> &DFSchemaRef {
+        &self.schema
     }
 
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+    fn expressions(&self) -> Vec<Expr> {
         Vec::new()
     }
 
-    fn apply_expressions(
-        &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
-    ) -> DataFusionResult<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
+    fn fmt_for_explain(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "IvmKeyedLookup table={} buckets={} key={}",
+            self.spec.table.table_name,
+            self.spec.bucket_count,
+            self.spec.key.display(),
+        )
     }
 
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        if !children.is_empty() {
+    fn with_exprs_and_inputs(
+        &self,
+        exprs: Vec<Expr>,
+        inputs: Vec<LogicalPlan>,
+    ) -> DataFusionResult<Self> {
+        if !exprs.is_empty() || inputs.len() != 1 {
             return Err(DataFusionError::Internal(
-                "hidden lookup plan expects no children".to_string(),
+                "IvmKeyedLookup expects one input and no expressions".to_string(),
             ));
         }
-        Ok(self)
+        Ok(Self {
+            spec: Arc::clone(&self.spec),
+            contribution: inputs.into_iter().next().expect("one input"),
+            schema: self.schema.clone(),
+        })
+    }
+}
+
+/// Serializable specification of one keyed state merge.
+pub(crate) struct IvmStateMergeSpec {
+    state: IvmTable,
+    groups_by_bucket: Vec<Vec<PartitionFiles>>,
+    bucket_count: usize,
+    group_keys: Vec<String>,
+    measure_columns: Vec<String>,
+    epoch: i64,
+}
+
+impl std::fmt::Debug for IvmStateMergeSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "IvmStateMergeSpec(table={}, buckets={}, measures={})",
+            self.state.table_name,
+            self.bucket_count,
+            self.measure_columns.join(","),
+        )
+    }
+}
+
+/// Logical node that turns aggregate contributions into the next state rows.
+///
+/// The contribution stays a logical child so the bucket shuffle and the
+/// lookup are planned as normal worker stages.  The state merge itself is a
+/// streaming physical node above them; it never runs on the coordinator.
+pub(crate) struct IvmStateMergeNode {
+    spec: Arc<IvmStateMergeSpec>,
+    contribution: LogicalPlan,
+    schema: DFSchemaRef,
+}
+
+impl std::fmt::Debug for IvmStateMergeNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IvmStateMergeNode")
+    }
+}
+
+impl PartialEq for IvmStateMergeNode {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.spec, &other.spec)
+    }
+}
+
+impl Eq for IvmStateMergeNode {}
+
+impl std::hash::Hash for IvmStateMergeNode {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (Arc::as_ptr(&self.spec) as usize).hash(state);
+    }
+}
+
+impl PartialOrd for IvmStateMergeNode {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for IvmStateMergeNode {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (Arc::as_ptr(&self.spec) as usize).cmp(&(Arc::as_ptr(&other.spec) as usize))
+    }
+}
+
+impl UserDefinedLogicalNodeCore for IvmStateMergeNode {
+    fn name(&self) -> &str {
+        "IvmStateMerge"
     }
 
-    fn execute(
+    fn inputs(&self) -> Vec<&LogicalPlan> {
+        vec![&self.contribution]
+    }
+
+    fn schema(&self) -> &DFSchemaRef {
+        &self.schema
+    }
+
+    fn expressions(&self) -> Vec<Expr> {
+        Vec::new()
+    }
+
+    fn fmt_for_explain(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "IvmStateMerge table={} buckets={} measures={}",
+            self.spec.state.table_name,
+            self.spec.bucket_count,
+            self.spec.measure_columns.join(","),
+        )
+    }
+
+    fn with_exprs_and_inputs(
         &self,
-        partition: usize,
-        context: Arc<datafusion::execution::TaskContext>,
-    ) -> DataFusionResult<SendableRecordBatchStream> {
-        if partition != 0 {
-            return Err(DataFusionError::Execution(
-                "hidden lookup plan has one partition".to_string(),
+        exprs: Vec<Expr>,
+        inputs: Vec<LogicalPlan>,
+    ) -> DataFusionResult<Self> {
+        if !exprs.is_empty() || inputs.len() != 1 {
+            return Err(DataFusionError::Internal(
+                "IvmStateMerge expects one input and no expressions".to_string(),
             ));
         }
-        self.plan.execute(0, context)
+        Ok(Self {
+            spec: Arc::clone(&self.spec),
+            contribution: inputs.into_iter().next().expect("one input"),
+            schema: self.schema.clone(),
+        })
+    }
+}
+
+/// Build the logical plan that applies aggregate contributions to `state`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn state_merge_dataframe(
+    context: &SessionContext,
+    contribution: DataFrame,
+    state: IvmTable,
+    groups_by_bucket: Vec<Vec<PartitionFiles>>,
+    bucket_count: usize,
+    group_keys: Vec<String>,
+    measure_columns: Vec<String>,
+    epoch: i64,
+) -> DataFusionResult<DataFrame> {
+    let schema = Arc::new(DFSchema::try_from(state.schema.clone())?);
+    let node = IvmStateMergeNode {
+        spec: Arc::new(IvmStateMergeSpec {
+            state,
+            groups_by_bucket,
+            bucket_count,
+            group_keys,
+            measure_columns,
+            epoch,
+        }),
+        contribution: contribution.logical_plan().clone(),
+        schema,
+    };
+    Ok(DataFrame::new(
+        context.state(),
+        LogicalPlan::Extension(Extension {
+            node: Arc::new(node),
+        }),
+    ))
+}
+
+/// Physical rule that restores the bucket shuffle after `EnforceDistribution`.
+#[derive(Debug, Default)]
+pub struct IvmKeyedLookupRule;
+
+impl datafusion::physical_optimizer::PhysicalOptimizerRule for IvmKeyedLookupRule {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        _config: &datafusion::common::config::ConfigOptions,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        use datafusion::common::tree_node::{Transformed, TreeNode};
+        plan.transform_up(|node| {
+            let Some(lookup) = node.downcast_ref::<IvmPkLookupExec>() else {
+                return Ok(Transformed::no(node));
+            };
+            match lookup.ensure_bucket_shuffle()? {
+                Some(replacement) => Ok(Transformed::yes(replacement)),
+                None => Ok(Transformed::no(node)),
+            }
+        })
+        .map(|transformed| transformed.data)
+    }
+
+    fn name(&self) -> &str {
+        "ivm_keyed_lookup_bucket_shuffle"
+    }
+
+    fn schema_check(&self) -> bool {
+        false
+    }
+}
+
+/// Query planner for sessions that are not built by `lakesoul-datafusion`.
+///
+/// A plain `SessionContext` installs DataFusion's `DefaultQueryPlanner`, whose
+/// physical planner does not know the IVM extension node.  Wrapping it here
+/// keeps `lookup_source_by_join_keys` usable in embedded runtimes and tests.
+pub struct KeyedLookupQueryPlanner {
+    inner: DefaultPhysicalPlanner,
+}
+
+impl std::fmt::Debug for KeyedLookupQueryPlanner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "KeyedLookupQueryPlanner")
+    }
+}
+
+impl Default for KeyedLookupQueryPlanner {
+    fn default() -> Self {
+        Self {
+            inner: DefaultPhysicalPlanner::with_extension_planners(vec![Arc::new(
+                IvmKeyedLookupExtensionPlanner,
+            )]),
+        }
     }
 }
 
 #[async_trait]
-impl TableProvider for IvmLookupTable {
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-
-    fn table_type(&self) -> TableType {
-        TableType::Temporary
-    }
-
-    async fn scan(
+impl datafusion::execution::context::QueryPlanner for KeyedLookupQueryPlanner {
+    async fn create_physical_plan(
         &self,
-        _state: &dyn Session,
-        projection: Option<&Vec<usize>>,
-        _filters: &[datafusion::prelude::Expr],
-        _limit: Option<usize>,
+        logical_plan: &LogicalPlan,
+        session: &dyn Session,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let lookup = self.build_plan().await?;
-        let hidden: Arc<dyn ExecutionPlan> = Arc::new(IvmHiddenPlanExec::new(Arc::new(
-            CoalescePartitionsExec::new(lookup),
-        )));
-        let Some(projection) = projection else {
-            return Ok(hidden);
+        self.inner.create_physical_plan(logical_plan, session).await
+    }
+}
+
+/// Physical planner for [`IvmKeyedLookupNode`].
+///
+/// It plans only the lookup node: the contribution arrives as an already
+/// planned physical child, so there is no recursive `create_physical_plan`
+/// call and no nested distributed plan.
+#[derive(Debug, Default)]
+pub(crate) struct IvmKeyedLookupExtensionPlanner;
+
+#[async_trait]
+impl ExtensionPlanner for IvmKeyedLookupExtensionPlanner {
+    async fn plan_extension(
+        &self,
+        _planner: &dyn PhysicalPlanner,
+        node: &dyn UserDefinedLogicalNode,
+        _logical_inputs: &[&LogicalPlan],
+        physical_inputs: &[Arc<dyn ExecutionPlan>],
+        _session: &dyn Session,
+        _planning_ctx: &PhysicalPlanningContext,
+    ) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
+        if physical_inputs.len() != 1 {
+            return Err(DataFusionError::Internal(
+                "IVM keyed node needs exactly one physical input".to_string(),
+            ));
+        }
+        if let Some(node) = node.as_any().downcast_ref::<IvmStateMergeNode>() {
+            let spec = &node.spec;
+            let input = Arc::clone(&physical_inputs[0]);
+            let input =
+                bucket_repartition(input, IVM_GROUP_ROW_COLUMN, spec.bucket_count)
+                    .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?;
+            let lookup = IvmPkLookupExec::new_with_key(
+                input,
+                spec.state.clone(),
+                spec.groups_by_bucket.clone(),
+                PkLookupKey::BinaryRow {
+                    column: IVM_GROUP_ROW_COLUMN.to_string(),
+                },
+                spec.bucket_count,
+            )?
+            // A group with no old state row is a new group: emit the
+            // contribution with a null old-state side so the merge inserts it.
+            .with_multi_match(false);
+            return Ok(Some(Arc::new(IvmStateMergeExec::new(
+                Arc::new(lookup),
+                spec.state.schema.clone(),
+                spec.group_keys.clone(),
+                spec.measure_columns.clone(),
+                spec.epoch,
+            )?)));
+        }
+        let Some(node) = node.as_any().downcast_ref::<IvmKeyedLookupNode>() else {
+            return Ok(None);
         };
-        let schema = hidden.schema();
-        let exprs = projection
-            .iter()
-            .map(|index| {
-                let field = schema.field(*index);
-                (
-                    Arc::new(PhysicalColumn::new(field.name(), *index))
-                        as Arc<dyn PhysicalExpr>,
-                    field.name().clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-        Ok(Arc::new(ProjectionExec::try_new(exprs, hidden)?))
+        let spec = &node.spec;
+        let input = Arc::clone(&physical_inputs[0]);
+        let input = if let Some(columns) = spec.route_columns.as_deref() {
+            bucket_repartition_by_columns(input, columns, spec.bucket_count)
+                .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?
+        } else if let Some(key) = spec.bucket_key.as_deref() {
+            bucket_repartition(input, key, spec.bucket_count)
+                .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?
+        } else {
+            input
+        };
+        let lookup = match spec.key.clone() {
+            PkLookupKey::BinaryRow { column } => IvmPkLookupExec::new(
+                input,
+                spec.table.clone(),
+                spec.groups_by_bucket.clone(),
+                column,
+                spec.bucket_count,
+            )?,
+            PkLookupKey::Columns {
+                input_columns,
+                table_columns,
+            } => IvmPkLookupExec::new_with_columns(
+                input,
+                spec.table.clone(),
+                spec.groups_by_bucket.clone(),
+                input_columns,
+                table_columns,
+                spec.bucket_count,
+            )?,
+        };
+        Ok(Some(Arc::new(
+            lookup
+                .with_multi_match(spec.multi_match)
+                .with_profile(spec.profile_io.clone()),
+        )))
     }
 }
 
@@ -2512,7 +3127,24 @@ pub(crate) struct IvmStateMergeExec {
     properties: Arc<PlanProperties>,
 }
 
+#[cfg_attr(not(feature = "distributed"), allow(dead_code))]
 impl IvmStateMergeExec {
+    pub(crate) fn state_schema(&self) -> &SchemaRef {
+        &self.state_schema
+    }
+
+    pub(crate) fn group_keys(&self) -> &[String] {
+        &self.group_keys
+    }
+
+    pub(crate) fn measure_columns(&self) -> &[String] {
+        &self.measure_columns
+    }
+
+    pub(crate) fn epoch(&self) -> i64 {
+        self.epoch
+    }
+
     pub(crate) fn new(
         input: Arc<dyn ExecutionPlan>,
         state_schema: SchemaRef,
@@ -3128,6 +3760,20 @@ mod tests {
         assert!(values.is_null(2));
     }
 
+    /// The execution partition a bucket lands in after the hash shuffle.
+    fn bucket_partition(bucket: u32, partitions: usize) -> usize {
+        let values: ArrayRef = Arc::new(UInt32Array::from(vec![bucket]));
+        let mut hashes = [0u64];
+        datafusion::common::hash_utils::create_hashes(
+            [values.as_ref()],
+            datafusion::physical_plan::repartition::REPARTITION_RANDOM_STATE
+                .random_state(),
+            &mut hashes,
+        )
+        .unwrap();
+        (hashes[0] % partitions as u64) as usize
+    }
+
     #[tokio::test]
     async fn routes_composite_keys_with_the_writer_hash() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![
@@ -3170,7 +3816,7 @@ mod tests {
                     ];
                     lakesoul_io::utils::hash::create_hashes(&arrays, &mut hashes)
                         .map_err(|error| DataFusionError::Execution(error.to_string()))?;
-                    assert_eq!(partition, (hashes[0] % 4) as usize);
+                    assert_eq!(partition, bucket_partition(hashes[0] % 4, 4));
                     seen += 1;
                 }
             }
@@ -3211,8 +3857,8 @@ mod tests {
                     .unwrap();
                 for row in 0..key.len() {
                     let scalar = ScalarValue::Utf8(Some(key.value(row).to_string()));
-                    let expected = lakesoul_io::helpers::compute_scalar_hash(&scalar) % 4;
-                    assert_eq!(partition, expected as usize);
+                    let bucket = lakesoul_io::helpers::compute_scalar_hash(&scalar) % 4;
+                    assert_eq!(partition, bucket_partition(bucket, 4));
                 }
             }
         }
@@ -3222,17 +3868,12 @@ mod tests {
 }
 
 #[cfg(test)]
-mod bucket_range_tests {
+mod bucket_ownership_tests {
     use std::sync::Arc;
 
     use arrow::array::{Int64Array, UInt32Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
-    use datafusion::common::ScalarValue;
-    use datafusion::physical_expr::expressions::Column as PhysicalColumn;
-    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
-    use datafusion::physical_plan::repartition::RepartitionExec;
-    use datafusion::physical_plan::{Partitioning, RangePartitioning, SplitPoint};
     use datafusion::prelude::SessionContext;
 
     use super::*;
@@ -3258,8 +3899,7 @@ mod bucket_range_tests {
         }
     }
 
-    #[tokio::test]
-    async fn a_scaled_range_maps_each_task_to_contiguous_buckets() -> Result<()> {
+    fn lookup(bucket_count: usize) -> IvmPkLookupExec {
         let schema = Arc::new(Schema::new(vec![
             Field::new("k", DataType::Int64, false),
             Field::new(IVM_BUCKET_COLUMN, DataType::UInt32, true),
@@ -3270,24 +3910,13 @@ mod bucket_range_tests {
                 Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
                 Arc::new(UInt32Array::from(vec![0, 1, 2, 3])),
             ],
-        )?;
-        let context = SessionContext::new();
-        let input = context.read_batch(batch)?.create_physical_plan().await?;
-        let ordered = bucket_repartition(input, "k", 4)?;
-        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new(
-            Arc::new(PhysicalColumn::new(IVM_BUCKET_COLUMN, 1)),
-            SortOptions::default(),
-        )])
+        )
         .unwrap();
-        let range = RangePartitioning::try_new(
-            ordering,
-            vec![SplitPoint::new(vec![ScalarValue::UInt32(Some(2))])],
-        )?;
-        let scaled = Arc::new(RepartitionExec::try_new(
-            ordered,
-            Partitioning::Range(range),
-        )?);
-        let groups = (0..4)
+        let context = SessionContext::new();
+        let frame = context.read_batch(batch).unwrap();
+        let input = futures::executor::block_on(frame.create_physical_plan()).unwrap();
+        let input = bucket_repartition(input, "k", bucket_count).unwrap();
+        let groups = (0..bucket_count)
             .map(|bucket| {
                 vec![PartitionFiles {
                     partition_desc: "-5".to_string(),
@@ -3295,11 +3924,206 @@ mod bucket_range_tests {
                 }]
             })
             .collect();
-        let lookup = IvmPkLookupExec::new(scaled, table(), groups, "k", 4)?;
-        assert_eq!(lookup.bucket_range(0), (0, 2));
-        assert_eq!(lookup.bucket_range(1), (2, 4));
-        assert_eq!(lookup.groups_for_partition(0).len(), 2);
-        assert_eq!(lookup.groups_for_partition(1).len(), 2);
+        IvmPkLookupExec::new_with_key(
+            input,
+            table(),
+            groups,
+            PkLookupKey::BinaryRow {
+                column: "k".to_string(),
+            },
+            bucket_count,
+        )
+        .unwrap()
+    }
+
+    /// Every bucket is owned by exactly one `(task, partition)`.
+    #[test]
+    fn bucket_ownership_is_complete_and_disjoint() {
+        for bucket_count in [1usize, 4, 16] {
+            for task_count in [1usize, 2, 3, 8] {
+                let lookup = lookup(bucket_count);
+                let mut owners = vec![Vec::new(); bucket_count];
+                for task_index in 0..task_count {
+                    for partition in 0..bucket_count {
+                        for bucket in lookup
+                            .bucket_indices(
+                                partition,
+                                LookupTask {
+                                    index: task_index,
+                                    count: task_count,
+                                },
+                            )
+                            .unwrap()
+                        {
+                            owners[bucket].push((task_index, partition));
+                        }
+                    }
+                }
+                for (bucket, owner) in owners.iter().enumerate() {
+                    if bucket_count == 1 {
+                        // Without a bucket shuffle every task reads all
+                        // contribution partitions and must open every bucket.
+                        assert_eq!(owner.len(), task_count);
+                    } else {
+                        assert_eq!(
+                            owner.len(),
+                            1,
+                            "bucket {bucket} (P={bucket_count}, C={task_count}) has owners {owner:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The rows a shuffle slot delivers to `(task, partition)` all belong to
+    /// the buckets that partition opens.
+    #[test]
+    fn shuffle_slots_contain_only_their_buckets() {
+        for bucket_count in [4usize, 16] {
+            for task_count in [1usize, 2, 3] {
+                let lookup = lookup(bucket_count);
+                let total = bucket_count * task_count;
+                let values: ArrayRef = Arc::new(UInt32Array::from_iter_values(
+                    (0..bucket_count as u32).collect::<Vec<_>>(),
+                ));
+                let mut hashes = vec![0u64; bucket_count];
+                datafusion::common::hash_utils::create_hashes(
+                    [values.as_ref()],
+                    datafusion::physical_plan::repartition::REPARTITION_RANDOM_STATE
+                        .random_state(),
+                    &mut hashes,
+                )
+                .unwrap();
+                for bucket in 0..bucket_count {
+                    let slot = (hashes[bucket] % total as u64) as usize;
+                    let task = LookupTask {
+                        index: slot / bucket_count,
+                        count: task_count,
+                    };
+                    let owned = lookup.bucket_indices(slot % bucket_count, task).unwrap();
+                    assert!(
+                        owned.contains(&bucket),
+                        "bucket {bucket} missing from slot {slot}                          (P={bucket_count}, C={task_count}, owned={owned:?})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn repartition_partition_matches_bucket_owner() -> DataFusionResult<()> {
+        for bucket_count in [4usize, 8] {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("k", DataType::Int64, false),
+                Field::new(IVM_BUCKET_COLUMN, DataType::UInt32, true),
+            ]));
+            let batch = RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(Int64Array::from_iter_values(0..bucket_count as i64)),
+                    Arc::new(UInt32Array::from_iter_values(0..bucket_count as u32)),
+                ],
+            )?;
+            let context = SessionContext::new();
+            let input = context.read_batch(batch)?.create_physical_plan().await?;
+            let plan = bucket_repartition(input, "k", bucket_count)
+                .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?;
+            let lookup = lookup(bucket_count);
+            for partition in 0..bucket_count {
+                let mut stream = plan.execute(partition, context.task_ctx())?;
+                let mut seen = Vec::new();
+                while let Some(batch) = stream.next().await {
+                    let batch = batch?;
+                    let index = batch.schema().index_of(IVM_BUCKET_COLUMN)?;
+                    let buckets = batch
+                        .column(index)
+                        .as_any()
+                        .downcast_ref::<UInt32Array>()
+                        .unwrap();
+                    seen.extend(
+                        (0..buckets.len()).map(|row| buckets.value(row) as usize),
+                    );
+                }
+                seen.sort_unstable();
+                let owned = lookup
+                    .bucket_indices(partition, LookupTask { index: 0, count: 1 })?;
+                assert_eq!(seen, owned, "partition {partition} of {bucket_count}");
+            }
+        }
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_physical_optimizer_keeps_the_bucket_shuffle() -> DataFusionResult<()> {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("k", DataType::Int64, false)])),
+            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
+        )?;
+        let context = crate::runtime::install_keyed_lookup_planner(SessionContext::new());
+        let contribution = context.read_batch(batch)?;
+        let provider = IvmLookupTable::columns(
+            contribution,
+            table(),
+            Vec::new(),
+            vec!["k".to_string()],
+            vec!["k".to_string()],
+            8,
+            Some(vec!["k".to_string()]),
+            true,
+        );
+        let frame = provider.into_dataframe(&context).await?;
+        let plan = frame.create_physical_plan().await?;
+        fn find_lookup(plan: &Arc<dyn ExecutionPlan>) -> Option<Arc<dyn ExecutionPlan>> {
+            if plan.downcast_ref::<IvmPkLookupExec>().is_some() {
+                return Some(Arc::clone(plan));
+            }
+            plan.children()
+                .into_iter()
+                .find_map(|child| find_lookup(child))
+        }
+
+        // `EnforceDistribution` may replace the inserted repartition with one
+        // sized by `target_partitions`; either way the lookup must still see a
+        // hash shuffle on `__ivm_bucket` and use the hash ownership.
+        let lookup = find_lookup(&plan).expect("lookup node");
+        let input = lookup.children()[0];
+        assert_eq!(
+            input.name(),
+            "RepartitionExec",
+            "lookup input was {}",
+            input.name()
+        );
+        match input.output_partitioning() {
+            Partitioning::Hash(expressions, count) => {
+                assert!(*count > 1);
+                assert_eq!(expressions.len(), 1);
+            }
+            other => panic!("lookup input is not hash partitioned: {other:?}"),
+        }
+        let lookup = lookup
+            .downcast_ref::<IvmPkLookupExec>()
+            .expect("lookup exec");
+        assert_eq!(lookup.bucket_ownership(), BucketOwnership::Hash);
+        assert!(lookup.shuffle_partitions > 1);
+        assert_eq!(lookup.bucket_count, 8);
+        Ok(())
+    }
+
+    #[test]
+    fn a_single_task_opens_every_bucket_once_across_partitions() {
+        let lookup = lookup(4);
+        let task = LookupTask { index: 0, count: 1 };
+        let mut seen = Vec::new();
+        for partition in 0..4 {
+            let buckets = lookup.bucket_indices(partition, task).unwrap();
+            assert_eq!(
+                lookup.groups_for_partition(partition, task).unwrap().len(),
+                buckets.len()
+            );
+            seen.extend(buckets);
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, vec![0, 1, 2, 3]);
     }
 }

@@ -3867,7 +3867,7 @@ impl IvmRuntime {
             } else {
                 provider
             };
-            let frame = context.read_table(Arc::new(provider))?;
+            let frame = provider.into_dataframe(context).await?;
             let projections = left_state
                 .schema
                 .fields()
@@ -4001,7 +4001,7 @@ impl IvmRuntime {
         } else {
             provider
         };
-        let frame = context.read_table(std::sync::Arc::new(provider))?;
+        let frame = provider.into_dataframe(context).await?;
         let projections = left_state
             .schema
             .fields()
@@ -4552,7 +4552,7 @@ impl IvmRuntime {
             route_columns,
             true,
         );
-        let frame = context.read_table(std::sync::Arc::new(provider))?;
+        let frame = provider.into_dataframe(context).await?;
         let projections = source
             .schema
             .fields()
@@ -4882,7 +4882,7 @@ impl IvmRuntime {
         } else {
             provider
         };
-        let frame = context.read_table(Arc::new(provider))?;
+        let frame = provider.into_dataframe(context).await?;
         let projections = table
             .schema
             .fields()
@@ -5053,7 +5053,7 @@ impl IvmRuntime {
         } else {
             provider
         };
-        let frame = context.read_table(Arc::new(provider))?;
+        let frame = provider.into_dataframe(context).await?;
         let projections = table
             .schema
             .fields()
@@ -5167,7 +5167,7 @@ impl IvmRuntime {
         } else {
             provider
         };
-        let frame = context.read_table(Arc::new(provider))?;
+        let frame = provider.into_dataframe(context).await?;
         let right_columns = right_state
             .schema
             .fields()
@@ -9629,7 +9629,7 @@ mod side_state_lookup_tests {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
             keys.swap(index, (seed as usize) % (index + 1));
         }
-        let context = SessionContext::new();
+        let context = crate::runtime::install_keyed_lookup_planner(SessionContext::new());
         let contribution = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("g", DataType::Utf8, false)])),
             vec![Arc::new(StringArray::from_iter_values(

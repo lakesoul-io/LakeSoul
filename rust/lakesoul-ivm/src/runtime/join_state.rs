@@ -536,7 +536,7 @@ impl super::IvmRuntime {
             route_columns,
             true,
         );
-        let before = context.read_table(std::sync::Arc::new(provider))?;
+        let before = provider.into_dataframe(&context).await?;
         let before_schema = before.schema().clone();
         let projections = source
             .schema

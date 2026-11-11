@@ -906,7 +906,7 @@ impl IvmRuntime {
             true,
             Vec::new(),
         );
-        let frame = context.read_table(Arc::new(provider))?;
+        let frame = provider.into_dataframe(context).await?;
         let pks = frame
             .select(
                 source

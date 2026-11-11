@@ -20,9 +20,12 @@ pub use descriptor::{
     IvmTableDescriptor,
 };
 pub use plan::{
-    lookup_task_count, sink_task_count, split_stream_scan, stream_scan_task_count,
+    dual_sink_task_count, lookup_task_count, sink_task_count, split_stream_scan,
+    stream_scan_task_count,
 };
 pub use sink::{
-    IVM_SINK_SPEC, IVM_TASK_OUTPUT_SCHEMA_MARKER, IvmRefreshSinkExec, IvmSinkRule,
-    IvmSinkSpec, current_sink_spec, sink_plan, task_output_schema, without_sink,
+    IVM_DUAL_SINK_SPEC, IVM_SINK_SPEC, IVM_TASK_OUTPUT_SCHEMA_MARKER, IvmDualSinkExec,
+    IvmDualSinkRule, IvmDualSinkSpec, IvmRefreshSinkExec, IvmSinkRule, IvmSinkSpec,
+    current_dual_sink_spec, current_sink_spec, sink_plan, task_output_schema,
+    without_sink,
 };

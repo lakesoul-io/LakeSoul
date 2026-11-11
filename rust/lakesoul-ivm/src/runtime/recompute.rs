@@ -4317,27 +4317,6 @@ impl IvmRuntime {
         })
     }
 
-    /// Project the state merge output onto the user MV schema.
-    fn state_to_mv_batch(
-        batch: &RecordBatch,
-        schema: &SchemaRef,
-    ) -> DataFusionResult<RecordBatch> {
-        let columns = schema
-            .fields()
-            .iter()
-            .map(|field| {
-                batch.column_by_name(field.name()).cloned().ok_or_else(|| {
-                    DataFusionError::Execution(format!(
-                        "state merge is missing {}",
-                        field.name()
-                    ))
-                })
-            })
-            .collect::<DataFusionResult<Vec<_>>>()?;
-        RecordBatch::try_new(schema.clone(), columns)
-            .map_err(|error| DataFusionError::Execution(error.to_string()))
-    }
-
     fn data_type_sql(data_type: &DataType) -> Result<String> {
         Ok(match data_type {
             DataType::Decimal128(precision, scale) => {
@@ -4405,7 +4384,7 @@ impl IvmRuntime {
             WindowStart::Apply(record) => record,
         };
         let epoch = record.epoch;
-        let context = refresh_session_local();
+        let context = refresh_session();
         // The bootstrap is the whole current source; read it through the
         // provider instead of materialising every initial file here.  A new
         // view has no cursors, and `before_versions` still contains the
@@ -4667,7 +4646,6 @@ impl IvmRuntime {
             self.advance_cursors(&view.view_id, window.cursors).await?;
             return Ok(Some(epoch));
         }
-        use futures::StreamExt;
         let contrib = if let Some(keyed) = &keyed_contributions {
             keyed.frame.clone()
         } else {
@@ -4696,102 +4674,30 @@ impl IvmRuntime {
         };
         let state_groups_by_bucket =
             super::keyed_plan::groups_by_bucket(state_groups, state_bucket_num);
-        #[cfg(feature = "distributed")]
-        let contrib_plan =
-            crate::distributed::without_sink(contrib.create_physical_plan()).await?;
-        #[cfg(not(feature = "distributed"))]
-        let contrib_plan = contrib.create_physical_plan().await?;
-        let contrib_plan = if state_bucket_num > 1 {
-            super::keyed_plan::bucket_repartition(
-                contrib_plan,
-                IVM_GROUP_ROW_COLUMN,
-                state_bucket_num,
-            )?
-        } else {
-            contrib_plan
-        };
-        let lookup_plan: Arc<dyn datafusion::physical_plan::ExecutionPlan> = Arc::new(
-            super::keyed_plan::IvmPkLookupExec::new(
-                contrib_plan,
-                state.clone(),
-                state_groups_by_bucket,
-                IVM_GROUP_ROW_COLUMN,
-                state_bucket_num,
-            )?
-            // A group with no old state row is a new group: emit the
-            // contribution with a null old-state side so the merge plan
-            // can insert it.
-            .with_multi_match(false),
-        );
         let measure_columns = measures
             .iter()
             .map(|(_, column, _)| column.clone())
             .collect::<Vec<_>>();
-        let merge_plan: Arc<dyn datafusion::physical_plan::ExecutionPlan> =
-            Arc::new(super::keyed_plan::IvmStateMergeExec::new(
-                lookup_plan,
-                state.schema.clone(),
-                view.group_keys.clone(),
-                measure_columns,
-                epoch,
-            )?);
-        let merge_context = refresh_session_local();
-        let streams = datafusion::physical_plan::execute_stream_partitioned(
-            merge_plan,
-            merge_context.task_ctx(),
+        // The merge is a logical extension node: the bucket shuffle, the keyed
+        // lookup and the state merge are all planned as worker stages, and the
+        // dual sink writes the state and MV rows on the same workers.
+        let merge = super::keyed_plan::state_merge_dataframe(
+            &context,
+            contrib,
+            state.clone(),
+            state_groups_by_bucket,
+            state_bucket_num,
+            view.group_keys.clone(),
+            measure_columns,
+            epoch,
         )?;
-        let mv_schema = view.mv.schema.clone();
-        let mut state_chunk: Vec<RecordBatch> = Vec::new();
-        let mut mv_chunk: Vec<RecordBatch> = Vec::new();
-        let mut chunk_rows = 0usize;
-        let mut commit_ids: Vec<String> = Vec::new();
-        let mut state_writes = 0usize;
-        let mut mv_writes = 0usize;
-        let mut state_keys = 0usize;
         let write_started = std::time::Instant::now();
-        for mut output in streams {
-            while let Some(batch) = output.next().await {
-                let batch = batch?;
-                if batch.num_rows() == 0 {
-                    continue;
-                }
-                state_keys += batch.num_rows();
-                let mv_batch = Self::state_to_mv_batch(&batch, &mv_schema)?;
-                chunk_rows += batch.num_rows();
-                state_chunk.push(batch);
-                mv_chunk.push(mv_batch);
-                if chunk_rows >= crate::table::MAX_STATE_APPEND_ROWS {
-                    let (mv_ids, state_ids) = view
-                        .mv
-                        .append_batches_pair(
-                            &self.client,
-                            std::mem::take(&mut mv_chunk),
-                            state,
-                            std::mem::take(&mut state_chunk),
-                        )
-                        .await?;
-                    commit_ids.extend(state_ids);
-                    commit_ids.extend(mv_ids);
-                    state_writes += 1;
-                    mv_writes += 1;
-                    chunk_rows = 0;
-                }
-            }
-        }
-        if !state_chunk.is_empty() {
-            let (mv_ids, state_ids) = view
-                .mv
-                .append_batches_pair(&self.client, mv_chunk, state, state_chunk)
-                .await?;
-            commit_ids.extend(state_ids);
-            commit_ids.extend(mv_ids);
-            state_writes += 1;
-            mv_writes += 1;
-        }
+        let outcome = write_dataframe_dual(state, &view.mv, &self.client, merge).await?;
+        let mut commit_ids = outcome.state_ids;
+        commit_ids.extend(outcome.mv_ids);
         tracing::info!(
-            state_keys,
-            state_writes,
-            mv_writes,
+            state_keys = outcome.state_rows,
+            mv_rows = outcome.mv_rows,
             elapsed = ?write_started.elapsed(),
             "multi-agg keyed incremental finished"
         );

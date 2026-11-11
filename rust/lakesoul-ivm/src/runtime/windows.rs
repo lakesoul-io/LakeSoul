@@ -2817,7 +2817,7 @@ impl IvmRuntime {
             Some(vec![IVM_MW_PARTITION.to_string()]),
             true,
         );
-        let frame = context.read_table(Arc::new(provider))?;
+        let frame = provider.into_dataframe(context).await?;
         let projections = view
             .source
             .primary_keys

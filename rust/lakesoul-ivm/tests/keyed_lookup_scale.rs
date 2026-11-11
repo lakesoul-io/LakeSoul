@@ -90,7 +90,8 @@ async fn keyed_source_lookup_returns_every_high_cardinality_key() {
         }
     }
 
-    let context = SessionContext::new();
+    let context =
+        lakesoul_ivm::runtime::install_keyed_lookup_planner(SessionContext::new());
     let keys = shuffled_keys(10_000);
     let contribution = RecordBatch::try_new(
         Arc::new(Schema::new(vec![Field::new("g", DataType::Utf8, false)])),
@@ -241,7 +242,8 @@ async fn keyed_source_lookup_hides_rows_deleted_after_insert() {
         .await
         .unwrap();
 
-    let context = SessionContext::new();
+    let context =
+        lakesoul_ivm::runtime::install_keyed_lookup_planner(SessionContext::new());
     let contribution = RecordBatch::try_new(
         Arc::new(Schema::new(vec![Field::new("g", DataType::Utf8, false)])),
         vec![Arc::new(StringArray::from_iter_values(["g1"]))],

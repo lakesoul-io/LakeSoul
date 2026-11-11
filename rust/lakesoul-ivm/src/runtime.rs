@@ -57,7 +57,18 @@ mod fallback;
 pub(crate) mod join_state;
 mod joins;
 pub(crate) mod keyed_plan;
+pub use keyed_plan::IvmKeyedLookupRule;
 pub use keyed_plan::{enable_partition_stats, state_partition_stats};
+
+/// Physical planner for the keyed-lookup logical extension node.
+///
+/// The embedding session registers it with the default physical planner so a
+/// keyed state lookup is planned as one node whose child is the contribution
+/// subtree, instead of a nested `DistributedExec` built from a `DataFrame`.
+pub fn keyed_lookup_extension_planner()
+-> std::sync::Arc<dyn datafusion::physical_planner::ExtensionPlanner + Send + Sync> {
+    std::sync::Arc::new(keyed_plan::IvmKeyedLookupExtensionPlanner)
+}
 mod lookup_chain;
 mod multi_join;
 mod recompute;
@@ -3110,7 +3121,52 @@ pub(crate) fn refresh_session() -> SessionContext {
     let (config, runtime) = crate::config::session();
     let context = SessionContext::new_with_config_rt(config, runtime);
     ensure_memory_default_catalog(&context);
-    context
+    install_keyed_lookup_planner(context)
+}
+
+/// Add the keyed-lookup extension planner to a plain DataFusion session.
+///
+/// Sessions created by `lakesoul-datafusion` already plan the extension node
+/// through `LakeSoulPhysicalPlanner`; a bare `SessionContext` uses DataFusion's
+/// default physical planner, which needs the extension planner explicitly.
+pub fn install_keyed_lookup_planner(context: SessionContext) -> SessionContext {
+    let state =
+        datafusion::execution::SessionStateBuilder::new_from_existing(context.state())
+            .with_query_planner(std::sync::Arc::new(
+                keyed_plan::KeyedLookupQueryPlanner::default(),
+            ))
+            .build();
+    SessionContext::new_with_state(with_keyed_lookup_rule(state))
+}
+
+/// Insert the keyed-lookup bucket rule before `JoinSelection`.
+///
+/// The rule restores a bucket shuffle that `EnsureRequirements` would
+/// otherwise collapse to one partition.  It has to run before join selection:
+/// a join planned as `CollectLeft` requires its left child to stay on one
+/// partition, and restoring the shuffle afterwards would break that
+/// invariant.
+pub fn with_keyed_lookup_rule(
+    state: datafusion::execution::SessionState,
+) -> datafusion::execution::SessionState {
+    let mut rules = state.physical_optimizers().to_vec();
+    if rules
+        .iter()
+        .any(|rule| rule.name() == "ivm_keyed_lookup_bucket_shuffle")
+    {
+        return state;
+    }
+    let position = rules
+        .iter()
+        .position(|rule| rule.name() == "join_selection")
+        .unwrap_or(2.min(rules.len()));
+    rules.insert(
+        position,
+        std::sync::Arc::new(keyed_plan::IvmKeyedLookupRule),
+    );
+    datafusion::execution::SessionStateBuilder::new_from_existing(state)
+        .with_physical_optimizer_rules(rules)
+        .build()
 }
 
 /// Make sure the refresh session's default catalog/schema can hold the
@@ -3182,7 +3238,7 @@ pub(crate) fn group_row_udf_for_types(
 ) -> Result<datafusion::logical_expr::ScalarUDF> {
     let encoder = Arc::new(GroupKeyRowEncoder::from_types(&input_types)?);
     Ok(datafusion::logical_expr::create_udf(
-        "ivm_group_row",
+        GROUP_ROW_UDF,
         input_types,
         DataType::Binary,
         datafusion::logical_expr::Volatility::Immutable,
@@ -3195,6 +3251,76 @@ pub(crate) fn group_row_udf_for_types(
                 rows,
             )))
         }),
+    ))
+}
+
+/// Name-resolved `ivm_group_row` used when a worker decodes a plan.
+///
+/// The coordinator's typed UDF is encoded by name (the distributed codec at
+/// position 0 does not claim it), so the worker resolves it from its function
+/// registry.  The decoder does not carry the group-key types, but the physical
+/// expression does; build the row encoder from the actual argument arrays.
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct WorkerGroupRowUdf {
+    signature: datafusion::logical_expr::Signature,
+}
+
+impl Default for WorkerGroupRowUdf {
+    fn default() -> Self {
+        Self {
+            signature: datafusion::logical_expr::Signature::variadic_any(
+                datafusion::logical_expr::Volatility::Immutable,
+            ),
+        }
+    }
+}
+
+impl datafusion::logical_expr::ScalarUDFImpl for WorkerGroupRowUdf {
+    fn name(&self) -> &str {
+        GROUP_ROW_UDF
+    }
+
+    fn signature(&self) -> &datafusion::logical_expr::Signature {
+        &self.signature
+    }
+
+    fn return_type(
+        &self,
+        _arg_types: &[DataType],
+    ) -> datafusion::error::Result<DataType> {
+        Ok(DataType::Binary)
+    }
+
+    fn invoke_with_args(
+        &self,
+        args: datafusion::logical_expr::ScalarFunctionArgs,
+    ) -> datafusion::error::Result<datafusion::logical_expr::ColumnarValue> {
+        let arrays =
+            datafusion::logical_expr::ColumnarValue::values_to_arrays(&args.args)?;
+        let types = arrays
+            .iter()
+            .map(|array| array.data_type().clone())
+            .collect::<Vec<_>>();
+        let encoder = GroupKeyRowEncoder::from_types(&types).map_err(|error| {
+            datafusion::error::DataFusionError::Execution(format!(
+                "rebuild ivm_group_row encoder: {error:?}"
+            ))
+        })?;
+        let rows = encoder.encode_columns(&arrays).map_err(|error| {
+            datafusion::error::DataFusionError::Execution(format!(
+                "encode ivm_group_row: {error:?}"
+            ))
+        })?;
+        Ok(datafusion::logical_expr::ColumnarValue::Array(Arc::new(
+            rows,
+        )))
+    }
+}
+
+/// The name-resolved `ivm_group_row` a worker registers before decoding.
+pub fn worker_group_row_udf() -> Arc<datafusion::logical_expr::ScalarUDF> {
+    Arc::new(datafusion::logical_expr::ScalarUDF::new_from_impl(
+        WorkerGroupRowUdf::default(),
     ))
 }
 
@@ -3704,6 +3830,234 @@ async fn write_dataframe_distributed(
         inserts,
         deletes,
     })
+}
+
+/// One state/MV pair written by a keyed refresh output.
+pub(crate) struct DualWriteOutcome {
+    pub(crate) mv_ids: Vec<String>,
+    pub(crate) state_ids: Vec<String>,
+    pub(crate) state_rows: u64,
+    pub(crate) mv_rows: u64,
+}
+
+/// Execute a refresh that produces a state row and its MV row together.
+///
+/// A distributed refresh writes both tables on the workers through
+/// [`crate::distributed::IvmDualSinkExec`]; the coordinator only commits the
+/// returned files.  The local path writes both tables from the same stream.
+pub(crate) async fn write_dataframe_dual(
+    state: &IvmTable,
+    mv: &IvmTable,
+    client: &MetaDataClient,
+    frame: DataFrame,
+) -> Result<DualWriteOutcome> {
+    #[cfg(feature = "distributed")]
+    if crate::config::session_factory().is_some() {
+        return write_dataframe_dual_distributed(state, mv, client, frame).await;
+    }
+    write_dataframe_dual_local(state, mv, client, frame).await
+}
+
+async fn write_dataframe_dual_local(
+    state: &IvmTable,
+    mv: &IvmTable,
+    client: &MetaDataClient,
+    frame: DataFrame,
+) -> Result<DualWriteOutcome> {
+    use futures::StreamExt;
+    let state_suppressed = target_writes_suppressed(&state.table_id);
+    let mv_suppressed = target_writes_suppressed(&mv.table_id);
+    if state_suppressed && mv_suppressed {
+        return Ok(DualWriteOutcome {
+            mv_ids: Vec::new(),
+            state_ids: Vec::new(),
+            state_rows: 0,
+            mv_rows: 0,
+        });
+    }
+    let mut stream = frame.execute_stream().await?;
+    let mut state_writer = state.writer().await?;
+    let mut mv_writer = mv.writer().await?;
+    let mut state_rows = 0u64;
+    let mut mv_rows = 0u64;
+    while let Some(batch) = stream.next().await {
+        let batch = batch?;
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        let mv_batch = project_batch_columns(&batch, &mv.schema)?;
+        state_rows += batch.num_rows() as u64;
+        mv_rows += mv_batch.num_rows() as u64;
+        let state_batch = state.cast_batch(batch)?;
+        let mv_batch = mv.cast_batch(mv_batch)?;
+        state_writer.write_record_batch(state_batch).await?;
+        mv_writer.write_record_batch(mv_batch).await?;
+    }
+    let state_files =
+        state.output_files(state_writer.flush_and_close().await?, state_rows);
+    let mv_files = mv.output_files(mv_writer.flush_and_close().await?, mv_rows);
+    let state_ids = if state_suppressed {
+        Vec::new()
+    } else {
+        state.commit_files(client, state_files).await?
+    };
+    let mv_ids = if mv_suppressed {
+        Vec::new()
+    } else {
+        mv.commit_files(client, mv_files).await?
+    };
+    Ok(DualWriteOutcome {
+        mv_ids,
+        state_ids,
+        state_rows,
+        mv_rows,
+    })
+}
+
+#[cfg(feature = "distributed")]
+async fn write_dataframe_dual_distributed(
+    state: &IvmTable,
+    mv: &IvmTable,
+    client: &MetaDataClient,
+    frame: DataFrame,
+) -> Result<DualWriteOutcome> {
+    use futures::StreamExt;
+    let state_suppressed = target_writes_suppressed(&state.table_id);
+    let mv_suppressed = target_writes_suppressed(&mv.table_id);
+    if state_suppressed && mv_suppressed {
+        return Ok(DualWriteOutcome {
+            mv_ids: Vec::new(),
+            state_ids: Vec::new(),
+            state_rows: 0,
+            mv_rows: 0,
+        });
+    }
+    let expected_epoch = if state.schema.field_with_name(IVM_EPOCH_COLUMN).is_ok() {
+        current_refresh_epoch()
+    } else {
+        None
+    };
+    let spec = crate::distributed::IvmDualSinkSpec {
+        state: state.clone(),
+        mv: mv.clone(),
+        mv_schema: mv.schema.clone(),
+        epoch: expected_epoch,
+    };
+    let plan = crate::distributed::IVM_DUAL_SINK_SPEC
+        .scope(spec, async { frame.create_physical_plan().await })
+        .await?;
+    let applied = plan
+        .schema()
+        .metadata()
+        .get(crate::distributed::IVM_TASK_OUTPUT_SCHEMA_MARKER)
+        .map(String::as_str)
+        == Some("true");
+    if !applied {
+        return write_dataframe_dual_local(state, mv, client, frame).await;
+    }
+
+    let mut stream =
+        datafusion::physical_plan::execute_stream(plan, frame.task_ctx().into())?;
+    let mut state_files: Vec<DataFileInfo> = Vec::new();
+    let mut mv_files: Vec<DataFileInfo> = Vec::new();
+    let mut state_rows = 0u64;
+    let mut mv_rows = 0u64;
+    while let Some(batch) = stream.next().await {
+        let batch = batch?;
+        let schema = batch.schema();
+        let task_index = schema.index_of("task_id")?;
+        let table_index = schema.index_of("table_id")?;
+        let epoch_index = schema.index_of("epoch")?;
+        let files_index = schema.index_of("files")?;
+        let rows_index = schema.index_of("rows")?;
+        let task_ids = batch
+            .column(task_index)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt32Array>()
+            .ok_or_else(|| rootcause::report!("IVM dual task output has no task_id"))?;
+        let table_ids = batch
+            .column(table_index)
+            .as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| rootcause::report!("IVM dual task output has no table_id"))?;
+        let epochs = batch
+            .column(epoch_index)
+            .as_any()
+            .downcast_ref::<arrow_array::Int64Array>()
+            .ok_or_else(|| rootcause::report!("IVM dual task output has no epoch"))?;
+        let encoded_files = batch
+            .column(files_index)
+            .as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| rootcause::report!("IVM dual task output has no files"))?;
+        let task_rows = batch
+            .column(rows_index)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .ok_or_else(|| rootcause::report!("IVM dual task output has no rows"))?;
+        for row in 0..batch.num_rows() {
+            let task_id = task_ids.value(row);
+            let output_table = table_ids.value(row);
+            if let Some(expected) = expected_epoch
+                && epochs.value(row) != expected
+            {
+                return Err(rootcause::report!(
+                    "IVM dual task {task_id} wrote epoch {}, expected {expected}",
+                    epochs.value(row)
+                ));
+            }
+            let files: Vec<DataFileInfo> = serde_json::from_str(encoded_files.value(row))
+                .map_err(|error| {
+                    rootcause::report!(
+                        "decode IVM dual task {task_id} file list: {error}"
+                    )
+                })?;
+            if output_table == state.table_id {
+                state_files.extend(files);
+                state_rows += task_rows.value(row);
+            } else if output_table == mv.table_id {
+                mv_files.extend(files);
+                mv_rows += task_rows.value(row);
+            } else {
+                return Err(rootcause::report!(
+                    "IVM dual task {task_id} wrote unexpected table {output_table}"
+                ));
+            }
+        }
+    }
+    let state_ids = if state_suppressed {
+        Vec::new()
+    } else {
+        state.commit_files(client, state_files).await?
+    };
+    let mv_ids = if mv_suppressed {
+        Vec::new()
+    } else {
+        mv.commit_files(client, mv_files).await?
+    };
+    Ok(DualWriteOutcome {
+        mv_ids,
+        state_ids,
+        state_rows,
+        mv_rows,
+    })
+}
+
+/// Select the columns of `schema` from `batch` by name.
+pub(crate) fn project_batch_columns(
+    batch: &RecordBatch,
+    schema: &SchemaRef,
+) -> Result<RecordBatch> {
+    let columns = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            batch.column_by_name(field.name()).cloned().ok_or_else(|| {
+                rootcause::report!("state merge is missing column {}", field.name())
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(RecordBatch::try_new(schema.clone(), columns)?)
 }
 
 /// Write a refresh data frame and publish its files in one commit.

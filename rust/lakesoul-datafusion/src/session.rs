@@ -10,6 +10,7 @@
 //! [`SessionContext`] on each call. PostgreSQL connection identity and settings
 //! are intentionally kept in the `postgres-lakesoul` crate.
 
+#[cfg(feature = "ivm")]
 use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
 use datafusion::catalog::{CatalogProvider, TableProviderFactory};
 use datafusion::error::Result as DataFusionResult;
@@ -507,6 +508,15 @@ fn ivm_lookup_desired_task_count(
 
 /// Asks for one sink task per write partition.
 #[cfg(feature = "ivm")]
+fn ivm_dual_sink_desired_task_count(
+    ev: DesiredTaskCountEvent<'_>,
+) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
+    let partitions = lakesoul_ivm::distributed::dual_sink_task_count(ev.plan)?;
+    (partitions > 1).then(|| Ok(DesiredTaskCountEventResponse::desired(partitions)))
+}
+
+/// Asks for one sink task per write partition.
+#[cfg(feature = "ivm")]
 fn ivm_sink_desired_task_count(
     ev: DesiredTaskCountEvent<'_>,
 ) -> Option<DataFusionResult<DesiredTaskCountEventResponse>> {
@@ -803,6 +813,9 @@ impl LakeSoulSessionFactory {
             builder = builder.with_physical_optimizer_rule(Arc::new(
                 lakesoul_ivm::distributed::IvmSinkRule,
             ));
+            builder = builder.with_physical_optimizer_rule(Arc::new(
+                lakesoul_ivm::distributed::IvmDualSinkRule,
+            ));
         }
         if let (Some(dist), Some(resolver)) = (&distributed, &resolver) {
             // A single-worker deployment should still be able to run a
@@ -840,6 +853,9 @@ impl LakeSoulSessionFactory {
                     )
                     .with_distributed_desired_task_count_handler(
                         ivm_sink_desired_task_count,
+                    )
+                    .with_distributed_desired_task_count_handler(
+                        ivm_dual_sink_desired_task_count,
                     )
                     .with_distributed_scale_up_leaf_node_handler(
                         ivm_scan_scale_up_leaf_node,
@@ -884,6 +900,10 @@ impl LakeSoulSessionFactory {
         }
 
         let mut state = builder.build();
+        #[cfg(feature = "ivm")]
+        {
+            state = lakesoul_ivm::runtime::with_keyed_lookup_rule(state);
+        }
         state.table_factories_mut().insert(
             "LAKESOUL".to_string(),
             Arc::clone(&self.table_factory) as Arc<dyn TableProviderFactory>,

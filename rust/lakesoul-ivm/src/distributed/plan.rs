@@ -43,6 +43,12 @@ pub fn sink_task_count(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
         .map(|exec| exec.input_partition_count())
 }
 
+/// How many tasks a dual state/MV sink can use.
+pub fn dual_sink_task_count(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
+    plan.downcast_ref::<crate::distributed::IvmDualSinkExec>()
+        .map(|exec| exec.input_partition_count())
+}
+
 /// Split an IVM scan over `task_count` variants, or `None` for other plans.
 pub fn split_stream_scan(
     plan: &Arc<dyn ExecutionPlan>,
