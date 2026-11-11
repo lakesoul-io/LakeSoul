@@ -37,6 +37,31 @@
 缓存/接口表中每格格式为 **单查 QPS / 平均 ms / RSS MB / recall**。
 单查 QPS 是去掉首次查询后的稳定值；batch QPS 是两轮平均。
 
+
+### 机器与实测资源
+
+| 项目 | 取值 |
+|---|---|
+| CPU | Intel `General Purpose Processor`（KVM 虚拟 CPU），1 socket，8 物理核，2 threads/core，**16 逻辑 CPU** |
+| 指令集 | AVX2、AVX-512（含 AVX-512 VNNI/BF16） |
+| 内存 | **60 GiB**，无 swap |
+| cgroup 限制 | 未设置 CPU/内存上限 |
+| 测试存储 | MinIO 为本机容器；L2 cache 在本地 SSD |
+| 并发配置 | `hash_bucket_num=4`；native batch `parallelism=1`；pgvector `--worker-threads 4` |
+| 构建实测 | SIFT MinIO：平均 **237% CPU ≈ 2.4 逻辑核**，峰值 RSS **485 MB** |
+| 查询实测 | SIFT MinIO index-only，NQ=10：平均 **349% CPU ≈ 3.5 逻辑核**，峰值 RSS **397 MB** |
+
+说明：
+
+- 构建/查询进程没有绑定固定 CPU 核；上面的“用了多少核”是 `/usr/bin/time -v`
+  的平均 CPU 百分比换算的逻辑核数，不是 cgroup 配额。
+- 构建尝试使用 `hash_bucket_num=4` 的 shard 并行；`CARGO_BUILD_JOBS=8`
+  只影响编译过程，不影响基准运行时的 CPU 使用。
+- 单查大约使用 3–4 个逻辑核；native batch 的 bucket 线程为 4，
+  merge 线程数取 `min(NQ, 可用核数)`，所以短 batch 的实测平均约 3.5 核。
+- build RSS 范围约 0.5–1.45 GB；query RSS 范围约 0.3–2.2 GB；
+  机器总内存 60 GiB。
+
 ## 3. 构建
 
 | 数据集 | nlist | bits | build s | build RSS MB | 写表 s |

@@ -32,6 +32,32 @@ that reached recall@100 >= 0.97 for the chosen nlist, not the maximum nprobe.
 - L1+L2 is the normal production configuration.
 - First-query latency includes the MinIO read/promotion; steady-state QPS is measured after it.
 
+
+### Machine and measured resources
+
+| Item | Value |
+|---|---|
+| CPU | Intel `General Purpose Processor` (KVM vCPU), 1 socket, 8 physical cores, 2 threads/core, **16 logical CPUs** |
+| ISA | AVX2, AVX-512 (including AVX-512 VNNI/BF16) |
+| Memory | **60 GiB**, no swap |
+| cgroup limits | no CPU/memory limit |
+| Test storage | MinIO runs as a local container; L2 cache is on local SSD |
+| Concurrency | `hash_bucket_num=4`; native batch `parallelism=1`; pgvector `--worker-threads 4` |
+| Measured build | SIFT MinIO: average **237% CPU ≈ 2.4 logical cores**, peak RSS **485 MB** |
+| Measured query | SIFT MinIO index-only, NQ=10: average **349% CPU ≈ 3.5 logical cores**, peak RSS **397 MB** |
+
+Notes:
+
+- Build/query processes are not pinned to fixed CPUs; the core counts above are
+  derived from `/usr/bin/time -v` average CPU percentages, not a cgroup quota.
+- Build uses the `hash_bucket_num=4` shard layout; `CARGO_BUILD_JOBS=8` only
+  affects compilation, not benchmark runtime CPU use.
+- Single queries use roughly 3–4 logical cores. Native batch has one thread per
+  bucket (4), plus merge threads (`min(NQ, available cores)`); the short batch
+  averages about 3.5 cores.
+- Build RSS is roughly 0.5–1.45 GB; query RSS is roughly 0.3–2.2 GB on this
+  60 GiB machine.
+
 ## 3. Method
 
 | Item | Value |
