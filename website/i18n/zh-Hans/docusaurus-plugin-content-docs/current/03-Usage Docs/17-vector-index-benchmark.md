@@ -8,6 +8,8 @@
 四个数据集都用 `bits=7` 达到 recall@100 ≥ 0.97；nprobe 是从 8 开始
 **逐步增大找到的第一个满足值**，不是最大值。
 
+下面默认是 **Python native** 接口；DataFusion 和 pgvector 分节单列。
+
 | 数据集 | nlist | bits | nprobe | NQ | index recall | index 单查 QPS | index batch QPS | exact recall | exact 单查 QPS | exact batch QPS |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | SIFT-128 | 256 | 7 | 64 | 10 | 0.975 | 363.9 | 2757.8 | 1.000 | 14.6 | 1793.8 |
@@ -24,8 +26,8 @@
 | 存储 | MinIO 本机容器 `s3://lakesoul-bench2`；L2 在本地 SSD |
 | 索引 | IVF + RaBitQ，`hash_bucket_num=4` |
 | 查询 | top_k=100，HDF5 ground truth recall@100 |
-| 构建/查询 CPU | 不绑核；SIFT 构建实测 237%（约 2.4 核，峰值 RSS 485 MB），SIFT 查询 349%（约 3.5 核，峰值 RSS 397 MB） |
-| 并发 | native batch 4 个 bucket 线程 × `parallelism=1`；pgvector 4 worker |
+| CPU 使用 | 不绑核；SIFT 构建 237%（约 2.4 核，485 MB），SIFT 查询 349%（约 3.5 核，397 MB） |
+| 并发 | Python batch 4 个 bucket 线程 × `parallelism=1`；pgvector 4 worker |
 | 清理 | 每个数据集测完 drop 表，删除 MinIO prefix 和本地 cache |
 
 | 数据集 | Base | Query | dim | 距离 |
@@ -40,11 +42,10 @@
 | 层级 | 位置 | 内容 |
 |---|---|---|
 | L1 | 进程内存 | 已加载 index/cluster cache、decoded block、snapshot |
-| L2 | 本地 SSD `LAKESOUL_CACHE_PATH` | index segment、decoded vector block、snapshot |
+| L2 | 本地 SSD | index segment、decoded vector block、snapshot |
 | L3 | MinIO | 表数据和 index segment |
 
-`LAKESOUL_CACHE_SIZE=0` 关闭 L2。L1-only 对 index 查询有效；L2-only 不会缓存
-已加载的完整索引，主要服务 exact 的向量块读取。
+`LAKESOUL_CACHE_SIZE=0` 关闭 L2。L1-only 对 index 有效；L2-only 主要服务 exact。
 
 ## 3. 构建
 
@@ -55,9 +56,9 @@
 | GIST-960 | 256 | 7 | 53.5 | 1040 | 42.3 |
 | Deep-Image-96 | 1024 | 7 | 153.6 | 1447 | 56.1 |
 
-## 4. 缓存与检索
+## 4. Python native 接口
 
-**每个数据集的 nlist/bits/nprobe/NQ 固定如下，recall 与缓存配置无关。**
+每个数据集参数固定，recall 与缓存配置无关。
 
 ### SIFT-128
 
@@ -65,8 +66,8 @@
 
 | cache | L1 / L2 | index 单查 QPS | index batch QPS | index recall | exact 单查 QPS | exact batch QPS | exact recall | 查询 RSS MB |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| off | — / — | 4.0 | 39.0 | 0.975 | 2.8 | — | 1.000 | 383 |
-| L1 only | 8GiB / 0 | 339.3 | 3002.7 | 0.975 | 4.0 | — | 1.000 | 387 |
+| off | — / — | 4.0 | 39.0 | 0.975 | 2.5 | 6.3 | 1.000 | 383 |
+| L1 only | 8GiB / 0 | 339.3 | 3002.7 | 0.975 | 18.0 | 1765.7 | 1.000 | 387 |
 | L2 only | 0 / 16GiB | 3.9 | 39.4 | 0.975 | 3.1 | 29.2 | 1.000 | 384 |
 | L1+L2 512MiB | 512MiB / 512MiB | 300.3 | 3082.3 | 0.975 | 11.9 | 177.7 | 1.000 | 386 |
 | L1+L2 1GiB | 1GiB / 1GiB | 278.7 | 3171.7 | 0.975 | 14.5 | 311.4 | 1.000 | 384 |
@@ -111,72 +112,50 @@
 | L1+L2 1GiB | 1GiB / 1GiB | 16.0 | 118.4 | 0.971 | 4.3 | 57.0 | 0.989 | 868 |
 | L1+L2 8GiB | 8GiB / 16GiB | 15.9 | 119.0 | 0.971 | 4.3 | 141.1 | 0.989 | 869 |
 
-说明：
+SIFT 的 cache-off/L1-only exact batch 已在 reader fallback 后补测：
+off 6.3 QPS，L1-only 1765.7 QPS。GIST/Deep 的 `—` 没有在修改后重测。
 
-- `off`：`LAKESOUL_VECTOR_CACHE=0`，无 L1/L2；exact batch 为 `—`，
-  因为 MinIO 的 cache-off exact batch 没有在 reader fallback 修改后重测；
-  本地 SIFT 修改后为 15.7 QPS。
-- `L1 only`：8 GiB 内存，关闭 L2。
-- `L2 only`：L1 预算 0，16 GiB 本地磁盘缓存。
-- index recall 不随缓存变化；exact recall 略高。
+## 5. DataFusion 接口
 
-## 5. 接口
+相同目标参数；batch 是 SQL 查询循环，不是 native batch。
 
-目标配置，L1+L2 8 GiB。DataFusion batch 是 SQL 循环；Python 是 native batch；
-pgvector 是独立服务。
+| 数据集 | nlist | bits | nprobe | NQ | index recall | index 单查 | index batch | exact recall | exact 单查 | exact batch | RSS MB |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| SIFT-128 | 256 | 7 | 64 | 10 | 0.975 | 427.9 | 496.2 | 1.000 | 14.2 | 381.8 | client 384 |
+| GloVe-200 | 1024 | 7 | 448 | 20 | 0.971 | 192.5 | 214.0 | 0.988 | 11.4 | 210.5 | client 567 |
+| GIST-960 | 256 | 7 | 32 | 10 | 0.974 | 170.9 | 182.5 | 0.990 | 5.7 | 154.0 | client 1099 |
+| Deep-Image-96 | 1024 | 7 | 32 | 10 | 0.971 | 16.2 | 105.1 | 0.989 | 4.3 | 100.0 | client 869 |
 
-### SIFT-128
+## 6. pgvector 接口
 
-| 接口 | index 单查 | index batch | exact 单查 | exact batch | 服务端 RSS MB |
-|---|---:|---:|---:|---:|---:|
-| python | 363.9 | 2757.8 | 14.6 | 1793.8 | — |
-| datafusion | 427.9 | 496.2 | 14.2 | 381.8 | — |
-| pgvector | 392.7 | 452.4 | 32.2 | 178.3 | 312 |
+独立 `postgres-lakesoul` 服务，4 worker threads。`RSS MB` 是服务端 RSS
+（index 单查一行）；exact 会占用更多服务端内存。
 
-### GloVe-200
+| 数据集 | nlist | bits | nprobe | NQ | index recall | index 单查 | index batch | exact recall | exact 单查 | exact batch | RSS MB |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| SIFT-128 | 256 | 7 | 64 | 10 | 0.975 | 392.7 | 452.4 | 1.000 | 32.2 | 178.3 | server 312 |
+| GloVe-200 | 1024 | 7 | 448 | 20 | 0.971 | 201.4 | 222.4 | 0.988 | 24.2 | 102.0 | server 484 |
+| GIST-960 | 256 | 7 | 32 | 10 | 0.974 | 208.8 | 229.2 | 0.990 | 1.8 | 28.7 | server 1035 |
+| Deep-Image-96 | 1024 | 7 | 32 | 10 | 0.971 | 16.0 | 100.5 | 0.989 | 1.8 | 11.4 | server 791 |
 
-| 接口 | index 单查 | index batch | exact 单查 | exact batch | 服务端 RSS MB |
-|---|---:|---:|---:|---:|---:|
-| python | 161.2 | 1235.3 | 11.0 | 916.3 | — |
-| datafusion | 192.5 | 214.0 | 11.4 | 210.5 | — |
-| pgvector | 201.4 | 222.4 | 24.2 | 102.0 | 484 |
-
-### GIST-960
-
-| 接口 | index 单查 | index batch | exact 单查 | exact batch | 服务端 RSS MB |
-|---|---:|---:|---:|---:|---:|
-| python | 164.0 | 1731.5 | 6.2 | 1027.2 | — |
-| datafusion | 170.9 | 182.5 | 5.7 | 154.0 | — |
-| pgvector | 208.8 | 229.2 | 1.8 | 28.7 | 1035 |
-
-### Deep-Image-96
-
-| 接口 | index 单查 | index batch | exact 单查 | exact batch | 服务端 RSS MB |
-|---|---:|---:|---:|---:|---:|
-| python | 15.9 | 119.0 | 4.3 | 141.1 | — |
-| datafusion | 16.2 | 105.1 | 4.3 | 100.0 | — |
-| pgvector | 16.0 | 100.5 | 1.8 | 11.4 | 791 |
-
-## 6. 结论
+## 7. 结论
 
 1. index-only 必须有 L1：SIFT cache off 4.0 QPS → L1-only 339 → L1+L2 364。
-2. exact 依赖 L2：SIFT exact batch 8 GiB 下 1794 QPS，GIST 1027，
+2. exact 依赖 block cache：SIFT exact batch 8GiB 下 1794 QPS，GIST 1027，
    GloVe 916，Deep 141；L2-only batch 只有 16–29 QPS。
-3. Deep-Image 走 lazy index，QPS 约 15–16，nprobe 的 cluster 加载占主导，
-   额外缓存收益小。
+3. Deep-Image 走 lazy index，QPS 约 15–16。
 4. MinIO 构建受存储限制：SIFT 15.5s、GloVe 55.5s、GIST 53.5s、Deep 153.6s；
    build RSS 0.5–1.45 GB。
-5. 不使用 `nlist=4096,nprobe=2048`；GloVe 在
-   `nlist=1024,nprobe=448` 达到 0.97。
+5. GloVe 使用 `nlist=1024, nprobe=448`，不使用 `nlist=4096, nprobe=2048`。
 
-## 7. 限制
+## 8. 限制
 
-- 结果是本机 MinIO；远端 S3 会增加网络延迟。
+- 本机 MinIO；远端 S3 会增加网络延迟。
 - 除 GloVe NQ=20 外，其余 NQ=10。
-- MinIO cache-off/L1-only exact batch 未在 fallback 修改后重测。
-- 查询 RSS 是客户端进程；pgvector 服务端 RSS 单独列出。
+- GIST/Deep 的 cache-off/L1-only exact batch 未在 fallback 后重测。
+- pgvector 的 RSS 是服务端 RSS，不是客户端。
 
-## 8. 原始结果
+## 9. 原始结果
 
 - [minio.jsonl](/benchmark-data/vector-index-minio-2026-11-11/minio.jsonl)
 
