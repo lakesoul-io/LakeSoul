@@ -86,11 +86,11 @@ fn snapshot_ids(partition_info: &PartitionInfo) -> HashSet<(u64, u64)> {
 }
 
 async fn pool() -> Result<PooledClient> {
-    Ok(PooledClient::try_new(
+    PooledClient::try_new(
         pg_config_from_env(PRIMARY_URL_PROP_KEY, PRIMARY_URL_ENV_KEY)?,
         None,
     )
-    .await?)
+    .await
 }
 
 /// Every `partition_info` and `data_commit_info` row that belongs to
@@ -327,11 +327,11 @@ async fn update_conflicts_with_an_ordinary_writer_without_orphans() -> Result<()
         .into_iter()
         .collect::<HashSet<_>>();
     assert!(
-        files.contains(&"/tmp/p1/append.parquet".to_string()),
+        files.contains("/tmp/p1/append.parquet"),
         "the concurrently appended file must stay live: {files:?}"
     );
     assert!(
-        files.contains(&"/tmp/p1/retry.parquet".to_string()),
+        files.contains("/tmp/p1/retry.parquet"),
         "the retried update must be live: {files:?}"
     );
 

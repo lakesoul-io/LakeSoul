@@ -4023,8 +4023,8 @@ mod bucket_ownership_tests {
                     &mut hashes,
                 )
                 .unwrap();
-                for bucket in 0..bucket_count {
-                    let slot = (hashes[bucket] % total as u64) as usize;
+                for (bucket, &hash) in hashes.iter().enumerate() {
+                    let slot = (hash % total as u64) as usize;
                     let task = LookupTask {
                         index: slot / bucket_count,
                         count: task_count,
