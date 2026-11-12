@@ -174,6 +174,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
             target_partitions: cli.target_partitions,
             bytes_per_partition: cli.bytes_per_partition,
             max_tasks_per_stage: 0,
+            locality: None,
         });
     }
     let ctx = session_factory.create_session(&LakeSoulSessionOptions::default())?;

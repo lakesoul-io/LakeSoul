@@ -13,6 +13,13 @@ pub mod read_through;
 pub mod stats;
 pub use read_through::ReadThroughCache;
 
+/// The page size of the process-wide disk cache.
+///
+/// Cached reads are stored in pages of this size, aligned to the start of the
+/// file, so two reads of one file share cache entries exactly when they touch
+/// the same pages.
+pub const LAKESOUL_CACHE_PAGE_BYTES: usize = 4 * 1024 * 1024;
+
 static LAKESOUL_CACHE: OnceLock<Arc<DiskCache>> = OnceLock::new();
 
 /// Shared read stats for all LakeSoul read-through caches in this process.
@@ -97,7 +104,7 @@ pub(crate) fn get_lakesoul_cache() -> Arc<DiskCache> {
                 }
             };
             info!("LAKESOUL_CACHE_SIZE: {}", cache_size);
-            Arc::new(DiskCache::new(cache_size, 4 * 1024 * 1024))
+            Arc::new(DiskCache::new(cache_size, LAKESOUL_CACHE_PAGE_BYTES))
         })
         .clone()
 }

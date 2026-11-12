@@ -30,6 +30,7 @@ use rootcause::prelude::ResultExt;
 use url::Url;
 
 use crate::Result;
+use crate::distributed::locality::LocalityOptions;
 use crate::distributed::resolver::{
     KubernetesDiscovery, KubernetesWorkerResolver, StaticWorkerResolver,
 };
@@ -254,9 +255,49 @@ pub struct DistributedArgs {
         default_value_t = 0
     )]
     pub distributed_max_tasks_per_stage: usize,
+
+    /// Place append-only scan pieces on stable workers by rendezvous hashing,
+    /// so repeated scans of a file hit the worker cache that already holds
+    /// it. Off by default.
+    #[clap(
+        long,
+        env = "LAKESOUL_DISTRIBUTED_LOCALITY",
+        value_parser = BoolValueParser::new(),
+        action = ArgAction::Set,
+        num_args(0..=1),
+        require_equals(true),
+        default_value("false"),
+        default_missing_value("true")
+    )]
+    pub distributed_locality: bool,
+
+    /// How far a worker's share of a scan's bytes may exceed its fair share
+    /// before pieces spill to their next preferred worker (default 0.25).
+    /// Only used with `--distributed-locality`.
+    #[clap(long, env = "LAKESOUL_DISTRIBUTED_LOCALITY_EPSILON")]
+    pub distributed_locality_epsilon: Option<f64>,
 }
 
 impl DistributedArgs {
+    /// Resolves the cache-locality options; `None` when locality is off.
+    ///
+    /// An epsilon without `--distributed-locality` is rejected rather than
+    /// ignored, and so is a negative or non-finite one.
+    pub fn resolve_locality(&self) -> Result<Option<LocalityOptions>> {
+        match (self.distributed_locality, self.distributed_locality_epsilon) {
+            (false, None) => Ok(None),
+            (false, Some(_)) => bail!(
+                "--distributed-locality-epsilon given without \
+                 --distributed-locality: set LAKESOUL_DISTRIBUTED_LOCALITY=true"
+            ),
+            (true, None) => Ok(Some(LocalityOptions::default())),
+            (true, Some(epsilon)) => match LocalityOptions::new(epsilon) {
+                Ok(options) => Ok(Some(options)),
+                Err(message) => bail!("{message}"),
+            },
+        }
+    }
+
     /// Resolves the discovery backend from the parsed arguments.
     ///
     /// Errors instead of defaulting on every conflict: unknown/absent required
@@ -386,6 +427,9 @@ impl DistributedArgs {
     pub async fn resolve_distributed_options(
         &self,
     ) -> Result<Option<DistributedOptions>> {
+        // Validated before discovery: a bad or stray locality flag fails
+        // start-up even when distributed execution ends up disabled.
+        let locality = self.resolve_locality()?;
         let Some(discovery) = self.resolve_discovery()? else {
             return Ok(None);
         };
@@ -418,6 +462,7 @@ impl DistributedArgs {
             fallback_to_local: self.distributed_fallback_local,
             target_partitions,
             max_tasks_per_stage: self.distributed_max_tasks_per_stage,
+            locality,
             ..DistributedOptions::default()
         };
         let options = match self.distributed_bytes_per_partition {
@@ -628,6 +673,102 @@ impl IvmArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locality_flags_resolve_to_options() {
+        let parse = |args: &[&str]| {
+            DistributedArgs::try_parse_from(
+                std::iter::once("test").chain(args.iter().copied()),
+            )
+            .expect("valid arguments")
+            .resolve_locality()
+        };
+        assert_eq!(parse(&[]).unwrap(), None);
+        assert_eq!(
+            parse(&["--distributed-locality"]).unwrap(),
+            Some(LocalityOptions::default())
+        );
+        assert_eq!(
+            parse(&[
+                "--distributed-locality=true",
+                "--distributed-locality-epsilon",
+                "0.5"
+            ])
+            .unwrap(),
+            Some(LocalityOptions { epsilon: 0.5 })
+        );
+        assert!(parse(&["--distributed-locality-epsilon", "0.5"]).is_err());
+        assert!(
+            parse(&[
+                "--distributed-locality",
+                "--distributed-locality-epsilon=-1"
+            ])
+            .is_err()
+        );
+        assert!(
+            parse(&[
+                "--distributed-locality",
+                "--distributed-locality-epsilon",
+                "NaN"
+            ])
+            .is_err()
+        );
+    }
+
+    /// Locality flags are validated even when distributed execution is off,
+    /// so a stray or malformed flag fails start-up instead of being ignored.
+    #[tokio::test]
+    async fn locality_flags_are_validated_without_discovery() {
+        let resolve = |args: &[&str]| {
+            let args = DistributedArgs::try_parse_from(
+                std::iter::once("test").chain(args.iter().copied()),
+            )
+            .expect("valid arguments");
+            async move { args.resolve_distributed_options().await }
+        };
+        for discovery in [&[][..], &["--discovery", "none"][..]] {
+            let with = |extra: &[&'static str]| {
+                discovery
+                    .iter()
+                    .copied()
+                    .chain(extra.iter().copied())
+                    .collect::<Vec<_>>()
+            };
+            assert!(
+                resolve(&with(&["--distributed-locality-epsilon", "0.5"]))
+                    .await
+                    .is_err(),
+                "epsilon without locality, discovery {discovery:?}"
+            );
+            assert!(
+                resolve(&with(&[
+                    "--distributed-locality",
+                    "--distributed-locality-epsilon=-1"
+                ]))
+                .await
+                .is_err(),
+                "negative epsilon, discovery {discovery:?}"
+            );
+            assert!(
+                resolve(&with(&[
+                    "--distributed-locality",
+                    "--distributed-locality-epsilon",
+                    "NaN"
+                ]))
+                .await
+                .is_err(),
+                "NaN epsilon, discovery {discovery:?}"
+            );
+            // A valid locality setting with distributed execution off is a
+            // no-op, not an error.
+            assert!(
+                resolve(&with(&["--distributed-locality"]))
+                    .await
+                    .expect("valid flags")
+                    .is_none()
+            );
+        }
+    }
 
     #[test]
     fn s3_options_include_explicit_endpoint() {

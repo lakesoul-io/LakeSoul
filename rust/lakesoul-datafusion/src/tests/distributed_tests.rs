@@ -146,6 +146,7 @@ use tokio::task::JoinSet;
 use tokio_stream::wrappers::TcpListenerStream;
 use vortex_datafusion::VortexSource;
 
+use crate::distributed::locality::LocalityOptions;
 use crate::distributed::{
     DistributedOptions, LakeSoulWorkerOptions, StaticWorkerResolver, WorkerDiscovery,
 };
@@ -262,6 +263,7 @@ pub(super) fn distributed_factory_sized(
                 target_partitions,
                 bytes_per_partition,
                 max_tasks_per_stage: 0,
+                locality: None,
             },
         ),
     )
@@ -578,6 +580,7 @@ async fn test_merge_work_units_pinned_to_one_task_inner() -> Result<()> {
             target_partitions: 5,
             bytes_per_partition: Some(1),
             max_tasks_per_stage: 0,
+            locality: None,
         });
     let single_node = single_node_factory(client.clone())?;
 
@@ -1732,10 +1735,22 @@ fn worker_urls_reject_malformed_entries() {
 /// coordinator (or in one worker task) however many files it holds.
 #[test]
 fn test_append_only_scan_fans_out_over_tasks() {
-    run_distributed_test(test_append_only_scan_fans_out_over_tasks_inner());
+    run_distributed_test(test_append_only_scan_fans_out_over_tasks_inner(None));
 }
 
-async fn test_append_only_scan_fans_out_over_tasks_inner() -> Result<()> {
+/// The same fan-out with cache-locality placement on: the placed split and
+/// the locality routing must keep every row exactly once and still use
+/// several tasks.
+#[test]
+fn test_append_only_scan_fans_out_with_locality() {
+    run_distributed_test(test_append_only_scan_fans_out_over_tasks_inner(Some(
+        LocalityOptions::default(),
+    )));
+}
+
+async fn test_append_only_scan_fans_out_over_tasks_inner(
+    locality: Option<LocalityOptions>,
+) -> Result<()> {
     const FILES: usize = 9;
     let client = Arc::new(MetaDataClient::from_env().await?);
     let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
@@ -1780,6 +1795,7 @@ async fn test_append_only_scan_fans_out_over_tasks_inner() -> Result<()> {
             target_partitions: FILES,
             bytes_per_partition: Some(1),
             max_tasks_per_stage: 0,
+            locality,
         });
     let single_node = single_node_factory(client.clone())?;
 
