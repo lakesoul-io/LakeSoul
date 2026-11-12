@@ -829,9 +829,9 @@ mod tests {
         let plan = context.read_batch(batch)?.create_physical_plan().await?;
         assert_eq!(plan.output_partitioning().partition_count(), 1);
         let plan = partition_for_write(plan, &table(), None)?;
-        assert_eq!(plan.output_partitioning().partition_count(), 2);
+        assert_eq!(plan.output_partitioning().partition_count(), 4);
         match plan.output_partitioning() {
-            Partitioning::Hash(expressions, 2) => {
+            Partitioning::Hash(expressions, 4) => {
                 assert_eq!(expressions.len(), 1);
             }
             other => panic!("write input is not hash partitioned: {other:?}"),
