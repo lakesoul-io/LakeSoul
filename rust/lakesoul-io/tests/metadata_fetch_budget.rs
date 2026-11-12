@@ -580,7 +580,7 @@ async fn healthy_flatten(
 ) {
     let url = Url::parse(&format!("budget://{name}")).expect("healthy url");
     let store_url =
-        ObjectStoreUrl::parse(&format!("budget://{name}")).expect("healthy store url");
+        ObjectStoreUrl::parse(format!("budget://{name}")).expect("healthy store url");
     let (probe, mut starts, _completions) = Probe::new(true);
     let format = ParquetFormat::default();
     let conf = scan_config(&store_url, &format, wide_schema(), metas);
