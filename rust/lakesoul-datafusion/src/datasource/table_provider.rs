@@ -2059,7 +2059,34 @@ impl TableProvider for LakeSoulTableProvider {
             // holds every version of its own keys.
             let task_budget =
                 crate::distributed::planner::scan_task_budget(session_state.config());
-            for mut units in Self::pack_lazy_units(partition_units, task_budget) {
+            // With cache locality on, each node holds the units one worker
+            // prefers, so its task can be routed to the cache that already
+            // holds them; otherwise units are packed round-robin.
+            let units: Vec<ScanWorkUnit> =
+                partition_units.into_iter().flatten().collect();
+            let packed = match crate::distributed::locality::pack_merge_units_by_locality(
+                &units,
+                task_budget,
+                self.io_config.prefix().as_bytes(),
+                session_state.config(),
+            ) {
+                Some(nodes) => {
+                    let mut slots: Vec<Option<ScanWorkUnit>> =
+                        units.into_iter().map(Some).collect();
+                    nodes
+                        .into_iter()
+                        .map(|node| {
+                            node.into_iter()
+                                .map(|index| {
+                                    slots[index].take().expect("a unit is placed once")
+                                })
+                                .collect()
+                        })
+                        .collect()
+                }
+                None => Self::pack_lazy_units(vec![units], task_budget),
+            };
+            for mut units in packed {
                 let lanes = target_lanes.min(units.len()).max(1);
                 for (index, unit) in units.iter_mut().enumerate() {
                     unit.lane = index % lanes;

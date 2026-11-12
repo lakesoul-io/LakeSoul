@@ -865,6 +865,151 @@ async fn splitting_covers_every_file_exactly_once() {
 }
 
 #[tokio::test]
+async fn an_assigned_split_follows_the_assignment_and_regroups_units() {
+    let schema = id_schema();
+    let size = MIN_PARQUET_RANGE_BYTES;
+    let partition = |name: &str, files: Vec<ScanFile>| ScanWorkUnit {
+        files,
+        default_column_value: HashMap::from([("p".to_string(), name.to_string())]),
+        lane: 0,
+    };
+    let a: Vec<ScanFile> = (0..3)
+        .map(|index| fake_parquet("p=a", &format!("part-{index}.parquet"), size))
+        .collect();
+    let b: Vec<ScanFile> = (0..2)
+        .map(|index| fake_parquet("p=b", &format!("part-{index}.parquet"), size))
+        .collect();
+    let node = LakeSoulScanExec::try_new(
+        append_only_config(Arc::clone(&schema), Arc::new(Schema::empty())),
+        vec![partition("a", a), partition("b", b)],
+        2,
+    )
+    .expect("valid descriptor");
+
+    let mut seen = Vec::new();
+    let tasks = node
+        .split_into_tasks_by(3, |pieces| {
+            seen = pieces.iter().map(|piece| piece.path.clone()).collect();
+            // Out of order on purpose: a task's pieces still run in scan
+            // order, and pieces of one unit come back as one unit.
+            Ok(vec![vec![4, 0, 2], vec![], vec![3, 1]])
+        })
+        .expect("split by assignment");
+    assert_eq!(
+        seen.len(),
+        5,
+        "every file is one piece when no cut is needed"
+    );
+    assert_eq!(tasks.len(), 3);
+    assert_coverage(&tasks, 5, size);
+
+    let layout: Vec<Vec<(String, usize)>> = tasks
+        .iter()
+        .map(|task| {
+            task.work_units()
+                .iter()
+                .map(|unit| (unit.default_column_value["p"].clone(), unit.files.len()))
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        layout,
+        vec![
+            vec![("a".to_string(), 2), ("b".to_string(), 1)],
+            vec![],
+            vec![("a".to_string(), 1), ("b".to_string(), 1)],
+        ],
+        "pieces keep their unit's partition values and regroup per unit"
+    );
+    let first: Vec<&str> = tasks[0].work_units()[0]
+        .files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
+    assert_eq!(first, vec![seen[0].as_str(), seen[2].as_str()]);
+}
+
+#[tokio::test]
+async fn an_assigned_split_cuts_ranges_like_the_default_split() {
+    let schema = id_schema();
+    let size = 4 * MIN_PARQUET_RANGE_BYTES;
+    let node = LakeSoulScanExec::try_new(
+        append_only_config(Arc::clone(&schema), Arc::new(Schema::empty())),
+        vec![unit(vec![fake_parquet("table", "big.parquet", size)], 0)],
+        1,
+    )
+    .expect("valid descriptor");
+    let tasks = node
+        .split_into_tasks_by(4, |pieces| {
+            assert_eq!(pieces.len(), 4, "one file is cut into one piece per task");
+            Ok(vec![vec![3], vec![2], vec![1], vec![0]])
+        })
+        .expect("split by assignment");
+    assert_coverage(&tasks, 1, size);
+}
+
+#[tokio::test]
+async fn an_assigned_split_rejects_assignments_that_do_not_cover_the_scan() {
+    let schema = id_schema();
+    let files: Vec<ScanFile> = (0..3)
+        .map(|index| {
+            fake_parquet(
+                "table",
+                &format!("part-{index}.parquet"),
+                MIN_PARQUET_RANGE_BYTES,
+            )
+        })
+        .collect();
+    let node = LakeSoulScanExec::try_new(
+        append_only_config(Arc::clone(&schema), Arc::new(Schema::empty())),
+        vec![unit(files, 0)],
+        1,
+    )
+    .expect("valid descriptor");
+
+    assert_rejected!(
+        node.split_into_tasks_by(2, |_| Ok(vec![vec![0, 1, 2]])),
+        "assigned 1 tasks"
+    );
+    assert_rejected!(
+        node.split_into_tasks_by(2, |_| Ok(vec![vec![0, 1], vec![1, 2]])),
+        "assigned twice"
+    );
+    assert_rejected!(
+        node.split_into_tasks_by(2, |_| Ok(vec![vec![0, 7], vec![1, 2]])),
+        "does not exist"
+    );
+    assert_rejected!(
+        node.split_into_tasks_by(2, |_| Ok(vec![vec![0], vec![2]])),
+        "assigned to no task"
+    );
+}
+
+#[tokio::test]
+async fn an_assigned_split_keeps_a_merge_on_read_scan_whole() {
+    let table_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("v", DataType::Int64, true),
+        Field::new("n", DataType::Int64, true),
+        Field::new("op", DataType::Utf8, true),
+    ]));
+    let node = LakeSoulScanExec::try_new(
+        merge_config(table_schema),
+        vec![unit(
+            vec![fake_parquet("table", "a.parquet", MIN_PARQUET_RANGE_BYTES)],
+            0,
+        )],
+        1,
+    )
+    .expect("valid descriptor");
+    assert!(node.is_merge_on_read());
+    let tasks = node
+        .split_into_tasks_by(3, |_| panic!("a merge-on-read scan is never assigned"))
+        .expect("split");
+    assert_eq!(tasks.len(), 1);
+}
+
+#[tokio::test]
 async fn split_variants_use_every_lane_of_the_scan() {
     // A task executes all partitions of its variant. If the split left the
     // units on lane 0, each task would read its files one at a time and the

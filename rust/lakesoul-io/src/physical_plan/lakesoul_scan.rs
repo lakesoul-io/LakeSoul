@@ -264,6 +264,93 @@ impl LakeSoulScanExec {
         Ok(variants)
     }
 
+    /// Splits the scan into exactly `task_count` tasks, letting `assign`
+    /// choose the task that reads each piece.
+    ///
+    /// The scan is first cut into the same pieces [`Self::split_into_tasks`]
+    /// would distribute: every file of every non-empty unit, with parquet
+    /// files cut at legal byte ranges until there are `task_count` pieces
+    /// where their sizes allow it. `assign` receives those pieces in scan
+    /// order and returns, for each task, the indexes of the pieces it reads.
+    /// Every index must appear exactly once, so the variants still cover
+    /// every file and byte range exactly once; anything else is an internal
+    /// error.
+    ///
+    /// Within a task, pieces of one unit keep their order and are merged back
+    /// into one unit, so a task pays the per-unit setup once per unit it
+    /// touches rather than once per file.
+    ///
+    /// A merge-on-read scan comes back as itself, a single task, exactly as
+    /// [`Self::split_into_tasks`] returns it; `assign` is not called.
+    pub fn split_into_tasks_by<F>(
+        &self,
+        task_count: usize,
+        assign: F,
+    ) -> DFResult<Vec<Arc<LakeSoulScanExec>>>
+    where
+        F: FnOnce(&[ScanFile]) -> DFResult<Vec<Vec<usize>>>,
+    {
+        if task_count == 0 {
+            return internal_err!("LakeSoul scan cannot be split into no tasks");
+        }
+        if self.is_merge_on_read() {
+            return Ok(vec![Arc::new(self.clone())]);
+        }
+        let active = self.active_units();
+        let mut unit_of = Vec::new();
+        let mut files = Vec::new();
+        for (unit, pieces) in cut_pieces(&active, task_count).into_iter().enumerate() {
+            unit_of.extend(std::iter::repeat_n(unit, pieces.len()));
+            files.extend(pieces);
+        }
+        let assignment = assign(&files)?;
+        if assignment.len() != task_count {
+            return internal_err!(
+                "LakeSoul scan split over {task_count} tasks was assigned {} tasks",
+                assignment.len()
+            );
+        }
+        let mut slots: Vec<Option<ScanFile>> = files.into_iter().map(Some).collect();
+        let mut variants = Vec::with_capacity(task_count);
+        for mut pieces in assignment {
+            pieces.sort_unstable();
+            let mut bucket: Vec<ScanWorkUnit> = Vec::new();
+            let mut last_unit = None;
+            for index in pieces {
+                let Some(file) = slots.get_mut(index).and_then(Option::take) else {
+                    return internal_err!(
+                        "LakeSoul scan piece {index} was assigned twice or does not exist"
+                    );
+                };
+                let unit = unit_of[index];
+                match bucket.last_mut() {
+                    Some(current) if last_unit == Some(unit) => current.files.push(file),
+                    _ => bucket.push(ScanWorkUnit {
+                        files: vec![file],
+                        default_column_value: active[unit].default_column_value.clone(),
+                        lane: 0,
+                    }),
+                }
+                last_unit = Some(unit);
+            }
+            variants.push(self.with_units(bucket)?);
+        }
+        if let Some(missing) = slots.iter().position(Option::is_some) {
+            return internal_err!(
+                "LakeSoul scan piece {missing} was assigned to no task"
+            );
+        }
+        Ok(variants)
+    }
+
+    /// The units that read anything, in scan order.
+    fn active_units(&self) -> Vec<&ScanWorkUnit> {
+        self.units
+            .iter()
+            .filter(|unit| !unit.files.is_empty())
+            .collect()
+    }
+
     /// A variant of this scan executing exactly `units` in their own lanes.
     ///
     /// A task executes every partition of its variant, so the units are spread
@@ -300,11 +387,7 @@ impl LakeSoulScanExec {
     /// Each bucket holds units that execute in order; together the buckets
     /// cover every file, and every legal byte range of it, exactly once.
     fn append_only_buckets(&self, buckets: usize) -> DFResult<Vec<Vec<ScanWorkUnit>>> {
-        let active: Vec<&ScanWorkUnit> = self
-            .units
-            .iter()
-            .filter(|unit| !unit.files.is_empty())
-            .collect();
+        let active = self.active_units();
         if active.is_empty() {
             return Ok(vec![Vec::new(); buckets]);
         }
@@ -322,29 +405,7 @@ impl LakeSoulScanExec {
         }
         // Fewer units than lanes: cut the units into more pieces, at legal
         // parquet byte ranges, until the lanes can be filled.
-        let mut pieces: Vec<Vec<ScanFile>> =
-            active.iter().map(|unit| unit.files.clone()).collect();
-        let mut total: usize = pieces.iter().map(Vec::len).sum();
-        // A file already spread over several descriptors keeps counting them:
-        // the cap is about how many footer reads one file costs the scan, not
-        // how many this call adds.
-        let mut pieces_per_file: HashMap<String, usize> = HashMap::new();
-        for piece in pieces.iter().flatten() {
-            *pieces_per_file.entry(piece.path.clone()).or_insert(0) += 1;
-        }
-        while total < buckets {
-            let Some((unit, index)) = largest_splittable_piece(&pieces, &pieces_per_file)
-            else {
-                break;
-            };
-            let path = pieces[unit][index].path.clone();
-            let (left, right) = split_parquet_piece(&pieces[unit][index])
-                .expect("a splittable piece splits");
-            pieces[unit][index] = left;
-            pieces[unit].insert(index + 1, right);
-            *pieces_per_file.entry(path).or_insert(0) += 1;
-            total += 1;
-        }
+        let pieces = cut_pieces(&active, buckets);
         let mut groups: Vec<usize> = vec![1; pieces.len()];
         let mut assigned = pieces.len();
         while assigned < buckets {
@@ -1265,6 +1326,37 @@ fn split_parquet_piece(piece: &ScanFile) -> Option<(ScanFile, ScanFile)> {
     left.range = Some(start..middle);
     right.range = Some(middle..end);
     Some((left, right))
+}
+
+/// The pieces of each of `active`'s units, cut at legal parquet byte ranges
+/// until the scan has at least `buckets` pieces or nothing more can be cut.
+///
+/// Units that already hold enough files come back unchanged.
+fn cut_pieces(active: &[&ScanWorkUnit], buckets: usize) -> Vec<Vec<ScanFile>> {
+    let mut pieces: Vec<Vec<ScanFile>> =
+        active.iter().map(|unit| unit.files.clone()).collect();
+    let mut total: usize = pieces.iter().map(Vec::len).sum();
+    // A file already spread over several descriptors keeps counting them:
+    // the cap is about how many footer reads one file costs the scan, not
+    // how many this call adds.
+    let mut pieces_per_file: HashMap<String, usize> = HashMap::new();
+    for piece in pieces.iter().flatten() {
+        *pieces_per_file.entry(piece.path.clone()).or_insert(0) += 1;
+    }
+    while total < buckets {
+        let Some((unit, index)) = largest_splittable_piece(&pieces, &pieces_per_file)
+        else {
+            break;
+        };
+        let path = pieces[unit][index].path.clone();
+        let (left, right) =
+            split_parquet_piece(&pieces[unit][index]).expect("a splittable piece splits");
+        pieces[unit][index] = left;
+        pieces[unit].insert(index + 1, right);
+        *pieces_per_file.entry(path).or_insert(0) += 1;
+        total += 1;
+    }
+    pieces
 }
 
 /// The largest piece that can still be split, as (unit index, piece index).

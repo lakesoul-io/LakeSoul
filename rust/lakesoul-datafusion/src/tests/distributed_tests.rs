@@ -146,6 +146,7 @@ use tokio::task::JoinSet;
 use tokio_stream::wrappers::TcpListenerStream;
 use vortex_datafusion::VortexSource;
 
+use crate::distributed::locality::LocalityOptions;
 use crate::distributed::{
     DistributedOptions, LakeSoulWorkerOptions, StaticWorkerResolver, WorkerDiscovery,
 };
@@ -262,6 +263,7 @@ pub(super) fn distributed_factory_sized(
                 target_partitions,
                 bytes_per_partition,
                 max_tasks_per_stage: 0,
+                locality: None,
             },
         ),
     )
@@ -578,6 +580,7 @@ async fn test_merge_work_units_pinned_to_one_task_inner() -> Result<()> {
             target_partitions: 5,
             bytes_per_partition: Some(1),
             max_tasks_per_stage: 0,
+            locality: None,
         });
     let single_node = single_node_factory(client.clone())?;
 
@@ -1732,10 +1735,22 @@ fn worker_urls_reject_malformed_entries() {
 /// coordinator (or in one worker task) however many files it holds.
 #[test]
 fn test_append_only_scan_fans_out_over_tasks() {
-    run_distributed_test(test_append_only_scan_fans_out_over_tasks_inner());
+    run_distributed_test(test_append_only_scan_fans_out_over_tasks_inner(None));
 }
 
-async fn test_append_only_scan_fans_out_over_tasks_inner() -> Result<()> {
+/// The same fan-out with cache-locality placement on: the placed split and
+/// the locality routing must keep every row exactly once and still use
+/// several tasks.
+#[test]
+fn test_append_only_scan_fans_out_with_locality() {
+    run_distributed_test(test_append_only_scan_fans_out_over_tasks_inner(Some(
+        LocalityOptions::default(),
+    )));
+}
+
+async fn test_append_only_scan_fans_out_over_tasks_inner(
+    locality: Option<LocalityOptions>,
+) -> Result<()> {
     const FILES: usize = 9;
     let client = Arc::new(MetaDataClient::from_env().await?);
     let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
@@ -1780,6 +1795,7 @@ async fn test_append_only_scan_fans_out_over_tasks_inner() -> Result<()> {
             target_partitions: FILES,
             bytes_per_partition: Some(1),
             max_tasks_per_stage: 0,
+            locality,
         });
     let single_node = single_node_factory(client.clone())?;
 
@@ -4818,6 +4834,170 @@ async fn test_single_partition_bucket_units_run_on_workers_inner() -> Result<()>
         );
     }
 
+    Ok(())
+}
+
+/// Records, on one worker, the files of every merge-on-read scan in the plans
+/// it is handed. A worker plan is already specialized to its task, so these
+/// are exactly the units the worker merges.
+struct MergeFileRecordingSessionBuilder {
+    files: Arc<parking_lot::Mutex<BTreeSet<String>>>,
+}
+
+#[async_trait::async_trait]
+impl datafusion_distributed::WorkerSessionBuilder for MergeFileRecordingSessionBuilder {
+    async fn build_session_state(
+        &self,
+        ctx: datafusion_distributed::WorkerQueryContext,
+    ) -> datafusion::common::Result<datafusion::execution::SessionState> {
+        let mut builder = ctx.builder;
+        for codec in crate::distributed::codec::user_codecs() {
+            builder = builder.with_distributed_user_codec_arc(codec);
+        }
+        let files = Arc::clone(&self.files);
+        builder = builder.with_distributed_worker_plan_rewrite_handler(
+            move |ev: datafusion_distributed::WorkerPlanRewriteEvent<'_>| {
+                ev.plan.apply(|node| {
+                    if let Some(scan) = node.downcast_ref::<LakeSoulScanExec>()
+                        && scan.is_merge_on_read()
+                    {
+                        let mut files = files.lock();
+                        for unit in scan.work_units() {
+                            files.extend(unit.files.iter().map(|file| file.path.clone()));
+                        }
+                    }
+                    Ok(TreeNodeRecursion::Continue)
+                })?;
+                Ok(datafusion_distributed::WorkerPlanRewriteEventResponse::new(
+                    ev.plan,
+                ))
+            },
+        );
+        Ok(builder.build())
+    }
+}
+
+/// Starts `workers` workers that record the merge-on-read files they run.
+async fn spawn_workers_recording_merge_files(
+    workers: usize,
+) -> (
+    Vec<String>,
+    Vec<Arc<parking_lot::Mutex<BTreeSet<String>>>>,
+    JoinSet<()>,
+) {
+    let mut urls = Vec::new();
+    let mut seen = Vec::new();
+    let mut join_set = JoinSet::new();
+    for _ in 0..workers {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        urls.push(format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().unwrap().port()
+        ));
+        let files = Arc::new(parking_lot::Mutex::new(BTreeSet::new()));
+        let worker = Worker::from_session_builder(MergeFileRecordingSessionBuilder {
+            files: Arc::clone(&files),
+        })
+        .with_runtime_env(
+            crate::session::build_worker_runtime_env(
+                &CoreArgs::default(),
+                ExecutionMemoryArgs::default().create_pool(),
+            )
+            .unwrap(),
+        )
+        .with_version(crate::distributed::DISTRIBUTED_PROTOCOL_VERSION);
+        join_set.spawn(async move {
+            let _ = tonic::transport::Server::builder()
+                .add_service(worker.into_worker_server())
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await;
+        });
+        seen.push(files);
+    }
+    (urls, seen, join_set)
+}
+
+/// With cache locality on, a merge-on-read bucket is merged on the same
+/// worker every time the table is read, so the worker's disk cache keeps
+/// serving it: the scan packs each worker's preferred units into one merge,
+/// and routing sends that merge's task back to the same worker.
+///
+/// Five reads on three workers: every file must be merged by the same worker
+/// each time, the merges must use more than one worker, and every read must
+/// return the latest version of every key. Random routing would keep all
+/// five reads on the same workers about once in a hundred runs.
+#[test]
+fn test_merge_on_read_locality_keeps_buckets_on_their_workers() {
+    run_distributed_test(
+        test_merge_on_read_locality_keeps_buckets_on_their_workers_inner(),
+    );
+}
+
+async fn test_merge_on_read_locality_keeps_buckets_on_their_workers_inner() -> Result<()>
+{
+    const WORKERS: usize = 3;
+    const READS: usize = 5;
+    let client = Arc::new(MetaDataClient::from_env().await?);
+    let suffix = TABLE_SUFFIX.fetch_add(1, Ordering::SeqCst);
+    let table = seed_single_partition_buckets(
+        client.clone(),
+        format!("distributed_locality_buckets_{suffix}"),
+        true,
+    )
+    .await?;
+    let (worker_urls, seen, mut workers) =
+        spawn_workers_recording_merge_files(WORKERS).await;
+    let distributed = LakeSoulSessionFactory::new(client.clone(), &CoreArgs::default())?
+        .with_distributed(DistributedOptions {
+            discovery: WorkerDiscovery::Static(worker_urls),
+            fallback_to_local: false,
+            target_partitions: 2,
+            bytes_per_partition: Some(1),
+            max_tasks_per_stage: 0,
+            locality: Some(LocalityOptions::default()),
+        });
+    let rows_sql = format!("SELECT part, id, v FROM {table} ORDER BY id");
+    let expected_rows: Vec<(i32, i32, i32)> =
+        (0..BUCKET_ONLY_KEYS).map(|id| (0, id, 1000 + id)).collect();
+
+    let mut first: Option<BTreeMap<String, usize>> = None;
+    for read in 0..READS {
+        for files in &seen {
+            files.lock().clear();
+        }
+        let ctx = distributed.create_session(&LakeSoulSessionOptions::default())?;
+        let batches = collect_within_timeout(&ctx, &rows_sql, EXECUTION_TIMEOUT).await?;
+        assert_eq!(
+            shape_rows(&batches),
+            expected_rows,
+            "read {read}: {rows_sql}"
+        );
+
+        let mut owners: BTreeMap<String, usize> = BTreeMap::new();
+        for (worker, files) in seen.iter().enumerate() {
+            for file in files.lock().iter() {
+                if let Some(other) = owners.insert(file.clone(), worker) {
+                    panic!("read {read}: {file} merged on workers {other} and {worker}");
+                }
+            }
+        }
+        let busy: BTreeSet<usize> = owners.values().copied().collect();
+        assert!(
+            busy.len() >= 2,
+            "read {read}: merges must use several workers, got {owners:?}"
+        );
+        match &first {
+            None => first = Some(owners),
+            Some(first) => assert_eq!(
+                first, &owners,
+                "read {read}: every bucket must stay on the worker that merged it first"
+            ),
+        }
+    }
+
+    workers.abort_all();
     Ok(())
 }
 

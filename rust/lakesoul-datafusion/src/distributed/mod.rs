@@ -73,6 +73,7 @@
 
 pub mod codec;
 pub mod headers;
+pub mod locality;
 pub mod planner;
 pub mod resolver;
 mod trace_context;
@@ -169,6 +170,9 @@ pub struct DistributedOptions {
     /// count leaves all but one of them idle.  Raising it lets a stage fan a
     /// scan or keyed merge out over several tasks per worker.
     pub max_tasks_per_stage: usize,
+    /// Cache-locality placement of append-only scan tasks (see
+    /// [`locality`]). `None` keeps the default split and random routing.
+    pub locality: Option<locality::LocalityOptions>,
 }
 
 impl Default for DistributedOptions {
@@ -179,6 +183,7 @@ impl Default for DistributedOptions {
             target_partitions: 4,
             bytes_per_partition: None,
             max_tasks_per_stage: 0,
+            locality: None,
         }
     }
 }

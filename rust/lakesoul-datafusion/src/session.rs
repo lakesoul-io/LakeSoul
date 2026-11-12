@@ -51,6 +51,7 @@ use crate::catalog::{
 use crate::cli::CoreArgs;
 use crate::datasource::table_factory::LakeSoulTableProviderFactory;
 use crate::distributed::DistributedOptions;
+use crate::distributed::locality;
 use crate::distributed::planner::LakeSoulDistributedQueryPlanner;
 use crate::distributed::resolver::{
     KubernetesWorkerResolver, StaticWorkerResolver, WorkerDiscovery,
@@ -464,7 +465,11 @@ fn lazy_scan_scale_up_leaf_node(
     if scan.is_merge_on_read() || ev.task_count <= 1 {
         return None;
     }
-    let variants = match scan.split_into_tasks(ev.task_count) {
+    // Locality placement groups pieces by preferred worker when it is on;
+    // otherwise the scan's own round-robin split applies.
+    let split = locality::split_scan_by_locality(scan, ev.task_count, ev.session_config)
+        .unwrap_or_else(|| scan.split_into_tasks(ev.task_count));
+    let variants = match split {
         Ok(variants) => variants,
         Err(error) => return Some(Err(error)),
     };
@@ -786,8 +791,14 @@ impl LakeSoulSessionFactory {
         // search scan — and the vector index auto-build after a commit
         // construct their stores from the table's io config, which would
         // otherwise carry no credentials at all.
-        let session_config =
+        let mut session_config =
             session_config.with_extension(Arc::new(self.object_store_config.clone()));
+        // Locality placement reads its options from the session config: the
+        // scale-up and routing handlers only see the config, and its absence
+        // keeps both on their defaults.
+        if let Some(locality) = distributed.as_ref().and_then(|dist| dist.locality) {
+            session_config = session_config.with_extension(Arc::new(locality));
+        }
 
         let runtime = RuntimeEnvBuilder::new()
             .with_memory_pool(Arc::clone(&self.memory_pool))
@@ -859,6 +870,13 @@ impl LakeSoulSessionFactory {
                 .with_distributed_scale_up_leaf_node_handler(
                     lazy_scan_scale_up_leaf_node,
                 );
+            if dist.locality.is_some() {
+                // Custom routing runs before every builtin; it defers
+                // (`None`) on one-task stages and stages without a split
+                // LakeSoul scan, so the builtin co-location still applies.
+                builder = builder
+                    .with_distributed_route_tasks_handler(locality::locality_route_tasks);
+            }
             #[cfg(feature = "ivm")]
             {
                 builder = builder
