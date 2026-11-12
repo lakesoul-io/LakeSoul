@@ -2707,7 +2707,7 @@ dependencies = [
 [[package]]
 name = "datafusion-distributed"
 version = "4.0.0"
-source = "git+https://github.com/lakesoul-io/datafusion-distributed.git?branch=lakesoul-ivm-range-shuffle#04d54864bec6d2e2da58eec1b3c54615107ed876"
+source = "git+https://github.com/lakesoul-io/datafusion-distributed.git?branch=lakesoul-ivm-range-shuffle#b2531bbcf92b99031f6c5eaa6a88e1f9b8b8cd68"
 dependencies = [
  "arrow-flight",
  "arrow-ipc",

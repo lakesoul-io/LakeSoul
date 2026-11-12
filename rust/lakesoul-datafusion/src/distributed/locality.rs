@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Cache-locality placement for append-only scans.
+//! Cache-locality placement for LakeSoul scans.
 //!
 //! Every worker keeps its own disk cache of the files it has read. Without a
 //! stable choice of worker, the same file lands on a random worker on every
@@ -13,20 +13,26 @@
 //!
 //! Two steps follow the same placement:
 //!
-//! 1. **Pieces to tasks**, when the distributed planner scales a scan leaf
-//!    out ([`split_scan_by_locality`]): pieces preferred by one worker are
-//!    grouped into that worker's tasks.
+//! 1. **Work to tasks.** An append-only scan is split when the distributed
+//!    planner scales its leaf out ([`split_scan_by_locality`]); its pieces
+//!    are files and parquet byte ranges. A merge-on-read scan is packed into
+//!    scan nodes when the table provider plans it
+//!    ([`pack_merge_units_by_locality`]); its pieces are whole
+//!    `(range partition, hash bucket)` units, keyed by [`merge_unit_key`] so
+//!    the key survives new commits. Either way, pieces preferred by one
+//!    worker are grouped into that worker's tasks or nodes.
 //! 2. **Tasks to workers**, when the coordinator routes the stage
 //!    ([`locality_route_tasks`]): the placement is recomputed against the
 //!    current worker snapshot, and each task goes to the worker that owns most
-//!    of its bytes. Recomputing instead of carrying a hint in the plan keeps
-//!    the wire protocol unchanged, and a worker that disappeared between
-//!    planning and execution only moves the pieces it owned.
+//!    of its bytes. A merge-on-read stage is a children-isolator union; its
+//!    task-to-child map tells which nodes each task runs. Recomputing instead
+//!    of carrying a hint in the plan keeps the wire protocol unchanged, and a
+//!    worker that disappeared between planning and execution only moves the
+//!    pieces it owned.
 //!
 //! The placement is a pure function of the pieces, the worker set, the task
 //! count and the scan's table, so planning and routing agree without sharing
-//! state. Merge-on-read scans are not placed yet: their stage is a
-//! children-isolator union whose task-to-child mapping is not public.
+//! state.
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -37,12 +43,15 @@ use datafusion::error::Result as DataFusionResult;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use datafusion_distributed::{
-    DistributedGetterExt, DistributedLeafExec, NetworkBoundaryExt, RouteTasksEvent,
-    RouteTasksEventResponse,
+    ChildrenIsolatorUnionExec, DistributedGetterExt, DistributedLeafExec,
+    NetworkBoundaryExt, RouteTasksEvent, RouteTasksEventResponse,
 };
 use lakesoul_io::cache::LAKESOUL_CACHE_PAGE_BYTES;
-use lakesoul_io::physical_plan::{LakeSoulScanExec, ScanFile};
+use lakesoul_io::helpers::extract_hash_bucket_id;
+use lakesoul_io::physical_plan::{LakeSoulScanExec, ScanFile, ScanWorkUnit};
 use url::Url;
+
+use crate::distributed::planner::scan_task_budget;
 
 /// Counter of routed scan tasks, labelled by whether every piece of the task
 /// was placed on the worker it was routed to.
@@ -320,12 +329,103 @@ pub fn split_scan_by_locality(
     }))
 }
 
-/// Routes the tasks of a stage that scans a LakeSoul table append-only to the
-/// workers its pieces were placed on.
+/// Packs merge-on-read work units into scan nodes, one node per task the
+/// placement fills, so each node holds the units preferred by one worker.
+///
+/// Returns, for each node, the indexes of the units it holds in scan order,
+/// or `None` when locality placement does not apply; the caller then packs
+/// round-robin. A unit is never divided: every version of its keys stays in
+/// one node.
+pub fn pack_merge_units_by_locality(
+    units: &[ScanWorkUnit],
+    task_budget: usize,
+    scope: &[u8],
+    config: &SessionConfig,
+) -> Option<Vec<Vec<usize>>> {
+    if units.is_empty() {
+        return None;
+    }
+    let (options, workers) = locality_workers(config)?;
+    let task_count = task_budget.max(1).min(units.len());
+    let placement = place(
+        &merge_units(units, scope),
+        &workers,
+        task_count,
+        options.epsilon,
+        scope,
+    )?;
+    Some(
+        placement
+            .tasks
+            .into_iter()
+            .filter(|task| !task.is_empty())
+            .collect(),
+    )
+}
+
+/// The placement units of merge-on-read work units, keyed by
+/// [`merge_unit_key`] and weighing the bytes of all their files.
+///
+/// A file of unknown size weighs the mean of the known ones (or 1 when none
+/// is known).
+pub fn merge_units(units: &[ScanWorkUnit], scope: &[u8]) -> Vec<LocalityUnit> {
+    let known: Vec<u64> = units
+        .iter()
+        .flat_map(|unit| unit.files.iter().filter_map(piece_bytes))
+        .collect();
+    let fallback = if known.is_empty() {
+        1
+    } else {
+        (known.iter().map(|&b| u128::from(b)).sum::<u128>() / known.len() as u128) as u64
+    };
+    units
+        .iter()
+        .map(|unit| LocalityUnit {
+            key: merge_unit_key(scope, unit),
+            weight: unit.files.iter().fold(0u64, |sum, file| {
+                sum.saturating_add(piece_bytes(file).unwrap_or(fallback))
+            }),
+        })
+        .collect()
+}
+
+/// The affinity key of a merge-on-read unit: the table, its range-partition
+/// values and, when all its files name one, its hash bucket.
+///
+/// Unlike file paths, this survives new commits: a bucket's base files keep
+/// their worker while deltas are appended to it, so the files most worth
+/// caching stay where they were cached.
+pub fn merge_unit_key(scope: &[u8], unit: &ScanWorkUnit) -> Vec<u8> {
+    let mut key = scope.to_vec();
+    key.push(0);
+    let mut values: Vec<(&String, &String)> = unit.default_column_value.iter().collect();
+    values.sort_unstable();
+    for (column, value) in values {
+        key.extend_from_slice(column.as_bytes());
+        key.push(b'=');
+        key.extend_from_slice(value.as_bytes());
+        key.push(0);
+    }
+    let mut buckets = unit
+        .files
+        .iter()
+        .map(|file| extract_hash_bucket_id(&file.path));
+    if let Some(Some(bucket)) = buckets.next()
+        && buckets.all(|other| other == Some(bucket))
+    {
+        key.extend_from_slice(b"bucket");
+        key.extend_from_slice(&bucket.to_le_bytes());
+    }
+    key
+}
+
+/// Routes the tasks of a stage that scans a LakeSoul table to the workers its
+/// work was placed on: a children-isolator union of merge-on-read scans, or
+/// a split append-only scan.
 ///
 /// Answers `None`, deferring to the default routing, when locality is off,
 /// the stage has a single task (which the defaults co-locate with the
-/// coordinator or its input), or no split LakeSoul scan reads in this stage.
+/// coordinator or its input), or no placed LakeSoul scan reads in this stage.
 pub fn locality_route_tasks(
     ev: RouteTasksEvent<'_>,
 ) -> Option<DataFusionResult<RouteTasksEventResponse>> {
@@ -334,6 +434,16 @@ pub fn locality_route_tasks(
     }
     let config = ev.task_ctx.session_config();
     config.get_extension::<LocalityOptions>()?;
+    if let Some(tasks) = stage_merge_tasks(ev.plan, ev.task_count) {
+        let (options, workers) = locality_workers(config)?;
+        let urls = route_merge_tasks(
+            &tasks,
+            &workers,
+            scan_task_budget(config),
+            options.epsilon,
+        );
+        return Some(Ok(RouteTasksEventResponse::new(urls)));
+    }
     let variants = stage_scan_variants(ev.plan)?;
     if variants.len() != ev.task_count {
         return None;
@@ -341,6 +451,62 @@ pub fn locality_route_tasks(
     let (options, workers) = locality_workers(config)?;
     let urls = route_variants(&variants, &workers, options.epsilon);
     Some(Ok(RouteTasksEventResponse::new(urls)))
+}
+
+/// The merge-on-read scans each task of this stage runs, when the stage is a
+/// children-isolator union over them; without looking into the stages below.
+fn stage_merge_tasks(
+    plan: &Arc<dyn ExecutionPlan>,
+    task_count: usize,
+) -> Option<Vec<Vec<&LakeSoulScanExec>>> {
+    let mut found = None;
+    plan.apply(|node| {
+        if node.is_network_boundary() {
+            return Ok(TreeNodeRecursion::Jump);
+        }
+        let Some(union) = node.downcast_ref::<ChildrenIsolatorUnionExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        if union.task_count() != task_count {
+            return Ok(TreeNodeRecursion::Jump);
+        }
+        let children = union.children();
+        let tasks: Vec<Vec<&LakeSoulScanExec>> = (0..task_count)
+            .map(|task| {
+                union
+                    .task_children(task)
+                    .unwrap_or_default()
+                    .iter()
+                    .flat_map(|(child, _)| merge_scans(children[*child]))
+                    .collect()
+            })
+            .collect();
+        if tasks.iter().any(|scans| !scans.is_empty()) {
+            found = Some(tasks);
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        Ok(TreeNodeRecursion::Jump)
+    })
+    .ok()?;
+    found
+}
+
+/// The merge-on-read LakeSoul scans in a subtree of one stage.
+fn merge_scans(plan: &Arc<dyn ExecutionPlan>) -> Vec<&LakeSoulScanExec> {
+    let mut scans = Vec::new();
+    let _ = plan.apply(|node| {
+        if node.is_network_boundary() {
+            return Ok(TreeNodeRecursion::Jump);
+        }
+        match node.downcast_ref::<LakeSoulScanExec>() {
+            Some(scan) if scan.is_merge_on_read() => {
+                scans.push(scan);
+                Ok(TreeNodeRecursion::Jump)
+            }
+            _ => Ok(TreeNodeRecursion::Continue),
+        }
+    });
+    scans
 }
 
 /// The task variants of the largest split append-only LakeSoul scan this
@@ -406,12 +572,69 @@ fn route_variants(
     let placement = place(&units, workers, task_count, epsilon, scope)
         .expect("workers and tasks are non-empty");
 
-    // Bytes of each task per worker; a zero-byte piece still counts once.
     let mut votes: Vec<HashMap<usize, u64>> = vec![HashMap::new(); task_count];
     for (unit, &task) in task_of.iter().enumerate() {
-        *votes[task].entry(placement.unit_workers[unit]).or_insert(0) +=
-            units[unit].weight.max(1);
+        vote(
+            &mut votes[task],
+            placement.unit_workers[unit],
+            units[unit].weight,
+        );
     }
+    route_votes(&votes, &placement.task_workers, workers)
+}
+
+/// One worker per task of a merge-on-read stage: the worker its units were
+/// packed for at scan time, recomputed against `workers`.
+///
+/// Each table is placed on its own, exactly as its scan packed it: over
+/// `min(task_budget, units)` tasks with the table's path as scope.
+fn route_merge_tasks(
+    tasks: &[Vec<&LakeSoulScanExec>],
+    workers: &[Url],
+    task_budget: usize,
+    epsilon: f64,
+) -> Vec<Url> {
+    let mut by_scope: HashMap<&[u8], Vec<(usize, LocalityUnit)>> = HashMap::new();
+    for (task, scans) in tasks.iter().enumerate() {
+        for scan in scans {
+            let scope = scan_scope(scan);
+            let units = merge_units(scan.work_units(), scope);
+            by_scope
+                .entry(scope)
+                .or_default()
+                .extend(units.into_iter().map(|unit| (task, unit)));
+        }
+    }
+    let mut votes: Vec<HashMap<usize, u64>> = vec![HashMap::new(); tasks.len()];
+    let mut placed_workers = Vec::new();
+    for (scope, entries) in by_scope {
+        let units: Vec<LocalityUnit> =
+            entries.iter().map(|(_, unit)| unit.clone()).collect();
+        let task_count = task_budget.max(1).min(units.len());
+        let placement = place(&units, workers, task_count, epsilon, scope)
+            .expect("workers and tasks are non-empty");
+        for ((task, unit), worker) in entries.iter().zip(&placement.unit_workers) {
+            vote(&mut votes[*task], *worker, unit.weight);
+        }
+        placed_workers.extend(placement.task_workers);
+    }
+    route_votes(&votes, &placed_workers, workers)
+}
+
+/// Counts `weight` bytes of a task for `worker`; a zero-byte unit still
+/// counts once, so a task of empty files still has a preference.
+fn vote(task: &mut HashMap<usize, u64>, worker: usize, weight: u64) {
+    let bytes = task.entry(worker).or_insert(0);
+    *bytes = bytes.saturating_add(weight.max(1));
+}
+
+/// Routes each task to the worker holding most of its bytes. A task that
+/// reads nothing goes to the placed worker with the fewest tasks so far.
+fn route_votes(
+    votes: &[HashMap<usize, u64>],
+    placed_workers: &[usize],
+    workers: &[Url],
+) -> Vec<Url> {
     let mut routed: Vec<Option<usize>> = votes
         .iter()
         .map(|task| {
@@ -426,9 +649,12 @@ fn route_variants(
     for worker in routed.iter().flatten() {
         task_counts[*worker] += 1;
     }
-    let mut placed: Vec<usize> = placement.task_workers.clone();
+    let mut placed: Vec<usize> = placed_workers.to_vec();
     placed.sort_unstable();
     placed.dedup();
+    if placed.is_empty() {
+        placed = (0..workers.len()).collect();
+    }
     for slot in routed.iter_mut().filter(|slot| slot.is_none()) {
         let worker = *placed
             .iter()
@@ -439,15 +665,13 @@ fn route_variants(
     }
     let routed: Vec<usize> = routed.into_iter().map(|w| w.expect("routed")).collect();
 
-    record_route_metrics(&votes, &routed, &units, &task_of, workers.len());
+    record_route_metrics(votes, &routed, workers.len());
     routed.into_iter().map(|w| workers[w].clone()).collect()
 }
 
 fn record_route_metrics(
     votes: &[HashMap<usize, u64>],
     routed: &[usize],
-    units: &[LocalityUnit],
-    task_of: &[usize],
     worker_count: usize,
 ) {
     for (task, worker) in votes.iter().zip(routed) {
@@ -462,8 +686,9 @@ fn record_route_metrics(
         metrics::counter!(LOCALITY_TASKS_TOTAL, "outcome" => outcome).increment(1);
     }
     let mut bytes = vec![0u64; worker_count];
-    for (unit, &task) in task_of.iter().enumerate() {
-        bytes[routed[task]] = bytes[routed[task]].saturating_add(units[unit].weight);
+    for (task, &worker) in votes.iter().zip(routed) {
+        let task_bytes = task.values().fold(0u64, |sum, &b| sum.saturating_add(b));
+        bytes[worker] = bytes[worker].saturating_add(task_bytes);
     }
     let busy: Vec<u64> = bytes.into_iter().filter(|&b| b > 0).collect();
     if !busy.is_empty() {
@@ -1019,6 +1244,170 @@ mod tests {
         assert_eq!(busy, 2);
         let urls = route(&leaf(&node, &variants), 4, config).unwrap();
         assert_eq!(urls.len(), 4);
+    }
+
+    // -----------------------------------------------------------------------
+    // Merge-on-read units.
+    // -----------------------------------------------------------------------
+
+    /// A `(range partition, bucket)` unit with `versions` files of 1 MiB.
+    fn bucket_unit(range: &str, bucket: u32, versions: usize) -> ScanWorkUnit {
+        ScanWorkUnit {
+            files: (0..versions)
+                .map(|v| ScanFile {
+                    path: format!(
+                        "s3://bucket/table/date={range}/part-v{v}xyz_{bucket:04}.parquet"
+                    ),
+                    physical_format: PhysicalFormat::Parquet,
+                    size: Some(1 << 20),
+                    range: None,
+                })
+                .collect(),
+            default_column_value: HashMap::from([
+                ("date".to_string(), range.to_string()),
+                ("region".to_string(), "eu".to_string()),
+            ]),
+            lane: 0,
+        }
+    }
+
+    #[test]
+    fn merge_keys_name_the_table_range_and_bucket() {
+        let scope = b"s3://bucket/table";
+        let key = |unit: &ScanWorkUnit| merge_unit_key(scope, unit);
+        let a = bucket_unit("2026-01-01", 3, 1);
+        // New versions of a bucket keep its key.
+        assert_eq!(key(&a), key(&bucket_unit("2026-01-01", 3, 4)));
+        assert_ne!(key(&a), key(&bucket_unit("2026-01-01", 4, 1)));
+        assert_ne!(key(&a), key(&bucket_unit("2026-01-02", 3, 1)));
+        assert_ne!(key(&a), merge_unit_key(b"s3://bucket/other", &a));
+
+        // A unit whose files name different buckets (an atomic range) is
+        // keyed by its range alone.
+        let mut mixed = bucket_unit("2026-01-01", 3, 1);
+        mixed.files.extend(bucket_unit("2026-01-01", 5, 1).files);
+        let mut bare = bucket_unit("2026-01-01", 3, 1);
+        bare.files[0].path = "s3://bucket/table/date=2026-01-01/data.parquet".to_string();
+        assert_eq!(key(&mixed), key(&bare));
+        assert_ne!(key(&mixed), key(&a));
+
+        let weights: Vec<u64> = merge_units(&[a, bucket_unit("2026-01-01", 4, 3)], scope)
+            .iter()
+            .map(|unit| unit.weight)
+            .collect();
+        assert_eq!(weights, vec![1 << 20, 3 << 20]);
+    }
+
+    #[test]
+    fn merge_units_are_packed_by_preferred_worker() {
+        let ws = workers(3);
+        let units: Vec<ScanWorkUnit> = (0..4)
+            .flat_map(|day| {
+                (0..8).map(move |b| bucket_unit(&format!("2026-01-0{day}"), b, 2))
+            })
+            .collect();
+        let scope = b"s3://bucket/table";
+        assert!(
+            pack_merge_units_by_locality(&units, 3, scope, &session(false, &ws))
+                .is_none()
+        );
+        assert!(
+            pack_merge_units_by_locality(&[], 3, scope, &session(true, &ws)).is_none()
+        );
+
+        let nodes =
+            pack_merge_units_by_locality(&units, 3, scope, &session(true, &ws)).unwrap();
+        assert_eq!(nodes.len(), 3, "one node per worker");
+        let mut seen: Vec<usize> = nodes.iter().flatten().copied().collect();
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            (0..units.len()).collect::<Vec<_>>(),
+            "every unit once"
+        );
+        for node in &nodes {
+            assert!(node.windows(2).all(|w| w[0] < w[1]), "scan order kept");
+        }
+
+        // A new version in one bucket moves no unit to another node.
+        let mut grown = units.clone();
+        grown[5].files.extend(bucket_unit("2026-01-00", 5, 1).files);
+        assert_eq!(
+            nodes,
+            pack_merge_units_by_locality(&grown, 3, scope, &session(true, &ws)).unwrap()
+        );
+
+        // Fewer units than the budget: one node per unit.
+        let few =
+            pack_merge_units_by_locality(&units[..2], 3, scope, &session(true, &ws))
+                .unwrap();
+        assert_eq!(few.len(), 2);
+    }
+
+    #[test]
+    fn merge_tasks_are_routed_to_the_worker_their_units_were_packed_for() {
+        let ws = workers(3);
+        let units: Vec<ScanWorkUnit> =
+            (0..12).map(|b| bucket_unit("2026-01-01", b, 1)).collect();
+        let merge = scan(&["id"], 0);
+        let config = merge.scan_config().clone();
+        let nodes = pack_merge_units_by_locality(
+            &units,
+            3,
+            config.io_config.prefix().as_bytes(),
+            &session(true, &ws),
+        )
+        .unwrap();
+        let scans: Vec<LakeSoulScanExec> = nodes
+            .iter()
+            .map(|node| {
+                let units = node.iter().map(|&i| units[i].clone()).collect();
+                LakeSoulScanExec::try_new(config.clone(), units, 1).unwrap()
+            })
+            .collect();
+        assert!(scans.iter().all(LakeSoulScanExec::is_merge_on_read));
+
+        // Tasks in reverse node order, to show routing follows the units,
+        // not the task index.
+        let tasks: Vec<Vec<&LakeSoulScanExec>> =
+            scans.iter().rev().map(|s| vec![s]).collect();
+        let urls = route_merge_tasks(&tasks, &ws, 3, LocalityOptions::DEFAULT_EPSILON);
+        assert_eq!(urls.len(), 3);
+        assert_eq!(
+            urls.iter().collect::<HashSet<_>>().len(),
+            3,
+            "one task per worker"
+        );
+
+        let placement = place(
+            &merge_units(&units, config.io_config.prefix().as_bytes()),
+            &ws,
+            3,
+            LocalityOptions::DEFAULT_EPSILON,
+            config.io_config.prefix().as_bytes(),
+        )
+        .unwrap();
+        for (task, scan) in tasks.iter().enumerate() {
+            for unit in scan[0].work_units() {
+                let index = units
+                    .iter()
+                    .position(|u| u.files[0].path == unit.files[0].path)
+                    .unwrap();
+                assert_eq!(urls[task], ws[placement.unit_workers[index]]);
+            }
+        }
+
+        // A lost worker only moves its own task.
+        let lost = urls[1].clone();
+        let survivors: Vec<Url> = ws.iter().filter(|w| **w != lost).cloned().collect();
+        let after =
+            route_merge_tasks(&tasks, &survivors, 3, LocalityOptions::DEFAULT_EPSILON);
+        assert_eq!(after.len(), 3);
+        assert_eq!(
+            (after[0].clone(), after[2].clone()),
+            (urls[0].clone(), urls[2].clone())
+        );
+        assert!(survivors.contains(&after[1]));
     }
 
     #[test]
