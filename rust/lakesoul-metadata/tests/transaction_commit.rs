@@ -169,7 +169,7 @@ async fn publishes_every_table_in_one_transaction() -> Result<()> {
 async fn a_stale_partition_on_one_table_publishes_nothing() -> Result<()> {
     let client = MetaDataClient::from_env().await?;
     let names = [unique_name("stale_a"), unique_name("stale_b")];
-    let mut ids = vec![
+    let mut ids = [
         create_test_table(&client, &names[0]).await?,
         create_test_table(&client, &names[1]).await?,
     ];

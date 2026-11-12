@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn numeric_typmod_is_decoded() {
-        let typmod = (((20_i32 << 16) | 4) + 4) as i32;
+        let typmod = ((20_i32 << 16) | 4) + 4;
         assert_eq!(
             PgType::from_oid(1700, typmod),
             Some(PgType::Numeric {

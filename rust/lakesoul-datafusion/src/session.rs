@@ -804,7 +804,7 @@ impl LakeSoulSessionFactory {
         // block has staged writes: they drop the ordering/score expressions
         // the index plan is supposed to provide, and the index only describes
         // published files.
-        let block =
+        let _block =
             session_config.get_extension::<crate::write_mode::LakeSoulDeferredCommit>();
         let runtime = RuntimeEnvBuilder::new()
             .with_memory_pool(Arc::clone(&self.memory_pool))
