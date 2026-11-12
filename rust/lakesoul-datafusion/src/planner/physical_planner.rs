@@ -62,9 +62,13 @@ pub struct LakeSoulPhysicalPlanner {
 
 impl LakeSoulPhysicalPlanner {
     pub fn new() -> Self {
-        Self {
-            default_planner: DefaultPhysicalPlanner::default(),
-        }
+        #[cfg(feature = "ivm")]
+        let default_planner = DefaultPhysicalPlanner::with_extension_planners(vec![
+            lakesoul_ivm::runtime::keyed_lookup_extension_planner(),
+        ]);
+        #[cfg(not(feature = "ivm"))]
+        let default_planner = DefaultPhysicalPlanner::default();
+        Self { default_planner }
     }
 }
 

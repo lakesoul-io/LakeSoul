@@ -647,7 +647,11 @@ impl IvmStreamExec {
         let per_task = self.groups.len().div_ceil(task_count).max(1);
         let mut variants = Vec::with_capacity(task_count);
         for task in 0..task_count {
-            let start = task * per_task;
+            // `ceil(groups / task_count)` chunks can leave the last tasks
+            // without a group (8 groups over 6 tasks, for example).  Clamp the
+            // start instead of slicing past the end; the padding loop below
+            // still gives every variant its `per_task` entries.
+            let start = (task * per_task).min(self.groups.len());
             let end = (start + per_task).min(self.groups.len());
             let mut groups = self.groups[start..end].to_vec();
             let mut filters = (start..end)

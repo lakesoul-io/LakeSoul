@@ -151,9 +151,15 @@ fn record_bytes(store: &'static str, operation: &'static str, bytes: u64) {
 /// a `trace`-level span (`vortex_io::spawn_io`), so at the default `info` level
 /// the reads below it have no current span; `RUST_LOG=…,vortex_io::spawn_io=trace`
 /// reactivates them as traced spans. Metrics are unaffected either way.
+fn trace_spans_disabled() -> bool {
+    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DISABLED
+        .get_or_init(|| std::env::var_os("LAKESOUL_IO_DISABLE_TRACE_SPANS").is_some())
+}
+
 macro_rules! request_span {
     ($level:expr, $name:literal, $($field:tt)*) => {{
-        if tracing::Span::current().is_none() {
+        if trace_spans_disabled() || tracing::Span::current().is_none() {
             tracing::Span::none()
         } else {
             tracing::span!(

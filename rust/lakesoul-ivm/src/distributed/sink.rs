@@ -17,9 +17,12 @@ use arrow::record_batch::RecordBatch;
 use datafusion::common::Result as DFResult;
 use datafusion::common::config::ConfigOptions;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
-use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion::physical_expr::expressions::Column as PhysicalColumn;
+use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
@@ -61,14 +64,31 @@ pub struct IvmSinkSpec {
 tokio::task_local! {
     /// Set by `write_dataframe` while a distributed refresh plans its output.
     pub static IVM_SINK_SPEC: IvmSinkSpec;
+    /// Set by `write_dataframe_dual` while a state/MV pair is planned.
+    pub static IVM_DUAL_SINK_SPEC: IvmDualSinkSpec;
     /// Marks a nested plan (a lookup contribution, for example) that must not
     /// be wrapped by the root write sink.
     static IVM_SINK_DISABLED: bool;
 }
 
+/// One state table and its materialized view written by the same task.
+#[derive(Debug, Clone)]
+pub struct IvmDualSinkSpec {
+    pub state: IvmTable,
+    pub mv: IvmTable,
+    /// Columns of the state-merge output that form the MV row.
+    pub mv_schema: SchemaRef,
+    pub epoch: Option<i64>,
+}
+
 /// The sink spec of the current refresh task, if any.
 pub fn current_sink_spec() -> Option<IvmSinkSpec> {
     IVM_SINK_SPEC.try_with(Clone::clone).ok()
+}
+
+/// The dual sink spec of the current refresh task, if any.
+pub fn current_dual_sink_spec() -> Option<IvmDualSinkSpec> {
+    IVM_DUAL_SINK_SPEC.try_with(Clone::clone).ok()
 }
 
 fn sink_disabled() -> bool {
@@ -82,14 +102,117 @@ pub async fn without_sink<F: std::future::Future>(future: F) -> F::Output {
     IVM_SINK_DISABLED.scope(true, future).await
 }
 
+/// Columns whose hash selects the writer bucket.
+///
+/// Keeping every row with the same values in one writer partition means a
+/// delete and its replacement insert land in the same write.  A dual sink
+/// uses the state table's keys; the MV is a projection of the same rows.
+fn sink_key_columns(table: &IvmTable, mv: Option<&IvmTable>) -> Vec<String> {
+    // Prefer the state/primary table's keys: every state row must land in its
+    // one writer partition.  The MV is a projection of the same rows and
+    // shares those keys in every IVM view.
+    for table in std::iter::once(table).chain(mv) {
+        let source = if table.bucket_columns.is_empty() {
+            &table.primary_keys
+        } else {
+            &table.bucket_columns
+        };
+        if !source.is_empty() {
+            return source.clone();
+        }
+    }
+    Vec::new()
+}
+
+/// Partition a write input so each writer owns distinct LakeSoul buckets.
+///
+/// A sink whose input stays on one partition is folded into the coordinator's
+/// head stage; partitioning by the business key alone still makes every sink
+/// partition open one writer per bucket, which leaves many tiny files.  The
+/// bucket id gives each writer a disjoint bucket set.
+fn partition_for_write(
+    input: Arc<dyn ExecutionPlan>,
+    table: &IvmTable,
+    mv: Option<&IvmTable>,
+) -> DFResult<Arc<dyn ExecutionPlan>> {
+    let keys = sink_key_columns(table, mv);
+    if keys.is_empty() {
+        return Ok(input);
+    }
+    let mut expressions = Vec::with_capacity(keys.len());
+    for key in &keys {
+        match input.schema().index_of(key) {
+            Ok(index) => expressions
+                .push(Arc::new(PhysicalColumn::new(key, index)) as Arc<dyn PhysicalExpr>),
+            Err(_) => return Ok(input),
+        }
+    }
+    let input_partitions = input.output_partitioning().partition_count();
+    let bucket_count = table
+        .hash_bucket_num
+        .parse::<usize>()
+        .ok()
+        .filter(|count| *count > 0)
+        .unwrap_or(input_partitions);
+
+    // Align sink partitions with the writer's buckets.  A hash repartition by
+    // key does not do that: every sink partition still contains rows of every
+    // bucket, so every partition opens one writer per bucket and a small view
+    // leaves dozens of tiny files.  Adding the LakeSoul bucket id and range
+    // partitioning on it gives each bucket exactly one sink partition; the
+    // writer then emits one file per bucket and range partition.
+    if bucket_count > 1 {
+        use crate::runtime::keyed_plan::{
+            IVM_BUCKET_COLUMN, bucket_repartition_by_columns,
+        };
+        let key_columns = sink_key_columns(table, mv);
+        if !key_columns.is_empty() {
+            // Hash on the LakeSoul bucket id, not on the business key: the
+            // writer hashes each row to one of `bucket_count` buckets, so
+            // every bucket gets exactly one sink partition and one writer.
+            let with_bucket =
+                bucket_repartition_by_columns(input, &key_columns, bucket_count)
+                    .map_err(|error| {
+                        datafusion::error::DataFusionError::Execution(error.to_string())
+                    })?;
+            let bucket_index = with_bucket.schema().index_of(IVM_BUCKET_COLUMN)?;
+            let schema = with_bucket.schema();
+            let keep = schema
+                .fields()
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != bucket_index)
+                .map(|(index, field)| {
+                    (
+                        Arc::new(PhysicalColumn::new(field.name(), index))
+                            as Arc<dyn PhysicalExpr>,
+                        field.name().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            return Ok(Arc::new(ProjectionExec::try_new(keep, with_bucket)?));
+        }
+    }
+
+    let partitions = input_partitions.min(bucket_count).max(2);
+    Ok(Arc::new(RepartitionExec::try_new(
+        input,
+        Partitioning::Hash(expressions, partitions),
+    )?))
+}
+
 /// Wrap `plan` so its output partitions are written on workers.
 pub fn sink_plan(
     plan: Arc<dyn ExecutionPlan>,
     spec: IvmSinkSpec,
 ) -> Arc<dyn ExecutionPlan> {
+    let input = {
+        let original = Arc::clone(&plan);
+        partition_for_write(plan, &spec.table, None).unwrap_or(original)
+    };
     Arc::new(
         datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec::new(
-            Arc::new(IvmRefreshSinkExec::new(plan, spec)),
+            Arc::new(IvmRefreshSinkExec::new(input, spec)),
         ),
     )
 }
@@ -222,6 +345,13 @@ impl ExecutionPlan for IvmRefreshSinkExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
+        tracing::debug!(
+            target: "lakesoul_ivm::sink",
+            pid = std::process::id(),
+            partition,
+            table = %self.table.table_name,
+            "executing refresh sink"
+        );
         let input = self.input.execute(partition, context)?;
         let table = self.table.clone();
         let epoch = self.epoch;
@@ -304,6 +434,307 @@ async fn write_partition(
     .map_err(Into::into)
 }
 
+/// Worker sink that writes one refresh output to a state table and its MV.
+///
+/// The two writes share the input stream, so a keyed multi-aggregate refresh
+/// never needs a coordinator-side collect.  Each task emits one task-output
+/// row per table; the coordinator commits the state first and the MV last.
+pub struct IvmDualSinkExec {
+    input: Arc<dyn ExecutionPlan>,
+    spec: IvmDualSinkSpec,
+    schema: SchemaRef,
+    properties: Arc<PlanProperties>,
+}
+
+impl IvmDualSinkExec {
+    pub(crate) fn new(input: Arc<dyn ExecutionPlan>, spec: IvmDualSinkSpec) -> Self {
+        let partitions = input.output_partitioning().partition_count().max(1);
+        let schema = task_output_schema();
+        Self {
+            input,
+            spec,
+            schema: schema.clone(),
+            properties: Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(partitions),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            )),
+        }
+    }
+
+    pub(crate) fn state(&self) -> &IvmTable {
+        &self.spec.state
+    }
+
+    pub(crate) fn mv(&self) -> &IvmTable {
+        &self.spec.mv
+    }
+
+    pub(crate) fn epoch(&self) -> Option<i64> {
+        self.spec.epoch
+    }
+
+    pub(crate) fn mv_schema(&self) -> &SchemaRef {
+        &self.spec.mv_schema
+    }
+
+    pub(crate) fn input_partition_count(&self) -> usize {
+        self.input.output_partitioning().partition_count().max(1)
+    }
+}
+
+impl std::fmt::Debug for IvmDualSinkExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IvmDualSinkExec")
+    }
+}
+
+impl DisplayAs for IvmDualSinkExec {
+    fn fmt_as(
+        &self,
+        _format: DisplayFormatType,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        write!(
+            f,
+            "IvmDualSinkExec state={} mv={}",
+            self.spec.state.table_name, self.spec.mv.table_name
+        )
+    }
+}
+
+impl ExecutionPlanProperties for IvmDualSinkExec {
+    fn output_partitioning(&self) -> &Partitioning {
+        &self.properties.partitioning
+    }
+
+    fn output_ordering(&self) -> Option<&datafusion::physical_expr::LexOrdering> {
+        None
+    }
+
+    fn boundedness(&self) -> Boundedness {
+        Boundedness::Bounded
+    }
+
+    fn pipeline_behavior(&self) -> EmissionType {
+        EmissionType::Incremental
+    }
+
+    fn equivalence_properties(&self) -> &EquivalenceProperties {
+        &self.properties.eq_properties
+    }
+}
+
+impl ExecutionPlan for IvmDualSinkExec {
+    fn name(&self) -> &str {
+        "IvmDualSinkExec"
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+        )
+            -> DFResult<datafusion::common::tree_node::TreeNodeRecursion>,
+    ) -> DFResult<datafusion::common::tree_node::TreeNodeRecursion> {
+        Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        if children.len() != 1 {
+            return datafusion::common::internal_err!(
+                "IvmDualSinkExec expects exactly one child"
+            );
+        }
+        Ok(Arc::new(Self::new(children[0].clone(), self.spec.clone())))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> DFResult<SendableRecordBatchStream> {
+        tracing::debug!(
+            target: "lakesoul_ivm::sink",
+            pid = std::process::id(),
+            partition,
+            state = %self.spec.state.table_name,
+            mv = %self.spec.mv.table_name,
+            "executing dual sink"
+        );
+        let input = self.input.execute(partition, context)?;
+        let spec = self.spec.clone();
+        let schema = self.schema.clone();
+        let task_id = partition as u32;
+        let output = futures::stream::once(async move {
+            write_dual_partition(spec, task_id, schema, input).await
+        });
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.schema.clone(),
+            output,
+        )))
+    }
+}
+
+async fn write_dual_partition(
+    spec: IvmDualSinkSpec,
+    task_id: u32,
+    schema: SchemaRef,
+    mut input: SendableRecordBatchStream,
+) -> DFResult<RecordBatch> {
+    let mut state_writer = spec.state.writer().await.map_err(|error| {
+        datafusion::error::DataFusionError::Execution(error.to_string())
+    })?;
+    let mut mv_writer = spec.mv.writer().await.map_err(|error| {
+        datafusion::error::DataFusionError::Execution(error.to_string())
+    })?;
+    let mut state_rows = 0u64;
+    let mut mv_rows = 0u64;
+    while let Some(batch) = input.next().await {
+        let batch = batch?;
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        state_rows += batch.num_rows() as u64;
+        mv_rows += batch.num_rows() as u64;
+        let state_batch = spec.state.cast_batch(batch.clone()).map_err(|error| {
+            datafusion::error::DataFusionError::Execution(error.to_string())
+        })?;
+        let mv_batch = crate::runtime::project_batch_columns(&batch, &spec.mv_schema)
+            .map_err(|error| {
+                datafusion::error::DataFusionError::Execution(error.to_string())
+            })?;
+        state_writer
+            .write_record_batch(state_batch)
+            .await
+            .map_err(|error| {
+                datafusion::error::DataFusionError::Execution(error.to_string())
+            })?;
+        mv_writer
+            .write_record_batch(mv_batch)
+            .await
+            .map_err(|error| {
+                datafusion::error::DataFusionError::Execution(error.to_string())
+            })?;
+    }
+    let state_outputs = state_writer.flush_and_close().await.map_err(|error| {
+        datafusion::error::DataFusionError::Execution(error.to_string())
+    })?;
+    let mv_outputs = mv_writer.flush_and_close().await.map_err(|error| {
+        datafusion::error::DataFusionError::Execution(error.to_string())
+    })?;
+    let state_files = spec.state.output_files(state_outputs, state_rows);
+    let mv_files = spec.mv.output_files(mv_outputs, mv_rows);
+
+    let epoch = spec.epoch.unwrap_or(-1);
+    let mut task_ids = Vec::with_capacity(2);
+    let mut table_ids = Vec::with_capacity(2);
+    let mut epochs = Vec::with_capacity(2);
+    let mut encoded = Vec::with_capacity(2);
+    let mut rows = Vec::with_capacity(2);
+    let mut inserts = Vec::with_capacity(2);
+    let mut deletes = Vec::with_capacity(2);
+    let mut bytes = Vec::with_capacity(2);
+    for (table, files, rows_count) in [
+        (&spec.state, state_files, state_rows),
+        (&spec.mv, mv_files, mv_rows),
+    ] {
+        task_ids.push(task_id);
+        table_ids.push(table.table_id.clone());
+        epochs.push(epoch);
+        encoded.push(serde_json::to_string(&files).map_err(|error| {
+            datafusion::error::DataFusionError::Execution(format!(
+                "encode IVM task files: {error}"
+            ))
+        })?);
+        rows.push(rows_count);
+        inserts.push(rows_count);
+        deletes.push(0u64);
+        bytes.push(
+            files
+                .iter()
+                .map(|file| file.size.max(0) as u64)
+                .sum::<u64>(),
+        );
+    }
+    let strings = |values: &[String]| {
+        Arc::new(StringArray::from(
+            values.iter().map(String::as_str).collect::<Vec<_>>(),
+        )) as Arc<dyn arrow::array::Array>
+    };
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(UInt32Array::from(task_ids)) as Arc<dyn arrow::array::Array>,
+            strings(&table_ids),
+            Arc::new(Int64Array::from(epochs)),
+            strings(&encoded),
+            Arc::new(UInt64Array::from(rows)),
+            Arc::new(UInt64Array::from(inserts)),
+            Arc::new(UInt64Array::from(deletes)),
+            Arc::new(UInt64Array::from(bytes)),
+        ],
+    )
+    .map_err(Into::into)
+}
+
+/// Wraps a state/MV pair with [`IvmDualSinkExec`].
+#[derive(Debug, Default)]
+pub struct IvmDualSinkRule;
+
+impl PhysicalOptimizerRule for IvmDualSinkRule {
+    fn optimize(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        _config: &ConfigOptions,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        if sink_disabled() {
+            return Ok(plan);
+        }
+        let Some(spec) = current_dual_sink_spec() else {
+            return Ok(plan);
+        };
+        if plan.downcast_ref::<IvmDualSinkExec>().is_some()
+            || plan
+                .downcast_ref::<datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec>()
+                .and_then(|coalesce| coalesce.input().downcast_ref::<IvmDualSinkExec>())
+                .is_some()
+        {
+            return Ok(plan);
+        }
+        let input = partition_for_write(plan, &spec.state, Some(&spec.mv))?;
+        Ok(Arc::new(
+            datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec::new(
+                Arc::new(IvmDualSinkExec::new(input, spec)),
+            ),
+        ))
+    }
+
+    fn name(&self) -> &str {
+        "ivm_dual_refresh_sink"
+    }
+
+    fn schema_check(&self) -> bool {
+        false
+    }
+}
+
 /// Physical optimizer rule that wraps a refresh output with [`IvmRefreshSinkExec`].
 ///
 /// `write_dataframe` sets [`IVM_SINK_SPEC`] only while it plans an IVM write,
@@ -344,5 +775,67 @@ impl PhysicalOptimizerRule for IvmSinkRule {
     fn schema_check(&self) -> bool {
         // The sink intentionally changes the output schema to task descriptors.
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::array::Int64Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use datafusion::prelude::SessionContext;
+
+    use super::*;
+
+    fn table() -> IvmTable {
+        IvmTable {
+            table_id: "target".to_string(),
+            table_name: "target".to_string(),
+            namespace: "default".to_string(),
+            table_path: "file:///tmp/target".to_string(),
+            schema: Arc::new(Schema::new(vec![
+                Field::new("k", DataType::Int64, false),
+                Field::new("v", DataType::Int64, true),
+            ])),
+            primary_keys: vec!["k".to_string()],
+            range_partition_columns: Vec::new(),
+            internal_columns: Vec::new(),
+            bucket_columns: vec!["k".to_string()],
+            hash_bucket_num: "4".to_string(),
+            cdc_column: None,
+            file_format: lakesoul_io::file_format::PhysicalFormat::Vortex,
+            allow_fallback: true,
+        }
+    }
+
+    /// A one-partition write input is repartitioned by the merge key, so the
+    /// sink gets its own multi-task stage instead of running on the
+    /// coordinator's head stage.
+    #[tokio::test]
+    async fn write_input_is_hash_partitioned_by_merge_key() -> DFResult<()> {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("k", DataType::Int64, false),
+                Field::new("v", DataType::Int64, true),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+                Arc::new(Int64Array::from(vec![10, 20, 30, 40])),
+            ],
+        )?;
+        let context = SessionContext::new();
+        let plan = context.read_batch(batch)?.create_physical_plan().await?;
+        assert_eq!(plan.output_partitioning().partition_count(), 1);
+        let plan = partition_for_write(plan, &table(), None)?;
+        assert_eq!(plan.output_partitioning().partition_count(), 4);
+        match plan.output_partitioning() {
+            Partitioning::Hash(expressions, 4) => {
+                assert_eq!(expressions.len(), 1);
+            }
+            other => panic!("write input is not hash partitioned: {other:?}"),
+        }
+        Ok(())
     }
 }

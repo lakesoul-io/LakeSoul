@@ -42,7 +42,9 @@ impl IvmSessionFactory for SinkFactory {
                 lakesoul_ivm::distributed::IvmSinkRule,
             ))
             .build();
-        Ok(SessionContext::new_with_state(state))
+        Ok(lakesoul_ivm::runtime::install_keyed_lookup_planner(
+            SessionContext::new_with_state(state),
+        ))
     }
 }
 

@@ -123,6 +123,8 @@ pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2-ivm";
 #[cfg(not(feature = "ivm"))]
 pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2";
 
+#[cfg(feature = "ivm")]
+pub use worker::set_ivm_worker_options;
 pub use worker::{
     LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker,
     spawn_lakesoul_worker,
@@ -160,6 +162,13 @@ pub struct DistributedOptions {
     /// scans this splits wherever their source supports it (see
     /// [Task placement](self#task-placement)).
     pub bytes_per_partition: Option<usize>,
+    /// Maximum tasks per distributed stage, or 0 for the library default
+    /// (the number of workers).
+    ///
+    /// A worker has several execution threads; keeping the cap at the worker
+    /// count leaves all but one of them idle.  Raising it lets a stage fan a
+    /// scan or keyed merge out over several tasks per worker.
+    pub max_tasks_per_stage: usize,
 }
 
 impl Default for DistributedOptions {
@@ -169,6 +178,7 @@ impl Default for DistributedOptions {
             fallback_to_local: false,
             target_partitions: 4,
             bytes_per_partition: None,
+            max_tasks_per_stage: 0,
         }
     }
 }

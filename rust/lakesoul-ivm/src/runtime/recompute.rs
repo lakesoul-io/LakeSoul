@@ -13,6 +13,10 @@ use datafusion::common::ScalarValue;
 use datafusion::prelude::{col, lit};
 
 use crate::metadata::{PartitionVersion, StateRole};
+use crate::table::{
+    IvmTableOptions, create_ivm_table, keyed_state_file_format,
+    state_range_partition_columns,
+};
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 
 /// The internal state schema for a multi-aggregate view: the Arrow row
@@ -209,7 +213,7 @@ pub(crate) fn multi_agg_partial_plan(
     aggregates: &[(String, String, DataType)],
     source_schema: &Schema,
 ) -> Result<Option<MultiAggPartialPlan>> {
-    let context = refresh_session();
+    let context = refresh_session_local();
     let df_schema = DFSchema::try_from(source_schema.clone())
         .map_err(|error| report!("invalid source schema: {error}"))?;
     let mut columns = Vec::with_capacity(aggregates.len());
@@ -2697,11 +2701,11 @@ pub(super) fn validate_recompute_view(parts: &RecomputeParts<'_>) -> Result<()> 
         parts.group_exprs,
     )?;
     if let Some(filter) = parts.filter {
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &parts.source.schema, filter)?;
     }
     if let Some(having) = parts.having {
-        let context = refresh_session();
+        let context = refresh_session_local();
         let mut schema = parts.mv.schema.fields().iter().cloned().collect::<Vec<_>>();
         if let Some(lookup) = &parts.lookup {
             // The lookup value is joined into the recompute and referenced by
@@ -2757,6 +2761,315 @@ impl Drop for StageGuard {
 struct KeyedContributions {
     frame: DataFrame,
     _guard: StageGuard,
+}
+
+/// The schema of the narrow index of a recomputed aggregate: the group keys,
+/// the source primary key, the source range partition columns and the
+/// bookkeeping columns.  The index stores no aggregate payload; a refresh
+/// resolves the source rows of the affected groups by primary key.
+pub(super) fn recomputed_index_schema_for(
+    source: &IvmTable,
+    group_keys: &[String],
+    group_exprs: &[String],
+) -> Result<SchemaRef> {
+    let mut fields = super::group_key_fields(&source.schema, group_keys, group_exprs)?;
+    let mut add = |name: &str| -> Result<()> {
+        if fields.iter().any(|field| field.name() == name) {
+            return Ok(());
+        }
+        let field = source.schema.field_with_name(name)?;
+        fields.push(Arc::new(Field::new(
+            name,
+            field.data_type().clone(),
+            field.is_nullable(),
+        )));
+        Ok(())
+    };
+    for key in &source.primary_keys {
+        add(key)?;
+    }
+    for column in &source.range_partition_columns {
+        add(column)?;
+    }
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+impl IvmRuntime {
+    /// Ensure a narrow `(projection keys, source primary key)` index for one
+    /// group projection of a view.  A state that disappeared while the view
+    /// was populated cannot be trusted: the caller must rebuild so the index
+    /// is seeded from the full source.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn ensure_narrow_group_index(
+        &self,
+        view_id: &str,
+        source: &IvmTable,
+        mv: &IvmTable,
+        group_keys: &[String],
+        group_exprs: &[String],
+        role: StateRole,
+        label: &str,
+        allow_populated: bool,
+    ) -> Result<Option<IvmTable>> {
+        if group_keys.is_empty()
+            || source.primary_keys.is_empty()
+            || source.primary_keys.starts_with(group_keys)
+        {
+            return Ok(None);
+        }
+        let schema = recomputed_index_schema_for(source, group_keys, group_exprs)?;
+        let mut primary_keys = group_keys.to_vec();
+        for column in &source.range_partition_columns {
+            if source.schema.field_with_name(column).is_ok()
+                && !primary_keys.contains(column)
+            {
+                primary_keys.push(column.clone());
+            }
+        }
+        for key in &source.primary_keys {
+            if !primary_keys.contains(key) {
+                primary_keys.push(key.clone());
+            }
+        }
+        let range_partitions = state_range_partition_columns(source, &primary_keys);
+        if let Some(existing) = self.metadata().get_state(view_id, role).await? {
+            let table = self.open_table_by_id(&existing.table_id).await?;
+            if table.schema == schema && table.primary_keys == primary_keys {
+                return Ok(Some(table));
+            }
+            self.metadata().unregister_state(view_id, role).await?;
+            let _ = self
+                .client()
+                .drop_table(&table.table_name, &table.namespace)
+                .await;
+            if !allow_populated && !mv.current_files(self.client()).await?.is_empty() {
+                return Err(report!(
+                    "view {view_id} lost its {label} group index; a rebuild is required"
+                )
+                .attach(RebuildRequired));
+            }
+        } else if !allow_populated && !mv.current_files(self.client()).await?.is_empty() {
+            return Err(report!(
+                "view {view_id} lost its {label} group index; a rebuild is required"
+            )
+            .attach(RebuildRequired));
+        }
+        let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
+        let mut options = IvmTableOptions::new(
+            format!("{}__ivm_{}_index_{suffix}", mv.table_name, label),
+            format!("{}__ivm_{}_index_{suffix}", mv.table_path, label),
+            schema,
+        )
+        .with_namespace(mv.namespace.clone())
+        .with_primary_keys(primary_keys)
+        .with_bucket_columns(group_keys.to_vec())
+        .with_cdc_column(IVM_ROW_KINDS_COLUMN)
+        .with_file_format(keyed_state_file_format());
+        if !range_partitions.is_empty() {
+            options = options.with_range_partition_columns(range_partitions);
+        }
+        options.hash_bucket_num = source.hash_bucket_num.clone();
+        let table = create_ivm_table(self.client(), options).await?;
+        self.metadata()
+            .register_state(view_id, role, &table)
+            .await?;
+        Ok(Some(table))
+    }
+
+    /// Apply the changed source rows to one narrow index: retract the previous
+    /// group tuple of every changed primary key and insert its current tuple.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn update_narrow_group_index(
+        &self,
+        context: &SessionContext,
+        source: &IvmTable,
+        group_keys: &[String],
+        group_exprs: &[String],
+        index: &IvmTable,
+        delta: &DataFrame,
+        old: &DataFrame,
+        epoch: i64,
+    ) -> Result<Vec<String>> {
+        let fields = index
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .filter(|name| name != IVM_ROW_KINDS_COLUMN && name != IVM_EPOCH_COLUMN)
+            .collect::<Vec<_>>();
+        let project = |frame: DataFrame| -> Result<DataFrame> {
+            let frame = project_group_keys_frame(
+                context,
+                frame,
+                &source.schema,
+                group_keys,
+                group_exprs,
+            )?;
+            project_frame(frame, &fields)
+        };
+        let old_rows = project(old.clone())?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let delta_rows = project(filter_deletes(delta.clone(), change_column(source))?)?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let mut rows = old_rows.union(delta_rows)?;
+        let mut sort = index
+            .primary_keys
+            .iter()
+            .map(|key| column_expr(key))
+            .collect::<Vec<_>>();
+        sort.push(column_expr(IVM_ROW_KINDS_COLUMN));
+        rows = rows.sort_by(sort)?;
+        let outcome = append_dataframe(index, self.client(), rows).await?;
+        Ok(outcome.commit_ids)
+    }
+
+    /// The current source rows of the affected keys, resolved through one
+    /// narrow index: index tuples -> source primary keys -> source rows.
+    pub(super) async fn read_narrow_index_keys(
+        &self,
+        context: &SessionContext,
+        source: &IvmTable,
+        group_keys: &[String],
+        index: &IvmTable,
+        affected: DataFrame,
+    ) -> Result<DataFrame> {
+        let index_rows = self
+            .lookup_source_by_join_keys(
+                context, index, affected, group_keys, group_keys, true,
+            )
+            .await?;
+        Ok(index_rows
+            .select(
+                source
+                    .primary_keys
+                    .iter()
+                    .map(|key| col(key.as_str()))
+                    .collect::<Vec<_>>(),
+            )?
+            .distinct()?)
+    }
+
+    pub(super) async fn read_narrow_index_groups(
+        &self,
+        context: &SessionContext,
+        source: &IvmTable,
+        group_keys: &[String],
+        index: &IvmTable,
+        affected: DataFrame,
+    ) -> Result<DataFrame> {
+        let pks = self
+            .read_narrow_index_keys(context, source, group_keys, index, affected)
+            .await?;
+        self.lookup_source_by_join_keys(
+            context,
+            source,
+            pks,
+            &source.primary_keys,
+            &source.primary_keys,
+            true,
+        )
+        .await
+    }
+
+    /// Seed one narrow index with the full current source rows during a
+    /// rebuild.
+    pub(super) async fn seed_narrow_index(
+        &self,
+        index: &IvmTable,
+        frame: DataFrame,
+        epoch: i64,
+    ) -> Result<Vec<String>> {
+        let fields = index
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .filter(|name| name != IVM_ROW_KINDS_COLUMN && name != IVM_EPOCH_COLUMN)
+            .collect::<Vec<_>>();
+        let rows = project_frame(frame, &fields)?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let outcome = append_dataframe(index, self.client(), rows).await?;
+        Ok(outcome.commit_ids)
+    }
+
+    async fn ensure_recomputed_index(
+        &self,
+        parts: &RecomputeParts<'_>,
+        allow_populated: bool,
+    ) -> Result<Option<IvmTable>> {
+        self.ensure_narrow_group_index(
+            parts.view_id,
+            parts.source,
+            parts.mv,
+            parts.group_keys,
+            parts.group_exprs,
+            StateRole::RecomputedIndex,
+            "recomputed",
+            allow_populated,
+        )
+        .await
+    }
+
+    async fn update_recomputed_index(
+        &self,
+        context: &SessionContext,
+        parts: &RecomputeParts<'_>,
+        index: &IvmTable,
+        delta: &DataFrame,
+        old: &DataFrame,
+        epoch: i64,
+    ) -> Result<Vec<String>> {
+        self.update_narrow_group_index(
+            context,
+            parts.source,
+            parts.group_keys,
+            parts.group_exprs,
+            index,
+            delta,
+            old,
+            epoch,
+        )
+        .await
+    }
+
+    async fn read_recomputed_index_groups(
+        &self,
+        context: &SessionContext,
+        parts: &RecomputeParts<'_>,
+        index: &IvmTable,
+        affected: DataFrame,
+    ) -> Result<DataFrame> {
+        self.read_narrow_index_groups(
+            context,
+            parts.source,
+            parts.group_keys,
+            index,
+            affected,
+        )
+        .await
+    }
+
+    async fn seed_recomputed_index(
+        &self,
+        index: &IvmTable,
+        frame: DataFrame,
+        epoch: i64,
+    ) -> Result<Vec<String>> {
+        self.seed_narrow_index(index, frame, epoch).await
+    }
 }
 
 impl IvmRuntime {
@@ -2910,6 +3223,7 @@ impl IvmRuntime {
         if window.added_files.is_empty() && !lookup_changed {
             return Ok(None);
         }
+        let index = self.ensure_recomputed_index(parts, false).await?;
         let mut identity = window.identity.clone();
         if let Some(lookup_window) = &lookup_window {
             identity.extend(lookup_window.identity.iter().cloned());
@@ -2936,7 +3250,7 @@ impl IvmRuntime {
             // single row without a primary key, so the aggregate is
             // recomputed over the current source and the MV is rewritten
             // wholesale.
-            let context = refresh_session();
+            let context = refresh_session_local();
             context.register_table("src", Arc::new(self.table_provider(parts.source)))?;
             if let Some(lookup) = &parts.lookup {
                 context.register_table(
@@ -2947,12 +3261,8 @@ impl IvmRuntime {
             parts.mv.truncate(&self.client).await?;
             let sql = recompute_global_sql(parts, epoch);
             let frame = context.sql(&sql).await?;
-            commit_ids.extend(
-                parts
-                    .mv
-                    .append_stream(&self.client, frame.execute_stream().await?)
-                    .await?,
-            );
+            let outcome = append_dataframe(parts.mv, &self.client, frame).await?;
+            commit_ids.extend(outcome.commit_ids);
             let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
             self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                 .await?;
@@ -2964,21 +3274,32 @@ impl IvmRuntime {
             return Ok(Some(epoch));
         }
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let delta = project_group_keys_frame(
             &context,
-            self.groups_table_frame(&context, parts.source, window.added_files)?,
+            self.groups_table_frame(&context, parts.source, window.added_files.clone())?,
             &parts.source.schema,
             parts.group_keys,
             parts.group_exprs,
         )?;
         let keyed = !parts.source.primary_keys.is_empty();
         let old_frame = if keyed {
+            // Read only the old rows of the changed primary keys instead of
+            // the whole before image; the affected groups are exactly the
+            // groups of these rows plus the delta.
+            let key_exprs = parts
+                .source
+                .primary_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let contribution = delta.clone().select(key_exprs)?.distinct()?;
             let old = self
-                .before_window_table_frame(
+                .lookup_source_before_by_pks(
                     &context,
                     parts.source,
-                    &window.before_versions,
+                    &window,
+                    contribution,
                 )
                 .await?;
             project_group_keys_frame(
@@ -2991,7 +3312,15 @@ impl IvmRuntime {
         } else {
             dataframe(&context, Vec::new(), &parts.source.schema)?
         };
-        context.register_table("delta", delta.into_view())?;
+        if let Some(index) = &index {
+            commit_ids.extend(
+                self.update_recomputed_index(
+                    &context, parts, index, &delta, &old_frame, epoch,
+                )
+                .await?,
+            );
+        }
+        context.register_table("delta", delta.clone().into_view())?;
         let lookup_delta = match (&parts.lookup, &lookup_window) {
             (Some(lookup), Some(lookup_window))
                 if !lookup_window.added_files.is_empty() =>
@@ -3005,17 +3334,105 @@ impl IvmRuntime {
             }
             _ => None,
         };
+        let key_exprs = parts
+            .group_keys
+            .iter()
+            .map(|key| col(key.as_str()))
+            .collect::<Vec<_>>();
+        let mut affected = delta
+            .clone()
+            .select(key_exprs.clone())?
+            .distinct()?
+            .union(old_frame.clone().select(key_exprs.clone())?.distinct()?)?
+            .distinct()?;
+        if let Some(lookup_delta) = &lookup_delta {
+            affected = affected.union(lookup_delta.clone())?.distinct()?;
+        }
+        let global_lookup_changed = lookup_changed
+            && parts
+                .lookup
+                .as_ref()
+                .is_some_and(|lookup| lookup.join_keys.is_empty());
+        let affected_has_null = if parts.group_keys.is_empty() || global_lookup_changed {
+            false
+        } else {
+            let null_key = parts
+                .group_keys
+                .iter()
+                .map(|key| col(key.as_str()).is_null())
+                .reduce(|left, right| left.or(right))
+                .ok_or_else(|| report!("recompute view has no group keys"))?;
+            count_frame_rows(affected.clone().filter(null_key)?).await? > 0
+        };
         if let Some(lookup) = &parts.lookup {
-            context
-                .register_table("lookup", Arc::new(self.table_provider(lookup.table)))?;
+            let rows = if global_lookup_changed
+                || affected_has_null
+                || lookup.join_keys.is_empty()
+                || !lookup
+                    .join_keys
+                    .iter()
+                    .all(|key| parts.group_keys.contains(key))
+            {
+                self.current_table_frame(&context, lookup.table)?
+            } else {
+                let contribution = affected
+                    .clone()
+                    .select(
+                        lookup
+                            .join_keys
+                            .iter()
+                            .map(|key| col(key.as_str()))
+                            .collect::<Vec<_>>(),
+                    )?
+                    .distinct()?;
+                self.lookup_source_by_join_keys(
+                    &context,
+                    lookup.table,
+                    contribution,
+                    lookup.join_keys,
+                    lookup_right_keys(lookup),
+                    true,
+                )
+                .await?
+            };
+            context.register_table("lookup", rows.into_view())?;
             if let Some(frame) = lookup_delta {
                 context.register_table("lookup_delta", frame.into_view())?;
             }
         }
         if keyed {
-            context.register_table("old", old_frame.into_view())?;
+            context.register_table("old", old_frame.clone().into_view())?;
         }
-        let src = self.current_table_frame(&context, parts.source)?;
+        let src = if !parts.group_keys.is_empty()
+            && !global_lookup_changed
+            && !affected_has_null
+        {
+            if let Some(index) = &index {
+                self.read_recomputed_index_groups(
+                    &context,
+                    parts,
+                    index,
+                    affected.clone(),
+                )
+                .await?
+            } else if parts.group_exprs.is_empty()
+                && parts.source.primary_keys.starts_with(parts.group_keys)
+            {
+                self.lookup_source_by_join_keys(
+                    &context,
+                    parts.source,
+                    affected.clone(),
+                    parts.group_keys,
+                    parts.group_keys,
+                    true,
+                )
+                .await?
+            } else {
+                self.current_table_frame(&context, parts.source)?
+            }
+        } else {
+            self.current_table_frame(&context, parts.source)?
+        };
         let src = project_group_keys_frame(
             &context,
             src,
@@ -3024,17 +3441,34 @@ impl IvmRuntime {
             parts.group_exprs,
         )?;
         context.register_table("src", src.into_view())?;
-        context.register_table("mv", Arc::new(self.table_provider(parts.mv)))?;
+        let mv = if !parts.group_keys.is_empty()
+            && !global_lookup_changed
+            && !affected_has_null
+        {
+            self.lookup_source_by_join_keys(
+                &context,
+                parts.mv,
+                affected.clone(),
+                parts.group_keys,
+                parts.group_keys,
+                true,
+            )
+            .await?
+        } else {
+            self.current_table_frame(&context, parts.mv)?
+        };
+        context.register_table("mv", mv.into_view())?;
         let frame = context
             .sql(&recompute_refresh_sql(parts, epoch, lookup_changed))
             .await?;
-        let stream = frame.execute_stream().await?;
         // The plan and its streaming readers are no longer needed: drop the
         // session before the metadata commit so no reader task/pooled
         // connection is still alive when we ask for a commit connection.
         drop(context);
-        commit_ids.extend(parts.mv.append_stream(&self.client, stream).await?);
+        let outcome = append_dataframe(parts.mv, &self.client, frame).await?;
+        commit_ids.extend(outcome.commit_ids);
 
+        self.checkpoint_epoch_states(&record).await?;
         let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
             .await?;
@@ -3083,6 +3517,10 @@ impl IvmRuntime {
         let generation = self.metadata.bump_generation(parts.view_id).await?;
         self.metadata.delete_cursors(parts.view_id).await?;
         parts.mv.truncate(&self.client).await?;
+        let index = self.ensure_recomputed_index(parts, true).await?;
+        if let Some(index) = &index {
+            index.truncate(self.client()).await?;
+        }
 
         let baseline = self
             .source_baseline_for_filter(parts.source, parts.filter)
@@ -3115,7 +3553,7 @@ impl IvmRuntime {
         if parts.group_keys.is_empty() {
             // A global aggregate is recomputed over the baseline into the
             // single MV row.
-            let context = refresh_session();
+            let context = refresh_session_local();
             context.register_table(
                 "src",
                 Arc::new(
@@ -3130,12 +3568,12 @@ impl IvmRuntime {
             }
             let sql = recompute_global_sql(parts, epoch);
             let frame = context.sql(&sql).await?;
-            commit_ids.extend(
-                parts
-                    .mv
-                    .append_stream(&self.client, frame.execute_stream().await?)
-                    .await?,
-            );
+            // The plan and its streaming readers are no longer needed: drop the
+            // session before the metadata commit so no reader task/pooled
+            // connection is still alive when we ask for a commit connection.
+            drop(context);
+            let outcome = append_dataframe(parts.mv, &self.client, frame).await?;
+            commit_ids.extend(outcome.commit_ids);
             let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
             self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
                 .await?;
@@ -3144,7 +3582,7 @@ impl IvmRuntime {
             return Ok(epoch);
         }
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let frame =
             self.groups_table_frame(&context, parts.source, baseline.groups.clone())?;
         let frame = project_group_keys_frame(
@@ -3154,18 +3592,20 @@ impl IvmRuntime {
             parts.group_keys,
             parts.group_exprs,
         )?;
+        if let Some(index) = &index {
+            commit_ids.extend(
+                self.seed_recomputed_index(index, frame.clone(), epoch)
+                    .await?,
+            );
+        }
         context.register_table("src", frame.into_view())?;
         if let Some(lookup) = &parts.lookup {
             context
                 .register_table("lookup", Arc::new(self.table_provider(lookup.table)))?;
         }
         let frame = context.sql(&recompute_rebuild_sql(parts, epoch)).await?;
-        commit_ids.extend(
-            parts
-                .mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
-        );
+        let outcome = append_dataframe(parts.mv, &self.client, frame).await?;
+        commit_ids.extend(outcome.commit_ids);
 
         let mv_versions = output_partition_versions(&self.client, parts.mv).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -3598,7 +4038,7 @@ impl IvmRuntime {
         } else {
             provider
         };
-        let lookup_context = refresh_session();
+        let lookup_context = refresh_session_local();
         lookup_context.register_table("source_before", Arc::new(provider))?;
         let mut before_frame = lookup_context.table("source_before").await?;
         for filter in filters {
@@ -3676,7 +4116,11 @@ impl IvmRuntime {
         }
         let primary_key = view.source.primary_keys[0].as_str();
         let before_groups = source
-            .before_window_groups(&self.client, &window.before_versions)
+            .before_window_groups(
+                &self.client,
+                &window.before_versions,
+                window.before_timestamp,
+            )
             .await?;
         let stage_dir = std::env::temp_dir().join(format!(
             "lakesoul-ivm-contrib-{}",
@@ -3686,7 +4130,7 @@ impl IvmRuntime {
         let stage_guard = StageGuard {
             dir: stage_dir.clone(),
         };
-        let context = refresh_session();
+        let context = refresh_session_local();
         let encoder = Arc::new(GroupKeyRowEncoder::new(
             &view.source.schema,
             &view.group_keys,
@@ -3871,27 +4315,6 @@ impl IvmRuntime {
             frame,
             _guard: stage_guard,
         })
-    }
-
-    /// Project the state merge output onto the user MV schema.
-    fn state_to_mv_batch(
-        batch: &RecordBatch,
-        schema: &SchemaRef,
-    ) -> DataFusionResult<RecordBatch> {
-        let columns = schema
-            .fields()
-            .iter()
-            .map(|field| {
-                batch.column_by_name(field.name()).cloned().ok_or_else(|| {
-                    DataFusionError::Execution(format!(
-                        "state merge is missing {}",
-                        field.name()
-                    ))
-                })
-            })
-            .collect::<DataFusionResult<Vec<_>>>()?;
-        RecordBatch::try_new(schema.clone(), columns)
-            .map_err(|error| DataFusionError::Execution(error.to_string()))
     }
 
     fn data_type_sql(data_type: &DataType) -> Result<String> {
@@ -4131,33 +4554,12 @@ impl IvmRuntime {
              group by {keys}",
             filter = filter_where(view.filter.as_deref())
         );
-        let encoder = Arc::new(GroupKeyRowEncoder::new(
-            &view.source.schema,
-            &view.group_keys,
-        )?);
         let mut input_types = Vec::with_capacity(view.group_keys.len());
         for key in &view.group_keys {
             input_types
                 .push(view.source.schema.field_with_name(key)?.data_type().clone());
         }
-        let udf_encoder = encoder.clone();
-        let group_row_udf = datafusion::logical_expr::create_udf(
-            "ivm_group_row",
-            input_types,
-            DataType::Binary,
-            datafusion::logical_expr::Volatility::Immutable,
-            Arc::new(move |args: &[datafusion::logical_expr::ColumnarValue]| {
-                let arrays =
-                    datafusion::logical_expr::ColumnarValue::values_to_arrays(args)?;
-                let rows = udf_encoder
-                    .encode_columns(&arrays)
-                    .map_err(|error| DataFusionError::Execution(error.to_string()))?;
-                Ok(datafusion::logical_expr::ColumnarValue::Array(Arc::new(
-                    rows,
-                )))
-            }),
-        );
-        context.register_udf(group_row_udf);
+        context.register_udf(crate::runtime::group_row_udf_for_types(input_types)?);
         if bootstrap {
             use futures::StreamExt;
             let frame = context.sql(&contrib_sql).await?;
@@ -4244,7 +4646,6 @@ impl IvmRuntime {
             self.advance_cursors(&view.view_id, window.cursors).await?;
             return Ok(Some(epoch));
         }
-        use futures::StreamExt;
         let contrib = if let Some(keyed) = &keyed_contributions {
             keyed.frame.clone()
         } else {
@@ -4273,102 +4674,30 @@ impl IvmRuntime {
         };
         let state_groups_by_bucket =
             super::keyed_plan::groups_by_bucket(state_groups, state_bucket_num);
-        #[cfg(feature = "distributed")]
-        let contrib_plan =
-            crate::distributed::without_sink(contrib.create_physical_plan()).await?;
-        #[cfg(not(feature = "distributed"))]
-        let contrib_plan = contrib.create_physical_plan().await?;
-        let contrib_plan = if state_bucket_num > 1 {
-            super::keyed_plan::bucket_repartition(
-                contrib_plan,
-                IVM_GROUP_ROW_COLUMN,
-                state_bucket_num,
-            )?
-        } else {
-            contrib_plan
-        };
-        let lookup_plan: Arc<dyn datafusion::physical_plan::ExecutionPlan> = Arc::new(
-            super::keyed_plan::IvmPkLookupExec::new(
-                contrib_plan,
-                state.clone(),
-                state_groups_by_bucket,
-                IVM_GROUP_ROW_COLUMN,
-                state_bucket_num,
-            )?
-            // A group with no old state row is a new group: emit the
-            // contribution with a null old-state side so the merge plan
-            // can insert it.
-            .with_multi_match(false),
-        );
         let measure_columns = measures
             .iter()
             .map(|(_, column, _)| column.clone())
             .collect::<Vec<_>>();
-        let merge_plan: Arc<dyn datafusion::physical_plan::ExecutionPlan> =
-            Arc::new(super::keyed_plan::IvmStateMergeExec::new(
-                lookup_plan,
-                state.schema.clone(),
-                view.group_keys.clone(),
-                measure_columns,
-                epoch,
-            )?);
-        let merge_context = refresh_session();
-        let streams = datafusion::physical_plan::execute_stream_partitioned(
-            merge_plan,
-            merge_context.task_ctx(),
+        // The merge is a logical extension node: the bucket shuffle, the keyed
+        // lookup and the state merge are all planned as worker stages, and the
+        // dual sink writes the state and MV rows on the same workers.
+        let merge = super::keyed_plan::state_merge_dataframe(
+            &context,
+            contrib,
+            state.clone(),
+            state_groups_by_bucket,
+            state_bucket_num,
+            view.group_keys.clone(),
+            measure_columns,
+            epoch,
         )?;
-        let mv_schema = view.mv.schema.clone();
-        let mut state_chunk: Vec<RecordBatch> = Vec::new();
-        let mut mv_chunk: Vec<RecordBatch> = Vec::new();
-        let mut chunk_rows = 0usize;
-        let mut commit_ids: Vec<String> = Vec::new();
-        let mut state_writes = 0usize;
-        let mut mv_writes = 0usize;
-        let mut state_keys = 0usize;
         let write_started = std::time::Instant::now();
-        for mut output in streams {
-            while let Some(batch) = output.next().await {
-                let batch = batch?;
-                if batch.num_rows() == 0 {
-                    continue;
-                }
-                state_keys += batch.num_rows();
-                let mv_batch = Self::state_to_mv_batch(&batch, &mv_schema)?;
-                chunk_rows += batch.num_rows();
-                state_chunk.push(batch);
-                mv_chunk.push(mv_batch);
-                if chunk_rows >= crate::table::MAX_STATE_APPEND_ROWS {
-                    let (mv_ids, state_ids) = view
-                        .mv
-                        .append_batches_pair(
-                            &self.client,
-                            std::mem::take(&mut mv_chunk),
-                            state,
-                            std::mem::take(&mut state_chunk),
-                        )
-                        .await?;
-                    commit_ids.extend(state_ids);
-                    commit_ids.extend(mv_ids);
-                    state_writes += 1;
-                    mv_writes += 1;
-                    chunk_rows = 0;
-                }
-            }
-        }
-        if !state_chunk.is_empty() {
-            let (mv_ids, state_ids) = view
-                .mv
-                .append_batches_pair(&self.client, mv_chunk, state, state_chunk)
-                .await?;
-            commit_ids.extend(state_ids);
-            commit_ids.extend(mv_ids);
-            state_writes += 1;
-            mv_writes += 1;
-        }
+        let outcome = write_dataframe_dual(state, &view.mv, &self.client, merge).await?;
+        let mut commit_ids = outcome.state_ids;
+        commit_ids.extend(outcome.mv_ids);
         tracing::info!(
-            state_keys,
-            state_writes,
-            mv_writes,
+            state_keys = outcome.state_rows,
+            mv_rows = outcome.mv_rows,
             elapsed = ?write_started.elapsed(),
             "multi-agg keyed incremental finished"
         );
@@ -4431,9 +4760,8 @@ impl IvmRuntime {
             .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?
             .sort_by(sort_exprs)?;
-        partial
-            .append_stream(&self.client, ops.execute_stream().await?)
-            .await
+        let outcome = append_dataframe(partial, &self.client, ops).await?;
+        Ok(outcome.commit_ids)
     }
 
     /// Recompute the partial aggregates of the changed `(group, partition)`
@@ -4511,11 +4839,13 @@ impl IvmRuntime {
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         let mut sort_exprs = keys.iter().map(|key| column_expr(key)).collect::<Vec<_>>();
         sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
-        let ops = inserts.union(deletes)?.sort_by(sort_exprs)?;
+        let ops =
+            collapse_update_deletes(&self.metadata, context, partial, inserts, deletes)
+                .await?
+                .sort_by(sort_exprs)?;
         let _ = context;
-        partial
-            .append_stream(&self.client, ops.execute_stream().await?)
-            .await
+        let outcome = append_dataframe(partial, &self.client, ops).await?;
+        Ok(outcome.commit_ids)
     }
 
     async fn refresh_multi_agg_rows(
@@ -4671,11 +5001,8 @@ impl IvmRuntime {
             .collect::<Vec<_>>();
         sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
         state_ops = state_ops.sort_by(sort_exprs)?;
-        commit_ids.extend(
-            state
-                .append_stream(&self.client, state_ops.execute_stream().await?)
-                .await?,
-        );
+        let state_outcome = append_dataframe(state, &self.client, state_ops).await?;
+        commit_ids.extend(state_outcome.commit_ids);
 
         context.register_table("old", before_keys.clone().into_view())?;
         context.register_table("delta", delta_keys.clone().into_view())?;
@@ -4848,11 +5175,23 @@ impl IvmRuntime {
             context.register_table("src", src.into_view())?;
             view.parts()?
         };
-        // The row-state refresh already knows the affected groups.  When the
-        // MV is keyed by exactly those groups and there is no lookup column,
-        // probe only those rows instead of scanning the whole MV for the
-        // delete/insert sides.
-        if parts.lookup.is_none() && view.mv.primary_keys == view.group_keys {
+        // The row-state refresh already knows the affected groups.  Probe the
+        // MV by those group keys instead of scanning the whole MV for the
+        // delete/insert sides; a bucket layout on the group keys narrows the
+        // read further.  A lookup (HAVING subquery) can affect groups with no
+        // source delta, so it keeps the full scan.
+        let null_key = view
+            .group_keys
+            .iter()
+            .map(|key| col(key.as_str()).is_null())
+            .reduce(|left, right| left.or(right));
+        let keyed_mv = match (parts.lookup.is_none(), null_key) {
+            (true, Some(null_key)) => {
+                count_frame_rows(affected.clone().filter(null_key)?).await? == 0
+            }
+            _ => false,
+        };
+        if keyed_mv {
             let mv_rows = self
                 .lookup_source_by_join_keys(
                     &context,
@@ -4890,11 +5229,13 @@ impl IvmRuntime {
                 return Err(error.into());
             }
         };
-        commit_ids.extend(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
-        );
+        let frame = if bootstrap {
+            frame
+        } else {
+            collapse_update_delta(&self.metadata, &context, &view.mv, frame).await?
+        };
+        let mv_outcome = append_dataframe(&view.mv, &self.client, frame).await?;
+        commit_ids.extend(mv_outcome.commit_ids);
         self.checkpoint_epoch_states(&record).await?;
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)

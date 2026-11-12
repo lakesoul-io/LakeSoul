@@ -13,11 +13,12 @@ SPDX-License-Identifier: Apache-2.0
 ## 1. Start the endpoint with incremental SQL enabled
 
 ```bash
-cargo run -p postgres-lakesoul -- --port 5433 --ivm \
+cargo run -p postgres-lakesoul -- --port 5433 \
   --warehouse-prefix file:///tmp/lakesoul/warehouse
 ```
 
-`--ivm` enables the `INSERT ... SELECT` maintenance path. Without it, the
+IVM maintenance is always available; it is enabled per connection with
+`SET lakesoul.ivm.enabled = on`. Without that switch, the
 statement is a normal insert.
 
 ## 2. Create a target table
@@ -92,7 +93,10 @@ rebuild.
   back to a full recompute.
 - The statement must run in autocommit. Explicit transactions and multi-statement
   batches are refused.
-- Incremental SQL and distributed execution are mutually exclusive in v1.
+- Distributed execution is supported when every worker is built with the IVM
+  feature and the same protocol generation. The coordinator still owns source
+  windows, epochs and file commits; workers perform the scan/lookup/write
+  stages.
 
 ## Next
 

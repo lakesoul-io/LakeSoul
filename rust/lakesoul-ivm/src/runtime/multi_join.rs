@@ -467,7 +467,7 @@ fn validate_multi_join_view(view: &MultiJoinView) -> Result<()> {
             view.view_id
         ));
     }
-    let context = refresh_session();
+    let context = refresh_session_local();
     let keyed = view.keyed();
     for (index, source) in view.sources.iter().enumerate() {
         if keyed != !source.primary_keys.is_empty() {
@@ -600,6 +600,216 @@ fn validate_multi_join_view(view: &MultiJoinView) -> Result<()> {
     Ok(())
 }
 
+/// One undirected equality edge of a multi-way join, with the key columns
+/// and computed-key expressions on each side.
+struct MultiJoinEdge {
+    left: usize,
+    left_keys: Vec<String>,
+    left_exprs: Vec<String>,
+    right: usize,
+    right_keys: Vec<String>,
+    right_exprs: Vec<String>,
+}
+
+/// One source key set addressed through a narrow join-key index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MultiJoinIndexSpec {
+    source: usize,
+    keys: Vec<String>,
+    exprs: Vec<String>,
+    position: u32,
+}
+
+/// Group the equality keys into edges between source pairs.  `None` means the
+/// key graph cannot drive a per-source walk (a key within one source).
+fn multi_join_edges(view: &MultiJoinView) -> Option<Vec<MultiJoinEdge>> {
+    let mut edges: Vec<MultiJoinEdge> = Vec::new();
+    for key in &view.keys {
+        if key.left_source == key.right_source {
+            return None;
+        }
+        let position = edges.iter().position(|edge| {
+            (edge.left == key.left_source && edge.right == key.right_source)
+                || (edge.left == key.right_source && edge.right == key.left_source)
+        });
+        let (left_column, left_expr, right_column, right_expr) = if position
+            .is_some_and(|position| edges[position].left == key.right_source)
+        {
+            (
+                key.right_column.clone(),
+                key.right_expr.clone().unwrap_or_default(),
+                key.left_column.clone(),
+                key.left_expr.clone().unwrap_or_default(),
+            )
+        } else {
+            (
+                key.left_column.clone(),
+                key.left_expr.clone().unwrap_or_default(),
+                key.right_column.clone(),
+                key.right_expr.clone().unwrap_or_default(),
+            )
+        };
+        match position {
+            Some(position) => {
+                let edge = &mut edges[position];
+                edge.left_keys.push(left_column);
+                edge.left_exprs.push(left_expr);
+                edge.right_keys.push(right_column);
+                edge.right_exprs.push(right_expr);
+            }
+            None => edges.push(MultiJoinEdge {
+                left: key.left_source,
+                left_keys: vec![left_column],
+                left_exprs: vec![left_expr],
+                right: key.right_source,
+                right_keys: vec![right_column],
+                right_exprs: vec![right_expr],
+            }),
+        }
+    }
+    Some(edges)
+}
+
+/// The sources the equality keys reach from source 0.
+fn multi_join_key_reach(view: &MultiJoinView) -> Vec<bool> {
+    let mut reached = vec![false; view.sources.len()];
+    if reached.is_empty() {
+        return reached;
+    }
+    reached[0] = true;
+    loop {
+        let mut changed = false;
+        for key in &view.keys {
+            if key.left_source >= reached.len() || key.right_source >= reached.len() {
+                return reached;
+            }
+            if reached[key.left_source] != reached[key.right_source] {
+                reached[key.left_source] = true;
+                reached[key.right_source] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    reached
+}
+
+/// Whether a non-equality condition joins a source the equality keys do not
+/// reach.  Such a theta edge has no key to probe, so an incremental walk would
+/// read sources in full; the refresh asks for the full recompute instead.  A
+/// pure cross join has no condition and stays on the incremental path, where
+/// the cartesian product is the definition of the view.
+fn multi_join_has_theta_edge(view: &MultiJoinView) -> bool {
+    if view.conditions.is_empty() {
+        return false;
+    }
+    let reached = multi_join_key_reach(view);
+    view.conditions.iter().any(|condition| {
+        condition.left_source >= reached.len()
+            || condition.right_source >= reached.len()
+            || !reached[condition.left_source]
+            || !reached[condition.right_source]
+    })
+}
+
+/// The key sets a keyed multi-join reads through a narrow join-key index: a
+/// NULL-safe edge keeps NULLs, and a computed key has no source column to
+/// look up directly.
+fn multi_join_index_specs(
+    view: &MultiJoinView,
+    edges: &[MultiJoinEdge],
+) -> Vec<MultiJoinIndexSpec> {
+    let needs_index = view.null_safe
+        || view
+            .keys
+            .iter()
+            .any(|key| key.left_expr.is_some() || key.right_expr.is_some())
+        || edges.iter().any(|edge| {
+            // A plain non-PK edge cannot use the source's primary-key index;
+            // without a narrow join-key index the generic probe scans every
+            // bucket.  Keep one index for those edges too.
+            edge.left_keys != view.sources[edge.left].primary_keys
+                || edge.right_keys != view.sources[edge.right].primary_keys
+        });
+    if !needs_index {
+        return Vec::new();
+    }
+    let mut specs: Vec<MultiJoinIndexSpec> = Vec::new();
+    let mut push = |source: usize, keys: &[String], exprs: &[String]| {
+        if specs
+            .iter()
+            .any(|spec| spec.source == source && spec.keys == keys)
+        {
+            return;
+        }
+        specs.push(MultiJoinIndexSpec {
+            source,
+            keys: keys.to_vec(),
+            exprs: exprs.to_vec(),
+            position: specs.len() as u32,
+        });
+    };
+    for edge in edges {
+        push(edge.left, &edge.left_keys, &edge.left_exprs);
+        push(edge.right, &edge.right_keys, &edge.right_exprs);
+    }
+    specs
+}
+
+/// The narrow schema of a multi-join key index: the encoded join key, the
+/// source primary key, the source range partition columns and bookkeeping.
+/// No source payload column is copied.
+fn multi_join_key_index_schema_for(source: &IvmTable) -> Result<SchemaRef> {
+    let mut fields: Vec<Arc<Field>> = vec![Arc::new(Field::new(
+        super::join_state::IVM_JOIN_KEY_COLUMN,
+        DataType::Binary,
+        false,
+    ))];
+    for key in &source.primary_keys {
+        let field = source.schema.field_with_name(key)?;
+        fields.push(Arc::new(Field::new(
+            key.clone(),
+            field.data_type().clone(),
+            field.is_nullable(),
+        )));
+    }
+    for column in &source.range_partition_columns {
+        if source.primary_keys.contains(column) {
+            continue;
+        }
+        let field = source.schema.field_with_name(column)?;
+        fields.push(Arc::new(Field::new(
+            column.clone(),
+            field.data_type().clone(),
+            field.is_nullable(),
+        )));
+    }
+    fields.push(Arc::new(Field::new(
+        IVM_ROW_KINDS_COLUMN,
+        DataType::Utf8,
+        false,
+    )));
+    fields.push(Arc::new(Field::new(
+        IVM_EPOCH_COLUMN,
+        DataType::Int64,
+        false,
+    )));
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+fn multi_join_key_index_primary_keys(source: &IvmTable) -> Vec<String> {
+    let mut keys = vec![super::join_state::IVM_JOIN_KEY_COLUMN.to_string()];
+    keys.extend(source.primary_keys.iter().cloned());
+    for column in &source.range_partition_columns {
+        if !keys.contains(column) {
+            keys.push(column.clone());
+        }
+    }
+    keys
+}
+
 impl IvmRuntime {
     /// Persist a multi-way join view spec (idempotent).
     pub async fn register_multi_join_view(&self, view: &MultiJoinView) -> Result<()> {
@@ -611,10 +821,119 @@ impl IvmRuntime {
             .await
     }
 
+    /// Materialize every computed key of one source on a frame.  A keyed walk
+    /// selects key columns by name, so a computed key must exist before the
+    /// frame contributes to an edge.
+    fn materialize_multi_join_source_keys(
+        context: &SessionContext,
+        view: &MultiJoinView,
+        source: usize,
+        frame: DataFrame,
+    ) -> Result<DataFrame> {
+        let mut keys = Vec::new();
+        let mut exprs = Vec::new();
+        for key in &view.keys {
+            for (key_source, column, expr) in [
+                (key.left_source, &key.left_column, &key.left_expr),
+                (key.right_source, &key.right_column, &key.right_expr),
+            ] {
+                if key_source == source && !keys.iter().any(|existing| existing == column)
+                {
+                    keys.push(column.clone());
+                    exprs.push(expr.clone().unwrap_or_default());
+                }
+            }
+        }
+        super::join_state::materialize_join_keys(context, frame, &exprs, &keys)
+    }
+
+    /// The current source rows whose encoded join key occurs in
+    /// `contribution`, resolved through one narrow multi-join key index.
+    async fn lookup_multi_join_index_rows(
+        &self,
+        context: &SessionContext,
+        source: &IvmTable,
+        spec: &MultiJoinIndexSpec,
+        index: &IvmTable,
+        null_safe: bool,
+        contribution: DataFrame,
+    ) -> Result<DataFrame> {
+        use super::keyed_plan::{
+            IVM_STATE_COLUMN_PREFIX, IvmLookupTable, groups_by_bucket,
+        };
+        let mut contribution = contribution;
+        // A plain equality join does not match NULL with NULL.
+        if !null_safe {
+            let mut keep: Option<Expr> = None;
+            for key in &spec.keys {
+                let term = col(key.as_str()).is_not_null();
+                keep = Some(match keep {
+                    Some(previous) => previous.and(term),
+                    None => term,
+                });
+            }
+            if let Some(keep) = keep {
+                contribution = contribution.filter(keep)?;
+            }
+        }
+        let contribution = super::joins::encode_join_key_frame(
+            context,
+            contribution,
+            source,
+            &spec.keys,
+        )?
+        .select(vec![col(super::join_state::IVM_JOIN_KEY_COLUMN)])?;
+        let key_column = super::join_state::IVM_JOIN_KEY_COLUMN.to_string();
+        let bucket_count =
+            if index.bucket_columns.len() == 1 && index.bucket_columns[0] == key_column {
+                index
+                    .hash_bucket_num
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|count| *count > 1)
+                    .unwrap_or(1)
+            } else {
+                1
+            };
+        let groups = index.current_groups(&self.client).await?;
+        let groups = groups_by_bucket(groups, bucket_count);
+        let provider = IvmLookupTable::binary(
+            contribution,
+            index.clone(),
+            groups,
+            key_column,
+            bucket_count,
+            true,
+            Vec::new(),
+        );
+        let frame = provider.into_dataframe(context).await?;
+        let pks = frame
+            .select(
+                source
+                    .primary_keys
+                    .iter()
+                    .map(|key| {
+                        col(format!("{IVM_STATE_COLUMN_PREFIX}{key}")).alias(key.as_str())
+                    })
+                    .collect::<Vec<_>>(),
+            )?
+            .distinct()?;
+        self.lookup_source_by_join_keys(
+            context,
+            source,
+            pks,
+            &source.primary_keys,
+            &source.primary_keys,
+            true,
+        )
+        .await
+    }
+
     /// Fast path for a single changed source when every join edge is keyed by
     /// the joined source's primary key.  The changed rows seed a walk over the
     /// key graph; each reached source is probed by the edge keys instead of
     /// being read in full.
+    #[allow(clippy::too_many_arguments)]
     async fn multi_join_single_source_terms(
         &self,
         context: &SessionContext,
@@ -623,51 +942,16 @@ impl IvmRuntime {
         window: &super::SourceWindow,
         schemas: &[SchemaRef],
         primary_keys: &[Vec<String>],
+        edges: &[MultiJoinEdge],
+        index_states: &[(MultiJoinIndexSpec, IvmTable)],
     ) -> Result<Option<(DataFrame, Vec<Option<DataFrame>>)>> {
-        if view.null_safe
-            || view
-                .sources
-                .iter()
-                .any(|source| source.primary_keys.is_empty())
+        if view
+            .sources
+            .iter()
+            .any(|source| source.primary_keys.is_empty())
         {
             return Ok(None);
         }
-        let mut edges: Vec<(usize, Vec<String>, usize, Vec<String>)> = Vec::new();
-        for key in &view.keys {
-            if key.left_expr.is_some()
-                || key.right_expr.is_some()
-                || key.left_source == key.right_source
-            {
-                return Ok(None);
-            }
-            let position = edges.iter().position(|(left, _, right, _)| {
-                (*left == key.left_source && *right == key.right_source)
-                    || (*left == key.right_source && *right == key.left_source)
-            });
-            if let Some(position) = position {
-                let (left, left_keys, _right, right_keys) = &mut edges[position];
-                if *left == key.left_source {
-                    left_keys.push(key.left_column.clone());
-                    right_keys.push(key.right_column.clone());
-                } else {
-                    left_keys.push(key.right_column.clone());
-                    right_keys.push(key.left_column.clone());
-                }
-            } else {
-                edges.push((
-                    key.left_source,
-                    vec![key.left_column.clone()],
-                    key.right_source,
-                    vec![key.right_column.clone()],
-                ));
-            }
-        }
-        // A keyed source is normally also keyed by the join key.  When it is
-        // not, `lookup_source_by_join_keys` still performs the probe through
-        // the generic column lookup plan; the difference is that the source
-        // may need a scan instead of a bucket/PK index.  Keep the functional
-        // path here and let a later join-key index remove that scan.
-
         let source = &view.sources[changed];
         let delta =
             self.groups_table_frame(context, source, window.added_files.clone())?;
@@ -687,15 +971,22 @@ impl IvmRuntime {
             &source.schema,
             view.filters[changed].as_deref(),
         )?;
+        let changed_rows = Self::materialize_multi_join_source_keys(
+            context,
+            view,
+            changed,
+            changed_rows,
+        )?;
         let mut frames: Vec<Option<DataFrame>> = vec![None; view.sources.len()];
         frames[changed] = Some(changed_rows);
         loop {
             let mut progressed = false;
-            for (left, left_keys, right, right_keys) in &edges {
-                let pair = if frames[*left].is_some() && frames[*right].is_none() {
-                    Some((*left, left_keys, *right, right_keys))
-                } else if frames[*right].is_some() && frames[*left].is_none() {
-                    Some((*right, right_keys, *left, left_keys))
+            for edge in edges {
+                let pair = if frames[edge.left].is_some() && frames[edge.right].is_none()
+                {
+                    Some((edge.left, &edge.left_keys, edge.right, &edge.right_keys))
+                } else if frames[edge.right].is_some() && frames[edge.left].is_none() {
+                    Some((edge.right, &edge.right_keys, edge.left, &edge.left_keys))
                 } else {
                     None
                 };
@@ -714,8 +1005,21 @@ impl IvmRuntime {
                             .collect::<Vec<_>>(),
                     )?
                     .distinct()?;
-                let rows = self
-                    .lookup_source_by_join_keys(
+                let rows = if let Some((spec, index)) = index_states
+                    .iter()
+                    .find(|(spec, _)| spec.source == to && &spec.keys == to_keys)
+                {
+                    self.lookup_multi_join_index_rows(
+                        context,
+                        &view.sources[to],
+                        spec,
+                        index,
+                        view.null_safe,
+                        contribution,
+                    )
+                    .await?
+                } else {
+                    self.lookup_source_by_join_keys(
                         context,
                         &view.sources[to],
                         contribution,
@@ -723,13 +1027,16 @@ impl IvmRuntime {
                         to_keys,
                         true,
                     )
-                    .await?;
+                    .await?
+                };
                 let rows = apply_side_filter(
                     context,
                     rows,
                     &view.sources[to].schema,
                     view.filters[to].as_deref(),
                 )?;
+                let rows =
+                    Self::materialize_multi_join_source_keys(context, view, to, rows)?;
                 frames[to] = Some(rows);
                 progressed = true;
             }
@@ -740,7 +1047,7 @@ impl IvmRuntime {
         for (index, frame) in frames.iter_mut().enumerate() {
             if frame.is_none() {
                 let source = &view.sources[index];
-                *frame = Some(apply_side_filter(
+                let current = apply_side_filter(
                     context,
                     filter_deletes(
                         self.current_table_frame(context, source)?,
@@ -748,6 +1055,9 @@ impl IvmRuntime {
                     )?,
                     &source.schema,
                     view.filters[index].as_deref(),
+                )?;
+                *frame = Some(Self::materialize_multi_join_source_keys(
+                    context, view, index, current,
                 )?);
             }
         }
@@ -771,6 +1081,135 @@ impl IvmRuntime {
         let mut affected_sources = vec![None; view.sources.len()];
         affected_sources[changed] = Some(affected);
         Ok(Some((current_rows, affected_sources)))
+    }
+
+    /// Ensure one narrow join-key index of a keyed multi-join edge.
+    async fn ensure_multi_join_key_index(
+        &self,
+        view_id: &str,
+        source: &IvmTable,
+        spec: &MultiJoinIndexSpec,
+    ) -> Result<IvmTable> {
+        let role = StateRole::MultiJoinKeyIndex(spec.position);
+        let schema = multi_join_key_index_schema_for(source)?;
+        let primary_keys = multi_join_key_index_primary_keys(source);
+        if let Some(existing) = self.metadata().get_state(view_id, role).await? {
+            let table = self.open_table_by_id(&existing.table_id).await?;
+            if table.schema == schema && table.primary_keys == primary_keys {
+                return Ok(table);
+            }
+            self.metadata().unregister_state(view_id, role).await?;
+            let _ = self
+                .client()
+                .drop_table(&table.table_name, &table.namespace)
+                .await;
+        }
+        let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
+        let mut options = IvmTableOptions::new(
+            format!("{}__ivm_join_key_index_{suffix}", source.table_name),
+            format!("{}__ivm_join_key_index_{suffix}", source.table_path),
+            schema,
+        )
+        .with_namespace(source.namespace.clone())
+        .with_primary_keys(primary_keys)
+        .with_bucket_columns(vec![super::join_state::IVM_JOIN_KEY_COLUMN.to_string()])
+        .with_cdc_column(IVM_ROW_KINDS_COLUMN)
+        .with_file_format(crate::table::keyed_state_file_format());
+        let range_partitions = crate::table::state_range_partition_columns(
+            source,
+            &multi_join_key_index_primary_keys(source),
+        );
+        if !range_partitions.is_empty() {
+            options = options.with_range_partition_columns(range_partitions);
+        }
+        options.hash_bucket_num = source.hash_bucket_num.clone();
+        let table = create_ivm_table(self.client(), options).await?;
+        self.metadata()
+            .register_state(view_id, role, &table)
+            .await?;
+        Ok(table)
+    }
+
+    /// Seed a join-key index from the current source rows.
+    async fn seed_multi_join_key_index(
+        &self,
+        context: &SessionContext,
+        index: &IvmTable,
+        source: &IvmTable,
+        spec: &MultiJoinIndexSpec,
+        frame: DataFrame,
+        epoch: i64,
+    ) -> Result<Vec<String>> {
+        let fields = index
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .filter(|name| name != IVM_ROW_KINDS_COLUMN && name != IVM_EPOCH_COLUMN)
+            .collect::<Vec<_>>();
+        let frame = super::join_state::materialize_join_keys(
+            context,
+            frame,
+            &spec.exprs,
+            &spec.keys,
+        )?;
+        let frame =
+            super::joins::encode_join_key_frame(context, frame, source, &spec.keys)?;
+        let rows = project_frame(frame, &fields)?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        append_dataframe(index, self.client(), rows)
+            .await
+            .map(|outcome| outcome.commit_ids)
+    }
+
+    /// Apply the changed source rows to one join-key index: retract the old
+    /// encoded key of every changed identity and insert its current key.
+    async fn update_multi_join_key_index(
+        &self,
+        context: &SessionContext,
+        index: &IvmTable,
+        source: &IvmTable,
+        spec: &MultiJoinIndexSpec,
+        delta: &DataFrame,
+        old: &DataFrame,
+        epoch: i64,
+    ) -> Result<Vec<String>> {
+        let fields = index
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .filter(|name| name != IVM_ROW_KINDS_COLUMN && name != IVM_EPOCH_COLUMN)
+            .collect::<Vec<_>>();
+        let project = |frame: DataFrame| -> Result<DataFrame> {
+            let frame = super::join_state::materialize_join_keys(
+                context,
+                frame,
+                &spec.exprs,
+                &spec.keys,
+            )?;
+            let frame =
+                super::joins::encode_join_key_frame(context, frame, source, &spec.keys)?;
+            project_frame(frame, &fields)
+        };
+        let old_rows = project(old.clone())?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let delta_rows = project(filter_deletes(delta.clone(), change_column(source))?)?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let mut rows = old_rows.union(delta_rows)?;
+        let mut sort = index
+            .primary_keys
+            .iter()
+            .map(|key| column_expr(key))
+            .collect::<Vec<_>>();
+        sort.push(column_expr(IVM_ROW_KINDS_COLUMN));
+        rows = rows.sort_by(sort)?;
+        append_dataframe(index, self.client(), rows)
+            .await
+            .map(|outcome| outcome.commit_ids)
     }
 
     /// Refresh a multi-way inner join view.
@@ -800,6 +1239,39 @@ impl IvmRuntime {
         if windows.iter().all(|window| window.added_files.is_empty()) {
             return Ok(None);
         }
+        if keyed && multi_join_has_theta_edge(view) {
+            // A pure non-equality (or disconnected) key graph has no key to
+            // probe: an incremental walk would read every source in full.  The
+            // rebuild path recomputes the same view and is reported as such;
+            // the generated identity columns keep the Tier-2 SQL fallback from
+            // being usable here.
+            return Err(report!(
+                "multi join view {} has no equality key path through every source; \
+                 refreshing it requires a full recompute",
+                view.view_id
+            )
+            .attach(RebuildRequired));
+        }
+        // A NULL-safe or computed edge has no plain source column to probe;
+        // its narrow key index is maintained from the same source windows.
+        let edges = multi_join_edges(view);
+        let index_specs = edges
+            .as_ref()
+            .map(|edges| multi_join_index_specs(view, edges))
+            .unwrap_or_default();
+        let mut index_states = Vec::with_capacity(index_specs.len());
+        if keyed {
+            for spec in &index_specs {
+                let index = self
+                    .ensure_multi_join_key_index(
+                        &view.view_id,
+                        &view.sources[spec.source],
+                        spec,
+                    )
+                    .await?;
+                index_states.push((spec.clone(), index));
+            }
+        }
         let identity = windows
             .iter()
             .flat_map(|window| window.identity.iter().cloned())
@@ -819,6 +1291,50 @@ impl IvmRuntime {
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
         let context = refresh_session();
+        for (spec, index) in &index_states {
+            let source = &view.sources[spec.source];
+            if index.current_files(&self.client).await?.is_empty() {
+                let current = filter_deletes(
+                    self.current_table_frame(&context, source)?,
+                    change_column(source),
+                )?;
+                commit_ids.extend(
+                    self.seed_multi_join_key_index(
+                        &context, index, source, spec, current, epoch,
+                    )
+                    .await?,
+                );
+            } else if !windows[spec.source].added_files.is_empty() {
+                let window = &windows[spec.source];
+                let delta = self.groups_table_frame(
+                    &context,
+                    source,
+                    window.added_files.clone(),
+                )?;
+                let contribution = delta
+                    .clone()
+                    .select(
+                        source
+                            .primary_keys
+                            .iter()
+                            .map(|key| col(key.as_str()))
+                            .collect::<Vec<_>>(),
+                    )?
+                    .distinct()?;
+                let old = self
+                    .lookup_source_before_by_pks(&context, source, window, contribution)
+                    .await?;
+                commit_ids.extend(
+                    self.update_multi_join_key_index(
+                        &context, index, source, spec, &delta, &old, epoch,
+                    )
+                    .await?,
+                );
+            }
+        }
+        if !index_states.is_empty() {
+            self.checkpoint_epoch_states(&record).await?;
+        }
         let schemas = view
             .sources
             .iter()
@@ -927,6 +1443,8 @@ impl IvmRuntime {
                         &windows[changed_indices[0]],
                         &schemas,
                         &primary_keys,
+                        edges.as_deref().unwrap_or(&[]),
+                        &index_states,
                     )
                     .await?
                 {
@@ -951,6 +1469,8 @@ impl IvmRuntime {
                             &windows[changed],
                             &schemas,
                             &primary_keys,
+                            edges.as_deref().unwrap_or(&[]),
+                            &index_states,
                         )
                         .await?
                     {
@@ -1156,6 +1676,25 @@ impl IvmRuntime {
         let generation = self.metadata.bump_generation(&view.view_id).await?;
         self.metadata.delete_cursors(&view.view_id).await?;
         view.mv.truncate(&self.client).await?;
+        let edges = multi_join_edges(view);
+        let index_specs = edges
+            .as_ref()
+            .map(|edges| multi_join_index_specs(view, edges))
+            .unwrap_or_default();
+        let mut index_states = Vec::with_capacity(index_specs.len());
+        if keyed {
+            for spec in &index_specs {
+                let index = self
+                    .ensure_multi_join_key_index(
+                        &view.view_id,
+                        &view.sources[spec.source],
+                        spec,
+                    )
+                    .await?;
+                index.truncate(self.client()).await?;
+                index_states.push((spec.clone(), index));
+            }
+        }
 
         let mut baselines = Vec::with_capacity(view.sources.len());
         for source in &view.sources {
@@ -1191,12 +1730,32 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
+        let context = refresh_session();
+        for (spec, index) in &index_states {
+            let source = &view.sources[spec.source];
+            let current = filter_deletes(
+                self.groups_table_frame(
+                    &context,
+                    source,
+                    baselines[spec.source].groups.clone(),
+                )?,
+                change_column(source),
+            )?;
+            commit_ids.extend(
+                self.seed_multi_join_key_index(
+                    &context, index, source, spec, current, epoch,
+                )
+                .await?,
+            );
+        }
+        if !index_states.is_empty() {
+            self.checkpoint_epoch_states(&record).await?;
+        }
 
         if !baselines
             .iter()
             .any(|baseline| baseline.groups.iter().all(|group| group.files.is_empty()))
         {
-            let context = refresh_session();
             let schemas = view
                 .sources
                 .iter()
@@ -1244,9 +1803,9 @@ impl IvmRuntime {
                 joined.with_column(IVM_EPOCH_COLUMN, lit(epoch))?
             };
             commit_ids.extend(
-                view.mv
-                    .append_stream(&self.client, joined.execute_stream().await?)
-                    .await?,
+                append_dataframe(&view.mv, &self.client, joined)
+                    .await?
+                    .commit_ids,
             );
         }
 

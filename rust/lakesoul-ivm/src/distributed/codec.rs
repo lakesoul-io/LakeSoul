@@ -10,6 +10,7 @@ use arrow_schema::{Schema, SchemaRef};
 use datafusion::common::Result as DFResult;
 use datafusion::common::{exec_err, internal_err};
 use datafusion::execution::TaskContext;
+use datafusion::logical_expr::{ScalarUDF, TypeSignature};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::physical_expr::proto_decode::PhysicalExprDecodeCtx;
 use datafusion::physical_expr_common::physical_expr::proto_encode::PhysicalExprEncodeCtx;
@@ -25,9 +26,12 @@ use prost::Message;
 use serde::{Deserialize, Serialize};
 
 use crate::distributed::descriptor::IvmTableDescriptor;
-use crate::distributed::sink::{IvmRefreshSinkExec, IvmSinkSpec};
+use crate::distributed::sink::{
+    IvmDualSinkExec, IvmDualSinkSpec, IvmRefreshSinkExec, IvmSinkSpec,
+};
 use crate::runtime::keyed_plan::{
-    IvmPkLookupExec, LakeSoulBucketExpr, LakeSoulColumnsBucketExpr, PkLookupKey,
+    BucketKey, IvmBucketProjectionExec, IvmPkLookupExec, IvmStateMergeExec,
+    LakeSoulBucketExpr, LakeSoulColumnsBucketExpr, PkLookupKey,
 };
 use crate::table::{IvmTable, PartitionFiles};
 
@@ -54,11 +58,38 @@ struct IvmPkLookupExecProto {
     emit_unmatched: bool,
 }
 
+/// Wire message of one keyed state merge.
+#[derive(Debug, Serialize, Deserialize)]
+struct IvmStateMergeExecProto {
+    state_schema: Vec<u8>,
+    group_keys: Vec<String>,
+    measure_columns: Vec<String>,
+    epoch: i64,
+}
+
 /// Wire message of one worker write sink.
 #[derive(Debug, Serialize, Deserialize)]
 struct IvmRefreshSinkExecProto {
     table: IvmTableDescriptor,
     epoch: Option<i64>,
+}
+
+/// Wire message of one state/MV dual write sink.
+#[derive(Debug, Serialize, Deserialize)]
+struct IvmDualSinkExecProto {
+    state: IvmTableDescriptor,
+    mv: IvmTableDescriptor,
+    mv_schema: Vec<u8>,
+    epoch: Option<i64>,
+}
+
+/// Wire message of the bucket-id projection.
+#[derive(Debug, Serialize, Deserialize)]
+struct IvmBucketProjectionProto {
+    /// 0 = single key, 1 = composite columns.
+    kind: u8,
+    keys: Vec<String>,
+    bucket_count: u32,
 }
 
 /// Wire form of the two custom bucket expressions.
@@ -76,7 +107,10 @@ struct BucketExprProto {
 enum IvmExecProto {
     Stream(IvmStreamExecProto),
     PkLookup(IvmPkLookupExecProto),
+    StateMerge(IvmStateMergeExecProto),
+    BucketProjection(IvmBucketProjectionProto),
     Sink(IvmRefreshSinkExecProto),
+    DualSink(IvmDualSinkExecProto),
 }
 
 /// Codec for IVM physical nodes.
@@ -147,7 +181,12 @@ impl PhysicalExtensionCodec for IvmRefreshCodec {
         match proto {
             IvmExecProto::Stream(proto) => decode_stream_exec(proto, inputs, ctx),
             IvmExecProto::PkLookup(proto) => decode_pk_lookup(proto, inputs),
+            IvmExecProto::StateMerge(proto) => decode_state_merge(proto, inputs),
+            IvmExecProto::BucketProjection(proto) => {
+                decode_bucket_projection(proto, inputs)
+            }
             IvmExecProto::Sink(proto) => decode_sink(proto, inputs),
+            IvmExecProto::DualSink(proto) => decode_dual_sink(proto, inputs),
         }
     }
 
@@ -166,6 +205,66 @@ impl PhysicalExtensionCodec for IvmRefreshCodec {
                 serde_json::to_vec(&IvmExecProto::Stream(proto)).map_err(|error| {
                     datafusion::error::DataFusionError::Internal(format!(
                         "encode IvmStreamExec: {error}"
+                    ))
+                })?;
+            buf.extend_from_slice(&bytes);
+            return Ok(());
+        }
+        if let Some(exec) = node.downcast_ref::<IvmBucketProjectionExec>() {
+            let (kind, keys) = match exec.key() {
+                BucketKey::Single(key) => (0, vec![key.clone()]),
+                BucketKey::Columns(keys) => (1, keys.clone()),
+            };
+            let proto = IvmBucketProjectionProto {
+                kind,
+                keys,
+                bucket_count: exec.bucket_count(),
+            };
+            let bytes = serde_json::to_vec(&IvmExecProto::BucketProjection(proto))
+                .map_err(|error| {
+                    datafusion::error::DataFusionError::Internal(format!(
+                        "encode IvmBucketProjectionExec: {error}"
+                    ))
+                })?;
+            buf.extend_from_slice(&bytes);
+            return Ok(());
+        }
+        if let Some(exec) = node.downcast_ref::<IvmStateMergeExec>() {
+            let proto = IvmStateMergeExecProto {
+                state_schema: Self::encode_schema(exec.state_schema())?,
+                group_keys: exec.group_keys().to_vec(),
+                measure_columns: exec.measure_columns().to_vec(),
+                epoch: exec.epoch(),
+            };
+            let bytes = serde_json::to_vec(&IvmExecProto::StateMerge(proto)).map_err(
+                |error| {
+                    datafusion::error::DataFusionError::Internal(format!(
+                        "encode IvmStateMergeExec: {error}"
+                    ))
+                },
+            )?;
+            buf.extend_from_slice(&bytes);
+            return Ok(());
+        }
+        if let Some(exec) = node.downcast_ref::<IvmDualSinkExec>() {
+            let proto = IvmDualSinkExecProto {
+                state: exec.state().to_descriptor().map_err(|error| {
+                    datafusion::error::DataFusionError::Internal(format!(
+                        "encode IvmDualSinkExec state: {error}"
+                    ))
+                })?,
+                mv: exec.mv().to_descriptor().map_err(|error| {
+                    datafusion::error::DataFusionError::Internal(format!(
+                        "encode IvmDualSinkExec mv: {error}"
+                    ))
+                })?,
+                mv_schema: Self::encode_schema(exec.mv_schema())?,
+                epoch: exec.epoch(),
+            };
+            let bytes =
+                serde_json::to_vec(&IvmExecProto::DualSink(proto)).map_err(|error| {
+                    datafusion::error::DataFusionError::Internal(format!(
+                        "encode IvmDualSinkExec: {error}"
                     ))
                 })?;
             buf.extend_from_slice(&bytes);
@@ -301,6 +400,46 @@ impl PhysicalExtensionCodec for IvmRefreshCodec {
             kind => internal_err!("unknown IVM bucket expression kind {kind}"),
         }
     }
+    fn try_encode_udf(&self, node: &ScalarUDF, buf: &mut Vec<u8>) -> DFResult<()> {
+        if node.name() == crate::runtime::JOIN_KEY_UDF {
+            // The worker rebuilds the encoder from the physical argument
+            // types; there is no per-plan payload.
+            return Ok(());
+        }
+        if node.name() != crate::runtime::GROUP_ROW_UDF {
+            return Ok(());
+        }
+        if let TypeSignature::Exact(types) = &node.signature().type_signature {
+            let encoded = serde_json::to_vec(types).map_err(|error| {
+                datafusion::error::DataFusionError::Internal(format!(
+                    "encode ivm_group_row types: {error}"
+                ))
+            })?;
+            buf.extend_from_slice(&encoded);
+        }
+        Ok(())
+    }
+
+    fn try_decode_udf(&self, name: &str, buf: &[u8]) -> DFResult<Arc<ScalarUDF>> {
+        if name == crate::runtime::JOIN_KEY_UDF {
+            return Ok(crate::runtime::worker_join_key_udf());
+        }
+        if name != crate::runtime::GROUP_ROW_UDF {
+            return internal_err!("no IVM UDF codec for {name}");
+        }
+        let types: Vec<arrow_schema::DataType> =
+            serde_json::from_slice(buf).map_err(|error| {
+                datafusion::error::DataFusionError::Internal(format!(
+                    "decode ivm_group_row types: {error}"
+                ))
+            })?;
+        let udf = crate::runtime::group_row_udf_for_types(types).map_err(|error| {
+            datafusion::error::DataFusionError::Internal(format!(
+                "rebuild ivm_group_row: {error:?}"
+            ))
+        })?;
+        Ok(Arc::new(udf))
+    }
 }
 
 fn stream_exec_proto(node: &Arc<dyn ExecutionPlan>) -> DFResult<IvmStreamExecProto> {
@@ -404,6 +543,75 @@ fn decode_sink(
             epoch: proto.epoch,
         },
     )))
+}
+
+fn decode_dual_sink(
+    proto: IvmDualSinkExecProto,
+    inputs: &[Arc<dyn ExecutionPlan>],
+) -> DFResult<Arc<dyn ExecutionPlan>> {
+    if inputs.len() != 1 {
+        return internal_err!("IvmDualSinkExec expects exactly one child");
+    }
+    let state = IvmTable::from_descriptor(&proto.state).map_err(|error| {
+        datafusion::error::DataFusionError::Internal(format!(
+            "decode IvmDualSinkExec state: {error}"
+        ))
+    })?;
+    let mv = IvmTable::from_descriptor(&proto.mv).map_err(|error| {
+        datafusion::error::DataFusionError::Internal(format!(
+            "decode IvmDualSinkExec mv: {error}"
+        ))
+    })?;
+    let mv_schema = IvmRefreshCodec::decode_schema(&proto.mv_schema)?;
+    Ok(Arc::new(IvmDualSinkExec::new(
+        Arc::clone(&inputs[0]),
+        IvmDualSinkSpec {
+            state,
+            mv,
+            mv_schema,
+            epoch: proto.epoch,
+        },
+    )))
+}
+
+fn decode_bucket_projection(
+    proto: IvmBucketProjectionProto,
+    inputs: &[Arc<dyn ExecutionPlan>],
+) -> DFResult<Arc<dyn ExecutionPlan>> {
+    if inputs.len() != 1 {
+        return internal_err!("IvmBucketProjectionExec expects exactly one child");
+    }
+    let key = match proto.kind {
+        0 => BucketKey::Single(proto.keys.into_iter().next().ok_or_else(|| {
+            datafusion::error::DataFusionError::Internal(
+                "bucket projection has no key".to_string(),
+            )
+        })?),
+        1 => BucketKey::Columns(proto.keys),
+        other => return internal_err!("unknown bucket projection key kind {other}"),
+    };
+    Ok(Arc::new(IvmBucketProjectionExec::new(
+        Arc::clone(&inputs[0]),
+        key,
+        proto.bucket_count as usize,
+    )?))
+}
+
+fn decode_state_merge(
+    proto: IvmStateMergeExecProto,
+    inputs: &[Arc<dyn ExecutionPlan>],
+) -> DFResult<Arc<dyn ExecutionPlan>> {
+    if inputs.len() != 1 {
+        return internal_err!("IvmStateMergeExec expects exactly one child");
+    }
+    let schema = IvmRefreshCodec::decode_schema(&proto.state_schema)?;
+    Ok(Arc::new(IvmStateMergeExec::new(
+        Arc::clone(&inputs[0]),
+        schema,
+        proto.group_keys,
+        proto.measure_columns,
+        proto.epoch,
+    )?))
 }
 
 fn decode_pk_lookup(

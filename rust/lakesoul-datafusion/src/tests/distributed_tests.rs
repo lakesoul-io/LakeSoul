@@ -261,6 +261,7 @@ pub(super) fn distributed_factory_sized(
                 fallback_to_local,
                 target_partitions,
                 bytes_per_partition,
+                max_tasks_per_stage: 0,
             },
         ),
     )
@@ -576,6 +577,7 @@ async fn test_merge_work_units_pinned_to_one_task_inner() -> Result<()> {
             fallback_to_local: false,
             target_partitions: 5,
             bytes_per_partition: Some(1),
+            max_tasks_per_stage: 0,
         });
     let single_node = single_node_factory(client.clone())?;
 
@@ -1777,6 +1779,7 @@ async fn test_append_only_scan_fans_out_over_tasks_inner() -> Result<()> {
             fallback_to_local: false,
             target_partitions: FILES,
             bytes_per_partition: Some(1),
+            max_tasks_per_stage: 0,
         });
     let single_node = single_node_factory(client.clone())?;
 

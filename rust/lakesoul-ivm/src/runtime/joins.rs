@@ -1941,7 +1941,7 @@ fn lookup_join_projection(
     view: &LookupJoinView,
 ) -> Result<DataFrame> {
     let wide = !view.output_columns.is_empty();
-    let context = refresh_session();
+    let context = refresh_session_local();
     let mut left_columns = join_side_key_columns(
         &context,
         left.schema(),
@@ -2124,7 +2124,7 @@ fn validate_cross_join_view(view: &CrossJoinView) -> Result<()> {
         wide_output_fields(&view.left.schema, &view.right.schema, &view.output_columns)?;
     }
     if view.left_filter.is_some() || view.right_filter.is_some() {
-        let context = refresh_session();
+        let context = refresh_session_local();
         if let Some(filter) = &view.left_filter {
             parse_filter(&context, &view.left.schema, filter)?;
         }
@@ -2275,7 +2275,7 @@ fn validate_left_join_view(view: &LeftJoinView) -> Result<()> {
         )?;
     }
     if view.left_filter.is_some() || view.right_filter.is_some() {
-        let context = refresh_session();
+        let context = refresh_session_local();
         if let Some(filter) = &view.left_filter {
             parse_filter(&context, &view.left.schema, filter)?;
         }
@@ -2457,7 +2457,7 @@ fn validate_multi_lookup_join_view(view: &MultiLookupJoinView) -> Result<()> {
     }
     for (right, filter) in &view.rights {
         if let Some(filter) = filter {
-            let context = refresh_session();
+            let context = refresh_session_local();
             parse_filter(&context, &right.schema, filter)?;
         }
         let mut primary = right.primary_keys.clone();
@@ -2556,11 +2556,11 @@ fn validate_lookup_join_view(view: &LookupJoinView) -> Result<()> {
         ));
     }
     if let Some(filter) = &view.left_filter {
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &view.left.schema, filter)?;
     }
     if let Some(filter) = &view.right_filter {
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &view.right.schema, filter)?;
     }
     if view.left.primary_keys.is_empty() || view.right.primary_keys.is_empty() {
@@ -2662,7 +2662,7 @@ fn validate_pair_filter(
         Field::new("left_value", field_type(&left.schema, left_value)?, true),
         Field::new("right_value", field_type(&right.schema, right_value)?, true),
     ]));
-    let context = refresh_session();
+    let context = refresh_session_local();
     parse_filter(&context, &schema, filter)?;
     Ok(())
 }
@@ -2689,7 +2689,7 @@ fn validate_wide_pair_filter(
         fields.push(Field::new(alias, field_type(schema, &column.column)?, true));
     }
     let schema = Arc::new(Schema::new(fields));
-    let context = refresh_session();
+    let context = refresh_session_local();
     parse_filter(&context, &schema, filter)?;
     Ok(())
 }
@@ -2703,7 +2703,7 @@ fn validate_join_view(view: &JoinView) -> Result<()> {
         ));
     }
     if view.left_filter.is_some() || view.right_filter.is_some() {
-        let context = refresh_session();
+        let context = refresh_session_local();
         if let Some(filter) = &view.left_filter {
             parse_filter(&context, &view.left.schema, filter)?;
         }
@@ -2977,7 +2977,7 @@ fn join_side_state_columns(
     side: JoinSide,
     filter: Option<&str>,
 ) -> Result<Vec<String>> {
-    let context = refresh_session();
+    let context = refresh_session_local();
     let mut columns = source.primary_keys.clone();
     for (index, key) in join_keys.iter().enumerate() {
         if let Some(expression) = key_exprs.get(index).filter(|expr| !expr.is_empty()) {
@@ -3107,7 +3107,7 @@ pub(super) fn apply_pair_filter(
 ) -> Result<DataFrame> {
     match filter {
         Some(filter) => {
-            let context = refresh_session();
+            let context = refresh_session_local();
             let expression = context
                 .state()
                 .create_logical_expr(filter, joined.schema())
@@ -3734,37 +3734,23 @@ fn join_is_keyed(view: &JoinView) -> bool {
 pub(crate) fn encode_join_key_frame(
     context: &SessionContext,
     frame: DataFrame,
-    source: &IvmTable,
+    _source: &IvmTable,
     join_keys: &[String],
 ) -> Result<DataFrame> {
     let schema = frame.schema().as_arrow();
-    let input_types = join_keys
-        .iter()
-        .map(|key| Ok(schema.field_with_name(key)?.data_type().clone()))
-        .collect::<Result<Vec<_>>>()?;
-    let encoder = Arc::new(super::join_state::JoinKeyEncoder::new_with_schema(
-        source, schema, join_keys,
-    )?);
-    let name = format!("ivm_join_key_probe_{}", uuid::Uuid::new_v4().simple());
-    let udf = datafusion::logical_expr::create_udf(
-        &name,
-        input_types,
-        arrow::datatypes::DataType::Binary,
-        datafusion::logical_expr::Volatility::Immutable,
-        Arc::new(move |args: &[datafusion::logical_expr::ColumnarValue]| {
-            let arrays = datafusion::logical_expr::ColumnarValue::values_to_arrays(args)?;
-            Ok(datafusion::logical_expr::ColumnarValue::Array(
-                encoder.encode_columns(&arrays)?,
-            ))
-        }),
-    );
+    // Validate the key columns before planning; the UDF itself rebuilds its
+    // encoder from the argument types so a worker can resolve it by name.
+    for key in join_keys {
+        schema.field_with_name(key)?;
+    }
+    let udf = super::worker_join_key_udf();
     let key = udf.call(
         join_keys
             .iter()
             .map(|key| col(key.as_str()))
             .collect::<Vec<_>>(),
     );
-    context.register_udf(udf);
+    context.register_udf((*udf).clone());
     Ok(frame.with_column(super::join_state::IVM_JOIN_KEY_COLUMN, key)?)
 }
 
@@ -3867,7 +3853,7 @@ impl IvmRuntime {
             } else {
                 provider
             };
-            let frame = context.read_table(Arc::new(provider))?;
+            let frame = provider.into_dataframe(context).await?;
             let projections = left_state
                 .schema
                 .fields()
@@ -4001,7 +3987,7 @@ impl IvmRuntime {
         } else {
             provider
         };
-        let frame = context.read_table(std::sync::Arc::new(provider))?;
+        let frame = provider.into_dataframe(context).await?;
         let projections = left_state
             .schema
             .fields()
@@ -4535,7 +4521,11 @@ impl IvmRuntime {
             "keyed before lookup routing"
         );
         let before_groups = source
-            .before_window_groups(&self.client, &window.before_versions)
+            .before_window_groups(
+                &self.client,
+                &window.before_versions,
+                window.before_timestamp,
+            )
             .await?;
         let groups = groups_by_bucket(before_groups, bucket_count);
         let provider = IvmLookupTable::columns(
@@ -4548,7 +4538,7 @@ impl IvmRuntime {
             route_columns,
             true,
         );
-        let frame = context.read_table(std::sync::Arc::new(provider))?;
+        let frame = provider.into_dataframe(context).await?;
         let projections = source
             .schema
             .fields()
@@ -4669,6 +4659,47 @@ impl IvmRuntime {
         table_columns: &[String],
         multi_match: bool,
     ) -> Result<DataFrame> {
+        if crate::config::options().distributed_keyed_local
+            && crate::config::session_factory().is_some()
+        {
+            // The pinned datafusion-distributed range shuffle cannot nest a
+            // keyed plan inside the outer refresh plan: the worker waits for
+            // a producer plan the coordinator never publishes.  Plan and run
+            // the lookup in a local session, then hand the materialized rows
+            // to the outer (possibly distributed) plan as a memory table.
+            let local = crate::runtime::refresh_session_local();
+            let contribution_schema = Arc::new(contribution.schema().as_arrow().clone());
+            let batches = contribution.collect().await?;
+            let batches = if batches.is_empty() {
+                vec![datafusion::arrow::record_batch::RecordBatch::new_empty(
+                    contribution_schema,
+                )]
+            } else {
+                batches
+            };
+            let local_contribution = local.read_batches(batches)?;
+            let local_rows = self
+                .lookup_source_by_join_keys_impl(
+                    &local,
+                    table,
+                    local_contribution,
+                    input_columns,
+                    table_columns,
+                    multi_match,
+                    None,
+                )
+                .await?;
+            let schema = Arc::new(local_rows.schema().as_arrow().clone());
+            let batches = local_rows.collect().await?;
+            let batches = if batches.is_empty() {
+                vec![datafusion::arrow::record_batch::RecordBatch::new_empty(
+                    schema,
+                )]
+            } else {
+                batches
+            };
+            return Ok(context.read_batches(batches)?);
+        }
         self.lookup_source_by_join_keys_impl(
             context,
             table,
@@ -4837,7 +4868,7 @@ impl IvmRuntime {
         } else {
             provider
         };
-        let frame = context.read_table(Arc::new(provider))?;
+        let frame = provider.into_dataframe(context).await?;
         let projections = table
             .schema
             .fields()
@@ -4895,15 +4926,35 @@ impl IvmRuntime {
                 &left_columns,
             )
             .await?;
-        let right = self
-            .lookup_output_side(
+        let right = if let Some(index) = right_index {
+            // The right-key index is narrow: resolve the matching pair
+            // identities first, then read the full output rows by pair key.
+            let right_pairs = self
+                .lookup_output_side(
+                    context,
+                    index,
+                    affected_right,
+                    &view.right.primary_keys,
+                    &right_columns,
+                )
+                .await?;
+            let pair_keys = left_columns
+                .iter()
+                .chain(right_columns.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            self.lookup_output_side(context, table, &right_pairs, &pair_keys, &pair_keys)
+                .await?
+        } else {
+            self.lookup_output_side(
                 context,
-                right_index.unwrap_or(table),
+                table,
                 affected_right,
                 &view.right.primary_keys,
                 &right_columns,
             )
-            .await?;
+            .await?
+        };
         let pairs = left.union(right)?.distinct()?;
         filter_deletes(pairs, change_column(table))
     }
@@ -4988,7 +5039,7 @@ impl IvmRuntime {
         } else {
             provider
         };
-        let frame = context.read_table(Arc::new(provider))?;
+        let frame = provider.into_dataframe(context).await?;
         let projections = table
             .schema
             .fields()
@@ -5102,7 +5153,7 @@ impl IvmRuntime {
         } else {
             provider
         };
-        let frame = context.read_table(Arc::new(provider))?;
+        let frame = provider.into_dataframe(context).await?;
         let right_columns = right_state
             .schema
             .fields()
@@ -5135,8 +5186,16 @@ impl IvmRuntime {
         // every state table too.
         let mut commit_ids = Vec::new();
         if let Some(index) = pair_index {
-            let index_written =
-                append_dataframe(index, &self.client, frame.clone()).await?;
+            // The pair index is a narrow right-key -> pair-identity index;
+            // the output payload stays in the target/state table.
+            let fields = index
+                .schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect::<Vec<_>>();
+            let rows = project_frame(frame.clone(), &fields)?;
+            let index_written = append_dataframe(index, &self.client, rows).await?;
             commit_ids.extend(index_written.commit_ids);
         }
         if let Some(state) = state {
@@ -5155,7 +5214,7 @@ impl IvmRuntime {
         output: &IvmTable,
         state: &IvmTable,
     ) -> Result<Vec<String>> {
-        let context = refresh_session();
+        let context = refresh_session_local();
         let frame = self.current_table_frame(&context, output)?;
         state.truncate(&self.client).await?;
         Ok(append_dataframe(state, &self.client, frame)
@@ -5243,13 +5302,20 @@ impl IvmRuntime {
             .iter()
             .map(|key| right_pk_alias(key))
             .collect::<Vec<_>>();
+        // The index only maps the right key to the pair identity.  The output
+        // payload is read from the MV after the index resolves the identities.
+        let mut schema_fields = bucket_columns.clone();
+        schema_fields.extend(view.left.primary_keys.iter().map(|key| left_pk_alias(key)));
+        schema_fields.push(IVM_ROW_KINDS_COLUMN.to_string());
+        schema_fields.push(IVM_EPOCH_COLUMN.to_string());
+        let schema = project_schema(&output.schema, &schema_fields)?;
         if let Some(existing) = self
             .metadata()
             .get_state(&view.view_id, StateRole::JoinPairIndex)
             .await?
         {
             let table = self.open_table_by_id(&existing.table_id).await?;
-            if table.schema == output.schema && table.primary_keys == primary_keys {
+            if table.schema == schema && table.primary_keys == primary_keys {
                 let output_files = output.current_files(&self.client).await?;
                 let index_files = table.current_files(&self.client).await?;
                 let mut stale = index_files.is_empty() && !output_files.is_empty();
@@ -5294,7 +5360,7 @@ impl IvmRuntime {
         let mut options = IvmTableOptions::new(
             format!("{}__ivm_right_index_{suffix}", output.table_name),
             format!("{}__ivm_right_index_{suffix}", output.table_path),
-            output.schema.clone(),
+            schema,
         )
         .with_namespace(output.namespace.clone())
         .with_primary_keys(primary_keys)
@@ -5320,8 +5386,15 @@ impl IvmRuntime {
         output: &IvmTable,
         index: &IvmTable,
     ) -> Result<Vec<String>> {
-        let context = refresh_session();
+        let context = refresh_session_local();
         let frame = self.current_table_frame(&context, output)?;
+        let fields = index
+            .schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>();
+        let frame = project_frame(frame, &fields)?;
         index.truncate(&self.client).await?;
         Ok(append_dataframe(index, &self.client, frame)
             .await?
@@ -5503,7 +5576,7 @@ impl IvmRuntime {
             commit_ids.extend(ids);
         }
         self.checkpoint_epoch_states(&record).await?;
-        let context = refresh_session();
+        let context = refresh_session_local();
         if keyed {
             let delta_left = self.groups_table_frame(
                 &context,
@@ -5528,6 +5601,20 @@ impl IvmRuntime {
                 filter_deletes(delta_right.clone(), change_column(&view.right))?,
                 &view.right.schema,
                 view.right_filter.as_deref(),
+            )?;
+            // A computed join key is materialized under its key name before
+            // the keyed side lookups and the keyed join projection.
+            let left_delta = super::join_state::materialize_join_keys(
+                &context,
+                left_delta,
+                &view.key_exprs.left,
+                &view.join_keys,
+            )?;
+            let right_delta = super::join_state::materialize_join_keys(
+                &context,
+                right_delta,
+                &view.key_exprs.right,
+                right_join_keys,
             )?;
 
             let full_left = || -> Result<DataFrame> {
@@ -5560,12 +5647,8 @@ impl IvmRuntime {
             // Both sides are keyed and use plain key columns: the changed
             // rows are the deltas, and the opposite side is read by the
             // delta's join keys.  This avoids a full read of either state.
-            let fast = !view.null_safe
-                && !view.left.primary_keys.is_empty()
-                && !view.right.primary_keys.is_empty()
-                && (view.right_keys.is_empty() || view.right_keys == view.join_keys)
-                && view.key_exprs.left.iter().all(|expr| expr.is_empty())
-                && view.key_exprs.right.iter().all(|expr| expr.is_empty());
+            let fast =
+                !view.left.primary_keys.is_empty() && !view.right.primary_keys.is_empty();
             let empty_left = context
                 .read_batches(vec![RecordBatch::new_empty(view.left.schema.clone())])?;
             let empty_right = context
@@ -5582,7 +5665,7 @@ impl IvmRuntime {
                     empty_right.clone()
                 };
                 let right_for_left = if left_changed {
-                    apply_side_filter(
+                    let filtered = apply_side_filter(
                         &context,
                         self.lookup_right_rows_for_left_keys(
                             &context,
@@ -5594,12 +5677,18 @@ impl IvmRuntime {
                         .await?,
                         &view.right.schema,
                         view.right_filter.as_deref(),
+                    )?;
+                    with_computed_keys(
+                        &context,
+                        filtered,
+                        &view.key_exprs.right,
+                        right_join_keys,
                     )?
                 } else {
                     empty_right.clone()
                 };
                 let left_for_right = if right_changed {
-                    apply_side_filter(
+                    let filtered = apply_side_filter(
                         &context,
                         self.lookup_left_rows_for_right_keys(
                             &context,
@@ -5610,6 +5699,12 @@ impl IvmRuntime {
                         .await?,
                         &view.left.schema,
                         view.left_filter.as_deref(),
+                    )?;
+                    with_computed_keys(
+                        &context,
+                        filtered,
+                        &view.key_exprs.left,
+                        &view.join_keys,
                     )?
                 } else {
                     empty_left.clone()
@@ -5846,7 +5941,15 @@ impl IvmRuntime {
                     &view.output,
                     view.state.as_ref(),
                     pair_index.as_ref(),
-                    inserts.union(deletes)?.sort_by(sort_exprs)?,
+                    collapse_update_deletes(
+                        &self.metadata,
+                        &context,
+                        &view.output,
+                        inserts,
+                        deletes,
+                    )
+                    .await?
+                    .sort_by(sort_exprs)?,
                 )
                 .await?,
             );
@@ -6462,7 +6565,15 @@ impl IvmRuntime {
                 &view.output,
                 view.state.as_ref(),
                 None,
-                inserts.union(deletes)?.sort_by(sort_exprs)?,
+                collapse_update_deletes(
+                    &self.metadata,
+                    &context,
+                    &view.output,
+                    inserts,
+                    deletes,
+                )
+                .await?
+                .sort_by(sort_exprs)?,
             )
             .await?,
         );
@@ -6826,7 +6937,15 @@ impl IvmRuntime {
                 &view.mv,
                 None,
                 None,
-                inserts.union(deletes)?.sort_by(sort_exprs)?,
+                collapse_update_deletes(
+                    &self.metadata,
+                    &context,
+                    &view.mv,
+                    inserts,
+                    deletes,
+                )
+                .await?
+                .sort_by(sort_exprs)?,
             )
             .await?,
         );
@@ -7508,7 +7627,15 @@ impl IvmRuntime {
             append_dataframe(
                 &view.output,
                 &self.client,
-                inserts.union(deletes)?.sort_by(sort_exprs)?,
+                collapse_update_deletes(
+                    &self.metadata,
+                    &context,
+                    &view.output,
+                    inserts,
+                    deletes,
+                )
+                .await?
+                .sort_by(sort_exprs)?,
             )
             .await?
             .commit_ids,
@@ -8502,7 +8629,15 @@ impl IvmRuntime {
             append_dataframe(
                 &view.output,
                 &self.client,
-                inserts.union(deletes)?.sort_by(sort_exprs)?,
+                collapse_update_deletes(
+                    &self.metadata,
+                    &context,
+                    &view.output,
+                    inserts,
+                    deletes,
+                )
+                .await?
+                .sort_by(sort_exprs)?,
             )
             .await?
             .commit_ids,
@@ -8915,7 +9050,15 @@ impl IvmRuntime {
             append_dataframe(
                 &view.output,
                 &self.client,
-                inserts.union(deletes)?.sort_by(sort_exprs)?,
+                collapse_update_deletes(
+                    &self.metadata,
+                    &context,
+                    &view.output,
+                    inserts,
+                    deletes,
+                )
+                .await?
+                .sort_by(sort_exprs)?,
             )
             .await?
             .commit_ids,
@@ -9520,7 +9663,7 @@ mod side_state_lookup_tests {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
             keys.swap(index, (seed as usize) % (index + 1));
         }
-        let context = SessionContext::new();
+        let context = crate::runtime::install_keyed_lookup_planner(SessionContext::new());
         let contribution = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("g", DataType::Utf8, false)])),
             vec![Arc::new(StringArray::from_iter_values(

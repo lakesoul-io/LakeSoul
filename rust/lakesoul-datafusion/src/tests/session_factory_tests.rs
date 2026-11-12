@@ -145,6 +145,7 @@ fn test_target_partitions_is_parameterized() {
             fallback_to_local: true,
             target_partitions: 1,
             bytes_per_partition: None,
+            max_tasks_per_stage: 0,
         });
         let ctx = factory
             .create_session(&LakeSoulSessionOptions::default())

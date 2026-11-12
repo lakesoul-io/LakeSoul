@@ -79,6 +79,14 @@ pub struct IvmOptions {
     pub vortex_row_block_size: Option<String>,
     /// Override of the Vortex data-block target bytes for internal tables.
     pub vortex_data_block_bytes: Option<String>,
+    /// Materialize keyed lookups on the coordinator instead of embedding
+    /// their range-shuffle plan in the distributed refresh plan.
+    ///
+    /// The pinned datafusion-distributed range shuffle deadlocks when a keyed
+    /// plan's `SortPreservingMergeExec` is planned as a nested distributed
+    /// stage; this keeps the lookup plan local and feeds its result to the
+    /// outer plan as an in-memory table.
+    pub distributed_keyed_local: bool,
     /// Lease TTL for the per-view refresh lock.  A live coordinator renews the
     /// lease; a killed coordinator stops renewing, so another coordinator can
     /// take over after this interval.
@@ -99,6 +107,7 @@ impl Default for IvmOptions {
             write_pool_dir: None,
             vortex_row_block_size: None,
             vortex_data_block_bytes: None,
+            distributed_keyed_local: false,
             refresh_lock_ttl_ms: 30 * 60 * 1000,
         }
     }
@@ -123,6 +132,14 @@ pub(crate) fn default_spill_dir() -> String {
 pub trait IvmSessionFactory: Send + Sync {
     /// Build one isolated refresh session.
     fn create(&self) -> crate::Result<SessionContext>;
+
+    /// Build an isolated session without the distributed planner.
+    ///
+    /// The default falls back to the regular session; a distributed embedder
+    /// overrides it when keyed subplans must run on the coordinator.
+    fn create_local(&self) -> crate::Result<SessionContext> {
+        self.create()
+    }
 }
 
 /// A DataFusion session template plus the IVM behaviour options.

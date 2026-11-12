@@ -44,7 +44,9 @@ impl IvmSessionFactory for SinkFactory {
                 lakesoul_ivm::distributed::IvmSinkRule,
             ))
             .build();
-        Ok(SessionContext::new_with_state(state))
+        Ok(lakesoul_ivm::runtime::install_keyed_lookup_planner(
+            SessionContext::new_with_state(state),
+        ))
     }
 }
 
@@ -1242,10 +1244,10 @@ async fn a_committed_mv_with_a_missing_state_checkpoint_replays_state_only() {
     };
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
     while !marker.exists() {
-        assert!(
-            !handle.is_finished(),
-            "the refresh finished before the target-commit hook"
-        );
+        if handle.is_finished() {
+            let result = handle.await;
+            panic!("the refresh finished before the target-commit hook: {result:?}");
+        }
         assert!(
             tokio::time::Instant::now() < deadline,
             "the refresh never reached the target-commit hook"

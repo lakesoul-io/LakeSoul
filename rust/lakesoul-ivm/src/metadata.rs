@@ -57,7 +57,16 @@ do $$ begin
         generation          bigint not null default 0,
         definition_hash     text,
         source_sql          text,
-        created_at          bigint not null
+        created_at          bigint not null,
+        last_refresh_at     bigint,
+        last_check_at       bigint,
+        last_action         text,
+        last_duration_ms    bigint not null default 0,
+        last_source_lag_ms  bigint,
+        last_rows_read      bigint not null default 0,
+        last_rows_written   bigint not null default 0,
+        last_error_at       bigint,
+        consecutive_failures bigint not null default 0
     );
 exception when duplicate_table or unique_violation then null;
 end $$;
@@ -84,6 +93,50 @@ end $$;
 
 do $$ begin
     alter table ivm.views add column if not exists last_error text;
+exception when duplicate_column or unique_violation then null;
+end $$;
+do $$ begin
+    alter table ivm.views add column if not exists last_refresh_at bigint;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists last_check_at bigint;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists last_action text;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists last_duration_ms bigint not null default 0;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists last_source_lag_ms bigint;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists last_rows_read bigint not null default 0;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists last_rows_written bigint not null default 0;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists last_error_at bigint;
+exception when duplicate_column or unique_violation then null;
+end $$;
+
+do $$ begin
+    alter table ivm.views add column if not exists consecutive_failures bigint not null default 0;
 exception when duplicate_column or unique_violation then null;
 end $$;
 
@@ -282,6 +335,13 @@ pub enum StateRole {
     /// values of that partition.  A refresh recomputes only the changed
     /// partitions and merges all partials of the affected groups.
     MultiAggPartials,
+    /// A narrow `(group keys, source primary key)` index for a recomputed
+    /// aggregate.  It lets the refresh read the source rows of the affected
+    /// groups by primary key instead of scanning the whole source.
+    RecomputedIndex,
+    /// One narrow index per grouping set, keyed by the set's keys and the
+    /// source primary key.  The index position is the set position.
+    GroupingSetIndex(u32),
     /// A join source state keyed by the encoded join key.
     JoinLeft,
     /// A join source state keyed by the encoded join key.
@@ -292,6 +352,9 @@ pub enum StateRole {
     /// step's left key to the base row identities, so a changed dimension can
     /// fan out to affected base rows without scanning the base.
     LookupChainIndex(u32),
+    /// One narrow `(encoded join key, source primary key)` index for a
+    /// multi-join edge that needs a null-safe or computed key lookup.
+    MultiJoinKeyIndex(u32),
     /// The source-row state used to recompute window/top-k ranks.
     RankState,
     /// One partition spec of a multi-window view.  The index is the spec
@@ -308,10 +371,13 @@ impl StateRole {
             StateRole::State => "state",
             StateRole::MultiAggRows => "multi_agg_rows",
             StateRole::MultiAggPartials => "multi_agg_partials",
+            StateRole::RecomputedIndex => "recomputed_index",
+            StateRole::GroupingSetIndex(_) => "grouping_set_index",
             StateRole::JoinLeft => "join_left",
             StateRole::JoinRight => "join_right",
             StateRole::JoinPairIndex => "join_pair_index",
             StateRole::LookupChainIndex(_) => "lookup_chain_index",
+            StateRole::MultiJoinKeyIndex(_) => "multi_join_key_index",
             StateRole::RankState => "rank_state",
             StateRole::MultiWindow(_) => "multi_window",
         }
@@ -324,6 +390,12 @@ impl StateRole {
             StateRole::LookupChainIndex(index) => {
                 Cow::Owned(format!("lookup_chain_index:{index}"))
             }
+            StateRole::GroupingSetIndex(index) => {
+                Cow::Owned(format!("grouping_set_index:{index}"))
+            }
+            StateRole::MultiJoinKeyIndex(index) => {
+                Cow::Owned(format!("multi_join_key_index:{index}"))
+            }
             role => Cow::Borrowed(role.as_str()),
         }
     }
@@ -334,6 +406,7 @@ impl StateRole {
             "state" => Ok(StateRole::State),
             "multi_agg_rows" => Ok(StateRole::MultiAggRows),
             "multi_agg_partials" => Ok(StateRole::MultiAggPartials),
+            "recomputed_index" => Ok(StateRole::RecomputedIndex),
             // An earlier development role name; keep reading it so a
             // pre-existing metadata row does not fail the whole listing.
             "multi_agg_partitions" => Ok(StateRole::MultiAggPartials),
@@ -351,6 +424,16 @@ impl StateRole {
                         },
                     );
                 }
+                if let Some(index) = other.strip_prefix("grouping_set_index:") {
+                    return index
+                        .parse::<u32>()
+                        .map(StateRole::GroupingSetIndex)
+                        .map_err(|_| {
+                            rootcause::report!(
+                                "invalid grouping-set index state role {other:?}"
+                            )
+                        });
+                }
                 if let Some(index) = other.strip_prefix("lookup_chain_index:") {
                     return index
                         .parse::<u32>()
@@ -358,6 +441,16 @@ impl StateRole {
                         .map_err(|_| {
                             rootcause::report!(
                                 "invalid lookup-chain index state role {other:?}"
+                            )
+                        });
+                }
+                if let Some(index) = other.strip_prefix("multi_join_key_index:") {
+                    return index
+                        .parse::<u32>()
+                        .map(StateRole::MultiJoinKeyIndex)
+                        .map_err(|_| {
+                            rootcause::report!(
+                                "invalid multi-join key index state role {other:?}"
                             )
                         });
                 }
@@ -417,6 +510,24 @@ pub struct ViewInfo {
     pub fallback: bool,
     /// Why the view fell back, when it did (for example the rejected shape).
     pub fallback_reason: Option<String>,
+    /// The last successful refresh/rebuild time (unix milliseconds).
+    pub last_refresh_at: Option<i64>,
+    /// The last source-window check time, including a no-op (unix ms).
+    pub last_check_at: Option<i64>,
+    /// The last refresh action (`incremental`, `noop`, `rebuild`, ...).
+    pub last_action: Option<String>,
+    /// Wall-clock duration of the last refresh attempt.
+    pub last_duration_ms: i64,
+    /// The largest source commit timestamp gap seen at the last check.
+    pub last_source_lag_ms: Option<i64>,
+    /// Rows read by the last refresh (from the refresh IO scope).
+    pub last_rows_read: i64,
+    /// Rows written by the last refresh (from the refresh IO scope).
+    pub last_rows_written: i64,
+    /// The last failed refresh time (unix milliseconds).
+    pub last_error_at: Option<i64>,
+    /// Consecutive failed refreshes since the last success.
+    pub consecutive_failures: i64,
 }
 
 /// The partition versions of one auxiliary state table at an epoch boundary.
@@ -1029,7 +1140,10 @@ impl IvmMetadata {
             .query(
                 "select view_id, status, refresh_interval_ms, last_epoch, last_error,
                         (spec->>'kind' = 'fallback') as fallback,
-                        spec->>'reason' as fallback_reason
+                        spec->>'reason' as fallback_reason,
+                        last_refresh_at, last_check_at, last_action,
+                        last_duration_ms, last_source_lag_ms, last_rows_read,
+                        last_rows_written, last_error_at, consecutive_failures
                  from ivm.views order by view_id",
                 QueryType::RO,
                 &[],
@@ -1045,8 +1159,39 @@ impl IvmMetadata {
                 last_error: row.get(4),
                 fallback: row.get(5),
                 fallback_reason: row.get(6),
+                last_refresh_at: row.get(7),
+                last_check_at: row.get(8),
+                last_action: row.get(9),
+                last_duration_ms: row.get(10),
+                last_source_lag_ms: row.get(11),
+                last_rows_read: row.get(12),
+                last_rows_written: row.get(13),
+                last_error_at: row.get(14),
+                consecutive_failures: row.get(15),
             })
             .collect())
+    }
+
+    /// Whether a consumer of `table_id` needs the source's full changelog.
+    ///
+    /// A direct `SUM`/`COUNT` view subtracts an update's old contribution from
+    /// the delete rows of the source delta.  The target sink also needs the old
+    /// row when it moves between target partitions.  A source that collapses
+    /// update pairs into insert-only upserts must keep the pairs while either
+    /// consumer exists.
+    pub async fn has_changelog_consumer(&self, table_id: &str) -> Result<bool> {
+        let rows = self
+            .client
+            .query(
+                "select 1 from ivm.views
+                 where spec->>'kind' in ('sum_count', 'sink')
+                   and spec->>'source_table_id' = $1::TEXT
+                 limit 1",
+                QueryType::RO,
+                &[&table_id],
+            )
+            .await?;
+        Ok(!rows.is_empty())
     }
 
     /// Start a rebuild: bump the generation and return it. Epochs of older
@@ -1542,6 +1687,53 @@ impl IvmMetadata {
             )
             .await?;
         Ok(deleted)
+    }
+
+    /// Record one refresh attempt for the freshness/observability surface.
+    ///
+    /// `success` is false for a failed attempt; `last_refresh_at` is then left
+    /// unchanged and the failure counter is advanced.  A no-op is a successful
+    /// check and advances both the check and refresh timestamps.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_view_refresh(
+        &self,
+        view_id: &str,
+        action: &str,
+        duration_ms: u64,
+        source_lag_ms: Option<i64>,
+        rows_read: u64,
+        rows_written: u64,
+        success: bool,
+    ) -> Result<()> {
+        let duration_ms = i64::try_from(duration_ms).unwrap_or(i64::MAX);
+        let rows_read = i64::try_from(rows_read).unwrap_or(i64::MAX);
+        let rows_written = i64::try_from(rows_written).unwrap_or(i64::MAX);
+        let now = crate::now_ms();
+        self.execute_rw(
+            "update ivm.views set
+                 last_check_at = $2::BIGINT,
+                 last_action = $3::TEXT,
+                 last_duration_ms = $4::BIGINT,
+                 last_source_lag_ms = coalesce($5::BIGINT, last_source_lag_ms),
+                 last_rows_read = $6::BIGINT,
+                 last_rows_written = $7::BIGINT,
+                 last_refresh_at = case when $8::BOOLEAN then $2::BIGINT else last_refresh_at end,
+                 last_error_at = case when $8::BOOLEAN then last_error_at else $2::BIGINT end,
+                 consecutive_failures = case when $8::BOOLEAN then 0 else consecutive_failures + 1 end
+             where view_id = $1::TEXT",
+            &[
+                &view_id,
+                &now,
+                &action,
+                &duration_ms,
+                &source_lag_ms,
+                &rows_read,
+                &rows_written,
+                &success,
+            ],
+        )
+        .await?;
+        Ok(())
     }
 
     /// Delete a view and its cursors.

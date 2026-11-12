@@ -739,9 +739,6 @@ impl StartupState {
         } else {
             command.args(["--discovery", "none"]);
         }
-        if self.ivm {
-            command.arg("--ivm");
-        }
         if fault == Some("startup") {
             // Controlled startup failure: clap rejects the unknown option and
             // the child exits non-zero before readiness.

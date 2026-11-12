@@ -59,6 +59,108 @@ async fn source(runtime: &IvmRuntime, dir: &tempfile::TempDir, tag: &str) -> Ivm
         .unwrap()
 }
 
+/// A target partition move must keep the old partition's delete.  The state
+/// row is unpartitioned; the sink, not the state, knows the target partition.
+#[test_log::test(tokio::test)]
+async fn target_partition_move_removes_the_old_partition_row() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = source(&runtime, &dir, &format!("mv_src_{suffix}")).await;
+    let target_schema = Arc::new(Schema::new(vec![
+        Field::new("biz_key", DataType::Utf8, false),
+        Field::new("stat_date", DataType::Utf8, false),
+        Field::new("v", DataType::Int64, true),
+        Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]));
+    let target = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_move_target_{suffix}"),
+                table_path(&dir, "target"),
+                target_schema,
+            )
+            .with_primary_keys(vec!["biz_key".to_string()])
+            .with_range_partition_columns(vec!["stat_date".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO {} SELECT CAST(k AS VARCHAR) AS biz_key, g AS stat_date, v FROM {}",
+        target.table_name, source.table_name
+    );
+    let runtime = executor.runtime();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "2026-08-01", 10, "insert"),
+                (2, "2026-08-01", 20, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+
+    // The same business key moves to another target partition.
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "2026-08-02", 11, "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+
+    let context = SessionContext::new();
+    context
+        .register_table("target", Arc::new(runtime.table_provider(&target)))
+        .unwrap();
+    let batches = context
+        .sql("select biz_key, stat_date, v from target order by biz_key, stat_date")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in batches {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let dates = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let values = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                keys.value(row).to_string(),
+                dates.value(row).to_string(),
+                values.value(row),
+            ));
+        }
+    }
+    assert_eq!(
+        rows,
+        vec![
+            ("1".to_string(), "2026-08-02".to_string(), 11),
+            ("2".to_string(), "2026-08-01".to_string(), 20),
+        ]
+    );
+}
+
 #[test_log::test(tokio::test)]
 async fn target_key_and_schema_are_independent_of_the_state() {
     let runtime = IvmRuntime::from_env().await.unwrap();

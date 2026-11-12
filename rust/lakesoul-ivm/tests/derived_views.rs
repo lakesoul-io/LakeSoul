@@ -3698,6 +3698,22 @@ async fn a_union_step_makes_an_aggregate_over_it_maintainable() {
         read_sum_mv(runtime, &mv).await,
         full_union_sum(runtime, &first, &second).await
     );
+
+    // An update and a delete in the same window: the union step must keep the
+    // update's old image for the aggregate's changelog subtraction.
+    first
+        .append_batch(runtime.client(), source_batch(&[(2, "b", 6, "insert")]))
+        .await
+        .unwrap();
+    second
+        .append_batch(runtime.client(), source_batch(&[(4, "c", 7, "delete")]))
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        read_sum_mv(runtime, &mv).await,
+        full_union_sum(runtime, &first, &second).await
+    );
 }
 
 #[test_log::test(tokio::test)]

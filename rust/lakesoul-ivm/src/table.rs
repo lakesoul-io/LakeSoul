@@ -1290,6 +1290,7 @@ impl IvmTable {
     /// hand each batch to both writers; cloning a `RecordBatch` only clones
     /// its `Arc` buffers.  Memory stays at one writer batch instead of the
     /// whole result set.
+    #[allow(dead_code)]
     pub(crate) async fn append_stream_pair<S>(
         &self,
         client: &MetaDataClient,
@@ -1358,6 +1359,7 @@ impl IvmTable {
     /// put them in different files, and merge-on-read then resolves the same
     /// key ambiguously.  Buffering only the trailing key group of each batch
     /// keeps the pair together without collecting the whole delta.
+    #[allow(dead_code)]
     pub(crate) async fn append_stream_by_key<S>(
         &self,
         client: &MetaDataClient,
@@ -1801,16 +1803,24 @@ impl IvmTable {
     ///
     /// Every partition the window touched is pinned to the version it was
     /// consumed at (`before`); a partition the window touched for the first
-    /// time contributes nothing and a partition the window did not touch is
-    /// read at its current state, so the result is the exact before state of
-    /// the window.
+    /// time contributes nothing.  A partition the window did not touch is
+    /// pinned to its latest version at `before_timestamp` (the last consumed
+    /// snapshot), not to its current version, so a source writer that commits
+    /// after the window was computed cannot leak into the before image.
     pub async fn read_before_window(
         &self,
         client: &MetaDataClient,
         before: &std::collections::HashMap<String, Option<i64>>,
+        before_timestamp: i64,
     ) -> Result<Vec<RecordBatch>> {
-        self.read_before_window_with_options(client, before, Vec::new(), None)
-            .await
+        self.read_before_window_with_options(
+            client,
+            before,
+            before_timestamp,
+            Vec::new(),
+            None,
+        )
+        .await
     }
 
     /// Read the before state of a refresh window restricted to `filters`.
@@ -1818,10 +1828,17 @@ impl IvmTable {
         &self,
         client: &MetaDataClient,
         before: &std::collections::HashMap<String, Option<i64>>,
+        before_timestamp: i64,
         filters: Vec<Expr>,
     ) -> Result<Vec<RecordBatch>> {
-        self.read_before_window_with_options(client, before, filters, None)
-            .await
+        self.read_before_window_with_options(
+            client,
+            before,
+            before_timestamp,
+            filters,
+            None,
+        )
+        .await
     }
 
     /// Read the before state of a refresh window projected to `projection`.
@@ -1829,10 +1846,17 @@ impl IvmTable {
         &self,
         client: &MetaDataClient,
         before: &std::collections::HashMap<String, Option<i64>>,
+        before_timestamp: i64,
         projection: Option<&SchemaRef>,
     ) -> Result<Vec<RecordBatch>> {
-        self.read_before_window_with_options(client, before, Vec::new(), projection)
-            .await
+        self.read_before_window_with_options(
+            client,
+            before,
+            before_timestamp,
+            Vec::new(),
+            projection,
+        )
+        .await
     }
 
     /// Read the before state of a refresh window with pushed filters and a
@@ -1846,33 +1870,59 @@ impl IvmTable {
         &self,
         client: &MetaDataClient,
         before: &std::collections::HashMap<String, Option<i64>>,
+        before_timestamp: i64,
         filters: Vec<Expr>,
         projection: Option<&SchemaRef>,
     ) -> Result<Vec<RecordBatch>> {
-        self.read_before_window_with_options(client, before, filters, projection)
-            .await
+        self.read_before_window_with_options(
+            client,
+            before,
+            before_timestamp,
+            filters,
+            projection,
+        )
+        .await
     }
 
+    /// The partition groups of the before state at `before_timestamp`.
     pub(crate) async fn before_window_groups(
         &self,
         client: &MetaDataClient,
         before: &std::collections::HashMap<String, Option<i64>>,
+        before_timestamp: i64,
     ) -> Result<Vec<PartitionFiles>> {
+        // Untouched partitions are resolved at the window boundary.  Using the
+        // current version would fold source commits that landed after the
+        // window was computed into a full before-image read.
+        let boundary = if before_timestamp > 0 {
+            client
+                .get_all_partition_info_as_of(&self.table_id, before_timestamp)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let boundary = boundary
+            .into_iter()
+            .map(|partition| (partition.partition_desc.clone(), partition))
+            .collect::<std::collections::HashMap<_, _>>();
         let mut versions = Vec::new();
-        for partition in client.get_all_partition_info(&self.table_id).await? {
-            match before.get(&partition.partition_desc) {
-                // The partition is first consumed by this window: it has no
-                // before state.
-                Some(None) => continue,
-                Some(Some(version)) => versions.push(PartitionVersion {
-                    partition_desc: partition.partition_desc.clone(),
-                    version: *version,
-                }),
-                // The window did not touch the partition: before == current.
-                None => versions.push(PartitionVersion {
-                    partition_desc: partition.partition_desc.clone(),
+        for (partition_desc, version) in before {
+            // The partition is first consumed by this window: it has no before
+            // state.
+            let Some(version) = version else {
+                continue;
+            };
+            versions.push(PartitionVersion {
+                partition_desc: partition_desc.clone(),
+                version: *version,
+            });
+        }
+        for (partition_desc, partition) in &boundary {
+            if !before.contains_key(partition_desc) {
+                versions.push(PartitionVersion {
+                    partition_desc: partition_desc.clone(),
                     version: i64::from(partition.version),
-                }),
+                });
             }
         }
         self.version_groups(client, &versions).await
@@ -1882,10 +1932,13 @@ impl IvmTable {
         &self,
         client: &MetaDataClient,
         before: &std::collections::HashMap<String, Option<i64>>,
+        before_timestamp: i64,
         filters: Vec<Expr>,
         projection: Option<&SchemaRef>,
     ) -> Result<Vec<RecordBatch>> {
-        let groups = self.before_window_groups(client, before).await?;
+        let groups = self
+            .before_window_groups(client, before, before_timestamp)
+            .await?;
         self.read_groups_with_options(groups, filters, projection)
             .await
     }

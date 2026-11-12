@@ -406,7 +406,7 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
         }
     }
     if view.left_filter.is_some() || view.right_filter.is_some() {
-        let context = refresh_session();
+        let context = refresh_session_local();
         if let Some(filter) = &view.left_filter {
             parse_filter(&context, &view.left.schema, filter)?;
         }
@@ -426,7 +426,7 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
             let predicate = view.match_predicate.as_deref().ok_or_else(|| {
                 report!("semi/anti view {} has no aggregate predicate", view.view_id)
             })?;
-            let context = refresh_session();
+            let context = refresh_session_local();
             let aggregate_type = right_aggregate_type(&context, view)?;
             let schema = match_schema(&view.left.schema, &aggregate_type)?;
             parse_filter(&context, &schema, predicate).map_err(|error| {
@@ -857,7 +857,10 @@ fn null_safe_semi_join(
             NullEquality::NullEqualsNull,
         )?
         .build()?;
-    Ok(DataFrame::new(refresh_session().state().clone(), plan))
+    Ok(DataFrame::new(
+        refresh_session_local().state().clone(),
+        plan,
+    ))
 }
 
 /// Join `left` against `right` with a semi/anti view's predicate.
@@ -933,7 +936,10 @@ fn semi_anti_join(
             NullEquality::NullEqualsNull,
         )?
         .build()?;
-    Ok(DataFrame::new(refresh_session().state().clone(), plan))
+    Ok(DataFrame::new(
+        refresh_session_local().state().clone(),
+        plan,
+    ))
 }
 
 impl IvmRuntime {
@@ -1271,6 +1277,7 @@ impl IvmRuntime {
                     &context,
                     &view.left,
                     &left_window.before_versions,
+                    left_window.before_timestamp,
                 )
                 .await?,
                 &left_columns,
@@ -1281,6 +1288,7 @@ impl IvmRuntime {
                         &context,
                         &view.right,
                         &right_window.before_versions,
+                        right_window.before_timestamp,
                     )
                     .await?,
                     &right_columns,
@@ -1576,7 +1584,15 @@ impl IvmRuntime {
             append_dataframe(
                 &view.mv,
                 &self.client,
-                inserts.union(deletes)?.sort_by(sort_exprs)?,
+                collapse_update_deletes(
+                    &self.metadata,
+                    &context,
+                    &view.mv,
+                    inserts,
+                    deletes,
+                )
+                .await?
+                .sort_by(sort_exprs)?,
             )
             .await?
             .commit_ids,
@@ -2238,7 +2254,7 @@ fn validate_left_aggregate_view(view: &LeftAggregateView) -> Result<()> {
             )
         })?;
     }
-    let context = refresh_session();
+    let context = refresh_session_local();
     let df_schema = DFSchema::try_from(view.right.schema.as_ref().clone())
         .map_err(|error| report!("invalid source schema: {error}"))?;
     context
@@ -2268,7 +2284,7 @@ fn left_aggregate_left_columns(view: &LeftAggregateView) -> Result<Vec<String>> 
             columns.push(key.clone());
         }
     }
-    let context = refresh_session();
+    let context = refresh_session_local();
     if let Some(filter) = &view.left_filter {
         for column in filter_columns(&context, &view.left.schema, filter)? {
             if !columns.contains(&column) {
@@ -2541,6 +2557,7 @@ impl IvmRuntime {
                         &context,
                         &view.left,
                         &left_window.before_versions,
+                        left_window.before_timestamp,
                     )
                     .await?,
                     &left_columns,
@@ -2557,6 +2574,7 @@ impl IvmRuntime {
                         &context,
                         &view.right,
                         &right_window.before_versions,
+                        right_window.before_timestamp,
                     )
                     .await?,
                     &right_columns,
@@ -2754,7 +2772,15 @@ impl IvmRuntime {
             append_dataframe(
                 &view.mv,
                 &self.client,
-                inserts.union(deletes)?.sort_by(sort_exprs)?,
+                collapse_update_deletes(
+                    &self.metadata,
+                    &context,
+                    &view.mv,
+                    inserts,
+                    deletes,
+                )
+                .await?
+                .sort_by(sort_exprs)?,
             )
             .await?
             .commit_ids,
