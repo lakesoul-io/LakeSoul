@@ -216,11 +216,11 @@ mod tests {
     #[test]
     fn decodes_escapes_and_nulls() {
         let values = decode_line(b"1\tAlice\t\\N\t\\\\xDEAD\tline\\nnext", 5).unwrap();
-        assert_eq!(values[0].as_str().as_deref(), Some("1"));
-        assert_eq!(values[1].as_str().as_deref(), Some("Alice"));
+        assert_eq!(values[0].as_str(), Some("1"));
+        assert_eq!(values[1].as_str(), Some("Alice"));
         assert!(values[2].is_null());
         assert_eq!(values[3].as_bytes(), b"\\xDEAD");
-        assert_eq!(values[4].as_str().as_deref(), Some("line\nnext"));
+        assert_eq!(values[4].as_str(), Some("line\nnext"));
     }
 
     #[test]

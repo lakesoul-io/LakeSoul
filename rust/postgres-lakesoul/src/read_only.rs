@@ -31,7 +31,7 @@
 //! `SessionSettingsHook` claims `SET TIME ZONE` (whose upstream branch writes
 //! through a discarded `SessionContext::state()` clone), `RESET` and `DISCARD
 //! ALL`, i.e. the connection-local settings and their restoration. It is
-//! installed after `TransactionStatementHook`, so a failed transaction
+//! installed after the transaction hook, so a failed transaction
 //! rejects these statements with `25P02` before any setting is changed, and
 //! after [`ReadCommittedOnlyGuard`], so isolation assignments keep their own
 //! validation. It still precedes `SetShowHook` so the broken upstream branch
@@ -62,7 +62,6 @@ use datafusion_postgres::QueryHook;
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::hooks::cursor::CursorStatementHook;
 use datafusion_postgres::hooks::set_show::SetShowHook;
-use datafusion_postgres::hooks::transactions::TransactionStatementHook;
 use datafusion_postgres::pgwire;
 use pgwire::api::ClientInfo;
 use pgwire::api::results::Response;
@@ -84,16 +83,16 @@ const FEATURE_NOT_SUPPORTED: &str = "0A000";
 /// cursor, `SET`/`SHOW` and transaction statements; the isolation guard runs
 /// first because it must see `BEGIN`/`SET TRANSACTION` before the transaction
 /// hook answers them. [`FailedTransactionGuard`] sits immediately in front of
-/// [`TransactionStatementHook`], so a failed transaction block is rejected with
-/// PostgreSQL's `25P02` by the in-repo guard instead of the upstream `25P01`,
-/// and only `COMMIT`/`ROLLBACK` still reach the upstream hook.
+/// [`crate::transaction::LakeSoulTransactionHook`], so a failed transaction
+/// block is rejected with PostgreSQL's `25P02` before the transaction hook can
+/// answer it; only `COMMIT`/`ROLLBACK` still reach the transaction hook.
 /// [`SessionSettingsHook`] runs after the transaction hook so a failed
 /// transaction (`25P02`) is reported before any `SET TIME ZONE`/`RESET`/
 /// `DISCARD ALL` could mutate session state, and before `SetShowHook` so the
 /// broken upstream `SET TIME ZONE` branch never runs.
 ///
 /// A hook that answers `SET`/`SHOW` itself must sit behind
-/// [`FailedTransactionGuard`] and [`TransactionStatementHook`]: a failed
+/// [`FailedTransactionGuard`] and the transaction hook: a failed
 /// transaction has to reject the statement with `25P02` before the hook could
 /// mutate session state, and in front of [`SetShowHook`] so it keeps first
 /// claim on its own variables.
@@ -106,7 +105,7 @@ pub(crate) fn statement_hooks_with(
         Arc::new(PortalCloseCleanup),       // new
         Arc::new(CursorStatementHook),
         Arc::new(FailedTransactionGuard), // new
-        Arc::new(TransactionStatementHook),
+        Arc::new(crate::transaction::LakeSoulTransactionHook),
     ];
     hooks.extend(connection_hooks);
     hooks.extend([
@@ -748,7 +747,6 @@ mod tests {
         "REVOKE SELECT ON t FROM u",
         "PREPARE p AS SELECT 1",
         "EXPLAIN INSERT INTO t VALUES (1)",
-        "SAVEPOINT sp",
         "BEGIN ISOLATION LEVEL REPEATABLE READ",
         "START TRANSACTION ISOLATION LEVEL SERIALIZABLE",
         "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",

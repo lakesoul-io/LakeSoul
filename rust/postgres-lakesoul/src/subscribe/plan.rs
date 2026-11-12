@@ -551,19 +551,23 @@ mod tests {
 
     #[test]
     fn watermark_ignores_foreign_commit_ids() {
-        let mut matching = PartitionInfo::default();
-        matching.snapshot = vec![
-            Uuid {
+        let matching = PartitionInfo {
+            snapshot: vec![
+                Uuid {
+                    high: SUBSCRIPTION_COMMIT_MAGIC,
+                    low: 100,
+                },
+                Uuid { high: 0, low: 999 },
+            ],
+            ..Default::default()
+        };
+        let other = PartitionInfo {
+            snapshot: vec![Uuid {
                 high: SUBSCRIPTION_COMMIT_MAGIC,
-                low: 100,
-            },
-            Uuid { high: 0, low: 999 },
-        ];
-        let mut other = PartitionInfo::default();
-        other.snapshot = vec![Uuid {
-            high: SUBSCRIPTION_COMMIT_MAGIC,
-            low: 42,
-        }];
+                low: 42,
+            }],
+            ..Default::default()
+        };
         assert_eq!(decode_watermark(&[matching, other]), 100);
         assert_eq!(decode_watermark(&[]), 0);
     }

@@ -750,10 +750,32 @@ impl QueryCancellation {
 
     /// Forgets every portal: SQL `CLOSE ALL` closes cursors and named portals
     /// alike, and each of them must stop keeping its statement.
+    ///
+    /// The statement this connection is running right now keeps its outcome:
+    /// it is usually the one asking for the purge (`CLOSE ALL`, `COMMIT`), and
+    /// it ends on its own once its response is sent. Ending it here would
+    /// report a completed statement as abandoned. Its portal entry is still
+    /// dropped - the portal is gone - so nothing is left behind by a
+    /// transaction end, which destroys portals without a `Close` message.
     pub fn forget_all_portals(&self) {
-        let removed: Vec<Arc<ExecutionState>> =
-            self.portals.lock().drain().map(|(_, s)| s).collect();
+        let running = self.current.lock().as_ref().map(Arc::clone);
+        let removed: Vec<Arc<ExecutionState>> = self
+            .portals
+            .lock()
+            .drain()
+            .map(|(_, state)| state)
+            .collect();
         for state in removed {
+            if running
+                .as_ref()
+                .is_some_and(|running| Arc::ptr_eq(running, &state))
+            {
+                // Its portal is gone, but the statement is still running: it
+                // keeps its outcome *and* its cancellation registration until
+                // its response is sent, so a cancel that arrives during a
+                // backpressured send still reaches it. `on_execute` ends it.
+                continue;
+            }
             self.finish_execution(&state);
             state.end(StatementOutcome::Abandoned);
         }
@@ -1555,7 +1577,9 @@ mod tests {
     }
 
     /// `CLOSE ALL` forgets every portal, and each of them stops keeping its
-    /// statement: closing the same name again starts a fresh statement.
+    /// statement: closing the same name again starts a fresh statement. The
+    /// statement that is running keeps its registration until it ends - it is
+    /// the one asking for the purge - so a cancel still reaches it.
     #[test]
     fn forget_all_portals_frees_every_portal() {
         let cancellation =
@@ -1568,13 +1592,20 @@ mod tests {
             .expect("statement admitted");
         cancellation.forget_all_portals();
         assert_eq!(cancellation.portal_count(), 0);
-        assert!(!cancellation.cancel(), "no portal keeps a statement");
+        assert!(
+            cancellation.cancel(),
+            "the statement that asked for the purge is still cancellable"
+        );
         let next_a = cancellation
             .begin_execution("a", "sa", None)
             .expect("statement admitted");
         assert!(
             !Arc::ptr_eq(&a, &next_a),
             "a name closed by CLOSE ALL gets a fresh statement"
+        );
+        assert!(
+            !Arc::ptr_eq(&b, &next_a),
+            "the running statement is not reused for another portal"
         );
         let next_b = cancellation
             .begin_execution("b", "sb", None)

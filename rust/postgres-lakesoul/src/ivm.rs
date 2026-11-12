@@ -35,7 +35,9 @@ use lakesoul_ivm::{IvmMetadata, IvmRuntime, IvmRuntimeConfig, IvmSqlExecutor};
 use lakesoul_metadata::MetaDataClientRef;
 use rootcause::Report;
 
-use crate::insert::{extract, reject_transaction, request_context, target_reference};
+use crate::insert::{
+    extract, reject_transaction_strict, request_context, target_reference,
+};
 use crate::server::ConnectionSession;
 use crate::session_settings::{
     SessionSettingsHook, settings_generation, show_response, text_column_plan,
@@ -330,7 +332,7 @@ impl IvmInsertHook {
         client: &mut dyn HookClient,
     ) -> PgWireResult<Response> {
         let (status, database) = request_context(client)?;
-        reject_transaction(status, "INSERT")?;
+        reject_transaction_strict(status, "INSERT")?;
         let session = client
             .session_extensions()
             .get::<ConnectionSession>()
@@ -424,7 +426,7 @@ impl QueryHook for IvmInsertHook {
             async {
                 validate_statement(insert)?;
                 let (status, database) = request_context(client)?;
-                reject_transaction(status, "INSERT")?;
+                reject_transaction_strict(status, "INSERT")?;
                 Self::placeholder_plan(insert, &database, session_context).await
             }
             .await,

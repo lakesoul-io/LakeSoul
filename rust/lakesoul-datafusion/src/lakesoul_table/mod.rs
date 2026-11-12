@@ -371,6 +371,7 @@ impl LakeSoulTable {
                 )
                 .unwrap_or_default(),
             format_registry,
+            deferred_commit: None,
         }))
     }
 

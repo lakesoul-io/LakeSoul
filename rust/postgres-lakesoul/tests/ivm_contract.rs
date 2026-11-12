@@ -4,7 +4,7 @@
 
 //! IVM entry contracts against the real PostgreSQL server.
 
-mod support;
+pub mod support;
 
 use anyhow::{Context, Result, ensure};
 

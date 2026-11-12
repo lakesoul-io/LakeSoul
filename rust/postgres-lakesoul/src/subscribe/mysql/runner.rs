@@ -479,25 +479,6 @@ async fn flush_all(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_truncate_targets() {
-        assert_eq!(
-            truncate_target("TRUNCATE TABLE `app`.`t1`", "app"),
-            Some(("app".to_string(), "t1".to_string()))
-        );
-        assert_eq!(
-            truncate_target("truncate t2;", "app"),
-            Some(("app".to_string(), "t2".to_string()))
-        );
-        assert_eq!(truncate_target("UPDATE t1 SET v = 1", "app"), None);
-    }
-}
-
 /// Parse the target of `TRUNCATE [TABLE] [db.]table`. Returning `None` means
 /// the statement is not a truncate; a truncate we cannot parse is rejected
 /// conservatively by the caller.
@@ -597,4 +578,23 @@ async fn handle_ddl(
             .await?;
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_truncate_targets() {
+        assert_eq!(
+            truncate_target("TRUNCATE TABLE `app`.`t1`", "app"),
+            Some(("app".to_string(), "t1".to_string()))
+        );
+        assert_eq!(
+            truncate_target("truncate t2;", "app"),
+            Some(("app".to_string(), "t2".to_string()))
+        );
+        assert_eq!(truncate_target("UPDATE t1 SET v = 1", "app"), None);
+    }
 }

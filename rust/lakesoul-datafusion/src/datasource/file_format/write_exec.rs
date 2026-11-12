@@ -197,6 +197,9 @@ fn violation_report(error: &DataFusionError) -> Option<DFResult<RecordBatch>> {
                 WriteViolation::DuplicateUpsertRow { table } => {
                     ("duplicate_upsert_row", table.clone())
                 }
+                WriteViolation::StagedLimit { what, limit } => {
+                    ("staged_limit", format!("{what}\u{1f}{limit}"))
+                }
                 WriteViolation::InvalidText { message } => {
                     ("invalid_text", message.clone())
                 }
@@ -301,6 +304,18 @@ fn collect_reports(
                 "not_null" => WriteViolation::NotNull { column: detail },
                 "duplicate_upsert_row" => {
                     WriteViolation::DuplicateUpsertRow { table: detail }
+                }
+                "staged_limit" => {
+                    let (what, limit) = detail
+                        .split_once('\u{1f}')
+                        .ok_or_else(|| report_error(REPORT_ERROR_DETAIL))?;
+                    let limit: u64 = limit
+                        .parse()
+                        .map_err(|_| report_error(REPORT_ERROR_DETAIL))?;
+                    WriteViolation::StagedLimit {
+                        what: what.to_string(),
+                        limit,
+                    }
                 }
                 "invalid_text" => WriteViolation::InvalidText { message: detail },
                 "division_by_zero" => WriteViolation::DivisionByZero { message: detail },
@@ -1604,16 +1619,33 @@ async fn commit_reports(
     let keep_files = cas_commit
         .as_ref()
         .map(|_| Arc::new(AtomicBool::new(false)));
-    let commit_guard = match &cas_commit {
-        Some(snapshot) => Some(CommitGuard::Cas {
+    // A transaction block owns the statement's output: record it in the block
+    // and let `COMMIT` publish it (or `ROLLBACK` delete it) instead of
+    // publishing here.
+    let deferred =
+        crate::write_mode::LakeSoulDeferredCommit::from_config(context.session_config());
+    let commit_guard = match deferred {
+        Some(sink) => Some(CommitGuard::Deferred {
+            sink,
             table_info: Arc::clone(&table_info),
-            snapshot: snapshot.clone(),
-            keep_files: Arc::clone(keep_files.as_ref().expect("keep_files")),
-        }),
-        None => Some(CommitGuard::Streamed {
+            expected: cas_commit.as_ref().map(|snapshot| match snapshot {
+                CommitSnapshot::InsertOnly(partitions) => partitions.clone(),
+                CommitSnapshot::Update(partitions) => partitions.as_ref().clone(),
+            }),
             context: Arc::clone(&context),
             attempted_files: Arc::clone(&attempted_files),
         }),
+        None => match &cas_commit {
+            Some(snapshot) => Some(CommitGuard::Cas {
+                table_info: Arc::clone(&table_info),
+                snapshot: snapshot.clone(),
+                keep_files: Arc::clone(keep_files.as_ref().expect("keep_files")),
+            }),
+            None => Some(CommitGuard::Streamed {
+                context: Arc::clone(&context),
+                attempted_files: Arc::clone(&attempted_files),
+            }),
+        },
     };
     let result = wait_for_commit(
         metadata_client,
@@ -1644,6 +1676,15 @@ enum CommitGuard {
         snapshot: CommitSnapshot,
         keep_files: Arc<AtomicBool>,
     },
+    Deferred {
+        sink: Arc<dyn crate::write_mode::StagedWriteSink>,
+        table_info: Arc<TableInfo>,
+        /// Versions the statement was validated against; `None` for an
+        /// append-only write, which cannot conflict.
+        expected: Option<Vec<PartitionInfo>>,
+        context: Arc<TaskContext>,
+        attempted_files: Arc<Mutex<Vec<String>>>,
+    },
     Streamed {
         context: Arc<TaskContext>,
         attempted_files: Arc<Mutex<Vec<String>>>,
@@ -1667,10 +1708,17 @@ async fn wait_for_commit(
         .as_ref()
         .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
     {
-        if let Some(CommitGuard::Streamed {
-            context,
-            attempted_files,
-        }) = &commit_guard
+        if let Some(
+            CommitGuard::Streamed {
+                context,
+                attempted_files,
+            }
+            | CommitGuard::Deferred {
+                context,
+                attempted_files,
+                ..
+            },
+        ) = &commit_guard
         {
             let files = attempted_files.lock().await;
             remove_files(context, &files).await?;
@@ -1685,9 +1733,77 @@ async fn wait_for_commit(
         .map(|(_, rows)| rows)
         .sum();
 
+    if let Some(CommitGuard::Deferred {
+        sink,
+        table_info,
+        expected,
+        context,
+        attempted_files,
+    }) = &commit_guard
+    {
+        // The block's `COMMIT` publishes this; nothing becomes visible now, so
+        // the statement reports its row count without a commit metric.
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| DataFusionError::Execution(error.to_string()))?
+            .as_millis() as i64;
+        let mut data_commits = Vec::new();
+        let mut rows = Vec::new();
+        for (partition_desc, (files, row_count)) in
+            partitioned_file_path_and_row_count.iter()
+        {
+            if files.is_empty() {
+                continue;
+            }
+            rows.push((partition_desc.clone(), *row_count));
+            let (high, low) = uuid::Uuid::new_v4().as_u64_pair();
+            data_commits.push(DataCommitInfo {
+                table_id: table_info.table_id.clone(),
+                partition_desc: partition_desc.clone(),
+                commit_id: Some(Uuid { high, low }),
+                file_ops: files
+                    .iter()
+                    .map(|file| DataFileOp {
+                        path: file.path.clone(),
+                        file_op: FileOp::Add as i32,
+                        size: file.size,
+                        file_exist_cols: file.file_exist_cols.clone(),
+                    })
+                    .collect(),
+                commit_op: CommitOp::AppendCommit as i32,
+                timestamp,
+                committed: true,
+                ..Default::default()
+            });
+        }
+        if data_commits.is_empty() {
+            // A statement that wrote no files publishes nothing and stages
+            // nothing: an empty entry would make `COMMIT` refuse the whole
+            // block, and it has no files to keep either.
+            return Ok(count);
+        }
+        // Only a primary-key write carries the versions it was validated
+        // against; an append-only one cannot conflict.
+        let staged = sink.stage(crate::write_mode::StagedWrite {
+            table_info: Arc::clone(table_info),
+            data_commits,
+            expected: expected.clone(),
+            rows,
+        });
+        if let Err(error) = staged {
+            // The block refuses the write (or it ended): the files are
+            // unreferenced and must not stay behind.
+            let files = attempted_files.lock().await;
+            remove_files(context, &files).await?;
+            return Err(error.into());
+        }
+        return Ok(count);
+    }
     // Timed and finalized around the publication alone: the file writers
     // above and the index maintenance below are not part of the metadata
-    // commit, and index outcomes have their own metrics.
+    // commit, and index outcomes have their own metrics. A staged write never
+    // reaches this point - `COMMIT` publishes it - so it records no commit
+    // metric instead of being counted as a failed one.
     let mut commit_metrics = WriteCommitMetrics::start();
     commit_metrics.record_partitions(partitioned_file_path_and_row_count.len() as u64);
 
@@ -1864,32 +1980,57 @@ async fn wait_for_commit(
     );
     commit_metrics.success();
 
+    // The index builders take the historical `(paths, rows)` view: an index
+    // entry only needs to know which files belong to a partition, not how the
+    // commit records each of them.
+    let index_files: HashMap<String, (Vec<String>, u64)> =
+        partitioned_file_path_and_row_count
+            .iter()
+            .map(|(partition_desc, (files, rows))| {
+                (
+                    partition_desc.clone(),
+                    (files.iter().map(|file| file.path.clone()).collect(), *rows),
+                )
+            })
+            .collect();
+    maintain_indexes(
+        &client,
+        &table_name,
+        &primary_keys,
+        &object_store_options,
+        &index_files,
+    )
+    .await?;
+    Ok(count)
+}
+
+/// Builds or incrementally updates the vector and text indexes over files that
+/// were just published.
+///
+/// The write path runs this inline once its own commit returned; a transaction
+/// block runs it once `COMMIT` published every staged statement, with the
+/// files grouped per partition. Both give the same shards: the builders read
+/// the published active-file set, not the caller's statement.
+pub async fn maintain_indexes(
+    client: &MetaDataClientRef,
+    table_name: &str,
+    primary_keys: &[String],
+    object_store_options: &SecretMap,
+    index_files: &HashMap<String, (Vec<String>, u64)>,
+) -> DFResult<()> {
     // Auto-build / incrementally update the vector index from the newly
     // committed files, driven by the table's `vector_index_columns`
     // property (same semantics as the Python write path). Re-fetch the table
     // info so properties changed after plan construction apply.
     // The native builder's future is not Send, so it is driven on the
     // blocking pool via the global runtime.
-    let committed_files = partitioned_file_path_and_row_count;
-    // The index builders take the historical `(paths, rows)` view: an index
-    // entry only needs to know which files belong to a partition, not how the
-    // commit records each of them.
-    let index_files: HashMap<String, (Vec<String>, u64)> = committed_files
-        .iter()
-        .map(|(partition_desc, (files, rows))| {
-            (
-                partition_desc.clone(),
-                (files.iter().map(|file| file.path.clone()).collect(), *rows),
-            )
-        })
-        .collect();
-
-    let table_ref = TableReference::from(table_name.as_str());
+    let table_ref = TableReference::from(table_name);
     let namespace = table_ref.schema().unwrap_or("default").to_string();
 
     let (configs, text_configs, deferred) = if let Some(fresh_info) = client
         .get_table_info_by_table_name(table_ref.table(), &namespace)
-        .await?
+        .await
+        .map_err(|error| DataFusionError::External(Box::new(error)))?
     {
         let deferred = serde_json::from_str::<crate::catalog::LakeSoulTableProperty>(
             &fresh_info.properties,
@@ -1917,7 +2058,7 @@ async fn wait_for_commit(
     // lakesoul_common::index::pending_shard_files).
     if deferred {
         debug!("index maintenance deferred for {}", &table_name);
-        return Ok(count);
+        return Ok(());
     }
 
     // One active-files listing serves both auto-rebuild policies.
@@ -1942,12 +2083,17 @@ async fn wait_for_commit(
     };
 
     // Text and vector index maintenance are independent; build them
-    // concurrently instead of serializing two blocking builds.
-    let text_index_files = index_files.clone();
-    let text_primary_keys = primary_keys.clone();
-    let text_object_store_options = object_store_options.clone();
+    // concurrently instead of serializing two blocking builds. The builders
+    // run on the blocking pool, so everything they touch is owned.
+    let vector_index_files = (*index_files).clone();
+    let text_index_files = (*index_files).clone();
+    let vector_primary_keys = primary_keys.to_vec();
+    let text_primary_keys = primary_keys.to_vec();
+    let vector_object_store_options = (*object_store_options).clone();
+    let text_object_store_options = (*object_store_options).clone();
     let vector_active_files = active_files.clone();
-    let text_client = Arc::clone(&client);
+    let vector_client = Arc::clone(client);
+    let text_client = Arc::clone(client);
     let vector_config_count = configs.len();
     let vector_build = async {
         if configs.is_empty() || primary_keys.is_empty() {
@@ -1965,11 +2111,11 @@ async fn wait_for_commit(
             lakesoul_io::session::GLOBAL_RUNTIME.block_on(
                 crate::vector_index::auto_build_vector_index(
                     &configs,
-                    &primary_keys,
-                    &object_store_options,
-                    &index_files,
+                    &vector_primary_keys,
+                    &vector_object_store_options,
+                    &vector_index_files,
                     active.as_deref(),
-                    &client.vector_index_catalog(),
+                    &vector_client.vector_index_catalog(),
                 ),
             )
         })
@@ -2051,7 +2197,7 @@ async fn wait_for_commit(
     let (vector_built, text_built) = tokio::join!(vector_build, text_build);
     vector_built?;
     text_built?;
-    Ok(count)
+    Ok(())
 }
 
 /// Marks a statement's write as cancelled when its result stream is dropped.

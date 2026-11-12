@@ -1169,18 +1169,16 @@ async fn refused_updates_change_nothing(h: &Harness) -> Result<()> {
         ensure_connection_usable(h, case).await?;
     }
 
-    // PostgreSQL updates inside a transaction; LakeSoul commits per statement
-    // and cannot undo one, so the statement is refused and the block rolls back.
+    // A write inside a block is staged: the block's `ROLLBACK` leaves the
+    // table exactly as it was.
     h.lake
         .batch_execute("BEGIN")
         .await
         .context("open a transaction block")?;
-    let error = h
-        .lake
+    h.lake
         .execute("UPDATE update_counters SET n = -1 WHERE id = 1", &[])
         .await
-        .expect_err("UPDATE inside a transaction block must be refused");
-    ensure_sqlstate(&error, FEATURE_NOT_SUPPORTED, "transaction block")?;
+        .context("UPDATE inside a transaction block is staged")?;
     h.lake
         .batch_execute("ROLLBACK")
         .await

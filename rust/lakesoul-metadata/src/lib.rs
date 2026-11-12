@@ -26,7 +26,7 @@ pub use error::{LakeSoulMetaDataError, Result};
 use lakesoul_metadata_proto::entity;
 pub use metadata_client::{
     CommitOutcome, IncrementalWindow, MetaDataClient, MetaDataClientRef,
-    PartitionChangelog, pg_config_from_env,
+    PartitionChangelog, TransactionTableCommit, pg_config_from_env,
 };
 
 pub mod transfusion;

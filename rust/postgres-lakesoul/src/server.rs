@@ -96,6 +96,10 @@ pub struct ConnectionSession {
     /// The statement this connection is running, so a `CancelRequest` (or the
     /// connection going away) stops it.
     pub cancellation: Arc<QueryCancellation>,
+    /// The open transaction block, shared with the write path.
+    pub transaction: crate::transaction::SharedTransaction,
+    /// The metadata client a `COMMIT` publishes through.
+    pub meta_client: lakesoul_metadata::MetaDataClientRef,
     /// The connection's slot: released when this state is dropped.
     #[allow(dead_code)]
     pub permit: ConnectionPermit,
@@ -105,6 +109,32 @@ pub struct ConnectionSession {
     /// was planned under: `Execute` replans a statement whose plan predates a
     /// change.
     pub settings: Arc<SettingsGeneration>,
+    /// The server limits, for the transaction block's staged-file accounting.
+    pub limits: crate::limits::Limits,
+}
+
+impl Drop for ConnectionSession {
+    /// A connection that goes away with an open block leaves its staged files
+    /// unreferenced: delete them instead of waiting for GC.
+    ///
+    /// A `COMMIT` in flight owns its files through `StagedFiles` and the block
+    /// state is already gone, so this only removes what no statement is
+    /// publishing.
+    fn drop(&mut self) {
+        let Some(state) = self.transaction.lock().take() else {
+            return;
+        };
+        if state.pending.is_empty() {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let context = self.session.context.clone();
+        runtime.spawn(async move {
+            crate::transaction::discard_staged_files(&context, state.pending).await;
+        });
+    }
 }
 
 /// Resolve the connection-local session state from pgwire's
@@ -303,6 +333,10 @@ impl LakeSoulQueryRouter {
                 let _statement = state
                     .session
                     .label_statement(execution.query_id(), &execution.span());
+                // A block whose `BEGIN` response never reached the client is
+                // not a transaction: undo it (and delete what it staged)
+                // before this statement can stage into it.
+                crate::transaction::reconcile(&state, client.transaction_status()).await;
                 // The SQL text is only known here: `RUST_LOG=info,lakesoul_sql=debug`
                 // turns it on without enabling debug for every target.
                 debug!(
@@ -323,6 +357,12 @@ impl LakeSoulQueryRouter {
                 let responses = match planned {
                     Ok(responses) => responses,
                     Err(error) => {
+                        // A statement hook may have ended the block itself (a
+                        // `COMMIT` that fails closes the transaction): the
+                        // status it left on the client is the one pgwire
+                        // reports in `ReadyForQuery`, so it must not be
+                        // overwritten with this batch's stale copy.
+                        transaction_status = client.transaction_status();
                         // `run_under_limit` already ended an interrupted
                         // statement; a planning error ends it as a failure.
                         execution.end_after_send(StatementOutcome::Failed);
@@ -330,6 +370,12 @@ impl LakeSoulQueryRouter {
                         return Err(error);
                     }
                 };
+                // A transaction hook may have changed the client's status: a
+                // `COMMIT` reports the block idle before it publishes and
+                // before the cancellable index build. Take that status into
+                // this batch's copy, so an interruption while the response is
+                // sent cannot write the stale pre-hook one back.
+                transaction_status = client.transaction_status();
                 for response in responses {
                     let response = guard_response(response, &execution);
                     // The socket write is bounded as well: a client that stops
@@ -616,9 +662,12 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
             session,
             service,
             cancellation,
+            transaction: crate::transaction::shared(),
+            meta_client: Arc::clone(self.session_factory.meta_client()),
             permit,
             defaults,
             settings: Arc::new(SettingsGeneration::default()),
+            limits: self.server_limits.limits(),
         });
         Ok(())
     }
@@ -1115,6 +1164,9 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
         // An unnamed portal is addressed by pgwire's default name, not by
         // "none".
         let state = connection_session(client)?;
+        // See the simple-query path: a block the client never learned about
+        // must not receive this statement.
+        crate::transaction::reconcile(&state, client.transaction_status()).await;
         let portal = message
             .name
             .clone()

@@ -220,7 +220,7 @@ impl InsertOnly {
 }
 
 /// A rejected conditional commit must not leave the statement's data files.
-pub(super) async fn remove_files(context: &TaskContext, files: &[String]) -> Result<()> {
+pub(crate) async fn remove_files(context: &TaskContext, files: &[String]) -> Result<()> {
     let mut errors = Vec::new();
     for file in files {
         let result = async {

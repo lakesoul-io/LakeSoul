@@ -16,10 +16,10 @@
 //! `RETURNING` is refused because the sink commits after the statement's rows
 //! are written and returns no row stream.
 //!
-//! Writes are refused inside a transaction block and inside a multi-statement
-//! simple-query message, for the same reason DDL is: LakeSoul commits
-//! immediately, so a later `ROLLBACK` or a failing statement in the batch
-//! cannot undo the rows.
+//! A write inside a transaction block is staged: its files are recorded in the
+//! block and published by `COMMIT`, so `ROLLBACK` can still undo it. A
+//! multi-statement simple-query message is still refused, because its statements
+//! are not run in one transaction here yet.
 //!
 //! Two outcomes need care. A statement that loses a race with a concurrent
 //! writer is reported as `40001` (serialization failure, retryable), because
@@ -121,7 +121,7 @@ impl QueryHook for InsertStatementHook {
             async {
                 let (status, database) = request_context(client)?;
                 if is_do_update(insert) {
-                    reject_transaction(status, "INSERT")?;
+                    reject_transaction(status, session_context, "INSERT")?;
                     let planned = prepare_upsert(
                         insert,
                         session_context,
@@ -151,7 +151,7 @@ impl QueryHook for InsertStatementHook {
             async {
                 let (status, database) = request_context(client)?;
                 if is_do_update(insert) {
-                    reject_transaction(status, "INSERT")?;
+                    reject_transaction(status, session_context, "INSERT")?;
                     // The Parse-time plan names the table the client prepared.
                     // The planner's own catalog lookup is the authoritative
                     // one: comparing against the identity it captured closes
@@ -247,7 +247,9 @@ async fn run_upsert(
     status: TransactionStatus,
     database: &str,
 ) -> PgWireResult<Response> {
-    reject_transaction(status, "INSERT")?;
+    // Upsert publishes through its own executor, which does not stage into the
+    // block: refuse it before resolving the target, so a block never runs it.
+    reject_transaction_strict(status, "INSERT ... ON CONFLICT DO UPDATE")?;
     let planned = prepare_upsert(
         insert,
         session_context,
@@ -412,7 +414,9 @@ async fn prepare(
     status: TransactionStatus,
     database: &str,
 ) -> PgWireResult<Target> {
-    reject_transaction(status, "INSERT")?;
+    // Only a LakeSoul table stages its metadata in a transaction block; a
+    // foreign table executes remote SQL and an external file table writes
+    // directly, so both are refused there (see the branches below).
     reject_unsupported(insert)?;
     let (table_ref, table_name) = target_reference(&insert.table, database)?;
     let provider = session_context
@@ -426,6 +430,7 @@ async fn prepare(
         })?;
     let provider_any: &dyn std::any::Any = provider.as_ref();
     if let Some(provider) = provider_any.downcast_ref::<LakeSoulTableProvider>() {
+        reject_transaction(status, session_context, "INSERT")?;
         let table_info = provider.table_info();
         let (range, primary_keys) = split_partitions(&table_info.partitions);
         let mode = conflict_plan(insert, &primary_keys, &range)?;
@@ -438,6 +443,7 @@ async fn prepare(
     }
 
     if let Some(provider) = provider_any.downcast_ref::<FederationTableProvider>() {
+        reject_transaction_strict(status, "INSERT")?;
         if insert.on.is_some() {
             return Err(feature_not_supported(
                 "INSERT ... ON CONFLICT is not supported on a foreign table; \
@@ -455,6 +461,7 @@ async fn prepare(
     }
 
     if let Some(provider) = provider_any.downcast_ref::<ExternalFileTableProvider>() {
+        reject_transaction_strict(status, "INSERT")?;
         if insert.on.is_some() {
             return Err(feature_not_supported(
                 "INSERT ... ON CONFLICT is not supported on an external file table; \
@@ -631,7 +638,34 @@ fn reject_unsupported(insert: &Insert) -> PgWireResult<()> {
     Ok(())
 }
 
+/// Refuses a write whose metadata cannot be rolled back inside a block.
+///
+/// A write whose metadata *is* staged is allowed when the block's sink is
+/// installed: it records its files in the block instead of publishing them.
 pub(crate) fn reject_transaction(
+    status: TransactionStatus,
+    session_context: &SessionContext,
+    verb: &str,
+) -> PgWireResult<()> {
+    if status == TransactionStatus::Idle
+        || lakesoul_datafusion::write_mode::LakeSoulDeferredCommit::from_context(
+            session_context,
+        )
+        .is_some()
+    {
+        return Ok(());
+    }
+    Err(feature_not_supported(format!(
+        "{verb} is not supported inside a transaction block: LakeSoul commits \
+         every statement immediately and cannot roll it back"
+    )))
+}
+
+/// Refuses a write inside a block unconditionally.
+///
+/// Used by paths whose metadata is not staged in the block (IVM, subscriptions):
+/// allowing them would publish inside a block that may still roll back.
+pub(crate) fn reject_transaction_strict(
     status: TransactionStatus,
     verb: &str,
 ) -> PgWireResult<()> {

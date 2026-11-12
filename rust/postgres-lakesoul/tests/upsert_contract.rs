@@ -12,7 +12,8 @@
 //! file) around it, and by reading the target relation afterwards.
 //!
 //! The matrix follows the PostgreSQL oracle recorded in
-//! `.plans/update-upsert.md` §10.1 and `local://c1-upsert-evidence.md`:
+//! `../UPSERT_CONTRACTS.md` (section 1), which also carries the acceptance
+//! results:
 //! partial `INSERT`/`SET`, unassigned columns, explicit NULL, old-value and
 //! `EXCLUDED` expressions, simultaneous assignments, conflict `WHERE`
 //! true/false/NULL, new keys outside the conflict filter, the repeated-source
