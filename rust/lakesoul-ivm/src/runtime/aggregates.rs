@@ -3242,7 +3242,7 @@ impl IvmRuntime {
             let sql = value_count_global_sql(view, epoch);
             let frame = context.sql(&sql).await?;
             commit_ids.extend(
-                append_dataframe(&view.mv, &self.client, frame)
+                append_dataframe(view.mv, &self.client, frame)
                     .await?
                     .commit_ids,
             );
@@ -3337,7 +3337,7 @@ impl IvmRuntime {
             ))
             .await?;
         commit_ids.extend(
-            append_dataframe(&view.state, &self.client, state_frame)
+            append_dataframe(view.state, &self.client, state_frame)
                 .await?
                 .commit_ids,
         );
@@ -3388,7 +3388,7 @@ impl IvmRuntime {
         context.register_table("mv", mv.into_view())?;
         let frame = context.sql(&value_count_mv_sql(view, epoch)).await?;
         commit_ids.extend(
-            append_dataframe(&view.mv, &self.client, frame)
+            append_dataframe(view.mv, &self.client, frame)
                 .await?
                 .commit_ids,
         );
@@ -3500,7 +3500,7 @@ impl IvmRuntime {
             let sql = value_count_global_sql(view, epoch);
             let frame = context.sql(&sql).await?;
             commit_ids.extend(
-                append_dataframe(&view.mv, &self.client, frame)
+                append_dataframe(view.mv, &self.client, frame)
                     .await?
                     .commit_ids,
             );
@@ -3560,7 +3560,7 @@ impl IvmRuntime {
         };
         let state_frame = context.sql(&state_sql).await?;
         commit_ids.extend(
-            append_dataframe(&view.state, &self.client, state_frame)
+            append_dataframe(view.state, &self.client, state_frame)
                 .await?
                 .commit_ids,
         );
@@ -3582,7 +3582,7 @@ impl IvmRuntime {
         };
         let mv_frame = context.sql(&mv_sql).await?;
         commit_ids.extend(
-            append_dataframe(&view.mv, &self.client, mv_frame)
+            append_dataframe(view.mv, &self.client, mv_frame)
                 .await?
                 .commit_ids,
         );

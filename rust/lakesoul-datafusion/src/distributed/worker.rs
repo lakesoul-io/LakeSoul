@@ -144,11 +144,14 @@ fn install_ivm_worker_config(
         Arc::clone(runtime),
     );
     config.object_store_options = core_args.s3_options();
-    config.options = IVM_WORKER_OPTIONS.get().cloned().unwrap_or_else(|| {
-        let mut options = lakesoul_ivm::IvmOptions::default();
-        options.max_active_tasks = Some(4);
-        options
-    });
+    config.options =
+        IVM_WORKER_OPTIONS
+            .get()
+            .cloned()
+            .unwrap_or_else(|| lakesoul_ivm::IvmOptions {
+                max_active_tasks: Some(4),
+                ..Default::default()
+            });
     lakesoul_ivm::config::install(config);
 }
 
