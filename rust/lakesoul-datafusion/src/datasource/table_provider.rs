@@ -52,7 +52,9 @@ use lakesoul_metadata::MetaDataClientRef;
 use lakesoul_metadata::error::LakeSoulMetaDataError;
 use lakesoul_metadata::transfusion::DataFileInfo;
 use lakesoul_metadata::utils::qualify_path;
-use lakesoul_metadata_proto::entity::{PartitionInfo, TableInfo};
+use lakesoul_metadata_proto::entity::{
+    CommitOp, DataCommitInfo, PartitionInfo, TableInfo,
+};
 use rootcause::compat::boxed_error::IntoBoxedError;
 use rootcause::prelude::ResultExt;
 use rootcause::report;
@@ -158,6 +160,10 @@ pub struct LakeSoulTableProvider {
     /// `text_index_columns` property (empty when the table has none).
     pub(crate) text_index_configs: Vec<crate::text_index::TextIndexTableConfig>,
     pub(crate) format_registry: Arc<LakeSoulFormatRegistry>,
+    /// The connection's deferred-commit handle, when the front end installs
+    /// one: a block's staged rows are invisible to the index shards and to any
+    /// rewrite that replays the published snapshot.
+    pub(crate) deferred_commit: Option<Arc<crate::write_mode::LakeSoulDeferredCommit>>,
 }
 impl LakeSoulTableProvider {
     fn needs_output_projection(
@@ -313,7 +319,34 @@ impl LakeSoulTableProvider {
                 .cmp(&right.0.partition_desc)
                 .then_with(|| left.0.version.cmp(&right.0.version))
         });
+        // Read-your-writes: the block's own staged files are not published, so
+        // its later statements would otherwise read (and validate keys
+        // against) the state from before its own writes. They belong at the
+        // end of their partition's file list: merge-on-read treats later
+        // versions as the live rows.
+        if let Some(sink) = crate::write_mode::LakeSoulDeferredCommit::from_session(ctx) {
+            let staged = sink.staged_commits(self.table_id());
+            if !staged.is_empty() {
+                overlay_staged_files(&mut listed, staged);
+                listed.sort_by(|left, right| {
+                    left.0
+                        .partition_desc
+                        .cmp(&right.0.partition_desc)
+                        .then_with(|| left.0.version.cmp(&right.0.version))
+                });
+            }
+        }
         Ok(listed)
+    }
+
+    /// Whether the connection's open transaction block has staged writes.
+    ///
+    /// Those files are not published, so anything that replays the published
+    /// snapshot - the index shards above all - cannot see them.
+    pub fn block_has_staged_writes(&self) -> bool {
+        self.deferred_commit
+            .as_ref()
+            .is_some_and(|handle| handle.has_staged_writes())
     }
 
     fn scan_file_from_info(&self, info: &DataFileInfo) -> DFResult<ScanFile> {
@@ -632,6 +665,7 @@ impl LakeSoulTableProvider {
             vector_index_configs,
             text_index_configs,
             format_registry,
+            deferred_commit: provider_options.deferred_commit,
         })
     }
 
@@ -946,6 +980,9 @@ impl LakeSoulTableProvider {
             vector_index_configs,
             text_index_configs,
             format_registry,
+            // Built from an existing provider: the handle is not the one the
+            // connection installed, so no block can be tracked through it.
+            deferred_commit: None,
         })
     }
 
@@ -1322,6 +1359,13 @@ impl LakeSoulTableProvider {
             debug!(reason, "vector index unavailable; using regular scan");
         };
 
+        // The index shards describe published files only: a staged write of
+        // the open block is invisible to them. The exact scan below sees it,
+        // so the indexed plan is refused while the block has staged writes.
+        if self.block_has_staged_writes() {
+            record_fallback("staged_writes");
+            return Ok(None);
+        }
         if self.primary_keys.is_empty() {
             record_fallback("missing_primary_key");
             return Ok(None);
@@ -1506,6 +1550,11 @@ impl LakeSoulTableProvider {
             debug!(reason, "text index unavailable; using regular scan");
         };
 
+        // See the vector path: index shards hold published files only.
+        if self.block_has_staged_writes() {
+            record_fallback("staged_writes");
+            return Ok(None);
+        }
         if self.primary_keys.is_empty() {
             record_fallback("missing_primary_key");
             return Ok(None);
@@ -2307,6 +2356,60 @@ fn is_vector_type(data_type: &DataType) -> bool {
             DataType::Float16 | DataType::Float32 | DataType::Float64
         ),
         _ => false,
+    }
+}
+
+/// Appends a transaction block's staged files to the partitions a scan will
+/// read.
+///
+/// The staged commits are not published, so a scan that lists the published
+/// snapshot misses them. Each commit goes after the files its partition
+/// already has: merge-on-read reads later versions as the live rows, so the
+/// block's own writes win over the rows they replace.
+fn overlay_staged_files(
+    listed: &mut Vec<(PartitionInfo, Vec<DataFileInfo>)>,
+    staged: Vec<DataCommitInfo>,
+) {
+    for commit in staged {
+        if commit.file_ops.is_empty() {
+            continue;
+        }
+        let files = commit
+            .file_ops
+            .iter()
+            .map(|file| DataFileInfo {
+                partition_desc: commit.partition_desc.clone(),
+                path: file.path.clone(),
+                file_op: "add".to_string(),
+                size: file.size,
+                modification_time: commit.timestamp,
+                file_exist_cols: file.file_exist_cols.clone(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        match listed
+            .iter_mut()
+            .find(|(info, _)| info.partition_desc == commit.partition_desc)
+        {
+            Some((_, existing)) => existing.extend(files),
+            None => {
+                // A partition the block created: no published version
+                // describes it yet, so the staged files are all the scan
+                // reads.
+                listed.push((
+                    PartitionInfo {
+                        table_id: commit.table_id.clone(),
+                        partition_desc: commit.partition_desc.clone(),
+                        commit_op: CommitOp::AppendCommit as i32,
+                        timestamp: commit.timestamp,
+                        domain: commit.domain.clone(),
+                        snapshot: commit.commit_id.into_iter().collect(),
+                        ..Default::default()
+                    },
+                    files,
+                ));
+            }
+        }
     }
 }
 

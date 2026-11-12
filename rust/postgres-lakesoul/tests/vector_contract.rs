@@ -9,6 +9,8 @@ mod common;
 #[path = "vector_contract/search.rs"]
 mod search;
 pub mod support;
+#[path = "vector_contract/transaction.rs"]
+mod transaction;
 
 use anyhow::Result;
 
@@ -29,7 +31,9 @@ async fn vector_contract_phase_three_three() -> Result<()> {
                 .await?;
             }
             codecs::run(h).await?;
-            search::run(h).await
+            search::run(h).await?;
+            // Last: it publishes one more row into the indexed fixture.
+            transaction::run(h).await
         })
     })
     .await

@@ -25,8 +25,9 @@
 //! scan, so an empty table or `WHERE false` does not slip through), tables
 //! without a primary key, `appendOnly` tables, tables with a non-overwrite
 //! merge operator, assignments to a primary-key or range-partition column,
-//! `RETURNING`, `UPDATE ... FROM`, and writes inside a transaction block or a
-//! multi-statement simple-query batch. `UPDATE ... RETURNING` has no row
+//! `RETURNING`, `UPDATE ... FROM`, and a multi-statement simple-query batch.
+//! Inside a transaction block an `UPDATE` is staged and published by `COMMIT`.
+//! `UPDATE ... RETURNING` has no row
 //! stream, and changing a key would leave the old row behind without a delete
 //! path.
 
@@ -71,7 +72,7 @@ impl QueryHook for UpdateStatementHook {
         Some(
             async {
                 let (status, database) = request_context(client)?;
-                crate::insert::reject_transaction(status, "UPDATE")?;
+                crate::insert::reject_transaction(status, session_context, "UPDATE")?;
                 let planned = prepare(update, session_context, &database).await?;
                 execute(&planned, None, session_context).await
             }
@@ -89,7 +90,7 @@ impl QueryHook for UpdateStatementHook {
         Some(
             async {
                 let (status, database) = request_context(client)?;
-                crate::insert::reject_transaction(status, "UPDATE")?;
+                crate::insert::reject_transaction(status, session_context, "UPDATE")?;
                 // Analysis only: the plan supplies parameter types, but no
                 // partition snapshot is pinned at Parse time.
                 let planned = prepare_with(
@@ -117,7 +118,7 @@ impl QueryHook for UpdateStatementHook {
         Some(
             async {
                 let (status, database) = request_context(client)?;
-                crate::insert::reject_transaction(status, "UPDATE")?;
+                crate::insert::reject_transaction(status, session_context, "UPDATE")?;
                 // Execute re-plans from the statement and the live catalog.
                 // Compare the prepared statement's target identity first: a
                 // recreated table (whatever its new configuration) must not be

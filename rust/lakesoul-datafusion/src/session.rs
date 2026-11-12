@@ -800,6 +800,12 @@ impl LakeSoulSessionFactory {
             session_config = session_config.with_extension(Arc::new(locality));
         }
 
+        // The pushdown rewrites must stay off while a front end's transaction
+        // block has staged writes: they drop the ordering/score expressions
+        // the index plan is supposed to provide, and the index only describes
+        // published files.
+        let block =
+            session_config.get_extension::<crate::write_mode::LakeSoulDeferredCommit>();
         let runtime = RuntimeEnvBuilder::new()
             .with_memory_pool(Arc::clone(&self.memory_pool))
             .build_arc()?;

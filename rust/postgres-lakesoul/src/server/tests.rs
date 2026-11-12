@@ -18,6 +18,7 @@ use std::task::{Context, Poll};
 use crate::limits::Limits;
 use datafusion::prelude::SessionContext;
 use datafusion_postgres::DfSessionService;
+use datafusion_postgres::QueryHook;
 use datafusion_postgres::pgwire;
 use datafusion_postgres::pgwire::api::query::{ExtendedQueryHandler, SimpleQueryHandler};
 use datafusion_postgres::pgwire::api::results::{FieldInfo, Response, SendableRowStream};
@@ -32,7 +33,7 @@ use pgwire::api::stmt::QueryParser;
 use pgwire::api::{
     METADATA_DATABASE, METADATA_USER, PgWireConnectionState, SessionExtensions,
 };
-use pgwire::error::PgWireError;
+use pgwire::error::{PgWireError, PgWireResult};
 use pgwire::messages::extendedquery::{
     Bind, Close, Execute, Parse, TARGET_TYPE_BYTE_PORTAL,
 };
@@ -120,16 +121,23 @@ async fn attach_session_with_limits(
             Arc::clone(&server),
             user,
         )),
+        transaction: crate::transaction::shared(),
+        meta_client: Arc::clone(factory.meta_client()),
         permit: server
             .admit_connection()
             .expect("the test server admits a connection"),
         defaults: defaults.clone(),
         settings: Arc::new(crate::session_settings::SettingsGeneration::default()),
+        limits: crate::limits::Limits::default(),
     });
     client.session_extensions().insert(ConnectionSession {
         session: Arc::clone(&state.session),
         service: Arc::clone(&state.service),
         cancellation: Arc::clone(&state.cancellation),
+        // The block state is shared: the hooks read it from this copy, and
+        // tests observe the same `Arc`.
+        transaction: Arc::clone(&state.transaction),
+        meta_client: Arc::clone(&state.meta_client),
         // The copy inserted for the client owns a slot of its own: a
         // `ConnectionPermit` is not cloneable, and the mock connection lives
         // as long as the test's client does.
@@ -138,6 +146,7 @@ async fn attach_session_with_limits(
             .expect("the test server admits the inserted connection"),
         defaults,
         settings: Arc::new(crate::session_settings::SettingsGeneration::default()),
+        limits: state.limits,
     });
     state
 }
@@ -434,11 +443,14 @@ async fn connection_close_releases_session() {
             Arc::clone(&server),
             "user_a",
         )),
+        transaction: crate::transaction::shared(),
+        meta_client: Arc::clone(factory.meta_client()),
         permit: server
             .admit_connection()
             .expect("the test server admits a connection"),
         defaults,
         settings: Arc::new(crate::session_settings::SettingsGeneration::default()),
+        limits: crate::limits::Limits::default(),
     });
     assert!(Arc::strong_count(&context) > baseline);
 
@@ -2662,4 +2674,661 @@ async fn pgvector_probes_guc_maps_to_nprobe() {
     .await
     .expect("on_execute");
     assert_eq!(vector_search_nprobe(&state.session.context), Some(5));
+}
+
+// ---------------------------------------------------------------------------
+// Transaction blocks
+// ---------------------------------------------------------------------------
+
+/// Runs one statement through the transaction hook directly, so a test observes
+/// the `Response` pgwire would turn into messages and the SQLSTATE of a
+/// refusal. `None` means the hook does not answer that statement.
+async fn transaction_response(
+    state: &Arc<ConnectionSession>,
+    client: &mut dyn datafusion_postgres::hooks::HookClient,
+    sql: &str,
+) -> Option<PgWireResult<Response>> {
+    // The server's own parser: unlike `sqlparser`'s, it accepts PostgreSQL
+    // spellings such as `ABORT` and rewrites them to the statements the hook
+    // answers.
+    let statement = datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser::new()
+        .parse(sql)
+        .expect("the test SQL parses")
+        .into_iter()
+        .next()
+        .expect("one statement");
+    crate::transaction::LakeSoulTransactionHook
+        .handle_simple_query(&statement, &state.session.context, client)
+        .await
+}
+
+/// SQLSTATE of a hook refusal.
+fn user_error_code(error: &PgWireError) -> &str {
+    match error {
+        PgWireError::UserError(info) => &info.code,
+        other => panic!("expected a user error, got {other:?}"),
+    }
+}
+
+/// The command tag of a transaction-end response.
+fn transaction_tag(response: Response) -> String {
+    let Response::TransactionEnd(tag) = response else {
+        panic!("expected a transaction end, got {response:?}");
+    };
+    pgwire::messages::response::CommandComplete::from(tag).tag
+}
+
+/// `BEGIN` opens the block, the block runs statements, `COMMIT` closes it.
+#[tokio::test]
+async fn begin_opens_and_commit_closes_a_transaction_block() {
+    let factory = test_factory().await;
+    let mut mock = MockClient::new();
+    let state = attach_session(&factory, &mut mock, "user_a").await;
+    let mut client = TrackingClient::new(mock);
+    let router = LakeSoulQueryRouter::new();
+
+    <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+        &router,
+        &mut client,
+        Query::new("begin".to_string()),
+    )
+    .await
+    .expect("begin");
+    assert_eq!(
+        client.transaction_status(),
+        TransactionStatus::Transaction,
+        "BEGIN enters the block"
+    );
+    assert!(
+        state.transaction.lock().is_some(),
+        "BEGIN records the block"
+    );
+
+    <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+        &router,
+        &mut client,
+        Query::new("select 1".to_string()),
+    )
+    .await
+    .expect("a read runs inside the block");
+
+    <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+        &router,
+        &mut client,
+        Query::new("commit".to_string()),
+    )
+    .await
+    .expect("commit");
+    assert_eq!(
+        client.transaction_status(),
+        TransactionStatus::Idle,
+        "COMMIT leaves the block"
+    );
+    assert!(state.transaction.lock().is_none(), "COMMIT ends the block");
+}
+
+/// A second `BEGIN` is a warning, not a second block: PostgreSQL keeps the one
+/// transaction and reports it with the plain command tag.
+#[tokio::test]
+async fn a_nested_begin_does_not_open_a_second_block() {
+    let factory = test_factory().await;
+    let mut mock = MockClient::new();
+    let state = attach_session(&factory, &mut mock, "user_a").await;
+    let mut client = TrackingClient::new(mock);
+
+    let first = transaction_response(&state, &mut client, "begin")
+        .await
+        .expect("BEGIN is answered")
+        .expect("BEGIN succeeds");
+    assert!(
+        matches!(first, Response::TransactionStart(_)),
+        "the first BEGIN starts the transaction"
+    );
+    // pgwire reports the transaction once the response is sent.
+    client.set_transaction_status(TransactionStatus::Transaction);
+    let second = transaction_response(&state, &mut client, "begin")
+        .await
+        .expect("a nested BEGIN is still answered")
+        .expect("a nested BEGIN is not an error");
+    assert!(
+        matches!(second, Response::Execution(_)),
+        "a nested BEGIN reports the plain tag"
+    );
+    assert!(
+        state.transaction.lock().is_some(),
+        "the original block is still open"
+    );
+}
+
+/// Savepoints, `ROLLBACK TO SAVEPOINT` and the `AND CHAIN` forms are refused
+/// with `0A000`, and the block stays usable.
+#[tokio::test]
+async fn savepoints_and_chained_commits_are_refused() {
+    let factory = test_factory().await;
+    let mut mock = MockClient::new();
+    let state = attach_session(&factory, &mut mock, "user_a").await;
+    let mut client = TrackingClient::new(mock);
+
+    transaction_response(&state, &mut client, "begin")
+        .await
+        .expect("answered")
+        .expect("begin");
+
+    for sql in [
+        "savepoint s",
+        "release savepoint s",
+        "rollback to savepoint s",
+        "commit and chain",
+        "rollback and chain",
+    ] {
+        let error = transaction_response(&state, &mut client, sql)
+            .await
+            .unwrap_or_else(|| panic!("{sql} is answered"))
+            .expect_err(sql);
+        assert_eq!(user_error_code(&error), "0A000", "{sql}");
+        assert!(
+            state.transaction.lock().is_some(),
+            "{sql} must not end the block"
+        );
+    }
+}
+
+/// `DISCARD ALL` cannot run inside a transaction block; outside one it still
+/// reaches the settings hook.
+#[tokio::test]
+async fn discard_all_is_refused_inside_a_block_only() {
+    let factory = test_factory().await;
+    let mut mock = MockClient::new();
+    let state = attach_session(&factory, &mut mock, "user_a").await;
+    let mut client = TrackingClient::new(mock);
+    let router = LakeSoulQueryRouter::new();
+
+    transaction_response(&state, &mut client, "begin")
+        .await
+        .expect("answered")
+        .expect("begin");
+    // pgwire reports the transaction once the response is sent.
+    client.set_transaction_status(TransactionStatus::Transaction);
+    let error = transaction_response(&state, &mut client, "discard all")
+        .await
+        .expect("DISCARD ALL is answered inside a block")
+        .expect_err("DISCARD ALL cannot run inside a block");
+    assert_eq!(user_error_code(&error), "25001");
+    let commit = transaction_response(&state, &mut client, "commit")
+        .await
+        .expect("answered")
+        .expect("commit succeeds");
+    assert_eq!(transaction_tag(commit), "COMMIT");
+
+    assert!(
+        transaction_response(&state, &mut client, "discard all")
+            .await
+            .is_none(),
+        "outside a block the settings hook claims DISCARD ALL"
+    );
+    <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+        &router,
+        &mut client,
+        Query::new("discard all".to_string()),
+    )
+    .await
+    .expect("DISCARD ALL still runs outside a block");
+}
+
+/// `COMMIT` in a failed block publishes nothing: it is answered with the
+/// `ROLLBACK` tag and ends the transaction.
+#[tokio::test]
+async fn commit_in_a_failed_block_is_answered_with_rollback() {
+    let factory = test_factory().await;
+    let mut mock = MockClient::new();
+    let state = attach_session(&factory, &mut mock, "user_a").await;
+    let mut client = TrackingClient::new(mock);
+
+    transaction_response(&state, &mut client, "begin")
+        .await
+        .expect("answered")
+        .expect("begin");
+    // What pgwire leaves behind after a statement of the block failed.
+    client.set_transaction_status(TransactionStatus::Error);
+
+    let response = transaction_response(&state, &mut client, "commit")
+        .await
+        .expect("answered")
+        .expect("COMMIT in a failed block is not an error");
+    assert_eq!(transaction_tag(response), "ROLLBACK");
+    assert!(
+        state.transaction.lock().is_none(),
+        "the failed block is over"
+    );
+}
+
+/// A portal bound inside the block does not survive it: PostgreSQL destroys
+/// every portal at the end of a transaction.
+#[tokio::test]
+async fn a_named_portal_does_not_survive_commit() {
+    let factory = test_factory().await;
+    let mut mock = MockClient::new();
+    let state = attach_session(&factory, &mut mock, "user_a").await;
+    let mut client = TrackingClient::new(mock);
+    let router = LakeSoulQueryRouter::new();
+
+    <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+        &router,
+        &mut client,
+        Query::new("begin".to_string()),
+    )
+    .await
+    .expect("begin");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_parse(
+        &router,
+        &mut client,
+        Parse::new(Some("stmt".to_string()), "select 1".to_string(), vec![]),
+    )
+    .await
+    .expect("parse");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_bind(
+        &router,
+        &mut client,
+        Bind::new(
+            Some("p".to_string()),
+            Some("stmt".to_string()),
+            vec![],
+            vec![],
+            vec![],
+        ),
+    )
+    .await
+    .expect("bind");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_execute(
+        &router,
+        &mut client,
+        Execute::new(Some("p".to_string()), 0),
+    )
+    .await
+    .expect("execute");
+    assert_eq!(
+        state.cancellation.portal_count(),
+        1,
+        "the portal is live inside the block"
+    );
+
+    <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+        &router,
+        &mut client,
+        Query::new("commit".to_string()),
+    )
+    .await
+    .expect("commit");
+    assert_eq!(
+        state.cancellation.portal_count(),
+        0,
+        "the block's portals are destroyed with it"
+    );
+    let error = <LakeSoulQueryRouter as ExtendedQueryHandler>::on_execute(
+        &router,
+        &mut client,
+        Execute::new(Some("p".to_string()), 0),
+    )
+    .await
+    .expect_err("a portal destroyed by COMMIT cannot execute");
+    assert!(
+        format!("{error}").contains("not found"),
+        "the error names the missing portal: {error}"
+    );
+}
+
+/// A block whose `BEGIN` response was interrupted never reached the client:
+/// pgwire reports the transaction only after the response is sent, so the
+/// client is still Idle. Such a block is not treated as nested - the next
+/// `BEGIN` opens the transaction the client asked for - and it does not make
+/// `DISCARD ALL` refuse.
+#[tokio::test]
+async fn a_block_the_client_never_saw_is_replaced_by_the_next_begin() {
+    let factory = test_factory().await;
+    let mut mock = MockClient::new();
+    let state = attach_session(&factory, &mut mock, "user_a").await;
+    let mut client = TrackingClient::new(mock);
+
+    // The hook installs the block; the status transition happens after the
+    // response is sent, and this test simulates a send that never completed.
+    let first = transaction_response(&state, &mut client, "begin")
+        .await
+        .expect("answered")
+        .expect("begin");
+    assert!(matches!(first, Response::TransactionStart(_)));
+    assert_eq!(
+        client.transaction_status(),
+        TransactionStatus::Idle,
+        "the client never saw the transaction"
+    );
+
+    let second = transaction_response(&state, &mut client, "begin")
+        .await
+        .expect("answered")
+        .expect("a second BEGIN opens the block the client asks for");
+    assert!(
+        matches!(second, Response::TransactionStart(_)),
+        "an unannounced block is replaced, not reported as nested"
+    );
+    assert!(
+        transaction_response(&state, &mut client, "discard all")
+            .await
+            .is_none(),
+        "no transaction the client knows about, so DISCARD ALL is allowed"
+    );
+
+    // The statement boundary undoes an unannounced block and its sink, so the
+    // next autocommit write publishes instead of staging into it.
+    crate::transaction::reconcile(&state, TransactionStatus::Idle).await;
+    assert!(
+        state.transaction.lock().is_none(),
+        "reconcile ends the block"
+    );
+    assert!(
+        lakesoul_datafusion::write_mode::LakeSoulDeferredCommit::from_context(
+            &state.session.context
+        )
+        .is_none(),
+        "reconcile clears the sink"
+    );
+}
+
+/// `END` is `COMMIT` and `ABORT` is `ROLLBACK`, as PostgreSQL parses them.
+#[tokio::test]
+async fn end_and_abort_use_the_commit_and_rollback_paths() {
+    let factory = test_factory().await;
+    let mut mock = MockClient::new();
+    let state = attach_session(&factory, &mut mock, "user_a").await;
+    let mut client = TrackingClient::new(mock);
+
+    for (opens, closes, expected) in [
+        ("begin", "end", "COMMIT"),
+        ("begin", "abort", "ROLLBACK"),
+        ("begin", "commit and no chain", "COMMIT"),
+        ("begin", "rollback and no chain", "ROLLBACK"),
+    ] {
+        transaction_response(&state, &mut client, opens)
+            .await
+            .expect("answered")
+            .expect(opens);
+        let response = transaction_response(&state, &mut client, closes)
+            .await
+            .expect("answered")
+            .expect(closes);
+        assert_eq!(transaction_tag(response), expected, "{closes}");
+        assert!(
+            state.transaction.lock().is_none(),
+            "{closes} ends the block"
+        );
+    }
+}
+
+/// `COMMIT` and `ROLLBACK` outside a block still answer, and leave the
+/// connection idle - as PostgreSQL does.
+#[tokio::test]
+async fn endings_outside_a_block_answer_without_a_block() {
+    let factory = test_factory().await;
+    let mut mock = MockClient::new();
+    let state = attach_session(&factory, &mut mock, "user_a").await;
+    let mut client = TrackingClient::new(mock);
+
+    for (sql, expected) in [("commit", "COMMIT"), ("rollback", "ROLLBACK")] {
+        let response = transaction_response(&state, &mut client, sql)
+            .await
+            .expect("answered")
+            .expect(sql);
+        assert_eq!(transaction_tag(response), expected, "{sql}");
+        assert!(state.transaction.lock().is_none(), "{sql} opens nothing");
+    }
+}
+
+/// A `COMMIT` sent through a portal publishes at `Execute`, and destroys the
+/// block's portals with it.
+#[tokio::test]
+async fn an_extended_protocol_commit_closes_the_block() {
+    let factory = test_factory().await;
+    let mut mock = MockClient::new();
+    let state = attach_session(&factory, &mut mock, "user_a").await;
+    let mut client = TrackingClient::new(mock);
+    let router = LakeSoulQueryRouter::new();
+
+    <LakeSoulQueryRouter as SimpleQueryHandler>::on_query(
+        &router,
+        &mut client,
+        Query::new("begin".to_string()),
+    )
+    .await
+    .expect("begin");
+    // A portal that belongs to the block.
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_parse(
+        &router,
+        &mut client,
+        Parse::new(Some("stmt".to_string()), "select 1".to_string(), vec![]),
+    )
+    .await
+    .expect("parse");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_bind(
+        &router,
+        &mut client,
+        Bind::new(
+            Some("p".to_string()),
+            Some("stmt".to_string()),
+            vec![],
+            vec![],
+            vec![],
+        ),
+    )
+    .await
+    .expect("bind");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_execute(
+        &router,
+        &mut client,
+        Execute::new(Some("p".to_string()), 0),
+    )
+    .await
+    .expect("execute");
+
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_parse(
+        &router,
+        &mut client,
+        Parse::new(None, "commit".to_string(), vec![]),
+    )
+    .await
+    .expect("parse commit");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_bind(
+        &router,
+        &mut client,
+        Bind::new(None, None, vec![], vec![], vec![]),
+    )
+    .await
+    .expect("bind commit");
+    <LakeSoulQueryRouter as ExtendedQueryHandler>::on_execute(
+        &router,
+        &mut client,
+        Execute::new(None, 0),
+    )
+    .await
+    .expect("execute commit");
+
+    assert_eq!(
+        client.transaction_status(),
+        TransactionStatus::Idle,
+        "the extended COMMIT ends the transaction"
+    );
+    assert!(state.transaction.lock().is_none(), "the block is gone");
+    assert_eq!(
+        state.cancellation.portal_count(),
+        0,
+        "the block's portals are destroyed with it"
+    );
+}
+
+/// `BEGIN` installs the sink the write path stages into; `COMMIT`/`ROLLBACK`
+/// clear it again, so an autocommit write publishes immediately.
+#[tokio::test]
+async fn a_block_installs_and_clears_the_deferred_commit_sink() {
+    let factory = test_factory().await;
+    let mut mock = MockClient::new();
+    let state = attach_session(&factory, &mut mock, "user_a").await;
+    let mut client = TrackingClient::new(mock);
+
+    assert!(
+        state
+            .session
+            .context
+            .state()
+            .config()
+            .get_extension::<lakesoul_datafusion::write_mode::LakeSoulDeferredCommit>()
+            .is_some(),
+        "the session config carries the deferred-commit handle"
+    );
+    assert!(
+        lakesoul_datafusion::write_mode::LakeSoulDeferredCommit::from_context(
+            &state.session.context
+        )
+        .is_none(),
+        "no block, no sink"
+    );
+
+    transaction_response(&state, &mut client, "begin")
+        .await
+        .expect("answered")
+        .expect("begin");
+    assert!(
+        lakesoul_datafusion::write_mode::LakeSoulDeferredCommit::from_context(
+            &state.session.context
+        )
+        .is_some(),
+        "BEGIN installs the sink"
+    );
+
+    client.set_transaction_status(TransactionStatus::Transaction);
+    transaction_response(&state, &mut client, "rollback")
+        .await
+        .expect("answered")
+        .expect("rollback");
+    assert!(
+        lakesoul_datafusion::write_mode::LakeSoulDeferredCommit::from_context(
+            &state.session.context
+        )
+        .is_none(),
+        "ROLLBACK clears the sink"
+    );
+}
+
+/// The block's `COMMIT` maps metadata failures to the SQLSTATEs a client
+/// retries on, and everything else to `XX000`.
+#[test]
+fn commit_failures_map_to_postgres_sqlstates() {
+    let code = |error: lakesoul_metadata::LakeSoulMetaDataError| {
+        match crate::transaction::commit_error(error) {
+            pgwire::error::PgWireError::UserError(info) => info.code,
+            other => panic!("COMMIT failures must be user errors, got {other:?}"),
+        }
+    };
+    assert_eq!(
+        code(lakesoul_metadata::LakeSoulMetaDataError::CommitConflict(
+            "table redefined".to_string()
+        )),
+        "40001"
+    );
+    assert_eq!(
+        code(lakesoul_metadata::LakeSoulMetaDataError::InsertConflict {
+            table_id: "t".to_string(),
+            partition_desc: "p".to_string(),
+            expected_version: 0,
+            actual_version: 1,
+        }),
+        "40001"
+    );
+    assert_eq!(
+        code(lakesoul_metadata::LakeSoulMetaDataError::NotFound(
+            "table gone".to_string()
+        )),
+        "40001"
+    );
+    assert_eq!(
+        code(lakesoul_metadata::LakeSoulMetaDataError::Internal(
+            "bug".to_string()
+        )),
+        "XX000"
+    );
+}
+
+/// A published block disarms its file owner: `COMMIT` returns control to a
+/// cancellable statement, and a cancellation there must not delete files the
+/// metadata transaction already references.
+#[tokio::test]
+async fn dropping_a_published_block_deletes_nothing() {
+    let dir = std::env::temp_dir().join(format!(
+        "lakesoul-published-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temporary directory");
+    let path = dir.join("part-0.parquet");
+    std::fs::write(&path, b"published bytes").expect("write the staged file");
+    let url = format!("file://{}", path.display());
+    let context = datafusion::prelude::SessionContext::new();
+
+    // Control: an owner that was never told the files are published deletes
+    // them, so the assertion below cannot pass vacuously.
+    drop(crate::transaction::StagedFiles::new(
+        &context,
+        vec![staged_file(&url)],
+    ));
+    let mut gone = false;
+    for _ in 0..100 {
+        if !path.exists() {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        gone,
+        "unpublished staged files are deleted: {} still exists",
+        path.display()
+    );
+
+    // Published: the owner is disarmed before any cancellable work.
+    std::fs::write(&path, b"published bytes").expect("write the staged file");
+    let writes = crate::transaction::StagedFiles::new(&context, vec![staged_file(&url)])
+        .into_parts()
+        .1;
+    assert_eq!(writes.len(), 1, "the writes are returned for maintenance");
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        path.exists(),
+        "a published block must never delete its files: {}",
+        path.display()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One staged write holding a single added file.
+fn staged_file(path: &str) -> lakesoul_datafusion::write_mode::StagedWrite {
+    use lakesoul_metadata_proto::entity::{
+        CommitOp, DataCommitInfo, DataFileOp, FileOp, TableInfo,
+    };
+    lakesoul_datafusion::write_mode::StagedWrite {
+        table_info: std::sync::Arc::new(TableInfo {
+            table_id: "published-file-test".to_string(),
+            ..Default::default()
+        }),
+        data_commits: vec![DataCommitInfo {
+            table_id: "published-file-test".to_string(),
+            partition_desc: "p".to_string(),
+            file_ops: vec![DataFileOp {
+                path: path.to_string(),
+                file_op: FileOp::Add as i32,
+                ..Default::default()
+            }],
+            commit_op: CommitOp::AppendCommit as i32,
+            ..Default::default()
+        }],
+        expected: None,
+        rows: Vec::new(),
+    }
 }

@@ -1407,8 +1407,8 @@ async fn time_zone_reset_restores_startup(
     Ok(())
 }
 
-/// A refused write inside a transaction fails it; no read executes until
-/// `ROLLBACK`; a simple batch then performs `ROLLBACK; SELECT ...` on the
+/// A failing statement inside a transaction fails the block; no read executes
+/// until `ROLLBACK`; a simple batch then performs `ROLLBACK; SELECT ...` on the
 /// recovered connection.
 ///
 /// PostgreSQL contract: a statement issued in a failed transaction block is
@@ -1423,19 +1423,22 @@ async fn failed_transaction_recovers_after_rollback(h: &Harness) -> Result<()> {
         .batch_execute("BEGIN")
         .await
         .context("case=failed-transaction-simple SQL=BEGIN")?;
-    let rejected = "INSERT INTO items (id, val, label) VALUES (97, 97, 'aborted')";
+    // A statement that fails inside the block leaves it failed. A write is
+    // staged now rather than refused, so this uses a statement that is an error
+    // on its own.
+    let rejected = "SELECT * FROM missing_table_xyz";
     let error = match h.lake.simple_query(rejected).await {
         Ok(_) => bail!(
             "case=failed-transaction-simple SQL={rejected} protocol=simple-text \
-             expected SQLSTATE 0A000, actual success"
+             expected a failing statement, actual success"
         ),
         Err(error) => error,
     };
-    common::ensure_sqlstate(
-        &error,
-        "0A000",
-        &format!("case=failed-transaction-simple SQL={rejected} protocol=simple-text"),
-    )?;
+    ensure!(
+        error.as_db_error().is_some(),
+        "case=failed-transaction-simple SQL={rejected}: expected a server error, \
+         actual {error}"
+    );
 
     let aborted_read = "SELECT COUNT(*) AS n FROM items";
     let error = match h.lake.simple_query(aborted_read).await {
@@ -1536,8 +1539,12 @@ async fn failed_transaction_recovers_after_rollback(h: &Harness) -> Result<()> {
     // transaction with the `ROLLBACK` tag, so the same `COMMIT` must succeed on
     // both sides and leave the connection readable.
     for (client, failure, failure_state, side) in [
-        (&h.lake, rejected, "0A000", "lakesoul"),
-        (&h.reference, reference_failure, "22P02", "postgres"),
+        // A write inside a block is staged now, so this side uses a statement
+        // that fails on its own. The SQLSTATE of a DataFusion planning error is
+        // the front end's own mapping: the contract here is that the statement
+        // failed and the block recovers, not the code.
+        (&h.lake, rejected, None, "lakesoul"),
+        (&h.reference, reference_failure, Some("22P02"), "postgres"),
     ] {
         let context = format!("case=failed-transaction-commit side={side} SQL=BEGIN");
         client
@@ -1549,10 +1556,16 @@ async fn failed_transaction_recovers_after_rollback(h: &Harness) -> Result<()> {
              protocol=simple-text"
         );
         let error = match client.simple_query(failure).await {
-            Ok(_) => bail!("{context} expected SQLSTATE {failure_state}, actual success"),
+            Ok(_) => bail!("{context} expected a failing statement, actual success"),
             Err(error) => error,
         };
-        common::ensure_sqlstate(&error, failure_state, &context)?;
+        match failure_state {
+            Some(state) => common::ensure_sqlstate(&error, state, &context)?,
+            None => ensure!(
+                error.as_db_error().is_some(),
+                "{context}: expected a server error, actual {error}"
+            ),
+        }
         let context =
             format!("case=failed-transaction-commit side={side} SQL=COMMIT failed block");
         client

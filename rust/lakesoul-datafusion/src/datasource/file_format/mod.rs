@@ -8,8 +8,8 @@ mod text_search_exec;
 mod vector_search_exec;
 mod write_exec;
 
-pub(crate) use insert_only::InsertOnly;
+pub(crate) use insert_only::{InsertOnly, remove_files};
 pub use metadata_format::LakeSoulMetaDataFormat;
 pub use text_search_exec::LakeSoulTextSearchExec;
 pub use vector_search_exec::LakeSoulVectorSearchExec;
-pub use write_exec::{LakeSoulCommitExec, LakeSoulWriteExec};
+pub use write_exec::{LakeSoulCommitExec, LakeSoulWriteExec, maintain_indexes};

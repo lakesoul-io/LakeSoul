@@ -396,6 +396,12 @@ impl PgSessionFactory {
         config.set_extension(Arc::new(
             lakesoul_datafusion::write_mode::LakeSoulFixedSnapshot::new(),
         ));
+        // Where an open transaction block collects the writes it will publish.
+        // The block hook installs a sink on `BEGIN` and clears it when the block
+        // ends; the sink writes through the connection's metadata client.
+        config.set_extension(Arc::new(
+            lakesoul_datafusion::write_mode::LakeSoulDeferredCommit::new(),
+        ));
         let state = SessionStateBuilder::new_from_existing(state)
             .with_config(config)
             .build();

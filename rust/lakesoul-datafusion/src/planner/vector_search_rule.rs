@@ -90,6 +90,15 @@ impl OptimizerRule for VectorSearchPushdownRule {
             .is_some_and(|options| options.rerank_mode() == RerankMode::Index);
         match detect(&plan, index_only) {
             Some((spec, target)) => {
+                // Index-only ordering drops the distance sort, and the index
+                // plan describes published files only: while the connection's
+                // block has staged rows for this table, leave the plan alone so
+                // the exact scan answers (it sees them, ordered).
+                if let LogicalPlan::TableScan(scan) = target.as_ref()
+                    && crate::write_mode::table_source_has_staged_writes(&scan.source)
+                {
+                    return Ok(Transformed::no(plan));
+                }
                 let rewritten = rewrite_chain(plan, &spec, &target, true)
                     .expect("matching plan must be rewritable");
                 Ok(Transformed::yes(rewritten))

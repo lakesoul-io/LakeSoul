@@ -100,6 +100,8 @@ pub enum WriteViolation {
     NotNull { column: String },
     /// The upsert source would affect a row this command already modified.
     DuplicateUpsertRow { table: String },
+    /// A transaction block would exceed the server's staged-file/byte limit.
+    StagedLimit { what: String, limit: u64 },
     /// A value failed to convert while the statement was running.
     InvalidText { message: String },
     /// An arithmetic expression divided by zero while executing.
@@ -113,6 +115,7 @@ impl WriteViolation {
             Self::DuplicateKey { .. } | Self::ExistingKey { .. } => "23505",
             Self::NotNull { .. } => "23502",
             Self::DuplicateUpsertRow { .. } => "21000",
+            Self::StagedLimit { .. } => "54000",
             Self::InvalidText { .. } => "22P02",
             Self::DivisionByZero { .. } => "22012",
         }
@@ -142,6 +145,11 @@ impl fmt::Display for WriteViolation {
                 f,
                 "ON CONFLICT DO UPDATE command cannot affect row a second time \
                  (table '{table}')"
+            ),
+            Self::StagedLimit { what, limit } => write!(
+                f,
+                "transaction block would exceed the server limit of {limit} \
+                 staged {what}; COMMIT or ROLLBACK first"
             ),
             Self::InvalidText { message } => f.write_str(message),
             Self::DivisionByZero { message } => f.write_str(message),
@@ -388,4 +396,185 @@ impl Drop for LakeSoulSnapshotGuard {
             *current = None;
         }
     }
+}
+
+/// One statement's staged write, handed to an open transaction block instead of
+/// being published.
+#[derive(Debug, Clone)]
+pub struct StagedWrite {
+    /// The table definition the statement wrote against.
+    pub table_info: Arc<lakesoul_metadata_proto::entity::TableInfo>,
+    /// One `data_commit_info` per partition, in the order the statement wrote
+    /// them. `COMMIT` publishes them and keeps that order: merge-on-read reads
+    /// the partition snapshot as version order.
+    pub data_commits: Vec<lakesoul_metadata_proto::entity::DataCommitInfo>,
+    /// The partition versions the statement was validated against.
+    ///
+    /// `None` for an append-only write: its files are disjoint from every other
+    /// writer's, so no version can conflict.
+    pub expected: Option<Vec<lakesoul_metadata_proto::entity::PartitionInfo>>,
+    /// Rows written per partition, for the index maintenance that runs after
+    /// the block commits.
+    pub rows: Vec<(String, u64)>,
+}
+
+/// Where a transaction block collects the writes it will publish.
+pub trait StagedWriteSink: Send + Sync {
+    /// Records one statement's output in the open block.
+    ///
+    /// Called once per statement, after its files are fully written. The block
+    /// owns those files from then on: only its `COMMIT` publishes them, and
+    /// only its `ROLLBACK` (or its failure) deletes them.
+    fn stage(&self, write: StagedWrite) -> datafusion::error::Result<()>;
+
+    /// The block's staged commits for one table, in statement order.
+    ///
+    /// A scan of that table must include them: the block's own statements read
+    /// what its earlier statements wrote (`read-your-writes`), instead of
+    /// validating against the published state and duplicating a key. Outside a
+    /// block - or for a front end that cannot be read back - this is empty.
+    fn staged_commits(
+        &self,
+        table_id: &str,
+    ) -> Vec<lakesoul_metadata_proto::entity::DataCommitInfo> {
+        let _ = table_id;
+        Vec::new()
+    }
+
+    /// Whether the block has staged any write at all.
+    ///
+    /// Logical rewrites that assume they can see every row of a table (the
+    /// vector/text index pushdowns drop the ordering or the score expression)
+    /// must stay off while a block writes: its rows are not published yet.
+    fn has_staged_writes(&self) -> bool {
+        false
+    }
+}
+
+/// Handle a front end installs for the duration of a transaction block.
+///
+/// Cloning shares the value. A session installs one handle in its config; the
+/// front end installs a sink when a block opens and clears it when the block
+/// ends, and the writer stages its output while a sink is installed.
+#[derive(Clone, Default)]
+pub struct LakeSoulDeferredCommit {
+    sink: Arc<std::sync::Mutex<Option<Arc<dyn StagedWriteSink>>>>,
+}
+
+impl fmt::Debug for LakeSoulDeferredCommit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let installed = self
+            .sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some();
+        f.debug_struct("LakeSoulDeferredCommit")
+            .field("installed", &installed)
+            .finish()
+    }
+}
+
+impl LakeSoulDeferredCommit {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether the open block has staged any write.
+    pub fn has_staged_writes(&self) -> bool {
+        self.get().is_some_and(|sink| sink.has_staged_writes())
+    }
+
+    /// The sink of the open block, if there is one.
+    pub fn get(&self) -> Option<Arc<dyn StagedWriteSink>> {
+        self.sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Installs `sink` for the open block.
+    ///
+    /// There is no destructor: the block ends in the statement hook, which
+    /// clears the sink, not in a scope the writer could end.
+    pub fn set(&self, sink: Arc<dyn StagedWriteSink>) {
+        *self
+            .sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(sink);
+    }
+
+    pub fn clear(&self) {
+        *self
+            .sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    /// The sink installed in `session`, if a block is open.
+    pub fn from_session(
+        session: &dyn datafusion::catalog::Session,
+    ) -> Option<Arc<dyn StagedWriteSink>> {
+        Self::from_config(session.config())
+    }
+
+    /// The sink installed in `config`, for execute-time contexts that only have
+    /// the session configuration.
+    pub fn from_config(
+        config: &datafusion::prelude::SessionConfig,
+    ) -> Option<Arc<dyn StagedWriteSink>> {
+        config
+            .get_extension::<Self>()
+            .and_then(|handle| handle.get())
+    }
+
+    /// The sink installed in `context`, for callers that hold the session
+    /// rather than its `Session` view.
+    pub fn from_context(
+        context: &datafusion::prelude::SessionContext,
+    ) -> Option<Arc<dyn StagedWriteSink>> {
+        Self::from_config(context.state().config())
+    }
+}
+
+/// Whether the table behind a logical `TableSource` has staged writes in the
+/// connection's open transaction block.
+///
+/// Logical rewrites that replay the published snapshot (the vector/text index
+/// pushdowns drop the ordering or the score expression) must not run then.
+pub fn table_source_has_staged_writes(
+    source: &std::sync::Arc<dyn datafusion::logical_expr::TableSource>,
+) -> bool {
+    source
+        .downcast_ref::<datafusion::datasource::default_table_source::DefaultTableSource>(
+        )
+        .and_then(|source| {
+            source
+                .table_provider
+                .downcast_ref::<crate::datasource::table_provider::LakeSoulTableProvider>(
+                )
+        })
+        .is_some_and(|provider| provider.block_has_staged_writes())
+}
+
+/// Deletes the files of staged writes: `ROLLBACK` and a failed `COMMIT` must
+/// leave no object behind.
+///
+/// The object store comes from `session`'s runtime. A file that is already gone
+/// is not an error, and a failure here is the caller's to log: the files are
+/// unreferenced, so GC is the backstop.
+pub async fn discard_staged_writes(
+    session: &datafusion::prelude::SessionContext,
+    writes: &[StagedWrite],
+) -> datafusion::error::Result<()> {
+    let paths: Vec<String> = writes
+        .iter()
+        .flat_map(|write| write.data_commits.iter())
+        .flat_map(|commit| commit.file_ops.iter())
+        .map(|file| file.path.clone())
+        .collect();
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let context = session.task_ctx();
+    crate::datasource::file_format::remove_files(&context, &paths).await
 }

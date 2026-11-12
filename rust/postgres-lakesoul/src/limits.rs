@@ -29,6 +29,8 @@ pub const CONFIGURATION_LIMIT_EXCEEDED: &str = "53400";
 const ACTIVE_QUERIES: &str = "lakesoul_active_queries";
 /// Connections and statements a limit refused, grouped by the limit.
 const ADMISSION_REJECTED_TOTAL: &str = "lakesoul_admission_rejected_total";
+/// Transaction writes a staged file/byte bound refused, grouped by resource.
+pub const STAGED_LIMIT_REJECTED_TOTAL: &str = "lakesoul_transaction_staged_limit_total";
 
 /// The limits one server enforces. Zero means unlimited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +46,14 @@ pub struct Limits {
     pub max_result_rows: usize,
     /// Bytes of encoded rows a statement may send, 0 for unlimited.
     pub max_result_bytes: usize,
+    /// Files one transaction block may stage before `COMMIT`, 0 for unlimited.
+    ///
+    /// A staged block holds unreferenced Parquet files and the metadata commit
+    /// that publishes them: without a bound, a client could keep a block open
+    /// and fill the warehouse.
+    pub max_staged_files_per_transaction: usize,
+    /// Bytes of staged files one transaction block may hold, 0 for unlimited.
+    pub max_staged_bytes_per_transaction: usize,
 }
 
 /// The defaults a server starts from, and what `Limits::unlimited` relaxes.
@@ -53,6 +63,8 @@ impl Default for Limits {
             max_connections: 64,
             max_queries_per_user: 8,
             max_concurrent_queries: 0,
+            max_staged_files_per_transaction: 0,
+            max_staged_bytes_per_transaction: 0,
             max_result_rows: 0,
             max_result_bytes: 0,
         }
@@ -67,6 +79,8 @@ impl Limits {
             max_connections: 0,
             max_queries_per_user: 0,
             max_concurrent_queries: 0,
+            max_staged_files_per_transaction: 0,
+            max_staged_bytes_per_transaction: 0,
             max_result_rows: 0,
             max_result_bytes: 0,
         }
@@ -189,10 +203,18 @@ pub fn register_limit_metrics() {
             ADMISSION_REJECTED_TOTAL,
             "Connections and statements refused by a limit, grouped by limit"
         );
+        metrics::describe_counter!(
+            STAGED_LIMIT_REJECTED_TOTAL,
+            "Transaction writes refused for exceeding the staged file/byte bound"
+        );
     });
     metrics::gauge!(ACTIVE_QUERIES).set(0.0);
     for limit in ["connections", "queries_per_user", "concurrent_queries"] {
         metrics::counter!(ADMISSION_REJECTED_TOTAL, "limit" => limit).increment(0);
+    }
+    for resource in ["files", "bytes"] {
+        metrics::counter!(STAGED_LIMIT_REJECTED_TOTAL, "resource" => resource)
+            .increment(0);
     }
 }
 
@@ -258,6 +280,11 @@ impl ServerLimits {
             limits,
             state: LimitsState::default(),
         })
+    }
+
+    /// The limits this server enforces.
+    pub fn limits(&self) -> Limits {
+        self.limits
     }
 
     #[cfg(test)]
@@ -430,6 +457,8 @@ mod tests {
             max_connections,
             max_queries_per_user: max_queries,
             max_concurrent_queries: 0,
+            max_staged_files_per_transaction: 0,
+            max_staged_bytes_per_transaction: 0,
             max_result_rows: max_rows,
             max_result_bytes: 0,
         })

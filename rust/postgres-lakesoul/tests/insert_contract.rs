@@ -1508,13 +1508,22 @@ async fn refusal_matrix_changes_nothing(h: &Harness) -> Result<()> {
         ensure_sqlstate(&error, code, case)?;
     }
 
+    // A write inside a block is staged: nothing is visible before `COMMIT`, and
+    // `ROLLBACK` leaves no rows and no files behind. The authoritative snapshot
+    // includes the warehouse bytes, so the final comparison proves the staged
+    // files were deleted.
     h.lake.batch_execute("BEGIN").await?;
-    let error = h
-        .lake
+    h.lake
         .execute("INSERT INTO items (id, val, label) VALUES (8, 8, 'x')", &[])
         .await
-        .expect_err("INSERT inside a transaction block must be refused");
-    ensure_sqlstate(&error, "0A000", "transaction block")?;
+        .context("INSERT inside a transaction block is staged")?;
+    // The block itself reads its own write; another connection must not.
+    let peer = h.connect_lake().await?;
+    let visible: i64 = peer
+        .query_one("SELECT count(*) FROM items WHERE id = 8", &[])
+        .await?
+        .get(0);
+    assert_eq!(visible, 0, "a peer does not see the staged row");
     h.lake.batch_execute("ROLLBACK").await?;
 
     let error = h

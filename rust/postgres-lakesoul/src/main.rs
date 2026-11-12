@@ -47,6 +47,7 @@ mod server;
 mod session;
 mod session_settings;
 mod subscribe;
+mod transaction;
 mod update;
 use rootcause::Report;
 
@@ -141,6 +142,22 @@ struct Cli {
     /// Maximum encoded size a statement's result may reach, 0 for unlimited
     #[clap(long, env = "LAKESOUL_PG_MAX_RESULT_BYTES", default_value_t = 0)]
     max_result_bytes: usize,
+
+    /// Files one transaction block may stage before COMMIT, 0 for unlimited
+    #[clap(
+        long,
+        env = "LAKESOUL_PG_MAX_STAGED_FILES_PER_TRANSACTION",
+        default_value_t = 0
+    )]
+    max_staged_files_per_transaction: usize,
+
+    /// Bytes of staged files one transaction block may hold, 0 for unlimited
+    #[clap(
+        long,
+        env = "LAKESOUL_PG_MAX_STAGED_BYTES_PER_TRANSACTION",
+        default_value_t = 0
+    )]
+    max_staged_bytes_per_transaction: usize,
 
     /// Seconds a client connection may be idle before TCP keepalive probes
     /// start, 0 to leave keepalive off. Without it, a client that vanishes
@@ -356,7 +373,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
     .spawn();
 
     info!(
-        "start serving on {}:{} (max_connections={}, max_queries_per_user={}, max_concurrent_queries={}, max_result_rows={}, max_result_bytes={}, max_jobs={})",
+        "start serving on {}:{} (max_connections={}, max_queries_per_user={}, max_concurrent_queries={}, max_result_rows={}, max_result_bytes={}, max_staged_files_per_transaction={}, max_staged_bytes_per_transaction={}, max_jobs={})",
         cli.bind,
         cli.port,
         cli.max_connections,
@@ -364,6 +381,8 @@ async fn main_inner(cli: Cli) -> Result<()> {
         cli.max_concurrent_queries,
         cli.max_result_rows,
         cli.max_result_bytes,
+        cli.max_staged_files_per_transaction,
+        cli.max_staged_bytes_per_transaction,
         cli.max_jobs
     );
 
@@ -379,6 +398,8 @@ async fn main_inner(cli: Cli) -> Result<()> {
         max_concurrent_queries: cli.max_concurrent_queries,
         max_result_rows: cli.max_result_rows,
         max_result_bytes: cli.max_result_bytes,
+        max_staged_files_per_transaction: cli.max_staged_files_per_transaction,
+        max_staged_bytes_per_transaction: cli.max_staged_bytes_per_transaction,
     };
     if limits.one_user_can_fill_the_server() {
         warn!(
