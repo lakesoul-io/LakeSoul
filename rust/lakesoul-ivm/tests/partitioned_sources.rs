@@ -3061,6 +3061,115 @@ async fn a_partitioned_union_view_prunes_unchanged_partitions() {
     );
 }
 
+/// A row that moves to another range partition keeps the old partition's
+/// delete even when the same key is re-inserted: merge-on-read only collapses
+/// rows inside one partition.
+#[test_log::test(tokio::test)]
+async fn a_union_partition_move_keeps_the_old_delete() {
+    use lakesoul_ivm::{
+        IVM_SOURCE_COLUMN, UnionAllView, UnionSource, union_all_mv_schema_for,
+    };
+
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    // `k` is the primary key; `day` is only a range partition.
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pmove_src_{suffix}"),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN)
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_pmove_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                union_all_mv_schema_for(&source.schema).unwrap(),
+            )
+            .with_primary_keys(vec![IVM_SOURCE_COLUMN.to_string(), "k".to_string()])
+            .with_range_partition_columns(vec!["day".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = UnionAllView::new(
+        format!("pmove_{suffix}"),
+        vec![UnionSource::new(source.clone())],
+        mv.clone(),
+    );
+
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "x", 10, "d1", "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_union_all(&view).await.unwrap();
+
+    // The same key moves from d1 to d2 and changes its value.  The source
+    // retracts the d1 row, and the insert in d2 cannot replace it: the refresh
+    // must write both the old partition's delete and the new partition's
+    // insert.
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "x", 10, "d1", "delete")]),
+        )
+        .await
+        .unwrap();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "y", 11, "d2", "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_union_all(&view).await.unwrap();
+
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(&mv)))
+        .unwrap();
+    let batches = context
+        .sql("select k, v, day from mv order by k")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in batches {
+        let k = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let v = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let day = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((k.value(row), v.value(row), day.value(row).to_string()));
+        }
+    }
+    assert_eq!(rows, vec![(1, 11, "d2".to_string())]);
+}
+
 /// A keyed left join over a partitioned left source prunes the MV partitions
 /// the delta did not touch.
 #[test_log::test(tokio::test)]

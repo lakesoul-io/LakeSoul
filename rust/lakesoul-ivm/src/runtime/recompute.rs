@@ -4839,7 +4839,10 @@ impl IvmRuntime {
             .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
         let mut sort_exprs = keys.iter().map(|key| column_expr(key)).collect::<Vec<_>>();
         sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
-        let ops = inserts.union(deletes)?.sort_by(sort_exprs)?;
+        let ops =
+            collapse_update_deletes(&self.metadata, context, partial, inserts, deletes)
+                .await?
+                .sort_by(sort_exprs)?;
         let _ = context;
         let outcome = append_dataframe(partial, &self.client, ops).await?;
         Ok(outcome.commit_ids)
@@ -5225,6 +5228,11 @@ impl IvmRuntime {
                 );
                 return Err(error.into());
             }
+        };
+        let frame = if bootstrap {
+            frame
+        } else {
+            collapse_update_delta(&self.metadata, &context, &view.mv, frame).await?
         };
         let mv_outcome = append_dataframe(&view.mv, &self.client, frame).await?;
         commit_ids.extend(mv_outcome.commit_ids);

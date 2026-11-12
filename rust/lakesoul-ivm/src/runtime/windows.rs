@@ -2351,6 +2351,7 @@ impl IvmRuntime {
             let change = change_column(&view.source).unwrap_or(IVM_ROW_KINDS_COLUMN);
             commit_ids.extend(
                 self.update_rank_state(
+                    &context,
                     rank,
                     change,
                     &rank_keys,
@@ -2575,6 +2576,8 @@ impl IvmRuntime {
         };
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&window_refresh_sql(view, epoch)).await?;
+        let frame =
+            collapse_update_delta(&self.metadata, &context, &view.mv, frame).await?;
         if state.table_id == view.mv.table_id {
             // The target MV is also the state: one write serves both.
             commit_ids.extend(
@@ -3040,6 +3043,8 @@ impl IvmRuntime {
             context.register_table("src", Arc::new(self.table_provider(&view.source)))?;
         }
         let frame = context.sql(&multi_window_refresh_sql(view, epoch)).await?;
+        let frame =
+            collapse_update_delta(&self.metadata, &context, &view.mv, frame).await?;
         commit_ids.extend(
             append_dataframe(&view.mv, &self.client, frame)
                 .await?
@@ -3478,6 +3483,7 @@ impl IvmRuntime {
     /// row, while a deleted or partition/group-moving key gets a tombstone.
     async fn update_rank_state(
         &self,
+        context: &SessionContext,
         state: &IvmTable,
         change: &str,
         key_columns: &[String],
@@ -3527,12 +3533,15 @@ impl IvmRuntime {
             .join(old_only, JoinType::LeftSemi, &key_refs, &key_refs, None)?
             .with_column(change, lit("delete"))?;
         let inserts = current.with_column(change, lit("insert"))?;
-        let frame = inserts.union(deletes)?.sort_by(
-            key_columns
-                .iter()
-                .map(|key| column_expr(key))
-                .collect::<Vec<_>>(),
-        )?;
+        let frame =
+            collapse_update_deletes(&self.metadata, context, state, inserts, deletes)
+                .await?
+                .sort_by(
+                    key_columns
+                        .iter()
+                        .map(|key| column_expr(key))
+                        .collect::<Vec<_>>(),
+                )?;
         state
             .append_stream(&self.client, frame.execute_stream().await?)
             .await
@@ -3632,6 +3641,7 @@ impl IvmRuntime {
             let change = change_column(&view.source).unwrap_or(IVM_ROW_KINDS_COLUMN);
             commit_ids.extend(
                 self.update_rank_state(
+                    &context,
                     rank,
                     change,
                     &rank_keys,
@@ -3865,6 +3875,8 @@ impl IvmRuntime {
         phase_done!("src_lookup");
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&top_k_refresh_sql(view, epoch)).await?;
+        let frame =
+            collapse_update_delta(&self.metadata, &context, &view.mv, frame).await?;
         phase_done!("sql_plan");
         let (mv_ids, state_ids) = if state.table_id == view.mv.table_id {
             // The target MV is also the state: one write serves both.

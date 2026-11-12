@@ -5941,7 +5941,15 @@ impl IvmRuntime {
                     &view.output,
                     view.state.as_ref(),
                     pair_index.as_ref(),
-                    inserts.union(deletes)?.sort_by(sort_exprs)?,
+                    collapse_update_deletes(
+                        &self.metadata,
+                        &context,
+                        &view.output,
+                        inserts,
+                        deletes,
+                    )
+                    .await?
+                    .sort_by(sort_exprs)?,
                 )
                 .await?,
             );
@@ -6557,7 +6565,15 @@ impl IvmRuntime {
                 &view.output,
                 view.state.as_ref(),
                 None,
-                inserts.union(deletes)?.sort_by(sort_exprs)?,
+                collapse_update_deletes(
+                    &self.metadata,
+                    &context,
+                    &view.output,
+                    inserts,
+                    deletes,
+                )
+                .await?
+                .sort_by(sort_exprs)?,
             )
             .await?,
         );
@@ -6921,7 +6937,15 @@ impl IvmRuntime {
                 &view.mv,
                 None,
                 None,
-                inserts.union(deletes)?.sort_by(sort_exprs)?,
+                collapse_update_deletes(
+                    &self.metadata,
+                    &context,
+                    &view.mv,
+                    inserts,
+                    deletes,
+                )
+                .await?
+                .sort_by(sort_exprs)?,
             )
             .await?,
         );
@@ -7603,7 +7627,15 @@ impl IvmRuntime {
             append_dataframe(
                 &view.output,
                 &self.client,
-                inserts.union(deletes)?.sort_by(sort_exprs)?,
+                collapse_update_deletes(
+                    &self.metadata,
+                    &context,
+                    &view.output,
+                    inserts,
+                    deletes,
+                )
+                .await?
+                .sort_by(sort_exprs)?,
             )
             .await?
             .commit_ids,
@@ -8597,7 +8629,15 @@ impl IvmRuntime {
             append_dataframe(
                 &view.output,
                 &self.client,
-                inserts.union(deletes)?.sort_by(sort_exprs)?,
+                collapse_update_deletes(
+                    &self.metadata,
+                    &context,
+                    &view.output,
+                    inserts,
+                    deletes,
+                )
+                .await?
+                .sort_by(sort_exprs)?,
             )
             .await?
             .commit_ids,
@@ -9010,7 +9050,15 @@ impl IvmRuntime {
             append_dataframe(
                 &view.output,
                 &self.client,
-                inserts.union(deletes)?.sort_by(sort_exprs)?,
+                collapse_update_deletes(
+                    &self.metadata,
+                    &context,
+                    &view.output,
+                    inserts,
+                    deletes,
+                )
+                .await?
+                .sort_by(sort_exprs)?,
             )
             .await?
             .commit_ids,

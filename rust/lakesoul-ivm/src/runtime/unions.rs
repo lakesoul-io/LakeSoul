@@ -4,6 +4,8 @@
 
 //! The `UNION ALL` / `UNION` (distinct) views.
 
+use datafusion::logical_expr::BinaryExpr;
+
 use super::*;
 
 /// A persisted source of a [`ViewSpec::UnionAll`].
@@ -733,6 +735,81 @@ fn union_frames(mut frames: Vec<DataFrame>) -> Result<DataFrame> {
     Ok(combined)
 }
 
+/// Drop `(delete(old), insert(new))` pairs whose projected row image is
+/// identical.
+///
+/// A keyed union materializes one row per `(__ivm_source, keys)`.  An update
+/// that only touches source columns outside the view's projection leaves that
+/// row unchanged; writing the pair would push a false delta through every
+/// downstream view.  `previous` holds complete old MV images, so a null-safe
+/// comparison over the projected columns is exact.
+///
+/// Returns the surviving inserts and deletes.  A key that only exists on one
+/// side keeps its row.
+fn prune_unchanged_union_pairs(
+    view_id: &str,
+    identity: &[String],
+    inserts: DataFrame,
+    previous: DataFrame,
+) -> Result<(DataFrame, DataFrame)> {
+    let payload_columns = inserts
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .filter(|name| !identity.contains(name))
+        .collect::<Vec<_>>();
+    if identity.is_empty() || payload_columns.is_empty() {
+        return Ok((inserts, previous));
+    }
+    let identity_refs = identity.iter().map(String::as_str).collect::<Vec<_>>();
+    let new = inserts.clone().alias("new")?;
+    let old = previous.clone().alias("old")?;
+    let mut equal: Option<Expr> = None;
+    for column in &payload_columns {
+        let comparison = Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(Expr::Column(Column::new(Some("new"), column.as_str()))),
+            Operator::IsNotDistinctFrom,
+            Box::new(Expr::Column(Column::new(Some("old"), column.as_str()))),
+        ));
+        equal = Some(match equal {
+            Some(previous) => previous.and(comparison),
+            None => comparison,
+        });
+    }
+    let same = new
+        .join(old, JoinType::Inner, &identity_refs, &identity_refs, equal)
+        .map_err(|error| {
+            report!("union {view_id}: compare the old and new projected rows: {error}")
+        })?;
+    let same_keys = same
+        .select(
+            identity
+                .iter()
+                .map(|key| {
+                    Expr::Column(Column::new(Some("new"), key.as_str()))
+                        .alias(key.clone())
+                })
+                .collect::<Vec<_>>(),
+        )?
+        .distinct()?;
+    let inserts = inserts.join(
+        same_keys.clone(),
+        JoinType::LeftAnti,
+        &identity_refs,
+        &identity_refs,
+        None,
+    )?;
+    let previous = previous.join(
+        same_keys,
+        JoinType::LeftAnti,
+        &identity_refs,
+        &identity_refs,
+        None,
+    )?;
+    Ok((inserts, previous))
+}
+
 impl IvmRuntime {
     /// Persist a union-all view spec (idempotent).
     pub async fn register_union_all_view(&self, view: &UnionAllView) -> Result<()> {
@@ -940,7 +1017,77 @@ impl IvmRuntime {
                 .distinct()?;
             let inserts_schema = inserts.first().map(|frame| frame.schema().clone());
             let already_schema = already.schema().clone();
-            let inserts = union_frames(inserts)?
+            let inserts = union_frames(inserts)?;
+            // The old MV images of the changed keys.  The current epoch's rows
+            // are excluded so a replay stays idempotent.
+            let previous = mv
+                .join(changed, JoinType::LeftSemi, &pair_refs, &pair_refs, None)?
+                .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?
+                .select(output_exprs.clone())?;
+            // The physical identity also covers the range partition and the
+            // writer bucket: merge-on-read only replaces rows inside one of
+            // them.  A move to another partition therefore keeps both the old
+            // tombstone and the new insert.
+            let mut collapse_names = view.mv.primary_keys.clone();
+            for column in view
+                .mv
+                .range_partition_columns
+                .iter()
+                .chain(view.mv.effective_bucket_columns())
+            {
+                if !collapse_names.contains(column) {
+                    collapse_names.push(column.clone());
+                }
+            }
+            // An update that only changes source columns outside the view's
+            // projection leaves the materialized row unchanged.  Emitting the
+            // delete/insert pair would push a false delta through every
+            // downstream view, so both rows are dropped.  A branch that
+            // projects every source column has nothing to hide, so skip the
+            // comparison (and its plan depth) there.
+            // The comparison only pays off at the boundary from a base table:
+            // an intermediate view already emits a delta only when its own row
+            // changed.  There the union's projection is usually one or two
+            // columns narrower (a dropped payload field), so the join would
+            // scan both sides to find no no-op at all.
+            let projection_is_narrow = view.sources.iter().any(|source| {
+                if source.columns.is_empty()
+                    || source
+                        .table
+                        .schema
+                        .field_with_name(IVM_ROW_KINDS_COLUMN)
+                        .is_ok()
+                {
+                    return false;
+                }
+                // A branch that projects every payload column cannot hide an
+                // upstream change.  The union's own source index is one of the
+                // projected columns, so compare the counts rather than the
+                // names: nested unions rename `__ivm_source`.
+                let payload_columns = source
+                    .table
+                    .schema
+                    .fields()
+                    .iter()
+                    .filter(|field| {
+                        Some(field.name().as_str()) != source.table.cdc_column.as_deref()
+                            && field.name() != IVM_ROW_KINDS_COLUMN
+                            && field.name() != IVM_EPOCH_COLUMN
+                    })
+                    .count();
+                source.columns.len() < payload_columns
+            });
+            let (inserts, previous) = if projection_is_narrow {
+                prune_unchanged_union_pairs(
+                    &view.view_id,
+                    &collapse_names,
+                    inserts,
+                    previous,
+                )?
+            } else {
+                (inserts, previous)
+            };
+            let inserts = inserts
                 .join(already, JoinType::LeftAnti, &pair_refs, &pair_refs, None)
                 .map_err(|error| {
                     report!(
@@ -950,14 +1097,12 @@ impl IvmRuntime {
                         already_schema,
                     )
                 })?
-                .select(output_exprs.clone())?
-                .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
-                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-            let deletes = mv
-                .join(changed, JoinType::LeftSemi, &pair_refs, &pair_refs, None)?
-                .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?
-                .select(output_exprs)?
+                .select(output_exprs.clone())?;
+            let deletes = previous
                 .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
+                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+            let inserts = inserts
+                .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
                 .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
             let mut sort_exprs = vec![column_expr(&view.source_column)];
             sort_exprs.extend(pair_names.iter().skip(1).map(|key| column_expr(key)));
@@ -966,7 +1111,15 @@ impl IvmRuntime {
                 append_dataframe(
                     &view.mv,
                     &self.client,
-                    inserts.union(deletes)?.sort_by(sort_exprs)?,
+                    collapse_update_deletes(
+                        &self.metadata,
+                        &context,
+                        &view.mv,
+                        inserts,
+                        deletes,
+                    )
+                    .await?
+                    .sort_by(sort_exprs)?,
                 )
                 .await?
                 .commit_ids,

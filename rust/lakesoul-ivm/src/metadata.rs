@@ -1172,6 +1172,28 @@ impl IvmMetadata {
             .collect())
     }
 
+    /// Whether a consumer of `table_id` needs the source's full changelog.
+    ///
+    /// A direct `SUM`/`COUNT` view subtracts an update's old contribution from
+    /// the delete rows of the source delta.  The target sink also needs the old
+    /// row when it moves between target partitions.  A source that collapses
+    /// update pairs into insert-only upserts must keep the pairs while either
+    /// consumer exists.
+    pub async fn has_changelog_consumer(&self, table_id: &str) -> Result<bool> {
+        let rows = self
+            .client
+            .query(
+                "select 1 from ivm.views
+                 where spec->>'kind' in ('sum_count', 'sink')
+                   and spec->>'source_table_id' = $1::TEXT
+                 limit 1",
+                QueryType::RO,
+                &[&table_id],
+            )
+            .await?;
+        Ok(!rows.is_empty())
+    }
+
     /// Start a rebuild: bump the generation and return it. Epochs of older
     /// generations stay for auditing but can no longer be matched.
     pub async fn bump_generation(&self, view_id: &str) -> Result<i64> {

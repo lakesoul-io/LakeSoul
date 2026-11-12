@@ -13,9 +13,11 @@ use arrow_array::{Array, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::memory::MemTable;
 use datafusion::prelude::SessionContext;
+use lakesoul_ivm::table::PartitionFiles;
 use lakesoul_ivm::{
-    IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IvmRuntime, IvmTable, IvmTableOptions,
-    RowView, UnionAllView, UnionSource, row_mv_schema_for, union_all_mv_schema_for,
+    IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IVM_SOURCE_COLUMN, IvmRuntime, IvmTable,
+    IvmTableOptions, RowView, UnionAllView, UnionSource, row_mv_schema_for,
+    union_all_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -244,6 +246,55 @@ async fn row_view_projection_and_filter() {
         row_values(&runtime, &mv).await,
         full_row_values(&runtime, &source).await
     );
+}
+
+/// A row view's update also collapses its delete into the replacement insert.
+#[test_log::test(tokio::test)]
+async fn row_refresh_collapses_update_deletes() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source =
+        keyed_source(&runtime, &dir, &format!("ivm_row_clip_src_{suffix}")).await;
+    let output_columns = vec!["k".to_string(), "amount".to_string()];
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_row_clip_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                row_mv_schema_for(&source.schema, &output_columns).unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = RowView::new(format!("row_clip_{suffix}"), source.clone(), mv.clone())
+        .with_output_columns(output_columns);
+
+    source
+        .append_batch(
+            runtime.client(),
+            keyed_batch(&[(1, "a", 10, "insert"), (2, "b", 20, "insert")]),
+        )
+        .await
+        .unwrap();
+    let epoch = runtime.refresh_row(&view).await.unwrap().unwrap();
+    assert_eq!(epoch_writes(&runtime, &mv, epoch).await, (2, 0));
+
+    source
+        .append_batch(runtime.client(), keyed_batch(&[(1, "a", 11, "insert")]))
+        .await
+        .unwrap();
+    let epoch = runtime.refresh_row(&view).await.unwrap().unwrap();
+    assert_eq!(epoch_writes(&runtime, &mv, epoch).await, (1, 0));
+
+    source
+        .append_batch(runtime.client(), keyed_batch(&[(2, "b", 20, "delete")]))
+        .await
+        .unwrap();
+    let epoch = runtime.refresh_row(&view).await.unwrap().unwrap();
+    assert_eq!(epoch_writes(&runtime, &mv, epoch).await, (0, 1));
 }
 
 async fn append_only_rows(
@@ -543,6 +594,136 @@ async fn union_all_tracks_keyed_sources() {
         union_rows(&runtime, &mv).await,
         full_union_rows(&runtime, &[&left, &right]).await
     );
+}
+
+/// The physical `(inserts, deletes)` one epoch wrote to a table, read without
+/// merge-on-read so tombstones are visible.
+async fn epoch_writes(
+    runtime: &IvmRuntime,
+    table: &IvmTable,
+    epoch: i64,
+) -> (usize, usize) {
+    let mut groups = Vec::new();
+    for partition in runtime
+        .client()
+        .get_all_partition_info(&table.table_id)
+        .await
+        .unwrap()
+    {
+        let files = runtime
+            .client()
+            .get_data_files_of_single_partition(&partition)
+            .await
+            .unwrap();
+        if !files.is_empty() {
+            groups.push(PartitionFiles {
+                partition_desc: partition.partition_desc.clone(),
+                files,
+            });
+        }
+    }
+    let mut inserts = 0;
+    let mut deletes = 0;
+    for batch in table
+        .read_partition_files_unmerged_projected(groups, Some(&table.schema))
+        .await
+        .unwrap()
+    {
+        let schema = batch.schema();
+        let epochs = batch
+            .column(schema.index_of(IVM_EPOCH_COLUMN).unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let kinds = batch
+            .column(schema.index_of(IVM_ROW_KINDS_COLUMN).unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            if epochs.value(row) != epoch {
+                continue;
+            }
+            match kinds.value(row) {
+                "insert" => inserts += 1,
+                "delete" => deletes += 1,
+                _ => {}
+            }
+        }
+    }
+    (inserts, deletes)
+}
+
+#[test_log::test(tokio::test)]
+async fn union_all_prunes_unchanged_rows_and_collapses_deletes() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let left = keyed_source(&runtime, &dir, &format!("ivm_union_prune_l_{suffix}")).await;
+    let right =
+        keyed_source(&runtime, &dir, &format!("ivm_union_prune_r_{suffix}")).await;
+    // The union projects `k` and `amount`; `name` is outside the projection.
+    let projected = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_union_prune_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                union_all_mv_schema_for(&projected).unwrap(),
+            )
+            .with_primary_keys(vec![IVM_SOURCE_COLUMN.to_string(), "k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let projection = vec!["k".to_string(), "amount".to_string()];
+    let view = UnionAllView::new(
+        format!("union_prune_{suffix}"),
+        vec![
+            UnionSource::new(left.clone())
+                .with_projection(projection.clone(), Vec::new()),
+            UnionSource::new(right.clone()).with_projection(projection, Vec::new()),
+        ],
+        mv.clone(),
+    );
+
+    left.append_batch(
+        runtime.client(),
+        keyed_batch(&[(1, "a", 10, "insert"), (2, "b", 20, "insert")]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(runtime.client(), keyed_batch(&[(3, "c", 30, "insert")]))
+        .await
+        .unwrap();
+    let epoch = runtime.refresh_union_all(&view).await.unwrap().unwrap();
+    assert_eq!(epoch_writes(&runtime, &mv, epoch).await, (3, 0));
+
+    // Only `name` changes; the projected image is identical, so the refresh
+    // must not emit a false delta.
+    left.append_batch(runtime.client(), keyed_batch(&[(1, "a2", 10, "insert")]))
+        .await
+        .unwrap();
+    let epoch = runtime.refresh_union_all(&view).await.unwrap().unwrap();
+    assert_eq!(epoch_writes(&runtime, &mv, epoch).await, (0, 0));
+
+    // A projected change writes the replacement insert only.
+    left.append_batch(runtime.client(), keyed_batch(&[(1, "a2", 11, "insert")]))
+        .await
+        .unwrap();
+    let epoch = runtime.refresh_union_all(&view).await.unwrap().unwrap();
+    assert_eq!(epoch_writes(&runtime, &mv, epoch).await, (1, 0));
+
+    // A real delete keeps its tombstone.
+    left.append_batch(runtime.client(), keyed_batch(&[(1, "a2", 11, "delete")]))
+        .await
+        .unwrap();
+    let epoch = runtime.refresh_union_all(&view).await.unwrap().unwrap();
+    assert_eq!(epoch_writes(&runtime, &mv, epoch).await, (0, 1));
 }
 
 #[test_log::test(tokio::test)]

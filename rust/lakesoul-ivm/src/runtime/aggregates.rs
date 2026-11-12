@@ -2667,6 +2667,8 @@ impl IvmRuntime {
         crate::runtime::trace_rss("sum_count mv_frame");
         let sql = sum_count_refresh_sql(view, keyed, epoch, changelog, active_keyed);
         let frame = context.sql(&sql).await?;
+        let frame =
+            collapse_update_delta(&self.metadata, &context, &view.mv, frame).await?;
         crate::runtime::trace_rss("sum_count planned");
         commit_ids.extend(
             append_dataframe(&view.mv, &self.client, frame)

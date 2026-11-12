@@ -47,7 +47,8 @@ pub use crate::table::{IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN};
 pub const IVM_GROUP_ROW_COLUMN: &str = "__ivm_group_row";
 pub const IVM_ROW_COUNT_COLUMN: &str = "__ivm_row_count";
 use crate::table::{
-    IvmTable, IvmTableOptions, PartitionFiles, create_ivm_table, parse_partition_values,
+    IvmTable, IvmTableOptions, PartitionFiles, create_ivm_table, internal_file_format,
+    parse_partition_values,
 };
 
 mod aggregates;
@@ -3927,6 +3928,8 @@ async fn write_dataframe_distributed(
         plan_ms,
         execute_ms,
         rows = inserts + deletes,
+        inserts,
+        deletes,
         "distributed write timings"
     );
     Ok(WrittenFiles {
@@ -4194,6 +4197,75 @@ pub(crate) fn project_batch_columns(
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(RecordBatch::try_new(schema.clone(), columns)?)
+}
+
+/// Collapse an update's `delete(old)` + `insert(new)` pair into the insert.
+///
+/// Merge-on-read keeps the newest row for a primary key inside one physical
+/// partition and writer bucket, so the delete is redundant when the same
+/// identity is replaced by an insert.  A move to another partition keeps both
+/// rows.  The helper is a no-op for rebuild snapshots (no deletes), state
+/// tables (a different file format) and views with a consumer that needs the
+/// old row: a direct `SUM`/`COUNT` view or the target sink (a target partition
+/// move must delete the old partition's row).
+pub(crate) async fn collapse_update_deletes(
+    metadata: &IvmMetadata,
+    context: &SessionContext,
+    table: &IvmTable,
+    inserts: DataFrame,
+    deletes: DataFrame,
+) -> Result<DataFrame> {
+    if table.primary_keys.is_empty() || table.file_format != internal_file_format() {
+        return Ok(inserts.union(deletes)?);
+    }
+    if metadata.has_changelog_consumer(&table.table_id).await? {
+        return Ok(inserts.union(deletes)?);
+    }
+    let mut identity = table.primary_keys.clone();
+    for column in table
+        .range_partition_columns
+        .iter()
+        .chain(table.effective_bucket_columns())
+    {
+        if !identity.contains(column) {
+            identity.push(column.clone());
+        }
+    }
+    // A nullable group/window key can be NULL.  A regular equi-join treats
+    // NULL as unequal, which would keep the update's delete and let the
+    // writer/merge order decide whether the row survives.
+    let plan = LogicalPlanBuilder::new(deletes.logical_plan().clone())
+        .join_detailed(
+            inserts.logical_plan().clone(),
+            JoinType::LeftAnti,
+            (identity.clone(), identity.clone()),
+            None,
+            NullEquality::NullEqualsNull,
+        )?
+        .build()?;
+    let deletes = DataFrame::new(context.state(), plan);
+    Ok(inserts.union(deletes)?)
+}
+
+/// Collapse the delete side of a refresh SQL frame into its inserts.
+///
+/// Only for incremental frames that can contain both kinds; a rebuild frame is
+/// insert-only and must skip the extra distinct.  The frame order is not
+/// significant after the collapse: at most one row remains per physical
+/// identity (a partition move keeps its two rows in different partitions).
+pub(crate) async fn collapse_update_delta(
+    metadata: &IvmMetadata,
+    context: &SessionContext,
+    table: &IvmTable,
+    frame: DataFrame,
+) -> Result<DataFrame> {
+    if table.primary_keys.is_empty() || table.file_format != internal_file_format() {
+        return Ok(frame);
+    }
+    let kinds = Expr::Column(Column::from_name(IVM_ROW_KINDS_COLUMN));
+    let inserts = frame.clone().filter(kinds.clone().eq(lit("insert")))?;
+    let deletes = frame.filter(kinds.eq(lit("delete")))?;
+    collapse_update_deletes(metadata, context, table, inserts, deletes).await
 }
 
 /// Write a refresh data frame and publish its files in one commit.

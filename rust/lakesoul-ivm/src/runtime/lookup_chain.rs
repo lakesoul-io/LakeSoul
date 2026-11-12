@@ -1520,7 +1520,9 @@ impl IvmRuntime {
         let outcome = append_dataframe(
             &view.mv,
             &self.client,
-            inserts.union(deletes)?.sort_by(sort_exprs)?,
+            collapse_update_deletes(&self.metadata, &context, &view.mv, inserts, deletes)
+                .await?
+                .sort_by(sort_exprs)?,
         )
         .await?;
         if unique_steps {
@@ -1685,7 +1687,15 @@ impl IvmRuntime {
                     .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
                 let written = write_dataframe(
                     &mv_table,
-                    inserts.union(deletes)?.sort_by(sort_exprs)?,
+                    collapse_update_deletes(
+                        &self.metadata,
+                        &context,
+                        &mv_table,
+                        inserts,
+                        deletes,
+                    )
+                    .await?
+                    .sort_by(sort_exprs)?,
                 )
                 .await?;
                 Ok::<WrittenFiles, rootcause::Report>(written)

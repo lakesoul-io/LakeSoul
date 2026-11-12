@@ -779,7 +779,15 @@ impl IvmRuntime {
                 append_dataframe(
                     &view.mv,
                     &self.client,
-                    inserts.union(deletes)?.sort_by(sort_exprs)?,
+                    collapse_update_deletes(
+                        &self.metadata,
+                        &context,
+                        &view.mv,
+                        inserts,
+                        deletes,
+                    )
+                    .await?
+                    .sort_by(sort_exprs)?,
                 )
                 .await?
                 .commit_ids,
