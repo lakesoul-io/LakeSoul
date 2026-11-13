@@ -24,68 +24,6 @@ use rootcause::report;
 
 use crate::Result;
 
-/// Idempotent runtime DDL. Production deployments also apply
-/// `script/metadata-migrations/V4000003__federation.sql` and
-/// `V4000004__federation_dialect.sql`.
-const FEDERATION_SCHEMA_DDL: &str = r#"
-create schema if not exists federation;
-
-create table if not exists federation.servers
-(
-    server_name text primary key,
-    backend     text not null default 'adbc',
-    driver      text not null default 'postgresql',
-    dialect     text not null default 'postgres',
-    options     text not null default '{}',
-    created_at  bigint not null,
-    updated_at  bigint not null
-);
-
-alter table federation.servers
-    add column if not exists backend text not null default 'adbc';
-
-alter table federation.servers
-    add column if not exists dialect text not null default 'postgres';
-
--- Backfill rows created before the dialect column existed. The old code
--- always generated PostgreSQL SQL, so anything else was unusable anyway.
-update federation.servers
-set dialect = case driver
-    when 'mysql' then 'mysql'
-    when 'sqlite' then 'sqlite'
-    when 'duckdb' then 'duckdb'
-    when 'bigquery' then 'bigquery'
-    when 'snowflake' then 'snowflake'
-    when 'trino' then 'generic'
-    else dialect
-end
-where dialect = 'postgres' and driver not in ('postgresql', 'postgres');
-
-create table if not exists federation.user_mappings
-(
-    server_name text not null references federation.servers (server_name) on delete cascade,
-    pg_user     text not null,
-    options     text not null default '{}',
-    updated_at  bigint not null,
-    primary key (server_name, pg_user)
-);
-
-create table if not exists federation.foreign_tables
-(
-    database       text not null,
-    local_schema   text not null,
-    local_name     text not null,
-    server_name    text not null references federation.servers (server_name) on delete cascade,
-    remote_schema  text not null,
-    remote_table   text not null,
-    schema_json    text not null,
-    options        text not null default '{}',
-    created_at     bigint not null,
-    updated_at     bigint not null,
-    primary key (database, local_schema, local_name)
-);
-"#;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerBackend {
     Adbc,
@@ -152,11 +90,28 @@ impl FederationMetadata {
         Self { client }
     }
 
+    /// Verify that the federation metadata schema is installed. The schema is
+    /// owned by `script/meta_init.sql` and the metadata migrations; the server
+    /// does not create it at runtime.
     pub async fn init_schema(&self) -> Result<()> {
-        self.client
-            .batch_execute(FEDERATION_SCHEMA_DDL, QueryType::RW)
+        let installed: Option<bool> = self
+            .client
+            .query_opt(
+                "select to_regclass('federation.servers') is not null",
+                QueryType::RW,
+                &[],
+            )
             .await
-            .map_err(|error| report!("create federation metadata schema: {error}"))
+            .map_err(|error| report!("check federation metadata schema: {error}"))?
+            .map(|row| row.get(0));
+        if installed != Some(true) {
+            return Err(report!(
+                "the federation metadata schema is missing; initialize the \
+                 metadata database with script/meta_init.sql and run \
+                 script/metadata_migrate.py migrate"
+            ));
+        }
+        Ok(())
     }
 
     pub async fn load(&self) -> Result<FederationData> {

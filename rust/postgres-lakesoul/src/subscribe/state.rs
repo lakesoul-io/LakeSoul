@@ -20,119 +20,6 @@ use rootcause::{bail, report};
 
 use crate::Result;
 
-/// Idempotent runtime DDL. Production deployments should also apply
-/// `script/metadata-migrations/V4000002__subscription.sql`.
-const SUBSCRIPTION_SCHEMA_DDL: &str = r#"
-do $$ begin
-    create schema if not exists subscription;
-exception when duplicate_schema or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists subscription.subscriptions (
-        subscription_id       text primary key,
-        slot_name             text not null unique,
-        publication           text not null,
-        source_url            text not null,
-        state                 text not null default 'init',
-        enabled               boolean not null default true,
-        -- Only SQL-created subscriptions are restarted by the server
-        -- supervisor; a manually started CLI subscriber must not be
-        -- duplicated.
-        supervised            boolean not null default false,
-        commit_rows           bigint not null default 50000,
-        commit_interval_ms    bigint not null default 1000,
-        snapshot_batch_rows   bigint not null default 50000,
-        snapshot_batch_bytes  bigint not null default 67108864,
-        snapshot_parallelism  bigint not null default 4,
-        snapshot_memory_bytes bigint not null default 1073741824,
-        auto_create           boolean not null default false,
-        schema_evolution      text not null default 'auto',
-        warehouse_prefix      text,
-        cdc_column            text not null default 'rowKinds',
-        supervisor_pid        integer,
-        log_path              text,
-        last_error            text,
-        created_at            bigint not null,
-        updated_at            bigint not null
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists subscription.tables (
-        subscription_id     text   not null references subscription.subscriptions (subscription_id) on delete cascade,
-        source_schema       text   not null,
-        source_table        text   not null,
-        source_relation_oid bigint not null,
-        target_namespace    text   not null,
-        target_table        text   not null,
-        target_table_id     text   not null,
-        primary_key         text   not null,
-        data_lsn            numeric(20, 0) not null default 0,
-        state               text   not null default 'init',
-        snapshot_state      text   not null default 'pending',
-        snapshot_mode       text   not null default 'managed',
-        snapshot_lsn        numeric(20, 0),
-        snapshot_started_at bigint,
-        snapshot_completed_at bigint,
-        snapshot_dump_path  text,
-        last_error          text,
-        created_at          bigint not null,
-        updated_at          bigint not null,
-        primary key (subscription_id, source_schema, source_table),
-        unique (subscription_id, target_namespace, target_table),
-        -- Two subscriber processes must not write the same target table.
-        unique (target_namespace, target_table)
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists subscription.progress (
-        subscription_id  text primary key references subscription.subscriptions (subscription_id) on delete cascade,
-        processed_lsn    numeric(20, 0) not null default 0,
-        updated_at       bigint not null,
-        owner            text,
-        lease_expires_at bigint
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists subscription.mysql_state (
-        subscription_id   text primary key references subscription.subscriptions (subscription_id) on delete cascade,
-        server_id         integer not null,
-        gtid_mode         text not null default 'auto',
-        snapshot_locking  text not null default 'none',
-        source_database   text not null,
-        stream_offset     jsonb,
-        stream_sequence   bigint not null default 0,
-        snapshot_boundary jsonb,
-        snapshot_rows     bigint not null default 0,
-        snapshot_state    text not null default 'pending',
-        updated_at        bigint not null
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-alter table if exists subscription.mysql_state
-    add column if not exists snapshot_rows bigint not null default 0;
-
--- Pre-release databases created before these options existed. Fresh tables
--- already have the columns, so these are no-ops there.
-alter table if exists subscription.subscriptions
-    add column if not exists auto_create boolean not null default false;
-alter table if exists subscription.subscriptions
-    add column if not exists schema_evolution text not null default 'auto';
-alter table if exists subscription.subscriptions
-    add column if not exists warehouse_prefix text;
-alter table if exists subscription.subscriptions
-    add column if not exists cdc_column text not null default 'rowKinds';
-alter table if exists subscription.subscriptions
-    add column if not exists source_kind text not null default 'postgres';
-"#;
-
 #[derive(Debug, Clone)]
 pub struct TableDefinition {
     pub source_schema: String,
@@ -357,11 +244,28 @@ impl SubscriptionMetadata {
         Self { client }
     }
 
+    /// Verify that the subscription metadata schema is installed. The schema
+    /// is owned by `script/meta_init.sql` and the metadata migrations; the
+    /// server does not create it at runtime.
     pub async fn init_schema(&self) -> Result<()> {
-        self.client
-            .batch_execute(SUBSCRIPTION_SCHEMA_DDL, QueryType::RW)
+        let installed: Option<bool> = self
+            .client
+            .query_opt(
+                "select to_regclass('subscription.subscriptions') is not null",
+                QueryType::RW,
+                &[],
+            )
             .await
-            .map_err(|error| report!("create subscription metadata schema: {error}"))
+            .map_err(|error| report!("check subscription metadata schema: {error}"))?
+            .map(|row| row.get(0));
+        if installed != Some(true) {
+            return Err(report!(
+                "the subscription metadata schema is missing; initialize the \
+                 metadata database with script/meta_init.sql and run \
+                 script/metadata_migrate.py migrate"
+            ));
+        }
+        Ok(())
     }
 
     pub async fn load_by_id(

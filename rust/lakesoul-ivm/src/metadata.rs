@@ -4,8 +4,9 @@
 
 //! PostgreSQL metadata owned by the IVM runtime (schema `ivm`).
 //!
-//! The tables live next to the LakeSoul metadata in the same database but are
-//! created and used only by this crate:
+//! The tables live next to the LakeSoul metadata in the same database and are
+//! created by `script/meta_init.sql` (new deployments) or the metadata
+//! migration (existing 4.0 databases):
 //!
 //! * `ivm.views` stores the serialized [`crate::ViewSpec`] of every view, its
 //!   monotonic epoch counter and its rebuild generation;
@@ -37,223 +38,6 @@ use tokio_postgres::error::SqlState;
 use tokio_postgres::types::ToSql;
 
 use crate::error::Result;
-
-/// DDL for the IVM metadata schema. Idempotent and safe to run concurrently
-/// (PostgreSQL `IF NOT EXISTS` is not race free, so each statement tolerates
-/// the duplicate created by a concurrent initializer).
-const IVM_SCHEMA_DDL: &str = "
-do $$ begin
-    create schema if not exists ivm;
-exception when duplicate_schema or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists ivm.views (
-        view_id             text primary key,
-        spec                jsonb not null,
-        refresh_interval_ms bigint not null default 0,
-        status              text not null default 'active',
-        last_epoch          bigint not null default 0,
-        generation          bigint not null default 0,
-        definition_hash     text,
-        source_sql          text,
-        created_at          bigint not null,
-        last_refresh_at     bigint,
-        last_check_at       bigint,
-        last_action         text,
-        last_duration_ms    bigint not null default 0,
-        last_source_lag_ms  bigint,
-        last_rows_read      bigint not null default 0,
-        last_rows_written   bigint not null default 0,
-        last_error_at       bigint,
-        consecutive_failures bigint not null default 0
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists last_epoch bigint not null default 0;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists generation bigint not null default 0;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists definition_hash text;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists source_sql text;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists last_error text;
-exception when duplicate_column or unique_violation then null;
-end $$;
-do $$ begin
-    alter table ivm.views add column if not exists last_refresh_at bigint;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists last_check_at bigint;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists last_action text;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists last_duration_ms bigint not null default 0;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists last_source_lag_ms bigint;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists last_rows_read bigint not null default 0;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists last_rows_written bigint not null default 0;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists last_error_at bigint;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists consecutive_failures bigint not null default 0;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists ivm.cursors (
-        view_id         text not null,
-        source_table_id text not null,
-        partition_desc  text not null,
-        last_version    bigint not null,
-        last_timestamp  bigint not null,
-        primary key (view_id, source_table_id, partition_desc)
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists ivm.epochs (
-        view_id            text   not null,
-        generation         bigint not null,
-        epoch              bigint not null,
-        window_key         text   not null,
-        status             text   not null,
-        to_versions        jsonb  not null,
-        mv_versions_before jsonb  not null default '[]'::jsonb,
-        state_versions_before jsonb not null default '[]'::jsonb,
-        mv_versions        jsonb  not null default '[]'::jsonb,
-        state_versions     jsonb  not null default '[]'::jsonb,
-        commit_ids         jsonb  not null default '[]'::jsonb,
-        commit_plan        jsonb  not null default '{}'::jsonb,
-        created_at         bigint not null,
-        committed_at       bigint,
-        primary key (view_id, generation, epoch)
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.epochs add column if not exists commit_ids jsonb not null default '[]'::jsonb;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.epochs add column if not exists state_versions_before jsonb not null default '[]'::jsonb;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.epochs add column if not exists state_versions jsonb not null default '[]'::jsonb;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.epochs add column if not exists commit_plan jsonb not null default '{}'::jsonb;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    create unique index if not exists ivm_epochs_window_key
-        on ivm.epochs (view_id, generation, window_key);
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists ivm.states (
-        view_id    text   not null,
-        role       text   not null,
-        table_id   text   not null,
-        table_name text   not null,
-        namespace  text   not null default 'default',
-        table_path text   not null,
-        created_at bigint not null,
-        primary key (view_id, role)
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists ivm.consumers (
-        view_id     text   not null,
-        consumer_id text   not null,
-        last_epoch  bigint not null,
-        updated_at  bigint not null,
-        primary key (view_id, consumer_id)
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists ivm.view_commits (
-        view_id        text   not null,
-        commit_id      text   not null,
-        partition_desc text   not null,
-        created_at     bigint not null,
-        primary key (view_id, commit_id)
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists ivm.view_locks (
-        view_id    text   not null primary key,
-        owner      text   not null,
-        expires_at bigint not null
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists ivm.view_partitions (
-        view_id        text   not null,
-        partition_desc text   not null,
-        updated_at     bigint not null,
-        primary key (view_id, partition_desc)
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-";
 
 /// The persisted cursor of one source partition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -705,9 +489,26 @@ impl IvmMetadata {
         Self { client }
     }
 
-    /// Create the `ivm` schema and tables if they do not exist.
+    /// Verify that the IVM metadata schema is installed. The schema is owned
+    /// by `script/meta_init.sql` and the metadata migrations; the runtime does
+    /// not create it.
     pub async fn init_schema(&self) -> Result<()> {
-        self.batch_execute_rw(IVM_SCHEMA_DDL).await?;
+        let installed: Option<bool> = self
+            .client
+            .query_opt(
+                "select to_regclass('ivm.views') is not null",
+                QueryType::RW,
+                &[],
+            )
+            .await?
+            .map(|row| row.get(0));
+        if installed != Some(true) {
+            return Err(rootcause::report!(
+                "the IVM metadata schema is missing; initialize the metadata \
+                 database with script/meta_init.sql and run \
+                 script/metadata_migrate.py migrate"
+            ));
+        }
         Ok(())
     }
 
@@ -767,24 +568,6 @@ impl IvmMetadata {
             attempt += 1;
             match self.client.query_opt(sql, QueryType::RW, params).await {
                 Ok(row) => return Ok(row),
-                Err(error)
-                    if attempt < Self::MAX_RETRY_ATTEMPTS
-                        && Self::is_retryable(&error) =>
-                {
-                    Self::retry_backoff(attempt).await;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-    }
-
-    /// Run a DDL batch, retrying concurrency conflicts (idempotent DDL).
-    async fn batch_execute_rw(&self, sql: &str) -> Result<()> {
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            match self.client.batch_execute(sql, QueryType::RW).await {
-                Ok(()) => return Ok(()),
                 Err(error)
                     if attempt < Self::MAX_RETRY_ATTEMPTS
                         && Self::is_retryable(&error) =>

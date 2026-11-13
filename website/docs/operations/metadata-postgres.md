@@ -37,4 +37,19 @@ Then create LakeSoul meta tables:
 ```bash
 PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql
 ```
-`meta_init.sql` is located under `script` dir in the source code.
+`meta_init.sql` is located under `script` dir in the source code. It creates
+the complete metadata schema for a new deployment: the core LakeSoul tables,
+snapshots and tags, the secondary-index catalog, subscriptions, federation,
+and the IVM and detached-query job tables.
+
+For an existing deployment, do not recreate the database. Apply the metadata
+migrations instead:
+
+```bash
+python3 script/metadata_migrate.py migrate \
+  --database-url postgresql://lakesoul_test@localhost:5432/lakesoul_test
+```
+
+Use `status` to list applied and pending versions and `check` to verify that
+the schema is current. All metadata changes after the 4.0.0 release are kept in
+`script/metadata-migrations/V4000001__release_4_1_0.sql`.

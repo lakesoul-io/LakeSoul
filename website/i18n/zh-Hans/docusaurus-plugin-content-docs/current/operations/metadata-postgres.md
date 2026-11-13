@@ -38,4 +38,17 @@ lakesoul.pg.password=lakesoul_test
 ```bash
 PGPASSWORD=lakesoul_test psql -h localhost -p 5432 -U lakesoul_test -f script/meta_init.sql
 ```
-`meta_init.sql` 文件在代码库的 `script` 目录下。
+`meta_init.sql` 文件在代码库的 `script` 目录下。对于全新部署，这一个脚本会
+创建完整的元数据 schema，包括核心表、快照与标签、索引目录、订阅、联邦，以及
+IVM 和后台查询作业表。
+
+已有部署不要重建数据库，应执行元数据迁移：
+
+```bash
+python3 script/metadata_migrate.py migrate \
+  --database-url postgresql://lakesoul_test@localhost:5432/lakesoul_test
+```
+
+`status` 可以查看已应用和待应用的版本，`check` 用于确认 schema 已是最新。
+4.0.0 之后的所有元数据变更都放在
+`script/metadata-migrations/V4000001__release_4_1_0.sql` 这一个文件中。
