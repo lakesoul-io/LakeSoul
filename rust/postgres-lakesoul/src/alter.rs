@@ -288,11 +288,14 @@ fn check_mutable_option(name: &str) -> PgWireResult<()> {
 /// which sqlparser cannot parse, to `... SET (k = NULL [, ...])`, which
 /// [`option_change`] reads as a reset. Anything else is left to the parser.
 pub(crate) fn rewrite_reset_options(sql: &str) -> Option<String> {
-    // Every statement passes through here; only tokenize a candidate.
+    // Every statement passes through here; only tokenize one that mentions
+    // RESET. Not a leading-keyword check: the statement may open with
+    // comments, which only the tokenizer below skips correctly (it reports
+    // them as whitespace, nested block comments included).
     if !sql
-        .trim_start()
-        .get(..5)
-        .is_some_and(|head| head.eq_ignore_ascii_case("alter"))
+        .as_bytes()
+        .windows(5)
+        .any(|window| window.eq_ignore_ascii_case(b"reset"))
     {
         return None;
     }
@@ -1085,6 +1088,28 @@ mod tests {
             "ALTER TABLE RESET (a)",
             "RESET timezone",
             "SELECT 'ALTER TABLE t RESET (a)'",
+        ] {
+            assert_eq!(rewrite_reset_options(sql), None, "{sql}");
+        }
+    }
+
+    #[test]
+    fn reset_rewrite_skips_comments() {
+        let expected = Some("ALTER TABLE t SET (vortex_row_block_size = NULL)");
+        for sql in [
+            "/* tuning */ ALTER TABLE t RESET (vortex_row_block_size)",
+            "-- tuning\nALTER TABLE t RESET (vortex_row_block_size)",
+            "  /* a /* nested */ comment */\n\t-- and a line\n  ALTER TABLE t \
+             RESET (vortex_row_block_size);",
+            "ALTER /* x */ TABLE t -- y\n RESET /* z */ (vortex_row_block_size)",
+        ] {
+            assert_eq!(rewrite_reset_options(sql).as_deref(), expected, "{sql}");
+        }
+        // A RESET only inside a comment or literal is not a candidate.
+        for sql in [
+            "/* ALTER TABLE t RESET (a) */ SELECT 1",
+            "-- ALTER TABLE t RESET (a)\nSELECT 1",
+            "/* reset */ ALTER TABLE t SET (a = 1)",
         ] {
             assert_eq!(rewrite_reset_options(sql), None, "{sql}");
         }

@@ -1865,12 +1865,31 @@ async fn alter_set_reset_options(h: &Harness) -> Result<()> {
         row.vortex_data_block_target_bytes,
         row.hash_bucket_num
     );
+    // A RESET opening with comments is still rewritten (simple protocol).
+    command(
+        h,
+        "/* tuning */ -- layout\nALTER TABLE ddl_alter_options \
+         RESET (vortex_data_block_target_bytes)",
+    )
+    .await
+    .with_context(|| format!("case={CONTRACT}: comment-prefixed RESET"))?;
+    let row = metadata(h, "ddl_alter_options")
+        .await?
+        .with_context(|| format!("case={CONTRACT}: metadata after commented RESET"))?;
+    ensure!(
+        row.vortex_data_block_target_bytes.is_none()
+            && row.hash_bucket_num.as_deref() == Some("2"),
+        "case={CONTRACT}: comment-prefixed RESET must remove its option, actual \
+         bytes={:?} buckets={:?}",
+        row.vortex_data_block_target_bytes,
+        row.hash_bucket_num
+    );
     // No write here: the declared vector column does not exist (CREATE TABLE
     // has no array type), so index maintenance would fail the INSERT. Writes
     // under these options are covered by lakesoul-datafusion's vector tests.
     command(h, "DROP TABLE ddl_alter_options").await?;
     eprintln!(
-        "PASS case={CONTRACT} refused-without-vector set reset-extended layout-kept"
+        "PASS case={CONTRACT} refused-without-vector set reset-extended reset-commented layout-kept"
     );
     Ok(())
 }
