@@ -21,11 +21,16 @@
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use lakesoul_common::schema_evolution::{
+    ColumnChange, TableLayout, can_widen, check_evolution, decimal_accepts,
+};
 use lakesoul_common::ser::arrow_java::schema_to_metadata_parts;
 use lakesoul_datafusion::catalog::LakeSoulTableProperty;
 use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
 use lakesoul_datafusion::lakesoul_table::helpers::case_fold_table_name;
-use lakesoul_metadata::MetaDataClientRef;
+use lakesoul_metadata::{
+    LakeSoulMetaDataError, MetaDataClientRef, TableDefinitionUpdate,
+};
 use lakesoul_metadata_proto::entity::TableInfo;
 use pg_walstream::RelationColumn;
 use rootcause::{bail, report};
@@ -73,6 +78,34 @@ pub(crate) async fn ensure_target(
     allow_create: bool,
     allow_evolve: bool,
 ) -> Result<LakeSoulTable> {
+    ensure_target_with_retries(
+        meta,
+        source,
+        target_namespace,
+        target_table,
+        options,
+        allow_create,
+        allow_evolve,
+        EVOLVE_RETRIES,
+    )
+    .await
+}
+
+/// How many times an evolution re-reads the target after a concurrent
+/// redefinition before giving up.
+pub(crate) const EVOLVE_RETRIES: usize = 1;
+
+#[allow(clippy::too_many_arguments)]
+async fn ensure_target_with_retries(
+    meta: &MetaDataClientRef,
+    source: &SourceTable,
+    target_namespace: &str,
+    target_table: &str,
+    options: &TargetOptions,
+    allow_create: bool,
+    allow_evolve: bool,
+    retries: usize,
+) -> Result<LakeSoulTable> {
     let table_name = case_fold_table_name(target_table);
     let info = meta
         .get_table_info_by_table_name(&table_name, target_namespace)
@@ -91,10 +124,13 @@ pub(crate) async fn ensure_target(
                     )
                 })?;
         let cdc_column = table_cdc_column(&info)?;
-        let new_schema = evolved_schema(
+        let layout =
+            TableLayout::from_partitions(&info.partitions, Some(cdc_column.clone()));
+        let new_schema = evolved_schema_for_layout(
             source,
             table.schema(),
             &cdc_column,
+            &layout,
             options.schema_evolution,
         )?;
         if let Some(new_schema) = new_schema {
@@ -107,14 +143,36 @@ pub(crate) async fn ensure_target(
                 new_columns = new_schema.fields().len(),
                 "evolving target table schema"
             );
-            meta.update_table_schema(
-                &info.table_id,
-                &lakesoul_common::ser::arrow_java::schema_to_metadata_str(&new_schema),
-            )
-            .await
-            .map_err(|error| {
-                report!("update target schema {target_namespace}.{target_table}: {error}")
-            })?;
+            let published = publish_evolved_schema(meta, &info, &new_schema)
+                .await
+                .map_err(|error| {
+                    report!(
+                        "update target schema {target_namespace}.{target_table}: {error}"
+                    )
+                })?;
+            if !published {
+                if retries == 0 {
+                    bail!(
+                        "target table {target_namespace}.{target_table} was redefined \
+                         concurrently while its schema was being evolved; retry"
+                    );
+                }
+                tracing::info!(
+                    target = %format!("{target_namespace}.{target_table}"),
+                    "target redefined concurrently; re-reading it and evolving again"
+                );
+                return Box::pin(ensure_target_with_retries(
+                    meta,
+                    source,
+                    target_namespace,
+                    target_table,
+                    options,
+                    allow_create,
+                    allow_evolve,
+                    retries - 1,
+                ))
+                .await;
+            }
             return LakeSoulTable::for_namespace_and_name(
                 target_namespace,
                 &table_name,
@@ -191,7 +249,7 @@ pub(crate) async fn ensure_target(
     if !created {
         // Another process created it between the lookup and the insert. Open
         // and evolve the winner instead of failing the subscription.
-        return Box::pin(ensure_target(
+        return Box::pin(ensure_target_with_retries(
             meta,
             source,
             target_namespace,
@@ -199,6 +257,7 @@ pub(crate) async fn ensure_target(
             options,
             false,
             allow_evolve,
+            retries,
         ))
         .await;
     }
@@ -244,15 +303,43 @@ pub(crate) fn source_schema(source: &SourceTable, cdc_column: &str) -> Result<Sc
     Ok(Arc::new(Schema::new(fields)))
 }
 
-/// Compare the current source schema with the target schema. Returns a new
-/// target schema only when an evolution is needed. Historical target columns
-/// are never removed.
+/// [`evolved_schema_for_layout`] for a target laid out the way the subscriber
+/// creates it: hashed by the source primary key, no range partitions.
+#[cfg(test)]
 pub(crate) fn evolved_schema(
     source: &SourceTable,
     target: SchemaRef,
     cdc_column: &str,
     mode: SchemaEvolution,
 ) -> Result<Option<SchemaRef>> {
+    let layout = TableLayout {
+        primary_keys: source.primary_key.clone(),
+        range_partitions: Vec::new(),
+        cdc_column: Some(cdc_column.to_string()),
+    };
+    evolved_schema_for_layout(source, target, cdc_column, &layout, mode)
+}
+
+/// Compare the current source schema with the target schema. Returns a new
+/// target schema only when an evolution is needed. Historical target columns
+/// are never removed.
+///
+/// Which source changes to follow is decided here (the source is the
+/// authority on types and nullability); every change itself is applied
+/// through [`check_evolution`], so the target is held to the same rule as
+/// `ALTER TABLE` and the other LakeSoul writers, including the refusal to
+/// change a column `layout` depends on.
+pub(crate) fn evolved_schema_for_layout(
+    source: &SourceTable,
+    target: SchemaRef,
+    cdc_column: &str,
+    layout: &TableLayout,
+    mode: SchemaEvolution,
+) -> Result<Option<SchemaRef>> {
+    let apply = |schema: &Schema, change: ColumnChange| {
+        check_evolution(schema, &change, layout)
+            .map_err(|error| report!("cannot evolve the target schema: {error}"))
+    };
     let cdc_index = target.index_of(cdc_column).map_err(|error| {
         report!("target table has no CDC column {cdc_column:?}: {error}")
     })?;
@@ -263,7 +350,7 @@ pub(crate) fn evolved_schema(
         );
     }
 
-    let mut fields = target.fields().to_vec();
+    let mut schema: Schema = target.as_ref().clone();
     let mut changed = false;
     let mut seen = vec![false; source.columns.len()];
 
@@ -325,12 +412,19 @@ pub(crate) fn evolved_schema(
                     source_column.type_name
                 );
             }
-            fields[target_index] =
-                Arc::new(field.as_ref().clone().with_data_type(source_type));
+            schema = apply(
+                &schema,
+                ColumnChange::Widen {
+                    name: field.name().clone(),
+                    to: source_type,
+                },
+            )?;
             changed = true;
         }
 
-        if !source_column.not_null && !fields[target_index].is_nullable() {
+        // Columns are only ever appended, so the index still addresses this
+        // column in the evolving schema.
+        if !source_column.not_null && !schema.field(target_index).is_nullable() {
             if mode != SchemaEvolution::Auto {
                 bail!(
                     "source column {} became nullable but target column is NOT NULL; \
@@ -338,8 +432,7 @@ pub(crate) fn evolved_schema(
                     source_column.name
                 );
             }
-            fields[target_index] =
-                Arc::new(fields[target_index].as_ref().clone().with_nullable(true));
+            schema = apply(&schema, ColumnChange::DropNotNull(field.name().clone()))?;
             changed = true;
         }
     }
@@ -372,21 +465,39 @@ pub(crate) fn evolved_schema(
             );
         }
         let data_type = source_arrow_type(source_column)?;
-        fields.push(Arc::new(Field::new(
-            source_column.name.clone(),
-            data_type,
-            true,
-        )));
+        schema = apply(
+            &schema,
+            ColumnChange::Add(Field::new(source_column.name.clone(), data_type, true)),
+        )?;
         changed = true;
     }
 
-    if !changed {
-        return Ok(None);
+    Ok(changed.then(|| Arc::new(schema)))
+}
+
+/// Publish an evolved target schema, but only onto the definition `info` the
+/// evolution was computed from. Returns `false` when the target was
+/// redefined concurrently (nothing was written): the caller re-reads the
+/// target and evolves again.
+pub(crate) async fn publish_evolved_schema(
+    meta: &MetaDataClientRef,
+    info: &TableInfo,
+    schema: &Schema,
+) -> std::result::Result<bool, LakeSoulMetaDataError> {
+    match meta
+        .alter_table_definition(
+            info,
+            &TableDefinitionUpdate {
+                schema: Some(schema_to_metadata_parts(schema)),
+                properties: None,
+            },
+        )
+        .await
+    {
+        Ok(()) => Ok(true),
+        Err(LakeSoulMetaDataError::CommitConflict(_)) => Ok(false),
+        Err(error) => Err(error),
     }
-    Ok(Some(Arc::new(Schema::new_with_metadata(
-        fields,
-        target.metadata().clone(),
-    ))))
 }
 
 /// Convert one `Relation` message into the source columns it describes.
@@ -549,33 +660,6 @@ pub(crate) fn source_arrow_type(source: &SourceColumn) -> Result<DataType> {
             DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")))
         }
     })
-}
-
-fn can_widen(from: &DataType, to: &DataType) -> bool {
-    if from == to {
-        return true;
-    }
-    match (from, to) {
-        (DataType::Int16, DataType::Int32 | DataType::Int64)
-        | (DataType::Int32, DataType::Int64)
-        | (DataType::Float32, DataType::Float64) => true,
-        (
-            DataType::Decimal128(from_precision, from_scale),
-            DataType::Decimal128(to_precision, to_scale),
-        ) => decimal_accepts(*to_precision, *to_scale, *from_precision, *from_scale),
-        _ => false,
-    }
-}
-
-fn decimal_accepts(
-    target_precision: u8,
-    target_scale: i8,
-    source_precision: u8,
-    source_scale: i8,
-) -> bool {
-    target_scale >= source_scale
-        && i16::from(target_precision) - i16::from(target_scale)
-            >= i16::from(source_precision) - i16::from(source_scale)
 }
 
 fn table_cdc_column(info: &TableInfo) -> Result<String> {
@@ -757,6 +841,98 @@ mod tests {
             .unwrap()
             .expect("evolved");
         assert!(schema.field_with_name("name").unwrap().is_nullable());
+    }
+
+    /// A pre-existing target may be range partitioned. The shared rule
+    /// refuses to change a partition column, which the subscriber's own
+    /// checks never covered.
+    #[test]
+    fn range_partition_columns_are_not_evolved() {
+        let source = source_table(vec![
+            SourceColumn {
+                not_null: true,
+                ..source_column("id", PgType::Int8, "int8")
+            },
+            source_column("region", PgType::Int8, "int8"),
+        ]);
+        let target = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("region", DataType::Int32, false),
+            Field::new("rowKinds", DataType::Utf8, true),
+        ]));
+        let layout =
+            TableLayout::from_partitions("region;id", Some("rowKinds".to_string()));
+        let error = evolved_schema_for_layout(
+            &source,
+            target,
+            "rowKinds",
+            &layout,
+            SchemaEvolution::Auto,
+        )
+        .unwrap_err();
+        assert!(format!("{error}").contains("range-partition"), "{error}");
+    }
+
+    /// The publication only applies onto the definition the evolution was
+    /// computed from; a stale one is reported, not overwritten. Needs the
+    /// metadata PostgreSQL configured through `LAKESOUL_PG_*`.
+    #[tokio::test]
+    async fn publication_refuses_a_stale_definition() {
+        let meta: MetaDataClientRef =
+            Arc::new(lakesoul_metadata::MetaDataClient::from_env().await.unwrap());
+        let base = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("rowKinds", DataType::Utf8, true),
+        ]);
+        let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
+            schema_to_metadata_parts(&base);
+        let name = format!("subscribe_publish_{}", uuid::Uuid::new_v4().simple());
+        let created = TableInfo {
+            table_id: format!("table_{}", uuid::Uuid::new_v4()),
+            table_name: name.clone(),
+            table_namespace: "default".to_string(),
+            table_path: format!("file:///tmp/{name}"),
+            table_schema,
+            table_schema_arrow_ipc,
+            table_schema_arrow_ipc_json_hash,
+            properties: r#"{"use_cdc":"true","lakesoul_cdc_change_column":"rowKinds"}"#
+                .to_string(),
+            partitions: ";id".to_string(),
+            domain: "public".to_string(),
+        };
+        meta.create_table(created.clone()).await.unwrap();
+        let info = meta
+            .get_table_info_by_table_id(&created.table_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let add = |name: &str| {
+            let mut fields = base.fields().to_vec();
+            fields.push(Arc::new(Field::new(name, DataType::Utf8, true)));
+            Schema::new(fields)
+        };
+
+        assert!(
+            publish_evolved_schema(&meta, &info, &add("first"))
+                .await
+                .unwrap()
+        );
+        // `info` is now stale: the second publication must not land.
+        assert!(
+            !publish_evolved_schema(&meta, &info, &add("second"))
+                .await
+                .unwrap()
+        );
+        let stored = meta
+            .get_table_info_by_table_id(&info.table_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(stored.table_schema.contains("first"));
+        assert!(!stored.table_schema.contains("second"));
+        meta.delete_table_by_table_info_cascade(&stored)
+            .await
+            .unwrap();
     }
 
     #[test]

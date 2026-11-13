@@ -3128,6 +3128,11 @@ impl MetaDataClient {
 
     /// Replace a table's schema metadata, clearing the Arrow IPC mirror so
     /// every reader parses the new schema from `table_schema`.
+    ///
+    /// **Unchecked**: it overwrites whatever definition is stored, so a
+    /// concurrent change to the table is lost. Kept for external callers;
+    /// in-tree writers use [`Self::alter_table_definition`], which publishes
+    /// only onto the definition the change was computed from.
     pub async fn update_table_schema(&self, table_id: &str, schema: &str) -> Result<()> {
         self.execute_update(
             DaoType::UpdateTableInfoById as i32,

@@ -25,8 +25,9 @@ use arrow_array::Array;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::error::DataFusionError;
 use datafusion::prelude::Expr;
+use lakesoul_common::schema_evolution::{ColumnChange, TableLayout, check_evolution};
 use lakesoul_common::ser::arrow_java::{
-    schema_from_table_info_metadata, schema_to_metadata_str,
+    schema_from_table_info_metadata, schema_to_metadata_parts, schema_to_metadata_str,
 };
 use lakesoul_io::{
     config::{
@@ -38,7 +39,10 @@ use lakesoul_io::{
     reader::LakeSoulReader,
     writer::{SendableWriter, async_writer::FlushOutput, create_writer_with_io_config},
 };
-use lakesoul_metadata::{MetaDataClient, transfusion::DataFileInfo};
+use lakesoul_metadata::{
+    LakeSoulMetaDataError, MetaDataClient, TableDefinitionUpdate,
+    transfusion::DataFileInfo,
+};
 use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo, TableInfo};
 use serde::{Deserialize, Serialize};
 
@@ -844,22 +848,64 @@ impl IvmTable {
         if self.schema.field_with_name(IVM_EPOCH_COLUMN).is_ok() {
             return Ok(None);
         }
-        let mut fields = self.schema.fields().to_vec();
-        fields.push(Arc::new(Field::new(
-            IVM_EPOCH_COLUMN,
-            DataType::Int64,
-            true,
-        )));
-        let schema = Arc::new(Schema::new_with_metadata(
-            fields,
-            self.schema.metadata().clone(),
-        ));
-        client
-            .update_table_schema(&self.table_id, &schema_to_metadata_str(&schema))
-            .await?;
-        let mut updated = self.clone();
-        updated.schema = schema;
-        Ok(Some(updated))
+        // The column is added to the *stored* definition and published only
+        // onto that definition, so a concurrent change to the table is never
+        // overwritten with this handle's older schema. One concurrent
+        // redefinition is absorbed by re-reading; a second is an error.
+        // The metadata futures are boxed so this call, which runs deep inside
+        // the refresh executor's state machine, does not inline a metadata
+        // transaction into it.
+        let mut retries = 1;
+        loop {
+            let info = Box::pin(client.get_table_info_by_table_id(&self.table_id))
+                .await?
+                .ok_or_else(|| {
+                    rootcause::report!(
+                        "table {}.{} no longer exists",
+                        self.namespace,
+                        self.table_name
+                    )
+                })?;
+            let stored = Self::from_table_info(&info)?;
+            if stored.schema.field_with_name(IVM_EPOCH_COLUMN).is_ok() {
+                // Another runtime added it first.
+                let mut updated = self.clone();
+                updated.schema = stored.schema;
+                return Ok(Some(updated));
+            }
+            let layout = TableLayout {
+                primary_keys: stored.primary_keys.clone(),
+                range_partitions: stored.range_partition_columns.clone(),
+                cdc_column: stored.cdc_column.clone(),
+            };
+            let schema = check_evolution(
+                &stored.schema,
+                &ColumnChange::Add(Field::new(IVM_EPOCH_COLUMN, DataType::Int64, true)),
+                &layout,
+            )
+            .map_err(|error| {
+                rootcause::report!(
+                    "add {IVM_EPOCH_COLUMN} to {}.{}: {error}",
+                    self.namespace,
+                    self.table_name
+                )
+            })?;
+            let update = TableDefinitionUpdate {
+                schema: Some(schema_to_metadata_parts(&schema)),
+                properties: None,
+            };
+            match Box::pin(client.alter_table_definition(&info, &update)).await {
+                Ok(()) => {
+                    let mut updated = self.clone();
+                    updated.schema = Arc::new(schema);
+                    return Ok(Some(updated));
+                }
+                Err(LakeSoulMetaDataError::CommitConflict(_)) if retries > 0 => {
+                    retries -= 1;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     /// Create one rolling writer for a refresh/compaction output.
@@ -2758,5 +2804,137 @@ mod coalesce_tests {
             .downcast_ref::<Int32Array>()
             .expect("int32 column");
         assert_eq!(values.values(), &[0, 1, 2, 3, 4, 5]);
+    }
+}
+
+/// Adding the epoch column to a target that lacks it. These tests need the
+/// metadata PostgreSQL configured through `LAKESOUL_PG_*`.
+#[cfg(test)]
+mod epoch_column_tests {
+    use super::*;
+
+    async fn create_target(client: &MetaDataClient, tag: &str) -> TableInfo {
+        let name = format!("ivm_epoch_{tag}_{}", uuid::Uuid::new_v4().simple());
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("v", DataType::Int32, true),
+            Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, true),
+        ]);
+        let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
+            schema_to_metadata_parts(&schema);
+        let info = TableInfo {
+            table_id: format!("table_{}", uuid::Uuid::new_v4()),
+            table_name: name.clone(),
+            table_namespace: "default".to_string(),
+            table_path: format!("file:///tmp/{name}"),
+            table_schema,
+            table_schema_arrow_ipc,
+            table_schema_arrow_ipc_json_hash,
+            properties: serde_json::json!({
+                "hashBucketNum": "1",
+                "use_cdc": "true",
+                "lakesoul_cdc_change_column": IVM_ROW_KINDS_COLUMN,
+            })
+            .to_string(),
+            partitions: ";id".to_string(),
+            domain: "public".to_string(),
+        };
+        client.create_table(info.clone()).await.unwrap();
+        client
+            .get_table_info_by_table_id(&info.table_id)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    async fn stored_schema(
+        client: &MetaDataClient,
+        table_id: &str,
+    ) -> (TableInfo, SchemaRef) {
+        let info = client
+            .get_table_info_by_table_id(table_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let schema = IvmTable::from_table_info(&info).unwrap().schema;
+        (info, schema)
+    }
+
+    #[tokio::test]
+    async fn epoch_column_is_added_to_the_stored_definition() {
+        let client = MetaDataClient::from_env().await.unwrap();
+        let info = create_target(&client, "add").await;
+        let table = IvmTable::from_table_info(&info).unwrap();
+
+        let updated = table
+            .ensure_epoch_column(&client)
+            .await
+            .unwrap()
+            .expect("the column is missing, so it is added");
+        assert!(updated.schema.field_with_name(IVM_EPOCH_COLUMN).is_ok());
+        let (stored_info, stored) = stored_schema(&client, &info.table_id).await;
+        let epoch = stored.field_with_name(IVM_EPOCH_COLUMN).unwrap();
+        assert_eq!(epoch.data_type(), &DataType::Int64);
+        assert!(epoch.is_nullable());
+        // The IPC mirror is rewritten with the schema, not cleared.
+        assert!(!stored_info.table_schema_arrow_ipc.is_empty());
+        assert_eq!(
+            stored_info.table_schema_arrow_ipc_json_hash,
+            lakesoul_common::ser::arrow_java::schema_metadata_json_hash(
+                &stored_info.table_schema
+            )
+        );
+        // A handle that already has the column changes nothing.
+        assert!(
+            updated
+                .ensure_epoch_column(&client)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        client
+            .delete_table_by_table_info_cascade(&stored_info)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_concurrent_redefinition_is_not_overwritten() {
+        let client = MetaDataClient::from_env().await.unwrap();
+        let info = create_target(&client, "keep").await;
+        // The handle is loaded before another writer adds a column.
+        let stale = IvmTable::from_table_info(&info).unwrap();
+        let widened = check_evolution(
+            &stale.schema,
+            &ColumnChange::Add(Field::new("extra", DataType::Utf8, true)),
+            &TableLayout::default(),
+        )
+        .unwrap();
+        client
+            .alter_table_definition(
+                &info,
+                &TableDefinitionUpdate {
+                    schema: Some(schema_to_metadata_parts(&widened)),
+                    properties: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let updated = stale.ensure_epoch_column(&client).await.unwrap().unwrap();
+        let (stored_info, stored) = stored_schema(&client, &info.table_id).await;
+        for schema in [&stored, &updated.schema] {
+            assert!(schema.field_with_name("extra").is_ok(), "{schema:?}");
+            assert!(
+                schema.field_with_name(IVM_EPOCH_COLUMN).is_ok(),
+                "{schema:?}"
+            );
+        }
+
+        client
+            .delete_table_by_table_info_cascade(&stored_info)
+            .await
+            .unwrap();
     }
 }

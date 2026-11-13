@@ -283,6 +283,20 @@ impl DdlStatementHook {
         context: &SessionContext,
         client: &mut dyn HookClient,
     ) -> PgWireResult<Response> {
+        let applied = self.apply_alter(alter, context, client).await;
+        crate::alter::record_outcome(applied.as_ref().copied());
+        applied.map(|_| Response::Execution(Tag::new("ALTER TABLE")))
+    }
+
+    /// Run `alter`; `Ok(true)` when a new definition was published, `Ok(false)`
+    /// when the statement changed nothing (`IF EXISTS` on an absent table,
+    /// only no-op actions).
+    async fn apply_alter(
+        &self,
+        alter: &AlterTable,
+        context: &SessionContext,
+        client: &mut dyn HookClient,
+    ) -> PgWireResult<bool> {
         let actions = crate::alter::validate_alter(alter)?;
         let table = self.target(&alter.name)?;
         let schema_provider = self.public_schema(context)?;
@@ -297,7 +311,7 @@ impl DdlStatementHook {
                     format!("relation \"{table}\" does not exist, skipping"),
                 )
                 .await?;
-                return Ok(Response::Execution(Tag::new("ALTER TABLE")));
+                return Ok(false);
             }
             return Err(user_error(
                 UNDEFINED_TABLE,
@@ -328,7 +342,8 @@ impl DdlStatementHook {
             )));
         }
         let (update, notices) = crate::alter::plan_alter(&table, &table_info, &actions)?;
-        if !update.is_empty() {
+        let applied = !update.is_empty();
+        if applied {
             self.client
                 .alter_table_definition(&table_info, &update)
                 .await
@@ -337,7 +352,7 @@ impl DdlStatementHook {
         for message in notices {
             crate::alter::notice(client, message).await?;
         }
-        Ok(Response::Execution(Tag::new("ALTER TABLE")))
+        Ok(applied)
     }
 }
 
@@ -363,11 +378,14 @@ impl QueryHook for DdlStatementHook {
         // parts analyzable from the AST alone are refused here, at Parse, the
         // way PostgreSQL reports them before Bind.
         let verb = ddl_verb(statement)?;
-        Some(
-            reject_in_transaction(client.transaction_status(), verb)
-                .and_then(|()| self.validate(statement, session_context))
-                .map(|()| SessionSettingsHook::placeholder_plan()),
-        )
+        let validated = reject_in_transaction(client.transaction_status(), verb)
+            .and_then(|()| self.validate(statement, session_context));
+        if let (Statement::AlterTable(_), Err(error)) = (statement, &validated) {
+            // Refused at Parse: the statement never reaches execution, where
+            // every other outcome is counted.
+            crate::alter::record_outcome(Err(error));
+        }
+        Some(validated.map(|()| SessionSettingsHook::placeholder_plan()))
     }
 
     async fn handle_extended_query(
@@ -427,6 +445,9 @@ impl DdlStatementHook {
         if let Err(error) =
             reject_in_transaction(client.transaction_status(), ddl_verb(statement)?)
         {
+            if matches!(statement, Statement::AlterTable(_)) {
+                crate::alter::record_outcome(Err(&error));
+            }
             return Some(Err(error));
         }
         let result = match statement {

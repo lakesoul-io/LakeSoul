@@ -566,6 +566,52 @@ pub(crate) fn publish_error(table: &str, error: LakeSoulMetaDataError) -> PgWire
     }
 }
 
+/// `ALTER TABLE` statements by outcome.
+const ALTER_TABLE_TOTAL: &str = "lakesoul_alter_table_total";
+
+/// Every `outcome` label value of [`ALTER_TABLE_TOTAL`].
+const OUTCOMES: [&str; 5] = ["applied", "noop", "refused", "conflict", "error"];
+
+static DESCRIBE_METRICS: std::sync::Once = std::sync::Once::new();
+
+/// Exports the `ALTER TABLE` counter at zero for every outcome, so the first
+/// statement after startup shows in `increase()`. Call once at startup, after
+/// installing the metrics recorder.
+pub fn register_metrics() {
+    DESCRIBE_METRICS.call_once(|| {
+        metrics::describe_counter!(
+            ALTER_TABLE_TOTAL,
+            "ALTER TABLE statements by outcome: applied (a new definition was \
+             published), noop (nothing to change), refused (the statement or \
+             the table does not allow it), conflict (redefined concurrently, \
+             40001), error (anything else)"
+        );
+    });
+    for outcome in OUTCOMES {
+        metrics::counter!(ALTER_TABLE_TOTAL, "outcome" => outcome).increment(0);
+    }
+}
+
+/// Count one `ALTER TABLE` statement: `Ok(true)` published a definition,
+/// `Ok(false)` changed nothing.
+pub(crate) fn record_outcome(outcome: Result<bool, &PgWireError>) {
+    metrics::counter!(ALTER_TABLE_TOTAL, "outcome" => outcome_label(outcome))
+        .increment(1);
+}
+
+fn outcome_label(outcome: Result<bool, &PgWireError>) -> &'static str {
+    match outcome {
+        Ok(true) => "applied",
+        Ok(false) => "noop",
+        Err(PgWireError::UserError(info)) => match info.code.as_str() {
+            SERIALIZATION_FAILURE => "conflict",
+            INTERNAL_ERROR => "error",
+            _ => "refused",
+        },
+        Err(_) => "error",
+    }
+}
+
 /// Send a PostgreSQL `NOTICE`.
 pub(crate) async fn notice(
     client: &mut dyn HookClient,
@@ -843,6 +889,38 @@ mod tests {
         let actions =
             validate_alter(&parse("ALTER TABLE t ALTER COLUMN v TYPE BIGINT")).unwrap();
         assert!(plan_alter("t", &info, &actions).is_ok());
+    }
+
+    #[test]
+    fn outcomes_are_counted_by_label() {
+        let recorder =
+            metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let rendered = metrics::with_local_recorder(&recorder, || {
+            register_metrics();
+            record_outcome(Ok(true));
+            record_outcome(Ok(true));
+            record_outcome(Ok(false));
+            record_outcome(Err(&feature_not_supported("no".to_string())));
+            record_outcome(Err(&user_error(DUPLICATE_COLUMN, "dup")));
+            record_outcome(Err(&publish_error(
+                "t",
+                LakeSoulMetaDataError::CommitConflict("raced".to_string()),
+            )));
+            handle.render()
+        });
+        for series in [
+            "lakesoul_alter_table_total{outcome=\"applied\"} 2",
+            "lakesoul_alter_table_total{outcome=\"noop\"} 1",
+            "lakesoul_alter_table_total{outcome=\"refused\"} 2",
+            "lakesoul_alter_table_total{outcome=\"conflict\"} 1",
+            "lakesoul_alter_table_total{outcome=\"error\"} 0",
+        ] {
+            assert!(
+                rendered.lines().any(|line| line == series),
+                "{series} missing in:\n{rendered}"
+            );
+        }
     }
 
     #[test]
