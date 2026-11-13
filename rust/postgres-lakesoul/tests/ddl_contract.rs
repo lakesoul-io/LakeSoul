@@ -365,14 +365,12 @@ async fn drop_absent_and_if_exists(h: &Harness) -> Result<()> {
 }
 
 /// `WITH (hash_bucket_num, file_format, append_only)` reaches the table
-/// properties.
+/// properties; the Vortex block options are refused (see the refusal matrix).
 async fn options_and_column_types(h: &Harness) -> Result<()> {
     command(
         h,
         "CREATE TABLE ddl_buckets (id BIGINT PRIMARY KEY, tag TEXT) \
-         WITH (hash_bucket_num = 8, file_format = 'parquet', append_only = true, \
-               vortex_row_block_size = 4096, \
-               vortex_data_block_target_bytes = 262144)",
+         WITH (hash_bucket_num = 8, file_format = 'parquet', append_only = true)",
     )
     .await?;
     let row = metadata(h, "ddl_buckets")
@@ -406,23 +404,15 @@ async fn options_and_column_types(h: &Harness) -> Result<()> {
         )
     );
     ensure!(
-        row.vortex_row_block_size.as_deref() == Some("4096"),
+        row.vortex_row_block_size.is_none()
+            && row.vortex_data_block_target_bytes.is_none(),
         "{}",
         detail(
             "ddl_buckets",
-            "vector row block size",
-            &format!("expected 4096, actual {:?}", row.vortex_row_block_size)
-        )
-    );
-    ensure!(
-        row.vortex_data_block_target_bytes.as_deref() == Some("262144"),
-        "{}",
-        detail(
-            "ddl_buckets",
-            "vector data block target",
+            "vortex layout options",
             &format!(
-                "expected 262144, actual {:?}",
-                row.vortex_data_block_target_bytes
+                "expected none, actual {:?} {:?}",
+                row.vortex_row_block_size, row.vortex_data_block_target_bytes
             )
         )
     );
@@ -670,6 +660,33 @@ async fn refusal_matrix_creates_nothing(h: &Harness) -> Result<()> {
             "CREATE TABLE ddl_timestamp_zero (at TIMESTAMP(0))",
             "0A000",
         ),
+        // The Vortex block options shape vector index columns only, which a
+        // table created here cannot declare: storing one would be a no-op.
+        (
+            "ddl_vortex_rows",
+            "CREATE TABLE ddl_vortex_rows (id BIGINT PRIMARY KEY) \
+             WITH (vortex_row_block_size = 4096)",
+            "0A000",
+        ),
+        (
+            "ddl_vortex_bytes",
+            "CREATE TABLE ddl_vortex_bytes (id BIGINT PRIMARY KEY) \
+             WITH (file_format = 'vortex', vortex_data_block_target_bytes = 262144)",
+            "0A000",
+        ),
+        (
+            "ddl_vortex_parquet",
+            "CREATE TABLE ddl_vortex_parquet (id BIGINT PRIMARY KEY) \
+             WITH (file_format = 'parquet', vortex_row_block_size = 4096)",
+            "0A000",
+        ),
+        // An invalid value is still reported as one.
+        (
+            "ddl_vortex_zero",
+            "CREATE TABLE ddl_vortex_zero (id BIGINT PRIMARY KEY) \
+             WITH (vortex_row_block_size = 0)",
+            "22023",
+        ),
     ];
     for (table, sql, expected) in cases {
         let actual = error_code(h, sql).await.with_context(|| {
@@ -755,6 +772,8 @@ async fn extended_protocol_creates_and_drops(h: &Harness) -> Result<()> {
         "CREATE TABLE ddl_ext_bad (id UUID)",
         "CREATE TABLE ddl_ext_old_bucket_option (id BIGINT PRIMARY KEY) \
          WITH (hashbucketnum = 8)",
+        "CREATE TABLE ddl_ext_vortex (id BIGINT PRIMARY KEY) \
+         WITH (vortex_row_block_size = 4096)",
     ] {
         let error = h
             .lake
@@ -1767,7 +1786,8 @@ async fn alter_drop_not_null(h: &Harness) -> Result<()> {
 }
 
 /// `SET (...)`/`RESET (...)` change writer-tuning options only, keep every
-/// other property, and work through both protocols.
+/// other property, and work through both protocols. `SET` is refused where
+/// no writer would apply the option.
 async fn alter_set_reset_options(h: &Harness) -> Result<()> {
     const CONTRACT: &str = "alter-set-reset-options";
     command(
@@ -1776,6 +1796,35 @@ async fn alter_set_reset_options(h: &Harness) -> Result<()> {
          WITH (hash_bucket_num = 2)",
     )
     .await?;
+    // The Vortex block options shape vector index columns only; this table
+    // has none, so storing one would report a setting nothing applies.
+    let before = definition(h, "ddl_alter_options").await?;
+    let (code, message) = error_detail(
+        h,
+        "ALTER TABLE ddl_alter_options SET (vortex_row_block_size = 4096)",
+    )
+    .await?;
+    ensure!(
+        code == "0A000" && message.contains("has no effect"),
+        "case={CONTRACT}: SET without a vector index column expected 0A000, actual \
+         {code} {message}"
+    );
+    ensure!(
+        definition(h, "ddl_alter_options").await? == before,
+        "case={CONTRACT}: a refused SET must not change the definition"
+    );
+    // CREATE TABLE cannot declare a vector index; mark one the way the
+    // Python SDK and DataFusion store it.
+    h.reference
+        .execute(
+            "UPDATE public.table_info SET properties = (properties::jsonb || \
+             jsonb_build_object('vector_index_columns', \
+             '[{\"column\":\"embedding\",\"dim\":4}]'))::json \
+             WHERE table_namespace = $1 AND table_name = 'ddl_alter_options'",
+            &[&h.lake_namespace],
+        )
+        .await
+        .context("declare a vector index column")?;
     command(
         h,
         "ALTER TABLE ddl_alter_options SET (vortex_row_block_size = 4096, \
@@ -1816,14 +1865,13 @@ async fn alter_set_reset_options(h: &Harness) -> Result<()> {
         row.vortex_data_block_target_bytes,
         row.hash_bucket_num
     );
-    command(h, "INSERT INTO ddl_alter_options VALUES (1), (2)").await?;
-    let rows = scalar(&h.lake, "SELECT count(*) FROM ddl_alter_options").await?;
-    ensure!(
-        rows == 2,
-        "case={CONTRACT}: writes after SET, actual {rows} rows"
-    );
+    // No write here: the declared vector column does not exist (CREATE TABLE
+    // has no array type), so index maintenance would fail the INSERT. Writes
+    // under these options are covered by lakesoul-datafusion's vector tests.
     command(h, "DROP TABLE ddl_alter_options").await?;
-    eprintln!("PASS case={CONTRACT} set reset-extended layout-kept");
+    eprintln!(
+        "PASS case={CONTRACT} refused-without-vector set reset-extended layout-kept"
+    );
     Ok(())
 }
 

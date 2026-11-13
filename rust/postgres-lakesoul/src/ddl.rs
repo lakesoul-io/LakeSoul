@@ -163,6 +163,7 @@ impl DdlStatementHook {
         let (schema, primary_key) = build_schema(&create.columns, &create.constraints)?;
         let partition_cols = partition_columns(&create.hive_distribution, &schema)?;
         let options = table_options(&create.table_options)?;
+        check_create_options(&table, &options)?;
 
         let mut location_options = options;
         location_options
@@ -419,10 +420,10 @@ impl DdlStatementHook {
             return Ok(());
         };
         reject_unsupported_create(create)?;
-        self.target(&create.name)?;
+        let table = self.target(&create.name)?;
         let (schema, _) = build_schema(&create.columns, &create.constraints)?;
         partition_columns(&create.hive_distribution, &schema)?;
-        table_options(&create.table_options)?;
+        check_create_options(&table, &table_options(&create.table_options)?)?;
         if self.warehouse.is_none() {
             return Err(feature_not_supported(
                 "CREATE TABLE needs a configured warehouse: start the server \
@@ -1016,6 +1017,24 @@ fn invalid_type(data_type: &SqlDataType, detail: &str) -> PgWireError {
     feature_not_supported(format!(
         "column type {data_type} is not supported: {detail}"
     ))
+}
+
+/// Refuse `WITH (...)` options no writer of the new table would apply, by
+/// the rule `ALTER TABLE ... SET` uses ([`crate::alter::check_option_takes_effect`]).
+/// A table created here declares no vector index column, so the Vortex block
+/// options are always refused.
+fn check_create_options(
+    table: &str,
+    options: &HashMap<String, String>,
+) -> PgWireResult<()> {
+    let mut names: Vec<&String> = options.keys().collect();
+    names.sort();
+    for name in names {
+        crate::alter::check_option_takes_effect(table, name, |key| {
+            options.get(key).map(String::as_str)
+        })?;
+    }
+    Ok(())
 }
 
 /// `WITH (...)` options LakeSoul understands.

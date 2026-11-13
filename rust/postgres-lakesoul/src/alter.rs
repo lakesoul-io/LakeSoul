@@ -16,7 +16,8 @@
 //! * `ALTER [COLUMN] name [SET DATA] TYPE type`: a lossless widening;
 //! * `ALTER [COLUMN] name DROP NOT NULL` on a non-key column;
 //! * `SET (option = value, ...)` / `RESET (option, ...)` for the writer-tuning
-//!   options that do not change the physical layout.
+//!   options that do not change the physical layout; `SET` only where a
+//!   writer applies them (the Vortex layout of vector index columns).
 //!
 //! Everything else is refused before metadata is touched, with `0A000` unless
 //! PostgreSQL has a more specific SQLSTATE. Several actions in one statement
@@ -43,6 +44,10 @@ use lakesoul_common::schema_evolution::{
 use lakesoul_common::ser::arrow_java::{
     schema_from_table_info_metadata, schema_to_metadata_parts,
 };
+use lakesoul_datafusion::vector_index::{
+    VECTOR_INDEX_COLUMNS_KEY, parse_vector_index_columns,
+};
+use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_metadata::{
     LakeSoulMetaDataError, MetaDataClientRef, QueryType, TableDefinitionUpdate,
 };
@@ -465,6 +470,9 @@ pub(crate) fn plan_alter(
                 for (key, value) in changes {
                     match value {
                         Some(value) => {
+                            check_option_takes_effect(table, key, |name| {
+                                properties.get(name).and_then(|value| value.as_str())
+                            })?;
                             properties.insert(
                                 key.clone(),
                                 serde_json::Value::String(value.clone()),
@@ -485,6 +493,52 @@ pub(crate) fn plan_alter(
             .then(|| serde_json::Value::Object(properties)),
     };
     Ok((update, notices))
+}
+
+/// Refuse to store a writer-tuning option the table's writers would ignore.
+/// Shared by `ALTER TABLE ... SET` and `CREATE TABLE ... WITH`.
+///
+/// The two Vortex block options shape only the columns declared in
+/// `vector_index_columns` (the meaning the Python SDK and every Rust writer
+/// give them); the other columns keep the Vortex defaults, and Parquet
+/// ignores them. Storing one on any other table would report success for a
+/// setting nothing applies. `RESET` is always allowed: removing an option
+/// cannot leave the table claiming a layout it does not have.
+///
+/// `property` reads the table's properties as they will be stored.
+pub(crate) fn check_option_takes_effect<'a>(
+    table: &str,
+    option: &str,
+    property: impl Fn(&str) -> Option<&'a str>,
+) -> PgWireResult<()> {
+    if !MUTABLE_OPTIONS.contains(&option) {
+        return Ok(());
+    }
+    // Parsed the way writers parse it, so the check follows their reading.
+    if property("file_format").and_then(|format| format.parse().ok())
+        == Some(PhysicalFormat::Parquet)
+    {
+        return Err(feature_not_supported(format!(
+            "table option \"{option}\" has no effect on \"{table}\": it tunes the \
+             Vortex layout, and the table is written as parquet"
+        )));
+    }
+    let vector_columns = parse_vector_index_columns(property(VECTOR_INDEX_COLUMNS_KEY))
+        .map_err(|error| {
+        user_error(
+            INTERNAL_ERROR,
+            format!(
+                "table \"{table}\" has invalid vector_index_columns metadata: {error}"
+            ),
+        )
+    })?;
+    if vector_columns.is_empty() {
+        return Err(feature_not_supported(format!(
+            "table option \"{option}\" has no effect on \"{table}\": it tunes the \
+             Vortex layout of vector index columns only, and the table declares none"
+        )));
+    }
+    Ok(())
 }
 
 fn evolution_error(table: &str, error: EvolutionError) -> PgWireError {
@@ -670,9 +724,37 @@ mod tests {
         )
     }
 
-    fn plan(sql: &str) -> PgWireResult<(TableDefinitionUpdate, Vec<String>)> {
+    /// `base()` with `properties` merged in.
+    fn with_properties(properties: serde_json::Value) -> TableInfo {
+        let mut info = base();
+        let mut merged: serde_json::Value =
+            serde_json::from_str(&info.properties).unwrap();
+        merged
+            .as_object_mut()
+            .unwrap()
+            .extend(properties.as_object().unwrap().clone());
+        info.properties = merged.to_string();
+        info
+    }
+
+    /// A table declaring a vector index column, so the Vortex block options
+    /// shape its writes.
+    fn vector_table() -> TableInfo {
+        with_properties(serde_json::json!({
+            "vector_index_columns": r#"[{"column":"label","dim":4}]"#,
+        }))
+    }
+
+    fn plan_on(
+        info: &TableInfo,
+        sql: &str,
+    ) -> PgWireResult<(TableDefinitionUpdate, Vec<String>)> {
         let actions = validate_alter(&parse(sql))?;
-        plan_alter("t", &base(), &actions)
+        plan_alter("t", info, &actions)
+    }
+
+    fn plan(sql: &str) -> PgWireResult<(TableDefinitionUpdate, Vec<String>)> {
+        plan_on(&base(), sql)
     }
 
     fn planned_schema(update: &TableDefinitionUpdate) -> Schema {
@@ -825,29 +907,85 @@ mod tests {
 
     #[test]
     fn options_set_and_reset_keep_other_properties() {
-        let (update, _) =
-            plan("ALTER TABLE t SET (vortex_data_block_target_bytes = 1048576)").unwrap();
+        let vector_index_columns = r#"[{"column":"label","dim":4}]"#;
+        let (update, _) = plan_on(
+            &vector_table(),
+            "ALTER TABLE t SET (vortex_data_block_target_bytes = 1048576)",
+        )
+        .unwrap();
         assert!(update.schema.is_none());
         assert_eq!(
             update.properties.unwrap(),
             serde_json::json!({
                 "hashBucketNum": "4",
+                "vector_index_columns": vector_index_columns,
                 "vortex_row_block_size": "8192",
                 "vortex_data_block_target_bytes": "1048576",
             })
         );
         let reset =
             rewrite_reset_options("ALTER TABLE t RESET (vortex_row_block_size)").unwrap();
-        let (update, _) = plan(&reset).unwrap();
+        let (update, _) = plan_on(&vector_table(), &reset).unwrap();
         assert_eq!(
             update.properties.unwrap(),
-            serde_json::json!({"hashBucketNum": "4"})
+            serde_json::json!({
+                "hashBucketNum": "4",
+                "vector_index_columns": vector_index_columns,
+            })
         );
         // Resetting an absent option changes nothing.
         let reset =
             rewrite_reset_options("ALTER TABLE t RESET (vortex_data_block_target_bytes)")
                 .unwrap();
-        assert!(plan(&reset).unwrap().0.is_empty());
+        assert!(plan_on(&vector_table(), &reset).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn options_no_writer_applies_are_refused() {
+        // No vector index column: every column keeps the Vortex defaults.
+        // Parquet: the Vortex layout does not apply at all.
+        let parquet = with_properties(serde_json::json!({
+            "vector_index_columns": r#"[{"column":"label","dim":4}]"#,
+            "file_format": "Parquet",
+        }));
+        for (info, sql) in [
+            (base(), "ALTER TABLE t SET (vortex_row_block_size = 4096)"),
+            (
+                base(),
+                "ALTER TABLE t SET (vortex_data_block_target_bytes = 1048576)",
+            ),
+            (
+                parquet.clone(),
+                "ALTER TABLE t SET (vortex_row_block_size = 4096)",
+            ),
+        ] {
+            let error = plan_on(&info, sql).expect_err(sql);
+            assert_eq!(code(&error), "0A000", "{sql}: {error:?}");
+            assert!(
+                error.to_string().contains("has no effect"),
+                "{sql}: {error}"
+            );
+        }
+        // Removing a setting nothing applies is still allowed.
+        let reset =
+            rewrite_reset_options("ALTER TABLE t RESET (vortex_row_block_size)").unwrap();
+        for info in [base(), parquet] {
+            let (update, _) = plan_on(&info, &reset).unwrap();
+            assert!(
+                !update
+                    .properties
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .contains_key("vortex_row_block_size")
+            );
+        }
+        // A vortex table with a vector index column takes it.
+        let vortex = with_properties(serde_json::json!({
+            "vector_index_columns": r#"[{"column":"label","dim":4}]"#,
+            "file_format": "vortex",
+        }));
+        plan_on(&vortex, "ALTER TABLE t SET (vortex_row_block_size = 4096)").unwrap();
     }
 
     #[test]
