@@ -1018,6 +1018,16 @@ impl IvmRuntime {
                         contribution,
                     )
                     .await?
+                } else if view.null_safe {
+                    self.lookup_source_by_join_keys_null_safe(
+                        context,
+                        &view.sources[to],
+                        contribution,
+                        to_keys,
+                        to_keys,
+                        true,
+                    )
+                    .await?
                 } else {
                     self.lookup_source_by_join_keys(
                         context,

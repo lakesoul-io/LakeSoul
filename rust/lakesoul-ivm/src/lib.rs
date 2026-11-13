@@ -40,9 +40,12 @@
 //! columns, and window partition/order keys may be strings or any other
 //! sortable type, projection/filter views mirror the rows that pass their
 //! conditions, `UNION ALL` merges several same-schema sources with a source
-//! index, and a top-k view keeps the best `limit` rows of every group. Group keys and window partition keys may be NULL (NULL
-//! groups with NULL, following SQL), while row identities (source primary
-//! keys used by keyed views) must be non-nullable. An inner join over two
+//! index, and a top-k view keeps the best `limit` rows of every group. Group
+//! keys and window partition keys may be NULL (NULL groups with NULL,
+//! following SQL); the keyed state/MV lookups encode a NULL key with the
+//! Arrow row format and match it against the same encoded key, so a NULL
+//! group does not force a full scan. Row identities (source primary keys used
+//! by keyed views) must be non-nullable. An inner join over two
 //! keyed sources keeps a retractable output keyed by both row identities, so
 //! upserts, deletes and join-key changes on either side are reflected.
 //!

@@ -1467,7 +1467,7 @@ impl IvmRuntime {
         // Read those keys through the shared PK lookup instead of scanning
         // the whole MV when its key matches the left key.
         let mv = if view.mv.primary_keys == view.left.primary_keys {
-            self.lookup_source_by_join_keys(
+            self.lookup_source_by_join_keys_null_safe(
                 &context,
                 &view.mv,
                 affected.clone(),
@@ -1670,12 +1670,19 @@ impl IvmRuntime {
             )?;
             let missing = missing.select(aliases)?;
             // Only the right keys are read: the existence answer never needs
-            // the payload of the right table.
-            let rows = self
-                .lookup_source_by_join_keys(
+            // the payload of the right table.  INTERSECT/EXCEPT probes are
+            // null-safe; a plain SEMI/ANTI join never matches a NULL key.
+            let rows = if view.null_safe {
+                self.lookup_source_by_join_keys_null_safe(
                     context, right, missing, right_keys, right_keys, true,
                 )
-                .await?;
+                .await?
+            } else {
+                self.lookup_source_by_join_keys(
+                    context, right, missing, right_keys, right_keys, true,
+                )
+                .await?
+            };
             let rows = rows.select(
                 right_keys
                     .iter()
@@ -2695,7 +2702,7 @@ impl IvmRuntime {
             affected_from_left.union(affected_from_right)?.distinct()?
         };
         let mv = if view.mv.primary_keys == view.left.primary_keys {
-            self.lookup_source_by_join_keys(
+            self.lookup_source_by_join_keys_null_safe(
                 &context,
                 &view.mv,
                 affected.clone(),

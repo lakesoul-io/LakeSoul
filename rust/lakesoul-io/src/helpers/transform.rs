@@ -777,4 +777,15 @@ mod tests {
         assert!(list_values.is_null(1));
         assert_eq!(list_values.value(0).data_type(), &DataType::Utf8);
     }
+
+    #[test]
+    fn make_default_array_fills_a_null_partition_column() {
+        use arrow_array::Array;
+        let value = LAKESOUL_NULL_STRING.to_string();
+        for data_type in [DataType::Utf8, DataType::Int64, DataType::Date32] {
+            let array = make_default_array(&data_type, &value, 5).unwrap();
+            assert_eq!(array.len(), 5);
+            assert_eq!(array.null_count(), 5);
+        }
+    }
 }

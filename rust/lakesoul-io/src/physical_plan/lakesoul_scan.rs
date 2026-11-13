@@ -980,7 +980,13 @@ fn unit_partition_values(
                     field.name()
                 )
             })?;
-            ScalarValue::try_from_string(value.clone(), field.data_type())
+            crate::helpers::into_scalar_value(value, field.data_type()).map_err(|error| {
+                exec_datafusion_err!(
+                    "work unit of lane {} has an invalid value for partition column '{}': {error}",
+                    unit.lane,
+                    field.name()
+                )
+            })
         })
         .collect()
 }

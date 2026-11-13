@@ -678,7 +678,7 @@ impl IvmRuntime {
                 // full MV read.
                 let (mv, affected) = if view.mv.primary_keys == view.source.primary_keys {
                     let mv = self
-                        .lookup_source_by_join_keys(
+                        .lookup_source_by_join_keys_null_safe(
                             &context,
                             &view.mv,
                             affected.clone(),
@@ -715,7 +715,7 @@ impl IvmRuntime {
                 let affected = delta.clone().select(key_exprs.clone())?.distinct()?;
                 let source_now = filter_deletes(delta, change_column(&view.source))?;
                 let mv = if view.mv.primary_keys == view.source.primary_keys {
-                    self.lookup_source_by_join_keys(
+                    self.lookup_source_by_join_keys_null_safe(
                         &context,
                         &view.mv,
                         affected.clone(),
