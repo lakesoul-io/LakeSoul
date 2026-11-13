@@ -3332,3 +3332,52 @@ fn staged_file(path: &str) -> lakesoul_datafusion::write_mode::StagedWrite {
         rows: Vec::new(),
     }
 }
+
+/// A table whose files disagree on a column type no reader can reconcile is
+/// `42804` (datatype_mismatch), however DataFusion wrapped the merge failure.
+#[test]
+fn incompatible_file_types_map_to_datatype_mismatch() {
+    use datafusion::arrow::datatypes::DataType;
+    use datafusion::arrow::error::ArrowError;
+    use datafusion::error::DataFusionError;
+    use lakesoul_io::file_format::IncompatibleColumnType;
+
+    let incompatible = || IncompatibleColumnType {
+        column: "qty".to_string(),
+        from: DataType::Int32,
+        to: DataType::Utf8View,
+    };
+    let wrapped = [
+        DataFusionError::ArrowError(
+            Box::new(ArrowError::ExternalError(Box::new(incompatible()))),
+            None,
+        ),
+        DataFusionError::Context(
+            "planning the scan".to_string(),
+            Box::new(DataFusionError::ArrowError(
+                Box::new(ArrowError::ExternalError(Box::new(incompatible()))),
+                None,
+            )),
+        ),
+        DataFusionError::External(Box::new(incompatible())),
+    ];
+    for error in wrapped {
+        let display = error.to_string();
+        match super::map_statement_error(PgWireError::ApiError(Box::new(error))) {
+            PgWireError::UserError(info) => {
+                assert_eq!(info.code, "42804", "{display}");
+                assert!(info.message.contains("\"qty\""), "{}", info.message);
+            }
+            other => panic!("{display}: expected 42804, got {other:?}"),
+        }
+    }
+    // Any other Arrow schema error keeps the generic mapping.
+    let other = DataFusionError::ArrowError(
+        Box::new(ArrowError::SchemaError("something else".to_string())),
+        None,
+    );
+    assert!(matches!(
+        super::map_statement_error(PgWireError::ApiError(Box::new(other))),
+        PgWireError::ApiError(_)
+    ));
+}

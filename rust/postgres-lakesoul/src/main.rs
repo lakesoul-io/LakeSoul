@@ -30,6 +30,7 @@ use crate::server::LakeSoulHandlers;
 use crate::session::PgSessionFactory;
 
 mod allocator;
+mod alter;
 mod cancel;
 mod catalog;
 mod ddl;

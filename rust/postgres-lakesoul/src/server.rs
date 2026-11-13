@@ -151,7 +151,10 @@ where
 
 /// Rewrite DDL sqlparser cannot parse to the sentinel SELECT its hook claims.
 fn rewrite_special_statements(sql: &str) -> PgWireResult<String> {
-    let sql = crate::federation::rewrite(sql)?.unwrap_or_else(|| sql.to_string());
+    // `ALTER TABLE ... RESET (...)` is not in sqlparser either; it becomes the
+    // `SET (k = NULL)` form `DdlStatementHook` reads as a reset.
+    let sql = crate::alter::rewrite_reset_options(sql).unwrap_or_else(|| sql.to_string());
+    let sql = crate::federation::rewrite(&sql)?.unwrap_or(sql);
     crate::subscribe::sql::rewrite(&sql).map(|rewritten| rewritten.unwrap_or(sql))
 }
 
@@ -207,9 +210,45 @@ fn map_statement_error(error: PgWireError) -> PgWireError {
         {
             return cardinality_violation_error();
         }
+        if let Some(incompatible) = incompatible_column_type(cause) {
+            return incompatible_file_type_error(incompatible);
+        }
         current = cause.source();
     }
     error
+}
+
+/// The typed schema-merge failure, also when DataFusion wrapped it in
+/// variants whose `source()` does not lead to it.
+fn incompatible_column_type<'a>(
+    cause: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a lakesoul_io::file_format::IncompatibleColumnType> {
+    if let Some(typed) = cause.downcast_ref() {
+        return Some(typed);
+    }
+    match cause.downcast_ref::<DataFusionError>()?.find_root() {
+        DataFusionError::ArrowError(arrow, _) => match arrow.as_ref() {
+            datafusion::arrow::error::ArrowError::ExternalError(inner) => {
+                inner.downcast_ref()
+            }
+            _ => None,
+        },
+        DataFusionError::External(inner) => inner.downcast_ref(),
+        _ => None,
+    }
+}
+
+/// PostgreSQL `datatype_mismatch`: the table's data files disagree on a column
+/// type no reader can reconcile (written by an engine with a looser schema
+/// evolution rule than LakeSoul's), so every scan of it fails.
+fn incompatible_file_type_error(
+    incompatible: &lakesoul_io::file_format::IncompatibleColumnType,
+) -> PgWireError {
+    PgWireError::UserError(Box::new(ErrorInfo::new(
+        "ERROR".to_string(),
+        "42804".to_string(),
+        incompatible.to_string(),
+    )))
 }
 
 impl LakeSoulQueryRouter {

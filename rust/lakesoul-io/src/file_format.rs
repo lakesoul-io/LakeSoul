@@ -663,6 +663,35 @@ fn merge_schemas_with_cast(
     Ok(Arc::new(out_fields.finish().with_metadata(out_meta)))
 }
 
+/// A column whose type in one data file cannot be cast to its type in
+/// another, so the table's files cannot be read under one schema.
+///
+/// Schema evolution never produces this through the LakeSoul rule (it only
+/// allows lossless widenings); a file written by an engine with a looser rule
+/// can.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncompatibleColumnType {
+    /// The column, by name.
+    pub column: String,
+    /// Its type in the files merged so far.
+    pub from: arrow_schema::DataType,
+    /// Its type in the file that could not be merged.
+    pub to: arrow_schema::DataType,
+}
+
+impl Display for IncompatibleColumnType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "column \"{}\" has type {} in one data file and {} in another, which \
+             cannot be cast to each other",
+            self.column, self.from, self.to
+        )
+    }
+}
+
+impl std::error::Error for IncompatibleColumnType {}
+
 #[derive(Debug, Default)]
 pub struct CanCastSchemaBuilder {
     fields: Vec<FieldRef>,
@@ -688,11 +717,14 @@ impl CanCastSchemaBuilder {
             *e = field.clone();
             Ok(())
         } else {
-            Err(ArrowError::SchemaError(format!(
-                "Fail to merge schema field '{}' because the from data_type = {} does not equal {}",
-                field.name(),
-                e.data_type(),
-                field.data_type()
+            // Typed, so a front end can report its own SQLSTATE: the table's
+            // files disagree on a column type no reader can reconcile.
+            Err(ArrowError::ExternalError(Box::new(
+                IncompatibleColumnType {
+                    column: field.name().clone(),
+                    from: e.data_type().clone(),
+                    to: field.data_type().clone(),
+                },
             )))
         }
     }
@@ -1382,6 +1414,37 @@ mod tests {
         assert_eq!(
             merged.field_with_name("id").unwrap().data_type(),
             &DataType::Int64
+        );
+    }
+
+    #[test]
+    fn merge_reports_an_uncastable_column_as_a_typed_error() {
+        let nested_type =
+            DataType::Struct(vec![Field::new("inner", DataType::Int32, true)].into());
+        let mut builder = CanCastSchemaBuilder::new();
+        builder
+            .try_merge(&Arc::new(Field::new("v", DataType::Int32, true)))
+            .unwrap();
+        let error = builder
+            .try_merge(&Arc::new(Field::new("v", nested_type.clone(), true)))
+            .unwrap_err();
+        let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+        let mut found = None;
+        while let Some(current) = source {
+            if let Some(typed) = current.downcast_ref::<IncompatibleColumnType>() {
+                found = Some(typed.clone());
+                break;
+            }
+            source = current.source();
+        }
+        assert_eq!(
+            found,
+            Some(IncompatibleColumnType {
+                column: "v".to_string(),
+                from: DataType::Int32,
+                to: nested_type,
+            }),
+            "{error}"
         );
     }
 

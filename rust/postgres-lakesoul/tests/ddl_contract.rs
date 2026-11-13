@@ -58,6 +58,15 @@ async fn ddl_create_and_drop_tables() -> Result<()> {
             same_connection_ddl_replans_prepared_statements(h).await?;
             cross_connection_drop_keeps_the_bound_plan(h).await?;
             cross_connection_drop_and_recreate_keeps_the_bound_plan(h).await?;
+            alter_add_column_reads_null(h).await?;
+            alter_widens_types(h).await?;
+            alter_drop_not_null(h).await?;
+            alter_set_reset_options(h).await?;
+            alter_refusal_matrix_changes_nothing(h).await?;
+            alter_owned_tables_are_refused(h).await?;
+            alter_is_refused_in_a_batch_and_a_block(h).await?;
+            alter_conflicts_with_a_block_written_against_the_old_definition(h).await?;
+            alter_replans_prepared_statements(h).await?;
             Ok(())
         })
     })
@@ -572,7 +581,7 @@ async fn refusal_matrix_creates_nothing(h: &Harness) -> Result<()> {
         ("ddl_create_schema", "CREATE SCHEMA ddl_schema", "0A000"),
         (
             "ddl_alter",
-            "ALTER TABLE ddl_orders ADD COLUMN extra INT",
+            "ALTER TABLE ddl_orders DROP COLUMN status",
             "0A000",
         ),
         ("ddl_drop_view", "DROP VIEW ddl_view", "0A000"),
@@ -1549,6 +1558,700 @@ async fn cross_connection_drop_and_recreate_keeps_the_bound_plan(
         .simple_query("DROP TABLE ddl_cross_recreate")
         .await
         .context("cleanup DROP of the re-created table")?;
+    Ok(())
+}
+
+/// `ADD COLUMN` publishes a nullable column at the end: rows in files written
+/// before it read NULL, rows written after it carry the value, through the
+/// text and the binary protocol, for primary-key, append-only and
+/// range-partitioned tables.
+async fn alter_add_column_reads_null(h: &Harness) -> Result<()> {
+    const CONTRACT: &str = "alter-add-column-reads-null";
+    for (table, create, seed, after) in [
+        (
+            "ddl_alter_add_pk",
+            "CREATE TABLE ddl_alter_add_pk (id BIGINT NOT NULL PRIMARY KEY, label TEXT)",
+            "INSERT INTO ddl_alter_add_pk VALUES (1, 'a'), (2, 'b')",
+            // An upsert of an old key merges a new file over an old one.
+            "INSERT INTO ddl_alter_add_pk VALUES (2, 'b', 'two'), (3, 'c', 'three') \
+             ON CONFLICT (id) DO UPDATE SET label = excluded.label, note = excluded.note",
+        ),
+        (
+            "ddl_alter_add_append",
+            "CREATE TABLE ddl_alter_add_append (id BIGINT, label TEXT) \
+             WITH (append_only = true)",
+            "INSERT INTO ddl_alter_add_append VALUES (1, 'a')",
+            "INSERT INTO ddl_alter_add_append VALUES (3, 'c', 'three')",
+        ),
+        (
+            "ddl_alter_add_part",
+            "CREATE TABLE ddl_alter_add_part (id BIGINT NOT NULL, label TEXT) \
+             PARTITIONED BY (id)",
+            "INSERT INTO ddl_alter_add_part VALUES (1, 'a')",
+            "INSERT INTO ddl_alter_add_part VALUES (3, 'c', 'three')",
+        ),
+    ] {
+        command(h, create).await?;
+        command(h, seed).await?;
+        command(h, &format!("ALTER TABLE {table} ADD COLUMN note TEXT")).await?;
+        command(h, after).await?;
+
+        let statement = h
+            .lake
+            .prepare(&format!("SELECT id, label, note FROM {table} ORDER BY id"))
+            .await
+            .with_context(|| format!("case={CONTRACT} table={table} prepare"))?;
+        ensure!(
+            statement.columns()[2].type_() == &Type::TEXT,
+            "case={CONTRACT} table={table}: note must be TEXT, actual {}",
+            statement.columns()[2].type_()
+        );
+        let binary: Vec<(i64, Option<String>, Option<String>)> = h
+            .lake
+            .query(&statement, &[])
+            .await
+            .with_context(|| format!("case={CONTRACT} table={table} binary SELECT"))?
+            .iter()
+            .map(|row| (row.get(0), row.get(1), row.get(2)))
+            .collect();
+        let expected: Vec<(i64, Option<String>, Option<String>)> =
+            if table == "ddl_alter_add_pk" {
+                vec![
+                    (1, Some("a".into()), None),
+                    (2, Some("b".into()), Some("two".into())),
+                    (3, Some("c".into()), Some("three".into())),
+                ]
+            } else {
+                vec![
+                    (1, Some("a".into()), None),
+                    (3, Some("c".into()), Some("three".into())),
+                ]
+            };
+        ensure!(
+            binary == expected,
+            "case={CONTRACT} table={table}: binary rows expected {expected:?}, actual \
+             {binary:?}"
+        );
+        let text = support::compare::simple(
+            &h.lake,
+            &format!("SELECT id, label, note FROM {table} ORDER BY id"),
+        )
+        .await?;
+        let text_notes: Vec<Option<String>> =
+            text.rows.iter().map(|row| row[2].clone()).collect();
+        let expected_notes: Vec<Option<String>> =
+            expected.iter().map(|row| row.2.clone()).collect();
+        ensure!(
+            text_notes == expected_notes,
+            "case={CONTRACT} table={table}: text notes expected {expected_notes:?}, \
+             actual {text_notes:?}"
+        );
+        ensure_schema_mirror_consistent(h, table).await?;
+        command(h, &format!("DROP TABLE {table}")).await?;
+    }
+    eprintln!("PASS case={CONTRACT} pk append-only partitioned text binary");
+    Ok(())
+}
+
+/// Lossless widenings keep every value, report the new type, and accept
+/// values only the wider type can hold.
+async fn alter_widens_types(h: &Harness) -> Result<()> {
+    const CONTRACT: &str = "alter-widen-types";
+    command(
+        h,
+        "CREATE TABLE ddl_alter_widen (id BIGINT NOT NULL PRIMARY KEY, qty INT, \
+         small SMALLINT, price NUMERIC(10, 2), ratio REAL)",
+    )
+    .await?;
+    command(
+        h,
+        "INSERT INTO ddl_alter_widen VALUES (1, 2147483647, 7, 12345678.91, 1.5), \
+         (2, -5, -7, -0.01, 0.25)",
+    )
+    .await?;
+    command(
+        h,
+        "ALTER TABLE ddl_alter_widen ALTER COLUMN qty TYPE BIGINT, \
+         ALTER COLUMN small SET DATA TYPE INT, \
+         ALTER COLUMN price TYPE NUMERIC(14, 3), \
+         ALTER COLUMN ratio TYPE DOUBLE PRECISION",
+    )
+    .await?;
+    command(
+        h,
+        "INSERT INTO ddl_alter_widen VALUES (3, 9000000000, 70000, 98765432109.876, 0.1)",
+    )
+    .await?;
+    let statement = h
+        .lake
+        .prepare("SELECT qty, small, price, ratio FROM ddl_alter_widen ORDER BY id")
+        .await
+        .with_context(|| format!("case={CONTRACT} prepare"))?;
+    let types: Vec<Type> = statement
+        .columns()
+        .iter()
+        .map(|column| column.type_().clone())
+        .collect();
+    ensure!(
+        types == [Type::INT8, Type::INT4, Type::NUMERIC, Type::FLOAT8],
+        "case={CONTRACT}: widened types expected [int8, int4, numeric, float8], \
+         actual {types:?}"
+    );
+    let text = support::compare::simple(
+        &h.lake,
+        "SELECT qty, small, price, ratio FROM ddl_alter_widen ORDER BY id",
+    )
+    .await?;
+    let expected = vec![
+        vec!["2147483647", "7", "12345678.910", "1.5"],
+        vec!["-5", "-7", "-0.010", "0.25"],
+        vec!["9000000000", "70000", "98765432109.876", "0.1"],
+    ];
+    let actual: Vec<Vec<String>> = text
+        .rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|value| value.clone().unwrap_or_default())
+                .collect()
+        })
+        .collect();
+    ensure!(
+        actual == expected,
+        "case={CONTRACT}: rows expected {expected:?}, actual {actual:?}"
+    );
+    let total = scalar(&h.lake, "SELECT sum(qty)::BIGINT FROM ddl_alter_widen").await?;
+    ensure!(
+        total == 2_147_483_647 - 5 + 9_000_000_000,
+        "case={CONTRACT}: sum(qty) over old and new files, actual {total}"
+    );
+    ensure_schema_mirror_consistent(h, "ddl_alter_widen").await?;
+    command(h, "DROP TABLE ddl_alter_widen").await?;
+    eprintln!("PASS case={CONTRACT} int8 int4 numeric float8 values-preserved");
+    Ok(())
+}
+
+/// `DROP NOT NULL` lifts the writer's NOT NULL check for later inserts.
+async fn alter_drop_not_null(h: &Harness) -> Result<()> {
+    const CONTRACT: &str = "alter-drop-not-null";
+    command(
+        h,
+        "CREATE TABLE ddl_alter_nullable (id BIGINT NOT NULL PRIMARY KEY, v INT NOT NULL)",
+    )
+    .await?;
+    let refused =
+        error_code(h, "INSERT INTO ddl_alter_nullable VALUES (1, NULL)").await?;
+    ensure!(
+        refused == "23502",
+        "case={CONTRACT}: NULL into NOT NULL before ALTER expected 23502, actual {refused}"
+    );
+    command(
+        h,
+        "ALTER TABLE ddl_alter_nullable ALTER COLUMN v DROP NOT NULL",
+    )
+    .await?;
+    command(h, "INSERT INTO ddl_alter_nullable VALUES (1, NULL)").await?;
+    let nulls = scalar(
+        &h.lake,
+        "SELECT count(*) FROM ddl_alter_nullable WHERE v IS NULL",
+    )
+    .await?;
+    ensure!(
+        nulls == 1,
+        "case={CONTRACT}: expected one NULL row, actual {nulls}"
+    );
+    command(h, "DROP TABLE ddl_alter_nullable").await?;
+    eprintln!("PASS case={CONTRACT}");
+    Ok(())
+}
+
+/// `SET (...)`/`RESET (...)` change writer-tuning options only, keep every
+/// other property, and work through both protocols.
+async fn alter_set_reset_options(h: &Harness) -> Result<()> {
+    const CONTRACT: &str = "alter-set-reset-options";
+    command(
+        h,
+        "CREATE TABLE ddl_alter_options (id BIGINT NOT NULL PRIMARY KEY) \
+         WITH (hash_bucket_num = 2)",
+    )
+    .await?;
+    command(
+        h,
+        "ALTER TABLE ddl_alter_options SET (vortex_row_block_size = 4096, \
+         vortex_data_block_target_bytes = 1048576)",
+    )
+    .await?;
+    let row = metadata(h, "ddl_alter_options")
+        .await?
+        .with_context(|| format!("case={CONTRACT}: metadata after SET"))?;
+    ensure!(
+        row.vortex_row_block_size.as_deref() == Some("4096")
+            && row.vortex_data_block_target_bytes.as_deref() == Some("1048576")
+            && row.hash_bucket_num.as_deref() == Some("2"),
+        "case={CONTRACT}: SET must store both options and keep hashBucketNum, actual \
+         rows={:?} bytes={:?} buckets={:?}",
+        row.vortex_row_block_size,
+        row.vortex_data_block_target_bytes,
+        row.hash_bucket_num
+    );
+    // The extended protocol runs the rewritten RESET too.
+    h.lake
+        .execute(
+            "ALTER TABLE ddl_alter_options RESET (vortex_row_block_size)",
+            &[],
+        )
+        .await
+        .with_context(|| format!("case={CONTRACT}: extended RESET"))?;
+    let row = metadata(h, "ddl_alter_options")
+        .await?
+        .with_context(|| format!("case={CONTRACT}: metadata after RESET"))?;
+    ensure!(
+        row.vortex_row_block_size.is_none()
+            && row.vortex_data_block_target_bytes.as_deref() == Some("1048576")
+            && row.hash_bucket_num.as_deref() == Some("2"),
+        "case={CONTRACT}: RESET must remove only its option, actual rows={:?} \
+         bytes={:?} buckets={:?}",
+        row.vortex_row_block_size,
+        row.vortex_data_block_target_bytes,
+        row.hash_bucket_num
+    );
+    command(h, "INSERT INTO ddl_alter_options VALUES (1), (2)").await?;
+    let rows = scalar(&h.lake, "SELECT count(*) FROM ddl_alter_options").await?;
+    ensure!(
+        rows == 2,
+        "case={CONTRACT}: writes after SET, actual {rows} rows"
+    );
+    command(h, "DROP TABLE ddl_alter_options").await?;
+    eprintln!("PASS case={CONTRACT} set reset-extended layout-kept");
+    Ok(())
+}
+
+/// Every refused `ALTER TABLE` leaves the definition byte-identical and the
+/// connection usable.
+async fn alter_refusal_matrix_changes_nothing(h: &Harness) -> Result<()> {
+    const CONTRACT: &str = "alter-refusal-matrix-changes-nothing";
+    command(
+        h,
+        "CREATE TABLE ddl_alter_refuse (id BIGINT NOT NULL PRIMARY KEY, \
+         part INT NOT NULL, qty INT, label TEXT) PARTITIONED BY (part)",
+    )
+    .await?;
+    command(h, "INSERT INTO ddl_alter_refuse VALUES (1, 1, 10, 'a')").await?;
+    let before = definition(h, "ddl_alter_refuse").await?;
+    let cases: &[(&str, &str)] = &[
+        ("ALTER TABLE ddl_alter_refuse DROP COLUMN label", "0A000"),
+        (
+            "ALTER TABLE ddl_alter_refuse RENAME COLUMN label TO name",
+            "0A000",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse RENAME TO ddl_alter_renamed",
+            "0A000",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse ADD COLUMN n INT NOT NULL",
+            "0A000",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse ADD COLUMN n INT DEFAULT 1",
+            "0A000",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse ADD COLUMN n INT PRIMARY KEY",
+            "0A000",
+        ),
+        ("ALTER TABLE ddl_alter_refuse ADD COLUMN n UUID", "0A000"),
+        (
+            "ALTER TABLE ddl_alter_refuse ADD COLUMN label TEXT",
+            "42701",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse ADD COLUMN IF NOT EXISTS label INT",
+            "42701",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse ALTER COLUMN missing DROP NOT NULL",
+            "42703",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse ALTER COLUMN qty TYPE SMALLINT",
+            "0A000",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse ALTER COLUMN qty TYPE TEXT",
+            "0A000",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse ALTER COLUMN qty TYPE BIGINT USING qty::bigint",
+            "0A000",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse ALTER COLUMN qty SET NOT NULL",
+            "0A000",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse ALTER COLUMN qty SET DEFAULT 0",
+            "0A000",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse ALTER COLUMN id TYPE NUMERIC(38, 0)",
+            "42P16",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse ALTER COLUMN id DROP NOT NULL",
+            "42P16",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse ALTER COLUMN part TYPE BIGINT",
+            "0A000",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse ALTER COLUMN part DROP NOT NULL",
+            "0A000",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse SET (hash_bucket_num = 8)",
+            "0A000",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse SET (file_format = 'parquet')",
+            "0A000",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse SET (fillfactor = 70)",
+            "0A000",
+        ),
+        ("ALTER TABLE ddl_alter_refuse RESET (use_cdc)", "0A000"),
+        (
+            "ALTER TABLE ddl_alter_refuse SET (vortex_row_block_size = 0)",
+            "22023",
+        ),
+        (
+            "ALTER TABLE ddl_alter_refuse ADD CONSTRAINT c CHECK (qty > 0)",
+            "0A000",
+        ),
+        ("ALTER TABLE ddl_alter_refuse OWNER TO someone", "0A000"),
+        // One refused action refuses the whole statement.
+        (
+            "ALTER TABLE ddl_alter_refuse ADD COLUMN ok_col INT, \
+             ALTER COLUMN qty TYPE SMALLINT",
+            "0A000",
+        ),
+        ("ALTER TABLE ddl_alter_absent ADD COLUMN n INT", "42P01"),
+        (
+            "ALTER TABLE other_schema.ddl_alter_refuse ADD COLUMN n INT",
+            "3F000",
+        ),
+    ];
+    for (sql, expected) in cases {
+        let (code, message) = error_detail(h, sql)
+            .await
+            .with_context(|| format!("case={CONTRACT} SQL={sql}"))?;
+        ensure!(
+            code == *expected,
+            "case={CONTRACT} SQL={sql}: expected {expected}, actual {code} ({message})"
+        );
+        let after = definition(h, "ddl_alter_refuse").await?;
+        ensure!(
+            after == before,
+            "case={CONTRACT} SQL={sql}: a refused ALTER changed table_info"
+        );
+    }
+    // `IF EXISTS` on an absent table and a no-op `IF NOT EXISTS` succeed.
+    command(h, "ALTER TABLE IF EXISTS ddl_alter_absent ADD COLUMN n INT").await?;
+    command(
+        h,
+        "ALTER TABLE ddl_alter_refuse ADD COLUMN IF NOT EXISTS label TEXT",
+    )
+    .await?;
+    command(h, "ALTER TABLE ddl_alter_refuse ALTER COLUMN qty TYPE INT").await?;
+    ensure!(
+        definition(h, "ddl_alter_refuse").await? == before,
+        "case={CONTRACT}: no-op ALTERs must not rewrite table_info"
+    );
+    let rows = scalar(&h.lake, "SELECT count(*) FROM ddl_alter_refuse").await?;
+    ensure!(
+        rows == 1,
+        "case={CONTRACT}: the connection stays usable, rows={rows}"
+    );
+    command(h, "DROP TABLE ddl_alter_refuse").await?;
+    eprintln!("PASS case={CONTRACT} cases={}", cases.len());
+    Ok(())
+}
+
+/// Tables whose definition another component owns are refused: an IVM
+/// table and a subscription target.
+async fn alter_owned_tables_are_refused(h: &Harness) -> Result<()> {
+    const CONTRACT: &str = "alter-owned-tables-refused";
+    command(
+        h,
+        "CREATE TABLE ddl_alter_ivm (id BIGINT NOT NULL PRIMARY KEY)",
+    )
+    .await?;
+    h.reference
+        .execute(
+            "UPDATE public.table_info SET properties = \
+             (properties::jsonb || '{\"lakesoul.ivm.internal\": \"true\"}')::json \
+             WHERE table_namespace = $1 AND table_name = 'ddl_alter_ivm'",
+            &[&h.lake_namespace],
+        )
+        .await
+        .context("mark the table as IVM-owned")?;
+    let before = definition(h, "ddl_alter_ivm").await?;
+    let code = error_code(h, "ALTER TABLE ddl_alter_ivm ADD COLUMN n INT").await?;
+    ensure!(
+        code == "0A000",
+        "case={CONTRACT}: IVM table expected 0A000, actual {code}"
+    );
+    ensure!(
+        definition(h, "ddl_alter_ivm").await? == before,
+        "case={CONTRACT}: refused IVM ALTER changed table_info"
+    );
+    command(h, "DROP TABLE ddl_alter_ivm").await?;
+
+    command(
+        h,
+        "CREATE TABLE ddl_alter_sub (id BIGINT NOT NULL PRIMARY KEY)",
+    )
+    .await?;
+    let table_id = metadata(h, "ddl_alter_sub")
+        .await?
+        .with_context(|| format!("case={CONTRACT}: subscription target metadata"))?
+        .table_id;
+    let subscription = format!("ddl_alter_sub_{}", std::process::id());
+    h.reference
+        .execute(
+            "INSERT INTO subscription.subscriptions \
+             (subscription_id, slot_name, publication, source_url, created_at, updated_at) \
+             VALUES ($1, $1, 'pub', 'postgres://source', 0, 0)",
+            &[&subscription],
+        )
+        .await
+        .context("register a subscription")?;
+    h.reference
+        .execute(
+            "INSERT INTO subscription.tables \
+             (subscription_id, source_schema, source_table, source_relation_oid, \
+              target_namespace, target_table, target_table_id, primary_key, \
+              created_at, updated_at) \
+             VALUES ($1, 'public', 'src', 1, $2, 'ddl_alter_sub', $3, 'id', 0, 0)",
+            &[&subscription, &h.lake_namespace, &table_id],
+        )
+        .await
+        .context("register the subscription target")?;
+    let outcome = error_detail(h, "ALTER TABLE ddl_alter_sub ADD COLUMN n INT").await;
+    h.reference
+        .execute(
+            "DELETE FROM subscription.subscriptions WHERE subscription_id = $1",
+            &[&subscription],
+        )
+        .await
+        .context("remove the subscription")?;
+    let (code, message) = outcome?;
+    ensure!(
+        code == "0A000" && message.contains(&subscription),
+        "case={CONTRACT}: subscription target expected 0A000 naming the \
+         subscription, actual {code} ({message})"
+    );
+    // Without the subscription the same statement runs.
+    command(h, "ALTER TABLE ddl_alter_sub ADD COLUMN n INT").await?;
+    command(h, "DROP TABLE ddl_alter_sub").await?;
+    eprintln!("PASS case={CONTRACT} ivm subscription");
+    Ok(())
+}
+
+/// `ALTER TABLE` commits immediately, so it is refused where PostgreSQL could
+/// still roll it back: in a multi-statement simple query and in a block.
+async fn alter_is_refused_in_a_batch_and_a_block(h: &Harness) -> Result<()> {
+    const CONTRACT: &str = "alter-refused-in-batch-and-block";
+    command(h, "CREATE TABLE ddl_alter_tx (id BIGINT)").await?;
+    let before = definition(h, "ddl_alter_tx").await?;
+    let (code, message) =
+        error_detail(h, "ALTER TABLE ddl_alter_tx ADD COLUMN n INT; SELECT 1").await?;
+    ensure!(
+        code == "0A000" && message.contains("implicit transaction"),
+        "case={CONTRACT}: batch expected 0A000 naming the implicit transaction, \
+         actual {code} ({message})"
+    );
+    h.lake.simple_query("BEGIN").await?;
+    let code = error_code(h, "ALTER TABLE ddl_alter_tx ADD COLUMN n INT").await?;
+    h.lake.simple_query("ROLLBACK").await?;
+    ensure!(
+        code == "0A000",
+        "case={CONTRACT}: ALTER inside BEGIN expected 0A000, actual {code}"
+    );
+    ensure!(
+        definition(h, "ddl_alter_tx").await? == before,
+        "case={CONTRACT}: a refused ALTER changed table_info"
+    );
+    command(h, "DROP TABLE ddl_alter_tx").await?;
+    eprintln!("PASS case={CONTRACT}");
+    Ok(())
+}
+
+/// A transaction block that wrote against the old definition cannot commit
+/// after a peer's `ALTER TABLE`: its `COMMIT` fails with `40001` and nothing
+/// it staged is published.
+async fn alter_conflicts_with_a_block_written_against_the_old_definition(
+    h: &Harness,
+) -> Result<()> {
+    const CONTRACT: &str = "alter-concurrent-write-conflicts";
+    command(
+        h,
+        "CREATE TABLE ddl_alter_race (id BIGINT NOT NULL PRIMARY KEY)",
+    )
+    .await?;
+    command(h, "INSERT INTO ddl_alter_race VALUES (1)").await?;
+    let peer = h.connect_lake().await?;
+    h.lake.simple_query("BEGIN").await?;
+    h.lake
+        .simple_query("INSERT INTO ddl_alter_race VALUES (2)")
+        .await
+        .with_context(|| format!("case={CONTRACT}: INSERT in the block"))?;
+    peer.simple_query("ALTER TABLE ddl_alter_race ADD COLUMN note TEXT")
+        .await
+        .with_context(|| format!("case={CONTRACT}: peer ALTER"))?;
+    let error = h
+        .lake
+        .simple_query("COMMIT")
+        .await
+        .expect_err("COMMIT after a peer ALTER must fail");
+    ensure_server_sqlstate(&error, "40001", CONTRACT)?;
+    let rows = scalar(&h.lake, "SELECT count(*) FROM ddl_alter_race").await?;
+    ensure!(
+        rows == 1,
+        "case={CONTRACT}: the failed block must publish nothing, rows={rows}"
+    );
+    // The retry, planned against the new definition, commits.
+    command(h, "INSERT INTO ddl_alter_race VALUES (2, 'retried')").await?;
+    let rows = scalar(&h.lake, "SELECT count(*) FROM ddl_alter_race").await?;
+    ensure!(
+        rows == 2,
+        "case={CONTRACT}: retry expected 2 rows, actual {rows}"
+    );
+    command(h, "DROP TABLE ddl_alter_race").await?;
+    eprintln!("PASS case={CONTRACT} commit=40001 retry=ok");
+    Ok(())
+}
+
+/// An `INSERT` prepared before an `ALTER TABLE` writes against the new
+/// definition on Execute, whether the `ALTER` ran on this connection or a
+/// peer: an `INSERT` resolves its target from metadata at Execute. (The
+/// same-connection settings-generation bump that `ALTER` shares with
+/// `CREATE`/`DROP` is proven by `same_connection_ddl_replans_prepared_statements`;
+/// this case does not isolate it.)
+async fn alter_replans_prepared_statements(h: &Harness) -> Result<()> {
+    const CONTRACT: &str = "alter-replans-prepared-statements";
+    command(
+        h,
+        "CREATE TABLE ddl_alter_replan (id BIGINT NOT NULL PRIMARY KEY, v INT NOT NULL)",
+    )
+    .await?;
+    let insert = h
+        .lake
+        .prepare_typed(
+            "INSERT INTO ddl_alter_replan (id, v) VALUES ($1, $2)",
+            &[Type::INT8, Type::INT4],
+        )
+        .await
+        .with_context(|| format!("case={CONTRACT} prepare"))?;
+    let error = h
+        .lake
+        .execute(&insert, &[&1_i64, &None::<i32>])
+        .await
+        .expect_err("NULL into NOT NULL must fail before the ALTER");
+    ensure_server_sqlstate(&error, "23502", CONTRACT)?;
+    command(
+        h,
+        "ALTER TABLE ddl_alter_replan ALTER COLUMN v DROP NOT NULL",
+    )
+    .await?;
+    h.lake
+        .execute(&insert, &[&1_i64, &None::<i32>])
+        .await
+        .with_context(|| {
+            format!("case={CONTRACT}: the same-connection ALTER must replan the INSERT")
+        })?;
+
+    let peer = h.connect_lake().await?;
+    command(
+        h,
+        "CREATE TABLE ddl_alter_cross (id BIGINT NOT NULL PRIMARY KEY, v INT NOT NULL)",
+    )
+    .await?;
+    let stale = peer
+        .prepare_typed(
+            "INSERT INTO ddl_alter_cross (id, v) VALUES ($1, $2)",
+            &[Type::INT8, Type::INT4],
+        )
+        .await
+        .with_context(|| format!("case={CONTRACT} peer prepare"))?;
+    command(
+        h,
+        "ALTER TABLE ddl_alter_cross ALTER COLUMN v DROP NOT NULL",
+    )
+    .await?;
+    // An already Parsed INSERT resolves its target from metadata at Execute
+    // (see the cross-connection binding boundary), so even the peer's
+    // statement prepared before the ALTER writes against the new definition.
+    let bound = peer
+        .execute(&stale, &[&1_i64, &None::<i32>])
+        .await
+        .with_context(|| {
+            format!("case={CONTRACT}: the peer's prepared INSERT resolves at Execute")
+        })?;
+    ensure!(
+        bound == 1,
+        "case={CONTRACT}: peer prepared INSERT rows={bound}"
+    );
+    let fresh = peer
+        .execute("INSERT INTO ddl_alter_cross (id, v) VALUES (2, NULL)", &[])
+        .await
+        .with_context(|| format!("case={CONTRACT}: a fresh statement sees the ALTER"))?;
+    ensure!(fresh == 1, "case={CONTRACT}: fresh INSERT rows={fresh}");
+    eprintln!(
+        "PASS case={CONTRACT} same-connection=replanned \
+         cross-connection-prepared-insert=new-definition fresh=new-definition"
+    );
+    command(h, "DROP TABLE ddl_alter_replan").await?;
+    command(h, "DROP TABLE ddl_alter_cross").await?;
+    Ok(())
+}
+
+/// Everything `ALTER TABLE` may change in a `table_info` row, as text.
+async fn definition(h: &Harness, table: &str) -> Result<[Option<String>; 5]> {
+    let row = h
+        .reference
+        .query_one(
+            "SELECT table_schema, encode(table_schema_arrow_ipc, 'hex'), \
+             table_schema_arrow_ipc_json_hash, properties::text, partitions \
+             FROM public.table_info WHERE table_namespace = $1 AND table_name = $2",
+            &[&h.lake_namespace, &table],
+        )
+        .await
+        .with_context(|| format!("definition of {table}"))?;
+    Ok([row.get(0), row.get(1), row.get(2), row.get(3), row.get(4)])
+}
+
+/// The Arrow IPC mirror an `ALTER` rewrote still matches `table_schema`, so
+/// Rust readers keep the fast path instead of falling back to the JSON.
+async fn ensure_schema_mirror_consistent(h: &Harness, table: &str) -> Result<()> {
+    let row = h
+        .reference
+        .query_one(
+            "SELECT table_schema_arrow_ipc_json_hash = md5(table_schema), \
+             coalesce(length(table_schema_arrow_ipc), 0) > 0 \
+             FROM public.table_info WHERE table_namespace = $1 AND table_name = $2",
+            &[&h.lake_namespace, &table],
+        )
+        .await
+        .with_context(|| format!("schema mirror of {table}"))?;
+    let (hash_matches, has_ipc): (bool, bool) = (row.get(0), row.get(1));
+    ensure!(
+        hash_matches && has_ipc,
+        "table={table}: the schema mirror must match table_schema after ALTER \
+         (hash matches={hash_matches}, ipc present={has_ipc})"
+    );
     Ok(())
 }
 

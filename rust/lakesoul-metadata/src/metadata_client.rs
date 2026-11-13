@@ -99,6 +99,56 @@ impl TableIdentity {
     }
 }
 
+/// Lock `expected`'s `table_info` row, require it to still be `expected`, and
+/// apply `update`, all inside the caller's `transaction`.
+///
+/// Kept separate from [`MetaDataClient::alter_table_definition`] so a
+/// transaction that also publishes data files can change the definition in
+/// the same metadata transaction.
+pub(crate) async fn apply_table_definition(
+    transaction: &tokio_postgres::Transaction<'_>,
+    expected: &TableInfo,
+    update: &TableDefinitionUpdate,
+) -> Result<()> {
+    let table_id = &expected.table_id;
+    let locked = transaction
+        .query_opt(
+            "select domain, table_name, table_namespace, table_schema, \
+             partitions, properties, table_schema_arrow_ipc_json_hash \
+             from table_info where table_id = $1::TEXT for update",
+            &[table_id],
+        )
+        .await?
+        .ok_or_else(|| {
+            LakeSoulMetaDataError::NotFound(format!("table {table_id} no longer exists"))
+        })?;
+    if TableIdentity::from_row(&locked) != TableIdentity::from_table_info(expected) {
+        return Err(LakeSoulMetaDataError::CommitConflict(format!(
+            "table {table_id} was redefined concurrently; retry the statement"
+        )));
+    }
+    if let Some((schema, schema_ipc, schema_hash)) = &update.schema {
+        transaction
+            .execute(
+                "update table_info set table_schema = $2::TEXT, \
+                 table_schema_arrow_ipc = $3::BYTEA, \
+                 table_schema_arrow_ipc_json_hash = $4::TEXT \
+                 where table_id = $1::TEXT",
+                &[table_id, schema, schema_ipc, schema_hash],
+            )
+            .await?;
+    }
+    if let Some(properties) = &update.properties {
+        transaction
+            .execute(
+                "update table_info set properties = $2::JSON where table_id = $1::TEXT",
+                &[table_id, properties],
+            )
+            .await?;
+    }
+    Ok(())
+}
+
 /// Observable result of a metadata commit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitOutcome {
@@ -129,6 +179,28 @@ pub struct TransactionTableCommit {
     /// this commit touches must still have exactly the version listed, and a
     /// partition that is not listed must not exist yet.
     pub expected: Option<Vec<PartitionInfo>>,
+}
+
+/// A new definition for one table, published by
+/// [`MetaDataClient::alter_table_definition`]. Fields left `None` keep their
+/// stored value.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TableDefinitionUpdate {
+    /// The new schema as `(table_schema, table_schema_arrow_ipc,
+    /// table_schema_arrow_ipc_json_hash)`, i.e. what
+    /// `lakesoul_common::ser::arrow_java::schema_to_metadata_parts` returns:
+    /// the Arrow-Java JSON every engine reads plus the IPC fast path for Rust
+    /// readers, kept consistent through the hash.
+    pub schema: Option<(String, Vec<u8>, String)>,
+    /// The new `properties` JSON object.
+    pub properties: Option<serde_json::Value>,
+}
+
+impl TableDefinitionUpdate {
+    /// Whether the update changes nothing.
+    pub fn is_empty(&self) -> bool {
+        self.schema.is_none() && self.properties.is_none()
+    }
 }
 
 /// The changelog of one partition over the version window
@@ -3062,6 +3134,34 @@ impl MetaDataClient {
             [table_id, "", "", schema].join(PARAM_DELIM),
         )
         .await?;
+        Ok(())
+    }
+
+    /// Publish a new schema and/or properties for a table, but only if the
+    /// table is still exactly the definition `expected` describes.
+    ///
+    /// One PostgreSQL transaction locks the `table_info` row `FOR UPDATE`,
+    /// compares its identity (name, namespace, schema, partitions, properties,
+    /// schema hash) with `expected` and applies `update`. Publications
+    /// (`commit_update`, `commit_transaction`) share-lock the same row, so a
+    /// write planned against the old definition either commits before this
+    /// change or fails its own identity check after it. A second concurrent
+    /// alteration waits for this one and then sees a changed row.
+    ///
+    /// A mismatch is [`LakeSoulMetaDataError::CommitConflict`]; a missing row
+    /// is [`LakeSoulMetaDataError::NotFound`]. Nothing is written in either
+    /// case.
+    pub async fn alter_table_definition(
+        &self,
+        expected: &TableInfo,
+        update: &TableDefinitionUpdate,
+    ) -> Result<()> {
+        let guard = self.client.lock().await;
+        let mut connection = guard.get(QueryType::RW).await?;
+        let transaction = connection.transaction().await?;
+        // Dropping the transaction on an error rolls it back.
+        apply_table_definition(&transaction, expected, update).await?;
+        transaction.commit().await?;
         Ok(())
     }
 
