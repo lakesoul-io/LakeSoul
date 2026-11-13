@@ -2,7 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! `CREATE TABLE` and `DROP TABLE` for the PostgreSQL front end.
+//! `CREATE TABLE`, `DROP TABLE` and `ALTER TABLE` for the PostgreSQL front
+//! end. `ALTER TABLE`'s evolution policy lives in [`crate::alter`].
 //!
 //! The statements are answered here rather than by DataFusion's own DDL
 //! machinery: a PostgreSQL `CREATE TABLE` has no `STORED AS`/`LOCATION`
@@ -27,15 +28,17 @@ use datafusion::common::{Constraints, TableReference, ToDFSchema};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::sqlparser::ast::{
-    ColumnDef, ColumnOption, ConstraintCharacteristics, CreateTable, CreateTableOptions,
-    DataType as SqlDataType, ExactNumberInfo, Expr, HiveDistributionStyle, Ident,
-    IndexColumn, IndexOption, IndexType, ObjectName, ObjectType, SqlOption, Statement,
-    TableConstraint, TimezoneInfo, UnaryOperator, Value,
+    AlterTable, ColumnDef, ColumnOption, ConstraintCharacteristics, CreateTable,
+    CreateTableOptions, DataType as SqlDataType, ExactNumberInfo, Expr,
+    HiveDistributionStyle, Ident, IndexColumn, IndexOption, IndexType, ObjectName,
+    ObjectType, SqlOption, Statement, TableConstraint, TimezoneInfo, UnaryOperator,
+    Value,
 };
 use datafusion_postgres::QueryHook;
 use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire;
+use lakesoul_common::schema_evolution::column_names_collide;
 use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
 use lakesoul_metadata::MetaDataClientRef;
 use pgwire::api::ClientInfo;
@@ -125,8 +128,8 @@ impl DdlStatementHook {
                 format!("schema \"{schema}\" does not exist"),
             )),
             _ => Err(feature_not_supported(
-                "cross-database CREATE/DROP TABLE is not supported: a connection \
-                 addresses exactly one database"
+                "cross-database CREATE/DROP/ALTER TABLE is not supported: a \
+                 connection addresses exactly one database"
                     .to_string(),
             )),
         }
@@ -161,6 +164,7 @@ impl DdlStatementHook {
         let (schema, primary_key) = build_schema(&create.columns, &create.constraints)?;
         let partition_cols = partition_columns(&create.hive_distribution, &schema)?;
         let options = table_options(&create.table_options)?;
+        check_create_options(&table, &options)?;
 
         let mut location_options = options;
         location_options
@@ -268,6 +272,90 @@ impl DdlStatementHook {
         }
         Ok(Response::Execution(Tag::new("DROP TABLE")))
     }
+
+    /// Validate `ALTER TABLE` against the stored definition and publish the
+    /// new one if it is still the definition that was validated.
+    ///
+    /// The catalog listing only holds table names, which `ALTER` does not
+    /// change, and every lookup builds its provider from metadata, so the
+    /// next statement sees the new definition without a listing refresh.
+    async fn alter_table(
+        &self,
+        alter: &AlterTable,
+        context: &SessionContext,
+        client: &mut dyn HookClient,
+    ) -> PgWireResult<Response> {
+        let applied = self.apply_alter(alter, context, client).await;
+        crate::alter::record_outcome(applied.as_ref().copied());
+        applied.map(|_| Response::Execution(Tag::new("ALTER TABLE")))
+    }
+
+    /// Run `alter`; `Ok(true)` when a new definition was published, `Ok(false)`
+    /// when the statement changed nothing (`IF EXISTS` on an absent table,
+    /// only no-op actions).
+    async fn apply_alter(
+        &self,
+        alter: &AlterTable,
+        context: &SessionContext,
+        client: &mut dyn HookClient,
+    ) -> PgWireResult<bool> {
+        let actions = crate::alter::validate_alter(alter)?;
+        let table = self.target(&alter.name)?;
+        let schema_provider = self.public_schema(context)?;
+        let Some(provider) = schema_provider
+            .table(&table)
+            .await
+            .map_err(|error| PgWireError::ApiError(Box::new(error)))?
+        else {
+            if alter.if_exists {
+                crate::alter::notice(
+                    client,
+                    format!("relation \"{table}\" does not exist, skipping"),
+                )
+                .await?;
+                return Ok(false);
+            }
+            return Err(user_error(
+                UNDEFINED_TABLE,
+                format!("relation \"{table}\" does not exist"),
+            ));
+        };
+        let provider: &dyn std::any::Any = provider.as_ref();
+        let Some(provider) = provider.downcast_ref::<LakeSoulTableProvider>() else {
+            return Err(feature_not_supported(format!(
+                "ALTER TABLE on \"{table}\" is not supported: it is a foreign table, \
+                 whose definition belongs to its remote server"
+            )));
+        };
+        // The definition the change is validated against, read from the
+        // primary: the publication below requires the stored row to still be
+        // exactly this one.
+        let table_info = provider
+            .primary_table_info()
+            .await
+            .map_err(|error| crate::alter::publish_error(&table, error))?;
+        if let Some(subscription) =
+            crate::alter::subscription_of(&self.client, &table_info.table_id).await?
+        {
+            return Err(feature_not_supported(format!(
+                "ALTER TABLE on \"{table}\" is not supported while subscription \
+                 \"{subscription}\" writes it: the subscription evolves the table \
+                 from its source schema"
+            )));
+        }
+        let (update, notices) = crate::alter::plan_alter(&table, &table_info, &actions)?;
+        let applied = !update.is_empty();
+        if applied {
+            self.client
+                .alter_table_definition(&table_info, &update)
+                .await
+                .map_err(|error| crate::alter::publish_error(&table, error))?;
+        }
+        for message in notices {
+            crate::alter::notice(client, message).await?;
+        }
+        Ok(applied)
+    }
 }
 
 #[async_trait]
@@ -292,11 +380,14 @@ impl QueryHook for DdlStatementHook {
         // parts analyzable from the AST alone are refused here, at Parse, the
         // way PostgreSQL reports them before Bind.
         let verb = ddl_verb(statement)?;
-        Some(
-            reject_in_transaction(client.transaction_status(), verb)
-                .and_then(|()| self.validate(statement, session_context))
-                .map(|()| SessionSettingsHook::placeholder_plan()),
-        )
+        let validated = reject_in_transaction(client.transaction_status(), verb)
+            .and_then(|()| self.validate(statement, session_context));
+        if let (Statement::AlterTable(_), Err(error)) = (statement, &validated) {
+            // Refused at Parse: the statement never reaches execution, where
+            // every other outcome is counted.
+            crate::alter::record_outcome(Err(error));
+        }
+        Some(validated.map(|()| SessionSettingsHook::placeholder_plan()))
     }
 
     async fn handle_extended_query(
@@ -320,14 +411,20 @@ impl DdlStatementHook {
         statement: &Statement,
         session_context: &SessionContext,
     ) -> PgWireResult<()> {
+        if let Statement::AlterTable(alter) = statement {
+            crate::alter::validate_alter(alter)?;
+            self.target(&alter.name)?;
+            self.public_schema(session_context)?;
+            return Ok(());
+        }
         let Statement::CreateTable(create) = statement else {
             return Ok(());
         };
         reject_unsupported_create(create)?;
-        self.target(&create.name)?;
+        let table = self.target(&create.name)?;
         let (schema, _) = build_schema(&create.columns, &create.constraints)?;
         partition_columns(&create.hive_distribution, &schema)?;
-        table_options(&create.table_options)?;
+        check_create_options(&table, &table_options(&create.table_options)?)?;
         if self.warehouse.is_none() {
             return Err(feature_not_supported(
                 "CREATE TABLE needs a configured warehouse: start the server \
@@ -350,6 +447,9 @@ impl DdlStatementHook {
         if let Err(error) =
             reject_in_transaction(client.transaction_status(), ddl_verb(statement)?)
         {
+            if matches!(statement, Statement::AlterTable(_)) {
+                crate::alter::record_outcome(Err(&error));
+            }
             return Some(Err(error));
         }
         let result = match statement {
@@ -362,9 +462,12 @@ impl DdlStatementHook {
                 names,
                 ..
             } => self.drop_table(*if_exists, names, session_context).await,
+            Statement::AlterTable(alter) => {
+                self.alter_table(alter, session_context, client).await
+            }
             _ => return None,
         };
-        // A successful CREATE/DROP changes the catalog objects the
+        // A successful CREATE/DROP/ALTER changes the catalog objects the
         // connection's prepared statements bound at Parse: advance the
         // settings generation once for the whole statement, so their next
         // `Execute` replans against the new catalog. A refused statement has
@@ -387,6 +490,7 @@ fn ddl_verb(statement: &Statement) -> Option<&'static str> {
             object_type: ObjectType::Table,
             ..
         } => Some("DROP TABLE"),
+        Statement::AlterTable(_) => Some("ALTER TABLE"),
         _ => None,
     }
 }
@@ -412,7 +516,7 @@ pub(crate) fn refuse_ddl_in_batch(statements: &[String]) -> PgWireResult<()> {
         return Ok(());
     }
     Err(feature_not_supported(
-        "CREATE/DROP TABLE cannot be combined with other statements in one \
+        "CREATE/DROP/ALTER TABLE cannot be combined with other statements in one \
          simple-query message: PostgreSQL would run the batch in an implicit \
          transaction, and LakeSoul table metadata cannot be rolled back"
             .to_string(),
@@ -636,10 +740,22 @@ pub(crate) fn build_schema(
     let mut primary_key: Option<Vec<usize>> = None;
     for (index, column) in columns.iter().enumerate() {
         let name = normalize_column_ident(&column.name)?;
-        if names.contains(&name) {
+        // The rule `ALTER TABLE ... ADD COLUMN` applies: names that only
+        // differ in case (in any script) are one column to Spark.
+        if let Some(existing) = names
+            .iter()
+            .find(|existing| column_names_collide(existing, &name))
+        {
             return Err(user_error(
                 DUPLICATE_COLUMN,
-                format!("column \"{name}\" specified more than once"),
+                if *existing == name {
+                    format!("column \"{name}\" specified more than once")
+                } else {
+                    format!(
+                        "column \"{name}\" collides with column \"{existing}\": \
+                         case-insensitive engines would read them as one column"
+                    )
+                },
             ));
         }
         let data_type = arrow_type(&column.data_type)?;
@@ -815,7 +931,7 @@ fn conflicting_null_declaration(name: &str) -> PgWireError {
 /// PG column type → Arrow type. The mapping is deliberately small: an
 /// unsupported type is refused with `0A000` instead of being coerced into a
 /// different storage type.
-fn arrow_type(data_type: &SqlDataType) -> PgWireResult<DataType> {
+pub(crate) fn arrow_type(data_type: &SqlDataType) -> PgWireResult<DataType> {
     let ty = match data_type {
         SqlDataType::SmallInt(_) | SqlDataType::Int2(_) => DataType::Int16,
         SqlDataType::Int(_) | SqlDataType::Integer(_) | SqlDataType::Int4(_) => {
@@ -916,6 +1032,24 @@ fn invalid_type(data_type: &SqlDataType, detail: &str) -> PgWireError {
     ))
 }
 
+/// Refuse `WITH (...)` options no writer of the new table would apply, by
+/// the rule `ALTER TABLE ... SET` uses ([`crate::alter::check_option_takes_effect`]).
+/// A table created here declares no vector index column, so the Vortex block
+/// options are always refused.
+fn check_create_options(
+    table: &str,
+    options: &HashMap<String, String>,
+) -> PgWireResult<()> {
+    let mut names: Vec<&String> = options.keys().collect();
+    names.sort();
+    for name in names {
+        crate::alter::check_option_takes_effect(table, name, |key| {
+            options.get(key).map(String::as_str)
+        })?;
+    }
+    Ok(())
+}
+
 /// `WITH (...)` options LakeSoul understands.
 fn table_options(options: &CreateTableOptions) -> PgWireResult<HashMap<String, String>> {
     let entries: &[SqlOption] = match options {
@@ -931,132 +1065,140 @@ fn table_options(options: &CreateTableOptions) -> PgWireResult<HashMap<String, S
     };
     let mut parsed = HashMap::new();
     for entry in entries {
-        let SqlOption::KeyValue { key, value } = entry else {
-            return Err(feature_not_supported(format!(
-                "table option {entry} is not supported: use key = value"
-            )));
-        };
-        let name = key.value.to_lowercase();
-        let value = literal_string(value)?;
-        match name.as_str() {
-            "hash_bucket_num" => {
-                let bucket: i64 = value.parse().map_err(|_| {
-                    user_error(
-                        INVALID_PARAMETER_VALUE,
-                        format!(
-                            "value \"{value}\" for option \"hash_bucket_num\" is not \
+        let (name, value) = table_option(entry)?;
+        parsed.insert(name, value);
+    }
+    Ok(parsed)
+}
+
+/// One `key = value` table option, validated and normalized. Shared by
+/// `CREATE TABLE ... WITH (...)` and `ALTER TABLE ... SET (...)`.
+pub(crate) fn table_option(entry: &SqlOption) -> PgWireResult<(String, String)> {
+    let SqlOption::KeyValue { key, value } = entry else {
+        return Err(feature_not_supported(format!(
+            "table option {entry} is not supported: use key = value"
+        )));
+    };
+    let name = key.value.to_lowercase();
+    let value = literal_string(value)?;
+    let value = match name.as_str() {
+        "hash_bucket_num" => {
+            let bucket: i64 = value.parse().map_err(|_| {
+                user_error(
+                    INVALID_PARAMETER_VALUE,
+                    format!(
+                        "value \"{value}\" for option \"hash_bucket_num\" is not \
                              valid (expects 1..={MAX_HASH_BUCKET_NUM})"
-                        ),
-                    )
-                })?;
-                if !(1..=i64::from(MAX_HASH_BUCKET_NUM)).contains(&bucket) {
-                    return Err(user_error(
-                        INVALID_PARAMETER_VALUE,
-                        format!(
-                            "value {bucket} for option \"hash_bucket_num\" is out of \
+                    ),
+                )
+            })?;
+            if !(1..=i64::from(MAX_HASH_BUCKET_NUM)).contains(&bucket) {
+                return Err(user_error(
+                    INVALID_PARAMETER_VALUE,
+                    format!(
+                        "value {bucket} for option \"hash_bucket_num\" is out of \
                              range (expects 1..={MAX_HASH_BUCKET_NUM})"
-                        ),
-                    ));
-                }
-                parsed.insert(name, bucket.to_string());
+                    ),
+                ));
             }
-            "file_format" => {
-                if !matches!(value.as_str(), "parquet" | "vortex" | "vortex-compact") {
-                    return Err(user_error(
-                        INVALID_PARAMETER_VALUE,
-                        format!(
-                            "value \"{value}\" for option \"file_format\" is not \
+            bucket.to_string()
+        }
+        "file_format" => {
+            if !matches!(value.as_str(), "parquet" | "vortex" | "vortex-compact") {
+                return Err(user_error(
+                    INVALID_PARAMETER_VALUE,
+                    format!(
+                        "value \"{value}\" for option \"file_format\" is not \
                              valid (expects parquet, vortex or vortex-compact)"
-                        ),
-                    ));
-                }
-                parsed.insert(name, value);
+                    ),
+                ));
             }
-            "append_only" => {
-                let normalized = value.to_ascii_lowercase();
-                if !matches!(normalized.as_str(), "true" | "false") {
-                    return Err(user_error(
-                        INVALID_PARAMETER_VALUE,
-                        format!(
-                            "value \"{value}\" for option \"append_only\" is not \
+            value
+        }
+        "append_only" => {
+            let normalized = value.to_ascii_lowercase();
+            if !matches!(normalized.as_str(), "true" | "false") {
+                return Err(user_error(
+                    INVALID_PARAMETER_VALUE,
+                    format!(
+                        "value \"{value}\" for option \"append_only\" is not \
                              valid (expects true or false)"
-                        ),
-                    ));
-                }
-                parsed.insert(name, normalized);
+                    ),
+                ));
             }
-            "use_cdc" => {
-                let normalized = value.to_ascii_lowercase();
-                if !matches!(normalized.as_str(), "true" | "false") {
-                    return Err(user_error(
-                        INVALID_PARAMETER_VALUE,
-                        format!(
-                            "value \"{value}\" for option \"use_cdc\" is not \
+            normalized
+        }
+        "use_cdc" => {
+            let normalized = value.to_ascii_lowercase();
+            if !matches!(normalized.as_str(), "true" | "false") {
+                return Err(user_error(
+                    INVALID_PARAMETER_VALUE,
+                    format!(
+                        "value \"{value}\" for option \"use_cdc\" is not \
                              valid (expects true or false)"
-                        ),
-                    ));
-                }
-                parsed.insert(name, normalized);
+                    ),
+                ));
             }
-            "lakesoul_cdc_change_column" => {
-                // Folded like a column name; the declared column is resolved
-                // after `build_schema`.
-                let folded = value.to_ascii_lowercase();
-                validate_name(&folded)?;
-                parsed.insert(name, folded);
-            }
-            "vortex_row_block_size" => {
-                let rows: usize = value.parse().map_err(|_| {
-                    user_error(
-                        INVALID_PARAMETER_VALUE,
-                        format!(
-                            "value \"{value}\" for option \"vortex_row_block_size\" \
+            normalized
+        }
+        "lakesoul_cdc_change_column" => {
+            // Folded like a column name; the declared column is resolved
+            // after `build_schema`.
+            let folded = value.to_ascii_lowercase();
+            validate_name(&folded)?;
+            folded
+        }
+        "vortex_row_block_size" => {
+            let rows: usize = value.parse().map_err(|_| {
+                user_error(
+                    INVALID_PARAMETER_VALUE,
+                    format!(
+                        "value \"{value}\" for option \"vortex_row_block_size\" \
                              is not valid (expects a positive integer)"
-                        ),
-                    )
-                })?;
-                if rows == 0 {
-                    return Err(user_error(
-                        INVALID_PARAMETER_VALUE,
-                        "value 0 for option \"vortex_row_block_size\" is out of \
+                    ),
+                )
+            })?;
+            if rows == 0 {
+                return Err(user_error(
+                    INVALID_PARAMETER_VALUE,
+                    "value 0 for option \"vortex_row_block_size\" is out of \
                          range (expects a positive integer)"
-                            .to_string(),
-                    ));
-                }
-                parsed.insert(name, rows.to_string());
+                        .to_string(),
+                ));
             }
-            "vortex_data_block_target_bytes" => {
-                let bytes: u64 = value.parse().map_err(|_| {
-                    user_error(
-                        INVALID_PARAMETER_VALUE,
-                        format!(
-                            "value \"{value}\" for option \
+            rows.to_string()
+        }
+        "vortex_data_block_target_bytes" => {
+            let bytes: u64 = value.parse().map_err(|_| {
+                user_error(
+                    INVALID_PARAMETER_VALUE,
+                    format!(
+                        "value \"{value}\" for option \
                              \"vortex_data_block_target_bytes\" is not valid \
                              (expects a positive integer)"
-                        ),
-                    )
-                })?;
-                if bytes == 0 {
-                    return Err(user_error(
-                        INVALID_PARAMETER_VALUE,
-                        "value 0 for option \"vortex_data_block_target_bytes\" \
+                    ),
+                )
+            })?;
+            if bytes == 0 {
+                return Err(user_error(
+                    INVALID_PARAMETER_VALUE,
+                    "value 0 for option \"vortex_data_block_target_bytes\" \
                          is out of range (expects a positive integer)"
-                            .to_string(),
-                    ));
-                }
-                parsed.insert(name, bytes.to_string());
+                        .to_string(),
+                ));
             }
-            other => {
-                return Err(feature_not_supported(format!(
-                    "table option \"{other}\" is not supported (expects \
+            bytes.to_string()
+        }
+        other => {
+            return Err(feature_not_supported(format!(
+                "table option \"{other}\" is not supported (expects \
                      hash_bucket_num, file_format, append_only, use_cdc, \
                      lakesoul_cdc_change_column, vortex_row_block_size, \
                      vortex_data_block_target_bytes)"
-                )));
-            }
+            )));
         }
-    }
-    Ok(parsed)
+    };
+    Ok((name, value))
 }
 
 /// Default and validate the CDC change column once the schema is known.
@@ -1141,7 +1283,7 @@ fn literal_string(value: &Expr) -> PgWireResult<String> {
     }
 }
 
-fn user_error(code: &str, message: impl Into<String>) -> PgWireError {
+pub(crate) fn user_error(code: &str, message: impl Into<String>) -> PgWireError {
     PgWireError::UserError(Box::new(ErrorInfo::new(
         "ERROR".to_string(),
         code.to_string(),

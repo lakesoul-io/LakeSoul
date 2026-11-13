@@ -7,6 +7,9 @@
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use lakesoul_common::schema_evolution::{
+    ColumnChange, TableLayout, check_evolution, column_names_collide,
+};
 use lakesoul_common::ser::arrow_java::schema_to_metadata_parts;
 use lakesoul_datafusion::catalog::LakeSoulTableProperty;
 use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
@@ -17,7 +20,7 @@ use rootcause::{bail, report};
 
 use super::super::SchemaEvolution;
 use super::super::plan::decode_mysql_watermark;
-use super::super::schema::TargetOptions;
+use super::super::schema::{TargetOptions, publish_evolved_schema};
 use super::catalog::MySqlTable;
 use crate::Result;
 
@@ -71,6 +74,7 @@ impl MySqlTablePlan {
             options,
             allow_create,
             allow_evolve,
+            super::super::schema::EVOLVE_RETRIES,
         )
         .await?;
         let schema = table.schema();
@@ -271,6 +275,7 @@ async fn ensure_target(
     options: &TargetOptions,
     allow_create: bool,
     allow_evolve: bool,
+    retries: usize,
 ) -> Result<LakeSoulTable> {
     let table_name = case_fold_table_name(target_table);
     let info = meta
@@ -290,10 +295,13 @@ async fn ensure_target(
                     )
                 })?;
         let cdc_column = table_cdc_column(&info)?;
+        let layout =
+            TableLayout::from_partitions(&info.partitions, Some(cdc_column.clone()));
         let new_schema = evolved_schema(
             source,
             table.schema(),
             &cdc_column,
+            &layout,
             options.schema_evolution,
         )?;
         if let Some(new_schema) = new_schema {
@@ -306,14 +314,36 @@ async fn ensure_target(
                 new_columns = new_schema.fields().len(),
                 "evolving MySQL target schema"
             );
-            meta.update_table_schema(
-                &info.table_id,
-                &lakesoul_common::ser::arrow_java::schema_to_metadata_str(&new_schema),
-            )
-            .await
-            .map_err(|error| {
-                report!("update target schema {target_namespace}.{target_table}: {error}")
-            })?;
+            let published = publish_evolved_schema(meta, &info, &new_schema)
+                .await
+                .map_err(|error| {
+                    report!(
+                        "update target schema {target_namespace}.{target_table}: {error}"
+                    )
+                })?;
+            if !published {
+                if retries == 0 {
+                    bail!(
+                        "target table {target_namespace}.{target_table} was redefined \
+                         concurrently while its schema was being evolved; retry"
+                    );
+                }
+                tracing::info!(
+                    target = %format!("{target_namespace}.{target_table}"),
+                    "target redefined concurrently; re-reading it and evolving again"
+                );
+                return Box::pin(ensure_target(
+                    meta,
+                    source,
+                    target_namespace,
+                    target_table,
+                    options,
+                    allow_create,
+                    allow_evolve,
+                    retries - 1,
+                ))
+                .await;
+            }
             return LakeSoulTable::for_namespace_and_name(
                 target_namespace,
                 &table_name,
@@ -395,6 +425,7 @@ async fn ensure_target(
             options,
             false,
             allow_evolve,
+            retries,
         ))
         .await;
     }
@@ -420,7 +451,7 @@ pub(crate) fn source_schema(source: &MySqlTable, cdc_column: &str) -> Result<Sch
     if source
         .columns
         .iter()
-        .any(|column| column.name.eq_ignore_ascii_case(cdc_column))
+        .any(|column| column_names_collide(&column.name, cdc_column))
     {
         bail!(
             "source table {} already has a column named {cdc_column:?}; choose \
@@ -438,15 +469,25 @@ pub(crate) fn source_schema(source: &MySqlTable, cdc_column: &str) -> Result<Sch
     Ok(Arc::new(Schema::new(fields)))
 }
 
+/// Compare the MySQL source with the target. A source type must already fit
+/// the target column ([`target_holds`]); the target type is never changed.
+/// Appending a nullable column and relaxing `NOT NULL` are applied through
+/// [`check_evolution`], so the target is held to the same rule as
+/// `ALTER TABLE` and the other LakeSoul writers.
 fn evolved_schema(
     source: &MySqlTable,
     target: SchemaRef,
     cdc_column: &str,
+    layout: &TableLayout,
     mode: SchemaEvolution,
 ) -> Result<Option<SchemaRef>> {
     if mode == SchemaEvolution::None {
         return Ok(None);
     }
+    let apply = |schema: &Schema, change: ColumnChange| {
+        check_evolution(schema, &change, layout)
+            .map_err(|error| report!("cannot evolve the target schema: {error}"))
+    };
     let cdc_index = target.index_of(cdc_column).map_err(|error| {
         report!("target table has no CDC column {cdc_column:?}: {error}")
     })?;
@@ -454,28 +495,23 @@ fn evolved_schema(
         bail!("target CDC column {cdc_column:?} is not Utf8");
     }
 
-    let mut fields: Vec<Field> = target.fields().iter().map(|f| (**f).clone()).collect();
+    let mut schema: Schema = target.as_ref().clone();
     let mut changed = false;
 
     for column in &source.columns {
         let source_type = column.data_type.arrow_type()?;
         let source_nullable = column.nullable && !column.primary_key;
-        if let Some(index) = fields.iter().position(|field| field.name() == &column.name)
-        {
-            let target_type = fields[index].data_type().clone();
-            if target_type != source_type && !can_widen(&target_type, &source_type) {
+        if let Ok(index) = schema.index_of(&column.name) {
+            let target_type = schema.field(index).data_type().clone();
+            if target_type != source_type && !target_holds(&target_type, &source_type) {
                 bail!(
                     "source column {:?} changed type from {target_type} to {source_type}; \
                      P0 does not narrow or cross-cast target columns",
                     column.name
                 );
             }
-            if source_nullable && !fields[index].is_nullable() {
-                fields[index] = Field::new(
-                    fields[index].name(),
-                    fields[index].data_type().clone(),
-                    true,
-                );
+            if source_nullable && !schema.field(index).is_nullable() {
+                schema = apply(&schema, ColumnChange::DropNotNull(column.name.clone()))?;
                 changed = true;
             }
         } else {
@@ -486,7 +522,10 @@ fn evolved_schema(
                     column.name
                 );
             }
-            fields.push(Field::new(column.name.clone(), source_type, true));
+            schema = apply(
+                &schema,
+                ColumnChange::Add(Field::new(column.name.clone(), source_type, true)),
+            )?;
             changed = true;
         }
     }
@@ -496,7 +535,7 @@ fn evolved_schema(
         .iter()
         .map(|column| column.name.as_str())
         .collect();
-    for (index, field) in fields.iter().enumerate() {
+    for (index, field) in schema.fields().iter().enumerate() {
         if index == cdc_index || source_names.contains(field.name().as_str()) {
             continue;
         }
@@ -507,11 +546,14 @@ fn evolved_schema(
         );
     }
 
-    let new_schema = Arc::new(Schema::new(fields));
-    Ok(changed.then_some(new_schema))
+    Ok(changed.then(|| Arc::new(schema)))
 }
 
-fn can_widen(target: &DataType, source: &DataType) -> bool {
+/// Whether the existing `target` column type already holds every value of
+/// the MySQL `source` type (including MySQL's `TINYINT` and unsigned types).
+/// Unlike [`lakesoul_common::schema_evolution::can_widen`], which decides
+/// whether a target type may be *changed*, this never changes the target.
+fn target_holds(target: &DataType, source: &DataType) -> bool {
     if target == source {
         return true;
     }

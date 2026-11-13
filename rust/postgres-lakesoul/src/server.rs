@@ -151,7 +151,10 @@ where
 
 /// Rewrite DDL sqlparser cannot parse to the sentinel SELECT its hook claims.
 fn rewrite_special_statements(sql: &str) -> PgWireResult<String> {
-    let sql = crate::federation::rewrite(sql)?.unwrap_or_else(|| sql.to_string());
+    // `ALTER TABLE ... RESET (...)` is not in sqlparser either; it becomes the
+    // `SET (k = NULL)` form `DdlStatementHook` reads as a reset.
+    let sql = crate::alter::rewrite_reset_options(sql).unwrap_or_else(|| sql.to_string());
+    let sql = crate::federation::rewrite(&sql)?.unwrap_or(sql);
     crate::subscribe::sql::rewrite(&sql).map(|rewritten| rewritten.unwrap_or(sql))
 }
 
@@ -207,9 +210,45 @@ fn map_statement_error(error: PgWireError) -> PgWireError {
         {
             return cardinality_violation_error();
         }
+        if let Some(incompatible) = incompatible_column_type(cause) {
+            return incompatible_file_type_error(incompatible);
+        }
         current = cause.source();
     }
     error
+}
+
+/// The typed schema-merge failure, also when DataFusion wrapped it in
+/// variants whose `source()` does not lead to it.
+fn incompatible_column_type<'a>(
+    cause: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a lakesoul_io::file_format::IncompatibleColumnType> {
+    if let Some(typed) = cause.downcast_ref() {
+        return Some(typed);
+    }
+    match cause.downcast_ref::<DataFusionError>()?.find_root() {
+        DataFusionError::ArrowError(arrow, _) => match arrow.as_ref() {
+            datafusion::arrow::error::ArrowError::ExternalError(inner) => {
+                inner.downcast_ref()
+            }
+            _ => None,
+        },
+        DataFusionError::External(inner) => inner.downcast_ref(),
+        _ => None,
+    }
+}
+
+/// PostgreSQL `datatype_mismatch`: the table's data files disagree on a column
+/// type no reader can reconcile (written by an engine with a looser schema
+/// evolution rule than LakeSoul's), so every scan of it fails.
+fn incompatible_file_type_error(
+    incompatible: &lakesoul_io::file_format::IncompatibleColumnType,
+) -> PgWireError {
+    PgWireError::UserError(Box::new(ErrorInfo::new(
+        "ERROR".to_string(),
+        "42804".to_string(),
+        incompatible.to_string(),
+    )))
 }
 
 impl LakeSoulQueryRouter {
@@ -828,13 +867,27 @@ impl LakeSoulQueryRouter {
         {
             return Err(undefined_relation(&table));
         }
-        let Some(planned) = self
+        let Some(replanned) = self
             .parser
             .parse_sql(client, sql, &statement.parameter_types)
             .await?
         else {
             return Ok(());
         };
+        // The client may already hold this statement's row description
+        // (Describe after Parse) and decodes every row with it. A replan that
+        // changes the result columns - `ALTER TABLE ... TYPE BIGINT` on a
+        // selected `INT` column, or DROP + CREATE with other types - would
+        // send rows the client misreads, so it is refused the way PostgreSQL
+        // refuses it. The statement keeps its stale generation: every later
+        // Execute is refused too, until the client prepares it again.
+        if let Some((_, plan)) = planned
+            && let (_, Some((_, new_plan))) = &replanned
+            && result_columns(plan)? != result_columns(new_plan)?
+        {
+            return Err(changed_result_type());
+        }
+        let planned = replanned;
         let mut replacement = Portal::default();
         replacement.name = portal.name.clone();
         replacement.statement = Arc::new(StoredStatement::new(
@@ -885,6 +938,32 @@ fn missing_bound_table(context: &SessionContext, plan: &LogicalPlan) -> Option<S
         Ok(TreeNodeRecursion::Continue)
     });
     missing
+}
+
+/// A plan's result columns as the client sees them: names and PostgreSQL
+/// types, mapped exactly as `Describe` maps them. Arrow-level differences the
+/// client cannot observe (`Utf8` vs `Utf8View`, nullability) do not count.
+fn result_columns(plan: &LogicalPlan) -> PgWireResult<Vec<(String, Type)>> {
+    Ok(
+        datafusion_postgres::arrow_pg::datatypes::arrow_schema_to_pg_fields(
+            plan.schema().as_arrow(),
+            &Format::UnifiedText,
+            None,
+        )?
+        .into_iter()
+        .map(|field| (field.name().to_string(), field.datatype().clone()))
+        .collect(),
+    )
+}
+
+/// PostgreSQL's refusal to run a prepared statement whose result columns
+/// changed since it was planned.
+fn changed_result_type() -> PgWireError {
+    PgWireError::UserError(Box::new(ErrorInfo::new(
+        "ERROR".to_string(),
+        "0A000".to_string(),
+        "cached plan must not change result type".to_string(),
+    )))
 }
 
 /// PostgreSQL `undefined_table` for a binding the catalog lost.

@@ -30,6 +30,7 @@ use crate::server::LakeSoulHandlers;
 use crate::session::PgSessionFactory;
 
 mod allocator;
+mod alter;
 mod cancel;
 mod catalog;
 mod ddl;
@@ -224,6 +225,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
     cancel::register_query_metrics();
     jobs::register_metrics();
     limits::register_limit_metrics();
+    alter::register_metrics();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
     if cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some() {
         return subscribe::run(

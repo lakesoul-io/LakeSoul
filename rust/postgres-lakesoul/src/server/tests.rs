@@ -3332,3 +3332,97 @@ fn staged_file(path: &str) -> lakesoul_datafusion::write_mode::StagedWrite {
         rows: Vec::new(),
     }
 }
+
+/// A table whose files disagree on a column type no reader can reconcile is
+/// `42804` (datatype_mismatch), however DataFusion wrapped the merge failure.
+#[test]
+fn incompatible_file_types_map_to_datatype_mismatch() {
+    use datafusion::arrow::datatypes::DataType;
+    use datafusion::arrow::error::ArrowError;
+    use datafusion::error::DataFusionError;
+    use lakesoul_io::file_format::IncompatibleColumnType;
+
+    let incompatible = || IncompatibleColumnType {
+        column: "qty".to_string(),
+        from: DataType::Int32,
+        to: DataType::Utf8View,
+    };
+    let wrapped = [
+        DataFusionError::ArrowError(
+            Box::new(ArrowError::ExternalError(Box::new(incompatible()))),
+            None,
+        ),
+        DataFusionError::Context(
+            "planning the scan".to_string(),
+            Box::new(DataFusionError::ArrowError(
+                Box::new(ArrowError::ExternalError(Box::new(incompatible()))),
+                None,
+            )),
+        ),
+        DataFusionError::External(Box::new(incompatible())),
+    ];
+    for error in wrapped {
+        let display = error.to_string();
+        match super::map_statement_error(PgWireError::ApiError(Box::new(error))) {
+            PgWireError::UserError(info) => {
+                assert_eq!(info.code, "42804", "{display}");
+                assert!(info.message.contains("\"qty\""), "{}", info.message);
+            }
+            other => panic!("{display}: expected 42804, got {other:?}"),
+        }
+    }
+    // Any other Arrow schema error keeps the generic mapping.
+    let other = DataFusionError::ArrowError(
+        Box::new(ArrowError::SchemaError("something else".to_string())),
+        None,
+    );
+    assert!(matches!(
+        super::map_statement_error(PgWireError::ApiError(Box::new(other))),
+        PgWireError::ApiError(_)
+    ));
+}
+
+/// A replan may only proceed when the client-visible result columns are
+/// unchanged: same names, same PostgreSQL types. Arrow-only differences
+/// (`Utf8` vs `Utf8View`, nullability) are not visible to the client.
+#[test]
+fn result_columns_compare_client_visible_types() {
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::DFSchema;
+    use datafusion::logical_expr::{EmptyRelation, LogicalPlan};
+
+    let plan = |fields: Vec<Field>| {
+        LogicalPlan::EmptyRelation(EmptyRelation {
+            produce_one_row: false,
+            schema: Arc::new(DFSchema::try_from(Schema::new(fields)).unwrap()),
+        })
+    };
+    let columns = |fields| super::result_columns(&plan(fields)).unwrap();
+
+    let int = columns(vec![Field::new("qty", DataType::Int32, false)]);
+    assert_eq!(
+        int,
+        columns(vec![Field::new("qty", DataType::Int32, true)]),
+        "nullability is not part of the row description"
+    );
+    assert_ne!(
+        int,
+        columns(vec![Field::new("qty", DataType::Int64, false)])
+    );
+    assert_ne!(
+        int,
+        columns(vec![Field::new("amount", DataType::Int32, false)])
+    );
+    assert_ne!(
+        int,
+        columns(vec![
+            Field::new("qty", DataType::Int32, false),
+            Field::new("note", DataType::Utf8, true),
+        ])
+    );
+    assert_eq!(
+        columns(vec![Field::new("label", DataType::Utf8, true)]),
+        columns(vec![Field::new("label", DataType::Utf8View, true)]),
+        "both are text to the client"
+    );
+}
