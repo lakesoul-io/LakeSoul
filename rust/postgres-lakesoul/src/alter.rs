@@ -433,6 +433,21 @@ pub(crate) fn plan_alter(
                 &layout,
             ) {
                 Ok(next) => schema = next,
+                // A different spelling of an existing column is an error even
+                // with IF NOT EXISTS: the column asked for does not exist.
+                Err(EvolutionError::DuplicateColumn { name, .. })
+                    if name != *field.name() =>
+                {
+                    return Err(user_error(
+                        DUPLICATE_COLUMN,
+                        format!(
+                            "column \"{}\" of relation \"{table}\" collides with \
+                             column \"{name}\": case-insensitive engines would read \
+                             them as one column",
+                            field.name()
+                        ),
+                    ));
+                }
                 Err(EvolutionError::DuplicateColumn {
                     name,
                     same_type: true,
@@ -877,6 +892,57 @@ mod tests {
             ),
             "42701"
         );
+    }
+
+    #[test]
+    fn unicode_case_variants_are_duplicates() {
+        // Identifiers fold ASCII only, so `ä` reaches the rule as written.
+        let info = table_info(
+            &Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("Ä", DataType::Int32, true),
+            ]),
+            ";id",
+            "{}",
+        );
+        for sql in [
+            "ALTER TABLE t ADD COLUMN ä INT",
+            "ALTER TABLE t ADD COLUMN IF NOT EXISTS ä INT",
+            "ALTER TABLE t ADD COLUMN \"ä\" TEXT",
+        ] {
+            let error = plan_on(&info, sql).expect_err(sql);
+            assert_eq!(code(&error), "42701", "{sql}: {error:?}");
+            assert!(
+                error.to_string().contains("collides with column \"Ä\""),
+                "{sql}: {error}"
+            );
+        }
+        // The same spelling with IF NOT EXISTS is still the skip notice.
+        let (update, notices) =
+            plan_on(&info, "ALTER TABLE t ADD COLUMN IF NOT EXISTS \"Ä\" INT").unwrap();
+        assert!(update.is_empty());
+        assert_eq!(notices.len(), 1);
+    }
+
+    #[test]
+    fn create_refuses_unicode_case_variants() {
+        let parse_columns =
+            |sql: &str| match Parser::parse_sql(&PostgreSqlDialect {}, sql)
+                .unwrap()
+                .remove(0)
+            {
+                Statement::CreateTable(create) => (create.columns, create.constraints),
+                other => panic!("{other:?}"),
+            };
+        let (columns, constraints) = parse_columns("CREATE TABLE t (Ä INT, ä INT)");
+        let error = crate::ddl::build_schema(&columns, &constraints).unwrap_err();
+        assert_eq!(code(&error), "42701");
+        assert!(
+            error.to_string().contains("collides with column \"Ä\""),
+            "{error}"
+        );
+        let (columns, constraints) = parse_columns("CREATE TABLE t (a INT, ä INT)");
+        crate::ddl::build_schema(&columns, &constraints).unwrap();
     }
 
     #[test]

@@ -662,6 +662,12 @@ async fn refusal_matrix_creates_nothing(h: &Harness) -> Result<()> {
         ),
         // The Vortex block options shape vector index columns only, which a
         // table created here cannot declare: storing one would be a no-op.
+        // Spark resolves names case-insensitively in every script.
+        (
+            "ddl_case_collision",
+            "CREATE TABLE ddl_case_collision (id BIGINT PRIMARY KEY, Ä INT, ä INT)",
+            "42701",
+        ),
         (
             "ddl_vortex_rows",
             "CREATE TABLE ddl_vortex_rows (id BIGINT PRIMARY KEY) \

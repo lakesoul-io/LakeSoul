@@ -7,7 +7,9 @@
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use lakesoul_common::schema_evolution::{ColumnChange, TableLayout, check_evolution};
+use lakesoul_common::schema_evolution::{
+    ColumnChange, TableLayout, check_evolution, column_names_collide,
+};
 use lakesoul_common::ser::arrow_java::schema_to_metadata_parts;
 use lakesoul_datafusion::catalog::LakeSoulTableProperty;
 use lakesoul_datafusion::lakesoul_table::LakeSoulTable;
@@ -449,7 +451,7 @@ pub(crate) fn source_schema(source: &MySqlTable, cdc_column: &str) -> Result<Sch
     if source
         .columns
         .iter()
-        .any(|column| column.name.eq_ignore_ascii_case(cdc_column))
+        .any(|column| column_names_collide(&column.name, cdc_column))
     {
         bail!(
             "source table {} already has a column named {cdc_column:?}; choose \

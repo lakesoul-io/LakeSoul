@@ -199,14 +199,77 @@ pub fn check_evolution(
     }
 }
 
+/// Whether two column names would resolve to the same column in an engine
+/// that matches names case-insensitively, so a table must not hold both.
+///
+/// Spark resolves names with Java `String.equalsIgnoreCase` (by default) and
+/// checks duplicates with `toLowerCase(Locale.ROOT)`; both apply Unicode
+/// case mappings, so `ä` and `Ä` (or `σ`, `ς` and `Σ`) collide, not only
+/// ASCII letters. The names collide when either comparison says so:
+///
+/// * per character, equal after simple upper-casing, or after lower-casing
+///   that (`equalsIgnoreCase`);
+/// * equal after full lower-casing (`toLowerCase`).
+///
+/// Erring towards a collision only refuses a name; missing one would make
+/// references ambiguous in every case-insensitive reader.
+pub fn column_names_collide(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+    if left.is_ascii() && right.is_ascii() {
+        return left.eq_ignore_ascii_case(right);
+    }
+    left.to_lowercase() == right.to_lowercase() || equals_ignore_case(left, right)
+}
+
+/// Java `String.equalsIgnoreCase`, by code point.
+fn equals_ignore_case(left: &str, right: &str) -> bool {
+    let mut left = left.chars();
+    let mut right = right.chars();
+    loop {
+        match (left.next(), right.next()) {
+            (None, None) => return true,
+            (Some(l), Some(r)) => {
+                if l == r {
+                    continue;
+                }
+                let (l, r) = (simple_upper(l), simple_upper(r));
+                if l != r && simple_lower(l) != simple_lower(r) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// `Character.toUpperCase`: the one-character mapping, or the character
+/// itself when its upper case is several characters (`ß`).
+fn simple_upper(c: char) -> char {
+    single(c.to_uppercase()).unwrap_or(c)
+}
+
+/// `Character.toLowerCase`, see [`simple_upper`].
+fn simple_lower(c: char) -> char {
+    single(c.to_lowercase()).unwrap_or(c)
+}
+
+fn single(mut mapped: impl Iterator<Item = char>) -> Option<char> {
+    match (mapped.next(), mapped.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    }
+}
+
 fn add_column(current: &Schema, field: &Field) -> Result<Schema, EvolutionError> {
     // Readers match columns by name, and Spark and Flink resolve them
     // case-insensitively: a column that differs only in case would be
-    // ambiguous there.
+    // ambiguous there, whatever the script (see [`column_names_collide`]).
     if let Some(existing) = current
         .fields()
         .iter()
-        .find(|existing| existing.name().eq_ignore_ascii_case(field.name()))
+        .find(|existing| column_names_collide(existing.name(), field.name()))
     {
         return Err(EvolutionError::DuplicateColumn {
             name: existing.name().clone(),
@@ -400,6 +463,53 @@ mod tests {
                 same_type: false
             }
         );
+        // So is one outside ASCII.
+        let unicode = Schema::new(vec![Field::new("Ä", DataType::Int32, true)]);
+        let error = check_evolution(
+            &unicode,
+            &ColumnChange::Add(Field::new("ä", DataType::Int32, true)),
+            &TableLayout::default(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            EvolutionError::DuplicateColumn {
+                name: "Ä".to_string(),
+                same_type: false
+            }
+        );
+    }
+
+    #[test]
+    fn column_names_collide_like_case_insensitive_engines() {
+        for (left, right) in [
+            ("qty", "qty"),
+            ("rowKinds", "ROWKINDS"),
+            ("Ä", "ä"),
+            ("straße", "STRAßE"),
+            ("Σίσυφος", "σίσυφοσ"),
+            ("ς", "Σ"),
+            ("ς", "σ"),
+            ("ǅ", "ǆ"),
+            ("Ǆ", "ǅ"),
+            ("К", "к"),
+            ("ᾼ", "ᾳ"),
+            ("İ", "i\u{307}"),
+            ("K", "\u{212a}"),
+        ] {
+            assert!(column_names_collide(left, right), "{left} vs {right}");
+            assert!(column_names_collide(right, left), "{right} vs {left}");
+        }
+        for (left, right) in [
+            ("qty", "qtx"),
+            ("a", "ä"),
+            ("straße", "strasse"),
+            ("ä", "äa"),
+            ("x", ""),
+        ] {
+            assert!(!column_names_collide(left, right), "{left} vs {right}");
+            assert!(!column_names_collide(right, left), "{right} vs {left}");
+        }
     }
 
     #[test]

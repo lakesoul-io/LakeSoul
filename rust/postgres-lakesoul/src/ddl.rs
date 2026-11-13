@@ -38,6 +38,7 @@ use datafusion_postgres::QueryHook;
 use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire;
+use lakesoul_common::schema_evolution::column_names_collide;
 use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
 use lakesoul_metadata::MetaDataClientRef;
 use pgwire::api::ClientInfo;
@@ -739,10 +740,22 @@ pub(crate) fn build_schema(
     let mut primary_key: Option<Vec<usize>> = None;
     for (index, column) in columns.iter().enumerate() {
         let name = normalize_column_ident(&column.name)?;
-        if names.contains(&name) {
+        // The rule `ALTER TABLE ... ADD COLUMN` applies: names that only
+        // differ in case (in any script) are one column to Spark.
+        if let Some(existing) = names
+            .iter()
+            .find(|existing| column_names_collide(existing, &name))
+        {
             return Err(user_error(
                 DUPLICATE_COLUMN,
-                format!("column \"{name}\" specified more than once"),
+                if *existing == name {
+                    format!("column \"{name}\" specified more than once")
+                } else {
+                    format!(
+                        "column \"{name}\" collides with column \"{existing}\": \
+                         case-insensitive engines would read them as one column"
+                    )
+                },
             ));
         }
         let data_type = arrow_type(&column.data_type)?;
