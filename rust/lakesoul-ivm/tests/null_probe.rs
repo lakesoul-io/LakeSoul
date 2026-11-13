@@ -143,3 +143,161 @@ async fn internal_table_supports_null_merge_keys() {
         .unwrap();
     drop(dir);
 }
+
+fn partitioned_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Utf8, true),
+        Field::new("p", DataType::Utf8, true),
+        Field::new("v", DataType::Int64, false),
+        Field::new("rowKinds", DataType::Utf8, false),
+    ]))
+}
+
+fn partitioned_batch(rows: &[(Option<&str>, Option<&str>, i64, &str)]) -> RecordBatch {
+    RecordBatch::try_new(
+        partitioned_schema(),
+        vec![
+            Arc::new(StringArray::from_iter(rows.iter().map(|row| row.0))),
+            Arc::new(StringArray::from_iter(rows.iter().map(|row| row.1))),
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.2))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.3))),
+        ],
+    )
+    .unwrap()
+}
+
+async fn read_partitioned_rows(
+    runtime: &IvmRuntime,
+    table: &lakesoul_ivm::IvmTable,
+) -> Vec<(Option<String>, Option<String>, i64)> {
+    let mut rows = Vec::new();
+    for batch in table.read_current(runtime.client()).await.unwrap() {
+        let schema = batch.schema();
+        let keys = batch
+            .column(schema.index_of("k").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let partitions = batch
+            .column(schema.index_of("p").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let values = batch
+            .column(schema.index_of("v").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                if keys.is_null(row) {
+                    None
+                } else {
+                    Some(keys.value(row).to_string())
+                },
+                if partitions.is_null(row) {
+                    None
+                } else {
+                    Some(partitions.value(row).to_string())
+                },
+                values.value(row),
+            ));
+        }
+    }
+    rows.sort();
+    rows
+}
+
+#[test_log::test(tokio::test)]
+async fn a_null_range_partition_value_survives_merge_and_compaction() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let table = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_null_part_probe_{}", uuid::Uuid::new_v4().simple()),
+                format!("file://{}", dir.path().join("tp").display()),
+                partitioned_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_range_partition_columns(vec!["p".to_string()]),
+        )
+        .await
+        .unwrap();
+
+    table
+        .append_batch(
+            runtime.client(),
+            partitioned_batch(&[
+                (Some("a"), None, 1, "insert"),
+                (Some("b"), Some("x"), 2, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        read_partitioned_rows(&runtime, &table).await,
+        vec![
+            (Some("a".to_string()), None, 1),
+            (Some("b".to_string()), Some("x".to_string()), 2),
+        ]
+    );
+
+    // Upsert and delete+insert inside the NULL range partition.
+    table
+        .append_batch(
+            runtime.client(),
+            partitioned_batch(&[(Some("a"), None, 3, "insert")]),
+        )
+        .await
+        .unwrap();
+    table
+        .append_batch(
+            runtime.client(),
+            partitioned_batch(&[
+                (Some("a"), None, 3, "delete"),
+                (Some("a"), None, 4, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        read_partitioned_rows(&runtime, &table).await,
+        vec![
+            (Some("a".to_string()), None, 4),
+            (Some("b".to_string()), Some("x".to_string()), 2),
+        ]
+    );
+
+    let client = runtime.client().clone();
+    table.compact(&client).await.unwrap();
+    assert_eq!(
+        read_partitioned_rows(&runtime, &table).await,
+        vec![
+            (Some("a".to_string()), None, 4),
+            (Some("b".to_string()), Some("x".to_string()), 2),
+        ]
+    );
+    table
+        .append_batch(
+            runtime.client(),
+            partitioned_batch(&[(Some("a"), None, 5, "insert")]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        read_partitioned_rows(&runtime, &table).await,
+        vec![
+            (Some("a".to_string()), None, 5),
+            (Some("b".to_string()), Some("x".to_string()), 2),
+        ]
+    );
+
+    runtime
+        .client()
+        .drop_table(&table.table_name, "default")
+        .await
+        .unwrap();
+    drop(dir);
+}
