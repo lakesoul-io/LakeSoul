@@ -1403,7 +1403,7 @@ impl IvmRuntime {
             let base = &view.sources[0].0;
             let base_columns = lookup_chain_source_columns(view, 0, &context)?;
             let base_now = self
-                .lookup_source_by_join_keys(
+                .lookup_source_by_join_keys_null_safe(
                     &context,
                     base,
                     affected.clone(),
@@ -1426,7 +1426,7 @@ impl IvmRuntime {
             let base = &view.sources[0].0;
             let base_columns = lookup_chain_source_columns(view, 0, &context)?;
             let base_now = self
-                .lookup_source_by_join_keys(
+                .lookup_source_by_join_keys_null_safe(
                     &context,
                     base,
                     affected.clone(),

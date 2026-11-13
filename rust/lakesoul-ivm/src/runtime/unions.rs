@@ -911,7 +911,7 @@ impl IvmRuntime {
                 let affected = delta.select(key_exprs)?.distinct()?;
                 // Read only the current rows for this source's changed keys.
                 let source_now = self
-                    .lookup_source_by_join_keys(
+                    .lookup_source_by_join_keys_null_safe(
                         &context,
                         table,
                         affected.clone(),
@@ -987,7 +987,7 @@ impl IvmRuntime {
                 .collect::<Vec<_>>();
             let changed = union_frames(changed)?;
             let mv = if view.mv.primary_keys == pair_names {
-                self.lookup_source_by_join_keys(
+                self.lookup_source_by_join_keys_null_safe(
                     &context,
                     &view.mv,
                     changed.clone(),

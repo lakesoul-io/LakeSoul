@@ -535,7 +535,10 @@ impl super::IvmRuntime {
             bucket_count,
             route_columns,
             true,
-        );
+        )
+        // The source may be an internal view whose row identity is a NULL
+        // group key; the before image must match it.
+        .with_null_safe(true);
         let before = provider.into_dataframe(&context).await?;
         let before_schema = before.schema().clone();
         let projections = source

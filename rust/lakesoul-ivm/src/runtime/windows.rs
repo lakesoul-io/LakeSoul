@@ -955,7 +955,11 @@ fn multi_window_index_schema(source: &IvmTable) -> Result<SchemaRef> {
     ))];
     for key in &source.primary_keys {
         let field = source.schema.field_with_name(key)?;
-        fields.push(Arc::new(Field::new(key, field.data_type().clone(), false)));
+        fields.push(Arc::new(Field::new(
+            key,
+            field.data_type().clone(),
+            field.is_nullable(),
+        )));
     }
     fields.push(Arc::new(Field::new(
         IVM_ROW_KINDS_COLUMN,

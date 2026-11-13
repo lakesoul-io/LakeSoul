@@ -270,11 +270,9 @@ pub fn join_view_schema_with_keys(
 ) -> Result<SchemaRef> {
     let mut fields = Vec::new();
     for (index, key) in join_keys.iter().enumerate() {
-        fields.push(Arc::new(Field::new(
-            key,
-            join_key_type(left_schema, join_keys, key_exprs, index)?,
-            false,
-        )));
+        let data_type = join_key_type(left_schema, join_keys, key_exprs, index)?;
+        let nullable = join_key_nullable(left_schema, key, key_exprs, index)?;
+        fields.push(Arc::new(Field::new(key, data_type, nullable)));
     }
     fields.push(Arc::new(Field::new(
         "left_value",
@@ -590,7 +588,7 @@ pub fn cross_join_view_schema_for(
         fields.push(Arc::new(Field::new(
             left_pk_alias(key),
             field.data_type().clone(),
-            false,
+            field.is_nullable(),
         )));
     }
     for key in right_primary_keys {
@@ -598,7 +596,7 @@ pub fn cross_join_view_schema_for(
         fields.push(Arc::new(Field::new(
             right_pk_alias(key),
             field.data_type().clone(),
-            false,
+            field.is_nullable(),
         )));
     }
     fields.push(Arc::new(Field::new(
@@ -797,13 +795,10 @@ pub fn wide_left_join_view_schema_with_identity_and_keys(
         let computed = key_exprs.left.get(index).filter(|expr| !expr.is_empty());
         let (data_type, nullable) = match computed {
             // A computed key is typed by its expression.
-            Some(expr) => {
-                let (data_type, nullable) = expression_type(left_schema, expr)?;
-                (data_type, !nullable)
-            }
+            Some(expr) => expression_type(left_schema, expr)?,
             None => {
                 let field = left_schema.field_with_name(key)?;
-                (field.data_type().clone(), !field.is_nullable())
+                (field.data_type().clone(), field.is_nullable())
             }
         };
         fields.push(Arc::new(Field::new(key, data_type, nullable)));
@@ -820,7 +815,7 @@ pub fn wide_left_join_view_schema_with_identity_and_keys(
         fields.push(Arc::new(Field::new(
             left_pk_alias(key),
             field.data_type().clone(),
-            false,
+            field.is_nullable(),
         )));
     }
     for key in right_primary_keys {
@@ -1006,7 +1001,11 @@ pub fn wide_lookup_join_view_schema_for(
             continue;
         }
         let field = left_schema.field_with_name(key)?;
-        fields.push(Arc::new(Field::new(key, field.data_type().clone(), false)));
+        fields.push(Arc::new(Field::new(
+            key,
+            field.data_type().clone(),
+            field.is_nullable(),
+        )));
     }
     fields.push(Arc::new(Field::new(
         IVM_ROW_KINDS_COLUMN,
@@ -1048,11 +1047,13 @@ pub fn wide_join_view_schema_with_keys(
 ) -> Result<SchemaRef> {
     let mut fields = Vec::new();
     for (index, key) in join_keys.iter().enumerate() {
-        fields.push(Arc::new(Field::new(
-            key,
-            join_key_type(left_schema, join_keys, key_exprs, index)?,
-            false,
-        )));
+        let data_type = join_key_type(left_schema, join_keys, key_exprs, index)?;
+        // A strict inner join never matches a NULL key, but a null-safe join
+        // does, and a left source that is itself an internal view may carry
+        // NULL key values.  Keep the source nullability so the output schema
+        // accepts both.
+        let nullable = join_key_nullable(left_schema, key, key_exprs, index)?;
+        fields.push(Arc::new(Field::new(key, data_type, nullable)));
     }
     fields.extend(wide_output_fields(
         left_schema,
@@ -1065,6 +1066,22 @@ pub fn wide_join_view_schema_with_keys(
         false,
     )));
     Ok(Arc::new(Schema::new(fields)))
+}
+
+/// The nullability of a join key projected from the left schema.
+fn join_key_nullable(
+    left_schema: &Schema,
+    key: &str,
+    key_exprs: &JoinKeyExprs,
+    index: usize,
+) -> Result<bool> {
+    match key_exprs.left.get(index).filter(|expr| !expr.is_empty()) {
+        Some(expr) => Ok(expression_type(left_schema, expr)?.1),
+        None => Ok(left_schema
+            .field_with_name(key)
+            .map(|field| field.is_nullable())
+            .unwrap_or(true)),
+    }
 }
 
 /// The schema of a wide keyed [`JoinView`] or [`CrossJoinView`] output: the
@@ -1106,11 +1123,9 @@ pub fn wide_keyed_join_view_schema_with_keys(
     }
     let mut fields = Vec::new();
     for (index, key) in join_keys.iter().enumerate() {
-        fields.push(Arc::new(Field::new(
-            key,
-            join_key_type(left_schema, join_keys, key_exprs, index)?,
-            false,
-        )));
+        let data_type = join_key_type(left_schema, join_keys, key_exprs, index)?;
+        let nullable = join_key_nullable(left_schema, key, key_exprs, index)?;
+        fields.push(Arc::new(Field::new(key, data_type, nullable)));
     }
     fields.extend(wide_output_fields(
         left_schema,
@@ -1122,7 +1137,7 @@ pub fn wide_keyed_join_view_schema_with_keys(
         fields.push(Arc::new(Field::new(
             left_pk_alias(key),
             field.data_type().clone(),
-            false,
+            field.is_nullable(),
         )));
     }
     for key in right_primary_keys {
@@ -1130,7 +1145,7 @@ pub fn wide_keyed_join_view_schema_with_keys(
         fields.push(Arc::new(Field::new(
             right_pk_alias(key),
             field.data_type().clone(),
-            false,
+            field.is_nullable(),
         )));
     }
     fields.push(Arc::new(Field::new(
@@ -1184,7 +1199,7 @@ fn keyed_join_schema_for(
         fields.push(Arc::new(Field::new(
             key,
             data_type,
-            outer != JoinSchema::Inner && nullable,
+            outer != JoinSchema::Inner || nullable,
         )));
     }
     fields.push(Arc::new(Field::new(
@@ -1210,7 +1225,7 @@ fn keyed_join_schema_for(
         fields.push(Arc::new(Field::new(
             left_pk_alias(key),
             field.data_type().clone(),
-            outer != JoinSchema::Inner,
+            outer != JoinSchema::Inner || field.is_nullable(),
         )));
     }
     for key in right_primary_keys {
@@ -1218,7 +1233,7 @@ fn keyed_join_schema_for(
         fields.push(Arc::new(Field::new(
             right_pk_alias(key),
             field.data_type().clone(),
-            outer != JoinSchema::Inner,
+            outer != JoinSchema::Inner || field.is_nullable(),
         )));
     }
     fields.push(Arc::new(Field::new(
@@ -1918,7 +1933,11 @@ pub fn lookup_join_view_schema_for(
             continue;
         }
         let field = left_schema.field_with_name(key)?;
-        fields.push(Arc::new(Field::new(key, field.data_type().clone(), false)));
+        fields.push(Arc::new(Field::new(
+            key,
+            field.data_type().clone(),
+            field.is_nullable(),
+        )));
     }
     fields.push(Arc::new(Field::new(
         IVM_ROW_KINDS_COLUMN,
@@ -3262,6 +3281,31 @@ fn keyed_semi_join(
     Ok(DataFrame::new(context.state(), plan))
 }
 
+/// A semi/anti join between two frames on the same row-identity columns.
+///
+/// A row identity of an internal view may contain NULL (a NULL group key), so
+/// a plain equality join would keep the stale side-state row alongside its
+/// new version.  Identity comparison is null-safe by definition.
+fn null_safe_identity_join(
+    context: &SessionContext,
+    left: DataFrame,
+    right: DataFrame,
+    keys: &[String],
+    join_type: JoinType,
+) -> Result<DataFrame> {
+    debug_assert!(matches!(join_type, JoinType::LeftSemi | JoinType::LeftAnti));
+    let plan = LogicalPlanBuilder::new(left.logical_plan().clone())
+        .join_detailed(
+            right.logical_plan().clone(),
+            join_type,
+            (keys.to_vec(), keys.to_vec()),
+            None,
+            NullEquality::NullEqualsNull,
+        )?
+        .build()?;
+    Ok(DataFrame::new(context.state(), plan))
+}
+
 /// Project an inner equi-join of two keyed sources onto
 /// `(join keys, left value, right value, left pk*, right pk*)`.
 fn keyed_join_projection(
@@ -4249,7 +4293,7 @@ impl IvmRuntime {
         let delta_left_pks = delta_left.clone().select(left_pk_exprs)?.distinct()?;
         let affected_left = delta_left_pks.union(left_for_right)?.distinct()?;
         let left_now = self
-            .lookup_source_by_join_keys(
+            .lookup_source_by_join_keys_null_safe(
                 context,
                 &view.left,
                 affected_left,
@@ -4537,7 +4581,10 @@ impl IvmRuntime {
             bucket_count,
             route_columns,
             true,
-        );
+        )
+        // The source may be an internal view whose row identity is a NULL
+        // group key; the before image must match it.
+        .with_null_safe(true);
         let frame = provider.into_dataframe(context).await?;
         let projections = source
             .schema
@@ -5097,7 +5144,10 @@ impl IvmRuntime {
             bucket_count,
             route_columns,
             true,
-        );
+        )
+        // The lookup key is the row identity of the join output, which may
+        // contain a NULL key from an internal view.
+        .with_null_safe(true);
         let provider = if materialized {
             provider.with_prepruned_groups()
         } else {
@@ -5966,7 +6016,6 @@ impl IvmRuntime {
                         .map(|key| right_pk_alias(key)),
                 )
                 .collect::<Vec<_>>();
-            let pair_refs = pair_keys.iter().map(String::as_str).collect::<Vec<_>>();
             let pair_exprs = pair_keys
                 .iter()
                 .map(|key| col(key.as_str()))
@@ -5978,10 +6027,15 @@ impl IvmRuntime {
                 .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
                 .select(pair_exprs.clone())?
                 .distinct()?;
-            let inserts = current
-                .join(already, JoinType::LeftAnti, &pair_refs, &pair_refs, None)?
-                .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
-                .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+            let inserts = null_safe_identity_join(
+                &context,
+                current,
+                already,
+                &pair_keys,
+                JoinType::LeftAnti,
+            )?
+            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
 
             // Retract the previous pairs of the affected rows; rows written by
             // this epoch are kept so a replay is idempotent.
@@ -6584,7 +6638,7 @@ impl IvmRuntime {
         let mv = if state_table.primary_keys == view.left.primary_keys
             && view.key_exprs.left.iter().all(|expr| expr.is_empty())
         {
-            self.lookup_source_by_join_keys(
+            self.lookup_source_by_join_keys_null_safe(
                 &context,
                 state_table,
                 affected.clone(),
@@ -6603,24 +6657,38 @@ impl IvmRuntime {
             .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
             .select(key_exprs.clone())?
             .distinct()?;
-        let inserts = lookup_join_projection(left_now, right_now, view)?
-            .join(
-                affected.clone(),
-                JoinType::LeftSemi,
-                &key_names,
-                &key_names,
-                None,
-            )?
-            .join(already, JoinType::LeftAnti, &key_names, &key_names, None)?
-            .select(lookup_join_output_columns(view))?
-            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
-            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-        let deletes = mv
-            .join(affected, JoinType::LeftSemi, &key_names, &key_names, None)?
-            .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?
-            .select(lookup_join_output_columns(view))?
-            .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
-            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let key_names_owned = key_names
+            .iter()
+            .map(|key| key.to_string())
+            .collect::<Vec<_>>();
+        let inserts = null_safe_identity_join(
+            &context,
+            lookup_join_projection(left_now, right_now, view)?,
+            affected.clone(),
+            &key_names_owned,
+            JoinType::LeftSemi,
+        )?;
+        let inserts = null_safe_identity_join(
+            &context,
+            inserts,
+            already,
+            &key_names_owned,
+            JoinType::LeftAnti,
+        )?
+        .select(lookup_join_output_columns(view))?
+        .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+        .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let deletes = null_safe_identity_join(
+            &context,
+            mv,
+            affected,
+            &key_names_owned,
+            JoinType::LeftSemi,
+        )?
+        .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?
+        .select(lookup_join_output_columns(view))?
+        .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
+        .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
 
         let mut sort_exprs = key_exprs;
         sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
@@ -6872,19 +6940,19 @@ impl IvmRuntime {
         // window; the delta already carries the current version of the rest,
         // including deletes.
         let right_only_keys = match (right_affected_keys, &left_delta) {
-            (Some(keys), Some(delta)) => Some(keys.join(
+            (Some(keys), Some(delta)) => Some(null_safe_identity_join(
+                &context,
+                keys,
                 delta.clone().select(pk_exprs.clone())?.distinct()?,
+                &left_pks,
                 JoinType::LeftAnti,
-                &left_pks.iter().map(String::as_str).collect::<Vec<_>>(),
-                &left_pks.iter().map(String::as_str).collect::<Vec<_>>(),
-                None,
             )?),
             (Some(keys), None) => Some(keys),
             (None, _) => None,
         };
         let left_from_right = match right_only_keys {
             Some(keys) => Some(
-                self.lookup_source_by_join_keys(
+                self.lookup_source_by_join_keys_null_safe(
                     &context, &view.left, keys, &left_pks, &left_pks, true,
                 )
                 .await?,
@@ -6945,7 +7013,7 @@ impl IvmRuntime {
         let joined = join_multi_lookup_frames(left_now, right_nows, view)?;
 
         let mv = self
-            .lookup_source_by_join_keys(
+            .lookup_source_by_join_keys_null_safe(
                 &context,
                 &view.mv,
                 affected.clone(),
@@ -6959,40 +7027,38 @@ impl IvmRuntime {
             .filter(col(IVM_EPOCH_COLUMN).eq(lit(epoch)))?
             .select(pk_exprs.clone())?
             .distinct()?;
-        let inserts = joined
-            .join(
-                affected.clone(),
-                JoinType::LeftSemi,
-                &left_pks.iter().map(String::as_str).collect::<Vec<_>>(),
-                &left_pks.iter().map(String::as_str).collect::<Vec<_>>(),
-                None,
-            )?
-            .join(
-                already,
-                JoinType::LeftAnti,
-                &left_pks.iter().map(String::as_str).collect::<Vec<_>>(),
-                &left_pks.iter().map(String::as_str).collect::<Vec<_>>(),
-                None,
-            )?
-            .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
-            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
-        let deletes = mv
-            .join(
-                affected,
-                JoinType::LeftSemi,
-                &left_pks.iter().map(String::as_str).collect::<Vec<_>>(),
-                &left_pks.iter().map(String::as_str).collect::<Vec<_>>(),
-                None,
-            )?
-            .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?
-            .select(
-                view.output_columns
-                    .iter()
-                    .map(|column| col(column.name.as_str()))
-                    .collect::<Vec<_>>(),
-            )?
-            .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
-            .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let inserts = null_safe_identity_join(
+            &context,
+            joined,
+            affected.clone(),
+            &left_pks,
+            JoinType::LeftSemi,
+        )?;
+        let inserts = null_safe_identity_join(
+            &context,
+            inserts,
+            already,
+            &left_pks,
+            JoinType::LeftAnti,
+        )?
+        .with_column(IVM_ROW_KINDS_COLUMN, lit("insert"))?
+        .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
+        let deletes = null_safe_identity_join(
+            &context,
+            mv,
+            affected,
+            &left_pks,
+            JoinType::LeftSemi,
+        )?
+        .filter(col(IVM_EPOCH_COLUMN).not_eq(lit(epoch)))?
+        .select(
+            view.output_columns
+                .iter()
+                .map(|column| col(column.name.as_str()))
+                .collect::<Vec<_>>(),
+        )?
+        .with_column(IVM_ROW_KINDS_COLUMN, lit("delete"))?
+        .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
 
         let mut sort_exprs = pk_exprs;
         sort_exprs.push(column_expr(IVM_ROW_KINDS_COLUMN));
@@ -8341,7 +8407,7 @@ impl IvmRuntime {
                     .collect::<Vec<_>>(),
             )?;
             let right_rows = self
-                .lookup_source_by_join_keys(
+                .lookup_source_by_join_keys_null_safe(
                     &context,
                     &view.right,
                     right_source_ids,
@@ -8436,7 +8502,7 @@ impl IvmRuntime {
                     .collect::<Vec<_>>(),
             )?;
             let right_rows = self
-                .lookup_source_by_join_keys(
+                .lookup_source_by_join_keys_null_safe(
                     &context,
                     &view.right,
                     right_source_ids.clone(),

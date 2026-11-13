@@ -1467,7 +1467,7 @@ impl IvmRuntime {
         // Read those keys through the shared PK lookup instead of scanning
         // the whole MV when its key matches the left key.
         let mv = if view.mv.primary_keys == view.left.primary_keys {
-            self.lookup_source_by_join_keys(
+            self.lookup_source_by_join_keys_null_safe(
                 &context,
                 &view.mv,
                 affected.clone(),
@@ -2702,7 +2702,7 @@ impl IvmRuntime {
             affected_from_left.union(affected_from_right)?.distinct()?
         };
         let mv = if view.mv.primary_keys == view.left.primary_keys {
-            self.lookup_source_by_join_keys(
+            self.lookup_source_by_join_keys_null_safe(
                 &context,
                 &view.mv,
                 affected.clone(),

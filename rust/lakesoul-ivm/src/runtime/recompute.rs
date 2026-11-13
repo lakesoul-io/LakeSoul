@@ -2972,7 +2972,7 @@ impl IvmRuntime {
         let pks = self
             .read_narrow_index_keys(context, source, group_keys, index, affected)
             .await?;
-        self.lookup_source_by_join_keys(
+        self.lookup_source_by_join_keys_null_safe(
             context,
             source,
             pks,
@@ -4444,7 +4444,7 @@ impl IvmRuntime {
                 )
                 .await?;
             let new = self
-                .lookup_source_by_join_keys(
+                .lookup_source_by_join_keys_null_safe(
                     &context,
                     &view.source,
                     delta_keys,

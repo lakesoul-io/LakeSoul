@@ -20,11 +20,12 @@ use datafusion::datasource::memory::MemTable;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     DistinctAggKind, DistinctAggView, IVM_ROW_KINDS_COLUMN, IVM_ROW_NUMBER_COLUMN,
-    IVM_VALUE_COLUMN, IvmRuntime, IvmTable, IvmTableOptions, JoinView, MinMaxKind,
-    MinMaxView, SemiAntiView, SumCountView, WindowView, distinct_agg_mv_schema_for,
-    join_view_schema_for, min_max_mv_schema_for, nullable_join_key_schema,
-    semi_anti_mv_schema, state_partition_stats, sum_count_mv_schema_for,
-    value_count_state_schema_for, window_mv_schema_for,
+    IVM_VALUE_COLUMN, IvmRuntime, IvmTable, IvmTableOptions, JoinView, LookupJoinView,
+    MinMaxKind, MinMaxView, SemiAntiView, SumCountView, WindowView,
+    distinct_agg_mv_schema_for, join_view_schema_for, lookup_join_view_schema_for,
+    min_max_mv_schema_for, nullable_join_key_schema, semi_anti_mv_schema,
+    state_partition_stats, sum_count_mv_schema_for, value_count_state_schema_for,
+    window_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -476,6 +477,255 @@ async fn null_group_keys_grouping_sets() {
             (0, None, 20, 1),
             (0, Some("a".to_string()), 5, 1),
             (1, None, 25, 2),
+        ]
+    );
+}
+
+/// `(g, h, sum_v, rv)` rows of a compact lookup-join output.
+async fn read_null_lookup_join(
+    runtime: &IvmRuntime,
+    output: &IvmTable,
+) -> Vec<(String, Option<String>, i64, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("out", Arc::new(runtime.table_provider(output)))
+        .unwrap();
+    let batches = context
+        .sql("select g, h, left_value, right_value from out")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in batches {
+        let schema = batch.schema();
+        let keys = batch
+            .column(schema.index_of("g").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let groups = batch
+            .column(schema.index_of("h").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(schema.index_of("left_value").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let rights = batch
+            .column(schema.index_of("right_value").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                keys.value(row).to_string(),
+                if groups.is_null(row) {
+                    None
+                } else {
+                    Some(groups.value(row).to_string())
+                },
+                sums.value(row),
+                rights.value(row),
+            ));
+        }
+    }
+    rows.sort();
+    rows
+}
+
+#[test_log::test(tokio::test)]
+async fn a_null_group_key_identity_updates_a_lookup_join() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("g", DataType::Utf8, false),
+        Field::new("h", DataType::Utf8, true),
+        Field::new("amount", DataType::Int64, true),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let batch = |rows: &[(i64, &str, Option<&str>, i64, &str)]| {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.0))),
+                Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.1))),
+                Arc::new(string_array(
+                    &rows.iter().map(|row| row.2).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.3))),
+                Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.4))),
+            ],
+        )
+        .unwrap()
+    };
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_null_lj_src_{suffix}"),
+                table_path(&dir, "src"),
+                schema.clone(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let group_keys = vec!["g".to_string(), "h".to_string()];
+    let sums = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_null_lj_sums_{suffix}"),
+                table_path(&dir, "sums"),
+                sum_count_mv_schema_for(&source.schema, &group_keys, Some("amount"))
+                    .unwrap(),
+            )
+            .with_primary_keys(group_keys.clone()),
+        )
+        .await
+        .unwrap();
+    let sum_view = SumCountView::new_with_group_keys(
+        format!("null_lj_sums_{suffix}"),
+        source.clone(),
+        sums.clone(),
+        group_keys.clone(),
+        Some("amount".to_string()),
+    );
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("g", DataType::Utf8, false),
+        Field::new("rv", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_null_lj_right_{suffix}"),
+                table_path(&dir, "right"),
+                right_schema,
+            )
+            .with_primary_keys(vec!["g".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let join_keys = vec!["g".to_string()];
+    let output = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_null_lj_out_{suffix}"),
+                table_path(&dir, "out"),
+                lookup_join_view_schema_for(
+                    &sums.schema,
+                    &right.schema,
+                    &sums.primary_keys,
+                    &right.primary_keys,
+                    &join_keys,
+                    &Default::default(),
+                    "sum_v",
+                    "rv",
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(sums.primary_keys.clone()),
+        )
+        .await
+        .unwrap();
+    let view = LookupJoinView::new(
+        format!("null_lj_{suffix}"),
+        sums.clone(),
+        right.clone(),
+        output.clone(),
+        "g",
+        "sum_v",
+        "rv",
+    );
+
+    source
+        .append_batch(
+            runtime.client(),
+            batch(&[
+                (1, "a", None, 10, "insert"),
+                (2, "b", Some("x"), 20, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                right.schema.clone(),
+                vec![
+                    Arc::new(StringArray::from(vec!["a", "b"])),
+                    Arc::new(Int64Array::from(vec![100, 200])),
+                    Arc::new(StringArray::from(vec!["insert", "insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_sum_count(&sum_view).await.unwrap().unwrap();
+    runtime.refresh_lookup_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        read_null_lookup_join(&runtime, &output).await,
+        vec![
+            ("a".to_string(), None, 10, 100),
+            ("b".to_string(), Some("x".to_string()), 20, 200),
+        ]
+    );
+
+    // The nullable left identity moves from NULL to "y": the old output row
+    // must be retracted, not left behind as a stale pair.
+    source
+        .append_batch(
+            runtime.client(),
+            batch(&[
+                (1, "a", None, 10, "delete"),
+                (1, "a", Some("y"), 10, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_sum_count(&sum_view).await.unwrap().unwrap();
+    runtime.refresh_lookup_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        read_null_lookup_join(&runtime, &output).await,
+        vec![
+            ("a".to_string(), Some("y".to_string()), 10, 100),
+            ("b".to_string(), Some("x".to_string()), 20, 200),
+        ]
+    );
+
+    // A right-side update refreshes the row whose left identity is not a
+    // join key.
+    right
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                right.schema.clone(),
+                vec![
+                    Arc::new(StringArray::from(vec!["b"])),
+                    Arc::new(Int64Array::from(vec![250])),
+                    Arc::new(StringArray::from(vec!["insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_lookup_join(&view).await.unwrap().unwrap();
+    assert_eq!(
+        read_null_lookup_join(&runtime, &output).await,
+        vec![
+            ("a".to_string(), Some("y".to_string()), 10, 100),
+            ("b".to_string(), Some("x".to_string()), 20, 250),
         ]
     );
 }
