@@ -3381,3 +3381,48 @@ fn incompatible_file_types_map_to_datatype_mismatch() {
         PgWireError::ApiError(_)
     ));
 }
+
+/// A replan may only proceed when the client-visible result columns are
+/// unchanged: same names, same PostgreSQL types. Arrow-only differences
+/// (`Utf8` vs `Utf8View`, nullability) are not visible to the client.
+#[test]
+fn result_columns_compare_client_visible_types() {
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::DFSchema;
+    use datafusion::logical_expr::{EmptyRelation, LogicalPlan};
+
+    let plan = |fields: Vec<Field>| {
+        LogicalPlan::EmptyRelation(EmptyRelation {
+            produce_one_row: false,
+            schema: Arc::new(DFSchema::try_from(Schema::new(fields)).unwrap()),
+        })
+    };
+    let columns = |fields| super::result_columns(&plan(fields)).unwrap();
+
+    let int = columns(vec![Field::new("qty", DataType::Int32, false)]);
+    assert_eq!(
+        int,
+        columns(vec![Field::new("qty", DataType::Int32, true)]),
+        "nullability is not part of the row description"
+    );
+    assert_ne!(
+        int,
+        columns(vec![Field::new("qty", DataType::Int64, false)])
+    );
+    assert_ne!(
+        int,
+        columns(vec![Field::new("amount", DataType::Int32, false)])
+    );
+    assert_ne!(
+        int,
+        columns(vec![
+            Field::new("qty", DataType::Int32, false),
+            Field::new("note", DataType::Utf8, true),
+        ])
+    );
+    assert_eq!(
+        columns(vec![Field::new("label", DataType::Utf8, true)]),
+        columns(vec![Field::new("label", DataType::Utf8View, true)]),
+        "both are text to the client"
+    );
+}

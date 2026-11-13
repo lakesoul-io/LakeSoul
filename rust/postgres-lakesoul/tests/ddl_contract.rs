@@ -67,6 +67,7 @@ async fn ddl_create_and_drop_tables() -> Result<()> {
             alter_is_refused_in_a_batch_and_a_block(h).await?;
             alter_conflicts_with_a_block_written_against_the_old_definition(h).await?;
             alter_replans_prepared_statements(h).await?;
+            alter_keeps_described_result_types(h).await?;
             Ok(())
         })
     })
@@ -2215,6 +2216,100 @@ async fn alter_replans_prepared_statements(h: &Harness) -> Result<()> {
     );
     command(h, "DROP TABLE ddl_alter_replan").await?;
     command(h, "DROP TABLE ddl_alter_cross").await?;
+    Ok(())
+}
+
+/// A same-connection `ALTER TABLE` replans prepared statements, but a replan
+/// must not change a result the client already described: widening a
+/// selected column, or `SELECT *` gaining a column, is refused at Execute
+/// with PostgreSQL's `0A000` ("cached plan must not change result type")
+/// instead of sending INT8 rows to a client decoding INT4. A statement whose
+/// result is unchanged keeps working, and a fresh Prepare sees the new type.
+async fn alter_keeps_described_result_types(h: &Harness) -> Result<()> {
+    const CONTRACT: &str = "alter-keeps-described-result-types";
+    command(
+        h,
+        "CREATE TABLE ddl_alter_result (id BIGINT NOT NULL PRIMARY KEY, qty INT, \
+         label TEXT)",
+    )
+    .await?;
+    command(h, "INSERT INTO ddl_alter_result VALUES (1, 7, 'a')").await?;
+    let widened = h
+        .lake
+        .prepare("SELECT qty FROM ddl_alter_result WHERE id = 1")
+        .await
+        .with_context(|| format!("case={CONTRACT} prepare qty"))?;
+    let star = h
+        .lake
+        .prepare("SELECT * FROM ddl_alter_result WHERE id = 1")
+        .await
+        .with_context(|| format!("case={CONTRACT} prepare *"))?;
+    let unchanged = h
+        .lake
+        .prepare("SELECT label FROM ddl_alter_result WHERE id = 1")
+        .await
+        .with_context(|| format!("case={CONTRACT} prepare label"))?;
+    ensure!(
+        widened.columns()[0].type_() == &Type::INT4,
+        "case={CONTRACT}: qty is described as int4 before the ALTER"
+    );
+    let before: Option<i32> = h.lake.query_one(&widened, &[]).await?.get(0);
+    ensure!(
+        before == Some(7),
+        "case={CONTRACT}: qty before ALTER {before:?}"
+    );
+
+    command(
+        h,
+        "ALTER TABLE ddl_alter_result ALTER COLUMN qty TYPE BIGINT, \
+         ADD COLUMN note TEXT",
+    )
+    .await?;
+    for (what, statement) in [("widened column", &widened), ("SELECT *", &star)] {
+        // Twice: the refusal does not let a later Execute through.
+        for attempt in 1..=2 {
+            let error = h
+                .lake
+                .query(statement, &[])
+                .await
+                .expect_err("a changed result type must be refused");
+            ensure_server_sqlstate(
+                &error,
+                "0A000",
+                &format!("case={CONTRACT} {what} attempt={attempt}"),
+            )?;
+        }
+    }
+    let label: Option<String> = h
+        .lake
+        .query_one(&unchanged, &[])
+        .await
+        .with_context(|| format!("case={CONTRACT}: an unchanged result replans"))?
+        .get(0);
+    ensure!(
+        label.as_deref() == Some("a"),
+        "case={CONTRACT}: unchanged statement after ALTER, actual {label:?}"
+    );
+    let fresh = h
+        .lake
+        .prepare("SELECT qty FROM ddl_alter_result WHERE id = 1")
+        .await
+        .with_context(|| format!("case={CONTRACT} re-prepare"))?;
+    ensure!(
+        fresh.columns()[0].type_() == &Type::INT8,
+        "case={CONTRACT}: a fresh Prepare describes int8, actual {}",
+        fresh.columns()[0].type_()
+    );
+    let after: Option<i64> = h.lake.query_one(&fresh, &[]).await?.get(0);
+    ensure!(
+        after == Some(7),
+        "case={CONTRACT}: qty after ALTER {after:?}"
+    );
+    command(h, "DROP TABLE ddl_alter_result").await?;
+    eprintln!(
+        "PASS case={CONTRACT} widened=0A000 star=0A000 unchanged=replanned \
+         fresh=int8"
+    );
     Ok(())
 }
 
