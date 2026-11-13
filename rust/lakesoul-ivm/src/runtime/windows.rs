@@ -2419,36 +2419,17 @@ impl IvmRuntime {
                     .union(old_parts)?
                     .distinct()?
             };
-            let null_part = view
-                .partition_keys
-                .iter()
-                .map(|key| col(key.as_str()).is_null())
-                .reduce(|left, right| left.or(right))
-                .ok_or_else(|| report!("window view has no partition keys"))?;
-            if count_frame_rows(affected.clone().filter(null_part)?).await? == 0 {
-                self.lookup_source_by_join_keys(
-                    &context,
-                    &state,
-                    affected,
-                    &view.partition_keys,
-                    &view.partition_keys,
-                    true,
-                )
-                .await?
-            } else {
-                match mv_partitions {
-                    Some(restriction) => {
-                        self.current_table_frame_filtered_partitions(
-                            &context,
-                            &state,
-                            Vec::new(),
-                            &restriction,
-                        )
-                        .await?
-                    }
-                    None => self.current_table_frame(&context, &state)?,
-                }
-            }
+            // A partition key may be NULL; the keyed lookup matches it with
+            // the NULL partition instead of scanning the whole state.
+            self.lookup_source_by_join_keys_null_safe(
+                &context,
+                &state,
+                affected,
+                &view.partition_keys,
+                &view.partition_keys,
+                true,
+            )
+            .await?
         };
         phase_done!("mv_lookup");
         context.register_table("delta", delta.clone().into_view())?;
@@ -2501,25 +2482,15 @@ impl IvmRuntime {
             match affected {
                 None => self.current_table_frame(&context, rank)?,
                 Some(affected) => {
-                    let null_part = view
-                        .partition_keys
-                        .iter()
-                        .map(|key| col(key.as_str()).is_null())
-                        .reduce(|left, right| left.or(right))
-                        .ok_or_else(|| report!("window view has no partition keys"))?;
-                    if count_frame_rows(affected.clone().filter(null_part)?).await? == 0 {
-                        self.lookup_source_by_join_keys(
-                            &context,
-                            rank,
-                            affected,
-                            &view.partition_keys,
-                            &view.partition_keys,
-                            true,
-                        )
-                        .await?
-                    } else {
-                        self.current_table_frame(&context, rank)?
-                    }
+                    self.lookup_source_by_join_keys_null_safe(
+                        &context,
+                        rank,
+                        affected,
+                        &view.partition_keys,
+                        &view.partition_keys,
+                        true,
+                    )
+                    .await?
                 }
             }
         } else {
@@ -3706,36 +3677,17 @@ impl IvmRuntime {
                     .union(old_groups)?
                     .distinct()?
             };
-            let null_group = view
-                .group_keys
-                .iter()
-                .map(|key| col(key.as_str()).is_null())
-                .reduce(|left, right| left.or(right))
-                .ok_or_else(|| report!("top-k view has no group keys"))?;
-            if count_frame_rows(affected.clone().filter(null_group)?).await? == 0 {
-                self.lookup_source_by_join_keys(
-                    &context,
-                    &state,
-                    affected,
-                    &view.group_keys,
-                    &view.group_keys,
-                    true,
-                )
-                .await?
-            } else {
-                match mv_partitions {
-                    Some(restriction) => {
-                        self.current_table_frame_filtered_partitions(
-                            &context,
-                            &state,
-                            Vec::new(),
-                            &restriction,
-                        )
-                        .await?
-                    }
-                    None => self.current_table_frame(&context, &state)?,
-                }
-            }
+            // A group key may be NULL; the keyed lookup matches it with the
+            // NULL group instead of scanning the whole state.
+            self.lookup_source_by_join_keys_null_safe(
+                &context,
+                &state,
+                affected,
+                &view.group_keys,
+                &view.group_keys,
+                true,
+            )
+            .await?
         };
         context.register_table("delta", delta.clone().into_view())?;
         // The SQL below scans `mv` twice (`already` and `active`).  A lazy
@@ -3799,26 +3751,15 @@ impl IvmRuntime {
             match affected {
                 None => self.current_table_frame(&context, rank)?,
                 Some(affected) => {
-                    let null_group = view
-                        .group_keys
-                        .iter()
-                        .map(|key| col(key.as_str()).is_null())
-                        .reduce(|left, right| left.or(right))
-                        .ok_or_else(|| report!("top-k view has no group keys"))?;
-                    if count_frame_rows(affected.clone().filter(null_group)?).await? == 0
-                    {
-                        self.lookup_source_by_join_keys(
-                            &context,
-                            rank,
-                            affected,
-                            &view.group_keys,
-                            &view.group_keys,
-                            true,
-                        )
-                        .await?
-                    } else {
-                        self.current_table_frame(&context, rank)?
-                    }
+                    self.lookup_source_by_join_keys_null_safe(
+                        &context,
+                        rank,
+                        affected,
+                        &view.group_keys,
+                        &view.group_keys,
+                        true,
+                    )
+                    .await?
                 }
             }
         } else {

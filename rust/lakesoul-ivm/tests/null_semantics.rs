@@ -23,8 +23,8 @@ use lakesoul_ivm::{
     IVM_VALUE_COLUMN, IvmRuntime, IvmTable, IvmTableOptions, JoinView, MinMaxKind,
     MinMaxView, SemiAntiView, SumCountView, WindowView, distinct_agg_mv_schema_for,
     join_view_schema_for, min_max_mv_schema_for, nullable_join_key_schema,
-    semi_anti_mv_schema, sum_count_mv_schema_for, value_count_state_schema_for,
-    window_mv_schema_for,
+    semi_anti_mv_schema, state_partition_stats, sum_count_mv_schema_for,
+    value_count_state_schema_for, window_mv_schema_for,
 };
 use tempfile::tempdir;
 
@@ -256,6 +256,11 @@ async fn null_group_keys_sum_count() {
         read_null_sum_state(&runtime, &mv).await,
         HashMap::from([(None, (Some(10), 2)), (Some("a".to_string()), (Some(5), 2)),])
     );
+    // A NULL group must use the keyed MV lookup, not a full scan.
+    assert!(
+        state_partition_stats(&mv.table_id).is_some(),
+        "the NULL group did not use the keyed MV lookup"
+    );
 
     // An upsert retracts the old amount; the delete empties one NULL row.
     source
@@ -303,6 +308,175 @@ async fn null_group_keys_sum_count() {
     assert_eq!(
         read_null_sum_state(&runtime, &mv).await,
         full_null_sum(&runtime, &source).await
+    );
+}
+
+/// The `(grouping index, group key, sum, count)` rows of a grouping-sets MV.
+async fn read_null_grouping_sets(
+    runtime: &IvmRuntime,
+    mv: &IvmTable,
+) -> Vec<(i64, Option<String>, i64, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql("select \"__ivm_grouping\", g, sum_v, count_v from mv")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in batches {
+        let schema = batch.schema();
+        let grouping = batch
+            .column(schema.index_of("__ivm_grouping").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let keys = batch
+            .column(schema.index_of("g").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(schema.index_of("sum_v").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let counts = batch
+            .column(schema.index_of("count_v").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                grouping.value(row),
+                if keys.is_null(row) {
+                    None
+                } else {
+                    Some(keys.value(row).to_string())
+                },
+                sums.value(row),
+                counts.value(row),
+            ));
+        }
+    }
+    rows.sort();
+    rows
+}
+
+#[test_log::test(tokio::test)]
+async fn null_group_keys_grouping_sets() {
+    use lakesoul_ivm::{grouping_sets_mv_schema_for, runtime::GroupingSetsView};
+
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_null_gs_src_{suffix}"),
+                table_path(&dir, "src"),
+                sum_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let group_keys = vec!["g".to_string()];
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_null_gs_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                grouping_sets_mv_schema_for(
+                    &source.schema,
+                    &group_keys,
+                    &[],
+                    Some("amount"),
+                    None,
+                    false,
+                    &[],
+                    &[],
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["__ivm_grouping".to_string(), "g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let view = GroupingSetsView::new(
+        format!("null_gs_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        group_keys,
+        vec![vec![0], vec![]],
+        Some("amount".to_string()),
+    );
+
+    // Two rows of the NULL group and one "a" row.  The NULL group and the
+    // grand total both carry a NULL value in `g`; the grouping index tells
+    // them apart.
+    source
+        .append_batch(
+            runtime.client(),
+            sum_batch(&[
+                (1, None, Some(10), "insert"),
+                (2, Some("a"), Some(5), "insert"),
+                (3, None, Some(2), "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_grouping_sets(&view).await.unwrap().unwrap();
+    assert_eq!(
+        read_null_grouping_sets(&runtime, &mv).await,
+        vec![
+            (0, None, 12, 2),
+            (0, Some("a".to_string()), 5, 1),
+            (1, None, 17, 3),
+        ]
+    );
+    assert!(
+        state_partition_stats(&mv.table_id).is_some(),
+        "the NULL group did not use the keyed MV lookup"
+    );
+
+    // An update of a NULL-group row and a delete of the other one: the NULL
+    // group is rewritten through the keyed lookup.
+    source
+        .append_batch(
+            runtime.client(),
+            sum_batch(&[
+                (1, None, Some(10), "delete"),
+                (1, None, Some(20), "insert"),
+                (3, None, Some(2), "delete"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_grouping_sets(&view).await.unwrap().unwrap();
+    assert_eq!(
+        read_null_grouping_sets(&runtime, &mv).await,
+        vec![
+            (0, None, 20, 1),
+            (0, Some("a".to_string()), 5, 1),
+            (1, None, 25, 2),
+        ]
+    );
+
+    runtime.rebuild_grouping_sets(&view).await.unwrap();
+    assert_eq!(
+        read_null_grouping_sets(&runtime, &mv).await,
+        vec![
+            (0, None, 20, 1),
+            (0, Some("a".to_string()), 5, 1),
+            (1, None, 25, 2),
+        ]
     );
 }
 
@@ -667,6 +841,12 @@ async fn null_values_min_max_and_distinct() {
             read_i64_value(runtime, &fixture.sum_mv).await,
         ),
         (Some("bob".to_string()), Some(1), Some(5),)
+    );
+    // The value-count state and MV lookups are keyed even when the group key
+    // is NULL.
+    assert!(
+        state_partition_stats(&fixture.min_mv.table_id).is_some(),
+        "the NULL value group did not use the keyed MV lookup"
     );
 
     // Deleting the only non-NULL rows leaves the group on NULL values only:
@@ -1608,6 +1788,11 @@ async fn null_window_partition_keys() {
     assert_eq!(
         read_window_rows(&runtime, &mv).await,
         full_window_rows(&runtime, &source).await
+    );
+    // A NULL partition must use the keyed state lookup, not a full scan.
+    assert!(
+        state_partition_stats(&mv.table_id).is_some(),
+        "the NULL window partition did not use the keyed MV lookup"
     );
 
     // A new row renumbers only the NULL partition.

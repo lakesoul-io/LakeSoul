@@ -1439,8 +1439,8 @@ impl IvmRuntime {
             for (index, step) in view.steps.iter().enumerate() {
                 let table = &view.sources[index + 1].0;
                 let columns = lookup_chain_source_columns(view, index + 1, &context)?;
-                let now = self
-                    .lookup_source_by_join_keys(
+                let now = if view.null_safe {
+                    self.lookup_source_by_join_keys_null_safe(
                         &context,
                         table,
                         affected.clone(),
@@ -1448,7 +1448,18 @@ impl IvmRuntime {
                         &step.right_keys,
                         true,
                     )
-                    .await?;
+                    .await?
+                } else {
+                    self.lookup_source_by_join_keys(
+                        &context,
+                        table,
+                        affected.clone(),
+                        &step.keys,
+                        &step.right_keys,
+                        true,
+                    )
+                    .await?
+                };
                 frames[index + 1].2 = project_frame(now, &columns)?;
             }
             now_frames = frames
@@ -1847,8 +1858,8 @@ impl IvmRuntime {
                         let (table, _) = &view.sources[index + 1];
                         let columns =
                             lookup_chain_source_columns(view, index + 1, &context)?;
-                        let now = self
-                            .lookup_source_by_join_keys(
+                        let now = if view.null_safe {
+                            self.lookup_source_by_join_keys_null_safe(
                                 &context,
                                 table,
                                 affected.clone(),
@@ -1856,7 +1867,18 @@ impl IvmRuntime {
                                 &step.right_keys,
                                 true,
                             )
-                            .await?;
+                            .await?
+                        } else {
+                            self.lookup_source_by_join_keys(
+                                &context,
+                                table,
+                                affected.clone(),
+                                &step.keys,
+                                &step.right_keys,
+                                true,
+                            )
+                            .await?
+                        };
                         frames.push(project_frame(now, &columns)?);
                     }
                     let frame = lookup_chain_replay(

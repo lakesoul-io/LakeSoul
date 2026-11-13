@@ -630,6 +630,7 @@ fn lookup_ordering(schema: &Schema, key: &PkLookupKey) -> DataFusionResult<LexOr
         PkLookupKey::Columns {
             input_columns,
             table_columns,
+            ..
         } => mapped_input_columns(input_columns, table_columns),
         PkLookupKey::BinaryRow { column } => vec![column.clone()],
     };
@@ -798,10 +799,29 @@ pub(crate) enum PkLookupKey {
     Columns {
         input_columns: Vec<String>,
         table_columns: Vec<String>,
+        /// Whether a NULL key matches a NULL table row.
+        ///
+        /// Group keys and window partition keys may be NULL (SQL groups NULLs
+        /// together), so their identity lookups are null-safe.  A strict SQL
+        /// join probe (`a.k = b.k`) keeps NULLs apart, and its contribution
+        /// rows with a NULL key are dropped before the lookup.
+        #[serde(default)]
+        null_safe: bool,
     },
 }
 
 impl PkLookupKey {
+    /// Whether a NULL key matches a NULL table row.
+    fn null_safe(&self) -> bool {
+        matches!(
+            self,
+            Self::Columns {
+                null_safe: true,
+                ..
+            }
+        )
+    }
+
     /// The same key expressed on the table side.  Contribution and table
     /// columns can have different names for a differently-named join key.
     fn for_table(&self) -> Self {
@@ -809,9 +829,14 @@ impl PkLookupKey {
             Self::BinaryRow { column } => Self::BinaryRow {
                 column: column.clone(),
             },
-            Self::Columns { table_columns, .. } => Self::Columns {
+            Self::Columns {
+                table_columns,
+                null_safe,
+                ..
+            } => Self::Columns {
                 input_columns: table_columns.clone(),
                 table_columns: table_columns.clone(),
+                null_safe: *null_safe,
             },
         }
     }
@@ -932,24 +957,25 @@ fn key_filter_exprs(
         PkLookupKey::Columns {
             input_columns,
             table_columns,
+            null_safe,
         } => {
             let input_columns = mapped_input_columns(input_columns, table_columns);
             let mut rows = Vec::new();
+            let mut null_columns = vec![false; input_columns.len()];
             for row in 0..batch.num_rows() {
                 let mut values = Vec::with_capacity(input_columns.len());
-                let mut null = false;
-                for column in &input_columns {
+                for (index, column) in input_columns.iter().enumerate() {
                     let index = batch.schema().index_of(column)?;
-                    if batch.column(index).is_null(row) {
-                        null = true;
-                        break;
+                    let value =
+                        ScalarValue::try_from_array(batch.column(index).as_ref(), row)?;
+                    if value.is_null() {
+                        null_columns[index] = true;
                     }
-                    values.push(ScalarValue::try_from_array(
-                        batch.column(index).as_ref(),
-                        row,
-                    )?);
+                    values.push(value);
                 }
-                if !null {
+                // A strict probe never looks up a NULL key (SQL `=` does not
+                // match NULL); an identity lookup includes the NULL group.
+                if *null_safe || values.iter().all(|value| !value.is_null()) {
                     rows.push(values);
                 }
             }
@@ -957,16 +983,24 @@ fn key_filter_exprs(
                 return Ok(PkFilters::Pushdown(Vec::new()));
             }
             if table_columns.len() == 1 {
+                let mut filters = Vec::new();
+                if null_columns[0] {
+                    filters.push(col(table_columns[0].as_str()).is_null());
+                }
                 let list = rows
                     .into_iter()
-                    .map(|mut values| lit(values.remove(0)))
+                    .filter_map(|mut values| {
+                        let value = values.remove(0);
+                        (!value.is_null()).then(|| lit(value))
+                    })
                     .collect::<Vec<_>>();
                 if list.len() > PK_LOOKUP_IN_LIST_LIMIT {
                     return Ok(PkFilters::ScanAll);
                 }
-                return Ok(PkFilters::Pushdown(vec![
-                    col(table_columns[0].as_str()).in_list(list, false),
-                ]));
+                if !list.is_empty() {
+                    filters.push(col(table_columns[0].as_str()).in_list(list, false));
+                }
+                return Ok(PkFilters::Pushdown(filters));
             }
             // A composite key must not become one OR term per contribution
             // row: the state reader evaluates the filter against every state
@@ -978,10 +1012,16 @@ fn key_filter_exprs(
             let mut values_by_column = vec![Vec::new(); table_columns.len()];
             for values in rows {
                 for (index, value) in values.into_iter().enumerate() {
-                    values_by_column[index].push(value);
+                    if !value.is_null() {
+                        values_by_column[index].push(value);
+                    }
                 }
             }
-            if values_by_column.iter().any(|values| values.is_empty()) {
+            if values_by_column
+                .iter()
+                .enumerate()
+                .any(|(index, values)| values.is_empty() && !null_columns[index])
+            {
                 return Ok(PkFilters::Pushdown(vec![lit(false)]));
             }
             // If one key column already exceeds the cheap IN-list bound,
@@ -998,18 +1038,24 @@ fn key_filter_exprs(
             // Apply all key columns, not only the shortest IN list.  The
             // reader still performs the exact Arrow-row match, but the
             // conjunctive filters keep the state rows read for a composite
-            // chunk close to the contribution cardinality.
-            Ok(PkFilters::Pushdown(
-                values_by_column
-                    .into_iter()
-                    .enumerate()
-                    .filter(|(_, values)| !values.is_empty())
-                    .map(|(index, values)| {
-                        col(table_columns[index].as_str())
-                            .in_list(values.into_iter().map(lit).collect(), false)
-                    })
-                    .collect(),
-            ))
+            // chunk close to the contribution cardinality.  A NULL key adds
+            // an `IS NULL` term; a column with only NULL keys drops its IN
+            // list.
+            let mut filters = Vec::with_capacity(table_columns.len());
+            for (index, values) in values_by_column.into_iter().enumerate() {
+                let column = col(table_columns[index].as_str());
+                let null_term = null_columns[index].then(|| column.clone().is_null());
+                let list = (!values.is_empty()).then(|| {
+                    column.in_list(values.into_iter().map(lit).collect(), false)
+                });
+                match (null_term, list) {
+                    (Some(null_term), Some(list)) => filters.push(null_term.or(list)),
+                    (Some(null_term), None) => filters.push(null_term),
+                    (None, Some(list)) => filters.push(list),
+                    (None, None) => {}
+                }
+            }
+            Ok(PkFilters::Pushdown(filters))
         }
     }
 }
@@ -1044,6 +1090,7 @@ fn key_rows(
         PkLookupKey::Columns {
             input_columns,
             table_columns,
+            null_safe,
         } => {
             let input_columns = mapped_input_columns(input_columns, table_columns);
             let fields = table_columns
@@ -1092,15 +1139,17 @@ fn key_rows(
                     }
                 })
                 .collect::<DataFusionResult<Vec<ArrayRef>>>()?;
-            let nulls = (0..batch.num_rows())
-                .map(|row| arrays.iter().any(|array| array.is_null(row)))
-                .collect::<Vec<_>>();
             let rows = converter
                 .convert_columns(&arrays)
                 .map_err(|error| DataFusionError::Execution(error.to_string()))?;
             Ok((0..batch.num_rows())
                 .map(|row| {
-                    if nulls[row] {
+                    let null = arrays.iter().any(|array| array.is_null(row));
+                    // A strict probe drops NULL keys: SQL `=` never matches
+                    // NULL.  An identity lookup keeps the row; the Arrow row
+                    // bytes encode the NULL and match the same bytes on the
+                    // state side.
+                    if null && !*null_safe {
                         None
                     } else {
                         Some(rows.row(row).as_ref().to_vec())
@@ -1608,6 +1657,7 @@ fn build_persistent_join(
         PkLookupKey::Columns {
             input_columns,
             table_columns,
+            ..
         } => (
             table_columns.clone(),
             mapped_input_columns(input_columns, table_columns),
@@ -1647,6 +1697,15 @@ fn build_persistent_join(
     } else {
         JoinType::Inner
     };
+    // An identity lookup for a nullable group/partition key must match NULL
+    // with NULL; a strict join probe keeps them apart.  Both inputs are sorted
+    // with `SortOptions::default()` (NULLs first), the order the writer and
+    // the per-file index use.
+    let null_equality = if key.null_safe() {
+        NullEquality::NullEqualsNull
+    } else {
+        NullEquality::NullEqualsNothing
+    };
     let join = SortMergeJoinExec::try_new(
         state_stream,
         contribution_input,
@@ -1654,7 +1713,7 @@ fn build_persistent_join(
         None,
         join_type,
         sort_options,
-        NullEquality::NullEqualsNothing,
+        null_equality,
     )?;
     let state_field_count = state_schema.fields().len();
     let contribution_field_count = contribution_schema.fields().len();
@@ -1764,6 +1823,7 @@ impl IvmPkLookupExec {
         input_columns: Vec<String>,
         table_columns: Vec<String>,
         bucket_count: usize,
+        null_safe: bool,
     ) -> DataFusionResult<Self> {
         Self::new_with_key(
             input,
@@ -1772,6 +1832,7 @@ impl IvmPkLookupExec {
             PkLookupKey::Columns {
                 input_columns,
                 table_columns,
+                null_safe,
             },
             bucket_count,
         )
@@ -2324,6 +2385,7 @@ pub(crate) fn partition_pairs_for_key(
         PkLookupKey::Columns {
             input_columns,
             table_columns,
+            ..
         } => partitions
             .iter()
             .map(|partition| {
@@ -2463,6 +2525,7 @@ impl IvmLookupTable {
             key: PkLookupKey::Columns {
                 input_columns,
                 table_columns,
+                null_safe: false,
             },
             bucket_count,
             route_columns,
@@ -2508,6 +2571,15 @@ impl IvmLookupTable {
     /// partitions.  The plan then skips the contribution collect and filter.
     pub(crate) fn with_prepruned_groups(mut self) -> Self {
         self.prepruned = true;
+        self
+    }
+
+    /// Match NULL keys with NULL rows (a grouped/partitioned identity lookup)
+    /// instead of dropping them (a strict join probe).
+    pub(crate) fn with_null_safe(mut self, null_safe: bool) -> Self {
+        if let PkLookupKey::Columns { null_safe: key, .. } = &mut self.key {
+            *key = null_safe;
+        }
         self
     }
 
@@ -3111,6 +3183,7 @@ impl ExtensionPlanner for IvmKeyedLookupExtensionPlanner {
             PkLookupKey::Columns {
                 input_columns,
                 table_columns,
+                null_safe,
             } => IvmPkLookupExec::new_with_columns(
                 input,
                 spec.table.clone(),
@@ -3118,6 +3191,7 @@ impl ExtensionPlanner for IvmKeyedLookupExtensionPlanner {
                 input_columns,
                 table_columns,
                 spec.bucket_count,
+                null_safe,
             )?,
         };
         Ok(Some(Arc::new(
@@ -3559,10 +3633,49 @@ mod tests {
         let key = PkLookupKey::Columns {
             input_columns: vec!["k".to_string()],
             table_columns: vec!["k".to_string()],
+            null_safe: false,
         };
         let rows = key_rows(&batch, &key, &table_schema).unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].is_some());
+    }
+
+    #[test]
+    fn a_null_safe_key_encodes_the_null_group() {
+        let table_schema =
+            Arc::new(Schema::new(vec![Field::new("g", DataType::Utf8, true)]));
+        let batch = RecordBatch::try_new(
+            table_schema.clone(),
+            vec![Arc::new(StringArray::from(vec![
+                Some("a"),
+                None,
+                Some("a"),
+                None,
+            ]))],
+        )
+        .unwrap();
+
+        let strict = PkLookupKey::Columns {
+            input_columns: vec!["g".to_string()],
+            table_columns: vec!["g".to_string()],
+            null_safe: false,
+        };
+        let rows = key_rows(&batch, &strict, &table_schema).unwrap();
+        assert_eq!(rows.len(), 4);
+        assert!(rows[0].is_some());
+        assert!(rows[1].is_none());
+        assert!(rows[3].is_none());
+
+        let null_safe = PkLookupKey::Columns {
+            input_columns: vec!["g".to_string()],
+            table_columns: vec!["g".to_string()],
+            null_safe: true,
+        };
+        let rows = key_rows(&batch, &null_safe, &table_schema).unwrap();
+        assert!(rows.iter().all(Option::is_some));
+        assert_eq!(rows[0], rows[2]);
+        assert_eq!(rows[1], rows[3]);
+        assert_ne!(rows[0], rows[1]);
     }
 
     #[test]
@@ -3695,6 +3808,7 @@ mod tests {
         let key = PkLookupKey::Columns {
             input_columns: vec!["a".to_string(), "b".to_string()],
             table_columns: vec!["a".to_string(), "b".to_string()],
+            null_safe: false,
         };
         let PkFilters::Pushdown(filters) = key_filter_exprs(&batch, &key).unwrap() else {
             panic!("small composite key should use pushed-down filters");
@@ -3725,6 +3839,7 @@ mod tests {
         let key = PkLookupKey::Columns {
             input_columns: vec!["a".to_string(), "b".to_string()],
             table_columns: vec!["a".to_string(), "b".to_string()],
+            null_safe: false,
         };
         assert!(matches!(
             key_filter_exprs(&batch, &key).unwrap(),
@@ -3771,6 +3886,7 @@ mod tests {
             &PkLookupKey::Columns {
                 input_columns: vec!["a".into(), "b".into()],
                 table_columns: vec!["a".into(), "b".into()],
+                null_safe: false,
             },
             false,
             true,

@@ -119,6 +119,23 @@ async fn internal_table_supports_null_merge_keys() {
         vec![(None, 4), (Some("a".to_string()), 2)]
     );
 
+    // Compaction rewrites the logical state; the NULL merge key must survive
+    // and keep merging with later rows.
+    let client = runtime.client().clone();
+    table.compact(&client).await.unwrap();
+    assert_eq!(
+        read_rows(&runtime, &table).await,
+        vec![(None, 4), (Some("a".to_string()), 2)]
+    );
+    table
+        .append_batch(runtime.client(), batch(&[(None, 5, "insert")]))
+        .await
+        .unwrap();
+    assert_eq!(
+        read_rows(&runtime, &table).await,
+        vec![(None, 5), (Some("a".to_string()), 2)]
+    );
+
     runtime
         .client()
         .drop_table(&table.table_name, "default")

@@ -4649,6 +4649,10 @@ impl IvmRuntime {
     /// Read a source/MV as the keyed state for a join.  The contribution keys
     /// are matched to real table PK columns with `arrow::Row`; bucket routing
     /// uses the table's writer bucket columns when they are part of the key.
+    ///
+    /// A NULL key never matches: SQL `=` keeps NULLs apart.  Group keys and
+    /// window partition keys group NULLs together, so their identity lookups
+    /// use [`Self::lookup_source_by_join_keys_null_safe`].
     #[doc(hidden)]
     pub async fn lookup_source_by_join_keys(
         &self,
@@ -4658,6 +4662,56 @@ impl IvmRuntime {
         input_columns: &[String],
         table_columns: &[String],
         multi_match: bool,
+    ) -> Result<DataFrame> {
+        self.lookup_source_by_join_keys_with_null_safe(
+            context,
+            table,
+            contribution,
+            input_columns,
+            table_columns,
+            multi_match,
+            false,
+        )
+        .await
+    }
+
+    /// Like [`Self::lookup_source_by_join_keys`], but a NULL key matches a
+    /// NULL row (`IS NOT DISTINCT FROM`).
+    ///
+    /// Used for the identity lookups of nullable group and window partition
+    /// keys, whose state/MV rows are keyed by those columns.
+    #[doc(hidden)]
+    pub async fn lookup_source_by_join_keys_null_safe(
+        &self,
+        context: &SessionContext,
+        table: &IvmTable,
+        contribution: DataFrame,
+        input_columns: &[String],
+        table_columns: &[String],
+        multi_match: bool,
+    ) -> Result<DataFrame> {
+        self.lookup_source_by_join_keys_with_null_safe(
+            context,
+            table,
+            contribution,
+            input_columns,
+            table_columns,
+            multi_match,
+            true,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn lookup_source_by_join_keys_with_null_safe(
+        &self,
+        context: &SessionContext,
+        table: &IvmTable,
+        contribution: DataFrame,
+        input_columns: &[String],
+        table_columns: &[String],
+        multi_match: bool,
+        null_safe: bool,
     ) -> Result<DataFrame> {
         if crate::config::options().distributed_keyed_local
             && crate::config::session_factory().is_some()
@@ -4687,6 +4741,7 @@ impl IvmRuntime {
                     table_columns,
                     multi_match,
                     None,
+                    null_safe,
                 )
                 .await?;
             let schema = Arc::new(local_rows.schema().as_arrow().clone());
@@ -4708,6 +4763,7 @@ impl IvmRuntime {
             table_columns,
             multi_match,
             None,
+            null_safe,
         )
         .await
     }
@@ -4725,6 +4781,7 @@ impl IvmRuntime {
         table_columns: &[String],
         multi_match: bool,
         partitions: &[(String, Vec<String>)],
+        null_safe: bool,
     ) -> Result<DataFrame> {
         // The restriction is only sound when the lookup key determines the
         // partition.  A caller that cannot guarantee it gets the full read.
@@ -4734,13 +4791,14 @@ impl IvmRuntime {
             .all(|column| table_columns.contains(column))
         {
             return self
-                .lookup_source_by_join_keys(
+                .lookup_source_by_join_keys_with_null_safe(
                     context,
                     table,
                     contribution,
                     input_columns,
                     table_columns,
                     multi_match,
+                    null_safe,
                 )
                 .await;
         }
@@ -4757,6 +4815,7 @@ impl IvmRuntime {
             table_columns,
             multi_match,
             Some(partitions),
+            null_safe,
         )
         .await
     }
@@ -4771,6 +4830,7 @@ impl IvmRuntime {
         table_columns: &[String],
         multi_match: bool,
         partitions: Option<&[(String, Vec<String>)]>,
+        null_safe: bool,
     ) -> Result<DataFrame> {
         use super::keyed_plan::{
             IVM_STATE_COLUMN_PREFIX, IvmLookupTable, groups_by_bucket,
@@ -4815,6 +4875,7 @@ impl IvmRuntime {
         let partition_key = super::keyed_plan::PkLookupKey::Columns {
             input_columns: input_columns.to_vec(),
             table_columns: table_columns.to_vec(),
+            null_safe,
         };
         let (routed, inferred, materialized) = match partitions {
             Some(_) => (routed, None, false),
@@ -4862,7 +4923,8 @@ impl IvmRuntime {
             bucket_count,
             route_columns,
             multi_match,
-        );
+        )
+        .with_null_safe(null_safe);
         let provider = if materialized || partitions.is_some() {
             provider.with_prepruned_groups()
         } else {
@@ -5006,6 +5068,8 @@ impl IvmRuntime {
         let key = super::keyed_plan::PkLookupKey::Columns {
             input_columns: input_columns.to_vec(),
             table_columns: table_columns.to_vec(),
+            // Join output pairs are keyed by non-nullable source identities.
+            null_safe: false,
         };
         let (input, inferred, materialized) = self
             .materialize_for_partitions(

@@ -2581,7 +2581,7 @@ impl IvmRuntime {
         crate::runtime::trace_rss("sum_count old_frame");
 
         let mut keyed_mv: Option<DataFrame> = None;
-        let mut active_keyed =
+        let active_keyed =
             view.having.is_none() && view.mv.primary_keys == view.group_keys;
         if active_keyed {
             let key_exprs = view
@@ -2595,34 +2595,21 @@ impl IvmRuntime {
                     .union(old_frame.clone().select(key_exprs)?.distinct()?)?
                     .distinct()?;
             }
-            // The shared PK lookup treats NULL keys as "no lookup", while a
-            // grouped aggregate here can legitimately have a NULL group key.
-            // Fall back to the full MV scan for those windows.
-            let null_key = view
-                .group_keys
-                .iter()
-                .map(|key| col(key.as_str()).is_null())
-                .reduce(|left, right| left.or(right))
-                .ok_or_else(|| report!("sum/count view has no group keys"))?;
-            let null_rows = count_frame_rows(affected.clone().filter(null_key)?).await?;
-            if null_rows == 0 {
-                keyed_mv = Some(affected.clone());
-                let active = self
-                    .lookup_source_by_join_keys(
-                        &context,
-                        &view.mv,
-                        affected,
-                        &view.group_keys,
-                        &view.mv.primary_keys,
-                        true,
-                    )
-                    .await?;
-                let active =
-                    cast_frame_columns(active, &view.mv.schema, &view.group_keys)?;
-                context.register_table("active_input", active.into_view())?;
-            } else {
-                active_keyed = false;
-            }
+            // A group key may be NULL; the keyed lookup matches it with the
+            // NULL group instead of falling back to a full MV scan.
+            keyed_mv = Some(affected.clone());
+            let active = self
+                .lookup_source_by_join_keys_null_safe(
+                    &context,
+                    &view.mv,
+                    affected,
+                    &view.group_keys,
+                    &view.mv.primary_keys,
+                    true,
+                )
+                .await?;
+            let active = cast_frame_columns(active, &view.mv.schema, &view.group_keys)?;
+            context.register_table("active_input", active.into_view())?;
         }
         context.register_table("delta", delta.into_view())?;
         if keyed && !changelog {
@@ -2640,7 +2627,7 @@ impl IvmRuntime {
             context.register_table("src", src.into_view())?;
         }
         let mv = if let Some(affected) = keyed_mv {
-            self.lookup_source_by_join_keys(
+            self.lookup_source_by_join_keys_null_safe(
                 &context,
                 &view.mv,
                 affected,
@@ -2810,7 +2797,7 @@ impl IvmRuntime {
         };
         context.register_table("old", old.clone().into_view())?;
         let mut index_pks: Option<DataFrame> = None;
-        let mut fallback_full = set_indexes.is_empty();
+        let fallback_full = set_indexes.is_empty();
         if !fallback_full {
             for (spec, index) in &set_indexes {
                 let key_exprs = spec
@@ -2824,16 +2811,6 @@ impl IvmRuntime {
                     .distinct()?
                     .union(old.clone().select(key_exprs)?.distinct()?)?
                     .distinct()?;
-                let null_key = spec
-                    .keys
-                    .iter()
-                    .map(|key| col(key.as_str()).is_null())
-                    .reduce(|left, right| left.or(right))
-                    .ok_or_else(|| report!("grouping-sets view has no group keys"))?;
-                if count_frame_rows(affected.clone().filter(null_key)?).await? > 0 {
-                    fallback_full = true;
-                    break;
-                }
                 let pks = if let Some(index) = index {
                     commit_ids.extend(
                         self.update_narrow_group_index(
@@ -2858,7 +2835,7 @@ impl IvmRuntime {
                     .await?
                 } else {
                     let rows = self
-                        .lookup_source_by_join_keys(
+                        .lookup_source_by_join_keys_null_safe(
                             &context,
                             &view.source,
                             affected,
@@ -2919,52 +2896,45 @@ impl IvmRuntime {
                 .distinct()?
                 .union(old.select(key_exprs)?.distinct()?)?
                 .distinct()?;
-            let null_key = view
-                .group_keys
-                .iter()
-                .map(|key| col(key.as_str()).is_null())
-                .reduce(|left, right| left.or(right))
-                .ok_or_else(|| report!("grouping-sets view has no group keys"))?;
-            if count_frame_rows(affected_keys.clone().filter(null_key)?).await? > 0 {
-                self.current_table_frame(&context, &view.mv)?
-            } else {
-                let mut keyed: Option<DataFrame> = None;
-                for (index, set) in view.groupings.iter().enumerate() {
-                    let columns = set
-                        .iter()
-                        .map(|position| view.group_keys[*position].clone())
-                        .collect::<Vec<_>>();
-                    let mut contribution = affected_keys
-                        .clone()
-                        .select(
-                            columns
-                                .iter()
-                                .map(|key| col(key.as_str()))
-                                .collect::<Vec<_>>(),
-                        )?
-                        .distinct()?;
-                    contribution = contribution
-                        .with_column(IVM_GROUPING_COLUMN, lit(index as i64))?;
-                    let mut input_columns = vec![IVM_GROUPING_COLUMN.to_string()];
-                    input_columns.extend(columns.clone());
-                    let table_columns = input_columns.clone();
-                    let frame = self
-                        .lookup_source_by_join_keys(
-                            &context,
-                            &view.mv,
-                            contribution,
-                            &input_columns,
-                            &table_columns,
-                            true,
-                        )
-                        .await?;
-                    keyed = Some(match keyed {
-                        Some(existing) => existing.union(frame)?,
-                        None => frame,
-                    });
-                }
-                keyed.ok_or_else(|| report!("grouping-sets view has no groupings"))?
+            // A grouping-set key may be NULL; the keyed lookup matches it
+            // with the NULL group.  Each set probes the MV by its own key
+            // columns plus the grouping id.
+            let mut keyed: Option<DataFrame> = None;
+            for (index, set) in view.groupings.iter().enumerate() {
+                let columns = set
+                    .iter()
+                    .map(|position| view.group_keys[*position].clone())
+                    .collect::<Vec<_>>();
+                let mut contribution = affected_keys
+                    .clone()
+                    .select(
+                        columns
+                            .iter()
+                            .map(|key| col(key.as_str()))
+                            .collect::<Vec<_>>(),
+                    )?
+                    .distinct()?;
+                contribution =
+                    contribution.with_column(IVM_GROUPING_COLUMN, lit(index as i64))?;
+                let mut input_columns = vec![IVM_GROUPING_COLUMN.to_string()];
+                input_columns.extend(columns.clone());
+                let table_columns = input_columns.clone();
+                let frame = self
+                    .lookup_source_by_join_keys_null_safe(
+                        &context,
+                        &view.mv,
+                        contribution,
+                        &input_columns,
+                        &table_columns,
+                        true,
+                    )
+                    .await?;
+                keyed = Some(match keyed {
+                    Some(existing) => existing.union(frame)?,
+                    None => frame,
+                });
             }
+            keyed.ok_or_else(|| report!("grouping-sets view has no groupings"))?
         };
         context.register_table("mv", mv.into_view())?;
         let frame = context.sql(&grouping_sets_refresh_sql(view, epoch)).await?;
@@ -3306,18 +3276,10 @@ impl IvmRuntime {
                 "with {cte} select distinct {state_key_list} from counts"
             ))
             .await?;
-        let null_state_key = state_value_keys
-            .iter()
-            .map(|key| col(key.as_str()).is_null())
-            .reduce(|left, right| left.or(right))
-            .ok_or_else(|| report!("value-count view has no state keys"))?;
-        let active_keyed = view.state.primary_keys == state_value_keys
-            && count_frame_rows(affected_state_keys.clone().filter(null_state_key)?)
-                .await?
-                == 0;
+        let active_keyed = view.state.primary_keys == state_value_keys;
         if active_keyed {
             let active = self
-                .lookup_source_by_join_keys(
+                .lookup_source_by_join_keys_null_safe(
                     &context,
                     view.state,
                     affected_state_keys.clone(),
@@ -3349,31 +3311,22 @@ impl IvmRuntime {
                 quoted_list(view.group_keys)
             ))
             .await?;
-        let null_group_key = view
-            .group_keys
-            .iter()
-            .map(|key| col(key.as_str()).is_null())
-            .reduce(|left, right| left.or(right))
-            .ok_or_else(|| report!("value-count view has no group keys"))?;
-        if count_frame_rows(affected.clone().filter(null_group_key)?).await? == 0 {
-            let state_now = self
-                .lookup_source_by_join_keys(
-                    &context,
-                    view.state,
-                    affected.clone(),
-                    view.group_keys,
-                    view.group_keys,
-                    true,
-                )
-                .await?;
-            context.register_table("state_now", state_now.into_view())?;
-        } else {
-            context
-                .register_table("state_now", Arc::new(self.table_provider(view.state)))?;
-        }
+        // A group key may be NULL; the state and MV lookups match it with
+        // the NULL group.
+        let state_now = self
+            .lookup_source_by_join_keys_null_safe(
+                &context,
+                view.state,
+                affected.clone(),
+                view.group_keys,
+                view.group_keys,
+                true,
+            )
+            .await?;
+        context.register_table("state_now", state_now.into_view())?;
         context.register_table("affected", affected.clone().into_view())?;
         let mv = if view.mv.primary_keys == view.group_keys {
-            self.lookup_source_by_join_keys(
+            self.lookup_source_by_join_keys_null_safe(
                 &context,
                 view.mv,
                 affected,

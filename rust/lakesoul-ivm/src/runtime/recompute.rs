@@ -2946,7 +2946,7 @@ impl IvmRuntime {
         affected: DataFrame,
     ) -> Result<DataFrame> {
         let index_rows = self
-            .lookup_source_by_join_keys(
+            .lookup_source_by_join_keys_null_safe(
                 context, index, affected, group_keys, group_keys, true,
             )
             .await?;
@@ -3353,20 +3353,8 @@ impl IvmRuntime {
                 .lookup
                 .as_ref()
                 .is_some_and(|lookup| lookup.join_keys.is_empty());
-        let affected_has_null = if parts.group_keys.is_empty() || global_lookup_changed {
-            false
-        } else {
-            let null_key = parts
-                .group_keys
-                .iter()
-                .map(|key| col(key.as_str()).is_null())
-                .reduce(|left, right| left.or(right))
-                .ok_or_else(|| report!("recompute view has no group keys"))?;
-            count_frame_rows(affected.clone().filter(null_key)?).await? > 0
-        };
         if let Some(lookup) = &parts.lookup {
             let rows = if global_lookup_changed
-                || affected_has_null
                 || lookup.join_keys.is_empty()
                 || !lookup
                     .join_keys
@@ -3403,10 +3391,7 @@ impl IvmRuntime {
         if keyed {
             context.register_table("old", old_frame.clone().into_view())?;
         }
-        let src = if !parts.group_keys.is_empty()
-            && !global_lookup_changed
-            && !affected_has_null
-        {
+        let src = if !parts.group_keys.is_empty() && !global_lookup_changed {
             if let Some(index) = &index {
                 self.read_recomputed_index_groups(
                     &context,
@@ -3441,11 +3426,8 @@ impl IvmRuntime {
             parts.group_exprs,
         )?;
         context.register_table("src", src.into_view())?;
-        let mv = if !parts.group_keys.is_empty()
-            && !global_lookup_changed
-            && !affected_has_null
-        {
-            self.lookup_source_by_join_keys(
+        let mv = if !parts.group_keys.is_empty() && !global_lookup_changed {
+            self.lookup_source_by_join_keys_null_safe(
                 &context,
                 parts.mv,
                 affected.clone(),
@@ -5051,7 +5033,7 @@ impl IvmRuntime {
                 );
             }
             let changed_state = self
-                .lookup_source_by_join_keys(
+                .lookup_source_by_join_keys_null_safe(
                     &context,
                     state,
                     pairs.clone(),
@@ -5083,7 +5065,7 @@ impl IvmRuntime {
                 .await?,
             );
             let merge_rows = self
-                .lookup_source_by_join_keys(
+                .lookup_source_by_join_keys_null_safe(
                     &context,
                     partial,
                     affected.clone(),
@@ -5156,11 +5138,12 @@ impl IvmRuntime {
                         &view.group_keys,
                         true,
                         restriction,
+                        true,
                     )
                     .await?
                 }
                 None => {
-                    self.lookup_source_by_join_keys(
+                    self.lookup_source_by_join_keys_null_safe(
                         &context,
                         state,
                         affected.clone(),
@@ -5180,20 +5163,10 @@ impl IvmRuntime {
         // delete/insert sides; a bucket layout on the group keys narrows the
         // read further.  A lookup (HAVING subquery) can affect groups with no
         // source delta, so it keeps the full scan.
-        let null_key = view
-            .group_keys
-            .iter()
-            .map(|key| col(key.as_str()).is_null())
-            .reduce(|left, right| left.or(right));
-        let keyed_mv = match (parts.lookup.is_none(), null_key) {
-            (true, Some(null_key)) => {
-                count_frame_rows(affected.clone().filter(null_key)?).await? == 0
-            }
-            _ => false,
-        };
+        let keyed_mv = parts.lookup.is_none();
         if keyed_mv {
             let mv_rows = self
-                .lookup_source_by_join_keys(
+                .lookup_source_by_join_keys_null_safe(
                     &context,
                     &view.mv,
                     affected.clone(),

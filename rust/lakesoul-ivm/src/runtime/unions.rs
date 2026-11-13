@@ -1343,8 +1343,10 @@ impl IvmRuntime {
             let affected = context
                 .sql(&union_distinct_affected_sql(view, keyed, &changed)?)
                 .await?;
+            // The union's output row is the key; its columns may be NULL and
+            // SQL DISTINCT keeps one row per NULL value.
             let mv = self
-                .lookup_source_by_join_keys(
+                .lookup_source_by_join_keys_null_safe(
                     &context,
                     &view.mv,
                     affected,
