@@ -4771,7 +4771,7 @@ impl IvmRuntime {
         &self.semi_anti_right_keys
     }
 
-    /// Create the `ivm` schema and tables if they do not exist.
+    /// Verify that the `ivm` metadata schema is installed.
     pub async fn init_schema(&self) -> Result<()> {
         self.metadata.init_schema().await
     }

@@ -45,50 +45,6 @@ use crate::pooled_client::{PooledClient, QueryType};
 /// Maximum number of publish attempts per commit.
 pub const COMMIT_RETRIES: usize = 3;
 
-/// DDL for the index control-plane tables.
-///
-/// Canonical copy lives in `script/meta_init.sql`; this constant lets tests
-/// and tools bootstrap a database without applying the full metadata schema.
-pub const CREATE_TABLES_SQL: &str = r#"
-create table if not exists index_shard
-(
-    shard_id     bigserial primary key,
-    kind         text not null,
-    index_prefix text not null,
-    unique (kind, index_prefix)
-);
-
-create table if not exists index_commit
-(
-    commit_id     bigserial primary key,
-    shard_id      bigint      not null references index_shard (shard_id) on delete cascade,
-    generation    bigint      not null,
-    version       bigint      not null,
-    header        bytea       not null,
-    segments      jsonb       not null default '[]'::jsonb,
-    created_at    timestamptz not null default now(),
-    superseded_at timestamptz,
-    unique (shard_id, generation, version)
-);
-
-create index if not exists index_commit_shard_key_index
-    on index_commit (shard_id, generation desc, version desc);
-
-create table if not exists index_lease
-(
-    lease_id    uuid primary key,
-    shard_id    bigint      not null references index_shard (shard_id) on delete cascade,
-    generation  bigint      not null,
-    version     bigint      not null,
-    owner       text        not null,
-    acquired_at timestamptz not null default now(),
-    expires_at  timestamptz not null
-);
-
-create index if not exists index_lease_expiry_index
-    on index_lease (shard_id, expires_at);
-"#;
-
 /// One artifact referenced by an index commit.
 ///
 /// Defined in `lakesoul-common` so index kind crates can implement it
@@ -197,7 +153,7 @@ struct CatalogCore {
 static TABLES_INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
 impl CatalogCore {
-    /// Create the control-plane tables if they do not exist (once per process).
+    /// Verify that the control-plane tables exist (once per process).
     async fn ensure_tables(&self) -> Result<()> {
         TABLES_INIT
             .get_or_try_init(|| self.init_tables())
@@ -206,8 +162,28 @@ impl CatalogCore {
     }
 
     async fn init_tables(&self) -> Result<()> {
-        let guard = self.client.lock().await;
-        guard.batch_execute(CREATE_TABLES_SQL, QueryType::RW).await
+        let installed: Option<bool> = {
+            let guard = self.client.lock().await;
+            guard
+                .query_opt(
+                    "select to_regclass('index_shard') is not null",
+                    QueryType::RW,
+                    &[],
+                )
+                .await?
+                .map(|row| row.get(0))
+        };
+        if installed != Some(true) {
+            return Err(LakeSoulMetaDataError::Other(
+                std::io::Error::other(
+                    "the index metadata tables are missing; initialize the metadata \
+                     database with script/meta_init.sql and run \
+                     script/metadata_migrate.py migrate",
+                )
+                .into(),
+            ));
+        }
+        Ok(())
     }
 
     async fn release_lease(&self, lease_id: Uuid) -> Result<()> {
@@ -329,7 +305,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         self.core.kind
     }
 
-    /// Create the control-plane tables if they do not exist.
+    /// Verify that the control-plane tables exist.
     pub async fn init_tables(&self) -> Result<()> {
         self.core.init_tables().await
     }

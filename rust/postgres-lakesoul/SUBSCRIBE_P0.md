@@ -330,16 +330,17 @@ copy. Source session settings `statement_timeout=0`, `DateStyle=ISO`,
 ## Subscription state
 
 The definition and progress live in the metadata PostgreSQL under the
-`subscription` schema. Production deployments apply
-`script/metadata-migrations/V4000002__subscription.sql`; the worker also runs
-the same idempotent DDL at startup for local development and tests, including
-`ADD COLUMN IF NOT EXISTS` upgrades for pre-release databases.
+`subscription` schema. `script/meta_init.sql` creates it for a new deployment;
+an existing 4.0 database gets it from
+`script/metadata-migrations/V4000001__release_4_1_0.sql`. The worker only
+verifies that the schema is installed and never creates it at runtime.
 
 | Table | Purpose |
 | --- | --- |
 | `subscription.subscriptions` | slot, publication, source URL, state (`starting`/`snapshotting`/`streaming`/`stopped`/`disabled`/`error`), `enabled`, batch settings, target DDL options (`auto_create`, `schema_evolution`, `warehouse_prefix`, `cdc_column`), supervisor pid/log, last error |
 | `subscription.tables` | source table + relation OID, target namespace/table + table id, primary key, `data_lsn`, `snapshot_state`, `snapshot_mode`, `snapshot_lsn`, snapshot timestamps |
 | `subscription.progress` | subscription-level `processed_lsn`, including transactions that touched no mapped table |
+| `subscription.mysql_state` | MySQL GTID/binlog position, snapshot boundary and stream sequence |
 
 The target table's commit ids remain the authoritative data watermark; the
 metadata rows add identity checks and record idle progress. `data_lsn` is

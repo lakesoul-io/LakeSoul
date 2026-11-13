@@ -10,76 +10,16 @@
 //! execution belongs to the job runner.
 //!
 //! The tables live next to the other server-side metadata schemas (`ivm`,
-//! `subscription`). `script/metadata-migrations/V4000007__query_jobs.sql`
-//! carries the same DDL for deployments that apply migrations up front; the
-//! `create ... if not exists` statements here keep a fresh test database
-//! usable without the migration tool.
+//! `subscription`) and are created by `script/meta_init.sql` for a new
+//! deployment or by `script/metadata-migrations/V4000001__release_4_1_0.sql`
+//! for an existing 4.0 database. The server only verifies that the schema is
+//! installed; it never creates metadata tables at runtime.
 
 use lakesoul_metadata::{PooledClient, QueryType};
 use rootcause::report;
 use uuid::Uuid;
 
 use crate::Result;
-
-const JOBS_SCHEMA_DDL: &str = r#"
-create schema if not exists job;
-
-create table if not exists job.queries (
-    query_id           uuid primary key,
-    job_key            text,
-    user_name          text   not null,
-    database_name      text   not null,
-    sql_text           text   not null,
-    settings           jsonb  not null,
-    state              text   not null default 'queued',
-    attempt            integer not null default 0,
-    max_attempts       integer not null default 3,
-    retry_on_restart   boolean not null default true,
-    timeout_ms         bigint,
-    created_at         bigint not null,
-    started_at         bigint,
-    finished_at        bigint,
-    lease_expires_at   bigint,
-    owner              text,
-    cancel_requested   boolean not null default false,
-    command_tag        text,
-    rows_produced      bigint not null default 0,
-    bytes_produced     bigint not null default 0,
-    error_sqlstate     text,
-    error_message      text,
-    result_kind        text   not null default 'none',
-    result_rows        bigint,
-    result_bytes       bigint,
-    result_location    text,
-    result_schema      jsonb,
-    result_sets        jsonb,
-    result_expires_at  bigint
-);
-
-alter table if exists job.queries
-    add column if not exists result_schema jsonb;
-alter table if exists job.queries
-    add column if not exists result_sets jsonb;
-alter table if exists job.queries
-    add column if not exists attempt integer not null default 0;
-alter table if exists job.queries
-    add column if not exists max_attempts integer not null default 3;
-alter table if exists job.queries
-    add column if not exists retry_on_restart boolean not null default true;
-alter table if exists job.queries
-    add column if not exists timeout_ms bigint;
-
-create index if not exists job_queries_state_idx
-    on job.queries (state, created_at);
-
-create index if not exists job_queries_user_idx
-    on job.queries (user_name, created_at desc);
-
-drop index if exists job.job_queries_user_key_idx;
-
-create unique index if not exists job_queries_scope_key_idx
-    on job.queries (database_name, user_name, job_key);
-"#;
 
 /// One row of `job.queries` as the server writes it.
 pub struct NewJob<'a> {
@@ -127,11 +67,28 @@ impl JobMetadata {
         Self { client }
     }
 
+    /// Verify that the detached-query metadata schema is installed. The
+    /// schema is owned by `script/meta_init.sql` and the metadata migrations;
+    /// the server does not create it at runtime.
     pub async fn init_schema(&self) -> Result<()> {
-        self.client
-            .batch_execute(JOBS_SCHEMA_DDL, QueryType::RW)
+        let installed: Option<bool> = self
+            .client
+            .query_opt(
+                "select to_regclass('job.queries') is not null",
+                QueryType::RW,
+                &[],
+            )
             .await
-            .map_err(|error| report!("create query job metadata schema: {error}"))
+            .map_err(|error| report!("check query job metadata schema: {error}"))?
+            .map(|row| row.get(0));
+        if installed != Some(true) {
+            return Err(report!(
+                "the query job metadata schema is missing; initialize the metadata \
+                 database with script/meta_init.sql and run \
+                 script/metadata_migrate.py migrate"
+            ));
+        }
+        Ok(())
     }
 
     /// Inserts a queued job unless the user already submitted one with the
