@@ -394,6 +394,9 @@ pub fn transform_array(
                 DataType::Int64 => {
                     as_primitive_array::<Int64Type>(&array).clone().into_data()
                 }
+                DataType::Date32 => {
+                    as_primitive_array::<Date32Type>(&array).clone().into_data()
+                }
                 DataType::Utf8 => as_string_array(&array).clone().into_data(),
                 _ => {
                     bail!(
@@ -660,6 +663,32 @@ mod tests {
     use super::*;
     use arrow_array::builder::{ListViewBuilder, StringViewBuilder};
     use arrow_array::{ListArray, StringViewArray};
+
+    #[test]
+    fn transform_date32_to_timestamp_with_timezone() {
+        let source: ArrayRef = Arc::new(PrimitiveArray::<Date32Type>::from(vec![
+            Some(0),
+            Some(20_000),
+            None,
+        ]));
+        let target = DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")));
+
+        let transformed = transform_array(
+            "order_date".to_string(),
+            target.clone(),
+            source,
+            3,
+            false,
+            Arc::new(HashMap::new()),
+        )
+        .unwrap();
+
+        assert_eq!(transformed.data_type(), &target);
+        let timestamps = as_primitive_array::<TimestampMicrosecondType>(&transformed);
+        assert_eq!(timestamps.value(0), 0);
+        assert_eq!(timestamps.value(1), 20_000_i64 * 86_400_000_000_i64);
+        assert!(timestamps.is_null(2));
+    }
 
     #[test]
     fn transform_record_batch_materializes_utf8_view_as_utf8() {
