@@ -964,7 +964,7 @@ fn key_filter_exprs(
             let mut null_columns = vec![false; input_columns.len()];
             for row in 0..batch.num_rows() {
                 let mut values = Vec::with_capacity(input_columns.len());
-                for (index, column) in input_columns.iter().enumerate() {
+                for column in input_columns.iter() {
                     let index = batch.schema().index_of(column)?;
                     let value =
                         ScalarValue::try_from_array(batch.column(index).as_ref(), row)?;
