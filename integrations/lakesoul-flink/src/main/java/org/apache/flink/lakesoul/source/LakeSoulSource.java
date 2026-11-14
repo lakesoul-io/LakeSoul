@@ -119,7 +119,8 @@ public abstract class LakeSoulSource<OUT>
                     tableInfo.getTableId(),
                     optionParams.getOrDefault(LakeSoulOptions.HASH_BUCKET_NUM(), "-1"),
                     partitionColumns,
-                    partitionFilters);
+                    partitionFilters,
+                    this.tableId.identifier());
 
         } else {
             return staticSplitEnumerator(
@@ -233,7 +234,8 @@ public abstract class LakeSoulSource<OUT>
                 checkpoint.getTableId(),
                 String.valueOf(checkpoint.getHashBucketNum()),
                 this.partitionColumns,
-                this.partitionFilters);
+                this.partitionFilters,
+                this.tableId.identifier());
     }
 
     @Override

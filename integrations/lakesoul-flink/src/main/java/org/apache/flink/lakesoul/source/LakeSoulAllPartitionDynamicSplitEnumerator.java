@@ -65,7 +65,8 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
             String tableId,
             String hashBucketNum,
             List<String> partitionColumns,
-            Plan partitionFilters) {
+            Plan partitionFilters,
+            String fullTableName) {
         this.context = context;
         this.splitAssigner = splitAssigner;
         this.discoveryInterval = discoveryInterval;
@@ -75,6 +76,7 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
         this.taskIdsAwaitingSplit = Sets.newConcurrentHashSet();
         this.partitionLatestTimestamp = Maps.newConcurrentMap();
         this.partitionColumns = partitionColumns;
+        this.fullTableName = fullTableName;
 
         Schema tableSchema = ArrowUtils.toArrowSchema(rowType);
         List<Field> partitionFields =
@@ -83,11 +85,21 @@ public class LakeSoulAllPartitionDynamicSplitEnumerator
         this.partitionArrowSchema = new Schema(partitionFields);
         this.partitionFilters = partitionFilters;
         tableInfo = DataOperation.dbManager().getTableInfoByTableId(tableId);
-        fullTableName = tableInfo.getTableNamespace() + "." + tableInfo.getTableName();
+        if (tableInfo == null) {
+            String err =
+                    String.format(
+                            "Table %s with tableId %s does not exist. This table may have been"
+                                    + " dropped and recreated, please restart this streaming job"
+                                    + " without checkpoint/savepoint recovery",
+                            this.fullTableName, tableId);
+            LOG.error(err);
+            throw new SuppressRestartsException(new IllegalStateException(err));
+        }
+        this.fullTableName = tableInfo.getTableNamespace() + "." + tableInfo.getTableName();
         LOG.info(
                 "Create Dyn enumerator for table name {}, tableId {}, context {},"
                         + " filter {}, interval {}",
-                fullTableName,
+                this.fullTableName,
                 tableId,
                 System.identityHashCode(context),
                 partitionFilters,
