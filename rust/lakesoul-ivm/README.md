@@ -621,6 +621,28 @@ The `kind` label is the view kind (`sum_count`, `min_max`, `window`, `join`,
 fallback view's kind is `fallback`, so its refreshes and rebuilds are also
 visible per view kind.
 
+## State inventory
+
+`IvmRuntime::state_inventory(view_id)` walks a view chain from a target (or
+any view id) to its base tables and returns a read-only report of every
+materialized table and every `ivm.states` entry.  Each table carries its file
+bytes, file count, partition count, roles and optional logical row count, so
+derived steps, value-count/rank state, row-level multi-aggregate state and a
+split-target maintenance MV can be compared before changing a definition.
+
+```sh
+cargo run -q -p lakesoul-ivm --example state_inventory -- \
+    example_orders --namespace example
+```
+
+The runtime reads its PostgreSQL and object-store settings from the
+`LAKESOUL_*` environment.  `--json` emits the structured report,
+`--no-rows` skips the `COUNT(*)` pass (bytes and files still come from
+metadata), and `--top <n>` changes the size ranking.  The report marks
+internal derived steps (`<target>__ivm_stepN`), fallback views and missing
+state tables, and lists the base sources without counting them in the state
+totals.
+
 ## Runtime configuration
 
 IVM runs inside a DataFusion session owned by the embedding process.  It does
