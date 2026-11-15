@@ -128,8 +128,9 @@ pub struct DiskCache {
 
 impl DiskCache {
     pub fn new(disk_capacity: usize, page_size: usize) -> Self {
-        let root_path = std::env::var("LAKESOUL_CACHE_PATH")
-            .unwrap_or_else(|_| "lakesoul_cache_dir".to_string());
+        let root_path = lakesoul_vector::cache_config::config()
+            .disk_path()
+            .to_string();
         Self::with_path(disk_capacity, page_size, PathBuf::from(root_path))
     }
 

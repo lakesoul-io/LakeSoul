@@ -25,6 +25,7 @@ Usage::
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from . import index as _index
@@ -43,6 +44,10 @@ __all__ = [
     "ShardInfo",
     "build_partition_vector_index",
     "build_table_vector_index",
+    "delete_by_primary_keys",
+    "drop_vector_index",
+    "declare_vector_index",
+    "gc_dropped_vector_index_objects",
     "rerank_by_distance",
 ]
 
@@ -253,6 +258,221 @@ def build_table_vector_index(
         rebuild=rebuild,
     )
     return _as_vector_result(result)
+
+
+def delete_by_primary_keys(
+    table_name: str,
+    namespace: str,
+    vector_column: str,
+    keys: "pa.Table | pa.RecordBatch",
+    store_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Durably delete primary-key rows from a table's vector index.
+
+    The keys are arrow-row encoded exactly like the index keys (the batch
+    must contain every primary-key column with the table's column types) and
+    published as tombstones in every shard of the table, so the deleted rows
+    disappear from subsequent searches without rewriting any segment file.
+
+    .. warning::
+       Delete (or update) the rows in the table data as well.  A rebuilt
+       index reads the table's data files, so rows that still exist there
+       are re-indexed and become searchable again.
+
+    Args:
+        table_name: LakeSoul table name.
+        namespace: LakeSoul namespace.
+        vector_column: Indexed vector column.
+        keys: ``pyarrow.Table`` or ``pyarrow.RecordBatch`` holding the
+            primary-key columns of the rows to delete.
+        store_config: Object-store credentials; ``None`` means local storage.
+
+    Returns:
+        Dict with ``status``, ``keys`` (tombstones written) and ``shards``
+        (shards committed).
+    """
+    import pyarrow as pa
+
+    from ._lib.vector import (
+        delete_vector_index_keys_base64,
+        encode_index_keys_base64,
+    )
+
+    if isinstance(keys, pa.Table):
+        batches = keys.to_batches()
+        schema = keys.schema
+    elif isinstance(keys, pa.RecordBatch):
+        batches = [keys]
+        schema = keys.schema
+    else:
+        raise TypeError(
+            "keys must be a pyarrow.Table or pyarrow.RecordBatch holding "
+            "the primary-key columns"
+        )
+
+    client = _index.NativeMetadataClient.from_env()
+    table_info = client.get_table_info_by_name(table_name, namespace)
+    _, pk_cols = client.get_partition_and_pk_cols(table_info)
+    if not pk_cols:
+        raise ValueError(
+            f"Table '{table_name}' has no primary key columns defined."
+        )
+    pk_columns = list(pk_cols)
+    encoded: list[str] = []
+    for batch in batches:
+        encoded.extend(
+            encode_index_keys_base64(
+                schema=schema,
+                pk_columns=pk_columns,
+                batch=batch,
+            )
+        )
+    if not encoded:
+        return {"status": "ok", "keys": 0, "shards": 0}
+
+    store_config = dict(store_config) if store_config else {"type": "local"}
+    committed = 0
+    for pinfo in client.get_all_partition_info(table_info.table_id):
+        for shard in _index.group_files_by_shard(
+            client, table_info.table_id, pinfo.partition_desc, pk_columns
+        ):
+            delete_vector_index_keys_base64(
+                store_config=store_config,
+                file_paths=shard.file_paths,
+                vector_column=vector_column,
+                keys_b64=encoded,
+            )
+            committed += 1
+    return {"status": "ok", "keys": len(encoded), "shards": committed}
+
+
+def drop_vector_index(
+    table_name: str,
+    namespace: str,
+    vector_column: str | None = None,
+    *,
+    columns: list[str] | None = None,
+    partition_desc: str | None = None,
+    keep_declaration: bool = False,
+    purge_files: bool = True,
+    dry_run: bool = False,
+    if_exists: bool = True,
+    grace_seconds: float = 0.0,
+    wait_for_cleanup: bool = True,
+    store_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Drop a vector index from an existing table.
+
+    By default the column declaration is removed from the
+    ``vector_index_columns`` table property, so later writes do not rebuild
+    the index.  Use ``keep_declaration=True`` to drop only the physical index.
+
+    Args:
+        table_name: LakeSoul table name.
+        namespace: LakeSoul namespace.
+        vector_column: Column to drop; ignored when *columns* is given.
+        columns: Columns to drop; ``None`` means all declared vector columns.
+        partition_desc: Drop only one partition's shards.  Requires
+            ``keep_declaration=True``.
+        keep_declaration: Keep the ``vector_index_columns`` entry.
+        purge_files: Delete the ``_vector_index/...`` objects as well.
+        dry_run: Only report what would be deleted.
+        if_exists: Do not fail when the index is absent.
+        grace_seconds: Keep index objects for this many seconds after the
+            control plane is removed, so readers holding an old commit can
+            finish.  ``0`` deletes immediately.
+        wait_for_cleanup: When false, return after removing the control
+            plane and let a background drop job purge the objects.
+        store_config: Object-store configuration; defaults to local storage.
+
+    Returns:
+        Dict with ``table_name``, ``namespace``, ``columns``, ``partitions``,
+        ``shards_dropped``, ``objects_deleted``, ``bytes_deleted``,
+        ``declaration_removed``, ``dry_run``, ``epoch``, ``drop_id`` and
+        ``cleanup``.
+    """
+    try:
+        from ._lib.vector import drop_vector_index as _drop
+    except ImportError as error:  # pragma: no cover - feature-off build
+        raise RuntimeError(
+            "drop_vector_index requires a Python build with the "
+            "'ci-unify' feature (the standard wheel includes it)"
+        ) from error
+
+    if vector_column is not None and columns is None:
+        columns = [vector_column]
+    if columns is not None and not columns:
+        raise ValueError("columns must not be empty")
+
+    store_config = dict(store_config) if store_config else {"type": "local"}
+    return dict(
+        _drop(
+            store_config=store_config,
+            table_name=table_name,
+            namespace=namespace,
+            columns=list(columns) if columns is not None else None,
+            partition_desc=partition_desc,
+            keep_declaration=keep_declaration,
+            purge_files=purge_files,
+            dry_run=dry_run,
+            if_exists=if_exists,
+            grace_seconds=grace_seconds,
+            wait_for_cleanup=wait_for_cleanup,
+        )
+    )
+
+
+def declare_vector_index(
+    table_name: str,
+    namespace: str,
+    configs: list[dict[str, Any]],
+) -> None:
+    """Write/replace ``vector_index_columns`` entries after a drop.
+
+    Also clears drop tombstones for the declared columns.  This is the
+    supported way to make ``keep_declaration=False`` drops rebuildable.
+    """
+    try:
+        from ._lib.vector import declare_vector_index as _declare
+    except ImportError as error:  # pragma: no cover - feature-off build
+        raise RuntimeError(
+            "declare_vector_index requires a Python build with the "
+            "'ci-unify' feature (the standard wheel includes it)"
+        ) from error
+    _declare(
+        table_name=table_name,
+        namespace=namespace,
+        configs=json.dumps(list(configs)),
+    )
+
+
+def gc_dropped_vector_index_objects(
+    table_name: str,
+    namespace: str,
+    *,
+    store_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Sweep index objects left behind by a failed or deferred drop.
+
+    Tombstones are retained so a stale writer cannot recreate the index;
+    ``rebuild_vector_index`` clears them when it explicitly claims the prefix.
+    """
+    try:
+        from ._lib.vector import gc_dropped_vector_index_objects as _gc
+    except ImportError as error:  # pragma: no cover - feature-off build
+        raise RuntimeError(
+            "gc_dropped_vector_index_objects requires a Python build with the "
+            "'ci-unify' feature (the standard wheel includes it)"
+        ) from error
+
+    store_config = dict(store_config) if store_config else {"type": "local"}
+    return dict(
+        _gc(
+            store_config=store_config,
+            table_name=table_name,
+            namespace=namespace,
+        )
+    )
 
 
 def rerank_by_distance(

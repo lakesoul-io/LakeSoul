@@ -46,6 +46,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
+use std::time::UNIX_EPOCH;
 
 use futures::StreamExt;
 use futures::stream::BoxStream;
@@ -56,12 +57,17 @@ use object_store::{
     MultipartUpload, ObjectMeta, ObjectStore, ObjectStoreExt, PutMultipartOptions,
     PutOptions, PutPayload, PutResult, Result as OsResult,
 };
+use tokio::sync::OnceCell;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
 
 const ENV_KIND: &str = "LAKESOUL_INDEX_SSD_KIND";
 const DEFAULT_KIND: &str = "index-v1";
 const TEMP_SUFFIX: &str = ".tmp";
+
+fn entry_weight(size: u64) -> u32 {
+    size.div_ceil(1024).min(u32::MAX as u64) as u32
+}
 
 /// A cached local index file.
 #[derive(Clone, Debug)]
@@ -78,6 +84,7 @@ pub struct IndexSsdCache {
     root: Arc<PathBuf>,
     max_capacity_bytes: u64,
     kind: String,
+    adopted: OnceCell<()>,
     hits: AtomicU64,
     misses: AtomicU64,
     fetched_bytes: AtomicU64,
@@ -100,15 +107,6 @@ impl IndexSsdCache {
         if let Err(error) = std::fs::create_dir_all(root.as_ref()) {
             warn!(dir = %root.display(), %error, "failed to create index SSD cache dir");
         }
-        // Leftovers from an interrupted download are never valid entries.
-        if let Ok(entries) = std::fs::read_dir(root.as_ref()) {
-            for entry in entries.flatten() {
-                if entry.file_name().to_string_lossy().ends_with(TEMP_SUFFIX) {
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
-        }
-
         let cache = Cache::builder()
             .weigher(|_key: &String, entry: &Entry| {
                 // Keep the same KiB accounting as `DiskCache`; moka weights
@@ -144,6 +142,7 @@ impl IndexSsdCache {
             root,
             max_capacity_bytes: capacity_bytes,
             kind,
+            adopted: OnceCell::new(),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
             fetched_bytes: AtomicU64::new(0),
@@ -181,13 +180,109 @@ impl IndexSsdCache {
         })
     }
 
+    async fn ensure_adopted(&self) {
+        self.adopted
+            .get_or_init(|| async { self.adopt_existing_entries().await })
+            .await;
+    }
+
+    async fn adopt_existing_entries(&self) {
+        const MAX_ADOPTED_ENTRIES: usize = 4096;
+        let root = Arc::clone(&self.root);
+        let capacity_kib = self.max_capacity_bytes.div_ceil(1024);
+        let candidates = tokio::task::spawn_blocking(move || {
+            let canonical_root = std::fs::canonicalize(root.as_ref())?;
+            let mut files = Vec::new();
+            for entry in std::fs::read_dir(root.as_ref())? {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(_) => continue,
+                };
+                let name = entry.file_name();
+                let Some(name_text) = name.to_str() else {
+                    continue;
+                };
+                let Some(hash) = name_text.strip_suffix(".bin") else {
+                    continue;
+                };
+                if hash.len() != 16 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    continue;
+                }
+                let path = entry.path();
+                let metadata = match std::fs::symlink_metadata(&path) {
+                    Ok(metadata) if metadata.file_type().is_file() => metadata,
+                    _ => continue,
+                };
+                let canonical = match std::fs::canonicalize(&path) {
+                    Ok(path) if path.parent() == Some(canonical_root.as_path()) => path,
+                    _ => continue,
+                };
+                let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+                files.push((name_text.to_string(), canonical, metadata.len(), modified));
+            }
+            files.sort_by(|left, right| {
+                left.3.cmp(&right.3).then_with(|| left.0.cmp(&right.0))
+            });
+            let mut keep = vec![false; files.len()];
+            let mut used_kib = 0u64;
+            let mut kept_count = 0usize;
+            for index in (0..files.len()).rev() {
+                if kept_count >= MAX_ADOPTED_ENTRIES {
+                    break;
+                }
+                let weight = entry_weight(files[index].2) as u64;
+                if weight == 0 || used_kib.saturating_add(weight) > capacity_kib {
+                    continue;
+                }
+                keep[index] = true;
+                used_kib += weight;
+                kept_count += 1;
+            }
+            let mut retained = Vec::with_capacity(kept_count);
+            for (index, (name, path, size, _)) in files.into_iter().enumerate() {
+                if keep[index] {
+                    retained.push((name, path, size));
+                } else {
+                    let owned_regular_file = std::fs::symlink_metadata(&path)
+                        .is_ok_and(|metadata| metadata.file_type().is_file())
+                        && std::fs::canonicalize(&path)
+                            .is_ok_and(|canonical| canonical.parent() == Some(canonical_root.as_path()));
+                    if owned_regular_file {
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
+            }
+            Ok::<_, std::io::Error>(retained)
+        })
+        .await;
+        let retained = match candidates {
+            Ok(Ok(files)) => files,
+            Ok(Err(error)) => {
+                warn!(%error, "failed to scan index SSD cache for prior entries");
+                return;
+            }
+            Err(error) => {
+                warn!(%error, "index SSD cache adoption task failed");
+                return;
+            }
+        };
+        for (key, path, size) in retained {
+            if let Some(entry) = Self::open_entry(&path, size).await {
+                self.cache.insert(key, entry).await;
+            }
+        }
+        self.cache.run_pending_tasks().await;
+    }
+
     /// Return the local file for `location`, downloading it on a miss.
     async fn get_or_fetch(
         &self,
         inner: &Arc<dyn ObjectStore>,
         location: &Path,
+        cache_location: &Path,
     ) -> OsResult<Entry> {
-        let key = self.file_key(location);
+        self.ensure_adopted().await;
+        let key = self.file_key(cache_location);
         if let Some(entry) = self.cache.get(&key).await {
             self.hits.fetch_add(1, Ordering::Relaxed);
             return Ok(entry);
@@ -206,6 +301,7 @@ impl IndexSsdCache {
 
         self.misses.fetch_add(1, Ordering::Relaxed);
         let inner = Arc::clone(inner);
+        let location = location.clone();
         let root = Arc::clone(&self.root);
         let expected_path = path.clone();
         let result = self
@@ -220,7 +316,7 @@ impl IndexSsdCache {
                 {
                     return Ok::<Entry, String>(entry);
                 }
-                let entry = download_entry(inner, location, &root, &expected_path)
+                let entry = download_entry(inner, &location, &root, &expected_path)
                     .await
                     .map_err(|error| error.to_string())?;
                 Ok::<Entry, String>(entry)
@@ -247,6 +343,13 @@ impl IndexSsdCache {
     }
 }
 
+struct TemporaryFile(PathBuf);
+impl Drop for TemporaryFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Download one object to `path`, atomically replacing any previous copy.
 async fn download_entry(
     inner: Arc<dyn ObjectStore>,
@@ -256,12 +359,14 @@ async fn download_entry(
 ) -> std::io::Result<Entry> {
     tokio::fs::create_dir_all(root).await?;
     let temp = root.join(format!(
-        "{}{TEMP_SUFFIX}",
+        "{}-{}-{}{TEMP_SUFFIX}",
+        std::process::id(),
+        uuid::Uuid::new_v4(),
         path.file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "download".to_string())
     ));
-    let _ = tokio::fs::remove_file(&temp).await;
+    let _cleanup = TemporaryFile(temp.clone());
     let mut file = tokio::fs::File::create(&temp).await?;
     let mut stream = inner
         .get(location)
@@ -291,11 +396,13 @@ async fn download_entry(
 pub struct IndexCachedStore {
     inner: Arc<dyn ObjectStore>,
     cache: Arc<IndexSsdCache>,
+    namespace: Arc<crate::cache::store_namespace::StoreCacheNamespace>,
 }
 
 impl IndexCachedStore {
     pub fn new(inner: Arc<dyn ObjectStore>, cache: Arc<IndexSsdCache>) -> Self {
-        Self { inner, cache }
+        let namespace = crate::cache::store_namespace::store_cache_namespace(&inner);
+        Self { inner, cache, namespace }
     }
 }
 
@@ -354,7 +461,11 @@ impl ObjectStore for IndexCachedStore {
         {
             return self.inner.get_opts(location, options).await;
         }
-        let entry = self.cache.get_or_fetch(&self.inner, location).await?;
+        let cache_location = self.namespace.path(location);
+        let entry = self
+            .cache
+            .get_or_fetch(&self.inner, location, &cache_location)
+            .await?;
         let size = entry.size;
         let range = match options.range {
             Some(range) => range.as_range(size).map_err(|error| Error::Generic {
@@ -475,6 +586,51 @@ mod tests {
         let range = store.get_range(&location, 2..5).await.unwrap();
         assert_eq!(range.as_ref(), b"234");
         assert_eq!(cache.stats().0, 2);
+    }
+
+    #[tokio::test]
+    async fn adopts_only_owned_entries_and_enforces_budget_after_restart() {
+        use std::io::Read;
+        use object_store::ObjectStoreExt;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let old_path = root.join("0000000000000001.bin");
+        let new_path = root.join("0000000000000002.bin");
+        let unknown_path = root.join("manual-entry.bin");
+        let active_temp = root.join("active-writer.tmp");
+        std::fs::write(&old_path, vec![b'o'; 2 * 1024]).unwrap();
+        let mut old_reader = std::fs::File::open(&old_path).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        std::fs::write(&new_path, vec![b'n'; 2 * 1024]).unwrap();
+        std::fs::write(&unknown_path, b"not owned by this cache format").unwrap();
+        std::fs::write(&active_temp, b"another process may still be writing").unwrap();
+
+        let inner: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let location = Path::from("index/new.seg");
+        put(&inner, &location, &vec![b'c'; 2 * 1024]).await;
+        let cache = Arc::new(IndexSsdCache::new(root.to_path_buf(), 3 * 1024));
+        let store = IndexCachedStore::new(inner, Arc::clone(&cache));
+        assert_eq!(store.get(&location).await.unwrap().bytes().await.unwrap().len(), 2 * 1024);
+        cache.cache.run_pending_tasks().await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mut bytes = [0u8; 1];
+        old_reader.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes[0], b'o', "unlink must not break an existing open handle");
+        assert!(unknown_path.exists(), "unknown files are not owned by this cache");
+        assert!(active_temp.exists(), "temporary files may belong to active writers");
+        let owned_files = std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else { return false; };
+                let Some(hash) = name.strip_suffix(".bin") else { return false; };
+                hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+            .count();
+        assert!(owned_files <= 1, "recognized cache files must obey the 3 KiB LRU budget");
     }
 
     #[tokio::test]

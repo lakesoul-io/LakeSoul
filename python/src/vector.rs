@@ -11,13 +11,27 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use arrow_array::RecordBatch;
+use arrow_pyarrow::PyArrowType;
+use arrow_schema::Schema;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use lakesoul_common::IndexKind;
 use lakesoul_common::misc::SecretMap;
+#[cfg(feature = "ci-unify")]
+use lakesoul_datafusion::vector_index::{
+    DropGcReport, DropVectorIndexOptions, DropVectorIndexReport, VectorIndexTableConfig,
+    declare_vector_index as declare_vector_index_impl, drop_vector_index_with_store,
+    gc_dropped_vector_index_objects as gc_dropped_objects_impl,
+};
 use lakesoul_io::index::commit::ResolvedIndex;
+use lakesoul_io::index::key::{KeyCodec, KeyLayout};
 use lakesoul_io::index::prefix::shard_index_prefix;
 use lakesoul_io::vector::builder::VectorShardIndexBuilder;
+#[cfg(feature = "ci-unify")]
+use lakesoul_metadata::MetaDataClient;
 use lakesoul_metadata::index_catalog::{CommitMode, IndexCommitView, VectorSegmentEntry};
-use lakesoul_vector::{Metric, RotatorType, SegmentEntry, VectorIndexConfig};
+use lakesoul_vector::{IndexKey, Metric, RotatorType, SegmentEntry, VectorIndexConfig};
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use pyo3::prelude::*;
@@ -263,7 +277,7 @@ fn run_shard_vector_index(
     let index_prefix = shard_index_prefix(&file_paths, IndexKind::Vector, &config.column_name);
     let covered_files = file_paths.clone();
     let builder = VectorShardIndexBuilder::new(
-        store,
+        store.clone(),
         config,
         file_paths,
         pk_columns,
@@ -317,19 +331,22 @@ fn run_shard_vector_index(
         })?;
 
         if !outcome.new_segments.is_empty() {
-            catalog
-                .commit(
-                    &outcome.index_prefix,
-                    &outcome.header,
-                    &to_catalog_segments(&outcome.new_segments, &covered_files),
-                    mode,
-                )
-                .await
-                .map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                        "vector index commit failed: {e}"
-                    ))
-                })?;
+            let segments = to_catalog_segments(&outcome.new_segments, &covered_files);
+            lakesoul_vector::vector_commit::commit_vector_build(
+                &store,
+                &catalog,
+                &outcome.index_prefix,
+                &outcome.header,
+                segments,
+                outcome.upserted_keys,
+                mode,
+            )
+            .await
+            .map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                    "vector index commit failed: {e}"
+                ))
+            })?;
         }
         Ok("ok".to_string())
     })
@@ -349,6 +366,7 @@ fn to_resolved_shard(
             num_vectors: segment.num_vectors,
             file_size: segment.file_size,
             data_files: segment.data_files.clone(),
+            birth_version: segment.birth_version,
         })
         .collect();
     Ok(ResolvedIndex {
@@ -359,6 +377,8 @@ fn to_resolved_shard(
         version: view.version,
         header: view.header.clone(),
         segments: serde_json::to_value(&segments)?,
+        mutation_head: view.mutation_head.clone(),
+        mutation_records: view.mutation_records,
     })
 }
 
@@ -375,6 +395,7 @@ fn to_catalog_segments(
             num_vectors: segment.num_vectors,
             file_size: segment.file_size,
             data_files: data_files.to_vec(),
+            birth_version: segment.birth_version,
         })
         .collect()
 }
@@ -465,11 +486,310 @@ fn create_s3_store(config: &HashMap<String, String>) -> PyResult<Arc<dyn ObjectS
 }
 
 /// Register the vector submodule.
+/// Durable vector-index delete of arrow-row-encoded keys.
+///
+/// Deletes are tombstone commits: no segment file is rewritten and the
+/// deleted keys disappear from the next search.  The rows must be deleted
+/// from the table data as well, otherwise a later rebuild re-indexes them.
+///
+/// Args:
+///     store_config: object-store credentials (as for the build binding)
+///     file_paths: data files of the shard
+///     vector_column: indexed vector column (selects the index prefix)
+///     keys_b64: base64-encoded arrow-row primary-key bytes
+///
+/// Returns:
+///     Number of keys published (all of them), raises on failure
+#[pyfunction]
+fn delete_vector_index_keys_base64(
+    store_config: HashMap<String, String>,
+    file_paths: Vec<String>,
+    vector_column: String,
+    keys_b64: Vec<String>,
+) -> PyResult<usize> {
+    if keys_b64.is_empty() {
+        return Ok(0);
+    }
+    let keys: Vec<IndexKey> = keys_b64
+        .iter()
+        .map(|key| {
+            BASE64.decode(key).map(IndexKey::new).map_err(|error| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "invalid base64 index key: {error}"
+                ))
+            })
+        })
+        .collect::<PyResult<_>>()?;
+    let store = create_object_store(&store_config)?;
+    let index_prefix = shard_index_prefix(&file_paths, IndexKind::Vector, &vector_column);
+    let runtime = Runtime::new().map_err(|error| {
+        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+            "failed to create tokio runtime: {error}"
+        ))
+    })?;
+    let count = keys.len();
+    runtime.block_on(async move {
+        let client = lakesoul_metadata::MetaDataClient::from_env()
+            .await
+            .map_err(|error| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                    "vector index delete requires metadata access: {error}"
+                ))
+            })?;
+        let catalog = client.vector_index_catalog();
+        lakesoul_vector::vector_commit::delete_vector_keys(&store, &catalog, &index_prefix, &keys)
+            .await
+            .map_err(|error| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                    "vector index delete failed: {error}"
+                ))
+            })?;
+        Ok::<usize, PyErr>(count)
+    })
+}
+
+/// Encode primary-key rows as base64 arrow-row index keys.
+///
+/// The batch must contain every primary-key column; its Arrow schema must
+/// match the table's schema for the encoded bytes to match the index keys.
+#[pyfunction]
+fn encode_index_keys_base64(
+    schema: PyArrowType<Schema>,
+    pk_columns: Vec<String>,
+    batch: PyArrowType<RecordBatch>,
+) -> PyResult<Vec<String>> {
+    let layout = KeyLayout::from_schema(&schema.0, &pk_columns)
+        .map_err(|error| PyErr::new::<pyo3::exceptions::PyValueError, _>(error.to_string()))?;
+    let codec = KeyCodec::new(layout)
+        .map_err(|error| PyErr::new::<pyo3::exceptions::PyValueError, _>(error.to_string()))?;
+    let keys = codec
+        .encode_batch(&batch.0)
+        .map_err(|error| PyErr::new::<pyo3::exceptions::PyValueError, _>(error.to_string()))?;
+    Ok(keys
+        .iter()
+        .map(|key| BASE64.encode(key.as_bytes()))
+        .collect())
+}
+
+/// Drop a vector index for an existing table.
+///
+/// This is the Python binding of the Rust `drop_vector_index` implementation.
+/// It removes the `vector_index_columns` declaration (unless
+/// `keep_declaration=True`), deletes the index control-plane rows, optionally
+/// deletes the `_vector_index/...` objects, and invalidates the process-local
+/// caches.
+///
+/// Args:
+///     store_config: object-store configuration (same as
+///         `build_shard_vector_index`; `type` + `fs.s3a.*` keys).
+///     table_name: LakeSoul table name.
+///     namespace: LakeSoul namespace.
+///     columns: columns to drop; `None` means all declared vector columns.
+///     partition_desc: drop one partition's index (keeps the declaration).
+///     keep_declaration: keep the `vector_index_columns` entry.
+///     purge_files: delete `_vector_index/...` objects.
+///     dry_run: only report what would be deleted.
+///     if_exists: do not fail when the index is absent.
+///
+/// Returns:
+///     Dict with `table_name`, `namespace`, `columns`, `partitions`,
+///     `shards_dropped`, `objects_deleted`, `bytes_deleted`,
+///     `declaration_removed`, `dry_run`.
+#[cfg(feature = "ci-unify")]
+#[pyfunction]
+#[pyo3(signature = (
+    store_config,
+    table_name,
+    namespace,
+    columns = None,
+    partition_desc = None,
+    keep_declaration = false,
+    purge_files = true,
+    dry_run = false,
+    if_exists = true,
+    grace_seconds = 0.0,
+    wait_for_cleanup = true,
+))]
+#[allow(clippy::too_many_arguments)]
+fn drop_vector_index(
+    py: Python<'_>,
+    store_config: HashMap<String, String>,
+    table_name: String,
+    namespace: String,
+    columns: Option<Vec<String>>,
+    partition_desc: Option<String>,
+    keep_declaration: bool,
+    purge_files: bool,
+    dry_run: bool,
+    if_exists: bool,
+    grace_seconds: f64,
+    wait_for_cleanup: bool,
+) -> PyResult<Py<PyAny>> {
+    use pyo3::types::PyDict;
+
+    if !grace_seconds.is_finite() || grace_seconds < 0.0 {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "grace_seconds must be a finite non-negative number",
+        ));
+    }
+
+    let store = create_object_store(&store_config)?;
+    let runtime = Runtime::new().map_err(|error| {
+        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+            "failed to create tokio runtime: {error}"
+        ))
+    })?;
+    let report = runtime.block_on(async {
+        let client = MetaDataClient::from_env().await.map_err(|error| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                "vector index drop requires metadata access: {error}"
+            ))
+        })?;
+        let options = DropVectorIndexOptions {
+            columns,
+            partition_desc,
+            keep_declaration,
+            purge_files,
+            dry_run,
+            if_exists,
+            grace: std::time::Duration::from_secs_f64(grace_seconds),
+            wait_for_cleanup,
+        };
+        drop_vector_index_with_store(&client, store, &table_name, &namespace, options)
+            .await
+            .map_err(|error| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                    "vector index drop failed: {error}"
+                ))
+            })
+    })?;
+    let dict = PyDict::new(py);
+    fill_drop_report(py, &dict, &report)?;
+    Ok(dict.into_any().unbind())
+}
+
+#[cfg(feature = "ci-unify")]
+#[pyfunction]
+#[pyo3(signature = (table_name, namespace, configs))]
+fn declare_vector_index(table_name: String, namespace: String, configs: String) -> PyResult<()> {
+    let configs: Vec<VectorIndexTableConfig> = serde_json::from_str(&configs).map_err(|error| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "invalid vector index config JSON: {error}"
+        ))
+    })?;
+    let runtime = Runtime::new().map_err(|error| {
+        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+            "failed to create tokio runtime: {error}"
+        ))
+    })?;
+    runtime.block_on(async {
+        let client = MetaDataClient::from_env().await.map_err(|error| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                "vector index declaration requires metadata access: {error}"
+            ))
+        })?;
+        declare_vector_index_impl(&client, &table_name, &namespace, configs)
+            .await
+            .map_err(|error| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                    "vector index declaration failed: {error}"
+                ))
+            })
+    })
+}
+
+#[cfg(feature = "ci-unify")]
+#[pyfunction]
+#[pyo3(signature = (store_config, table_name, namespace))]
+fn gc_dropped_vector_index_objects(
+    py: Python<'_>,
+    store_config: HashMap<String, String>,
+    table_name: String,
+    namespace: String,
+) -> PyResult<Py<PyAny>> {
+    use pyo3::types::PyDict;
+
+    let runtime = Runtime::new().map_err(|error| {
+        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+            "failed to create tokio runtime: {error}"
+        ))
+    })?;
+    let report = runtime.block_on(async {
+        let client = MetaDataClient::from_env().await.map_err(|error| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                "vector index GC requires metadata access: {error}"
+            ))
+        })?;
+        let report = gc_dropped_objects_impl(&client, &table_name, &namespace, &store_config)
+            .await
+            .map_err(|error| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                    "vector index GC failed: {error}"
+                ))
+            })?;
+        Ok::<_, PyErr>((report, client))
+    })?;
+    let dict = PyDict::new(py);
+    fill_drop_gc_report(py, &dict, &report.0)?;
+    Ok(dict.into_any().unbind())
+}
+
+#[cfg(feature = "ci-unify")]
+fn fill_drop_gc_report(
+    py: Python<'_>,
+    dict: &Bound<pyo3::types::PyDict>,
+    report: &DropGcReport,
+) -> PyResult<()> {
+    dict.set_item("table_name", &report.table_name)?;
+    dict.set_item("namespace", &report.namespace)?;
+    dict.set_item("tombstones", report.tombstones)?;
+    dict.set_item("objects_deleted", report.objects_deleted)?;
+    dict.set_item("bytes_deleted", report.bytes_deleted)?;
+    let _ = py;
+    Ok(())
+}
+
+#[cfg(feature = "ci-unify")]
+fn fill_drop_report(
+    py: Python<'_>,
+    dict: &Bound<pyo3::types::PyDict>,
+    report: &DropVectorIndexReport,
+) -> PyResult<()> {
+    use pyo3::types::PyList;
+    dict.set_item("table_name", &report.table_name)?;
+    dict.set_item("namespace", &report.namespace)?;
+    dict.set_item("columns", PyList::new(py, &report.columns)?)?;
+    dict.set_item("partitions", PyList::new(py, &report.partitions)?)?;
+    dict.set_item("shards_dropped", report.shards_dropped)?;
+    dict.set_item("objects_deleted", report.objects_deleted)?;
+    dict.set_item("bytes_deleted", report.bytes_deleted)?;
+    dict.set_item("declaration_removed", report.declaration_removed)?;
+    dict.set_item("dry_run", report.dry_run)?;
+    dict.set_item("epoch", report.epoch)?;
+    dict.set_item("drop_id", report.drop_id.as_deref())?;
+    dict.set_item("cleanup", &report.cleanup)?;
+    Ok(())
+}
+
 pub fn init(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     let submodule = PyModule::new(m.py(), "vector")?;
     submodule.add_function(wrap_pyfunction!(build_shard_vector_index, &submodule)?)?;
     submodule.add_function(wrap_pyfunction!(rebuild_shard_vector_index, &submodule)?)?;
     submodule.add_function(wrap_pyfunction!(parse_vector_index_configs, &submodule)?)?;
+    submodule.add_function(wrap_pyfunction!(
+        delete_vector_index_keys_base64,
+        &submodule
+    )?)?;
+    submodule.add_function(wrap_pyfunction!(encode_index_keys_base64, &submodule)?)?;
+    #[cfg(feature = "ci-unify")]
+    submodule.add_function(wrap_pyfunction!(drop_vector_index, &submodule)?)?;
+    #[cfg(feature = "ci-unify")]
+    submodule.add_function(wrap_pyfunction!(declare_vector_index, &submodule)?)?;
+    #[cfg(feature = "ci-unify")]
+    submodule.add_function(wrap_pyfunction!(
+        gc_dropped_vector_index_objects,
+        &submodule
+    )?)?;
     m.add_submodule(&submodule)?;
     let full_name = format!("{}.vector", m.name()?);
     crate::install_module(&full_name, &submodule)?;

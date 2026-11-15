@@ -226,6 +226,9 @@ pub struct SegmentEntry {
     /// rather than "covers nothing".
     #[serde(default)]
     pub data_files: Vec<String>,
+    /// Catalog revision this segment was published at (0 = legacy/unknown).
+    #[serde(default)]
+    pub birth_version: u64,
 }
 
 impl SegmentEntry {
@@ -246,6 +249,8 @@ pub struct ClusterSegmentData {
     pub cluster_id: u32,
     /// Delta version this segment was written as (0 = base segment).
     pub version: u32,
+    /// Catalog revision this segment was published at (not stored in `.seg`).
+    pub birth_version: u64,
     pub centroid: Vec<f32>,
     pub padded_dim: usize,
     pub ex_bits: usize,
@@ -381,6 +386,7 @@ pub async fn read_segment_full(
     Ok(ClusterSegmentData {
         cluster_id,
         version,
+        birth_version: 0,
         centroid,
         padded_dim: pd,
         ex_bits: eb,

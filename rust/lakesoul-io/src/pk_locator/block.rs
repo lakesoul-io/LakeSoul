@@ -16,8 +16,8 @@
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, FixedSizeListArray, Float32Array, Float64Array,
-    LargeListArray, ListArray,
+    Array, ArrayRef, FixedSizeListArray, Float32Array, Float64Array, LargeListArray,
+    ListArray,
 };
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, FieldRef};
@@ -51,9 +51,7 @@ impl VectorElem {
 pub(crate) fn vector_elem(data_type: &DataType) -> Option<VectorElem> {
     match data_type {
         DataType::FixedSizeList(field, dim) if *dim > 0 => VectorElem::of_field(field),
-        DataType::List(field) | DataType::LargeList(field) => {
-            VectorElem::of_field(field)
-        }
+        DataType::List(field) | DataType::LargeList(field) => VectorElem::of_field(field),
         _ => None,
     }
 }
@@ -202,9 +200,12 @@ pub(crate) fn take_rows_from_bytes(
     };
     let count = rows.len();
     match field.data_type() {
-        DataType::FixedSizeList(item, size) => Some(Arc::new(
-            FixedSizeListArray::new(Arc::clone(item), *size, values, None),
-        )),
+        DataType::FixedSizeList(item, size) => Some(Arc::new(FixedSizeListArray::new(
+            Arc::clone(item),
+            *size,
+            values,
+            None,
+        ))),
         DataType::List(item) => {
             let offsets: Vec<i32> = (0..=count).map(|at| (at * dim) as i32).collect();
             Some(Arc::new(ListArray::new(
@@ -253,8 +254,8 @@ pub(crate) fn score_rows_from_bytes(
             VectorElem::F64 => {
                 for value in row.chunks_exact(8) {
                     stored.push(f64::from_le_bytes([
-                        value[0], value[1], value[2], value[3], value[4],
-                        value[5], value[6], value[7],
+                        value[0], value[1], value[2], value[3], value[4], value[5],
+                        value[6], value[7],
                     ]) as f32);
                 }
             }

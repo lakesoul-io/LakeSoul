@@ -4,17 +4,15 @@
 
 use std::sync::Arc;
 
-use datafusion::catalog::Session;
 use arrow::compute::SortOptions;
+use datafusion::catalog::Session;
 use datafusion::common::ScalarValue;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion::logical_expr::{Expr, LogicalPlan};
-use datafusion::physical_expr::{
-    LexOrdering, PhysicalSortExpr, create_physical_expr,
-};
+use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr, create_physical_expr};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::projection::ProjectionExec;

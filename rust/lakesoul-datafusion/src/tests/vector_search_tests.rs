@@ -218,7 +218,8 @@ fn brute_force_topk_fused_ip(
     weight_b: f32,
     k: usize,
 ) -> Vec<u64> {
-    let dot = |v: &Vec<f32>, q: &[f32]| -> f32 { v.iter().zip(q).map(|(a, b)| a * b).sum() };
+    let dot =
+        |v: &Vec<f32>, q: &[f32]| -> f32 { v.iter().zip(q).map(|(a, b)| a * b).sum() };
     let mut scored: Vec<(f32, u64)> = (0..vec_a.len())
         .map(|i| {
             (
@@ -443,7 +444,10 @@ fn rule_rewrites_inner_product_desc() {
         .unwrap()
         .data;
     let request = marker_request(&rewritten).expect("marker must be injected");
-    assert!(request.order_by, "IP index-only ordering must be pushed down");
+    assert!(
+        request.order_by,
+        "IP index-only ordering must be pushed down"
+    );
     assert_eq!(request.columns[0].metric, "IP");
     assert_eq!(request.columns[0].weight, 1.0);
     assert_eq!(request.overfetch, 2);
@@ -457,7 +461,7 @@ fn rule_rewrites_pgvector_negated_inner_product() {
     let plan = LogicalPlanBuilder::scan("t", provider_as_source(mem_table), None)
         .unwrap()
         .sort(vec![
-            Expr::Negative(Box::new(inner_product_expr())).sort(true, false)
+            Expr::Negative(Box::new(inner_product_expr())).sort(true, false),
         ])
         .unwrap()
         .limit(0, Some(10))
@@ -480,7 +484,7 @@ fn rule_rewrites_pgvector_negated_inner_product() {
     let plan = LogicalPlanBuilder::scan("t", provider_as_source(mem_table), None)
         .unwrap()
         .sort(vec![
-            Expr::Negative(Box::new(inner_product_expr())).sort(true, false)
+            Expr::Negative(Box::new(inner_product_expr())).sort(true, false),
         ])
         .unwrap()
         .limit(0, Some(10))
@@ -778,7 +782,6 @@ fn clean_table_dir(table_name: &str) {
             .join(table_name),
     );
 }
-
 
 /// Existing exact-path tests use the old default ordering; make it explicit
 /// now that the session default is index-only.
@@ -2536,8 +2539,7 @@ async fn sql_vector_search_multi_file_bucket() {
         .unwrap();
     assert_vector_index_built(table_name);
 
-    let ctx =
-        crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
     use_exact_rerank(&ctx).await;
     ctx.sql("SET lakesoul_vector_search.nprobe = 4")
         .await
@@ -2622,8 +2624,7 @@ async fn sql_vector_search_multi_file_upsert_uses_newest_version() {
         .unwrap();
     assert_vector_index_built(table_name);
 
-    let ctx =
-        crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
     use_exact_rerank(&ctx).await;
     ctx.sql("SET lakesoul_vector_search.nprobe = 4")
         .await
@@ -2697,8 +2698,7 @@ async fn sql_vector_search_projects_extra_columns() {
         .unwrap();
     assert_vector_index_built(table_name);
 
-    let ctx =
-        crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
     use_exact_rerank(&ctx).await;
     ctx.sql("SET lakesoul_vector_search.nprobe = 4")
         .await
@@ -2821,8 +2821,7 @@ async fn sql_vector_search_filter_narrows_probe() {
         .unwrap();
     assert_vector_index_built(table_name);
 
-    let ctx =
-        crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
     use_exact_rerank(&ctx).await;
     ctx.sql("SET lakesoul_vector_search.nprobe = 4")
         .await
@@ -2882,8 +2881,10 @@ async fn sql_vector_search_filter_narrows_probe() {
         .map(|(id, vector)| (*id, vector))
         .collect();
     let expected: Vec<u64> = {
-        let vectors_only: Vec<Vec<f32>> =
-            filtered.iter().map(|(_, vector)| (*vector).clone()).collect();
+        let vectors_only: Vec<Vec<f32>> = filtered
+            .iter()
+            .map(|(_, vector)| (*vector).clone())
+            .collect();
         let top = brute_force_topk(&vectors_only, &query, 10);
         top.iter()
             .map(|position| filtered[*position as usize].0)
@@ -2936,14 +2937,11 @@ fn cdc_vector_schema() -> SchemaRef {
     ]))
 }
 
-fn make_cdc_vector_batch(
-    ids: &[u64],
-    vectors: &[Vec<f32>],
-    ops: &[&str],
-) -> RecordBatch {
+fn make_cdc_vector_batch(ids: &[u64], vectors: &[Vec<f32>], ops: &[&str]) -> RecordBatch {
     let id_array = arrow::array::UInt64Array::from(ids.to_vec());
-    let op_array =
-        arrow::array::StringArray::from(ops.iter().map(|op| Some(*op)).collect::<Vec<_>>());
+    let op_array = arrow::array::StringArray::from(
+        ops.iter().map(|op| Some(*op)).collect::<Vec<_>>(),
+    );
     let mut builder = arrow::array::FixedSizeListBuilder::new(
         arrow::array::Float32Builder::new(),
         DIM as i32,
@@ -3015,8 +3013,7 @@ async fn sql_vector_search_cdc_drops_tombstones() {
         .await
         .unwrap();
 
-    let ctx =
-        crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
     use_exact_rerank(&ctx).await;
     ctx.sql("SET lakesoul_vector_search.nprobe = 4")
         .await
@@ -3033,7 +3030,9 @@ async fn sql_vector_search_cdc_drops_tombstones() {
 
     // The table itself must show the merge-on-read row count.
     let count = ctx
-        .sql(&format!("select count(*) as cnt from \"lakesoul\".default.{table_name}"))
+        .sql(&format!(
+            "select count(*) as cnt from \"lakesoul\".default.{table_name}"
+        ))
         .await
         .unwrap()
         .collect()
@@ -3060,8 +3059,10 @@ async fn sql_vector_search_cdc_drops_tombstones() {
         .map(|(id, vector)| (*id, vector))
         .collect();
     let expected: Vec<u64> = {
-        let vectors_only: Vec<Vec<f32>> =
-            visible.iter().map(|(_, vector)| (*vector).clone()).collect();
+        let vectors_only: Vec<Vec<f32>> = visible
+            .iter()
+            .map(|(_, vector)| (*vector).clone())
+            .collect();
         let top = brute_force_topk(&vectors_only, &query, 10);
         top.iter()
             .map(|position| visible[*position as usize].0)
@@ -3155,7 +3156,11 @@ fn make_partitioned_vector_batch(
     let vec_array = builder.finish();
     RecordBatch::try_new(
         partitioned_vector_schema(),
-        vec![Arc::new(part_array), Arc::new(id_array), Arc::new(vec_array)],
+        vec![
+            Arc::new(part_array),
+            Arc::new(id_array),
+            Arc::new(vec_array),
+        ],
     )
     .unwrap()
 }
@@ -3212,11 +3217,13 @@ async fn sql_vector_search_range_partitioned_table() {
                 }
             }
         }
-        assert!(segments > 0, "no vector index segments under the table root");
+        assert!(
+            segments > 0,
+            "no vector index segments under the table root"
+        );
     }
 
-    let ctx =
-        crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
+    let ctx = crate::create_lakesoul_session_ctx(client, &default_args()).unwrap();
     use_exact_rerank(&ctx).await;
     ctx.sql("SET lakesoul_vector_search.nprobe = 4")
         .await
@@ -3267,7 +3274,11 @@ async fn sql_vector_search_range_partitioned_table() {
             returned.push((*id, *part));
         }
     }
-    assert_eq!(returned.len(), 10, "the partitioned query must fill the limit");
+    assert_eq!(
+        returned.len(),
+        10,
+        "the partitioned query must fill the limit"
+    );
     let expected = brute_force_topk(&vectors, &query, 10);
     let hits = returned
         .iter()
@@ -3375,8 +3386,10 @@ async fn sql_vector_batch_ip_metric() {
     let index_only = provider.vector_batch_search(&state, &base).await.unwrap();
     assert_eq!(index_only.len(), queries.len());
     for (query_index, query) in queries.iter().enumerate() {
-        let expected: Vec<i64> =
-            brute_force_topk_ip(&vectors, query, 10).iter().map(|v| *v as i64).collect();
+        let expected: Vec<i64> = brute_force_topk_ip(&vectors, query, 10)
+            .iter()
+            .map(|v| *v as i64)
+            .collect();
         let hits = index_only[query_index]
             .iter()
             .filter(|id| expected.contains(id))
@@ -3398,8 +3411,10 @@ async fn sql_vector_batch_ip_metric() {
         .await
         .unwrap();
     for (query_index, query) in queries.iter().enumerate() {
-        let expected: Vec<i64> =
-            brute_force_topk_ip(&vectors, query, 10).iter().map(|v| *v as i64).collect();
+        let expected: Vec<i64> = brute_force_topk_ip(&vectors, query, 10)
+            .iter()
+            .map(|v| *v as i64)
+            .collect();
         let hits = exact[query_index]
             .iter()
             .filter(|id| expected.contains(id))
@@ -3603,7 +3618,10 @@ async fn sql_vector_search_multi_column_fusion_ip() {
         explain.contains("vec_a+vec_b"),
         "both IP columns must reach the exec: {explain}"
     );
-    assert!(explain.contains("SortExec"), "exact mode keeps the sort: {explain}");
+    assert!(
+        explain.contains("SortExec"),
+        "exact mode keeps the sort: {explain}"
+    );
 
     let ids_result = collect_ids(&ctx, &sql).await;
     assert_eq!(ids_result.len(), 5, "LIMIT 5 rows: {ids_result:?}");
@@ -4185,6 +4203,450 @@ async fn sql_vector_search_with_filter_above_scan_reads_payload_once() {
         "a filter above the scan must keep the single-read path"
     );
 
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_vector_index_removes_shards_and_declaration() {
+    use crate::tests::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_drop_index";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+    let test_prefix = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name);
+    let test_prefix = lakesoul_metadata::index_catalog::normalize_index_prefix(
+        test_prefix.to_str().unwrap(),
+    );
+    let cleanup_catalog = client.vector_index_catalog();
+    for prefix in cleanup_catalog
+        .list_dropped_under(&test_prefix)
+        .await
+        .unwrap()
+    {
+        let _ = cleanup_catalog.clear_dropped(&prefix).await;
+    }
+
+    let mut configs = vector_configs();
+    configs[0].management.rebuild_mode = "none".to_string();
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("4");
+    create_table_with_vector_index(client.clone(), table_name, builder.build(), &configs)
+        .await
+        .unwrap();
+
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    let vectors = random_vectors(100);
+    let ids: Vec<u64> = (0..100).collect();
+    let batch = make_batch(&ids, &vectors);
+    table.execute_upsert(batch).await.unwrap();
+
+    let catalog = client.vector_index_catalog();
+    let prefix = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name);
+    let prefix = lakesoul_metadata::index_catalog::normalize_index_prefix(
+        prefix.to_str().unwrap(),
+    );
+    assert!(
+        !catalog.list_shards_under(&prefix).await.unwrap().is_empty(),
+        "test setup must create at least one vector index shard"
+    );
+
+    let dry = table
+        .drop_vector_index(crate::vector_index::DropVectorIndexOptions {
+            columns: Some(vec!["vec".to_string()]),
+            dry_run: true,
+            if_exists: false,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(dry.dry_run);
+    assert!(dry.shards_dropped > 0);
+    assert!(
+        !catalog.list_shards_under(&prefix).await.unwrap().is_empty(),
+        "dry-run must not delete control-plane shards"
+    );
+
+    let report = table
+        .drop_vector_index(crate::vector_index::DropVectorIndexOptions {
+            columns: Some(vec!["vec".to_string()]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(!report.dry_run);
+    assert_eq!(report.columns, vec!["vec".to_string()]);
+    assert!(report.shards_dropped > 0);
+    assert!(report.declaration_removed);
+    assert!(report.objects_deleted > 0);
+    assert!(
+        catalog.list_shards_under(&prefix).await.unwrap().is_empty(),
+        "drop must remove all control-plane shards"
+    );
+    // Removing the declaration keeps the tombstone: a long-running writer
+    // with the old table property must not recreate the prefix.
+    assert!(
+        !catalog
+            .list_dropped_under(&prefix)
+            .await
+            .unwrap()
+            .is_empty(),
+        "declaration-removing drop must retain its tombstones"
+    );
+    let gc = crate::vector_index::gc_dropped_vector_index_objects(
+        &client,
+        table_name,
+        "default",
+        &std::collections::HashMap::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(gc.tombstones, report.shards_dropped);
+    assert!(
+        !catalog
+            .list_dropped_under(&prefix)
+            .await
+            .unwrap()
+            .is_empty(),
+        "object GC must keep tombstones"
+    );
+    let info = client
+        .get_table_info_by_table_name(table_name, "default")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !info.properties.contains("vector_index_columns"),
+        "drop must remove vector_index_columns, got {}",
+        info.properties
+    );
+
+    // Data is untouched and a query falls back to the normal reader.
+    let q = vectors[0]
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} \
+         order by array_distance(vec, ARRAY[{q}]) limit 5"
+    );
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+    assert_eq!(rows, 5, "search must fall back to a normal scan");
+
+    // The public re-declare path makes a declaration-removing drop
+    // rebuildable again: it writes the property and clears tombstones.
+    let configs = vector_configs();
+    crate::vector_index::declare_vector_index(&client, table_name, "default", configs)
+        .await
+        .unwrap();
+    assert!(
+        catalog
+            .list_dropped_under(&prefix)
+            .await
+            .unwrap()
+            .is_empty(),
+        "re-declare must clear the target tombstones"
+    );
+    let rebuilt = table.rebuild_vector_index().await.unwrap();
+    assert!(rebuilt >= 1, "re-declare + rebuild must recreate shards");
+    assert!(
+        !catalog.list_shards_under(&prefix).await.unwrap().is_empty(),
+        "re-declare + rebuild must publish shards"
+    );
+
+    // Leave the shared test database clean: drop_table does not remove
+    // index_drop rows.
+    for prefix in catalog.list_dropped_under(&prefix).await.unwrap() {
+        let _ = catalog.clear_dropped(&prefix).await;
+    }
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_vector_index_partitioned_table_uses_partition_dirs() {
+    use crate::tests::create_partitioned_vector_table;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_drop_partitioned";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let mut configs = vector_configs();
+    configs[0].management.rebuild_mode = "none".to_string();
+    create_partitioned_vector_table(
+        client.clone(),
+        table_name,
+        partitioned_vector_schema(),
+        &configs,
+    )
+    .await
+    .unwrap();
+
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    let ids: Vec<u64> = (0..40).collect();
+    let parts: Vec<i32> = ids.iter().map(|id| (*id % 2) as i32).collect();
+    let vectors = seeded_vectors(40, 13);
+    table
+        .execute_upsert(make_partitioned_vector_batch(&parts, &ids, &vectors))
+        .await
+        .unwrap();
+
+    let prefix = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name);
+    let prefix = lakesoul_metadata::index_catalog::normalize_index_prefix(
+        prefix.to_str().unwrap(),
+    );
+    let catalog = client.vector_index_catalog();
+    let before = catalog.list_shards_under(&prefix).await.unwrap();
+    assert!(
+        before.iter().any(|prefix| prefix.contains("/part=0/")),
+        "partitioned table must have part=0 shards: {before:?}"
+    );
+    assert!(
+        before.iter().any(|prefix| prefix.contains("/part=1/")),
+        "partitioned table must have part=1 shards: {before:?}"
+    );
+
+    let dry = table
+        .drop_vector_index(crate::vector_index::DropVectorIndexOptions {
+            columns: Some(vec!["vec".to_string()]),
+            partition_desc: Some("part=0".to_string()),
+            keep_declaration: true,
+            dry_run: true,
+            if_exists: false,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(dry.partitions, vec!["part=0".to_string()]);
+    assert!(dry.shards_dropped > 0);
+
+    let report = table
+        .drop_vector_index(crate::vector_index::DropVectorIndexOptions {
+            columns: Some(vec!["vec".to_string()]),
+            partition_desc: Some("part=0".to_string()),
+            keep_declaration: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(report.partitions, vec!["part=0".to_string()]);
+    assert!(report.shards_dropped > 0);
+    assert!(report.objects_deleted > 0);
+
+    let after = catalog.list_shards_under(&prefix).await.unwrap();
+    assert!(
+        !after.iter().any(|prefix| prefix.contains("/part=0/")),
+        "part=0 shards must be removed: {after:?}"
+    );
+    assert!(
+        after.iter().any(|prefix| prefix.contains("/part=1/")),
+        "part=1 shards must remain: {after:?}"
+    );
+
+    // Reader fallback still returns correct rows for the dropped partition.
+    let ctx =
+        crate::create_lakesoul_session_ctx(client.clone(), &default_args()).unwrap();
+    let q = vectors[0]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "select id from \"lakesoul\".default.{table_name} where part = 0 \
+         order by array_distance(vec, ARRAY[{q}]) limit 5"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+    assert_eq!(rows, 5, "dropped partition must fall back to a normal scan");
+
+    for prefix in catalog.list_dropped_under(&prefix).await.unwrap() {
+        let _ = catalog.clear_dropped(&prefix).await;
+    }
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_vector_index_keep_declaration_can_rebuild() {
+    use crate::tests::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_drop_keep_declaration";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+    let test_prefix = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name);
+    let test_prefix = lakesoul_metadata::index_catalog::normalize_index_prefix(
+        test_prefix.to_str().unwrap(),
+    );
+    let cleanup_catalog = client.vector_index_catalog();
+    for prefix in cleanup_catalog
+        .list_dropped_under(&test_prefix)
+        .await
+        .unwrap()
+    {
+        let _ = cleanup_catalog.clear_dropped(&prefix).await;
+    }
+
+    let mut configs = vector_configs();
+    configs[0].management.rebuild_mode = "none".to_string();
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("4");
+    create_table_with_vector_index(client.clone(), table_name, builder.build(), &configs)
+        .await
+        .unwrap();
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    let vectors = random_vectors(100);
+    let ids: Vec<u64> = (0..100).collect();
+    table
+        .execute_upsert(make_batch(&ids, &vectors))
+        .await
+        .unwrap();
+
+    let report = table
+        .drop_vector_index(crate::vector_index::DropVectorIndexOptions {
+            columns: Some(vec!["vec".to_string()]),
+            keep_declaration: true,
+            purge_files: false,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(report.shards_dropped > 0);
+    assert!(!report.declaration_removed);
+    let info = client
+        .get_table_info_by_table_name(table_name, "default")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        info.properties.contains("vector_index_columns"),
+        "keep_declaration must retain the property"
+    );
+
+    // An explicit rebuild is allowed to claim the dropped prefix and
+    // recreate the index.
+    let rebuilt = table.rebuild_vector_index().await.unwrap();
+    assert!(rebuilt >= 1, "expected rebuild after keep_declaration drop");
+    let catalog = client.vector_index_catalog();
+    let prefix = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name);
+    let prefix = lakesoul_metadata::index_catalog::normalize_index_prefix(
+        prefix.to_str().unwrap(),
+    );
+    assert!(
+        !catalog.list_shards_under(&prefix).await.unwrap().is_empty(),
+        "explicit rebuild must recreate shards"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_table_cleans_vector_index_control_plane() {
+    use crate::tests::create_table_with_vector_index;
+
+    let client = Arc::new(MetaDataClient::from_env().await.unwrap());
+    let table_name = "vec_drop_table_cascade";
+    let _ = client.drop_table(table_name, "default").await;
+    clean_table_dir(table_name);
+
+    let mut configs = vector_configs();
+    configs[0].management.rebuild_mode = "none".to_string();
+    let builder = LakeSoulIOConfigBuilder::new()
+        .with_schema(vector_schema())
+        .with_primary_keys(vec!["id".to_string()])
+        .with_hash_bucket_num("4");
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.clone().build(),
+        &configs,
+    )
+    .await
+    .unwrap();
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    let vectors = random_vectors(100);
+    let ids: Vec<u64> = (0..100).collect();
+    table
+        .execute_upsert(make_batch(&ids, &vectors))
+        .await
+        .unwrap();
+
+    let catalog = client.vector_index_catalog();
+    let prefix = std::env::current_dir()
+        .unwrap()
+        .join("default")
+        .join(table_name);
+    let prefix = lakesoul_metadata::index_catalog::normalize_index_prefix(
+        prefix.to_str().unwrap(),
+    );
+    assert!(!catalog.list_shards_under(&prefix).await.unwrap().is_empty());
+
+    client.drop_table(table_name, "default").await.unwrap();
+    assert!(
+        catalog.list_shards_under(&prefix).await.unwrap().is_empty(),
+        "drop_table must remove vector index shards"
+    );
+    assert!(
+        catalog
+            .list_dropped_under(&prefix)
+            .await
+            .unwrap()
+            .is_empty(),
+        "drop_table must remove drop tombstones"
+    );
+
+    // Recreating the same path must be able to build a fresh index.
+    clean_table_dir(table_name);
+    create_table_with_vector_index(
+        client.clone(),
+        table_name,
+        builder.clone().build(),
+        &configs,
+    )
+    .await
+    .unwrap();
+    let table = crate::lakesoul_table::LakeSoulTable::for_name(table_name)
+        .await
+        .unwrap();
+    table
+        .execute_upsert(make_batch(&ids, &vectors))
+        .await
+        .unwrap();
+    assert!(
+        !catalog.list_shards_under(&prefix).await.unwrap().is_empty(),
+        "recreated table must build a fresh index"
+    );
     let _ = client.drop_table(table_name, "default").await;
     clean_table_dir(table_name);
 }

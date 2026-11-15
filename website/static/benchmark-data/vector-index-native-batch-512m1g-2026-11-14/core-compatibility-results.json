@@ -1,0 +1,130 @@
+{
+  "database": "lakesoul_native_batch_tests",
+  "tests": [
+    {
+      "filter": "upsert_tests::",
+      "command": [
+        "cargo",
+        "test",
+        "-q",
+        "-p",
+        "lakesoul-datafusion",
+        "--lib",
+        "upsert_tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "returncode": 0,
+      "wall_seconds": 228.27789831534028,
+      "log": "/tmp/native-batch-core-compatibility-snhpx7_s/00.log",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "filter": "sql_range_primary_key_insert_is_partition_scoped_and_atomic",
+      "command": [
+        "cargo",
+        "test",
+        "-q",
+        "-p",
+        "lakesoul-datafusion",
+        "--lib",
+        "sql_range_primary_key_insert_is_partition_scoped_and_atomic",
+        "--",
+        "--test-threads=1"
+      ],
+      "returncode": 0,
+      "wall_seconds": 3.250263450667262,
+      "log": "/tmp/native-batch-core-compatibility-snhpx7_s/01.log",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "filter": "catalog_cdc_scan_filters_delete_tombstones_before_projection",
+      "command": [
+        "cargo",
+        "test",
+        "-q",
+        "-p",
+        "lakesoul-datafusion",
+        "--lib",
+        "catalog_cdc_scan_filters_delete_tombstones_before_projection",
+        "--",
+        "--test-threads=1"
+      ],
+      "returncode": 0,
+      "wall_seconds": 0.8101265821605921,
+      "log": "/tmp/native-batch-core-compatibility-snhpx7_s/02.log",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "filter": "distributed_tests::test_merge_on_read_matches_single_node",
+      "command": [
+        "cargo",
+        "test",
+        "-q",
+        "-p",
+        "lakesoul-datafusion",
+        "--lib",
+        "distributed_tests::test_merge_on_read_matches_single_node",
+        "--",
+        "--test-threads=1"
+      ],
+      "returncode": 0,
+      "wall_seconds": 1.783968560397625,
+      "log": "/tmp/native-batch-core-compatibility-snhpx7_s/03.log",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "filter": "distributed_tests::test_cdc_deletes_and_pushdown_match_single_node",
+      "command": [
+        "cargo",
+        "test",
+        "-q",
+        "-p",
+        "lakesoul-datafusion",
+        "--lib",
+        "distributed_tests::test_cdc_deletes_and_pushdown_match_single_node",
+        "--",
+        "--test-threads=1"
+      ],
+      "returncode": 0,
+      "wall_seconds": 1.2476768512278795,
+      "log": "/tmp/native-batch-core-compatibility-snhpx7_s/04.log",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "filter": "distributed_tests::test_queries_during_concurrent_upserts_stay_consistent",
+      "command": [
+        "cargo",
+        "test",
+        "-q",
+        "-p",
+        "lakesoul-datafusion",
+        "--lib",
+        "distributed_tests::test_queries_during_concurrent_upserts_stay_consistent",
+        "--",
+        "--test-threads=1"
+      ],
+      "returncode": 0,
+      "wall_seconds": 5.843624733388424,
+      "log": "/tmp/native-batch-core-compatibility-snhpx7_s/05.log",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "not_run": [
+    "compaction_tests module is commented out in tests/mod.rs; no compaction runtime claim"
+  ],
+  "release_hashes_unchanged": true,
+  "status": "passed"
+}

@@ -60,8 +60,8 @@ use datafusion_datasource::file_scan_config::FileScanConfig;
 use datafusion_datasource::memory::MemorySourceConfig;
 use datafusion_expr::{Expr, Operator};
 use futures::StreamExt;
-use lakesoul_vector::cache_config::config as vector_cache_config;
 use lakesoul_vector::IndexKey;
+use lakesoul_vector::cache_config::config as vector_cache_config;
 use memmap2::Mmap;
 use moka::future::Cache;
 use object_store::ObjectStore;
@@ -88,6 +88,7 @@ use vortex::session::VortexSession;
 
 use crate::cache::get_lakesoul_cache;
 use crate::cache::paging::PageCache;
+use crate::cache::store_namespace::{StoreCacheNamespace, store_cache_namespace};
 use crate::config::LakeSoulIOConfig;
 use crate::file_format::{PhysicalFormat, vortex_scan_session};
 use crate::helpers::transform::make_default_array;
@@ -136,15 +137,19 @@ pub fn cache_stats() -> (u64, u64) {
     )
 }
 
-/// Opened vortex files, keyed by location: opening reads the footer and layout
-/// over the object store, so it is worth amortizing across queries.  The index
-/// itself lives in the shared disk cache; this only keeps handles.
-static VORTEX_FILES: LazyLock<Cache<String, Arc<VortexFile>>> =
+struct CachedVortexFile {
+    file: Arc<VortexFile>,
+    _namespace: Arc<crate::cache::store_namespace::StoreCacheNamespace>,
+}
+
+/// Opened vortex files, keyed by actual store identity and location.
+static VORTEX_FILES: LazyLock<Cache<String, Arc<CachedVortexFile>>> =
     LazyLock::new(|| Cache::builder().max_capacity(1024).build());
 
 /// Files whose index was rejected (unsorted, oversized, ...).  Remembering the
 /// rejection avoids re-reading the key columns on every query; the TTL keeps a
-/// transient build failure from disabling the file forever.
+/// transient build failure from disabling the file forever. Store namespace
+/// is part of this key so one endpoint cannot poison another.
 static REJECTED: LazyLock<Cache<String, ()>> = LazyLock::new(|| {
     Cache::builder()
         .max_capacity(10_000)
@@ -677,6 +682,7 @@ impl IndexWriter {
 struct CachedFile {
     index: Arc<MmapIndex>,
     source: FileSource,
+    namespace: Arc<StoreCacheNamespace>,
 }
 
 /// The handle a take path needs, per physical format.
@@ -1448,26 +1454,24 @@ async fn get_vortex_file(
     location: &StorePath,
     session: &VortexSession,
 ) -> Option<Arc<VortexFile>> {
-    let key = location.as_ref().to_string();
+    let namespace = store_cache_namespace(&store);
+    let key = format!("{}:{}", namespace.token(), location.as_ref());
     let location = location.clone();
     let session = session.clone();
     VORTEX_FILES
         .try_get_with(key, async move {
             let read_at = Arc::new(ObjectStoreReadAt::new_with_allocator(
-                store,
+                namespace.store(),
                 location.clone(),
                 session.handle(),
                 session.allocator(),
             ));
-            session
-                .open_options()
-                .open_read(read_at)
-                .await
-                .map(Arc::new)
-                .map_err(|error| error.to_string())
+            let file = session.open_options().open_read(read_at).await.map_err(|error| error.to_string())?;
+            Ok::<_, String>(Arc::new(CachedVortexFile {file: Arc::new(file), _namespace: namespace}))
         })
         .await
         .ok()
+        .map(|cached| Arc::clone(&cached.file))
 }
 
 /// Identifier of one key layout: the pinned columns, their types and the row
@@ -1518,10 +1522,23 @@ fn index_kind_hash(kind: &str) -> u64 {
 
 /// Fingerprint of the data file the index belongs to, stored in the header so
 /// a name-hash collision can never serve one file's index for another.
+#[cfg(test)]
 fn index_source_hash(location: &StorePath) -> u64 {
     use std::hash::{Hash, Hasher};
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    location.as_ref().hash(&mut hasher);
+    hasher.finish()
+}
+
+fn namespaced_index_source_hash(
+    namespace: &StoreCacheNamespace,
+    location: &StorePath,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    namespace.token().hash(&mut hasher);
     location.as_ref().hash(&mut hasher);
     hasher.finish()
 }
@@ -1538,6 +1555,7 @@ async fn get_or_load_file(
 ) -> Option<Arc<CachedFile>> {
     // The handle the take path needs.  Vortex has to open the file; parquet
     // only needs its size for the reader's metadata fetch.
+    let namespace = store_cache_namespace(&store);
     let source = match format {
         PhysicalFormat::Vortex => {
             let session = vortex_session(session);
@@ -1554,25 +1572,28 @@ async fn get_or_load_file(
         }
         _ => return None,
     };
-    let kind = lookup_index_kind(columns, types, defaults);
+    let base_kind = lookup_index_kind(columns, types, defaults);
+    let kind = format!("{base_kind}#store:{}", namespace.token());
     let kind_hash = index_kind_hash(&kind);
-    let source_hash = index_source_hash(&location);
+    let source_hash = namespaced_index_source_hash(&namespace, &location);
+    let disk_location = namespace.path(&location);
 
     // Cached build: probe/populate the L2 key-index cache.  Without L2 the
     // exact re-rank still needs a key index; build one into a temporary file
     // and mmap it directly (see the uncached branch below).
     if let Some(cache) = index_disk_cache() {
-        let rejected_key = format!("{location}#{kind}");
+        let rejected_key = format!("{disk_location}#{kind}");
         if REJECTED.get(&rejected_key).await.is_some() {
             return None;
         }
 
-        if let Some((entry, size)) = cache.get_file_entry(&location, &kind).await {
+        if let Some((entry, size)) = cache.get_file_entry(&disk_location, &kind).await {
             if let Some(index) = MmapIndex::open(entry, size, kind_hash, source_hash) {
                 HITS.fetch_add(1, AtomicOrdering::Relaxed);
                 return Some(Arc::new(CachedFile {
                     index: Arc::new(index),
                     source,
+                    namespace: Arc::clone(&namespace),
                 }));
             }
             warn!("corrupt pk index for {location}; rebuilding");
@@ -1625,7 +1646,7 @@ async fn get_or_load_file(
             }
         };
         let (entry, size, built) = match cache
-            .insert_file_entry(&location, &kind, temp.clone(), size)
+            .insert_file_entry(&disk_location, &kind, temp.clone(), size)
             .await
         {
             Ok(entry) => entry,
@@ -1651,6 +1672,7 @@ async fn get_or_load_file(
         return Some(Arc::new(CachedFile {
             index: Arc::new(index),
             source,
+            namespace: Arc::clone(&namespace),
         }));
     }
 
@@ -1721,6 +1743,7 @@ async fn get_or_load_file(
     Some(Arc::new(CachedFile {
         index: Arc::new(index),
         source,
+        namespace,
     }))
 }
 
@@ -2042,7 +2065,14 @@ async fn take_rows_parquet(
             let index = batch.schema().index_of(name).map_err(|_| {
                 rootcause::report!("column {name} missing from file {location}")
             })?;
-            columns.push(Arc::clone(batch.column(index)));
+            let mut array = Arc::clone(batch.column(index));
+            let expected = projected_schema.field_with_name(name)
+                .map_err(|error| rootcause::report!("candidate column schema: {error}"))?;
+            if array.data_type() != expected.data_type() {
+                array = cast(array.as_ref(), expected.data_type())
+                    .map_err(|error| rootcause::report!("cast candidate column {name}: {error}"))?;
+            }
+            columns.push(array);
         }
         batches.push(
             RecordBatch::try_new(Arc::clone(projected_schema), columns)
@@ -2409,7 +2439,7 @@ impl BlockSource {
             DataType::FixedSizeList(_, dim) if *dim > 0 => *dim as usize,
             _ => return None,
         };
-        let source_hash = index_source_hash(&location);
+        let source_hash = namespaced_index_source_hash(&entry.namespace, &location);
         let field_hash = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -2417,9 +2447,9 @@ impl BlockSource {
             field.data_type().hash(&mut hasher);
             hasher.finish()
         };
-        let block_location = StorePath::from(format!(
+        let block_location = entry.namespace.path(&StorePath::from(format!(
             "vector-blocks/{source_hash:016x}/{field_hash:016x}"
-        ));
+        )));
         let rows = entry.index.rows;
         Some(Self {
             entry,
@@ -2602,9 +2632,11 @@ impl VectorBlockSource {
             .await
             .map(Arc::new);
         }
+        let namespace = store_cache_namespace(&store);
         let key = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            namespace.token().hash(&mut hasher);
             location.as_ref().hash(&mut hasher);
             key_columns.hash(&mut hasher);
             for data_type in key_types {
@@ -2761,6 +2793,63 @@ impl VectorBlockSource {
         }
         self.blocks.score_rows(&indices, query, ascending)
     }
+    /// Score many queries' candidates, grouped by physical block and row.
+    /// Each requested block is decoded once for this file/window and each
+    /// stored vector is converted once, even when many queries reference it.
+    /// Returned scores retain `requests` order; query/candidate slots are
+    /// caller-owned identifiers. This method must run on a blocking worker.
+    pub fn score_batch_rows(
+        &self,
+        requests: &[(usize, usize, u32)],
+        queries: &[Vec<f32>],
+        ascending: bool,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Option<(Vec<f32>, u64)> {
+        let mut order: Vec<usize> = (0..requests.len()).collect();
+        order.sort_unstable_by_key(|&i| requests[i].2);
+        let mut scores = vec![0.0f32; requests.len()];
+        let mut active_block = None;
+        let mut bytes: Arc<[u8]> = Arc::from([]);
+        let mut blocks = 0;
+        let mut position = 0;
+        let mut stored = Vec::with_capacity(self.blocks.dim);
+        while position < order.len() {
+            if cancel.load(AtomicOrdering::Acquire) { return None; }
+            let row = requests[order[position]].2 as u64;
+            if row as usize >= self.blocks.rows { return None; }
+            let block_id = self.blocks.block_id(row)?;
+            if active_block != Some(block_id) {
+                bytes = self.blocks.get_block(block_id)?;
+                active_block = Some(block_id);
+                blocks += 1;
+            }
+            let offset = (row % self.blocks.block_rows as u64) as usize * self.blocks.row_bytes;
+            let row_bytes = bytes.get(offset..offset.checked_add(self.blocks.row_bytes)?)?;
+            stored.clear();
+            match self.blocks.elem {
+                block::VectorElem::F32 => {
+                    stored.extend(row_bytes.chunks_exact(4).map(|v| f32::from_le_bytes([v[0],v[1],v[2],v[3]])));
+                }
+                block::VectorElem::F64 => {
+                    stored.extend(row_bytes.chunks_exact(8).map(|v| f64::from_le_bytes([v[0],v[1],v[2],v[3],v[4],v[5],v[6],v[7]]) as f32));
+                }
+            }
+            if stored.len() != self.blocks.dim { return None; }
+            while position < order.len() && requests[order[position]].2 as u64 == row {
+                let request = order[position];
+                let query = queries.get(requests[request].0)?;
+                if query.len() != stored.len() { return None; }
+                scores[request] = if ascending {
+                    block::squared_distance_f32(&stored, query)
+                } else {
+                    block::negated_dot_f32(&stored, query)
+                };
+                position += 1;
+            }
+        }
+        Some((scores, blocks))
+    }
+
     /// Exact L2/IP scores of already-resolved rows of this file.
     ///
     /// The multi-file exact batch resolves a key to `(file, row)` once and
@@ -3140,7 +3229,14 @@ async fn take_rows(
             let index = batch.schema().index_of(name).map_err(|_| {
                 rootcause::report!("column {name} missing from file {location}")
             })?;
-            columns.push(Arc::clone(batch.column(index)));
+            let mut array = Arc::clone(batch.column(index));
+            let expected = projected_schema.field_with_name(name)
+                .map_err(|error| rootcause::report!("candidate column schema: {error}"))?;
+            if array.data_type() != expected.data_type() {
+                array = cast(array.as_ref(), expected.data_type())
+                    .map_err(|error| rootcause::report!("cast candidate column {name}: {error}"))?;
+            }
+            columns.push(array);
         }
         batches.push(
             RecordBatch::try_new(Arc::clone(projected_schema), columns)
@@ -3166,10 +3262,83 @@ mod tests {
     use parquet::arrow::arrow_reader::RowSelector;
 
     use super::{
-        IndexCursor, IndexWriter, Key, KeyConstraint, KeyValue, MmapIndex,
-        extract_key_constraints, extract_key_constraints_with_cap, extract_pk_candidates,
-        key_values_to_arrays, row_selection,
+        IndexCursor, IndexWriter, Key, KeyConstraint, KeyValue, MmapIndex, PhysicalFormat,
+        VectorBlockSource, extract_key_constraints, extract_key_constraints_with_cap,
+        extract_pk_candidates, key_values_to_arrays, row_selection,
     };
+    use lakesoul_vector::IndexKey;
+    use object_store::ObjectStore;
+
+    #[tokio::test]
+    async fn vector_block_source_cache_is_scoped_to_object_store() {
+        use arrow::array::{FixedSizeListBuilder, Float32Builder, Int64Array};
+        use arrow::record_batch::RecordBatch;
+        use bytes::Bytes;
+        use object_store::memory::InMemory;
+        use object_store::{ObjectStoreExt, path::Path};
+        use parquet::arrow::ArrowWriter;
+
+        async fn put_vector_file(store: &InMemory, vector: [f32; 2]) {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new(
+                    "vec",
+                    DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
+                    false,
+                ),
+            ]));
+            let mut vectors = FixedSizeListBuilder::new(Float32Builder::new(), 2);
+            vectors.values().append_slice(&vector);
+            vectors.append(true);
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int64Array::from(vec![1])), Arc::new(vectors.finish())],
+            ).unwrap();
+            let mut bytes = Vec::new();
+            let mut writer = ArrowWriter::try_new(&mut bytes, schema, None).unwrap();
+            writer.write(&batch).unwrap();
+            writer.close().unwrap();
+            store.put(&Path::from("same/path.parquet"), Bytes::from(bytes).into()).await.unwrap();
+        }
+
+        let first = Arc::new(InMemory::new());
+        let second = Arc::new(InMemory::new());
+        put_vector_file(&first, [1.0, 0.0]).await;
+        put_vector_file(&second, [0.0, 1.0]).await;
+        let first_store: Arc<dyn ObjectStore> = first;
+        let second_store: Arc<dyn ObjectStore> = second;
+        let field = Arc::new(Field::new(
+            "vec",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
+            false,
+        ));
+        let location = Path::from("same/path.parquet");
+        let types = vec![DataType::Int64];
+        let columns = vec!["id".to_string()];
+        let first_source = VectorBlockSource::open_cached(
+            Arc::clone(&first_store), &location, PhysicalFormat::Parquet,
+            &columns, &types, &field,
+        ).await.expect("first store PK and decoded-block source");
+        let second_source = VectorBlockSource::open_cached(
+            Arc::clone(&second_store), &location, PhysicalFormat::Parquet,
+            &columns, &types, &field,
+        ).await.expect("second store PK and decoded-block source");
+        assert!(!Arc::ptr_eq(&first_source, &second_source));
+        let row_converter = RowConverter::new(vec![SortField::new(DataType::Int64)]).unwrap();
+        let encoded = row_converter
+            .convert_columns(&[Arc::new(Int64Array::from(vec![1]))])
+            .unwrap();
+        let keys = vec![IndexKey::new(encoded.row(0).as_ref())];
+        let first_keys = keys.clone();
+        let first_score = tokio::task::spawn_blocking(move || {
+            first_source.score_keys(&first_keys, &[1.0, 0.0], true).unwrap()[0]
+        }).await.unwrap();
+        let second_score = tokio::task::spawn_blocking(move || {
+            second_source.score_keys(&keys, &[1.0, 0.0], true).unwrap()[0]
+        }).await.unwrap();
+        assert_eq!(first_score, 0.0);
+        assert_eq!(second_score, 2.0);
+    }
 
     #[test]
     fn row_selection_covers_exactly_the_indices() {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright 2026 LakeSoul Contributors
 
-//! Runnable end-to-end example for `rust/lakesoul-vector/向量查询使用说明.md`.
+//! Runnable end-to-end example for `python/examples/vector-search/docs/向量查询使用说明.md`.
 //!
 //! It builds the guide's demo table, writes rows, then runs both query entries:
 //! * single-query SQL (`order by array_distance(...) limit k`);
@@ -76,7 +76,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         order by array_distance(vec, ARRAY[0.1, 0.1, 0.2, 0.3]) limit 10"#;
     let mut single_ids = Vec::new();
     for batch in ctx.sql(sql).await?.collect().await? {
-        let ids = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
         single_ids.extend(ids.iter().flatten());
     }
     println!("single-query top-10 ids: {single_ids:?}");

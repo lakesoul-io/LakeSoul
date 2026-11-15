@@ -20,6 +20,9 @@
 //! for that snapshot, and the caller picks the snapshot by choosing when to
 //! call it.
 
+pub mod native;
+pub mod distributed;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -36,7 +39,7 @@ use lakesoul_io::index::prefix::derive_index_prefixes;
 use lakesoul_io::pk_locator::{PrefixMatch, VectorBlockSource};
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::vector::search::{
-    LoadedShard, VectorHit, cached_typed_shard, load_typed_shard,
+    LoadedShard, VectorHit, cached_typed_shard_for_store, load_typed_shard,
 };
 use lakesoul_metadata::index_catalog::{
     IndexCommitView, VectorCatalog, VectorSegmentEntry,
@@ -579,7 +582,7 @@ async fn search_vector_batch_chunk(
             );
         // A hot batch takes the loaded shard straight from the cache; the
         // parsed segment list is only rebuilt when the shard has to load.
-        let shard = match cached_typed_shard(prefix, view.commit_id, expected_key_kind)
+        let shard = match cached_typed_shard_for_store(store, prefix, view.commit_id, expected_key_kind)
             .await
         {
             Some(shard) => shard,

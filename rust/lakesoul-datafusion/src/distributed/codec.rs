@@ -65,7 +65,8 @@ use vortex_datafusion::{VortexScanCodec, VortexSource};
 /// order decides which codec reads an extension payload, so registering a
 /// codec a worker does not know is a protocol change even when no existing
 /// message layout moved. Version 2 added [`VortexScanCodec`] at position 2.
-pub const CODEC_VERSION: u32 = 2;
+/// Version 3 appends the native batch probe codec at position 3.
+pub const CODEC_VERSION: u32 = 3;
 
 /// Wire format for [`MergeParquetExec`].
 ///
@@ -118,7 +119,8 @@ pub struct LakeSoulCodec;
 /// The coordinator's planner and every worker build their codec list from this
 /// one function so the positions an extension payload refers to cannot drift:
 /// position 0 is always the distributed codec itself, position 1
-/// [`LakeSoulCodec`] (merge-on-read stages), position 2 the vortex scan codec.
+/// [`LakeSoulCodec`] (merge-on-read stages), position 2 the vortex scan codec,
+/// position 3 the native vector batch probe codec.
 /// A worker that registers a different list either fails to decode a stage or
 /// would hand a payload to the wrong codec, so the list is part of the wire
 /// generation ([`CODEC_VERSION`]).
@@ -130,6 +132,7 @@ pub fn user_codecs() -> Vec<Arc<dyn PhysicalExtensionCodec>> {
     vec![
         Arc::new(LakeSoulCodec),
         Arc::new(VortexScanCodec::new(vortex_scan_session())),
+        Arc::new(super::vector_batch_codec::NativeBatchProbeCodec),
     ]
 }
 

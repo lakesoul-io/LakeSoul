@@ -52,3 +52,27 @@ Afterwards, we can test the examples using the instructions below.
 | [Titanic](./titanic/) | [Kaggle Titanic Dataset](https://www.kaggle.com/competitions/titanic) | `DNN` |
 | [IMDB Sentiment Analysis](./imdb/) | [Hugginface IMDB dataset](https://huggingface.co/datasets/imdb/tree/refs%2Fconvert%2Fparquet/plain_text/train) | [distilbert-base-uncased](https://huggingface.co/distilbert-base-uncased) |
 | [Food Image Search](./food101/) | [Hugginface Food101 dataset](https://huggingface.co/datasets/food101/tree/refs%2Fconvert%2Fparquet) | [clip-ViT-B-32](https://huggingface.co/sentence-transformers/clip-ViT-B-32) |
+
+## Vector Search
+
+See [vector-search/README.md](./vector-search/README.md) for the complete
+architecture, SQL/Python usage, call graph, and operations guide for the
+LakeSoul vector index (IVF + RaBitQ).
+
+Runnable end-to-end examples:
+
+```bash
+source lakesoul_env.sh
+python vector-search/vector_search.py
+```
+
+Performance comparison on real HDF5 datasets:
+[vector-search/hdf5-upsert-benchmark.md](./vector-search/hdf5-upsert-benchmark.md).
+
+SQL queries are in [vector-search/vector_search.sql](./vector-search/vector_search.sql):
+
+```bash
+cd ../..   # python/examples -> repository root
+cargo run -p lakesoul-console --release -- \
+    --file python/examples/vector-search/vector_search.sql
+```

@@ -30,6 +30,18 @@ pub fn pack_binary_code(binary_code: &[u8], packed: &mut [u8], dim: usize) {
             }
             return;
         }
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                pack_binary_code_avx2(binary_code, packed, dim);
+            }
+            return;
+        }
+        if is_x86_feature_detected!("sse2") {
+            unsafe {
+                pack_binary_code_sse2(binary_code, packed, dim);
+            }
+            return;
+        }
     }
 
     pack_binary_code_scalar(binary_code, packed, dim);
@@ -51,6 +63,18 @@ pub fn unpack_binary_code(packed: &[u8], binary_code: &mut [u8], dim: usize) {
         if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
             unsafe {
                 unpack_binary_code_avx512(packed, binary_code, dim);
+            }
+            return;
+        }
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                unpack_binary_code_avx2(packed, binary_code, dim);
+            }
+            return;
+        }
+        if is_x86_feature_detected!("sse2") {
+            unsafe {
+                unpack_binary_code_sse2(packed, binary_code, dim);
             }
             return;
         }
@@ -145,6 +169,152 @@ pub fn unpack_ex_code(packed: &[u8], ex_code: &mut [u16], dim: usize, ex_bits: u
     }
 
     unpack_ex_code_scalar(packed, ex_code, dim, ex_bits);
+}
+
+/// AVX2: process 32 dimensions per iteration, producing 4 packed bytes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn pack_binary_code_avx2(binary_code: &[u8], packed: &mut [u8], dim: usize) {
+    use std::arch::x86_64::{
+        __m256i, _mm256_loadu_si256, _mm256_min_epu8, _mm256_movemask_epi8,
+        _mm256_set1_epi8, _mm256_slli_epi16,
+    };
+
+    let chunks = dim / 32;
+    let one = _mm256_set1_epi8(1);
+
+    for chunk in 0..chunks {
+        let v = _mm256_loadu_si256(
+            binary_code.as_ptr().add(chunk * 32) as *const __m256i
+        );
+        // Same bit layout as the AVX-512 path: bit k -> dimension k, then
+        // reverse each byte so the packed layout is MSB-first.
+        let bits = _mm256_slli_epi16::<7>(_mm256_min_epu8(v, one));
+        let mask = _mm256_movemask_epi8(bits) as u32;
+        let rev = reverse_bits_per_byte(mask as u64) as u32;
+        packed[chunk * 4..chunk * 4 + 4].copy_from_slice(&rev.to_le_bytes());
+    }
+
+    for b in packed[chunks * 4..].iter_mut() {
+        *b = 0;
+    }
+    for i in chunks * 32..dim {
+        if binary_code[i] != 0 {
+            packed[i / 8] |= 1 << (7 - (i % 8));
+        }
+    }
+}
+
+/// SSE2: process 16 dimensions per iteration, producing 2 packed bytes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn pack_binary_code_sse2(binary_code: &[u8], packed: &mut [u8], dim: usize) {
+    use std::arch::x86_64::{
+        __m128i, _mm_loadu_si128, _mm_min_epu8, _mm_movemask_epi8,
+        _mm_set1_epi8, _mm_slli_epi16,
+    };
+
+    let chunks = dim / 16;
+    let one = _mm_set1_epi8(1);
+
+    for chunk in 0..chunks {
+        let v = _mm_loadu_si128(
+            binary_code.as_ptr().add(chunk * 16) as *const __m128i
+        );
+        let bits = _mm_slli_epi16::<7>(_mm_min_epu8(v, one));
+        let mask = _mm_movemask_epi8(bits) as u16;
+        let rev = reverse_bits_per_byte(mask as u64) as u16;
+        packed[chunk * 2..chunk * 2 + 2].copy_from_slice(&rev.to_le_bytes());
+    }
+
+    for b in packed[chunks * 2..].iter_mut() {
+        *b = 0;
+    }
+    for i in chunks * 16..dim {
+        if binary_code[i] != 0 {
+            packed[i / 8] |= 1 << (7 - (i % 8));
+        }
+    }
+}
+
+const fn build_unpack_table() -> [[u8; 8]; 256] {
+    let mut table = [[0u8; 8]; 256];
+    let mut byte = 0usize;
+    while byte < 256 {
+        let mut bit = 0usize;
+        while bit < 8 {
+            table[byte][bit] = ((byte >> (7 - bit)) & 1) as u8;
+            bit += 1;
+        }
+        byte += 1;
+    }
+    table
+}
+
+/// Byte -> eight 0/1 bytes, laid out for an AVX2 gather.
+static UNPACK_TABLE: [[u8; 8]; 256] = build_unpack_table();
+
+/// SSE2: expand two packed bytes at a time through the same 256-entry table.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn unpack_binary_code_sse2(packed: &[u8], binary_code: &mut [u8], dim: usize) {
+    use std::arch::x86_64::{__m128i, _mm_loadl_epi64, _mm_storel_epi64};
+
+    let chunks = dim / 16;
+    for chunk in 0..chunks {
+        for slot in 0..2 {
+            let row = &UNPACK_TABLE[packed[chunk * 2 + slot] as usize];
+            let value = _mm_loadl_epi64(row.as_ptr() as *const __m128i);
+            _mm_storel_epi64(
+                binary_code
+                    .as_mut_ptr()
+                    .add(chunk * 16 + slot * 8) as *mut __m128i,
+                value,
+            );
+        }
+    }
+
+    for i in chunks * 16..dim {
+        binary_code[i] = if (packed[i / 8] & (1 << (7 - (i % 8)))) != 0 {
+            1
+        } else {
+            0
+        };
+    }
+}
+
+/// AVX2: process 32 packed bits at a time using four 8-byte table gathers.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn unpack_binary_code_avx2(packed: &[u8], binary_code: &mut [u8], dim: usize) {
+    use std::arch::x86_64::{
+        __m128i, __m256i, _mm256_i32gather_epi64, _mm256_storeu_si256,
+        _mm_loadu_si128,
+    };
+
+    let chunks = dim / 32;
+    let table = UNPACK_TABLE.as_ptr() as *const i64;
+
+    for chunk in 0..chunks {
+        let mut indices = [0i32; 4];
+        for (slot, index) in indices.iter_mut().enumerate() {
+            *index = packed[chunk * 4 + slot] as i32 * 8;
+        }
+        let index = _mm_loadu_si128(indices.as_ptr() as *const __m128i);
+        let expanded = _mm256_i32gather_epi64(table, index, 1);
+        _mm256_storeu_si256(
+            binary_code.as_mut_ptr().add(chunk * 32) as *mut __m256i,
+            expanded,
+        );
+    }
+
+    for i in chunks * 32..dim {
+        binary_code[i] = if (packed[i / 8] & (1 << (7 - (i % 8)))) != 0 {
+            1
+        } else {
+            0
+        };
+    }
 }
 
 // ============================================================================
@@ -1283,16 +1453,18 @@ pub fn sanitized_lower_bound_mask_32(
     fallback: f32,
 ) -> u32 {
     #[cfg(target_arch = "x86_64")]
-    if is_x86_feature_detected!("avx512f") {
-        // SAFETY: runtime detection covers all AVX-512 instructions used.
-        return unsafe {
-            sanitized_lower_bound_mask_32_avx512(
-                lower_bounds,
-                threshold,
-                metric,
-                fallback,
-            )
-        };
+    {
+        if is_x86_feature_detected!("avx512f") {
+            // SAFETY: runtime detection covers all AVX-512 instructions used.
+            return unsafe {
+                sanitized_lower_bound_mask_32_avx512(
+                    lower_bounds,
+                    threshold,
+                    metric,
+                    fallback,
+                )
+            };
+        }
     }
     sanitized_lower_bound_mask_32_scalar(lower_bounds, threshold, metric, fallback)
 }
@@ -3921,4 +4093,239 @@ mod dispatch_tests {
 
         assert_eq!(ex_code, unpacked, "6-bit roundtrip failed");
     }
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_avx2_binary_pack_unpack_matches_scalar() {
+        if !std::arch::is_x86_feature_detected!("avx2") {
+            return;
+        }
+        for dim in [0usize, 1, 7, 8, 15, 16, 31, 32, 33, 63, 64, 65, 127, 128, 960] {
+            let binary: Vec<u8> = (0..dim)
+                .map(|index| ((index * 37 + 11) % 2) as u8)
+                .collect();
+            let mut scalar = vec![0u8; dim.div_ceil(8)];
+            let mut avx2 = vec![0u8; dim.div_ceil(8)];
+            pack_binary_code_scalar(&binary, &mut scalar, dim);
+            unsafe {
+                pack_binary_code_avx2(&binary, &mut avx2, dim);
+            }
+            assert_eq!(scalar, avx2, "pack mismatch at dim {dim}");
+
+            let mut unpacked = vec![0u8; dim];
+            unsafe {
+                unpack_binary_code_avx2(&avx2, &mut unpacked, dim);
+            }
+            assert_eq!(binary, unpacked, "unpack mismatch at dim {dim}");
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_avx2_fastscan_accumulate_matches_scalar() {
+        if !std::arch::is_x86_feature_detected!("avx2") {
+            return;
+        }
+        for dim in [16usize, 32, 64, 128] {
+            let packed_len = 32 * (dim / 8);
+            let lut_len = (dim / 4) * 16;
+            let packed_codes: Vec<u8> = (0..packed_len)
+                .map(|index| ((index * 73 + 19) & 0xff) as u8)
+                .collect();
+            let lut: Vec<i8> = (0..lut_len)
+                .map(|index| ((index * 29 + 7) % 61) as i8 - 30)
+                .collect();
+            let mut scalar = [0u16; FASTSCAN_BATCH_SIZE];
+            let mut avx2 = [0u16; FASTSCAN_BATCH_SIZE];
+            accumulate_batch_scalar(&packed_codes, &lut, dim, &mut scalar);
+            unsafe {
+                accumulate_batch_avx2_impl(&packed_codes, &lut, dim, &mut avx2);
+            }
+            assert_eq!(scalar, avx2, "FastScan mismatch at dim {dim}");
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_sse2_binary_pack_unpack_matches_scalar() {
+        assert!(std::arch::is_x86_feature_detected!("sse2"));
+        for dim in [0usize, 1, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 960] {
+            let binary: Vec<u8> = (0..dim)
+                .map(|index| ((index * 41 + 13) % 2) as u8)
+                .collect();
+            let mut scalar = vec![0u8; dim.div_ceil(8)];
+            let mut sse2 = vec![0u8; dim.div_ceil(8)];
+            pack_binary_code_scalar(&binary, &mut scalar, dim);
+            unsafe {
+                pack_binary_code_sse2(&binary, &mut sse2, dim);
+            }
+            assert_eq!(scalar, sse2, "SSE2 pack mismatch at dim {dim}");
+
+            let mut unpacked = vec![0u8; dim];
+            unsafe {
+                unpack_binary_code_sse2(&sse2, &mut unpacked, dim);
+            }
+            assert_eq!(binary, unpacked, "SSE2 unpack mismatch at dim {dim}");
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    #[ignore = "performance smoke; run with --ignored --nocapture"]
+    fn simd_performance_smoke() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        fn time_ns<F: FnMut()>(mut work: F, iterations: usize) -> f64 {
+            for _ in 0..(iterations / 10 + 1) {
+                work();
+            }
+            let start = Instant::now();
+            for _ in 0..iterations {
+                work();
+            }
+            start.elapsed().as_nanos() as f64 / iterations as f64
+        }
+
+        let dim = 960usize;
+        let binary: Vec<u8> = (0..dim).map(|i| ((i * 37 + 11) % 2) as u8).collect();
+        let packed_len = dim.div_ceil(8);
+        let mut packed = vec![0u8; packed_len];
+        let mut unpacked = vec![0u8; dim];
+
+        let iterations = 20_000;
+        let mut scalar_pack = time_ns(
+            || {
+                pack_binary_code_scalar(&binary, &mut packed, dim);
+                black_box(&packed);
+            },
+            iterations,
+        );
+        let mut avx2_pack = f64::NAN;
+        let mut avx512_pack = f64::NAN;
+        let mut sse2_pack = f64::NAN;
+        unsafe {
+            if std::arch::is_x86_feature_detected!("sse2") {
+                sse2_pack = time_ns(
+                    || {
+                        pack_binary_code_sse2(&binary, &mut packed, dim);
+                        black_box(&packed);
+                    },
+                    iterations,
+                );
+            }
+            if std::arch::is_x86_feature_detected!("avx2") {
+                avx2_pack = time_ns(
+                    || {
+                        pack_binary_code_avx2(&binary, &mut packed, dim);
+                        black_box(&packed);
+                    },
+                    iterations,
+                );
+            }
+            if std::arch::is_x86_feature_detected!("avx512f")
+                && std::arch::is_x86_feature_detected!("avx512bw")
+            {
+                avx512_pack = time_ns(
+                    || {
+                        pack_binary_code_avx512(&binary, &mut packed, dim);
+                        black_box(&packed);
+                    },
+                    iterations,
+                );
+            }
+        }
+
+        let mut scalar_unpack = time_ns(
+            || {
+                unpack_binary_code_scalar(&packed, &mut unpacked, dim);
+                black_box(&unpacked);
+            },
+            iterations,
+        );
+        let mut sse2_unpack = f64::NAN;
+        let mut avx2_unpack = f64::NAN;
+        let mut avx512_unpack = f64::NAN;
+        unsafe {
+            if std::arch::is_x86_feature_detected!("sse2") {
+                sse2_unpack = time_ns(
+                    || {
+                        unpack_binary_code_sse2(&packed, &mut unpacked, dim);
+                        black_box(&unpacked);
+                    },
+                    iterations,
+                );
+            }
+            if std::arch::is_x86_feature_detected!("avx2") {
+                avx2_unpack = time_ns(
+                    || {
+                        unpack_binary_code_avx2(&packed, &mut unpacked, dim);
+                        black_box(&unpacked);
+                    },
+                    iterations,
+                );
+            }
+            if std::arch::is_x86_feature_detected!("avx512f")
+                && std::arch::is_x86_feature_detected!("avx512bw")
+            {
+                avx512_unpack = time_ns(
+                    || {
+                        unpack_binary_code_avx512(&packed, &mut unpacked, dim);
+                        black_box(&unpacked);
+                    },
+                    iterations,
+                );
+            }
+        }
+
+        let packed_len = 32 * (dim / 8);
+        let lut_len = (dim / 4) * 16;
+        let packed_codes: Vec<u8> = (0..packed_len)
+            .map(|index| ((index * 73 + 19) & 0xff) as u8)
+            .collect();
+        let lut: Vec<i8> = (0..lut_len)
+            .map(|index| ((index * 29 + 7) % 61) as i8 - 30)
+            .collect();
+        let mut results = [0u16; FASTSCAN_BATCH_SIZE];
+        let fastscan_iterations = 20_000;
+        let scalar_fastscan = time_ns(
+            || {
+                accumulate_batch_scalar(&packed_codes, &lut, dim, &mut results);
+                black_box(&results);
+            },
+            fastscan_iterations,
+        );
+        let mut avx2_fastscan = f64::NAN;
+        let mut avx512_fastscan = f64::NAN;
+        unsafe {
+            if std::arch::is_x86_feature_detected!("avx2") {
+                avx2_fastscan = time_ns(
+                    || {
+                        accumulate_batch_avx2_impl(&packed_codes, &lut, dim, &mut results);
+                        black_box(&results);
+                    },
+                    fastscan_iterations,
+                );
+            }
+            if std::arch::is_x86_feature_detected!("avx512f")
+                && std::arch::is_x86_feature_detected!("avx512bw")
+            {
+                avx512_fastscan = time_ns(
+                    || {
+                        accumulate_batch_avx512_impl(&packed_codes, &lut, dim, &mut results);
+                        black_box(&results);
+                    },
+                    fastscan_iterations,
+                );
+            }
+        }
+
+        eprintln!("SIMD performance (ns/op, dim={dim})");
+        eprintln!("pack  scalar={scalar_pack:.1} sse2={sse2_pack:.1} avx2={avx2_pack:.1} avx512={avx512_pack:.1}");
+        eprintln!("unpack scalar={scalar_unpack:.1} sse2={sse2_unpack:.1} avx2={avx2_unpack:.1} avx512={avx512_unpack:.1}");
+        eprintln!("fastscan scalar={scalar_fastscan:.1} avx2={avx2_fastscan:.1} avx512={avx512_fastscan:.1}");
+        scalar_pack = black_box(scalar_pack);
+        scalar_unpack = black_box(scalar_unpack);
+        let _ = (scalar_pack, scalar_unpack);
+    }
+
 }

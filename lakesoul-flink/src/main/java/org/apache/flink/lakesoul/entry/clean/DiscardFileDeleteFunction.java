@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
+import com.dmetasoul.lakesoul.meta.DataFileReadLeaseGuard;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
@@ -18,7 +19,6 @@ import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
@@ -182,62 +182,35 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
 
     private boolean deleteBatch(List<String> batch) {
         log.info("start delete batch {}", batch.size());
-        List<String> deletable = batch;
-        try (Connection conn = dataSource.getConnection()) {
-            List<String> pinned = pinnedPaths(conn, batch);
-            if (!pinned.isEmpty()) {
-                deletable = new ArrayList<>(batch);
-                deletable.removeAll(pinned);
-                log.info("skip {} pinned discard files", pinned.size());
-            }
-            if (deletable.isEmpty()) {
-                return true;
-            }
-            try (PreparedStatement ps =
-                    conn.prepareStatement(
-                            "DELETE FROM discard_compressed_file_info WHERE file_path ="
-                                    + " ANY(?)")) {
-                ps.setArray(1, conn.createArrayOf("text", deletable.toArray()));
-                int rowsDeleted = ps.executeUpdate();
-                log.info("批量删除数据库记录 {} 条", rowsDeleted);
-            }
-        } catch (SQLException e) {
-            log.error("批量删除数据库失败", e);
-            return false;
-        }
-
-        CleanUtils cleanUtils = new CleanUtils();
         boolean allSucceeded = true;
-        for (String path : deletable) {
-            try {
-                cleanUtils.deleteFile(path);
-            } catch (Exception e) {
-                log.error("删除文件失败 [{}]", path, e);
-                allSucceeded = false;
-            }
-        }
-        if (allSucceeded) {
-            log.info("finish delete batch {}", batch.size());
-        }
-        return allSucceeded;
-    }
-
-    private List<String> pinnedPaths(Connection conn, List<String> batch) throws SQLException {
-        try (PreparedStatement ps =
-                conn.prepareStatement(
-                        "SELECT p.path FROM unnest(?::text[]) AS p(path)"
-                                + " WHERE EXISTS (SELECT 1 FROM data_commit_info dci,"
-                                + " unnest(dci.file_ops) AS f WHERE dci.pinned = true"
-                                + " AND f.path = p.path)")) {
-            ps.setArray(1, conn.createArrayOf("text", batch.toArray()));
-            List<String> paths = new ArrayList<>();
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    paths.add(rs.getString(1));
+        CleanUtils cleanUtils = new CleanUtils();
+        try (Connection conn = dataSource.getConnection();
+                DataFileReadLeaseGuard readers = DataFileReadLeaseGuard.acquire(conn, null)) {
+            for (String path : batch) {
+                if (!readers.retire(path, false)) {
+                    // Retain both the database row and checkpointed retry
+                    // state until the reader/tag releases this file.
+                    allSucceeded = false;
+                    continue;
+                }
+                try {
+                    cleanUtils.deleteFile(path);
+                    try (PreparedStatement ps = conn.prepareStatement(
+                            "delete from discard_compressed_file_info where file_path = ?")) {
+                        ps.setString(1, path);
+                        ps.executeUpdate();
+                    }
+                    readers.commit();
+                } catch (Exception error) {
+                    log.error("discard file cleanup failed [{}], retain for retry", path, error);
+                    allSucceeded = false;
                 }
             }
-            return paths;
+        } catch (SQLException error) {
+            log.error("failed to guard discard file cleanup", error);
+            return false;
         }
+        return allSucceeded;
     }
 
     @Override

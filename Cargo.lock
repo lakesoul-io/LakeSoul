@@ -5581,6 +5581,7 @@ dependencies = [
  "arrow-array 59.3.1",
  "arrow-pyarrow",
  "arrow-schema 59.3.1",
+ "base64 0.22.1",
  "datafusion",
  "datafusion-common",
  "datafusion-execution",
@@ -5682,6 +5683,7 @@ dependencies = [
  "faer",
  "futures",
  "half",
+ "lakesoul-metadata",
  "libc",
  "memmap2",
  "object_store",
@@ -5698,6 +5700,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -7854,6 +7857,7 @@ dependencies = [
  "lakesoul-datafusion",
  "lakesoul-metadata",
  "lakesoul-observability",
+ "lakesoul-vector",
  "metrics",
  "metrics-exporter-prometheus",
  "parking_lot 0.12.5",

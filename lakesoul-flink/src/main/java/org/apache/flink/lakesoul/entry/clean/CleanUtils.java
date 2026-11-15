@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.apache.flink.lakesoul.entry.clean;
 
+import com.dmetasoul.lakesoul.meta.DataFileReadLeaseGuard;
 import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
@@ -53,8 +54,7 @@ public class CleanUtils {
                 return;
             }
             if (!fs.delete(path, false)) {
-                logger.warn("文件删除失败: {}", filePath);
-                return;
+                throw new SQLException("文件删除失败: " + filePath);
             }
             logger.info("文件已删除: {}", filePath);
             deleteBlobref(fs, filePath);
@@ -151,6 +151,23 @@ public class CleanUtils {
             String partitionDesc,
             Connection connection,
             Boolean oldCompaction) {
+        try (DataFileReadLeaseGuard readers = DataFileReadLeaseGuard.acquire(connection, tableId)) {
+            if (readers.hasActiveReaders()) {
+                logger.info("defer cleanup of {}/{} while batch snapshots are active", tableId, partitionDesc);
+                return false;
+            }
+            boolean complete = deleteFileAndDataCommitInfoUnlocked(
+                    snapshot, tableId, partitionDesc, connection, oldCompaction, readers);
+            readers.commit();
+            return complete;
+        } catch (SQLException error) {
+            throw new RuntimeException("failed to guard original data cleanup", error);
+        }
+    }
+
+    private boolean deleteFileAndDataCommitInfoUnlocked(
+            List<String> snapshot, String tableId, String partitionDesc,
+            Connection connection, Boolean oldCompaction, DataFileReadLeaseGuard readers) {
         Set<String> livePaths = null;
         if (oldCompaction) {
             try {
@@ -198,11 +215,21 @@ public class CleanUtils {
                 }
                 List<String> deletable = new ArrayList<>();
                 int protectedCount = 0;
+                boolean readProtected = false;
                 for (String path : commitPaths) {
                     if (livePaths.contains(path)) {
                         protectedCount++;
                     } else {
-                        deletable.add(path);
+                        try {
+                            if (readers.retire(path, false)) {
+                                deletable.add(path);
+                            } else {
+                                readProtected = true;
+                                protectedCount++;
+                            }
+                        } catch (SQLException error) {
+                            throw new RuntimeException("failed to retire original data file", error);
+                        }
                     }
                 }
                 if (protectedCount > 0) {
@@ -226,6 +253,10 @@ public class CleanUtils {
                         complete = false;
                         continue;
                     }
+                }
+                if (readProtected) {
+                    complete = false;
+                    continue;
                 }
             }
 

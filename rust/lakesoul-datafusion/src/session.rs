@@ -532,6 +532,17 @@ impl LakeSoulSessionFactory {
         // search scan — and the vector index auto-build after a commit
         // construct their stores from the table's io config, which would
         // otherwise carry no credentials at all.
+        // Native batch SQL orchestrates bounded windows on the coordinator;
+        // only pre-dispatch fallback follows the session's availability policy.
+        let session_config = if let Some(dist) = &distributed {
+            session_config.with_extension(Arc::new(
+                crate::vector_batch::distributed::NativeBatchDistribution {
+                    fallback_to_local: dist.fallback_to_local,
+                },
+            ))
+        } else {
+            session_config
+        };
         let session_config =
             session_config.with_extension(Arc::new(self.object_store_config.clone()));
 
@@ -634,11 +645,15 @@ impl LakeSoulSessionFactory {
         );
         let provider_options = LakeSoulProviderOptions::from_session(&state);
         let ctx = Arc::new(SessionContext::new_with_state(state));
+        crate::udf::vector_batch::register(&ctx);
         ctx.register_udf((*crate::udf::vector_search_marker::marker_udf()).clone());
         ctx.register_udf((*crate::udf::vector_search_marker::multi_marker_udf()).clone());
         ctx.register_udf((*crate::udf::text_search_marker::marker_udf()).clone());
         ctx.register_udf((*crate::udf::text_search_marker::text_match_udf()).clone());
         ctx.register_udf((*crate::udf::text_search_marker::text_score_udf()).clone());
+        ctx.register_udf(crate::udf::drop_index::udf_with_options(
+            self.object_store_config.object_store_options(),
+        ));
 
         let lakesoul_catalog = Arc::new(LakeSoulCatalog::with_snapshot(
             Arc::clone(&self.meta_client),

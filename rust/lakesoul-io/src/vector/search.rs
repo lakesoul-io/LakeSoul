@@ -13,9 +13,9 @@ use std::sync::{Arc, LazyLock};
 
 use lakesoul_common::IndexKind;
 use lakesoul_common::misc::SecretMap;
+use lakesoul_vector::LazyIvfIndex;
 use lakesoul_vector::rabitq::math::{dot, l2_distance_sqr};
 use lakesoul_vector::rabitq::mutation::load_state;
-use lakesoul_vector::LazyIvfIndex;
 use lakesoul_vector::rabitq::segment::{IndexHeader, IndexStore, SegmentEntry};
 use lakesoul_vector::{IndexKey, IvfRabitqIndex, Metric, RabitqError, SearchParams};
 use object_store::ObjectStore;
@@ -23,6 +23,7 @@ use tracing::{debug, info, warn};
 
 use crate::Result as IoResult;
 use crate::config::LakeSoulIOConfig;
+use crate::cache::store_namespace::{StoreCacheNamespace, store_cache_namespace};
 use crate::index::cache::{self, IndexCacheEntry};
 use crate::index::commit::ResolvedIndex;
 use crate::index::key::{KeyCodec, KeyLayout};
@@ -289,7 +290,8 @@ async fn load_shard(
     }
     let prefix = index_prefix.trim_end_matches('/').to_string();
     let error_prefix = index_prefix.to_string();
-    let entry = cache::get_or_load(IndexKind::Vector, &prefix, commit_id, || {
+    let namespace = store_cache_namespace(store);
+    let entry = cache::get_or_load_scoped(IndexKind::Vector, &prefix, namespace, commit_id, || {
         // Copied only on a cache miss: a hit must not rebuild coverage or
         // clone the segment list.
         let store = store.clone();
@@ -427,25 +429,56 @@ pub async fn search_typed_shard(
 static LAZY_SHARDS: LazyLock<std::sync::Mutex<HashMap<String, Arc<LazyIvfIndex>>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
-fn lazy_shard_key(prefix: &str, commit_id: i64, key_kind: u64) -> String {
-    format!("{prefix}\0{commit_id}\0{key_kind:016x}")
+fn lazy_shard_key(
+    prefix: &str,
+    namespace: &StoreCacheNamespace,
+    commit_id: i64,
+    key_kind: u64,
+) -> String {
+    format!("{prefix}\0{}\0{commit_id}\0{key_kind:016x}", namespace.token())
 }
 
-fn lazy_shard_get(prefix: &str, commit_id: i64, key_kind: u64) -> Option<Arc<LazyIvfIndex>> {
+fn lazy_shard_get(
+    store: &Arc<dyn ObjectStore>,
+    prefix: &str,
+    commit_id: i64,
+    key_kind: u64,
+) -> Option<Arc<LazyIvfIndex>> {
+    let namespace = store_cache_namespace(store);
     LAZY_SHARDS
         .lock()
         .ok()?
-        .get(&lazy_shard_key(prefix, commit_id, key_kind))
+        .get(&lazy_shard_key(prefix, &namespace, commit_id, key_kind))
         .cloned()
 }
 
-fn lazy_shard_put(prefix: &str, commit_id: i64, key_kind: u64, shard: Arc<LazyIvfIndex>) {
+fn lazy_shard_put(
+    store: &Arc<dyn ObjectStore>,
+    prefix: &str,
+    commit_id: i64,
+    key_kind: u64,
+    shard: Arc<LazyIvfIndex>,
+) {
+    let namespace = store_cache_namespace(store);
     if let Ok(mut cache) = LAZY_SHARDS.lock() {
         if cache.len() >= 16 {
             cache.clear();
         }
-        cache.insert(lazy_shard_key(prefix, commit_id, key_kind), shard);
+        cache.insert(lazy_shard_key(prefix, &namespace, commit_id, key_kind), shard);
     }
+}
+
+/// Drop the lazy shard handles and cluster cache of one index prefix.
+///
+/// Called after `drop_vector_index` removes the shard so this process cannot
+/// keep serving it from memory.
+pub fn invalidate_lazy_shard(prefix: &str) {
+    let prefix = prefix.trim_end_matches('/');
+    if let Ok(mut cache) = LAZY_SHARDS.lock() {
+        let key_prefix = format!("{prefix}\0");
+        cache.retain(|key, _| !key.starts_with(&key_prefix));
+    }
+    lakesoul_vector::rabitq::ivf::lazy::invalidate_prefix(prefix);
 }
 
 /// Lazy loading is for shards whose index is too large to keep eagerly.
@@ -483,7 +516,7 @@ async fn load_lazy_shard(
     expected_key_kind: u64,
 ) -> IoResult<Option<Arc<LazyIvfIndex>>> {
     let prefix = index_prefix.trim_end_matches('/').to_string();
-    if let Some(shard) = lazy_shard_get(&prefix, commit_id, expected_key_kind) {
+    if let Some(shard) = lazy_shard_get(store, &prefix, commit_id, expected_key_kind) {
         return Ok(Some(shard));
     }
     let index_store = IndexStore::new(
@@ -516,7 +549,7 @@ async fn load_lazy_shard(
     {
         Ok(shard) => {
             let shard = Arc::new(shard);
-            lazy_shard_put(&prefix, commit_id, expected_key_kind, Arc::clone(&shard));
+            lazy_shard_put(store, &prefix, commit_id, expected_key_kind, Arc::clone(&shard));
             Ok(Some(shard))
         }
         Err(error) => {
@@ -576,6 +609,52 @@ impl LoadedShard {
         }
     }
 
+    /// Shared diagnostics-aware entry for native SQL/Python batch execution.
+    pub fn search_batch_with_options(
+        &self,
+        queries: &[&[f32]],
+        top_k: usize,
+        nprobe: usize,
+        options: &lakesoul_vector::rabitq::ivf::BatchSearchOptions,
+    ) -> IoResult<(Vec<Vec<VectorHit>>, lakesoul_vector::rabitq::ivf::BatchSearchDiagnostics)> {
+        let params = SearchParams::new(top_k, nprobe).with_parallelism(options.parallelism);
+        let output = match self.kind.as_ref() {
+            LoadedShardKind::Eager(inner) => inner.cached.index.batch_search_with_options(queries, params, options),
+            LoadedShardKind::Lazy(inner) => inner.search_batch_with_options(queries, params, options),
+        };
+        let hits = output.results.into_iter().map(|result| {
+            result.map(|hits| hits.into_iter().map(vector_hit).collect())
+                .map_err(|error| rootcause::report!("native batch search failed: {error}"))
+        }).collect::<IoResult<Vec<_>>>()?;
+        Ok((hits, output.diagnostics))
+    }
+
+    /// Search a bounded multi-query window, with cancellation observed by
+    /// the CPU kernel and lazy cluster loads. Does not execute SQL per query.
+    pub fn search_batch_controlled(
+        &self,
+        queries: &[&[f32]],
+        top_k: usize,
+        nprobe: usize,
+        parallelism: usize,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    ) -> IoResult<Vec<Vec<VectorHit>>> {
+        let results = match self.kind.as_ref() {
+            LoadedShardKind::Eager(inner) => inner.cached.index.batch_search_controlled(
+                queries,
+                SearchParams::new(top_k, nprobe).with_parallelism(parallelism),
+                cancel,
+            ),
+            LoadedShardKind::Lazy(inner) => inner.search_batch_controlled(
+                queries, top_k, nprobe, parallelism, cancel,
+            ),
+        };
+        results.into_iter().map(|result| {
+            result.map(|hits| hits.into_iter().map(vector_hit).collect())
+                .map_err(|error| rootcause::report!("native batch search failed: {error}"))
+        }).collect()
+    }
+
     /// Search several queries against this shard.
     pub fn search_batch(
         &self,
@@ -591,17 +670,11 @@ impl LoadedShard {
                 let direct = !std::env::var("LAKESOUL_VECTOR_PROBE_DIRECT")
                     .is_ok_and(|value| value == "0");
                 if direct && queries.len() == 1 {
-                    let results = inner
-                        .cached
-                        .index
-                        .search(queries[0], params)
-                        .map_err(|e| {
+                    let results =
+                        inner.cached.index.search(queries[0], params).map_err(|e| {
                             rootcause::report!("vector search failed: {:?}", e)
                         })?;
-                    return Ok(vec![results
-                        .into_iter()
-                        .map(vector_hit)
-                        .collect()]);
+                    return Ok(vec![results.into_iter().map(vector_hit).collect()]);
                 }
                 let mut per_query = Vec::with_capacity(queries.len());
                 for result in inner.cached.index.batch_search(queries, params) {
@@ -615,9 +688,7 @@ impl LoadedShard {
             }
             LoadedShardKind::Lazy(inner) => {
                 let mut per_query = Vec::with_capacity(queries.len());
-                for result in
-                    inner.search_batch(queries, top_k, nprobe, parallelism)
-                {
+                for result in inner.search_batch(queries, top_k, nprobe, parallelism) {
                     let results = result.map_err(|e| {
                         rootcause::report!("vector search failed: {:?}", e)
                     })?;
@@ -630,24 +701,31 @@ impl LoadedShard {
     }
 }
 
-/// Take an already-loaded shard for `(index_prefix, commit_id)`.
-///
-/// Returns `None` when the shard is not cached (the caller then loads it with
-/// [`load_typed_shard`]) or when the cached entry was built for another key
-/// layout.  A hot query therefore skips the header parse and the segment list
-/// entirely.
+/// Legacy lookup has no store handle and cannot safely prove cache identity.
+/// It remains as a compatibility miss; callers that can provide the store
+/// should use `cached_typed_shard_for_store`.
 pub async fn cached_typed_shard(
+    _index_prefix: &str,
+    _commit_id: i64,
+    _expected_key_kind: u64,
+) -> Option<LoadedShard> {
+    None
+}
+
+pub async fn cached_typed_shard_for_store(
+    store: &Arc<dyn ObjectStore>,
     index_prefix: &str,
     commit_id: i64,
     expected_key_kind: u64,
 ) -> Option<LoadedShard> {
     let prefix = index_prefix.trim_end_matches('/');
-    if let Some(lazy) = lazy_shard_get(prefix, commit_id, expected_key_kind) {
+    if let Some(lazy) = lazy_shard_get(store, prefix, commit_id, expected_key_kind) {
         return Some(LoadedShard::lazy(lazy));
     }
-    let entry =
-        cache::get_loaded::<LoadedVectorShard>(IndexKind::Vector, prefix, commit_id)
-            .await?;
+    let namespace = store_cache_namespace(store);
+    let entry = cache::get_loaded_scoped::<LoadedVectorShard>(
+        IndexKind::Vector, prefix, &namespace, commit_id,
+    ).await?;
     if entry.key_kind != expected_key_kind {
         return None;
     }
@@ -690,19 +768,18 @@ pub async fn load_typed_shard(
             .collect::<HashSet<_>>()
             .len(),
         segments,
+    ) && let Some(lazy) = load_lazy_shard(
+        store,
+        index_prefix,
+        commit_id,
+        version,
+        &header,
+        segments,
+        mutation_head,
+        mutation_records,
+        expected_key_kind,
     )
-        && let Some(lazy) = load_lazy_shard(
-            store,
-            index_prefix,
-            commit_id,
-            version,
-            &header,
-            segments,
-            mutation_head,
-            mutation_records,
-            expected_key_kind,
-        )
-        .await?
+    .await?
     {
         return Ok(Some(LoadedShard::lazy(lazy)));
     }
@@ -760,11 +837,10 @@ pub async fn search_matching_shards(
         shard.is_kind(IndexKind::Vector)
             && shard.index_prefix.trim_end_matches('/') == normalized
     }) else {
-        return Err(rootcause::report!(
-            "vector index at '{}' was not resolved by the caller; rebuild the index \
-             if it was created by an unsupported (legacy) writer",
-            normalized
-        ));
+        // The index may have been dropped after the table declaration was
+        // read, or the shard may be absent/legacy.  Fall back to the normal
+        // reader rather than failing the query.
+        return Ok(None);
     };
     let t_load = std::time::Instant::now();
     let load_profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
@@ -1200,10 +1276,11 @@ mod tests {
                 .is_none()
         );
         assert!(
-            !cache::is_loaded(
+            !cache::is_loaded_scoped(
                 IndexKind::Vector,
                 &resolved.index_prefix,
-                resolved.commit_id
+                &store_cache_namespace(&store),
+                resolved.commit_id,
             )
             .await
         );

@@ -186,6 +186,21 @@ fn unshippable_stage_error(leaf: &str) -> DataFusionError {
     ))
 }
 
+fn contains_vector_batch(plan: &LogicalPlan) -> DFResult<bool> {
+    let mut found = false;
+    plan.apply(|node| {
+        if let LogicalPlan::TableScan(scan) = node
+            && let Ok(provider) = datafusion::datasource::source_as_provider(&scan.source)
+            && crate::udf::vector_batch::is_vector_batch_provider(provider.as_ref())
+        {
+            found = true;
+            return Ok(TreeNodeRecursion::Stop);
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    Ok(found)
+}
+
 #[async_trait::async_trait]
 impl QueryPlanner for LakeSoulDistributedQueryPlanner {
     async fn create_physical_plan(
@@ -200,6 +215,15 @@ impl QueryPlanner for LakeSoulDistributedQueryPlanner {
                 ?available_workers,
                 "distributed planning worker availability snapshot"
             );
+        }
+        // Native SQL batches orchestrate bounded network exchanges themselves:
+        // their target snapshot is pinned exactly once on first demand. Letting
+        // generic file-scan splitting distribute this orchestration would either
+        // re-resolve latest metadata on workers or try to serialize SessionState.
+        // The real query-source child still executes once and each window is
+        // shipped by the dedicated broadcast/probe/merge path.
+        if contains_vector_batch(logical_plan)? {
+            return self.local.create_physical_plan(logical_plan, session).await;
         }
         let plan = match self
             .distributed

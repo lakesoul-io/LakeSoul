@@ -53,7 +53,7 @@ use lakesoul_io::index::commit::ResolvedIndex;
 use lakesoul_io::index::key::{KeyCodec, KeyLayout};
 use lakesoul_io::reader::{LakeSoulReader, SyncSendableMutableLakeSoulReader};
 use lakesoul_io::vector::search::{
-    LoadedShard, VectorHit, cached_typed_shard, load_typed_shard,
+    LoadedShard, VectorHit, cached_typed_shard_for_store, load_typed_shard,
 };
 use lakesoul_metadata::index_catalog::{
     IndexCommitView, VectorCatalog, VectorSegmentEntry,
@@ -100,6 +100,8 @@ fn covered_file_names(view: &IndexCommitView<VectorSegmentEntry>) -> Vec<String>
 /// changes the file set, which misses the cache and resolves afresh.
 struct CachedSnapshot {
     key: String,
+    /// Keeps the allocation identity in the cache key from being reused.
+    _store: Arc<dyn object_store::ObjectStore>,
     shards: Vec<CachedSnapshotShard>,
     bytes: usize,
 }
@@ -109,7 +111,10 @@ struct CachedSnapshot {
 /// The entries only add `Arc` references to shards the process-wide index cache
 /// already owns, so the budget is a guard for the case where that cache evicts.
 const SNAPSHOT_CACHE_ENTRIES: usize = 2;
-const SNAPSHOT_CACHE_BYTES: usize = 512 * 1024 * 1024;
+
+fn snapshot_cache_bytes() -> usize {
+    lakesoul_vector::cache_config::config().snapshot_bytes()
+}
 
 static SNAPSHOT_CACHE: LazyLock<Mutex<Vec<Arc<CachedSnapshot>>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
@@ -143,8 +148,25 @@ fn snapshot_cache_get(key: &str) -> Option<Arc<CachedSnapshot>> {
     cache.iter().find(|entry| entry.key == key).map(Arc::clone)
 }
 
+/// Drop every cached snapshot that references one index prefix.
+///
+/// `drop_vector_index` calls this after removing the shard; without it a
+/// repeat query on the same file set could keep serving the deleted shard.
+pub(crate) fn invalidate_snapshot_prefix(prefix: &str) {
+    let target = prefix.trim_end_matches('/');
+    let mut cache = SNAPSHOT_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.retain(|entry| {
+        !entry
+            .shards
+            .iter()
+            .any(|slot| slot.prefix.trim_end_matches('/') == target)
+    });
+}
+
 fn snapshot_cache_put(entry: Arc<CachedSnapshot>) {
-    if entry.bytes > SNAPSHOT_CACHE_BYTES {
+    if entry.bytes > snapshot_cache_bytes() {
         return;
     }
     let mut cache = SNAPSHOT_CACHE
@@ -156,7 +178,7 @@ fn snapshot_cache_put(entry: Arc<CachedSnapshot>) {
     // The entries pin shards the index cache may otherwise evict, so keep the
     // total footprint inside the budget as well.
     let mut total = cache.iter().map(|entry| entry.bytes).sum::<usize>();
-    while cache.len() > 1 && total > SNAPSHOT_CACHE_BYTES {
+    while cache.len() > 1 && total > snapshot_cache_bytes() {
         if let Some(dropped) = cache.pop() {
             total -= dropped.bytes;
         }
@@ -207,6 +229,9 @@ pub struct LakeSoulVectorSearchExec {
     fetch_limit: Option<usize>,
     /// Catalog used to resolve index commits and hold reader leases.
     catalog: VectorCatalog,
+    /// Table `vector_index_epoch`; part of the snapshot cache key so a plan
+    /// from before a drop cannot reuse the dropped index.
+    vector_index_epoch: u64,
     /// Runtime metrics.
     metrics: ExecutionPlanMetricsSet,
     /// Plan properties.
@@ -257,6 +282,7 @@ impl LakeSoulVectorSearchExec {
         cdc_filter: Option<Arc<dyn PhysicalExpr>>,
         fetch_limit: Option<usize>,
         catalog: VectorCatalog,
+        vector_index_epoch: u64,
     ) -> DFResult<Self> {
         Ok(Self {
             schema: Arc::clone(&schema),
@@ -274,6 +300,7 @@ impl LakeSoulVectorSearchExec {
             cdc_filter,
             fetch_limit,
             catalog,
+            vector_index_epoch,
             metrics: ExecutionPlanMetricsSet::new(),
             properties: Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(schema),
@@ -448,68 +475,71 @@ impl LakeSoulVectorSearchExec {
         }
 
         if search {
-        // Exact mode fetches extra candidates per bucket so the global sort
-        // above has margin against the approximate within-shard ranking;
-        // index-only mode needs each bucket's top-k only (with a small margin
-        // when a filter above the scan can drop candidates) because the
-        // ordering comes from the index itself.  Either way the physical
-        // `Limit` trims back to top_k.
-        let candidates_per_bucket = self.vector_search.candidates_per_bucket();
-        let primary_metric = self
-            .vector_search
-            .columns
-            .first()
-            .map(|column| column.metric.clone())
-            .unwrap_or_else(|| "L2".to_string());
-        builder = builder
-            .with_resolved_index_shards(resolved_shards)
-            .with_index_leases(leases)
-            .with_option(
-                OPTION_KEY_VECTOR_SEARCH_TOP_K,
-                candidates_per_bucket.to_string(),
-            )
-            .with_option(OPTION_KEY_VECTOR_SEARCH_NPROBE, nprobe.to_string())
-            .with_option(
-                OPTION_KEY_VECTOR_SEARCH_PARALLELISM,
-                parallelism.max(1).to_string(),
-            )
-            .with_option(OPTION_KEY_VECTOR_SEARCH_METRIC, primary_metric);
-        if self.vector_search.is_single() {
-            // Keep the single-column shorthand: it is the documented reader
-            // option pair and the fastest path through the option parser.
-            let column = &self.vector_search.columns[0];
-            builder = builder
-                .with_option(OPTION_KEY_VECTOR_SEARCH_COLUMN, column.column.clone())
-                .with_option(OPTION_KEY_VECTOR_SEARCH_QUERY, column.query_csv.clone());
-        } else {
-            // Several columns: the reader intersects the per-column candidate
-            // sets and fuses the distances (index-only ordering) or narrows
-            // the scan and lets the exact Sort above re-rank the candidates.
-            let requests: Vec<serde_json::Value> = self
+            // Exact mode fetches extra candidates per bucket so the global sort
+            // above has margin against the approximate within-shard ranking;
+            // index-only mode needs each bucket's top-k only (with a small margin
+            // when a filter above the scan can drop candidates) because the
+            // ordering comes from the index itself.  Either way the physical
+            // `Limit` trims back to top_k.
+            let candidates_per_bucket = self.vector_search.candidates_per_bucket();
+            let primary_metric = self
                 .vector_search
                 .columns
-                .iter()
-                .map(|column| {
-                    serde_json::json!({
-                        "column": column.column,
-                        "query": column.query_csv,
-                        "top_k": candidates_per_bucket,
-                        "weight": column.weight,
-                        "metric": column.metric,
-                    })
-                })
-                .collect();
-            builder = builder.with_option(
-                OPTION_KEY_VECTOR_SEARCH_REQUESTS,
-                serde_json::Value::Array(requests).to_string(),
-            );
-        }
-        if self.vector_search.order_by {
-            // Index-only ordering: the reader appends the index distance per
-            // candidate row and the vector column drops out of the scan.
+                .first()
+                .map(|column| column.metric.clone())
+                .unwrap_or_else(|| "L2".to_string());
             builder = builder
-                .with_option(OPTION_KEY_VECTOR_SEARCH_ORDER_BY, "true".to_string());
-        }
+                .with_resolved_index_shards(resolved_shards)
+                .with_index_leases(leases)
+                .with_option(
+                    OPTION_KEY_VECTOR_SEARCH_TOP_K,
+                    candidates_per_bucket.to_string(),
+                )
+                .with_option(OPTION_KEY_VECTOR_SEARCH_NPROBE, nprobe.to_string())
+                .with_option(
+                    OPTION_KEY_VECTOR_SEARCH_PARALLELISM,
+                    parallelism.max(1).to_string(),
+                )
+                .with_option(OPTION_KEY_VECTOR_SEARCH_METRIC, primary_metric);
+            if self.vector_search.is_single() {
+                // Keep the single-column shorthand: it is the documented reader
+                // option pair and the fastest path through the option parser.
+                let column = &self.vector_search.columns[0];
+                builder = builder
+                    .with_option(OPTION_KEY_VECTOR_SEARCH_COLUMN, column.column.clone())
+                    .with_option(
+                        OPTION_KEY_VECTOR_SEARCH_QUERY,
+                        column.query_csv.clone(),
+                    );
+            } else {
+                // Several columns: the reader intersects the per-column candidate
+                // sets and fuses the distances (index-only ordering) or narrows
+                // the scan and lets the exact Sort above re-rank the candidates.
+                let requests: Vec<serde_json::Value> = self
+                    .vector_search
+                    .columns
+                    .iter()
+                    .map(|column| {
+                        serde_json::json!({
+                            "column": column.column,
+                            "query": column.query_csv,
+                            "top_k": candidates_per_bucket,
+                            "weight": column.weight,
+                            "metric": column.metric,
+                        })
+                    })
+                    .collect();
+                builder = builder.with_option(
+                    OPTION_KEY_VECTOR_SEARCH_REQUESTS,
+                    serde_json::Value::Array(requests).to_string(),
+                );
+            }
+            if self.vector_search.order_by {
+                // Index-only ordering: the reader appends the index distance per
+                // candidate row and the vector column drops out of the scan.
+                builder = builder
+                    .with_option(OPTION_KEY_VECTOR_SEARCH_ORDER_BY, "true".to_string());
+            }
         }
         Ok(builder.build())
     }
@@ -559,10 +589,7 @@ impl LakeSoulVectorSearchExec {
     /// limit the pushdown rule matched) plus a margin for ties and float
     /// differences between the ranking here and the sort above.
     fn keep_rows(&self) -> usize {
-        let target = self
-            .fetch_limit
-            .unwrap_or(0)
-            .max(self.vector_search.top_k);
+        let target = self.fetch_limit.unwrap_or(0).max(self.vector_search.top_k);
         // `narrow` is the rule's guarantee that nothing filters rows between
         // this scan and the sort/limit above it, and the exact paths rank
         // every candidate by its exact distance before keeping any, so the
@@ -821,6 +848,8 @@ impl LakeSoulVectorSearchExec {
         key.push('\u{0}');
         key.push_str(&format!("{expected_key_kind:016x}"));
         key.push('\u{0}');
+        key.push_str(&format!("epoch={:016x}", self.vector_index_epoch));
+        key.push('\u{0}');
         key.push(if self.vector_search.order_by {
             '1'
         } else {
@@ -968,10 +997,11 @@ impl LakeSoulVectorSearchExec {
         let t_search = std::time::Instant::now();
         let (snapshot, resolve_ms, snapshot_cached) = match self
             .expected_snapshot(store, &groups, expected_key_kind, true)
-            .await? {
-                Some(resolved) => resolved,
-                None => return Ok(None),
-            };
+            .await?
+        {
+            Some(resolved) => resolved,
+            None => return Ok(None),
+        };
         let shards: Vec<LoadedShard> = snapshot
             .shards
             .iter()
@@ -1077,7 +1107,7 @@ impl LakeSoulVectorSearchExec {
         expected_key_kind: u64,
         cdc_free: bool,
     ) -> DFResult<Option<(Arc<CachedSnapshot>, f64, bool)>> {
-        let cache_key = self.snapshot_key(expected_key_kind);
+        let cache_key = format!("{}\0store={:p}", self.snapshot_key(expected_key_kind), Arc::as_ptr(store));
         let expected_prefixes: Vec<String> = groups
             .iter()
             .flat_map(|group| {
@@ -1088,10 +1118,9 @@ impl LakeSoulVectorSearchExec {
             })
             .collect();
         if snapshot_cache_enabled()
-            && let Some(entry) = snapshot_cache_get(&cache_key)
-                .filter(|entry| {
-                    self.snapshot_covered(entry, &expected_prefixes, cdc_free)
-                })
+            && let Some(entry) = snapshot_cache_get(&cache_key).filter(|entry| {
+                self.snapshot_covered(entry, &expected_prefixes, cdc_free)
+            })
         {
             return Ok(Some((entry, 0.0, true)));
         }
@@ -1099,17 +1128,19 @@ impl LakeSoulVectorSearchExec {
         prefixes.sort_unstable();
         prefixes.dedup();
         let t_resolve = std::time::Instant::now();
-        let views = self.catalog.resolve_cached_many(&prefixes).await.map_err(
-            |error| {
-                DataFusionError::External(
-                    rootcause::report!(
-                        "failed to resolve vector index shards: {}",
-                        error
+        let views =
+            self.catalog
+                .resolve_cached_many(&prefixes)
+                .await
+                .map_err(|error| {
+                    DataFusionError::External(
+                        rootcause::report!(
+                            "failed to resolve vector index shards: {}",
+                            error
+                        )
+                        .into_boxed_error(),
                     )
-                    .into_boxed_error(),
-                )
-            },
-        )?;
+                })?;
         let resolve_ms = t_resolve.elapsed().as_secs_f64() * 1000.0;
         // Prove that the resolved commits cover this snapshot before touching
         // any shard.
@@ -1156,7 +1187,7 @@ impl LakeSoulVectorSearchExec {
         // A hot shard comes straight from the index cache; the lookups
         // overlap instead of queuing.
         let lookups = requested.iter().map(|(prefix, _, view)| {
-            cached_typed_shard(prefix, view.commit_id, expected_key_kind)
+            cached_typed_shard_for_store(store, prefix, view.commit_id, expected_key_kind)
         });
         let cached = futures::future::join_all(lookups).await;
         let mut shards: Vec<CachedSnapshotShard> = Vec::with_capacity(requested.len());
@@ -1202,6 +1233,7 @@ impl LakeSoulVectorSearchExec {
         let bytes = shards.iter().map(|slot| slot.shard.memory_bytes()).sum();
         let entry = Arc::new(CachedSnapshot {
             key: cache_key,
+            _store: Arc::clone(store),
             shards,
             bytes,
         });
@@ -1235,7 +1267,8 @@ impl LakeSoulVectorSearchExec {
             || !self.partition_cols.is_empty()
             || !self.exact_ranking_matches_sort()
             || self.keep_rows() == 0
-            || (std::env::var("LAKESOUL_VECTOR_MULTI_FILE_EXACT").is_ok_and(|value| value == "0")
+            || (std::env::var("LAKESOUL_VECTOR_MULTI_FILE_EXACT")
+                .is_ok_and(|value| value == "0")
                 && self.file_groups.iter().any(|group| group.len() != 1))
         {
             return false;
@@ -1294,9 +1327,11 @@ impl LakeSoulVectorSearchExec {
         let mut handoff_ms = 0.0_f64;
         let batches = tokio::task::block_in_place(|| {
             handoff_ms = t_handoff.elapsed().as_secs_f64() * 1000.0;
-            lakesoul_io::session::GLOBAL_RUNTIME.block_on(
-                self.exact_batches_inner(&store, nprobe, parallelism),
-            )
+            lakesoul_io::session::GLOBAL_RUNTIME.block_on(self.exact_batches_inner(
+                &store,
+                nprobe,
+                parallelism,
+            ))
         });
         if std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok() {
             debug!(
@@ -1358,8 +1393,11 @@ impl LakeSoulVectorSearchExec {
                 )
             })?;
         tokio::task::block_in_place(|| {
-            lakesoul_io::session::GLOBAL_RUNTIME
-                .block_on(self.filtered_batches_inner(&store, nprobe, parallelism))
+            lakesoul_io::session::GLOBAL_RUNTIME.block_on(self.filtered_batches_inner(
+                &store,
+                nprobe,
+                parallelism,
+            ))
         })
     }
 
@@ -1391,16 +1429,15 @@ impl LakeSoulVectorSearchExec {
         let t_inner = std::time::Instant::now();
         let column = &self.vector_search.columns[0];
         let metric = column.metric.clone();
-        let layout = KeyLayout::from_schema(self.file_schema.as_ref(), &self.primary_keys)
-            .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let layout =
+            KeyLayout::from_schema(self.file_schema.as_ref(), &self.primary_keys)
+                .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
         let codec = KeyCodec::new(layout.clone())
             .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
         let expected_key_kind = layout.kind_hash();
-        let query = lakesoul_io::vector::search::parse_query_vector(
-            &column.query_csv,
-            None,
-        )
-        .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let query =
+            lakesoul_io::vector::search::parse_query_vector(&column.query_csv, None)
+                .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
         let groups = self
             .file_groups
             .iter()
@@ -1413,8 +1450,11 @@ impl LakeSoulVectorSearchExec {
             Some(resolved) => resolved,
             None => return Ok(None),
         };
-        let shards: Vec<LoadedShard> =
-            snapshot.shards.iter().map(|slot| slot.shard.clone()).collect();
+        let shards: Vec<LoadedShard> = snapshot
+            .shards
+            .iter()
+            .map(|slot| slot.shard.clone())
+            .collect();
         let target = self.keep_rows().max(1);
         let mut overfetch = std::env::var("LAKESOUL_VECTOR_FILTER_OVERFETCH")
             .ok()
@@ -1559,18 +1599,17 @@ impl LakeSoulVectorSearchExec {
         let t_inner = std::time::Instant::now();
         let column = &self.vector_search.columns[0];
         let t_layout = std::time::Instant::now();
-        let layout = KeyLayout::from_schema(self.file_schema.as_ref(), &self.primary_keys)
-            .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let layout =
+            KeyLayout::from_schema(self.file_schema.as_ref(), &self.primary_keys)
+                .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
         let expected_key_kind = layout.kind_hash();
         let codec = KeyCodec::new(layout)
             .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
         let codec_ms = t_layout.elapsed().as_secs_f64() * 1000.0;
         let t_query = std::time::Instant::now();
-        let query = lakesoul_io::vector::search::parse_query_vector(
-            &column.query_csv,
-            None,
-        )
-        .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
+        let query =
+            lakesoul_io::vector::search::parse_query_vector(&column.query_csv, None)
+                .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
         let query_ms = t_query.elapsed().as_secs_f64() * 1000.0;
         let top_k = self.vector_search.candidates_per_bucket();
         let t_groups = std::time::Instant::now();
@@ -1653,48 +1692,48 @@ impl LakeSoulVectorSearchExec {
                     .collect()
             })
             .collect();
-        let opens = self
-            .file_groups
-            .iter()
-            .zip(bucket_ranks.iter())
-            .map(|(files, ranks)| {
-                let store = Arc::clone(store);
-                // Oldest file first, so the payload reads follow the write
-                // order and a key present in several files picks the newest.
-                let mut order: Vec<usize> = (0..files.len()).collect();
-                order.sort_by_key(|position| (ranks[*position], *position));
-                let locations: Vec<object_store::path::Path> = order
-                    .iter()
-                    .map(|position| files[*position].object_meta.location.clone())
-                    .collect();
-                let ordered_ranks: Vec<u64> =
-                    order.iter().map(|position| ranks[*position]).collect();
-                let key_types = key_types.clone();
-                let key_columns = self.primary_keys.clone();
-                let field = Arc::clone(&vector_field);
-                async move {
-                    // One source per data file: a bucket may hold several
-                    // append-only files, and the resolver below picks the file
-                    // that owns each candidate key.
-                    let mut sources = Vec::with_capacity(locations.len());
-                    for location in locations {
-                        let format =
-                            PhysicalFormat::from_extension(location.as_ref()).ok()?;
-                        sources.push(
-                            lakesoul_io::pk_locator::VectorBlockSource::open_cached(
-                                Arc::clone(&store),
-                                &location,
-                                format,
-                                &key_columns,
-                                &key_types,
-                                &field,
-                            )
-                            .await?,
-                        );
+        let opens =
+            self.file_groups
+                .iter()
+                .zip(bucket_ranks.iter())
+                .map(|(files, ranks)| {
+                    let store = Arc::clone(store);
+                    // Oldest file first, so the payload reads follow the write
+                    // order and a key present in several files picks the newest.
+                    let mut order: Vec<usize> = (0..files.len()).collect();
+                    order.sort_by_key(|position| (ranks[*position], *position));
+                    let locations: Vec<object_store::path::Path> = order
+                        .iter()
+                        .map(|position| files[*position].object_meta.location.clone())
+                        .collect();
+                    let ordered_ranks: Vec<u64> =
+                        order.iter().map(|position| ranks[*position]).collect();
+                    let key_types = key_types.clone();
+                    let key_columns = self.primary_keys.clone();
+                    let field = Arc::clone(&vector_field);
+                    async move {
+                        // One source per data file: a bucket may hold several
+                        // append-only files, and the resolver below picks the file
+                        // that owns each candidate key.
+                        let mut sources = Vec::with_capacity(locations.len());
+                        for location in locations {
+                            let format =
+                                PhysicalFormat::from_extension(location.as_ref()).ok()?;
+                            sources.push(
+                                lakesoul_io::pk_locator::VectorBlockSource::open_cached(
+                                    Arc::clone(&store),
+                                    &location,
+                                    format,
+                                    &key_columns,
+                                    &key_types,
+                                    &field,
+                                )
+                                .await?,
+                            );
+                        }
+                        Some((sources, ordered_ranks))
                     }
-                    Some((sources, ordered_ranks))
-                }
-            });
+                });
         let sources = futures::future::join_all(opens).await;
         let query = Arc::new(query);
         // One thread per bucket: probe the bucket's shard and read that
@@ -1708,61 +1747,59 @@ impl LakeSoulVectorSearchExec {
             let source = sources.get(bucket).cloned().flatten();
             tasks.push(lakesoul_io::session::GLOBAL_RUNTIME.spawn_blocking(
                 move || -> DFResult<Option<(arrow::array::ArrayRef, Vec<IndexKey>)>> {
-                        let Some((sources, ranks)) = source else {
-                            return Ok(None);
-                        };
-                        let query_ref: [&[f32]; 1] = [query.as_slice()];
-                        let probed = shard
-                            .search_batch(&query_ref, top_k, nprobe, parallelism)
-                            .map_err(|error| {
-                                DataFusionError::External(error.into_boxed_error())
-                            })?;
-                        let hits = probed.into_iter().next().unwrap_or_default();
-                        // Dedupe the shard's hits by key (keeping the best
-                        // approximate score) and keep the bucket's top-k.
-                        let mut best: std::collections::HashMap<IndexKey, f32> =
-                            std::collections::HashMap::with_capacity(hits.len());
-                        for hit in hits {
-                            // L2 distance: smaller is better; IP dot product:
-                            // larger is better.
-                            best.entry(hit.key)
-                                .and_modify(|score| {
-                                    *score = if ascending {
-                                        score.min(hit.score)
-                                    } else {
-                                        score.max(hit.score)
-                                    }
-                                })
-                                .or_insert(hit.score);
-                        }
-                        let mut ranked: Vec<(f32, IndexKey)> = best
-                            .into_iter()
-                            .map(|(key, score)| (score, key))
-                            .collect();
-                        ranked.sort_by(|left, right| {
-                            let order = left
-                                .0
-                                .partial_cmp(&right.0)
-                                .unwrap_or(std::cmp::Ordering::Equal);
-                            // Keep the best `top_k` by the index score: the
-                            // nearest distances (L2) or the largest dot
-                            // products (IP).
-                            if ascending { order } else { order.reverse() }
-                        });
-                        ranked.truncate(top_k);
-                        let keys: Vec<IndexKey> =
-                            ranked.into_iter().map(|(_, key)| key).collect();
-                        // Resolve every candidate key across this bucket's
-                        // files: a key unique to one file is read from it, and
-                        // a key written more than once is read from the newest
-                        // version's file (a tie, i.e. an unknown age order,
-                        // falls back to the merge-on-read reader path).
-                        let Some(array) = lakesoul_io::pk_locator::take_multi_file_ranked(
-                            &sources, &ranks, &keys,
-                        ) else {
-                            return Ok(None);
-                        };
-                        Ok(Some((array, keys)))
+                    let Some((sources, ranks)) = source else {
+                        return Ok(None);
+                    };
+                    let query_ref: [&[f32]; 1] = [query.as_slice()];
+                    let probed = shard
+                        .search_batch(&query_ref, top_k, nprobe, parallelism)
+                        .map_err(|error| {
+                            DataFusionError::External(error.into_boxed_error())
+                        })?;
+                    let hits = probed.into_iter().next().unwrap_or_default();
+                    // Dedupe the shard's hits by key (keeping the best
+                    // approximate score) and keep the bucket's top-k.
+                    let mut best: std::collections::HashMap<IndexKey, f32> =
+                        std::collections::HashMap::with_capacity(hits.len());
+                    for hit in hits {
+                        // L2 distance: smaller is better; IP dot product:
+                        // larger is better.
+                        best.entry(hit.key)
+                            .and_modify(|score| {
+                                *score = if ascending {
+                                    score.min(hit.score)
+                                } else {
+                                    score.max(hit.score)
+                                }
+                            })
+                            .or_insert(hit.score);
+                    }
+                    let mut ranked: Vec<(f32, IndexKey)> =
+                        best.into_iter().map(|(key, score)| (score, key)).collect();
+                    ranked.sort_by(|left, right| {
+                        let order = left
+                            .0
+                            .partial_cmp(&right.0)
+                            .unwrap_or(std::cmp::Ordering::Equal);
+                        // Keep the best `top_k` by the index score: the
+                        // nearest distances (L2) or the largest dot
+                        // products (IP).
+                        if ascending { order } else { order.reverse() }
+                    });
+                    ranked.truncate(top_k);
+                    let keys: Vec<IndexKey> =
+                        ranked.into_iter().map(|(_, key)| key).collect();
+                    // Resolve every candidate key across this bucket's
+                    // files: a key unique to one file is read from it, and
+                    // a key written more than once is read from the newest
+                    // version's file (a tie, i.e. an unknown age order,
+                    // falls back to the merge-on-read reader path).
+                    let Some(array) = lakesoul_io::pk_locator::take_multi_file_ranked(
+                        &sources, &ranks, &keys,
+                    ) else {
+                        return Ok(None);
+                    };
+                    Ok(Some((array, keys)))
                 },
             ));
         }
@@ -1891,19 +1928,17 @@ impl LakeSoulVectorSearchExec {
         let vector_column = if taken_vectors.len() == 1 {
             taken_vectors.pop().expect("one bucket")
         } else {
-            let refs: Vec<&dyn arrow::array::Array> = taken_vectors
-                .iter()
-                .map(|array| array.as_ref())
-                .collect();
+            let refs: Vec<&dyn arrow::array::Array> =
+                taken_vectors.iter().map(|array| array.as_ref()).collect();
             arrow::compute::interleave(&refs, &gathered).map_err(|error| {
                 DataFusionError::Execution(format!(
                     "failed to merge the kept candidate vectors: {error}"
                 ))
             })?
         };
-        let decoded = codec.decode(&kept_keys).map_err(|error| {
-            DataFusionError::External(error.into_boxed_error())
-        })?;
+        let decoded = codec
+            .decode(&kept_keys)
+            .map_err(|error| DataFusionError::External(error.into_boxed_error()))?;
         // Emit the ranking columns only; a projection with extra columns is
         // completed by the deferred payload pass in `execute`.
         let output_schema = self.ranking_schema();
@@ -2350,7 +2385,12 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
                 .any(|field| !ranking.contains(field.name()))
             {
                 self.payload_columns_for_ranked(
-                    batches, nprobe, parallelism, &span, profile, partition,
+                    batches,
+                    nprobe,
+                    parallelism,
+                    &span,
+                    profile,
+                    partition,
                 )?
             } else {
                 batches
@@ -2413,7 +2453,8 @@ impl ExecutionPlan for LakeSoulVectorSearchExec {
             if profile {
                 debug!(
                     rank_ms = t_rank.elapsed().as_secs_f64() * 1000.0,
-                    ranked_rows = ranked.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+                    ranked_rows =
+                        ranked.iter().map(|batch| batch.num_rows()).sum::<usize>(),
                     kept_rows = kept.iter().map(|batch| batch.num_rows()).sum::<usize>(),
                     "vector search exact rank profile"
                 );
@@ -2735,13 +2776,7 @@ pub(crate) fn accumulate_exact_scores(
                 }
                 let start = offsets[row] as usize;
                 let end = offsets[row + 1] as usize;
-                accumulate_exact_row(
-                    &raw[start..end],
-                    query,
-                    ascending,
-                    scores,
-                    row,
-                );
+                accumulate_exact_row(&raw[start..end], query, ascending, scores, row);
             }
         }
         _ => return Err(unsupported()),

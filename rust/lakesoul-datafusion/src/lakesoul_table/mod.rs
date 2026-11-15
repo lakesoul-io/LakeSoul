@@ -426,6 +426,38 @@ impl LakeSoulTable {
         .await
     }
 
+    /// Drop the vector index of this table (or of selected columns).
+    ///
+    /// This is the DataFusion/Rust table-level API; the Python binding uses
+    /// the same core through `lakesoul_datafusion::vector_index`.
+    pub async fn drop_vector_index(
+        &self,
+        options: crate::vector_index::DropVectorIndexOptions,
+    ) -> Result<crate::vector_index::DropVectorIndexReport> {
+        crate::vector_index::drop_vector_index(
+            &self.client,
+            self.table_name(),
+            self.table_namespace(),
+            &HashMap::new(),
+            options,
+        )
+        .await
+    }
+
+    /// Sweep objects left behind by a failed/deferred vector-index drop.
+    /// Tombstones are kept; an explicit rebuild clears them.
+    pub async fn gc_dropped_vector_index_objects(
+        &self,
+    ) -> Result<crate::vector_index::DropGcReport> {
+        crate::vector_index::gc_dropped_vector_index_objects(
+            &self.client,
+            self.table_name(),
+            self.table_namespace(),
+            &HashMap::new(),
+        )
+        .await
+    }
+
     /// Rebuild every text index shard of this table from scratch (all active
     /// data files re-read into fresh splits), ignoring the configured
     /// `rebuild_mode`/`max_delta_ratio`.  Returns the number of rebuilt

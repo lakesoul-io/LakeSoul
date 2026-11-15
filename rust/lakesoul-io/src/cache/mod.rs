@@ -10,7 +10,8 @@ use std::sync::{Arc, OnceLock};
 pub mod disk_cache;
 pub mod paging;
 pub mod read_through;
-pub mod stats;
+pub(crate) mod stats;
+pub mod store_namespace;
 pub use read_through::ReadThroughCache;
 
 static LAKESOUL_CACHE: OnceLock<Arc<DiskCache>> = OnceLock::new();
@@ -69,34 +70,13 @@ pub fn lakesoul_cache_stats() -> Option<LakesoulCacheStatsSnapshot> {
 pub(crate) fn get_lakesoul_cache() -> Arc<DiskCache> {
     LAKESOUL_CACHE
         .get_or_init(|| -> Arc<DiskCache> {
-            let cache_size = {
-                match std::env::var("LAKESOUL_CACHE_SIZE") {
-                    Ok(mut s) => {
-                        info!("LAKESOUL_CACHE_SIZE: {}", s);
-                        match s.split_off(s.len() - 3).as_str() {
-                            "KiB" => s.parse::<usize>().unwrap_or(1) * 1024,
-                            "MiB" => s.parse::<usize>().unwrap_or(1) * 1024 * 1024,
-                            "GiB" => {
-                                info!("LAKESOUL_CACHE_SIZE: {}", s);
-                                s.parse::<usize>().unwrap_or(1) * 1024 * 1024 * 1024
-                            }
-                            "TiB" => {
-                                s.parse::<usize>().unwrap_or(1)
-                                    * 1024
-                                    * 1024
-                                    * 1024
-                                    * 1024
-                            }
-                            _ => {
-                                info!("LAKESOUL_CACHE_SIZE: {}", s);
-                                1024 * 1024 * 1024
-                            }
-                        }
-                    }
-                    Err(_) => 1024 * 1024 * 1024,
-                }
-            };
-            info!("LAKESOUL_CACHE_SIZE: {}", cache_size);
+            let config = lakesoul_vector::cache_config::config();
+            let cache_size = config.block_disk_bytes();
+            info!(
+                cache_bytes = cache_size,
+                path = config.disk_path(),
+                "L2 vector disk cache initialized"
+            );
             Arc::new(DiskCache::new(cache_size, 4 * 1024 * 1024))
         })
         .clone()

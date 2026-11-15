@@ -313,6 +313,9 @@ impl PgSessionFactory {
             .map_err(|error| report!("pgvector parameter planner: {error}"))?;
         datafusion_postgres::pgvector::install(&context)
             .map_err(|error| report!("pgvector install: {error}"))?;
+        // Register on the final frontend context, after catalog/default-schema
+        // and expression-planner replacement. UDTFs resolve through this state.
+        lakesoul_datafusion::udf::vector_batch::register(&context);
         let session = Arc::new(PgSession::new(
             identity,
             context,
@@ -359,5 +362,130 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(settings.initial_schema(), PUBLIC_SCHEMA);
+    }
+
+    /// The PG factory replaces the original catalog/default schema and installs
+    /// additional planners. Both functions must resolve through the final state.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_batch_functions_work_in_final_postgres_session() {
+        use datafusion::arrow::array::Int64Array;
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::physical_plan::displayable;
+
+        let metadata =
+            Arc::new(lakesoul_metadata::MetaDataClient::from_env().await.unwrap());
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let name = format!("pg_native_batch_{}_{}", std::process::id(), unique);
+        let location = std::env::temp_dir().join(&name);
+        let base = lakesoul_datafusion::create_lakesoul_session_ctx(
+            metadata.clone(),
+            &CoreArgs::from_env(),
+        )
+        .unwrap();
+        let config =
+            r#"[{"column":"vec","dim":8,"nlist":4,"total_bits":7,"metric":"L2"}]"#;
+        base.sql(&format!("CREATE EXTERNAL TABLE lakesoul.default.{name} (id BIGINT NOT NULL PRIMARY KEY, vec FLOAT[] NOT NULL) STORED AS LAKESOUL LOCATION '{}' OPTIONS ('vector_index_columns' '{config}', 'hashBucketNum' '4')", location.display()))
+            .await.unwrap().collect().await.unwrap();
+        base.sql(&format!("INSERT INTO lakesoul.default.{name} SELECT CAST(g.value AS BIGINT), ARRAY[g.value * 0.1, sin(g.value), cos(g.value), 0.5, -0.5, 1.0, -1.0, g.value * 0.01] FROM generate_series(0, 49) AS g(value)"))
+            .await.unwrap().collect().await.unwrap();
+        let query_name = format!("{name}_queries");
+        let query_location = std::env::temp_dir().join(&query_name);
+        base.sql(&format!("CREATE EXTERNAL TABLE lakesoul.default.{query_name} (qid BIGINT NOT NULL PRIMARY KEY, qvec FLOAT[] NOT NULL) STORED AS LAKESOUL LOCATION '{}' OPTIONS ('hashBucketNum' '1')", query_location.display()))
+            .await.unwrap().collect().await.unwrap();
+        base.sql(&format!("INSERT INTO lakesoul.default.{query_name} SELECT CAST(g.value + 1000 AS BIGINT), ARRAY[0.73, sin(7), cos(7), 0.5, -0.5, 1.0, -1.0, 0.07] FROM generate_series(0, 999) AS g(value)"))
+            .await.unwrap().collect().await.unwrap();
+        let factory = PgSessionFactory::new(
+            metadata.clone(),
+            &CoreArgs::from_env(),
+            Arc::new(AuthManager::new()),
+        )
+        .unwrap();
+        let session = factory
+            .create_session(
+                SessionIdentity {
+                    user: "lakesoul_test".into(),
+                    database: "default".into(),
+                },
+                &SessionSettings::default(),
+            )
+            .await
+            .unwrap();
+        let context = &session.context;
+        assert_eq!(
+            context.state().config_options().catalog.default_catalog,
+            "default"
+        );
+        assert_eq!(
+            context.state().config_options().catalog.default_schema,
+            "public"
+        );
+        let query = vec![
+            0.73f32,
+            (7.0f32).sin(),
+            (7.0f32).cos(),
+            0.5,
+            -0.5,
+            1.0,
+            -1.0,
+            0.07,
+        ];
+        let queries_json =
+            serde_json::to_string(&vec![query.clone(), query.clone()]).unwrap();
+        // Keep errors until after fixture cleanup, including all index objects.
+        let check: datafusion::error::Result<()> = async {
+            let sql = format!("SELECT * FROM lakesoul_vector_search_batch('{name}', 'vec', '{queries_json}', 3, 4, 'auto', 'exact')");
+            let plan = context.sql(&sql).await?.create_physical_plan().await?;
+            assert!(displayable(plan.as_ref()).indent(true).to_string().contains("VectorBatchSearchExec"));
+            let analyze = context.sql(&format!("EXPLAIN ANALYZE {sql}")).await?.collect().await?;
+            let analyze = datafusion::arrow::util::pretty::pretty_format_batches(&analyze)?.to_string();
+            for metric in ["batch_windows", "batch_output_batches", "batch_queries", "batch_shard_probes", "batch_cluster_loads", "batch_rerank_blocks", "batch_shared_block_reuses", "batch_peak_workers"] {
+                assert!(analyze.contains(metric), "missing {metric} in EXPLAIN ANALYZE:\n{analyze}");
+            }
+            let rows = context.sql(&sql).await?.collect().await?;
+            assert_eq!(rows.iter().map(RecordBatch::num_rows).sum::<usize>(), 6);
+            let batch = &rows[0];
+            assert_eq!(batch.schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(), ["query_id", "rank", "id", "distance"]);
+            let ids = batch.column(2).as_any().downcast_ref::<Int64Array>().unwrap();
+            let literal = query.iter().map(f32::to_string).collect::<Vec<_>>().join(",");
+            let expected = context.sql(&format!("SELECT id FROM {name} ORDER BY array_distance(vec, ARRAY[{literal}]) LIMIT 3")).await?.collect().await?;
+            let expected: Vec<i64> = expected.iter().flat_map(|batch| batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values().iter().copied()).collect();
+            assert_eq!(&ids.values()[..3], expected.as_slice());
+            assert_eq!(&ids.values()[3..], expected.as_slice());
+            // An existing query table is sufficient; the read-only PG server
+            // needs no CREATE TEMP TABLE or statement-policy changes.
+            let sql = format!("SELECT * FROM lakesoul_vector_search_batch_from_table('{name}', 'vec', '{query_name}', 'qid', 'qvec', 1, 4, 'L2', 'exact', 1)");
+            let explain = context.sql(&format!("EXPLAIN ANALYZE {sql}")).await?.collect().await?;
+            let explain = datafusion::arrow::util::pretty::pretty_format_batches(&explain)?.to_string();
+            assert!(explain.contains("batch_windows=4"), "expected four 256-query windows:\n{explain}");
+            let rows = context.sql(&sql).await?.collect().await?;
+            assert_eq!(rows.iter().map(RecordBatch::num_rows).sum::<usize>(), 1000);
+            let mut qids: Vec<i64> = rows.iter().flat_map(|batch| batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values().iter().copied()).collect();
+            qids.sort_unstable();
+            assert_eq!(qids, (1000..2000).collect::<Vec<_>>());
+            let parameter_sql = format!("SELECT * FROM lakesoul_vector_search_batch('{name}', 'vec', $1, 3)");
+            let error = context.sql(&parameter_sql).await.unwrap_err().to_string();
+            assert!(error.contains("placeholders"), "{error}");
+            let hidden = context.sql("SELECT * FROM lakesoul_vector_search_batch('another_database.public.private_vectors', 'vec', '[[1,2]]', 1)").await?;
+            assert!(hidden.collect().await.is_err(), "batch may not bypass the visible catalog");
+            Ok(())
+        }.await;
+        metadata.drop_table(&name, "default").await.unwrap();
+        metadata.drop_table(&query_name, "default").await.unwrap();
+        assert_eq!(location.parent(), Some(std::env::temp_dir().as_path()));
+        assert_eq!(location.file_name().unwrap().to_str(), Some(name.as_str()));
+        assert_eq!(
+            query_location.parent(),
+            Some(std::env::temp_dir().as_path())
+        );
+        assert_eq!(
+            query_location.file_name().unwrap().to_str(),
+            Some(query_name.as_str())
+        );
+        std::fs::remove_dir_all(&location).unwrap();
+        std::fs::remove_dir_all(&query_location).unwrap();
+        check.unwrap();
     }
 }

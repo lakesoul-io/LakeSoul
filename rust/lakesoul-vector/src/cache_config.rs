@@ -89,8 +89,8 @@ impl VectorCacheConfig {
             .or_else(|| env_bytes("LAKESOUL_VECTOR_INDEX_CACHE_BYTES"))
             .unwrap_or(DEFAULT_MEMORY_BYTES);
         let legacy_enabled = std::env::var("LAKESOUL_CACHE").ok();
-        let unified = std::env::var(ENV_CACHE).is_ok()
-            || std::env::var(ENV_MEMORY_BYTES).is_ok();
+        let unified =
+            std::env::var(ENV_CACHE).is_ok() || std::env::var(ENV_MEMORY_BYTES).is_ok();
         let enabled = match std::env::var(ENV_CACHE).ok().as_deref() {
             Some("0") | Some("false") | Some("off") => false,
             Some("1") | Some("true") | Some("on") => true,
@@ -98,12 +98,13 @@ impl VectorCacheConfig {
             // default; `LAKESOUL_CACHE=0` only disabled the generic L2 cache.
             _ => true,
         };
-        let explicit_disk = env_bytes(ENV_DISK_BYTES)
-            .or_else(|| env_bytes("LAKESOUL_INDEX_SSD_BYTES"));
+        let explicit_disk =
+            env_bytes(ENV_DISK_BYTES).or_else(|| env_bytes("LAKESOUL_INDEX_SSD_BYTES"));
         // Old deployments only enabled the generic L2 cache when the
         // LAKESOUL_CACHE switch was set; size/path alone were inert.  The
         // unified surface deliberately makes size/path sufficient.
-        let legacy_switch_on = matches!(legacy_enabled.as_deref(), Some("1") | Some("true"));
+        let legacy_switch_on =
+            matches!(legacy_enabled.as_deref(), Some("1") | Some("true"));
         let disk_configured = if unified {
             explicit_disk.is_some()
                 || std::env::var(ENV_DISK_PATH).is_ok()
@@ -142,14 +143,14 @@ impl VectorCacheConfig {
             0
         } else {
             expert_bytes("LAKESOUL_VECTOR_CLUSTER_CACHE_BYTES")
-            .or(legacy_index_memory)
-            .unwrap_or_else(|| {
-                if unified {
-                    memory_bytes.saturating_mul(6) / 10
-                } else {
-                    DEFAULT_MEMORY_BYTES
-                }
-            })
+                .or(legacy_index_memory)
+                .unwrap_or_else(|| {
+                    if unified {
+                        memory_bytes.saturating_mul(6) / 10
+                    } else {
+                        DEFAULT_MEMORY_BYTES
+                    }
+                })
         };
         let snapshot_bytes = if memory_bytes == 0 || !enabled {
             0
@@ -331,7 +332,11 @@ fn parse_bytes(value: &str) -> Option<usize> {
     } else {
         (value, 1)
     };
-    number.trim().parse::<usize>().ok().map(|n| n.saturating_mul(multiplier))
+    number
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .map(|n| n.saturating_mul(multiplier))
 }
 
 fn warn_deprecated() {

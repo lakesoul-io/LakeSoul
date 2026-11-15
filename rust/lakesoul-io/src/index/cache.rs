@@ -24,18 +24,6 @@ use lakesoul_common::IndexKind;
 use moka::future::Cache;
 use tracing::{debug, info, warn};
 
-/// Byte budget of the process-wide index cache; `0` disables caching.
-pub const ENV_CACHE_BYTES: &str = "LAKESOUL_INDEX_CACHE_BYTES";
-
-/// Preferred name for the memory budget.  The older names are kept as
-/// fallbacks so existing deployments keep working.
-const ENV_MEMORY_BYTES: &str = "LAKESOUL_INDEX_MEMORY_BYTES";
-
-/// Legacy name of the budget variable, kept as a fallback.
-const LEGACY_ENV_CACHE_BYTES: &str = "LAKESOUL_VECTOR_INDEX_CACHE_BYTES";
-
-const DEFAULT_CACHE_BYTES: u64 = 512 * 1024 * 1024;
-
 /// A loaded index shard managed by [`get_or_load`].
 pub trait IndexCacheEntry: Send + Sync + 'static {
     /// Catalog commit id the entry was loaded from.
@@ -51,22 +39,18 @@ struct ErasedEntry {
     data: Arc<dyn Any + Send + Sync>,
     commit_id: i64,
     bytes: usize,
+    _namespace: Option<Arc<crate::cache::store_namespace::StoreCacheNamespace>>,
 }
 
 static CACHE: LazyLock<Option<Cache<String, ErasedEntry>>> = LazyLock::new(|| {
-    let capacity = std::env::var(ENV_MEMORY_BYTES)
-        .ok()
-        .or_else(|| std::env::var(ENV_CACHE_BYTES).ok())
-        .or_else(|| std::env::var(LEGACY_ENV_CACHE_BYTES).ok())
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(DEFAULT_CACHE_BYTES);
+    let capacity = lakesoul_vector::cache_config::config().cluster_bytes() as u64;
     if capacity == 0 {
-        info!("index cache disabled by {ENV_CACHE_BYTES}=0");
+        info!("index cache disabled by LAKESOUL_VECTOR_CACHE=0");
         return None;
     }
     info!(
         capacity_bytes = capacity,
-        "index cache initialized ({ENV_CACHE_BYTES})"
+        "index cache initialized (LAKESOUL_VECTOR_MEMORY_BYTES)"
     );
     metrics::describe_counter!(
         "lakesoul_index_cache_evictions_total",
@@ -129,6 +113,36 @@ fn cache_key(kind: IndexKind, prefix: &str) -> String {
     format!("{kind}\u{0}{prefix}")
 }
 
+fn scoped_cache_key(
+    kind: IndexKind,
+    prefix: &str,
+    namespace: &crate::cache::store_namespace::StoreCacheNamespace,
+) -> String {
+    format!("{}\u{0}{}", cache_key(kind, prefix), namespace.token())
+}
+
+fn keys_for_prefix(cache: &Cache<String, ErasedEntry>, base: String) -> Vec<String> {
+    cache
+        .iter()
+        .filter_map(|(key, _)| {
+            (key.as_str() == base || key.starts_with(&format!("{base}\u{0}")))
+                .then(|| key.as_str().to_string())
+        })
+        .collect()
+}
+
+/// Drop the cached entry of one shard.
+///
+/// Used by `drop_vector_index` after the catalog rows and object files are
+/// removed so this process cannot keep serving the old parsed index.
+pub async fn invalidate(kind: IndexKind, prefix: &str) {
+    if let Some(cache) = CACHE.as_ref() {
+        for key in keys_for_prefix(cache, cache_key(kind, prefix)) {
+            cache.invalidate(&key).await;
+        }
+    }
+}
+
 /// Whether the shard at `commit_id` is already loaded, so a query would not
 /// touch any file (and therefore needs no reader lease).
 pub async fn is_loaded(kind: IndexKind, prefix: &str, commit_id: i64) -> bool {
@@ -138,6 +152,17 @@ pub async fn is_loaded(kind: IndexKind, prefix: &str, commit_id: i64) -> bool {
     cache
         .get(&cache_key(kind, prefix))
         .await
+        .is_some_and(|entry| entry.commit_id == commit_id)
+}
+
+pub async fn is_loaded_scoped(
+    kind: IndexKind,
+    prefix: &str,
+    namespace: &crate::cache::store_namespace::StoreCacheNamespace,
+    commit_id: i64,
+) -> bool {
+    let Some(cache) = CACHE.as_ref() else { return false; };
+    cache.get(&scoped_cache_key(kind, prefix, namespace)).await
         .is_some_and(|entry| entry.commit_id == commit_id)
 }
 
@@ -152,6 +177,22 @@ pub async fn get_loaded<T: IndexCacheEntry>(
 ) -> Option<Arc<T>> {
     let cache = CACHE.as_ref()?;
     let entry = cache.get(&cache_key(kind, prefix)).await?;
+    if entry.commit_id != commit_id {
+        return None;
+    }
+    entry.data.clone().downcast::<T>().ok()
+}
+
+/// Store-aware cache lookup for vector shards. Legacy callers without a store
+/// identity must use `get_loaded`; native batch uses this scoped variant.
+pub async fn get_loaded_scoped<T: IndexCacheEntry>(
+    kind: IndexKind,
+    prefix: &str,
+    namespace: &crate::cache::store_namespace::StoreCacheNamespace,
+    commit_id: i64,
+) -> Option<Arc<T>> {
+    let cache = CACHE.as_ref()?;
+    let entry = cache.get(&scoped_cache_key(kind, prefix, namespace)).await?;
     if entry.commit_id != commit_id {
         return None;
     }
@@ -204,6 +245,7 @@ where
                 commit_id,
                 bytes: value.memory_bytes(),
                 data: Arc::new(value) as Arc<dyn Any + Send + Sync>,
+                _namespace: None,
             })
         })
         .await?;
@@ -235,6 +277,58 @@ where
         "index cache miss, loaded"
     );
     Ok(value)
+}
+
+/// Store-aware loader for vector shards. This keeps the namespace guard alive
+/// for exactly as long as the cached parsed index.
+pub async fn get_or_load_scoped<T, E, F, Fut>(
+    kind: IndexKind,
+    prefix: &str,
+    namespace: Arc<crate::cache::store_namespace::StoreCacheNamespace>,
+    commit_id: i64,
+    loader: F,
+) -> Result<Arc<T>, Arc<E>>
+where
+    T: IndexCacheEntry,
+    E: Send + Sync + 'static,
+    F: Fn() -> Fut + Clone,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    let Some(cache) = CACHE.as_ref() else {
+        return loader().await.map(Arc::new).map_err(Arc::new);
+    };
+    let key = scoped_cache_key(kind, prefix, &namespace);
+    if let Some(entry) = cache.get(&key).await
+        && entry.commit_id == commit_id
+        && let Ok(value) = entry.data.clone().downcast::<T>()
+    {
+        HITS.fetch_add(1, Ordering::Relaxed);
+        metrics::counter!("lakesoul_index_cache_hits_total").increment(1);
+        return Ok(value);
+    }
+    MISSES.fetch_add(1, Ordering::Relaxed);
+    cache.invalidate(&key).await;
+    let cache_loader = loader.clone();
+    let namespace_guard = Arc::clone(&namespace);
+    let entry = cache
+        .try_get_with(key, async move {
+            let value = cache_loader().await?;
+            Ok::<ErasedEntry, E>(ErasedEntry {
+                commit_id,
+                bytes: value.memory_bytes(),
+                data: Arc::new(value) as Arc<dyn Any + Send + Sync>,
+                _namespace: Some(namespace_guard),
+            })
+        })
+        .await?;
+    if entry.commit_id != commit_id {
+        return loader().await.map(Arc::new).map_err(Arc::new);
+    }
+    Ok(entry
+        .data
+        .clone()
+        .downcast::<T>()
+        .unwrap_or_else(|_| panic!("index cache entry type mismatch for '{prefix}'")))
 }
 
 #[cfg(test)]

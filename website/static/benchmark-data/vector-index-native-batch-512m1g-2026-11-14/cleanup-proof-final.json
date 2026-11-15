@@ -1,0 +1,75 @@
+{
+  "checked_utc": "2026-11-14T07:25:06.484644+00:00",
+  "report_configurations": 30,
+  "checked_sources": [
+    {
+      "run_name": "native-batch-v2-20261113T060505Z-321091b5f07d48abbed8e03552ef0cb4",
+      "index_shards_remaining": 0,
+      "live_read_leases_remaining": 0
+    },
+    {
+      "run_name": "native-batch-v2-20261114T041849Z-6aad3284328a4464b32562cb6819c6eb",
+      "index_shards_remaining": 0,
+      "live_read_leases_remaining": 0
+    },
+    {
+      "run_name": "native-batch-v2-20261114T051135Z-32b55b0d8ce64403b816cb2160eee722",
+      "index_shards_remaining": 0,
+      "live_read_leases_remaining": 0
+    }
+  ],
+  "skipped_active_sources": [],
+  "prefixes": [
+    {
+      "source_run": "native-batch-v2-20261113T060505Z-321091b5f07d48abbed8e03552ef0cb4",
+      "dataset": "sift",
+      "prefix": "s3://lakesoul-bench2/native-batch-v2/321091b5f07d48abbed8e03552ef0cb4/sift",
+      "objects_remaining": 0,
+      "table_metadata_remaining": 0,
+      "local_scratch_absent": true
+    },
+    {
+      "source_run": "native-batch-v2-20261113T060505Z-321091b5f07d48abbed8e03552ef0cb4",
+      "dataset": "glove",
+      "prefix": "s3://lakesoul-bench2/native-batch-v2/321091b5f07d48abbed8e03552ef0cb4/glove",
+      "objects_remaining": 0,
+      "table_metadata_remaining": 0,
+      "local_scratch_absent": true
+    },
+    {
+      "source_run": "native-batch-v2-20261113T060505Z-321091b5f07d48abbed8e03552ef0cb4",
+      "dataset": "gist",
+      "prefix": "s3://lakesoul-bench2/native-batch-v2/321091b5f07d48abbed8e03552ef0cb4/gist",
+      "objects_remaining": 0,
+      "table_metadata_remaining": 0,
+      "local_scratch_absent": true
+    },
+    {
+      "source_run": "native-batch-v2-20261113T060505Z-321091b5f07d48abbed8e03552ef0cb4",
+      "dataset": "deep",
+      "prefix": "s3://lakesoul-bench2/native-batch-v2/321091b5f07d48abbed8e03552ef0cb4/deep",
+      "objects_remaining": 0,
+      "table_metadata_remaining": 0,
+      "local_scratch_absent": true
+    },
+    {
+      "source_run": "native-batch-v2-20261114T041849Z-6aad3284328a4464b32562cb6819c6eb",
+      "dataset": "deep",
+      "prefix": "s3://lakesoul-bench2/native-batch-v2/6aad3284328a4464b32562cb6819c6eb/deep",
+      "objects_remaining": 0,
+      "table_metadata_remaining": 0,
+      "local_scratch_absent": true
+    },
+    {
+      "source_run": "native-batch-v2-20261114T051135Z-32b55b0d8ce64403b816cb2160eee722",
+      "dataset": "deep",
+      "prefix": "s3://lakesoul-bench2/native-batch-v2/32b55b0d8ce64403b816cb2160eee722/deep",
+      "objects_remaining": 0,
+      "table_metadata_remaining": 0,
+      "local_scratch_absent": true
+    }
+  ],
+  "operation": "read-only object listing, metadata SELECT and local existence checks",
+  "all_checked_prefixes_empty": true,
+  "free_disk_bytes_observed": 31023775744
+}

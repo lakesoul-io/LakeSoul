@@ -775,6 +775,8 @@ fn resolved_of(prefix: &str, view: &IndexCommitView<TextSplitEntry>) -> Resolved
         version: view.version,
         header: view.header.clone(),
         segments: serde_json::to_value(&view.segments).unwrap_or(Value::Array(vec![])),
+        mutation_head: None,
+        mutation_records: 0,
     }
 }
 

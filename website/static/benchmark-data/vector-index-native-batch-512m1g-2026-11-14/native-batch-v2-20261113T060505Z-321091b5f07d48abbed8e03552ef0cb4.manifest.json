@@ -1,0 +1,253 @@
+{
+  "protocol": {
+    "version": "native-batch-v2",
+    "top_k": 100,
+    "single_nq": 200,
+    "batch_nq": {
+      "sift": 10000,
+      "glove": 10000,
+      "gist": 1000,
+      "deep": 10000
+    },
+    "queries": "first real HDF5 test rows; never cycle, repeat or pad",
+    "single": "200 completed ordinary single-vector API calls, no unreported warmup",
+    "batch": "exactly one fully consumed native call per API/rerank/nprobe",
+    "qps": "validated completed query-vector count / that call's wall seconds",
+    "percentiles": "separate native calls in 100-query chunks AFTER full timing",
+    "percentile_method": "chunk-normalized, not individual batch query latency",
+    "timed_scope": "API execution and full transfer; preparation/validation excluded",
+    "validation": "qid set, 100 unique in-range IDs, complete 1-based ranks, finite ordered SQL distances, per-query recall",
+    "exact_overfetch": 1,
+    "hash_buckets": 4,
+    "cache": {
+      "L1": "512MiB",
+      "L2": "1GiB",
+      "lazy_index": "auto"
+    },
+    "cache_state": "fresh process/owned empty cache per API/rerank/nprobe; singles precede batch",
+    "ordering": "datasets then API/rerank/nprobe, no concurrent performance jobs",
+    "sql_functions": {
+      "inline": "lakesoul_vector_search_batch",
+      "table": "lakesoul_vector_search_batch_from_table"
+    },
+    "sql_source": "owned LakeSoul query table for full batch, inline JSON for percentile chunks",
+    "sql_exact_contract": "final optional exact_overfetch literal must be supported",
+    "baseline_raw": "website/static/benchmark-data/vector-index-minio-large-512m1g-2026-11-11 (immutable)"
+  },
+  "fingerprint": {
+    "artifacts": {
+      "python_extension": {
+        "path": "/home/zhibin/LakeSoul/python/src/lakesoul/_lib.abi3.so",
+        "size": 331437032,
+        "sha256": "d9e12efac34e626253fa013e4ac62a8b8457a9d28a816db138b5fe97ec2c4cf6"
+      },
+      "pgwire_binary": {
+        "path": "/home/zhibin/LakeSoul/rust/target/release/postgres-lakesoul",
+        "size": 355444888,
+        "sha256": "08fbed82c4a43472094cc60c0b0dec918d8aab8c3cc899223ca3b1e4623e97b9"
+      }
+    },
+    "git_head": "f61bd12b98c4a427bb2b7bed82c19c3c80cbd63f",
+    "tracked_worktree_dirty": true,
+    "declared_build_note": "rustc 1.99.1 release; RUSTFLAGS=-C target-cpu=native; PROTOC=/tmp/protoc-bin/bin/protoc; CARGO_BUILD_JOBS=8; bounded query windows coalesce across Arrow input batches; local performance artifacts not portable distribution",
+    "build_flags_verified": false,
+    "python": "3.10.19 (main, Oct 21 2025, 16:43:05) [GCC 11.2.0]",
+    "note": "Hashes identify actual binaries; runtime RUSTFLAGS cannot prove build flags. Runner never compiles."
+  },
+  "token": "321091b5f07d48abbed8e03552ef0cb4",
+  "datasets": [
+    {
+      "dataset": "sift",
+      "token": "321091b5f07d48abbed8e03552ef0cb4",
+      "scratch_parent": "/tmp/lakesoul-native-batch",
+      "scratch": "/tmp/lakesoul-native-batch/nbatch_321091b5f07d48abbed8e03552ef0cb4_sift",
+      "table": "nb2_321091b5f07d48abbed8_sift",
+      "query_table": "nb2_321091b5f07d48abbed8_sift_queries",
+      "target_path": "s3://lakesoul-bench2/native-batch-v2/321091b5f07d48abbed8e03552ef0cb4/sift/target",
+      "query_path": "s3://lakesoul-bench2/native-batch-v2/321091b5f07d48abbed8e03552ef0cb4/sift/queries",
+      "endpoint": "http://127.0.0.1:9000",
+      "data_dir": "/home/zhibin/ann-benchmarks",
+      "pg_binary": "/home/zhibin/LakeSoul/rust/target/release/postgres-lakesoul",
+      "port": 6543,
+      "metrics_port": 19090,
+      "fingerprint": {
+        "artifacts": {
+          "python_extension": {
+            "path": "/home/zhibin/LakeSoul/python/src/lakesoul/_lib.abi3.so",
+            "size": 331437032,
+            "sha256": "d9e12efac34e626253fa013e4ac62a8b8457a9d28a816db138b5fe97ec2c4cf6"
+          },
+          "pgwire_binary": {
+            "path": "/home/zhibin/LakeSoul/rust/target/release/postgres-lakesoul",
+            "size": 355444888,
+            "sha256": "08fbed82c4a43472094cc60c0b0dec918d8aab8c3cc899223ca3b1e4623e97b9"
+          }
+        },
+        "git_head": "f61bd12b98c4a427bb2b7bed82c19c3c80cbd63f",
+        "tracked_worktree_dirty": true,
+        "declared_build_note": "rustc 1.99.1 release; RUSTFLAGS=-C target-cpu=native; PROTOC=/tmp/protoc-bin/bin/protoc; CARGO_BUILD_JOBS=8; bounded query windows coalesce across Arrow input batches; local performance artifacts not portable distribution",
+        "build_flags_verified": false,
+        "python": "3.10.19 (main, Oct 21 2025, 16:43:05) [GCC 11.2.0]",
+        "note": "Hashes identify actual binaries; runtime RUSTFLAGS cannot prove build flags. Runner never compiles."
+      },
+      "settings": {
+        "filename": "sift-128-euclidean.hdf5",
+        "dim": 128,
+        "rows": 1000000,
+        "metric": "L2",
+        "normalize": false,
+        "nlist": 256,
+        "probes": [
+          64
+        ],
+        "batch_nq": 10000,
+        "bits": 7
+      }
+    },
+    {
+      "dataset": "glove",
+      "token": "321091b5f07d48abbed8e03552ef0cb4",
+      "scratch_parent": "/tmp/lakesoul-native-batch",
+      "scratch": "/tmp/lakesoul-native-batch/nbatch_321091b5f07d48abbed8e03552ef0cb4_glove",
+      "table": "nb2_321091b5f07d48abbed8_glove",
+      "query_table": "nb2_321091b5f07d48abbed8_glove_queries",
+      "target_path": "s3://lakesoul-bench2/native-batch-v2/321091b5f07d48abbed8e03552ef0cb4/glove/target",
+      "query_path": "s3://lakesoul-bench2/native-batch-v2/321091b5f07d48abbed8e03552ef0cb4/glove/queries",
+      "endpoint": "http://127.0.0.1:9000",
+      "data_dir": "/home/zhibin/ann-benchmarks",
+      "pg_binary": "/home/zhibin/LakeSoul/rust/target/release/postgres-lakesoul",
+      "port": 6543,
+      "metrics_port": 19090,
+      "fingerprint": {
+        "artifacts": {
+          "python_extension": {
+            "path": "/home/zhibin/LakeSoul/python/src/lakesoul/_lib.abi3.so",
+            "size": 331437032,
+            "sha256": "d9e12efac34e626253fa013e4ac62a8b8457a9d28a816db138b5fe97ec2c4cf6"
+          },
+          "pgwire_binary": {
+            "path": "/home/zhibin/LakeSoul/rust/target/release/postgres-lakesoul",
+            "size": 355444888,
+            "sha256": "08fbed82c4a43472094cc60c0b0dec918d8aab8c3cc899223ca3b1e4623e97b9"
+          }
+        },
+        "git_head": "f61bd12b98c4a427bb2b7bed82c19c3c80cbd63f",
+        "tracked_worktree_dirty": true,
+        "declared_build_note": "rustc 1.99.1 release; RUSTFLAGS=-C target-cpu=native; PROTOC=/tmp/protoc-bin/bin/protoc; CARGO_BUILD_JOBS=8; bounded query windows coalesce across Arrow input batches; local performance artifacts not portable distribution",
+        "build_flags_verified": false,
+        "python": "3.10.19 (main, Oct 21 2025, 16:43:05) [GCC 11.2.0]",
+        "note": "Hashes identify actual binaries; runtime RUSTFLAGS cannot prove build flags. Runner never compiles."
+      },
+      "settings": {
+        "filename": "glove-200-angular.hdf5",
+        "dim": 200,
+        "rows": 1183514,
+        "metric": "IP",
+        "normalize": true,
+        "nlist": 1024,
+        "probes": [
+          512
+        ],
+        "batch_nq": 10000,
+        "bits": 7
+      }
+    },
+    {
+      "dataset": "gist",
+      "token": "321091b5f07d48abbed8e03552ef0cb4",
+      "scratch_parent": "/tmp/lakesoul-native-batch",
+      "scratch": "/tmp/lakesoul-native-batch/nbatch_321091b5f07d48abbed8e03552ef0cb4_gist",
+      "table": "nb2_321091b5f07d48abbed8_gist",
+      "query_table": "nb2_321091b5f07d48abbed8_gist_queries",
+      "target_path": "s3://lakesoul-bench2/native-batch-v2/321091b5f07d48abbed8e03552ef0cb4/gist/target",
+      "query_path": "s3://lakesoul-bench2/native-batch-v2/321091b5f07d48abbed8e03552ef0cb4/gist/queries",
+      "endpoint": "http://127.0.0.1:9000",
+      "data_dir": "/home/zhibin/ann-benchmarks",
+      "pg_binary": "/home/zhibin/LakeSoul/rust/target/release/postgres-lakesoul",
+      "port": 6543,
+      "metrics_port": 19090,
+      "fingerprint": {
+        "artifacts": {
+          "python_extension": {
+            "path": "/home/zhibin/LakeSoul/python/src/lakesoul/_lib.abi3.so",
+            "size": 331437032,
+            "sha256": "d9e12efac34e626253fa013e4ac62a8b8457a9d28a816db138b5fe97ec2c4cf6"
+          },
+          "pgwire_binary": {
+            "path": "/home/zhibin/LakeSoul/rust/target/release/postgres-lakesoul",
+            "size": 355444888,
+            "sha256": "08fbed82c4a43472094cc60c0b0dec918d8aab8c3cc899223ca3b1e4623e97b9"
+          }
+        },
+        "git_head": "f61bd12b98c4a427bb2b7bed82c19c3c80cbd63f",
+        "tracked_worktree_dirty": true,
+        "declared_build_note": "rustc 1.99.1 release; RUSTFLAGS=-C target-cpu=native; PROTOC=/tmp/protoc-bin/bin/protoc; CARGO_BUILD_JOBS=8; bounded query windows coalesce across Arrow input batches; local performance artifacts not portable distribution",
+        "build_flags_verified": false,
+        "python": "3.10.19 (main, Oct 21 2025, 16:43:05) [GCC 11.2.0]",
+        "note": "Hashes identify actual binaries; runtime RUSTFLAGS cannot prove build flags. Runner never compiles."
+      },
+      "settings": {
+        "filename": "gist-960-euclidean.hdf5",
+        "dim": 960,
+        "rows": 1000000,
+        "metric": "L2",
+        "normalize": false,
+        "nlist": 256,
+        "probes": [
+          64
+        ],
+        "batch_nq": 1000,
+        "bits": 7
+      }
+    },
+    {
+      "dataset": "deep",
+      "token": "321091b5f07d48abbed8e03552ef0cb4",
+      "scratch_parent": "/tmp/lakesoul-native-batch",
+      "scratch": "/tmp/lakesoul-native-batch/nbatch_321091b5f07d48abbed8e03552ef0cb4_deep",
+      "table": "nb2_321091b5f07d48abbed8_deep",
+      "query_table": "nb2_321091b5f07d48abbed8_deep_queries",
+      "target_path": "s3://lakesoul-bench2/native-batch-v2/321091b5f07d48abbed8e03552ef0cb4/deep/target",
+      "query_path": "s3://lakesoul-bench2/native-batch-v2/321091b5f07d48abbed8e03552ef0cb4/deep/queries",
+      "endpoint": "http://127.0.0.1:9000",
+      "data_dir": "/home/zhibin/ann-benchmarks",
+      "pg_binary": "/home/zhibin/LakeSoul/rust/target/release/postgres-lakesoul",
+      "port": 6543,
+      "metrics_port": 19090,
+      "fingerprint": {
+        "artifacts": {
+          "python_extension": {
+            "path": "/home/zhibin/LakeSoul/python/src/lakesoul/_lib.abi3.so",
+            "size": 331437032,
+            "sha256": "d9e12efac34e626253fa013e4ac62a8b8457a9d28a816db138b5fe97ec2c4cf6"
+          },
+          "pgwire_binary": {
+            "path": "/home/zhibin/LakeSoul/rust/target/release/postgres-lakesoul",
+            "size": 355444888,
+            "sha256": "08fbed82c4a43472094cc60c0b0dec918d8aab8c3cc899223ca3b1e4623e97b9"
+          }
+        },
+        "git_head": "f61bd12b98c4a427bb2b7bed82c19c3c80cbd63f",
+        "tracked_worktree_dirty": true,
+        "declared_build_note": "rustc 1.99.1 release; RUSTFLAGS=-C target-cpu=native; PROTOC=/tmp/protoc-bin/bin/protoc; CARGO_BUILD_JOBS=8; bounded query windows coalesce across Arrow input batches; local performance artifacts not portable distribution",
+        "build_flags_verified": false,
+        "python": "3.10.19 (main, Oct 21 2025, 16:43:05) [GCC 11.2.0]",
+        "note": "Hashes identify actual binaries; runtime RUSTFLAGS cannot prove build flags. Runner never compiles."
+      },
+      "settings": {
+        "filename": "deep-image-96-angular.hdf5",
+        "dim": 96,
+        "rows": 9990000,
+        "metric": "IP",
+        "normalize": true,
+        "nlist": 1024,
+        "probes": [
+          32,
+          64
+        ],
+        "batch_nq": 10000,
+        "bits": 7
+      }
+    }
+  ]
+}

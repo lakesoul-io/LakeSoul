@@ -133,8 +133,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
     // (`ORDER BY vec <-> '[...]' LIMIT k`), and it needs the on-demand
     // decoded-block cache backed by the unified L2 cache: without it every
     // candidate row is read through the vectorized reader.
-    let block_cache_enabled =
-        lakesoul_vector::cache_config::config().disk_enabled();
+    let block_cache_enabled = lakesoul_vector::cache_config::config().disk_enabled();
     if !block_cache_enabled {
         warn!(
             "vector re-rank decoded-block cache is disabled; explicit exact \

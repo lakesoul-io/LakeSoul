@@ -1,7 +1,7 @@
 > 缓存配置已收敛为 5 个公共变量（`LAKESOUL_VECTOR_CACHE`、
 > `LAKESOUL_VECTOR_MEMORY_BYTES`、`LAKESOUL_CACHE_PATH`、`LAKESOUL_CACHE_SIZE`、
 > `LAKESOUL_VECTOR_LAZY_INDEX`），旧变量仅作兼容；见
-> [exact三级缓存.md](exact三级缓存.md) 与 [index-only三级缓存.md](index-only三级缓存.md)。
+> [Warm Cache](warm-cache.md)。
 
 # LakeSoul fresh index-only QPS 分析与向量路径优化方案
 
@@ -13,7 +13,7 @@
 
 ### 1.1 当前 index-only 仍经过表读取
 
-Daft 的 `rerank="index"` 分支投影主键和保留的向量距离，不读向量列；但仍执行 `scan.to_daft()` 并收集结果。Native Reader 启动时先做向量候选搜索，接着依候选主键构建并执行 LakeSoul 物理读取计划，再向读出的行附加索引距离。[Daft index-only 分支](../../python/src/lakesoul/daft/search.py#L154-L188)；[候选 key 生成](../../rust/lakesoul-io/src/reader.rs#L673-L705)；[Reader 物理计划](../../rust/lakesoul-io/src/reader.rs#L479-L497)。
+Daft 的 `rerank="index"` 分支投影主键和保留的向量距离，不读向量列；但仍执行 `scan.to_daft()` 并收集结果。Native Reader 启动时先做向量候选搜索，接着依候选主键构建并执行 LakeSoul 物理读取计划，再向读出的行附加索引距离。[Daft index-only 分支](../../../../python/src/lakesoul/daft/search.py#L154-L188)；[候选 key 生成](../../../../rust/lakesoul-io/src/reader.rs#L673-L705)；[Reader 物理计划](../../../../rust/lakesoul-io/src/reader.rs#L479-L497)。
 
 因此这里的 index-only 是“**索引距离排序、不回读向量 payload**”，不是“绕过表存储、直接从 ANN 返回主键”。单独运行 `IvfRabitqIndex::search()` 不包含这个回表/合并/Daft collect 部分。
 
@@ -24,9 +24,9 @@ Daft 的 `rerank="index"` 分支投影主键和保留的向量距离，不读向
 - `LAKESOUL_INDEX_MEMORY_BYTES` 控制内存中的 vector/text index cache（旧名 `LAKESOUL_INDEX_CACHE_BYTES`）；
 - PK locator 要求 `LAKESOUL_CACHE` 已设置，且 `LAKESOUL_CACHE_SIZE` 对应的 cache capacity 非零。
 
-[PK locator 的开关](../../rust/lakesoul-io/src/pk_locator.rs#L107-L153)；[独立 disk-cache 初始化](../../rust/lakesoul-io/src/cache/mod.rs#L68-L102)。Vortex 格式本身不会自动开启 locator。
+[PK locator 的开关](../../../../rust/lakesoul-io/src/pk_locator.rs#L107-L153)；[独立 disk-cache 初始化](../../../../rust/lakesoul-io/src/cache/mod.rs#L68-L102)。Vortex 格式本身不会自动开启 locator。
 
-此前 SIFT 基准记录了 `LAKESOUL_INDEX_MEMORY_BYTES=8GiB`（当时的旧名是 `LAKESOUL_INDEX_CACHE_BYTES`），但没有记录/设置 `LAKESOUL_CACHE`。在所述运行环境 `LAKESOUL_CACHE` 未设置的前提下，`try_build_key_inputs_encoded()` 会在 locator cache gate 处返回 `None`；`file_filter_pushdown` 默认也是关闭的，候选 PK Filter 留在普通扫描/merge 路径。[encoded key locator gate](../../rust/lakesoul-io/src/pk_locator.rs#L2056-L2068)；[过滤下推默认值](../../rust/lakesoul-io/src/config/mod.rs#L311-L315)；[下推判断](../../rust/lakesoul-io/src/session.rs#L833-L863)。
+此前 SIFT 基准记录了 `LAKESOUL_INDEX_MEMORY_BYTES=8GiB`（当时的旧名是 `LAKESOUL_INDEX_CACHE_BYTES`），但没有记录/设置 `LAKESOUL_CACHE`。在所述运行环境 `LAKESOUL_CACHE` 未设置的前提下，`try_build_key_inputs_encoded()` 会在 locator cache gate 处返回 `None`；`file_filter_pushdown` 默认也是关闭的，候选 PK Filter 留在普通扫描/merge 路径。[encoded key locator gate](../../../../rust/lakesoul-io/src/pk_locator.rs#L2056-L2068)；[过滤下推默认值](../../../../rust/lakesoul-io/src/config/mod.rs#L311-L315)；[下推判断](../../../../rust/lakesoul-io/src/session.rs#L833-L863)。
 
 这种路径会读取四个 bucket 文件组中的主键列并参与 merge/过滤，尽管最终只输出少量候选、没有读取向量列。对 900K 行表，这比单纯的内存 ANN 查询多了主要工作量，很可能是 fresh 78ms 的首要来源。**这是根据脚本环境和分支条件的推断；仍应通过 locator profile 或读取字节/行数验证，不应仅凭 QPS 声称其占据了多少毫秒。**
 
@@ -34,7 +34,7 @@ Daft 的 `rerank="index"` 分支投影主键和保留的向量距离，不读向
 
 ### 1.3 一条 fresh 查询还包含控制面与 Daft 编排
 
-每次 `LakeSoulTable.scan(...).to_daft()` 构建表 schema、当前文件/分区计划，然后 Daft 按 partition/hash bucket 创建读取 task。[Scan config 构建](../../python/src/lakesoul/catalog.py#L1694-L1722)；[每个 scan partition 一个 Daft task](../../python/src/lakesoul/daft/source.py#L96-L132)。每个 Reader 解析并租用向量 shard，再转换 segment 描述；Python 路径每个 shard 都执行 `resolve_cached()` 和 `acquire_lease()`。[Python resolve/lease](../../python/src/index.rs#L151-L187)。
+每次 `LakeSoulTable.scan(...).to_daft()` 构建表 schema、当前文件/分区计划，然后 Daft 按 partition/hash bucket 创建读取 task。[Scan config 构建](../../../../python/src/lakesoul/catalog.py#L1694-L1722)；[每个 scan partition 一个 Daft task](../../../../python/src/lakesoul/daft/source.py#L96-L132)。每个 Reader 解析并租用向量 shard，再转换 segment 描述；Python 路径每个 shard 都执行 `resolve_cached()` 和 `acquire_lease()`。[Python resolve/lease](../../../../python/src/index.rs#L151-L187)。
 
 fresh 有 4,096 个段描述。这份元数据的复制和传输会产生额外工作，但数量本身不能证明其占据 78ms 的最大部分。向量索引 cache 命中只说明不再从对象存储加载完整索引，不代表 schema/scan plan、PG commit 检查、lease、segment transport、PK 行读取、Daft merge/collect 均免费。
 
@@ -42,7 +42,7 @@ fresh 有 4,096 个段描述。这份元数据的复制和传输会产生额外�
 
 这类完整查询中至少有 Daft runner 线程、Daft bucket task、Reader/Tokio worker、单次 ANN 的 probe parallelism 和多请求并发度。原 SIFT 基准是一个 Python worker 顺序发 query，Daft runner 配置 16；这不等于 16 条 ANN 同时执行。参考报告的 Rust QPS 则是内存单索引的纯核心查询，其线程语义和工作范围不同，绝对值不可直接相比。
 
-LakeSoul 内层 `vector_search_parallelism` 默认为 1；只有该值大于 1 且 nprobe 大于 1 时，IVF 才把 probes 分组并行执行。[选项默认值](../../rust/lakesoul-io/src/vector/search.rs#L412-L458)；[并行与顺序 probe 分支](../../rust/lakesoul-vector/src/rabitq/ivf/mod.rs#L1581-L1605)。faer/Rayon 在 K-means 构建中使用多核，不会自动使每次 search 也运行于所有核心。[K-means Rayon matmul](../../rust/lakesoul-vector/src/rabitq/kmeans.rs#L478-L499)。
+LakeSoul 内层 `vector_search_parallelism` 默认为 1；只有该值大于 1 且 nprobe 大于 1 时，IVF 才把 probes 分组并行执行。[选项默认值](../../../../rust/lakesoul-io/src/vector/search.rs#L412-L458)；[并行与顺序 probe 分支](../../../../rust/lakesoul-vector/src/rabitq/ivf/mod.rs#L1581-L1605)。faer/Rayon 在 K-means 构建中使用多核，不会自动使每次 search 也运行于所有核心。[K-means Rayon matmul](../../../../rust/lakesoul-vector/src/rabitq/kmeans.rs#L478-L499)。
 
 ## 2. 已确认与待测的边界
 

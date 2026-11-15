@@ -32,13 +32,11 @@ use datafusion_execution::SendableRecordBatchStream;
 use futures::StreamExt;
 use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::create_lakesoul_session_config;
-use lakesoul_datafusion::datasource::table_provider::{
-    LakeSoulTableProvider, TableReadSnapshot,
-};
+use lakesoul_datafusion::datasource::table_provider::{LakeSoulTableProvider, TableReadSnapshot};
 use lakesoul_datafusion::distributed::{DistributedOptions, WorkerDiscovery};
 use lakesoul_datafusion::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
-use lakesoul_datafusion::vector_batch::VectorBatchRequest;
 use lakesoul_datafusion::udf::vector_search_marker::LakeSoulVectorSearchConfig;
+use lakesoul_datafusion::vector_batch::VectorBatchRequest;
 use lakesoul_io::session::GLOBAL_RUNTIME;
 use lakesoul_metadata::MetaDataClient;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -88,7 +86,11 @@ const SNAPSHOT_SCHEMA: &str = "public";
 ///
 /// The stream is pulled lazily, one batch per `__next__`, so large query
 /// results do not have to be materialised as one Arrow table first.
-#[pyclass(module = "lakesoul._lib._session", name = "NativeBatchStream", unsendable)]
+#[pyclass(
+    module = "lakesoul._lib._session",
+    name = "NativeBatchStream",
+    unsendable
+)]
 pub struct NativeBatchStream {
     stream: Option<SendableRecordBatchStream>,
 }
@@ -99,10 +101,7 @@ impl NativeBatchStream {
         slf
     }
 
-    fn __next__(
-        &mut self,
-        py: Python<'_>,
-    ) -> PyResult<Option<PyArrowType<RecordBatch>>> {
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyArrowType<RecordBatch>>> {
         let Some(mut stream) = self.stream.take() else {
             return Ok(None);
         };
@@ -175,9 +174,7 @@ impl NativeSession {
             }
             if let Some(value) = config_usize(config, "target_partitions")? {
                 if value == 0 {
-                    return Err(PyValueError::new_err(
-                        "target_partitions must be >= 1",
-                    ));
+                    return Err(PyValueError::new_err("target_partitions must be >= 1"));
                 }
                 target_partitions = Some(value);
             }
@@ -194,8 +191,7 @@ impl NativeSession {
                         "fs.s3a.access.key" => args.s3_access_key = Some(value),
                         "fs.s3a.secret.key" => args.s3_secret_key = Some(value),
                         "fs.s3a.path.style.access" => {
-                            args.s3_virtual_host_style =
-                                !value.eq_ignore_ascii_case("true");
+                            args.s3_virtual_host_style = !value.eq_ignore_ascii_case("true");
                         }
                         // Other options are not part of the reader's S3
                         // configuration surface; ignoring them keeps the
@@ -206,9 +202,9 @@ impl NativeSession {
                 }
             }
             if let Some(options) = config.get_item("distributed")? {
-                let options = options.downcast::<PyDict>().map_err(|_| {
-                    PyValueError::new_err("distributed must be a dict")
-                })?;
+                let options = options
+                    .downcast::<PyDict>()
+                    .map_err(|_| PyValueError::new_err("distributed must be a dict"))?;
                 let worker_urls: Vec<String> = options
                     .get_item("worker_urls")?
                     .ok_or_else(|| {
@@ -227,17 +223,16 @@ impl NativeSession {
                         "distributed.worker_urls must not be empty",
                     ));
                 }
-                let distributed_partitions = config_usize(&options, "target_partitions")?
-                    .unwrap_or(8);
+                let distributed_partitions =
+                    config_usize(&options, "target_partitions")?.unwrap_or(8);
                 if distributed_partitions < 2 {
                     return Err(PyValueError::new_err(
                         "distributed.target_partitions must be >= 2",
                     ));
                 }
-                let fallback_to_local = config_bool(&options, "fallback_to_local")?
-                    .unwrap_or(false);
-                let bytes_per_partition =
-                    config_usize(&options, "bytes_per_partition")?;
+                let fallback_to_local =
+                    config_bool(&options, "fallback_to_local")?.unwrap_or(false);
+                let bytes_per_partition = config_usize(&options, "bytes_per_partition")?;
                 distributed = Some(DistributedOptions {
                     discovery: WorkerDiscovery::Static(worker_urls),
                     fallback_to_local,
@@ -255,12 +250,8 @@ impl NativeSession {
                         "nprobe" => vector_search.nprobe = value.extract()?,
                         "rerank" => vector_search.rerank = value.extract()?,
                         "parallelism" => vector_search.parallelism = value.extract()?,
-                        "deferred_payload" => {
-                            vector_search.deferred_payload = value.extract()?
-                        }
-                        "exact_overfetch" => {
-                            vector_search.exact_overfetch = value.extract()?
-                        }
+                        "deferred_payload" => vector_search.deferred_payload = value.extract()?,
+                        "exact_overfetch" => vector_search.exact_overfetch = value.extract()?,
                         other => {
                             return Err(PyValueError::new_err(format!(
                                 "unknown vector_search option {other:?}; \
@@ -285,8 +276,8 @@ impl NativeSession {
         if let Some(partitions) = target_partitions {
             session_config = session_config.with_target_partitions(partitions);
         }
-        let factory = LakeSoulSessionFactory::new(Arc::new(meta_client), &args)
-            .map_err(|error| {
+        let factory =
+            LakeSoulSessionFactory::new(Arc::new(meta_client), &args).map_err(|error| {
                 PyRuntimeError::new_err(format!(
                     "failed to create the LakeSoul session factory: {error}"
                 ))
@@ -316,9 +307,7 @@ impl NativeSession {
         snapshot_catalog
             .register_schema(SNAPSHOT_SCHEMA, schema_provider)
             .map_err(|error| {
-                PyValueError::new_err(format!(
-                    "failed to create the snapshot schema: {error}"
-                ))
+                PyValueError::new_err(format!("failed to create the snapshot schema: {error}"))
             })?;
         ctx.register_catalog(
             SNAPSHOT_CATALOG,
@@ -336,11 +325,7 @@ impl NativeSession {
     /// so it can combine lakehouse SQL (filters, joins, aggregates, window
     /// functions) with vector search (`ORDER BY array_distance(...) LIMIT k`).
     /// The GIL is released while the query runs.
-    fn sql(
-        &self,
-        py: Python<'_>,
-        sql: String,
-    ) -> PyResult<Vec<PyArrowType<RecordBatch>>> {
+    fn sql(&self, py: Python<'_>, sql: String) -> PyResult<Vec<PyArrowType<RecordBatch>>> {
         self.collect_arrow(py, &sql)
             .map(|batches| batches.into_iter().map(PyArrowType).collect())
     }
@@ -349,18 +334,15 @@ impl NativeSession {
     ///
     /// Unlike `sql`, this does not collect the whole result: callers can stop
     /// early, and large results stay bounded by the consumer's pace.
-    fn sql_stream(
-        &self,
-        py: Python<'_>,
-        sql: String,
-    ) -> PyResult<NativeBatchStream> {
+    fn sql_stream(&self, py: Python<'_>, sql: String) -> PyResult<NativeBatchStream> {
         let ctx = Arc::clone(&self.ctx);
         let stream = py
             .detach(move || {
                 GLOBAL_RUNTIME.block_on(async move {
-                    let dataframe = ctx.sql(&sql).await.map_err(|error| {
-                        format!("query planning failed: {error}; SQL: {sql}")
-                    })?;
+                    let dataframe = ctx
+                        .sql(&sql)
+                        .await
+                        .map_err(|error| format!("query planning failed: {error}; SQL: {sql}"))?;
                     dataframe
                         .execute_stream()
                         .await
@@ -397,9 +379,7 @@ impl NativeSession {
         let batches = self.collect_arrow(py, &format!("{prefix}{sql}"))?;
         pretty_format_batches(&batches)
             .map(|table| table.to_string())
-            .map_err(|error| {
-                PyRuntimeError::new_err(format!("failed to format the plan: {error}"))
-            })
+            .map_err(|error| PyRuntimeError::new_err(format!("failed to format the plan: {error}")))
     }
 
     /// Update the session's `lakesoul_vector_search.*` options.
@@ -410,11 +390,7 @@ impl NativeSession {
     /// ```python
     /// session.set_vector_search(rerank="index", nprobe=16)
     /// ```
-    fn set_vector_search(
-        &self,
-        py: Python<'_>,
-        options: Bound<'_, PyDict>,
-    ) -> PyResult<()> {
+    fn set_vector_search(&self, py: Python<'_>, options: Bound<'_, PyDict>) -> PyResult<()> {
         for (key, value) in options.iter() {
             let key: String = key.extract()?;
             let literal = if let Ok(flag) = value.extract::<bool>() {
@@ -425,10 +401,7 @@ impl NativeSession {
                 let text: String = value.extract()?;
                 format!("'{}'", text.replace('\'', "''"))
             };
-            self.collect_arrow(
-                py,
-                &format!("SET lakesoul_vector_search.{key} = {literal}"),
-            )?;
+            self.collect_arrow(py, &format!("SET lakesoul_vector_search.{key} = {literal}"))?;
         }
         Ok(())
     }
@@ -511,25 +484,19 @@ impl NativeSession {
                 let catalog = ctx
                     .catalog("lakesoul")
                     .ok_or_else(|| "the lakesoul catalog is not registered".to_string())?;
-                let schema = catalog.schema(&namespace).ok_or_else(|| {
-                    format!("the namespace {namespace:?} is not registered")
-                })?;
+                let schema = catalog
+                    .schema(&namespace)
+                    .ok_or_else(|| format!("the namespace {namespace:?} is not registered"))?;
                 let provider = schema
                     .table(&table)
                     .await
                     .map_err(|error| {
-                        format!(
-                            "failed to resolve the table {namespace}.{table}: {error}"
-                        )
+                        format!("failed to resolve the table {namespace}.{table}: {error}")
                     })?
-                    .ok_or_else(|| {
-                        format!("the table {namespace}.{table} is not registered")
-                    })?;
+                    .ok_or_else(|| format!("the table {namespace}.{table} is not registered"))?;
                 let provider = provider
                     .downcast_ref::<LakeSoulTableProvider>()
-                    .ok_or_else(|| {
-                        format!("{namespace}.{table} is not a LakeSoul table")
-                    })?;
+                    .ok_or_else(|| format!("{namespace}.{table} is not a LakeSoul table"))?;
                 let request = VectorBatchRequest {
                     column,
                     queries,
@@ -585,9 +552,7 @@ impl NativeSession {
         let spec = match (snapshot, tag, as_of) {
             (Some(snapshot_id), None, None) => {
                 if snapshot_id < 0 {
-                    return Err(PyValueError::new_err(
-                        "snapshot must be a non-negative id",
-                    ));
+                    return Err(PyValueError::new_err("snapshot must be a non-negative id"));
                 }
                 TableReadSnapshot::SnapshotId(snapshot_id)
             }
@@ -619,32 +584,23 @@ impl NativeSession {
                 let catalog = ctx
                     .catalog("lakesoul")
                     .ok_or_else(|| "the lakesoul catalog is not registered".to_string())?;
-                let schema = catalog.schema(&namespace).ok_or_else(|| {
-                    format!("the namespace {namespace:?} is not registered")
-                })?;
+                let schema = catalog
+                    .schema(&namespace)
+                    .ok_or_else(|| format!("the namespace {namespace:?} is not registered"))?;
                 let provider = schema
                     .table(&table)
                     .await
                     .map_err(|error| {
-                        format!(
-                            "failed to resolve the table {namespace}.{table}: {error}"
-                        )
+                        format!("failed to resolve the table {namespace}.{table}: {error}")
                     })?
-                    .ok_or_else(|| {
-                        format!("the table {namespace}.{table} is not registered")
-                    })?;
+                    .ok_or_else(|| format!("the table {namespace}.{table} is not registered"))?;
                 let provider = provider
                     .downcast_ref::<LakeSoulTableProvider>()
-                    .ok_or_else(|| {
-                        format!("{namespace}.{table} is not a LakeSoul table")
-                    })?;
-                let view: Arc<dyn TableProvider> =
-                    Arc::new(provider.snapshot_view(spec));
+                    .ok_or_else(|| format!("{namespace}.{table} is not a LakeSoul table"))?;
+                let view: Arc<dyn TableProvider> = Arc::new(provider.snapshot_view(spec));
                 snapshot_schema
                     .register_table(alias_for_task.clone(), view)
-                    .map_err(|error| {
-                        format!("failed to register the snapshot view: {error}")
-                    })?;
+                    .map_err(|error| format!("failed to register the snapshot view: {error}"))?;
                 Ok::<String, String>(format!(
                     "\"{SNAPSHOT_CATALOG}\".\"{SNAPSHOT_SCHEMA}\".\"{alias_for_task}\""
                 ))
@@ -666,9 +622,7 @@ impl NativeSession {
         self.snapshot_schema
             .deregister_table(alias.as_str())
             .map_err(|error| {
-                PyRuntimeError::new_err(format!(
-                    "failed to unregister the table view: {error}"
-                ))
+                PyRuntimeError::new_err(format!("failed to unregister the table view: {error}"))
             })?;
         Ok(())
     }
@@ -692,9 +646,10 @@ impl NativeSession {
         let sql = sql.to_string();
         py.detach(move || {
             GLOBAL_RUNTIME.block_on(async move {
-                let dataframe = ctx.sql(&sql).await.map_err(|error| {
-                    format!("query planning failed: {error}; SQL: {sql}")
-                })?;
+                let dataframe = ctx
+                    .sql(&sql)
+                    .await
+                    .map_err(|error| format!("query planning failed: {error}; SQL: {sql}"))?;
                 let schema = dataframe.schema().as_arrow().clone();
                 let batches = dataframe
                     .collect()

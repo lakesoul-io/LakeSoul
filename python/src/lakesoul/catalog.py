@@ -726,6 +726,18 @@ class LakeSoulCatalog:
             f"table must be a name or LakeSoulTable, got {type(table).__name__}"
         )
 
+    def drop_vector_index(
+        self,
+        table: str | LakeSoulTable,
+        column: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Drop a vector index through the table handle.
+
+        Convenience wrapper around :meth:`LakeSoulTable.drop_vector_index`.
+        """
+        return self._resolve_table(table).drop_vector_index(column, **kwargs)
+
     def drop_table(
         self,
         name: str,
@@ -796,6 +808,16 @@ class LakeSoulTable:
     @property
     def catalog(self) -> LakeSoulCatalog:
         return self._catalog
+
+    def _reset_query_session(self) -> None:
+        """Drop the cached DataFusion session after index metadata changes.
+
+        The session holds a metadata/catalog snapshot and vector snapshot
+        caches.  Keeping it after a drop can let a query plan the old index;
+        the next search creates a fresh session instead.
+        """
+        self._catalog._session = None
+
 
     @property
     def name(self) -> str:
@@ -1712,6 +1734,153 @@ class LakeSoulTable:
                 store_config=store_config,
             ),
             "vector_column",
+        )
+
+    def drop_vector_index(
+        self,
+        column: str | None = None,
+        *,
+        partition_desc: str | None = None,
+        partitions: Mapping[str, str] | None = None,
+        keep_declaration: bool | None = None,
+        purge_files: bool = True,
+        dry_run: bool = False,
+        if_exists: bool = True,
+        grace_seconds: float = 0.0,
+        wait_for_cleanup: bool = True,
+    ) -> dict[str, Any]:
+        """Drop the IVF+RaBitQ vector index for this table.
+
+        By default the column declaration is removed from
+        ``vector_index_columns`` so later writes do not rebuild the index.
+        Dropping a single partition keeps the declaration and requires
+        ``keep_declaration=True``.
+
+        Args:
+            column: Column to drop; ``None`` means all declared vector columns.
+            partition_desc: Drop only one partition's shards.
+            partitions: Partition-column mapping shorthand.
+            keep_declaration: Keep ``vector_index_columns`` unchanged.
+                Defaults to ``True`` for a partition-scoped drop, otherwise
+                ``False``.
+            purge_files: Delete the ``_vector_index/...`` objects as well.
+            dry_run: Only report what would be deleted.
+            if_exists: Do not fail when the index is absent.
+            grace_seconds: Keep index objects for this many seconds after the
+                control plane is removed, so readers holding an old commit can
+                finish.  ``0`` deletes immediately.
+            wait_for_cleanup: When false, return after removing the control
+                plane; a background drop job finishes object cleanup and
+                ``drop_id`` identifies it.
+
+        Returns:
+            Dict with ``shards_dropped``, ``objects_deleted``,
+            ``bytes_deleted``, ``declaration_removed``, ``dry_run`` and the
+            resolved columns/partitions.
+        """
+        if partition_desc is not None and partitions is not None:
+            raise ValueError("partition_desc and partitions are mutually exclusive")
+        if partitions is not None:
+            partition_desc = self._partition_desc(partitions)
+
+        if keep_declaration is None:
+            keep_declaration = partition_desc is not None
+        elif partition_desc is not None and not keep_declaration:
+            raise ValueError(
+                "partition-scoped drop requires keep_declaration=True: "
+                "other partitions still use the vector_index_columns entry"
+            )
+
+        from .vector_index import drop_vector_index as _drop_vector_index
+
+        result = _drop_vector_index(
+            self.name,
+            self.namespace,
+            vector_column=column,
+            partition_desc=partition_desc,
+            keep_declaration=keep_declaration,
+            purge_files=purge_files,
+            dry_run=dry_run,
+            if_exists=if_exists,
+            grace_seconds=grace_seconds,
+            wait_for_cleanup=wait_for_cleanup,
+            store_config=_index.default_object_store_config(
+                catalog=self._catalog, table=self
+            ),
+        )
+        # The table object holds a snapshot of table_info.  Refresh it so a
+        # later write on this object does not resurrect the dropped
+        # vector_index_columns declaration.
+        if not dry_run:
+            self._table_info = self._catalog.table(
+                self.name, namespace=self.namespace
+            )._table_info
+            self._reset_query_session()
+        return result
+
+    def declare_vector_index(
+        self, configs: Sequence[Mapping[str, Any]]
+    ) -> None:
+        """Re-add or replace ``vector_index_columns`` declarations.
+
+        This clears the drop tombstone for the declared columns, so a
+        ``drop_vector_index(keep_declaration=False)`` can be followed by
+        ``rebuild_vector_index()``.
+        """
+        from .vector_index import declare_vector_index as _declare
+
+        _declare(self.name, self.namespace, [dict(config) for config in configs])
+        self._table_info = self._catalog.table(
+            self.name, namespace=self.namespace
+        )._table_info
+        self._reset_query_session()
+
+    def recreate_vector_index(
+        self,
+        *,
+        column: str,
+        dim: int,
+        nlist: int = 1024,
+        total_bits: int = 7,
+        metric: str = "L2",
+        rotator_type: str = "FhtKac",
+        seed: int = 42,
+        use_faster_config: bool = True,
+        partition_desc: str | None = None,
+        partitions: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Re-declare and rebuild a dropped vector index."""
+        config = {
+            "column": column,
+            "dim": dim,
+            "nlist": nlist,
+            "total_bits": total_bits,
+            "metric": metric,
+            "rotator_type": rotator_type,
+            "seed": seed,
+            "use_faster_config": use_faster_config,
+        }
+        self.declare_vector_index([config])
+        return self.rebuild_vector_index(
+            column=column,
+            partition_desc=partition_desc,
+            partitions=partitions,
+        )
+
+    def gc_dropped_vector_index_objects(self) -> dict[str, Any]:
+        """Sweep objects left behind by a failed/deferred vector-index drop.
+
+        Tombstones are retained to block stale writers; an explicit
+        ``rebuild_vector_index()`` claims and clears them.
+        """
+        from .vector_index import gc_dropped_vector_index_objects as _gc
+
+        return _gc(
+            self.name,
+            self.namespace,
+            store_config=_index.default_object_store_config(
+                catalog=self._catalog, table=self
+            ),
         )
 
     def rebuild_vector_index(

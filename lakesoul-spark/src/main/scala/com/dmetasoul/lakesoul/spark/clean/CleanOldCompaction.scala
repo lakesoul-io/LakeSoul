@@ -4,6 +4,8 @@
 
 package com.dmetasoul.lakesoul.spark.clean
 
+import com.dmetasoul.lakesoul.meta.{DBConnector, DataFileReadLeaseGuard}
+import org.apache.spark.sql.lakesoul.utils.SparkUtil.tryWithResource
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import com.dmetasoul.lakesoul.spark.clean.CleanUtils.sqlToDataframe
@@ -105,7 +107,15 @@ object CleanOldCompaction {
         val path = new Path(p)
         val sessionHadoopConf = spark.sessionState.newHadoopConf()
         val fs = path.getFileSystem(sessionHadoopConf)
-        fs.delete(path, true)
+        tryWithResource(DBConnector.getConn) { connection =>
+          tryWithResource(DataFileReadLeaseGuard.acquire(connection, tableId)) { readers =>
+            if (readers.retire(p, true)) {
+              if (fs.exists(path) && !fs.delete(path, true)) {
+                throw new java.io.IOException(s"failed to delete retired compaction directory $path")
+              }
+            }
+          }
+        }
       }
     })
   }

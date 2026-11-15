@@ -27,6 +27,8 @@
 //! not support — is left untouched and executes as a regular full scan.
 use std::sync::Arc;
 
+use downcast_rs::Downcast;
+
 use datafusion::arrow::datatypes::DataType;
 use datafusion::common::ScalarValue;
 use datafusion::common::tree_node::{Transformed, TreeNode};
@@ -206,19 +208,28 @@ fn detect(
             LogicalPlan::Filter(filter) => {
                 saw_filter = true;
                 filter_predicate = Some(match filter_predicate {
-                    Some(previous) => Expr::BinaryExpr(
-                        datafusion::logical_expr::BinaryExpr::new(
+                    Some(previous) => {
+                        Expr::BinaryExpr(datafusion::logical_expr::BinaryExpr::new(
                             Box::new(previous),
                             datafusion::logical_expr::Operator::And,
                             Box::new(filter.predicate.clone()),
-                        ),
-                    ),
+                        ))
+                    }
                     None => filter.predicate.clone(),
                 });
                 current = Arc::clone(&filter.input);
             }
             LogicalPlan::TableScan(ts) => {
                 if ts.filters.iter().any(is_marker_expr) {
+                    return None;
+                }
+                // A declaration can outlive its index (drop with
+                // keep_declaration=true).  Do not rewrite to an index-only
+                // plan until a rebuild/redeclare marks the index available.
+                let table_name = ts.table_name.table();
+                let namespace = ts.table_name.schema().unwrap_or("default");
+                if crate::vector_index::is_vector_index_unavailable(namespace, table_name)
+                {
                     return None;
                 }
                 // Every term must be a distance call on a vector column of
@@ -321,7 +332,12 @@ fn as_scalar_function(expr: &Expr) -> Option<&ScalarFunction> {
 /// Push one weighted distance term, unwrapping a nested negation (pgvector's
 /// `<#>` is `-inner_product(..)`, and `0.7 * -(vec <#> q)` must become the
 /// positive magnitude 0.7 on the inner-product term).
-fn push_term(expr: &Expr, weight: f32, sign: f32, terms: &mut Vec<(Expr, f32)>) -> Option<()> {
+fn push_term(
+    expr: &Expr,
+    weight: f32,
+    sign: f32,
+    terms: &mut Vec<(Expr, f32)>,
+) -> Option<()> {
     let weight = sign * weight;
     match unwrap_cast(expr) {
         Expr::Negative(inner) => {

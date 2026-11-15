@@ -1,3 +1,39 @@
+# 原生批量查询（当前实现）
+
+本文保留了早期设计与后续变更记录，下文部分“当前限制”描述的是对应历史阶段。原生批量 SQL 的现行接口与边界以本节和 [Native SQL Batch](../../python/examples/vector-search/native-batch-sql.md) 为准。
+
+DataFusion 与 LakeSoul pgwire 已注册同一组表函数，一次 SQL 可检索多个 query，使用共享快照、cluster/FastScan block 和有界并行内核：
+
+```sql
+-- 目标表和query表由已有写入入口创建，pgwire保持只读。
+SELECT query_id, rank, id, distance
+FROM lakesoul_vector_search_batch_from_table(
+  'public.items', 'embedding',
+  'public.query_vectors', 'qid', 'qvec',
+  100, 64, 'L2', 'exact', 1
+)
+ORDER BY query_id, rank;
+
+-- 少量query使用inline JSON，query_id为从0开始的数组位置。
+SELECT query_id, rank, id, distance
+FROM lakesoul_vector_search_batch(
+  'public.items', 'embedding', '[[0.1,0.2,0.3],[0.4,0.5,0.6]]',
+  10, 64, 'L2', 'index'
+)
+ORDER BY query_id, rank;
+```
+
+- 返回 `query_id BIGINT, rank INTEGER, id BIGINT, distance FLOAT8`；rank从1开始。L2返回欧氏距离，IP返回负内积，均为越小越好。
+- `exact` 对 ANN 候选读取原始向量重排，不承诺全库精确kNN；新原生batch同时支持L2与IP。
+- 目标目前要求Int64单列主键 `id`、完整索引覆盖、无CDC/mutation chain和时间旅行。query表须有唯一非空Int64 qid及Float32列表向量。不同range partition的相同id仍是不同的目标行，不做全表ID误去重。
+- 参数须为常量；这两个表函数不接受动态 `$1` 向量参数。大量向量使用query表传入。此边界不改变原有单向量查询的prepared参数支持，也不改变其缺索引时的普通扫描路径。
+- `SET lakesoul_vector_batch.query_window='256'` 控制最多256个query的窗口，自动跨小Arrow输入batch填充；还可设置 `parallelism`、`io_concurrency`、`memory_bytes`。输入/工作/输出临时预算上限128MiB，单请求最多65536个query、有效输入64MiB。
+- 一个请求固定目标快照和可续租的 `index_read_lease`；逻辑drop阻止新batch使用该索引，物理清理等待已有读者。客户端取消或租约失效传递到实际工作，停止前保留保护。
+
+`EXPLAIN` 显示 `VectorBatchSearchExec`，`EXPLAIN ANALYZE` 提供window/query、cluster/block复用等指标。PG最终会话测试已验证1,000个query按 `[256,256,256,232]` 执行4个窗口；真实pgwire普通/扩展协议批查与小数据集基线一致。使用示例见 [Notebook](../../python/examples/vector-search/tutorial/native_batch_sql.ipynb)，验证范围见 [Validation](../../python/examples/vector-search/docs/native-batch-validation.md)。这是LakeSoul pgwire扩展，不是上游pgvector扩展的批查询功能，也不是逐query串行SQL循环。
+
+---
+
 ## 结论
 
 建议把目标拆成两层：
@@ -791,8 +827,8 @@ export LAKESOUL_VECTOR_BLOCK_CACHE_BYTES=268435456
 
 服务启动时如果没有 `LAKESOUL_CACHE`，会打印 WARN：exact 查询仍正确，但会回退到
 reader 路径（明显更慢）。exact 的单查询/批量实测见
-[exact三级缓存.md](../lakesoul-vector/exact三级缓存.md) 和
-[batch查询性能.md](../lakesoul-vector/batch查询性能.md)。
+[Warm Cache](../../python/examples/vector-search/docs/warm-cache.md) 和
+[Performance](../../python/examples/vector-search/docs/performance.md)。
 
 历史 R58 的 pgvector QPS 表（exact 261–598 QPS）是在已删除的整文件 payload 模式下
 测得的，不再代表当前版本；不要按那张表做容量规划。index-only（`rerank='index'`）

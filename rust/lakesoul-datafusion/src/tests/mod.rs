@@ -38,6 +38,10 @@ mod text_search_tests;
 mod upsert_tests;
 #[cfg(test)]
 mod vector_search_tests;
+#[cfg(test)]
+mod native_batch_tests;
+#[cfg(test)]
+mod vector_batch_distributed;
 // mod compaction_tests;
 // mod streaming_tests;
 #[cfg(feature = "ci")]
@@ -68,10 +72,7 @@ fn init() {
     unsafe {
         std::env::set_var("LAKESOUL_CACHE", "1");
         std::env::set_var("LAKESOUL_VECTOR_CACHE", "1");
-        std::env::set_var(
-            "LAKESOUL_CACHE_PATH",
-            "/tmp/lakesoul-datafusion-test-cache",
-        );
+        std::env::set_var("LAKESOUL_CACHE_PATH", "/tmp/lakesoul-datafusion-test-cache");
         std::env::set_var("LAKESOUL_CACHE_SIZE", "4GiB");
         std::env::set_var("LAKESOUL_VECTOR_MEMORY_BYTES", "1GiB");
         std::env::set_var("LAKESOUL_VECTOR_BLOCK_ROWS", "256");

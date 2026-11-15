@@ -4,7 +4,8 @@
 
 package com.dmetasoul.lakesoul.spark.clean
 
-import com.dmetasoul.lakesoul.meta.DBManager
+import com.dmetasoul.lakesoul.meta.{DBConnector, DBManager, DataFileReadLeaseGuard}
+import org.apache.spark.sql.lakesoul.utils.SparkUtil.tryWithResource
 import com.dmetasoul.lakesoul.spark.ParametersTool
 import com.dmetasoul.lakesoul.spark.clean.CleanUtils.{
   executeMetaSql,
@@ -367,9 +368,26 @@ object CleanExpiredData {
       p.getParent.toString
     })
 
-    def deletePath(fs: FileSystem, path: Path): Unit = {
-      println(s"--------- delete path: $path")
-      fs.delete(path, true)
+    val deferred = spark.sparkContext.longAccumulator("read-lease-deferred-cleanup")
+    def deletePath(fs: FileSystem, path: Path, immutableDirectory: Boolean = false): Unit = {
+      tryWithResource(DBConnector.getConn) { connection =>
+        tryWithResource(DataFileReadLeaseGuard.acquire(connection, tableId)) { readers =>
+          if (readers.retire(path.toString, immutableDirectory)) {
+            println(s"--------- delete retired path: $path")
+            if (fs.exists(path) && !fs.delete(path, immutableDirectory)) {
+              throw new java.io.IOException(s"failed to delete retired path $path")
+            }
+            if (!immutableDirectory) {
+              val sidecar = new Path(path.toString + ".blobref")
+              if (fs.exists(sidecar) && !fs.delete(sidecar, false)) {
+                throw new java.io.IOException(s"failed to delete blobref $sidecar")
+              }
+            }
+          } else {
+            deferred.add(1L)
+          }
+        }
+      }
     }
 
     val pathCompactDF = sqlRows
@@ -384,7 +402,7 @@ object CleanExpiredData {
       .foreach(row => {
         val dirPath = new Path(row.getAs[String]("dir"))
         val fs = dirPath.getFileSystem(sessionHadoopConf.value)
-        deletePath(fs, dirPath)
+        deletePath(fs, dirPath, immutableDirectory = true)
       })
 
     sqlRows
@@ -433,6 +451,11 @@ object CleanExpiredData {
     println(
       LocalDateTime.now(ZoneId.of(serverTimeZone)) + " end delete discard file"
     )
+    if (deferred.value > 0L) {
+      throw new IllegalStateException(
+        s"${deferred.value} paths are retained by active snapshots; retry cleanup after release"
+      )
+    }
     dbManager.deleteDiscardCompressedFile(tableId, partitionDesc, deadTimestamp)
     println(
       LocalDateTime.now(

@@ -148,7 +148,9 @@ fn metadata_error_to_py(error: LakeSoulMetaDataError, missing: MissingObject) ->
         LakeSoulMetaDataError::Internal(_)
         | LakeSoulMetaDataError::Other(_)
         | LakeSoulMetaDataError::InsertConflict { .. }
-        | LakeSoulMetaDataError::CommitConflict(_) => MetadataError::new_err(message),
+        | LakeSoulMetaDataError::CommitConflict(_)
+        | LakeSoulMetaDataError::IndexVersionConflict { .. }
+        | LakeSoulMetaDataError::IndexDropped { .. } => MetadataError::new_err(message),
     }
 }
 

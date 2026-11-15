@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright 2026 LakeSoul Contributors
 
-//! End-to-end QPS check for the code in `rust/lakesoul-vector/向量查询使用说明.md`.
+//! End-to-end QPS check for the code in `python/examples/vector-search/docs/向量查询使用说明.md`.
 //!
 //! Runs the guide's two query entries against a real LakeSoul table:
 //! * single-query SQL — one `SessionContext::sql` statement per query,
@@ -119,7 +119,10 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
 }
 
 /// fvecs: per row `dim: i32` followed by `dim` f32 values.
-fn read_fvecs(path: &str, limit: usize) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
+fn read_fvecs(
+    path: &str,
+    limit: usize,
+) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(path)?;
     let mut rows = Vec::new();
     let mut offset = 0usize;
@@ -182,7 +185,11 @@ fn recall_at_k(returned: &[i64], ground_truth: &[i64], k: usize) -> f64 {
     let k = k.min(ground_truth.len());
     let truth: std::collections::HashSet<i64> =
         ground_truth.iter().take(k).copied().collect();
-    let hits = returned.iter().take(k).filter(|id| truth.contains(id)).count();
+    let hits = returned
+        .iter()
+        .take(k)
+        .filter(|id| truth.contains(id))
+        .count();
     hits as f64 / k as f64
 }
 
@@ -257,9 +264,8 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut explain_text = String::new();
     for batch in ctx.sql(&explain_sql).await?.collect().await? {
         for column in batch.columns() {
-            if let Some(array) = column
-                .as_any()
-                .downcast_ref::<arrow::array::StringArray>()
+            if let Some(array) =
+                column.as_any().downcast_ref::<arrow::array::StringArray>()
             {
                 for value in array.iter().flatten() {
                     explain_text.push_str(value);
@@ -304,7 +310,10 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             table = args.table,
             k = args.top_k
         );
-        for (name, sql) in [("union_all", multi_union), ("cross_join_values", multi_join)] {
+        for (name, sql) in [
+            ("union_all", multi_union),
+            ("cross_join_values", multi_join),
+        ] {
             let explain = format!("EXPLAIN VERBOSE {sql}");
             let mut text = String::new();
             for batch in ctx.sql(&explain).await?.collect().await? {
@@ -425,7 +434,11 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             "union_batch (queries per statement={per_statement}): n={n} \
              statements={statements} qps={:.1} recall@{k}={:.5} rss_mb={:.1}",
             n as f64 / wall,
-            if compared == 0 { 0.0 } else { recall_sum / compared as f64 },
+            if compared == 0 {
+                0.0
+            } else {
+                recall_sum / compared as f64
+            },
             rss_mb(),
             k = args.top_k
         );
@@ -550,7 +563,8 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut sorted = batch_qps.clone();
     let batch_p50 = percentile(&mut sorted, 0.5);
-    let per_query_ms = queries.len() as f64 / batch_p50 * 1000.0 / queries.len() as f64 * 1000.0;
+    let per_query_ms =
+        queries.len() as f64 / batch_p50 * 1000.0 / queries.len() as f64 * 1000.0;
     println!(
         "batch: n_per_call={} calls={} qps_median={batch_p50:.1} qps_all={batch_qps:?} \
          per_query_ms={:.4} recall@{k}={batch_recall:.5} rss_mb={:.1} \
@@ -570,7 +584,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(std::env::var("RAYON_NUM_THREADS").ok().and_then(|value| value.parse().ok()).unwrap_or(16))
+        .worker_threads(
+            std::env::var("RAYON_NUM_THREADS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(16),
+        )
         .build()?;
     runtime.block_on(run(args))?;
     Ok(())

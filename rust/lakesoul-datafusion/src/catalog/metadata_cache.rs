@@ -73,22 +73,24 @@ impl<T: Clone> TtlCache<T> {
             if entries.len() > 4096 {
                 entries.retain(|_, entry| entry.at.elapsed() < Duration::from_secs(60));
             }
-            entries.insert(key, Entry { at: Instant::now(), value });
+            entries.insert(
+                key,
+                Entry {
+                    at: Instant::now(),
+                    value,
+                },
+            );
         }
     }
 }
 
-static TABLES: LazyLock<TtlCache<Arc<LakeSoulTable>>> =
-    LazyLock::new(TtlCache::new);
+static TABLES: LazyLock<TtlCache<Arc<LakeSoulTable>>> = LazyLock::new(TtlCache::new);
 static PARTITIONS: LazyLock<TtlCache<Arc<Vec<PartitionInfo>>>> =
     LazyLock::new(TtlCache::new);
 
 /// Resolve one table, reusing an entry fetched less than the configured TTL
 /// ago.  `key` must identify the metadata client instance and the table.
-pub(crate) async fn table<E, F>(
-    key: String,
-    fetch: F,
-) -> Result<Arc<LakeSoulTable>, E>
+pub(crate) async fn table<E, F>(key: String, fetch: F) -> Result<Arc<LakeSoulTable>, E>
 where
     F: Future<Output = Result<LakeSoulTable, E>>,
 {
@@ -130,6 +132,18 @@ pub(crate) fn table_key(
     name: &str,
 ) -> String {
     format!("{:p}:{namespace}:{name}", Arc::as_ptr(client))
+}
+
+/// Drop the cached table entry for a table in this process.
+///
+/// Cross-process/worker caches are bounded by `LAKESOUL_METADATA_TTL_MS`
+/// (and are disabled by default); the persistent `vector_index_epoch`
+/// invalidates snapshot caches once the table metadata is refreshed.
+pub(crate) fn invalidate_table(namespace: &str, name: &str) {
+    let suffix = format!(":{namespace}:{name}");
+    if let Ok(mut entries) = TABLES.entries.lock() {
+        entries.retain(|key, _| !key.ends_with(&suffix));
+    }
 }
 
 /// Cache key of a partition-list entry: metadata client instance + table id.

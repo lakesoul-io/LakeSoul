@@ -68,6 +68,22 @@ pub enum LakeSoulMetaDataError {
     NotFound(String),
     #[error("Metadata commit conflict: {0}")]
     CommitConflict(String),
+    #[error(
+        "index commit conflict: expected generation {expected_generation} version \
+         {expected_version}, found generation {actual_generation} version \
+         {actual_version}"
+    )]
+    IndexVersionConflict {
+        expected_generation: u64,
+        expected_version: u64,
+        actual_generation: u64,
+        actual_version: u64,
+    },
+    #[error(
+        "{kind} index shard '{index_prefix}' is marked as dropped; refusing to \
+         recreate it"
+    )]
+    IndexDropped { kind: String, index_prefix: String },
     #[error("Other error: {0}")]
     Other(#[from] GenericError),
 }

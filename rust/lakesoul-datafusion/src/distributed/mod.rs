@@ -68,6 +68,7 @@ pub mod headers;
 pub mod planner;
 pub mod resolver;
 mod trace_context;
+pub(crate) mod vector_batch_codec;
 pub mod worker;
 
 pub use codec::LakeSoulCodec;
@@ -90,7 +91,7 @@ pub use resolver::{
 /// ignore unknown fields rather than rejecting them, so a plan written by this
 /// build would have been silently accepted by a `/1` worker.
 ///
-/// `/2` is the current generation and the first one versioned on the wire: it
+/// `/2` was the first generation versioned on the wire: it
 /// carries the explicit [`codec::CODEC_VERSION`] field *and* registers the
 /// vortex scan codec at position 2 of [`codec::user_codecs`]. Both changes are
 /// one generation rather than two because neither format has ever been
@@ -100,9 +101,13 @@ pub use resolver::{
 /// them, so a coordinator that can stamp position 2 needs workers that resolve
 /// it.
 ///
-/// Advertising `/2` filters `/1` workers out at discovery and closes the other
-/// direction at decode time.
-pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2";
+/// `/3` appends the native vector batch probe codec at position 3. A bounded
+/// query window is a real Arrow IPC child, broadcast to shard-only worker tasks;
+/// the probe payload carries a pinned descriptor and parent read lease token.
+///
+/// Advertising `/3` filters older workers out at discovery and closes the
+/// other direction at decode time.
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/3";
 
 pub use worker::{
     LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker,

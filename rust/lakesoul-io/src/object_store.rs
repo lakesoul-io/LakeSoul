@@ -223,10 +223,10 @@ pub fn register_object_store(
                         url.host_str().ok_or(report!("host str missing"))?.into(),
                     );
                 }
-                // add cache if env LAKESOUL_CACHE is set
-                // set LAKESOUL_CACHE
-                // LAKESOUL_CACHE_SIZE set lakesoul cache size,
-                if std::env::var("LAKESOUL_CACHE").is_ok() {
+                // The central vector-cache config turns L2 on when
+                // LAKESOUL_CACHE_SIZE / _PATH is configured (or the legacy
+                // LAKESOUL_CACHE=1 is set).
+                if lakesoul_vector::cache_config::config().disk_enabled() {
                     register_s3_object_store_with_cache(
                         &url,
                         config,

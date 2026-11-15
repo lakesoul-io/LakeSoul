@@ -414,6 +414,8 @@ fn to_resolved_shard(prefix: &str, view: &IndexCommitView<TextSplitEntry>) -> Re
         version: view.version,
         header: view.header.clone(),
         segments,
+        mutation_head: view.mutation_head.clone(),
+        mutation_records: view.mutation_records,
     }
 }
 

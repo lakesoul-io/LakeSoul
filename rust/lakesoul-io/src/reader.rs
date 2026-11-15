@@ -677,20 +677,22 @@ impl LakeSoulReader {
                     );
                     // The newest entry of a key wins: a delta segment may
                     // hold a newer vector under the same key, and the score
-                    // that ranks a row must be its latest version's.
+                    // that ranks a row must be its latest version's.  The
+                    // catalog revision is global, unlike the per-cluster
+                    // segment version, so it orders copies across clusters.
                     let mut ordered: std::collections::HashMap<
                         lakesoul_vector::IndexKey,
-                        (u32, f32),
+                        (u64, f32),
                     > = std::collections::HashMap::with_capacity(hits.len());
                     for hit in hits {
                         match ordered.entry(hit.key) {
                             std::collections::hash_map::Entry::Occupied(mut entry) => {
-                                if hit.version >= entry.get().0 {
-                                    entry.insert((hit.version, hit.score));
+                                if hit.birth_version >= entry.get().0 {
+                                    entry.insert((hit.birth_version, hit.score));
                                 }
                             }
                             std::collections::hash_map::Entry::Vacant(entry) => {
-                                entry.insert((hit.version, hit.score));
+                                entry.insert((hit.birth_version, hit.score));
                             }
                         }
                     }
@@ -729,14 +731,7 @@ impl LakeSoulReader {
                         ordered
                             .into_iter()
                             .map(|(key, (_version, score))| {
-                                (
-                                    key,
-                                    if is_l2 {
-                                        score.max(0.0).sqrt()
-                                    } else {
-                                        -score
-                                    },
-                                )
+                                (key, if is_l2 { score.max(0.0).sqrt() } else { -score })
                             })
                             .collect(),
                     ));

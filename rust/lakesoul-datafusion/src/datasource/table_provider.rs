@@ -483,6 +483,11 @@ impl LakeSoulTableProvider {
                 &table_info.properties,
             )
             .unwrap_or_default();
+        crate::vector_index::set_vector_index_available(
+            &table_info.table_namespace,
+            &table_info.table_name,
+            crate::vector_index::vector_index_available(&table_info.properties),
+        );
         // A frontend may ask for its own marker on the vector columns (the
         // PostgreSQL wire server reports them as its `vector` type); the
         // scan, file and execution schemas are all derived from this one, so
@@ -759,6 +764,11 @@ impl LakeSoulTableProvider {
                 &table_info.properties,
             )
             .unwrap_or_default();
+        crate::vector_index::set_vector_index_available(
+            &table_info.table_namespace,
+            &table_info.table_name,
+            crate::vector_index::vector_index_available(&table_info.properties),
+        );
         let text_index_configs =
             crate::text_index::parse_text_index_from_table_properties(
                 &table_info.properties,
@@ -1075,6 +1085,37 @@ impl LakeSoulTableProvider {
         state: &SessionState,
         request: &crate::vector_batch::VectorBatchRequest,
     ) -> DFResult<Vec<Vec<i64>>> {
+        // SQL and the Python native entry share the same snapshot-bound engine
+        // for eligible tables. Preserve the older verification path only for
+        // table capabilities this new SQL contract explicitly cannot serve.
+        match crate::vector_batch::native::NativeBatchSnapshot::prepare(
+            self, state, &request.column, &request.metric,
+        ).await {
+            Ok(snapshot) => {
+                let options = crate::vector_batch::native::NativeBatchOptions {
+                    top_k: request.top_k,
+                    nprobe: request.nprobe,
+                    exact: request.exact,
+                    exact_overfetch: request.exact_overfetch,
+                    parallelism: if request.parallelism <= 1 { 0 } else { request.parallelism },
+                    ..Default::default()
+                };
+                options.validate()?;
+                let mut chunk_size = if request.batch_size == 0 { 256 } else { request.batch_size.min(256) };
+                while chunk_size > 1 && snapshot.estimated_work_bytes(chunk_size,&options)? > options.memory_bytes {
+                    chunk_size /= 2;
+                }
+                let mut results = Vec::with_capacity(request.queries.len());
+                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                for queries in request.queries.chunks(chunk_size.max(1)) {
+                    let hits = snapshot.search(queries,&options,Arc::clone(&cancel)).await?;
+                    results.extend(hits.into_iter().map(|query| query.into_iter().map(|hit| hit.id).collect()));
+                }
+                return Ok(results);
+            }
+            Err(DataFusionError::NotImplemented(_)) => {},
+            Err(error) => return Err(error),
+        }
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
         let t_batch = std::time::Instant::now();
         let file_groups = self
@@ -1300,6 +1341,26 @@ impl LakeSoulTableProvider {
             }
         }
 
+        // A table can keep its `vector_index_columns` declaration while the
+        // index has been dropped (keep_declaration=true).  Publishing a
+        // vector-search exec with no control-plane shard would fail later in
+        // the distance-ordering path; fall back to the regular scan instead.
+        let shards = self
+            .client
+            .vector_index_catalog()
+            .list_shards_under(&self.table_info.table_path)
+            .await
+            .map_err(|error| {
+                DataFusionError::External(
+                    rootcause::report!("failed to list vector index shards: {error}")
+                        .into_boxed_error(),
+                )
+            })?;
+        if shards.is_empty() {
+            record_fallback("index_missing");
+            return Ok(None);
+        }
+
         let bucket_group_count = groups.len();
         let span = tracing::Span::current();
         span.record("outcome", "selected");
@@ -1344,10 +1405,9 @@ impl LakeSoulTableProvider {
         // charge.
         let filter = match request.filter.as_ref() {
             Some(predicate) => {
-                let df_schema = datafusion::common::DFSchema::try_from(
-                    Arc::clone(&merged_schema),
-                )
-                .map_err(DataFusionError::from);
+                let df_schema =
+                    datafusion::common::DFSchema::try_from(Arc::clone(&merged_schema))
+                        .map_err(DataFusionError::from);
                 df_schema.ok().and_then(|schema| {
                     datafusion::physical_expr::create_physical_expr(
                         predicate,
@@ -1368,9 +1428,9 @@ impl LakeSoulTableProvider {
             if cdc_column.is_empty() {
                 None
             } else {
-                let predicate = Expr::Column(datafusion::common::Column::new_unqualified(
-                    cdc_column.to_string(),
-                ))
+                let predicate = Expr::Column(
+                    datafusion::common::Column::new_unqualified(cdc_column.to_string()),
+                )
                 .not_eq(Expr::Literal(
                     datafusion::common::ScalarValue::Utf8(Some("delete".to_string())),
                     None,
@@ -1404,6 +1464,7 @@ impl LakeSoulTableProvider {
             cdc_filter,
             limit,
             self.client.vector_index_catalog(),
+            crate::vector_index::vector_index_epoch(&self.table_info.properties),
         )?;
         let exec: Arc<dyn ExecutionPlan> = Arc::new(exec);
         if profile {
