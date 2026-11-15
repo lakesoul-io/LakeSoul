@@ -20,6 +20,8 @@ import org.apache.spark.sql.functions.{col, udf}
 import java.time.{LocalDateTime, Period, ZoneId}
 import java.util.TimeZone
 
+import scala.collection.JavaConverters._
+
 object CleanExpiredData {
 
   var serverTimeZone = TimeZone.getDefault.getID
@@ -369,25 +371,85 @@ object CleanExpiredData {
     })
 
     val deferred = spark.sparkContext.longAccumulator("read-lease-deferred-cleanup")
-    def deletePath(fs: FileSystem, path: Path, immutableDirectory: Boolean = false): Unit = {
+    // Only tables that declare a vector index column need original-file
+    // retirement fences. Every other table keeps the original filesystem-only
+    // cleanup: no metadata round trips per file and no schema dependency.
+    val needsGuard =
+      tryWithResource(DBConnector.getConn) { connection =>
+        DataFileReadLeaseGuard.tableHasVectorIndex(connection, tableId)
+      }
+
+    def removePath(
+        fs: FileSystem,
+        path: Path,
+        immutableDirectory: Boolean
+    ): Unit = {
+      println(s"--------- delete retired path: $path")
+      if (fs.exists(path) && !fs.delete(path, immutableDirectory)) {
+        throw new java.io.IOException(s"failed to delete retired path $path")
+      }
+      if (!immutableDirectory) {
+        val sidecar = new Path(path.toString + ".blobref")
+        if (fs.exists(sidecar) && !fs.delete(sidecar, false)) {
+          throw new java.io.IOException(s"failed to delete blobref $sidecar")
+        }
+      }
+    }
+
+    /**
+     * One guard per batch: a single protection probe and a single fence commit
+     * for every path of the batch, then the filesystem deletions.
+     */
+    def deletePaths(
+        fs: FileSystem,
+        paths: Seq[Path],
+        immutableDirectory: Boolean
+    ): Unit = {
+      if (paths.isEmpty) {
+        return
+      }
+      if (!needsGuard) {
+        paths.foreach(path => removePath(fs, path, immutableDirectory))
+        return
+      }
       tryWithResource(DBConnector.getConn) { connection =>
         tryWithResource(DataFileReadLeaseGuard.acquire(connection, tableId)) { readers =>
-          if (readers.retire(path.toString, immutableDirectory)) {
-            println(s"--------- delete retired path: $path")
-            if (fs.exists(path) && !fs.delete(path, immutableDirectory)) {
-              throw new java.io.IOException(s"failed to delete retired path $path")
+          val requested = paths.map(_.toString).toList
+          val allowed =
+            if (immutableDirectory) {
+              readers.retireBatch(
+                java.util.Collections.emptyList[String](),
+                requested.asJava
+              )
+            } else {
+              readers.retireBatch(
+                requested.asJava,
+                java.util.Collections.emptyList[String]()
+              )
             }
-            if (!immutableDirectory) {
-              val sidecar = new Path(path.toString + ".blobref")
-              if (fs.exists(sidecar) && !fs.delete(sidecar, false)) {
-                throw new java.io.IOException(s"failed to delete blobref $sidecar")
-              }
+          // The guard answers with canonical paths; map them back to the
+          // original strings so the filesystem call keeps its scheme.
+          val allowedCanonical = allowed.asScala.toSet
+          val deletable = requested
+            .filter(p => allowedCanonical.contains(DataFileReadLeaseGuard.normalizePath(p)))
+            .toSet
+          paths.foreach { path =>
+            if (deletable.contains(path.toString)) {
+              removePath(fs, path, immutableDirectory)
+            } else {
+              deferred.add(1L)
             }
-          } else {
-            deferred.add(1L)
           }
         }
       }
+    }
+
+    def deletePath(
+        fs: FileSystem,
+        path: Path,
+        immutableDirectory: Boolean = false
+    ): Unit = {
+      deletePaths(fs, Seq(path), immutableDirectory)
     }
 
     val pathCompactDF = sqlRows
@@ -408,13 +470,10 @@ object CleanExpiredData {
     sqlRows
       .filter(!col("path").contains("compact_"))
       .foreachPartition((rows: Iterator[Row]) => {
-        if (rows.hasNext) {
-          val path = new Path(rows.next().getString(0))
-          val fs = path.getFileSystem(sessionHadoopConf.value)
-          deletePath(fs, path)
-          rows.foreach(path => {
-            deletePath(fs, new Path(path.getString(0)))
-          })
+        val paths = rows.map(row => new Path(row.getString(0))).toList
+        if (paths.nonEmpty) {
+          val fs = paths.head.getFileSystem(sessionHadoopConf.value)
+          deletePaths(fs, paths, immutableDirectory = false)
         }
       })
     println(
@@ -443,11 +502,11 @@ object CleanExpiredData {
         ZoneId.of(serverTimeZone)
       ) + " start delete discard file"
     )
-    discardCompactionLevelFile.forEach(fileInfo => {
-      val filePath = new Path(fileInfo.getFilePath)
-      val fs = filePath.getFileSystem(sessionHadoopConf.value)
-      deletePath(fs, filePath)
-    })
+    discardCompactionLevelFile.asScala.grouped(1000).foreach { chunk =>
+      val paths = chunk.map(fileInfo => new Path(fileInfo.getFilePath)).toList
+      val fs = paths.head.getFileSystem(sessionHadoopConf.value)
+      deletePaths(fs, paths, immutableDirectory = false)
+    }
     println(
       LocalDateTime.now(ZoneId.of(serverTimeZone)) + " end delete discard file"
     )

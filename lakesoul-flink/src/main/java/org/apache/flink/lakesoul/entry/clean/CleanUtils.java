@@ -151,14 +151,19 @@ public class CleanUtils {
             String partitionDesc,
             Connection connection,
             Boolean oldCompaction) {
-        try (DataFileReadLeaseGuard readers = DataFileReadLeaseGuard.acquire(connection, tableId)) {
-            if (readers.hasActiveReaders()) {
+        // A table without a vector index keeps the original cleanup path: no
+        // advisory locks, no fence writes and no per-file metadata round trips.
+        try (DataFileReadLeaseGuard readers =
+                DataFileReadLeaseGuard.acquireOrNull(connection, tableId)) {
+            if (readers != null && readers.hasActiveReaders()) {
                 logger.info("defer cleanup of {}/{} while batch snapshots are active", tableId, partitionDesc);
                 return false;
             }
             boolean complete = deleteFileAndDataCommitInfoUnlocked(
                     snapshot, tableId, partitionDesc, connection, oldCompaction, readers);
-            readers.commit();
+            if (readers != null) {
+                readers.commit();
+            }
             return complete;
         } catch (SQLException error) {
             throw new RuntimeException("failed to guard original data cleanup", error);
@@ -216,19 +221,42 @@ public class CleanUtils {
                 List<String> deletable = new ArrayList<>();
                 int protectedCount = 0;
                 boolean readProtected = false;
+                List<String> candidates = new ArrayList<>();
                 for (String path : commitPaths) {
                     if (livePaths.contains(path)) {
                         protectedCount++;
                     } else {
+                        candidates.add(path);
+                    }
+                }
+                if (!candidates.isEmpty()) {
+                    if (readers == null) {
+                        // No vector index on this table: delete as before.
+                        deletable.addAll(candidates);
+                    } else {
+                        List<String> retired;
                         try {
-                            if (readers.retire(path, false)) {
-                                deletable.add(path);
-                            } else {
-                                readProtected = true;
-                                protectedCount++;
-                            }
+                            // One protection probe and one fence commit for the
+                            // whole commit's files instead of one per file.
+                            retired = readers.retireBatch(candidates, Collections.emptyList());
                         } catch (SQLException error) {
                             throw new RuntimeException("failed to retire original data file", error);
+                        }
+                        // The guard answers with canonical paths; keep the
+                        // original strings for the filesystem call.
+                        Set<String> retiredCanonical = new HashSet<>();
+                        for (String path : retired) {
+                            retiredCanonical.add(DataFileReadLeaseGuard.normalizePath(path));
+                        }
+                        for (String candidate : candidates) {
+                            if (retiredCanonical.contains(
+                                    DataFileReadLeaseGuard.normalizePath(candidate))) {
+                                deletable.add(candidate);
+                            }
+                        }
+                        if (deletable.size() != candidates.size()) {
+                            readProtected = true;
+                            protectedCount += candidates.size() - deletable.size();
                         }
                     }
                 }

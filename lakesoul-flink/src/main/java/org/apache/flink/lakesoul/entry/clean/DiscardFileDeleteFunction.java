@@ -21,6 +21,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -184,33 +185,77 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
         log.info("start delete batch {}", batch.size());
         boolean allSucceeded = true;
         CleanUtils cleanUtils = new CleanUtils();
-        try (Connection conn = dataSource.getConnection();
-                DataFileReadLeaseGuard readers = DataFileReadLeaseGuard.acquire(conn, null)) {
-            for (String path : batch) {
-                if (!readers.retire(path, false)) {
-                    // Retain both the database row and checkpointed retry
-                    // state until the reader/tag releases this file.
-                    allSucceeded = false;
-                    continue;
+        try (Connection conn = dataSource.getConnection()) {
+            DataFileReadLeaseGuard readers = readersForBatch(conn, batch);
+            try {
+                // One protection probe and one fence commit for the whole batch.
+                List<String> deletable =
+                        readers == null
+                                ? batch
+                                : readers.retireBatch(batch, Collections.emptyList());
+                java.util.Set<String> allowed = new java.util.HashSet<>();
+                for (String path : deletable) {
+                    allowed.add(DataFileReadLeaseGuard.normalizePath(path));
                 }
-                try {
-                    cleanUtils.deleteFile(path);
-                    try (PreparedStatement ps = conn.prepareStatement(
-                            "delete from discard_compressed_file_info where file_path = ?")) {
-                        ps.setString(1, path);
-                        ps.executeUpdate();
+                for (String path : batch) {
+                    if (!allowed.contains(DataFileReadLeaseGuard.normalizePath(path))) {
+                        // Retain both the database row and checkpointed retry
+                        // state until the reader/tag releases this file.
+                        allSucceeded = false;
+                        continue;
                     }
-                    readers.commit();
-                } catch (Exception error) {
-                    log.error("discard file cleanup failed [{}], retain for retry", path, error);
-                    allSucceeded = false;
+                    try {
+                        cleanUtils.deleteFile(path);
+                        try (PreparedStatement ps = conn.prepareStatement(
+                                "delete from discard_compressed_file_info where file_path = ?")) {
+                            ps.setString(1, path);
+                            ps.executeUpdate();
+                        }
+                        if (readers != null) {
+                            readers.commit();
+                        }
+                    } catch (Exception error) {
+                        log.error("discard file cleanup failed [{}], retain for retry", path, error);
+                        allSucceeded = false;
+                    }
+                }
+                return allSucceeded;
+            } finally {
+                if (readers != null) {
+                    try {
+                        readers.close();
+                    } catch (SQLException error) {
+                        log.error("failed to close discard cleanup guard", error);
+                    }
                 }
             }
         } catch (SQLException error) {
             log.error("failed to guard discard file cleanup", error);
             return false;
         }
-        return allSucceeded;
+    }
+
+    /**
+     * Retirement fences are only needed when one of the owning tables declares a vector index.
+     * Otherwise {@code null} keeps the original deletion path with no metadata round trips.
+     */
+    private DataFileReadLeaseGuard readersForBatch(Connection conn, List<String> batch)
+            throws SQLException {
+        String sql =
+                "select exists (select 1 from table_info t"
+                        + " where t.properties::jsonb ? 'vector_index_columns'"
+                        + " and exists (select 1 from discard_compressed_file_info d"
+                        + "   where d.file_path = any(?::text[]) and d.table_path = t.table_path))";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setArray(1, conn.createArrayOf("text", batch.toArray(new String[0])));
+            try (java.sql.ResultSet rows = ps.executeQuery()) {
+                rows.next();
+                if (!rows.getBoolean(1)) {
+                    return null;
+                }
+            }
+        }
+        return DataFileReadLeaseGuard.acquireFenceOnlyOrNull(conn);
     }
 
     @Override

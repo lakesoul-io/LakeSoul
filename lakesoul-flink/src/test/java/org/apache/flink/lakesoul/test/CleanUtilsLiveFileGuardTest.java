@@ -58,6 +58,19 @@ public class CleanUtilsLiveFileGuardTest {
         connection = DriverManager.getConnection(JDBC_URL, USER, PASSWORD);
 
         tableId = "clean_guard_" + UUID.randomUUID().toString().replace("-", "");
+        // Only a table that declares a vector index column is guarded; register
+        // one so these tests exercise the original-file protection path.
+        try (PreparedStatement ps =
+                connection.prepareStatement(
+                        "insert into table_info(table_id, table_namespace, table_name,"
+                                + " table_path, properties)"
+                                + " values(?, 'default', ?, ?, ?::json)")) {
+            ps.setString(1, tableId);
+            ps.setString(2, tableId);
+            ps.setString(3, "/tmp/clean_guard/" + tableId);
+            ps.setString(4, "{\"vector_index_columns\":[{\"column\":\"vec\"}]}");
+            ps.executeUpdate();
+        }
         dir = Files.createTempDirectory("clean-guard");
         sharedFile = Files.write(dir.resolve("shared.parquet"), new byte[] {1});
         expiredFile = Files.write(dir.resolve("expired.parquet"), new byte[] {2});
@@ -115,6 +128,11 @@ public class CleanUtilsLiveFileGuardTest {
                     ps.setString(2, root);
                     ps.executeUpdate();
                 }
+            }
+            try (PreparedStatement ps =
+                    connection.prepareStatement("delete from table_info where table_id = ?")) {
+                ps.setString(1, tableId);
+                ps.executeUpdate();
             }
             connection.close();
         }
@@ -259,6 +277,46 @@ public class CleanUtilsLiveFileGuardTest {
         assertTrue(Files.exists(expiredFile));
         assertTrue(Files.exists(updateFile));
         assertEquals("superseded commit metadata must be kept", 1, countCommits(compactionCommit));
+    }
+
+    /**
+     * A table without a vector index keeps the original cleanup: no guard, no advisory locks and
+     * no retirement fences, so ordinary lakehouse cleanup pays no metadata cost per file.
+     */
+    @Test
+    public void tableWithoutVectorIndexSkipsRetirementFences() throws Exception {
+        try (PreparedStatement ps =
+                connection.prepareStatement("delete from table_info where table_id = ?")) {
+            ps.setString(1, tableId);
+            ps.executeUpdate();
+        }
+
+        assertTrue(
+                new CleanUtils()
+                        .deleteFileAndDataCommitInfo(
+                                Collections.singletonList(compactionCommit.toString()),
+                                tableId,
+                                "-5",
+                                connection,
+                                true));
+        assertFalse("expired file should be deleted", Files.exists(expiredFile));
+        assertTrue("live file must survive", Files.exists(sharedFile));
+        assertEquals(0, countCommits(compactionCommit));
+        assertEquals("no fence may be written for an unguarded table", 0, countFences(expiredFile));
+    }
+
+    private int countFences(Path file) throws Exception {
+        try (PreparedStatement ps =
+                connection.prepareStatement(
+                        "select count(*) from index_drop where kind = 'data_file'"
+                                + " and index_prefix = ?")) {
+            ps.setString(1, com.dmetasoul.lakesoul.meta.DataFileReadLeaseGuard
+                    .normalizePath(file.toUri().toString()));
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getInt(1);
+            }
+        }
     }
 
     private void insertCommit(UUID commitId, String commitOp, String[][] fileOps) throws Exception {

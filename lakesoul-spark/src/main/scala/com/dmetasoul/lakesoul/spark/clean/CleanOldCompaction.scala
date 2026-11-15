@@ -10,6 +10,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.SparkSession
 import com.dmetasoul.lakesoul.spark.clean.CleanUtils.sqlToDataframe
 
+import scala.collection.JavaConverters._
 import scala.collection.mutable.Set
 
 object CleanOldCompaction {
@@ -102,22 +103,45 @@ object CleanOldCompaction {
         pathSet.add(splitCompactFilePath(p.get(0).toString)._1)
 
       })
-    pathSet.foreach(p => {
-      if (p != null && p != "") {
-        val path = new Path(p)
-        val sessionHadoopConf = spark.sessionState.newHadoopConf()
-        val fs = path.getFileSystem(sessionHadoopConf)
-        tryWithResource(DBConnector.getConn) { connection =>
-          tryWithResource(DataFileReadLeaseGuard.acquire(connection, tableId)) { readers =>
-            if (readers.retire(p, true)) {
+    val sessionHadoopConf = spark.sessionState.newHadoopConf()
+    // Only a table with a vector index needs retirement fences. Other tables
+    // keep the filesystem-only cleanup with no metadata round trip.
+    val needsGuard =
+      tryWithResource(DBConnector.getConn) { connection =>
+        DataFileReadLeaseGuard.tableHasVectorIndex(connection, tableId)
+      }
+    val directories = pathSet.filter(p => p != null && p != "").toList
+    if (needsGuard && directories.nonEmpty) {
+      tryWithResource(DBConnector.getConn) { connection =>
+        tryWithResource(DataFileReadLeaseGuard.acquire(connection, tableId)) { readers =>
+          val allowedCanonical = readers
+            .retireBatch(java.util.Collections.emptyList[String](), directories.asJava)
+            .asScala
+            .toSet
+          directories.foreach { directory =>
+            if (allowedCanonical.contains(DataFileReadLeaseGuard.normalizePath(directory))) {
+              val path = new Path(directory)
+              val fs = path.getFileSystem(sessionHadoopConf)
               if (fs.exists(path) && !fs.delete(path, true)) {
-                throw new java.io.IOException(s"failed to delete retired compaction directory $path")
+                throw new java.io.IOException(
+                  s"failed to delete retired compaction directory $path"
+                )
               }
             }
           }
         }
       }
-    })
+    } else {
+      directories.foreach { directory =>
+        val path = new Path(directory)
+        val fs = path.getFileSystem(sessionHadoopConf)
+        if (fs.exists(path) && !fs.delete(path, true)) {
+          throw new java.io.IOException(
+            s"failed to delete retired compaction directory $path"
+          )
+        }
+      }
+    }
   }
 
   def splitCompactFilePath(filePath: String): (String, String) = {
