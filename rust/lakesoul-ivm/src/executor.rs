@@ -1950,6 +1950,12 @@ impl IvmSqlExecutor {
             return Ok(None);
         }
         if caches.uses.get(left_table_id).copied() != Some(1) {
+            tracing::debug!(
+                view = %spec.view_id(),
+                left = %left_table_id,
+                uses = ?caches.uses.get(left_table_id),
+                "fuse_multi_lookup: left is not a single reader"
+            );
             return Ok(None);
         }
         let Some(value) = self.runtime.metadata().get_view_spec(left_table_id).await?
@@ -2073,8 +2079,16 @@ impl IvmSqlExecutor {
         let keys_ok = self.derived_primary_keys(spec).await?
             == self.derived_primary_keys(&chain).await?;
         if !schema_ok || !keys_ok {
+            tracing::debug!(
+                view = %spec.view_id(),
+                left = %left_table_id,
+                schema_ok,
+                keys_ok,
+                "fuse_multi_lookup: schema/keys mismatch"
+            );
             return Ok(None);
         }
+        tracing::debug!(view = %spec.view_id(), left = %left_table_id, "fuse_multi_lookup: fused");
         deferred.retain(|view_id| view_id != left_table_id);
         Ok(Some(FusedMultiLookup {
             spec: chain,

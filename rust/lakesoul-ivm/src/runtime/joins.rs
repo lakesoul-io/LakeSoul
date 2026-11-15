@@ -903,8 +903,8 @@ pub fn wide_full_join_view_schema_with_identity_and_keys(
 }
 
 /// The schema of a [`MultiLookupJoinView`] output.  Left fields keep their
-/// nullability (except left primary keys), every right field is nullable, and
-/// the row kind/epoch columns follow.
+/// nullability (including nullable base keys), every right field is nullable,
+/// and the row kind/epoch columns follow.
 pub fn multi_lookup_join_mv_schema_for(
     left_schema: &Schema,
     right_schemas: &[SchemaRef],
@@ -912,6 +912,16 @@ pub fn multi_lookup_join_mv_schema_for(
     join_keys: &[String],
     output_columns: &[MultiLookupColumn],
 ) -> Result<SchemaRef> {
+    if left_primary_keys.is_empty() {
+        return Err(report!(
+            "a multi lookup view needs primary keys on the left source"
+        ));
+    }
+    for key in join_keys {
+        left_schema.field_with_name(key).map_err(|_| {
+            report!("multi lookup join key {key} is not in the left source")
+        })?;
+    }
     let mut names = std::collections::HashSet::new();
     let mut fields = Vec::with_capacity(output_columns.len() + 2);
     for column in output_columns {
@@ -933,13 +943,12 @@ pub fn multi_lookup_join_mv_schema_for(
                 column.name
             ));
         }
-        let nullable = if column.source == 0 {
-            field.is_nullable()
-                && !(left_primary_keys.contains(&column.column)
-                    && !join_keys.contains(&column.column))
-        } else {
-            true
-        };
+        // A left payload keeps the source field's nullability; a right
+        // payload is nullable because the base row may not match.  The base
+        // key may itself be nullable (a NULL-keyed group), so forcing a
+        // primary-key payload non-nullable would make the fused chain's
+        // schema disagree with the two-step lookup it replaces.
+        let nullable = column.source != 0 || field.is_nullable();
         fields.push(Arc::new(Field::new(
             column.name.clone(),
             field.data_type().clone(),
