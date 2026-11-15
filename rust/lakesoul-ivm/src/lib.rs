@@ -95,8 +95,8 @@ pub use config::{IvmOptions, IvmRuntimeConfig, StateIndexMode};
 pub use error::Result;
 pub use executor::{IvmExecution, IvmExecutionAction, IvmSqlExecutor};
 pub use inventory::{
-    InventoryOptions, InventoryTotals, SourceRef, StateInventory, TableFootprint,
-    ViewInventory,
+    InventoryOptions, InventoryTotals, RoleTotal, SourceRef, StateInventory,
+    TableFootprint, ViewInventory,
 };
 pub use lakesoul_io::file_format::PhysicalFormat;
 pub use metadata::{

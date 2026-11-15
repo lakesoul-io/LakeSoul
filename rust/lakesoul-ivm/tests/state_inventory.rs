@@ -167,6 +167,15 @@ async fn inventory_lists_derived_steps_and_their_footprints() {
     assert!(inventory.totals.tables >= 2);
     assert!(inventory.totals.bytes > 0);
     assert!(inventory.totals.rows.unwrap() > 0);
+    assert_eq!(
+        inventory
+            .role_totals
+            .iter()
+            .map(|role| role.bytes)
+            .sum::<u64>(),
+        inventory.totals.bytes
+    );
+    assert!(inventory.role_totals.iter().any(|role| role.role == "mv"));
     assert!(
         inventory
             .base_sources
@@ -176,6 +185,7 @@ async fn inventory_lists_derived_steps_and_their_footprints() {
 
     let text = inventory.render_text();
     assert!(text.contains("IVM state inventory"), "{text}");
+    assert!(text.contains("BY PRIMARY ROLE"), "{text}");
     assert!(text.contains("TOP TABLES BY BYTES"), "{text}");
     assert!(text.contains(&mv.table_name), "{text}");
 
@@ -183,6 +193,7 @@ async fn inventory_lists_derived_steps_and_their_footprints() {
     let decoded: StateInventory = serde_json::from_str(&json).unwrap();
     assert_eq!(decoded.root_view_id, inventory.root_view_id);
     assert_eq!(decoded.totals, inventory.totals);
+    assert_eq!(decoded.role_totals, inventory.role_totals);
 
     let metadata_only = runtime
         .state_inventory_with_options(
@@ -437,6 +448,13 @@ async fn inventory_shows_row_state_versus_compact_multi_agg_state() {
     let rows_state = table_with_role(&max_inventory, "multi_agg_rows");
     assert_eq!(rows_state.rows, Some(6), "{rows_state:?}");
     assert!(rows_state.bytes > 0, "{rows_state:?}");
+    assert!(
+        max_inventory
+            .role_totals
+            .iter()
+            .any(|role| role.role == "multi_agg_rows"),
+        "{max_inventory:?}"
+    );
 
     executor
         .execute(&format!(
@@ -452,6 +470,13 @@ async fn inventory_shows_row_state_versus_compact_multi_agg_state() {
     let sum_inventory = runtime.state_inventory(&sum_mv.table_id).await.unwrap();
     let compact_state = table_with_role(&sum_inventory, "state");
     assert_eq!(compact_state.rows, Some(3), "{compact_state:?}");
+    assert!(
+        sum_inventory
+            .role_totals
+            .iter()
+            .any(|role| role.role == "state"),
+        "{sum_inventory:?}"
+    );
     assert!(
         rows_state.rows.unwrap() > compact_state.rows.unwrap(),
         "row state {rows_state:?} should be larger than compact state {compact_state:?}"

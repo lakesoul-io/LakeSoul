@@ -162,6 +162,23 @@ pub struct InventoryTotals {
     pub files: u64,
 }
 
+/// Totals for one primary table role.  A table registered under several
+/// roles is counted under its first role, so the role totals add up to the
+/// chain totals without double counting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleTotal {
+    /// The primary role (`mv`, `join_left`, `rank_state`, ...).
+    pub role: String,
+    /// Unique tables with this primary role.
+    pub tables: usize,
+    /// Logical rows, when every count succeeded.
+    pub rows: Option<u64>,
+    /// File bytes.
+    pub bytes: u64,
+    /// Files.
+    pub files: u64,
+}
+
 /// A read-only state inventory of one view chain.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateInventory {
@@ -186,6 +203,8 @@ pub struct StateInventory {
     pub base_sources: Vec<SourceRef>,
     /// Totals over the unique materialized and state tables.
     pub totals: InventoryTotals,
+    /// Totals per primary table role, largest first.
+    pub role_totals: Vec<RoleTotal>,
     /// Problems that did not stop the report (missing state tables, unknown
     /// file sizes, failed counts, ...).
     pub warnings: Vec<String>,
@@ -220,6 +239,20 @@ impl StateInventory {
             format_bytes(self.totals.bytes),
             self.totals.files
         );
+        if !self.role_totals.is_empty() {
+            let _ = writeln!(out, "BY PRIMARY ROLE");
+            for role in &self.role_totals {
+                let _ = writeln!(
+                    out,
+                    "  {:<20} tables={:>3} bytes={:>10} files={:>6} rows={}",
+                    role.role,
+                    role.tables,
+                    format_bytes(role.bytes),
+                    role.files,
+                    format_rows(role.rows)
+                );
+            }
+        }
         let _ = writeln!(out, "{}", "=".repeat(100));
 
         for (index, view) in self.views.iter().enumerate() {
@@ -470,6 +503,7 @@ impl IvmRuntime {
         base_sources.sort_by(|left, right| left.table_name.cmp(&right.table_name));
 
         let totals = inventory_totals(&views, &mut warnings);
+        let role_totals = inventory_role_totals(&views);
         Ok(StateInventory {
             root_view_id: view_id.to_string(),
             root_table_id: root_table.table_id,
@@ -481,6 +515,7 @@ impl IvmRuntime {
             views,
             base_sources,
             totals,
+            role_totals,
             warnings,
         })
     }
@@ -874,6 +909,41 @@ fn inventory_totals(
         bytes,
         files,
     }
+}
+
+fn inventory_role_totals(views: &[ViewInventory]) -> Vec<RoleTotal> {
+    let mut seen = HashSet::new();
+    let mut by_role: HashMap<&str, RoleTotal> = HashMap::new();
+    for view in views {
+        for table in &view.tables {
+            if !seen.insert(table.table_id.as_str()) {
+                continue;
+            }
+            let role = table.roles.first().map(String::as_str).unwrap_or("unknown");
+            let entry = by_role.entry(role).or_insert_with(|| RoleTotal {
+                role: role.to_string(),
+                tables: 0,
+                rows: Some(0),
+                bytes: 0,
+                files: 0,
+            });
+            entry.tables += 1;
+            entry.bytes += table.bytes;
+            entry.files += table.files;
+            entry.rows = match (entry.rows, table.rows) {
+                (Some(total), Some(count)) => Some(total + count),
+                _ => None,
+            };
+        }
+    }
+    let mut roles = by_role.into_values().collect::<Vec<_>>();
+    roles.sort_by(|left, right| {
+        right
+            .bytes
+            .cmp(&left.bytes)
+            .then_with(|| left.role.cmp(&right.role))
+    });
+    roles
 }
 
 fn format_rows(rows: Option<u64>) -> String {
