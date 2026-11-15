@@ -1021,6 +1021,16 @@ impl IvmRuntime {
         let context = refresh_session();
         let (left_state_source, right_state_source, left_columns, right_columns) =
             semi_anti_state_sources(&context, view)?;
+        let left_natural = super::join_state::natural_join_state_eligible(
+            &left_state_source,
+            &view.join_keys,
+            &[],
+        );
+        let right_natural = super::join_state::natural_join_state_eligible(
+            &right_state_source,
+            right_join_keys(view),
+            &[],
+        );
         let left_state = if side_keyed {
             self.ensure_join_side_state_for_view(
                 &view.view_id,
@@ -1028,6 +1038,7 @@ impl IvmRuntime {
                 &view.join_keys,
                 StateRole::JoinLeft,
                 view.null_safe,
+                left_natural,
             )
             .await?
         } else {
@@ -1040,6 +1051,7 @@ impl IvmRuntime {
                 right_join_keys(view),
                 StateRole::JoinRight,
                 view.null_safe,
+                right_natural,
             )
             .await?
         } else {
@@ -1778,6 +1790,11 @@ impl IvmRuntime {
             && !view.left.primary_keys.is_empty()
             && !view.right.primary_keys.is_empty()
         {
+            let left_natural = super::join_state::natural_join_state_eligible(
+                &left_state_source,
+                &view.join_keys,
+                &[],
+            );
             let left_state = self
                 .ensure_join_side_state_for_view(
                     &view.view_id,
@@ -1785,6 +1802,7 @@ impl IvmRuntime {
                     &view.join_keys,
                     StateRole::JoinLeft,
                     view.null_safe,
+                    left_natural,
                 )
                 .await?;
             if let Some(state) = left_state {
@@ -1798,6 +1816,11 @@ impl IvmRuntime {
                     .await?,
                 );
             }
+            let right_natural = super::join_state::natural_join_state_eligible(
+                &right_state_source,
+                right_join_keys(view),
+                &[],
+            );
             let right_state = self
                 .ensure_join_side_state_for_view(
                     &view.view_id,
@@ -1805,6 +1828,7 @@ impl IvmRuntime {
                     right_join_keys(view),
                     StateRole::JoinRight,
                     view.null_safe,
+                    right_natural,
                 )
                 .await?;
             if let Some(state) = right_state {
@@ -2459,6 +2483,7 @@ impl IvmRuntime {
                 &view.join_keys,
                 StateRole::JoinLeft,
                 false,
+                false,
             )
             .await?
         } else {
@@ -2470,6 +2495,7 @@ impl IvmRuntime {
                 &view.right,
                 left_aggregate_right_keys(view),
                 StateRole::JoinRight,
+                false,
                 false,
             )
             .await?

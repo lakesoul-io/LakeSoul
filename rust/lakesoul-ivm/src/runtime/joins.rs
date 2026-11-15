@@ -3852,13 +3852,27 @@ impl IvmRuntime {
         }
         .distinct()?;
         if let Some(left_state) = left_state {
-            let contribution = encode_join_key_frame(
-                context,
-                contribution,
-                &view.left,
-                &view.join_keys,
-            )?;
-            let bucket_count = if left_state.bucket_columns.len() == 1
+            let natural = left_state
+                .schema
+                .field_with_name(super::join_state::IVM_JOIN_KEY_COLUMN)
+                .is_err();
+            let contribution = if natural {
+                contribution
+            } else {
+                encode_join_key_frame(context, contribution, &view.left, &view.join_keys)?
+            };
+            let bucket_count = if natural {
+                if left_state.bucket_columns == view.join_keys {
+                    left_state
+                        .hash_bucket_num
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|count| *count > 1)
+                        .unwrap_or(1)
+                } else {
+                    1
+                }
+            } else if left_state.bucket_columns.len() == 1
                 && left_state.bucket_columns[0] == super::join_state::IVM_JOIN_KEY_COLUMN
             {
                 left_state
@@ -3870,10 +3884,21 @@ impl IvmRuntime {
             } else {
                 1
             };
-            let partition_columns =
-                plain_join_partition_columns(view, JoinSide::Left, left_state);
-            let key = super::keyed_plan::PkLookupKey::BinaryRow {
-                column: super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
+            let partition_columns = if natural {
+                left_state.range_partition_columns.clone()
+            } else {
+                plain_join_partition_columns(view, JoinSide::Left, left_state)
+            };
+            let key = if natural {
+                super::keyed_plan::PkLookupKey::Columns {
+                    input_columns: view.join_keys.clone(),
+                    table_columns: view.join_keys.clone(),
+                    null_safe: view.null_safe,
+                }
+            } else {
+                super::keyed_plan::PkLookupKey::BinaryRow {
+                    column: super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
+                }
             };
             let (contribution, inferred, materialized) = self
                 .materialize_for_partitions(
@@ -3892,15 +3917,29 @@ impl IvmRuntime {
                 None => left_state.current_groups(&self.client).await?,
             };
             let groups = groups_by_bucket(groups, bucket_count);
-            let provider = IvmLookupTable::binary(
-                contribution,
-                left_state.clone(),
-                groups,
-                super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
-                bucket_count,
-                true,
-                partition_columns,
-            );
+            let provider = if natural {
+                IvmLookupTable::columns(
+                    contribution,
+                    left_state.clone(),
+                    groups,
+                    view.join_keys.clone(),
+                    view.join_keys.clone(),
+                    bucket_count,
+                    (bucket_count > 1).then(|| view.join_keys.clone()),
+                    true,
+                )
+                .with_null_safe(view.null_safe)
+            } else {
+                IvmLookupTable::binary(
+                    contribution,
+                    left_state.clone(),
+                    groups,
+                    super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
+                    bucket_count,
+                    true,
+                    partition_columns,
+                )
+            };
             let provider = if materialized {
                 provider.with_prepruned_groups()
             } else {
@@ -3911,7 +3950,9 @@ impl IvmRuntime {
                 .schema
                 .fields()
                 .iter()
-                .filter(|field| field.name() != super::join_state::IVM_JOIN_KEY_COLUMN)
+                .filter(|field| {
+                    natural || field.name() != super::join_state::IVM_JOIN_KEY_COLUMN
+                })
                 .map(|field| {
                     column_expr(&format!("{IVM_STATE_COLUMN_PREFIX}{}", field.name()))
                         .alias(field.name())
@@ -3995,9 +4036,27 @@ impl IvmRuntime {
         let Some(left_state) = left_state else {
             return Ok(None);
         };
-        let contribution =
-            encode_join_key_frame(context, contribution, &view.left, &view.join_keys)?;
-        let bucket_count = if left_state.bucket_columns.len() == 1
+        let natural = left_state
+            .schema
+            .field_with_name(super::join_state::IVM_JOIN_KEY_COLUMN)
+            .is_err();
+        let contribution = if natural {
+            contribution
+        } else {
+            encode_join_key_frame(context, contribution, &view.left, &view.join_keys)?
+        };
+        let bucket_count = if natural {
+            if left_state.bucket_columns == view.join_keys {
+                left_state
+                    .hash_bucket_num
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|count| *count > 1)
+                    .unwrap_or(1)
+            } else {
+                1
+            }
+        } else if left_state.bucket_columns.len() == 1
             && left_state.bucket_columns[0] == super::join_state::IVM_JOIN_KEY_COLUMN
         {
             left_state
@@ -4009,10 +4068,21 @@ impl IvmRuntime {
         } else {
             1
         };
-        let partition_columns =
-            plain_join_partition_columns(view, JoinSide::Left, left_state);
-        let key = super::keyed_plan::PkLookupKey::BinaryRow {
-            column: super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
+        let partition_columns = if natural {
+            left_state.range_partition_columns.clone()
+        } else {
+            plain_join_partition_columns(view, JoinSide::Left, left_state)
+        };
+        let key = if natural {
+            super::keyed_plan::PkLookupKey::Columns {
+                input_columns: view.join_keys.clone(),
+                table_columns: view.join_keys.clone(),
+                null_safe: view.null_safe,
+            }
+        } else {
+            super::keyed_plan::PkLookupKey::BinaryRow {
+                column: super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
+            }
         };
         let (contribution, inferred, materialized) = self
             .materialize_for_partitions(context, contribution, &key, &partition_columns)
@@ -4026,15 +4096,29 @@ impl IvmRuntime {
             None => left_state.current_groups(&self.client).await?,
         };
         let groups = groups_by_bucket(groups, bucket_count);
-        let provider = IvmLookupTable::binary(
-            contribution,
-            left_state.clone(),
-            groups,
-            super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
-            bucket_count,
-            true,
-            partition_columns,
-        );
+        let provider = if natural {
+            IvmLookupTable::columns(
+                contribution,
+                left_state.clone(),
+                groups,
+                view.join_keys.clone(),
+                view.join_keys.clone(),
+                bucket_count,
+                (bucket_count > 1).then(|| view.join_keys.clone()),
+                true,
+            )
+            .with_null_safe(view.null_safe)
+        } else {
+            IvmLookupTable::binary(
+                contribution,
+                left_state.clone(),
+                groups,
+                super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
+                bucket_count,
+                true,
+                partition_columns,
+            )
+        };
         let provider = if materialized {
             provider.with_prepruned_groups()
         } else {
@@ -4045,7 +4129,9 @@ impl IvmRuntime {
             .schema
             .fields()
             .iter()
-            .filter(|field| field.name() != super::join_state::IVM_JOIN_KEY_COLUMN)
+            .filter(|field| {
+                natural || field.name() != super::join_state::IVM_JOIN_KEY_COLUMN
+            })
             .map(|field| {
                 column_expr(&format!("{IVM_STATE_COLUMN_PREFIX}{}", field.name()))
                     .alias(field.name())
@@ -5176,9 +5262,10 @@ impl IvmRuntime {
     }
 
     /// Read only the right-side state rows whose join keys occur in the left
-    /// delta.  The lookup is a physical plan: contribution keys are encoded,
-    /// routed to the side state's hash buckets, and matched with multi-match
-    /// semantics (one left key may have many right rows).
+    /// delta.  The lookup is a physical plan: contribution keys are routed to
+    /// the side state's hash buckets (natural columns or the hidden binary
+    /// key) and matched with multi-match semantics (one left key may have many
+    /// right rows).
     async fn lookup_join_right_state(
         &self,
         context: &SessionContext,
@@ -5223,6 +5310,10 @@ impl IvmRuntime {
         } else {
             delta_left.clone()
         };
+        let natural = right_state
+            .schema
+            .field_with_name(super::join_state::IVM_JOIN_KEY_COLUMN)
+            .is_err();
         let contribution = contribution
             .select(
                 view.join_keys
@@ -5231,9 +5322,36 @@ impl IvmRuntime {
                     .collect::<Vec<_>>(),
             )?
             .distinct()?;
-        let contribution =
-            encode_join_key_frame(context, contribution, &view.left, &view.join_keys)?;
-        let bucket_count = if right_state.bucket_columns.len() == 1
+        let contribution = if natural {
+            // The right state is keyed by the right-side names; rename the
+            // left delta's keys before routing so the bucket hash and the
+            // lookup key use the same columns.
+            contribution
+                .select(
+                    view.join_keys
+                        .iter()
+                        .enumerate()
+                        .map(|(index, key)| {
+                            col(key.as_str()).alias(right_join_keys[index].as_str())
+                        })
+                        .collect::<Vec<_>>(),
+                )?
+                .distinct()?
+        } else {
+            encode_join_key_frame(context, contribution, &view.left, &view.join_keys)?
+        };
+        let bucket_count = if natural {
+            if right_state.bucket_columns == *right_join_keys {
+                right_state
+                    .hash_bucket_num
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|count| *count > 1)
+                    .unwrap_or(1)
+            } else {
+                1
+            }
+        } else if right_state.bucket_columns.len() == 1
             && right_state.bucket_columns[0] == super::join_state::IVM_JOIN_KEY_COLUMN
         {
             right_state
@@ -5245,10 +5363,21 @@ impl IvmRuntime {
         } else {
             1
         };
-        let partition_columns =
-            plain_join_partition_columns(view, JoinSide::Right, right_state);
-        let key = super::keyed_plan::PkLookupKey::BinaryRow {
-            column: super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
+        let partition_columns = if natural {
+            right_state.range_partition_columns.clone()
+        } else {
+            plain_join_partition_columns(view, JoinSide::Right, right_state)
+        };
+        let key = if natural {
+            super::keyed_plan::PkLookupKey::Columns {
+                input_columns: right_join_keys.to_vec(),
+                table_columns: right_join_keys.to_vec(),
+                null_safe: view.null_safe,
+            }
+        } else {
+            super::keyed_plan::PkLookupKey::BinaryRow {
+                column: super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
+            }
         };
         let (contribution, inferred, materialized) = self
             .materialize_for_partitions(context, contribution, &key, &partition_columns)
@@ -5262,15 +5391,29 @@ impl IvmRuntime {
             None => right_state.current_groups(&self.client).await?,
         };
         let groups = groups_by_bucket(groups, bucket_count);
-        let provider = IvmLookupTable::binary(
-            contribution,
-            right_state.clone(),
-            groups,
-            super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
-            bucket_count,
-            true,
-            partition_columns,
-        );
+        let provider = if natural {
+            IvmLookupTable::columns(
+                contribution,
+                right_state.clone(),
+                groups,
+                right_join_keys.to_vec(),
+                right_join_keys.to_vec(),
+                bucket_count,
+                (bucket_count > 1).then(|| right_join_keys.to_vec()),
+                true,
+            )
+            .with_null_safe(view.null_safe)
+        } else {
+            IvmLookupTable::binary(
+                contribution,
+                right_state.clone(),
+                groups,
+                super::join_state::IVM_JOIN_KEY_COLUMN.to_string(),
+                bucket_count,
+                true,
+                partition_columns,
+            )
+        };
         let provider = if materialized {
             provider.with_prepruned_groups()
         } else {
@@ -5281,7 +5424,9 @@ impl IvmRuntime {
             .schema
             .fields()
             .iter()
-            .filter(|field| field.name() != super::join_state::IVM_JOIN_KEY_COLUMN)
+            .filter(|field| {
+                natural || field.name() != super::join_state::IVM_JOIN_KEY_COLUMN
+            })
             .map(|field| {
                 column_expr(&format!("{IVM_STATE_COLUMN_PREFIX}{}", field.name()))
                     .alias(field.name())
@@ -6228,6 +6373,11 @@ impl IvmRuntime {
                 JoinSide::Left,
                 view.left_filter.as_deref(),
             )?)?;
+        let left_natural = super::join_state::natural_join_state_eligible(
+            &left_state_source,
+            &view.join_keys,
+            &view.key_exprs.left,
+        );
         let left_state = if has_left_exprs {
             // A computed key is not a source column, so the source cannot be
             // the keyed state even when the primary key names match.
@@ -6236,6 +6386,15 @@ impl IvmRuntime {
                 &left_state_source,
                 &view.join_keys,
                 StateRole::JoinLeft,
+            )
+            .await?
+        } else if left_natural {
+            self.ensure_join_side_state_natural(
+                &view.view_id,
+                &left_state_source,
+                &view.join_keys,
+                StateRole::JoinLeft,
+                false,
             )
             .await?
         } else {
@@ -6826,14 +6985,29 @@ impl IvmRuntime {
             .left
             .projected_state_source(&view.join_keys)
             .map_err(|error| report!("multi lookup state projection: {error}"))?;
-        let left_state = self
-            .ensure_join_side_state(
+        let natural_state = super::join_state::natural_join_state_eligible(
+            &state_source,
+            &view.join_keys,
+            &[],
+        );
+        let left_state = if natural_state {
+            self.ensure_join_side_state_natural(
+                &view.view_id,
+                &state_source,
+                &view.join_keys,
+                StateRole::JoinLeft,
+                false,
+            )
+            .await?
+        } else {
+            self.ensure_join_side_state(
                 &view.view_id,
                 &state_source,
                 &view.join_keys,
                 StateRole::JoinLeft,
             )
-            .await?;
+            .await?
+        };
         let left_state_empty = match &left_state {
             Some(state) => state.current_files(&self.client).await?.is_empty(),
             None => false,
@@ -7154,14 +7328,29 @@ impl IvmRuntime {
             .left
             .projected_state_source(&view.join_keys)
             .map_err(|error| report!("multi lookup state projection: {error}"))?;
-        let left_state = self
-            .ensure_join_side_state(
+        let natural_state = super::join_state::natural_join_state_eligible(
+            &state_source,
+            &view.join_keys,
+            &[],
+        );
+        let left_state = if natural_state {
+            self.ensure_join_side_state_natural(
+                &view.view_id,
+                &state_source,
+                &view.join_keys,
+                StateRole::JoinLeft,
+                false,
+            )
+            .await?
+        } else {
+            self.ensure_join_side_state(
                 &view.view_id,
                 &state_source,
                 &view.join_keys,
                 StateRole::JoinLeft,
             )
-            .await?;
+            .await?
+        };
         if let Some(state) = left_state {
             commit_ids.extend(
                 self.sync_join_side_state(
@@ -7258,18 +7447,43 @@ impl IvmRuntime {
         };
         let epoch = record.epoch;
         let mut commit_ids = Vec::new();
-        let left_state = if view.key_exprs.left.iter().any(|expr| !expr.is_empty()) {
-            self.ensure_join_side_state_forced(
-                &view.view_id,
+        let has_left_exprs = view.key_exprs.left.iter().any(|expr| !expr.is_empty());
+        let left_state_source =
+            view.left.projected_state_source(&join_side_state_columns(
                 &view.left,
                 &view.join_keys,
+                &view.key_exprs.left,
+                &view.left_value,
+                &view.output_columns,
+                JoinSide::Left,
+                view.left_filter.as_deref(),
+            )?)?;
+        let left_natural = super::join_state::natural_join_state_eligible(
+            &left_state_source,
+            &view.join_keys,
+            &view.key_exprs.left,
+        );
+        let left_state = if has_left_exprs {
+            self.ensure_join_side_state_forced(
+                &view.view_id,
+                &left_state_source,
+                &view.join_keys,
                 StateRole::JoinLeft,
+            )
+            .await?
+        } else if left_natural {
+            self.ensure_join_side_state_natural(
+                &view.view_id,
+                &left_state_source,
+                &view.join_keys,
+                StateRole::JoinLeft,
+                false,
             )
             .await?
         } else {
             self.ensure_join_side_state(
                 &view.view_id,
-                &view.left,
+                &left_state_source,
                 &view.join_keys,
                 StateRole::JoinLeft,
             )
@@ -7278,7 +7492,7 @@ impl IvmRuntime {
         if let Some(state) = left_state {
             commit_ids.extend(
                 self.sync_join_side_state(
-                    &view.left,
+                    &left_state_source,
                     &state,
                     &view.join_keys,
                     &view.key_exprs.left,
@@ -7434,6 +7648,7 @@ impl IvmRuntime {
                 &view.join_keys,
                 StateRole::JoinLeft,
                 view.null_safe,
+                false,
             )
             .await?
         } else {
@@ -7446,6 +7661,7 @@ impl IvmRuntime {
                 right_keys,
                 StateRole::JoinRight,
                 view.null_safe,
+                false,
             )
             .await?
         } else {
@@ -8035,6 +8251,7 @@ impl IvmRuntime {
                 right_keys,
                 StateRole::JoinRight,
                 view.null_safe,
+                false,
             )
             .await?
         } else {
@@ -9402,6 +9619,7 @@ impl IvmRuntime {
                     &view.join_keys,
                     StateRole::JoinLeft,
                     view.null_safe,
+                    false,
                 )
                 .await?;
             if let Some(state) = left_state {
@@ -9427,6 +9645,7 @@ impl IvmRuntime {
                     right_keys,
                     StateRole::JoinRight,
                     view.null_safe,
+                    false,
                 )
                 .await?;
             if let Some(state) = right_state {
