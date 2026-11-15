@@ -50,7 +50,20 @@ impl SinkView {
     }
 
     /// The projection from the maintenance delta to the target schema.
-    fn projection(&self, epoch: i64, rebuild: bool) -> Result<Vec<Expr>> {
+    ///
+    /// A column may read a source column, cast it to the target type, or
+    /// evaluate a rendered expression that a folded final projection left
+    /// here.  Expressions compile against the source schema, so a sink whose
+    /// source is a derived step can compute its target rows directly.
+    fn projection(
+        &self,
+        context: &SessionContext,
+        epoch: i64,
+        rebuild: bool,
+    ) -> Result<Vec<Expr>> {
+        let source_schema =
+            datafusion::common::DFSchema::try_from(self.source.schema.as_ref().clone())
+                .map_err(|error| report!("invalid sink source schema: {error}"))?;
         let mut exprs = Vec::with_capacity(self.columns.len());
         for column in &self.columns {
             let target = self
@@ -63,6 +76,27 @@ impl SinkView {
                 lit(epoch)
             } else if rebuild && column.name == IVM_ROW_KINDS_COLUMN {
                 lit("insert")
+            } else if let Some(expression) = column.expression.as_deref() {
+                let expr = context
+                    .state()
+                    .create_logical_expr(expression, &source_schema)
+                    .map_err(|error| {
+                        report!(
+                            "sink expression for target column {} is invalid: {error}",
+                            column.name
+                        )
+                    })?;
+                if expr.get_type(&source_schema).map_err(|error| {
+                    report!(
+                        "sink expression for target column {} is invalid: {error}",
+                        column.name
+                    )
+                })? == *target.data_type()
+                {
+                    expr
+                } else {
+                    Expr::Cast(Cast::new(Box::new(expr), target.data_type().clone()))
+                }
             } else {
                 let source =
                     self.source
@@ -158,7 +192,10 @@ pub fn validate_sink_view(view: &SinkView) -> Result<()> {
         ));
     }
     for column in &view.columns {
-        if column.name == IVM_EPOCH_COLUMN || column.name == IVM_ROW_KINDS_COLUMN {
+        if column.name == IVM_EPOCH_COLUMN
+            || column.name == IVM_ROW_KINDS_COLUMN
+            || column.expression.is_some()
+        {
             continue;
         }
         view.source
@@ -232,28 +269,19 @@ impl IvmRuntime {
         let context = refresh_session();
         let delta =
             self.unmerged_groups_table_frame(&context, &view.source, window.added_files)?;
+        // Project before collapsing: a folded final projection may compute a
+        // target key (for example `md5(...)` or `CAST(k AS VARCHAR)`) that the
+        // source does not carry under its target name.
+        let delta = delta.select(view.projection(&context, epoch, false)?)?;
         // Collapse an update's delete/insert pair when both target the same
         // partition: the insert alone is an upsert and cannot be ordered
         // incorrectly by a writer that folds one key inside a file.  A
         // partition move keeps the old partition's delete and the new
         // partition's insert.
-        let source_name = |name: &str| {
-            view.columns
-                .iter()
-                .find(|column| column.name == name)
-                .map(|column| column.source().to_string())
-                .unwrap_or_else(|| name.to_string())
-        };
-        let mut key_columns = view
-            .target
-            .primary_keys
-            .iter()
-            .map(|key| source_name(key))
-            .collect::<Vec<_>>();
+        let mut key_columns = view.target.primary_keys.clone();
         for column in &view.target.range_partition_columns {
-            let column = source_name(column);
-            if !key_columns.contains(&column) {
-                key_columns.push(column);
+            if !key_columns.contains(column) {
+                key_columns.push(column.clone());
             }
         }
         let key_exprs = key_columns
@@ -278,19 +306,14 @@ impl IvmRuntime {
             .target
             .primary_keys
             .iter()
-            .map(|key| {
-                Expr::Column(Column::from_name(source_name(key).as_str()))
-                    .sort(true, false)
-            })
+            .map(|key| Expr::Column(Column::from_name(key.as_str())).sort(true, false))
             .collect::<Vec<_>>();
         sort_exprs
             .push(Expr::Column(Column::from_name(IVM_EPOCH_COLUMN)).sort(true, false));
         sort_exprs.push(
             Expr::Column(Column::from_name(IVM_ROW_KINDS_COLUMN)).sort(true, false),
         );
-        let frame = delta
-            .sort(sort_exprs)?
-            .select(view.projection(epoch, false)?)?;
+        let frame = delta.sort(sort_exprs)?;
         drop(context);
         let outcome = append_dataframe(&view.target, &self.client, frame).await?;
         commit_ids.extend(outcome.commit_ids);
@@ -350,7 +373,7 @@ impl IvmRuntime {
 
         let context = refresh_session();
         let frame = self.current_table_frame(&context, &view.source)?;
-        let frame = frame.select(view.projection(epoch, true)?)?;
+        let frame = frame.select(view.projection(&context, epoch, true)?)?;
         drop(context);
         let outcome = append_dataframe(&view.target, &self.client, frame).await?;
         commit_ids.extend(outcome.commit_ids);
@@ -429,18 +452,21 @@ mod tests {
                 SinkColumn {
                     name: "k".to_string(),
                     source: String::new(),
+                    expression: None,
                     result: "int64".to_string(),
                     nullable: false,
                 },
                 SinkColumn {
                     name: IVM_ROW_KINDS_COLUMN.to_string(),
                     source: String::new(),
+                    expression: None,
                     result: "utf8".to_string(),
                     nullable: false,
                 },
                 SinkColumn {
                     name: IVM_EPOCH_COLUMN.to_string(),
                     source: String::new(),
+                    expression: None,
                     result: "int64".to_string(),
                     nullable: false,
                 },
@@ -452,7 +478,7 @@ mod tests {
             refresh_interval_ms: 0,
         };
         validate_sink_view(&view).unwrap();
-        let exprs = view.projection(7, false).unwrap();
+        let exprs = view.projection(&SessionContext::new(), 7, false).unwrap();
         assert_eq!(
             exprs
                 .iter()

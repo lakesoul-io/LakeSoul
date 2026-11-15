@@ -12,7 +12,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmSqlExecutor, IvmTable,
-    IvmTableOptions, ViewSpec,
+    IvmTableOptions, StateRole, ViewSpec,
 };
 use tempfile::tempdir;
 
@@ -281,6 +281,255 @@ async fn target_key_and_schema_are_independent_of_the_state() {
         read_target(executor.runtime(), &target).await,
         vec![("1:c".to_string(), 13, 1)]
     );
+}
+
+fn join_left_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("lk", DataType::Utf8, false),
+        Field::new("jk", DataType::Utf8, true),
+        Field::new("lv", DataType::Utf8, true),
+        Field::new(CHANGE, DataType::Utf8, false),
+    ]))
+}
+
+fn join_right_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("jk", DataType::Utf8, false),
+        Field::new("rv", DataType::Int64, true),
+        Field::new(CHANGE, DataType::Utf8, false),
+    ]))
+}
+
+fn join_left_batch(rows: &[(&str, &str, &str, &str)]) -> RecordBatch {
+    RecordBatch::try_new(
+        join_left_schema(),
+        vec![
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.0))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.1))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.2))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.3))),
+        ],
+    )
+    .unwrap()
+}
+
+fn join_right_batch(rows: &[(&str, i64, &str)]) -> RecordBatch {
+    RecordBatch::try_new(
+        join_right_schema(),
+        vec![
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.0))),
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.1))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.2))),
+        ],
+    )
+    .unwrap()
+}
+
+#[test_log::test(tokio::test)]
+async fn a_computed_final_row_folds_into_the_sink() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_fold_left_{suffix}"),
+                table_path(&dir, "left"),
+                join_left_schema(),
+            )
+            .with_primary_keys(vec!["lk".to_string()])
+            .with_cdc_column(CHANGE),
+        )
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_fold_right_{suffix}"),
+                table_path(&dir, "right"),
+                join_right_schema(),
+            )
+            .with_primary_keys(vec!["jk".to_string()])
+            .with_cdc_column(CHANGE),
+        )
+        .await
+        .unwrap();
+    let target_schema = Arc::new(Schema::new(vec![
+        Field::new("score", DataType::Int64, false),
+        Field::new("label", DataType::Utf8, false),
+        Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]));
+    let target = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_sink_fold_{suffix}"),
+                table_path(&dir, "fold"),
+                target_schema,
+            )
+            .with_primary_keys(vec!["score".to_string()]),
+        )
+        .await
+        .unwrap();
+    // A pre-fusion plan left a row state next to the target; the first fused
+    // execution removes it once the sink writes from the derived source.
+    let _legacy_state = runtime
+        .create_table(IvmTableOptions::new(
+            format!("{}__ivm_state", target.table_name),
+            table_path(&dir, "fold_state"),
+            Arc::new(Schema::new(vec![Field::new("lk", DataType::Utf8, true)])),
+        ))
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO {} SELECT \
+         CASE WHEN r.rv IS NULL THEN 0 ELSE r.rv END + LENGTH(l.lv) AS score, \
+         l.lv AS label FROM {} l LEFT JOIN {} r ON l.jk = r.jk",
+        target.table_name, left.table_name, right.table_name
+    );
+    let runtime = executor.runtime();
+    left.append_batch(
+        runtime.client(),
+        join_left_batch(&[("l1", "a", "la", "insert"), ("l2", "b", "lb", "insert")]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            join_right_batch(&[("a", 10, "insert"), ("b", 20, "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(
+        read_score_label(runtime, &target).await,
+        vec![(12, "la".to_string()), (22, "lb".to_string())]
+    );
+
+    // The final row only computed target columns; it is folded into the sink
+    // instead of materializing a copy of the target.
+    assert!(
+        runtime
+            .open_table(
+                &format!("{}__ivm_state", target.table_name),
+                &target.namespace
+            )
+            .await
+            .is_err()
+    );
+    let states = runtime.list_states(&target.table_id).await.unwrap();
+    assert!(
+        states.iter().all(|state| state.role == StateRole::Mv),
+        "{states:?}"
+    );
+    let sink: ViewSpec = serde_json::from_value(
+        runtime
+            .metadata()
+            .get_view_spec(&target.table_id)
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let ViewSpec::Sink {
+        source_table_id,
+        columns,
+        ..
+    } = sink
+    else {
+        panic!("expected a sink");
+    };
+    assert!(columns.iter().any(|column| column.expression.is_some()));
+    let source_spec: ViewSpec = serde_json::from_value(
+        runtime
+            .metadata()
+            .get_view_spec(&source_table_id)
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(source_spec.kind(), "lookup_join");
+
+    // A right-side update recomputes the expression and moves the target key.
+    right
+        .append_batch(runtime.client(), join_right_batch(&[("a", 30, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_score_label(runtime, &target).await,
+        vec![(22, "lb".to_string()), (32, "la".to_string())]
+    );
+
+    // Deleting a left row removes its target row.
+    left.append_batch(
+        runtime.client(),
+        join_left_batch(&[("l2", "b", "lb", "delete")]),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_score_label(runtime, &target).await,
+        vec![(32, "la".to_string())]
+    );
+
+    // A rebuild of the folded source resets its changelog; the sink rebuilds
+    // from the source snapshot instead of consuming it as a delta.
+    let source_spec: ViewSpec = serde_json::from_value(
+        runtime
+            .metadata()
+            .get_view_spec(&source_table_id)
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    runtime.rebuild_spec(&source_spec).await.unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "rebuild");
+    assert_eq!(
+        read_score_label(executor.runtime(), &target).await,
+        vec![(32, "la".to_string())]
+    );
+}
+
+async fn read_score_label(runtime: &IvmRuntime, target: &IvmTable) -> Vec<(i64, String)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(target)))
+        .unwrap();
+    let batches = context
+        .sql("select score, label from mv order by score")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let scores = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let keys = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((scores.value(row), keys.value(row).to_string()));
+        }
+    }
+    rows
 }
 
 #[test_log::test(tokio::test)]

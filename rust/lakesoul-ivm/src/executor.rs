@@ -998,6 +998,14 @@ fn derived_output_mapping(
         .collect())
 }
 
+/// A final projection folded into a sink: the sink reads the row's derived
+/// source and computes the target columns while it writes.
+struct FusedTerminalRow {
+    source_table_id: String,
+    source_definition: String,
+    columns: Vec<SinkColumn>,
+}
+
 /// A fused multi-right lookup and the inner view whose join-key index it
 /// adopts, so the same left rows are not indexed twice.
 struct FusedMultiLookup {
@@ -1725,55 +1733,66 @@ impl IvmSqlExecutor {
             ));
         }
 
-        let mut state_spec = state_spec;
-        let state_table = self
-            .ensure_internal_state_table(target, &state_spec, expected.clone())
+        let fused_row = self
+            .fused_terminal_row(&state_spec, &positional, target, &caches)
             .await?;
-        state_spec.set_derived_identity(&state_table.table_id, &state_table.table_id)?;
-        if needs_state_table(&state_spec)
-            && let Some(state_table_id) =
-                self.ensure_state_table(&state_table, &state_spec).await?
-        {
-            state_spec.set_derived_state_table(&state_table_id)?;
-        }
-        let state_definition = definition_hash(&state_spec)?;
-        let stored_state = self
-            .runtime
-            .metadata()
-            .view_definition(&state_table.table_id)
-            .await?;
-        let same_state = stored_state
-            .as_ref()
-            .is_some_and(|(hash, _)| hash == &state_definition);
-        self.flush_deferred(&mut deferred).await?;
-        let state_dirty = self
-            .runtime
-            .metadata()
-            .view_status(&state_table.table_id)
-            .await?
-            .as_deref()
-            == Some("dirty");
+        let fused = fused_row.is_some();
+        let (source_table_id, source_definition, columns, state_rebuilt) =
+            if let Some(fused) = fused_row {
+                // The final row only computes target columns; the sink can do
+                // that while it writes, so the row state is not materialized.
+                tracing::debug!(
+                    target = %target.table_name,
+                    source = %fused.source_table_id,
+                    "folding the final row into the sink"
+                );
+                self.flush_deferred(&mut deferred).await?;
+                (
+                    fused.source_table_id,
+                    fused.source_definition,
+                    fused.columns,
+                    false,
+                )
+            } else {
+                let mut state_spec = state_spec;
+                let state_table = self
+                    .ensure_internal_state_table(target, &state_spec, expected.clone())
+                    .await?;
+                state_spec
+                    .set_derived_identity(&state_table.table_id, &state_table.table_id)?;
+                if needs_state_table(&state_spec)
+                    && let Some(state_table_id) =
+                        self.ensure_state_table(&state_table, &state_spec).await?
+                {
+                    state_spec.set_derived_state_table(&state_table_id)?;
+                }
+                let state_definition = definition_hash(&state_spec)?;
+                let stored_state = self
+                    .runtime
+                    .metadata()
+                    .view_definition(&state_table.table_id)
+                    .await?;
+                let same_state = stored_state
+                    .as_ref()
+                    .is_some_and(|(hash, _)| hash == &state_definition);
+                self.flush_deferred(&mut deferred).await?;
+                let state_dirty = self
+                    .runtime
+                    .metadata()
+                    .view_status(&state_table.table_id)
+                    .await?
+                    .as_deref()
+                    == Some("dirty");
 
-        let state_generation_before = self
-            .runtime
-            .metadata()
-            .view_generation(&state_table.table_id)
-            .await
-            .unwrap_or(0);
-        let mut state_rebuilt =
-            overwrite || stored_state.is_none() || !same_state || state_dirty;
-        let _state_epoch = if state_rebuilt {
-            let epoch = self.runtime.rebuild_spec(&state_spec).await?;
-            self.runtime
-                .metadata()
-                .set_view_definition(&state_table.table_id, &state_definition, sql)
-                .await?;
-            Some(epoch)
-        } else {
-            match self.runtime.refresh_spec(&state_spec).await {
-                Ok(epoch) => epoch,
-                Err(error) if IvmRuntime::rebuild_required(&error) => {
-                    state_rebuilt = true;
+                let state_generation_before = self
+                    .runtime
+                    .metadata()
+                    .view_generation(&state_table.table_id)
+                    .await
+                    .unwrap_or(0);
+                let mut state_rebuilt =
+                    overwrite || stored_state.is_none() || !same_state || state_dirty;
+                let _state_epoch = if state_rebuilt {
                     let epoch = self.runtime.rebuild_spec(&state_spec).await?;
                     self.runtime
                         .metadata()
@@ -1784,62 +1803,90 @@ impl IvmSqlExecutor {
                         )
                         .await?;
                     Some(epoch)
+                } else {
+                    match self.runtime.refresh_spec(&state_spec).await {
+                        Ok(epoch) => epoch,
+                        Err(error) if IvmRuntime::rebuild_required(&error) => {
+                            state_rebuilt = true;
+                            let epoch = self.runtime.rebuild_spec(&state_spec).await?;
+                            self.runtime
+                                .metadata()
+                                .set_view_definition(
+                                    &state_table.table_id,
+                                    &state_definition,
+                                    sql,
+                                )
+                                .await?;
+                            Some(epoch)
+                        }
+                        Err(error) => return Err(error),
+                    }
+                };
+                let state_generation = self
+                    .runtime
+                    .metadata()
+                    .view_generation(&state_table.table_id)
+                    .await
+                    .unwrap_or(0);
+                if state_generation != state_generation_before {
+                    // A rebuild of the state (even with the same definition) resets
+                    // its changelog; the target must be rebuilt from the snapshot.
+                    state_rebuilt = true;
                 }
-                Err(error) => return Err(error),
-            }
-        };
-        let state_generation = self
+                if state_rebuilt || state_dirty {
+                    self.runtime
+                        .metadata()
+                        .set_view_status(&state_table.table_id, "active")
+                        .await?;
+                    self.runtime
+                        .metadata()
+                        .set_view_error(&state_table.table_id, None)
+                        .await?;
+                }
+
+                let columns = target
+                    .schema
+                    .fields()
+                    .iter()
+                    .map(|field| {
+                        let source = positional
+                            .get(field.name())
+                            .cloned()
+                            .unwrap_or_else(|| field.name().clone());
+                        Ok(SinkColumn {
+                            name: field.name().clone(),
+                            source: if source == *field.name() {
+                                String::new()
+                            } else {
+                                source
+                            },
+                            expression: None,
+                            result: encode_data_type(field.data_type())?,
+                            nullable: field.is_nullable(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                (
+                    state_table.table_id.clone(),
+                    state_definition,
+                    columns,
+                    state_rebuilt,
+                )
+            };
+        let source_generation = self
             .runtime
             .metadata()
-            .view_generation(&state_table.table_id)
+            .view_generation(&source_table_id)
             .await
             .unwrap_or(0);
-        if state_generation != state_generation_before {
-            // A rebuild of the state (even with the same definition) resets
-            // its changelog; the target must be rebuilt from the snapshot.
-            state_rebuilt = true;
-        }
-        if state_rebuilt || state_dirty {
-            self.runtime
-                .metadata()
-                .set_view_status(&state_table.table_id, "active")
-                .await?;
-            self.runtime
-                .metadata()
-                .set_view_error(&state_table.table_id, None)
-                .await?;
-        }
-
-        let columns = target
-            .schema
-            .fields()
-            .iter()
-            .map(|field| {
-                let source = positional
-                    .get(field.name())
-                    .cloned()
-                    .unwrap_or_else(|| field.name().clone());
-                Ok(SinkColumn {
-                    name: field.name().clone(),
-                    source: if source == *field.name() {
-                        String::new()
-                    } else {
-                        source
-                    },
-                    result: encode_data_type(field.data_type())?,
-                    nullable: field.is_nullable(),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let source_generation = state_generation;
         let sink_spec = ViewSpec::Sink {
             view_id: view_id.to_string(),
-            source_table_id: state_table.table_id.clone(),
+            source_table_id,
             mv_table_id: target.table_id.clone(),
             columns,
             primary_keys: target.primary_keys.clone(),
             range_partition_columns: target.range_partition_columns.clone(),
-            source_definition: state_definition.clone(),
+            source_definition,
             source_generation,
         };
         let sink_definition = definition_hash(&sink_spec)?;
@@ -1925,6 +1972,9 @@ impl IvmSqlExecutor {
         } else {
             IvmExecutionAction::Incremental
         };
+        if fused {
+            self.release_legacy_state_table(target).await?;
+        }
         self.release_fused_inner_views(&caches).await?;
         Ok(IvmExecution {
             action,
@@ -1932,6 +1982,139 @@ impl IvmSqlExecutor {
             view_id: view_id.to_string(),
             definition_hash: sink_definition,
         })
+    }
+
+    /// Whether the maintenance state is only a final projection over a
+    /// derived step.  Such a row would materialize a full copy of the target
+    /// just to compute casts and CASE expressions; the sink can evaluate the
+    /// same expressions from the derived delta instead, so the row state is
+    /// not created.
+    async fn fused_terminal_row(
+        &self,
+        spec: &ViewSpec,
+        positional: &HashMap<String, String>,
+        target: &IvmTable,
+        caches: &DerivedCaches,
+    ) -> Result<Option<FusedTerminalRow>> {
+        let ViewSpec::Row {
+            source_table_id,
+            output_columns,
+            output_exprs,
+            filter,
+            ..
+        } = spec
+        else {
+            return Ok(None);
+        };
+        if filter.is_some() {
+            return Ok(None);
+        }
+        // A base table has no derived spec to hash and may be append-only; keep
+        // its explicit maintenance row.
+        if !caches
+            .derived
+            .values()
+            .any(|step| &step.view_id == source_table_id)
+        {
+            return Ok(None);
+        }
+        let source = self.runtime.open_table_by_id(source_table_id).await?;
+        if source.primary_keys.is_empty()
+            || source.schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_err()
+            || source.schema.field_with_name(IVM_EPOCH_COLUMN).is_err()
+        {
+            return Ok(None);
+        }
+        let Some(source_spec) = self
+            .runtime
+            .metadata()
+            .get_view_spec(source_table_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let source_spec: ViewSpec = serde_json::from_value(source_spec)?;
+        let source_definition = definition_hash(&source_spec)?;
+        let source_schema =
+            datafusion::common::DFSchema::try_from(source.schema.as_ref().clone())
+                .map_err(|error| {
+                    rootcause::report!("invalid sink source schema: {error}")
+                })?;
+        let context = datafusion::prelude::SessionContext::new();
+        let mut columns = Vec::with_capacity(target.schema.fields().len());
+        for field in target.schema.fields() {
+            let name = field.name();
+            let internal = name == IVM_ROW_KINDS_COLUMN || name.starts_with("__ivm_");
+            let (source_column, expression) = if internal {
+                (String::new(), None)
+            } else {
+                let Some(maintenance) = positional.get(name.as_str()) else {
+                    return Ok(None);
+                };
+                let Some(index) = output_columns
+                    .iter()
+                    .position(|column| column == maintenance)
+                else {
+                    return Ok(None);
+                };
+                let expression =
+                    output_exprs.get(index).map(String::as_str).unwrap_or("");
+                if expression.is_empty() {
+                    (maintenance.clone(), None)
+                } else if source.schema.field_with_name(expression).is_ok() {
+                    (expression.to_string(), None)
+                } else if context
+                    .state()
+                    .create_logical_expr(expression, &source_schema)
+                    .is_ok()
+                {
+                    (String::new(), Some(expression.to_string()))
+                } else {
+                    return Ok(None);
+                }
+            };
+            columns.push(SinkColumn {
+                name: name.clone(),
+                source: source_column,
+                expression,
+                result: encode_data_type(field.data_type())?,
+                nullable: field.is_nullable(),
+            });
+        }
+        Ok(Some(FusedTerminalRow {
+            source_table_id: source_table_id.clone(),
+            source_definition,
+            columns,
+        }))
+    }
+
+    /// Remove the row state a pre-fusion plan created for a split target.
+    async fn release_legacy_state_table(&self, target: &IvmTable) -> Result<()> {
+        let name = format!("{}__ivm_state", target.table_name);
+        let Ok(table) = self.runtime.open_table(&name, &target.namespace).await else {
+            return Ok(());
+        };
+        let _ = self.runtime.metadata().delete_view(&table.table_id).await;
+        for state in self.runtime.metadata().list_states(&table.table_id).await? {
+            if state.role == StateRole::Mv {
+                continue;
+            }
+            self.runtime
+                .metadata()
+                .unregister_state(&table.table_id, state.role)
+                .await?;
+            let _ = self
+                .runtime
+                .client()
+                .drop_table(&state.table_name, &state.namespace)
+                .await;
+        }
+        let _ = self
+            .runtime
+            .client()
+            .drop_table(&name, &target.namespace)
+            .await;
+        Ok(())
     }
 
     /// Create or reuse the hidden maintenance state table of a split view.

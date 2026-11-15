@@ -1259,6 +1259,11 @@ pub struct SinkColumn {
     /// position, so the names may differ.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source: String,
+    /// A rendered expression over the source schema that computes the target
+    /// value.  Present when a final projection was folded into the sink, so
+    /// the maintenance state does not keep a separate copy of the row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
     /// The encoded arrow data type.
     pub result: String,
     /// Whether the target column is nullable.
