@@ -4434,25 +4434,34 @@ impl IvmRuntime {
                 .iter()
                 .map(|key| col(key.as_str()))
                 .collect::<Vec<_>>();
-            let delta_keys = delta.clone().select(key_exprs)?.distinct()?;
-            let old = self
-                .lookup_source_before_by_pks(
+            let delta_keys = delta.clone().select(key_exprs.clone())?.distinct()?;
+            // A deleted key has no current row: looking it up would read the
+            // tombstone and add the deleted values back to the contribution.
+            let new_keys = filter_deletes(delta.clone(), change_column(&view.source))?
+                .select(key_exprs)?
+                .distinct()?;
+            let old = filter_deletes(
+                self.lookup_source_before_by_pks(
                     &context,
                     &view.source,
                     &window,
-                    delta_keys.clone(),
+                    delta_keys,
                 )
-                .await?;
-            let new = self
-                .lookup_source_by_join_keys_null_safe(
+                .await?,
+                change_column(&view.source),
+            )?;
+            let new = filter_deletes(
+                self.lookup_source_by_join_keys_null_safe(
                     &context,
                     &view.source,
-                    delta_keys,
+                    new_keys,
                     &view.source.primary_keys,
                     &view.source.primary_keys,
                     true,
                 )
-                .await?;
+                .await?,
+                change_column(&view.source),
+            )?;
             (old, new, None)
         } else if keyed && !versions.is_empty() {
             let delta = delta
