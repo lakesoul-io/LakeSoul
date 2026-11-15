@@ -532,6 +532,122 @@ fn inline_identity_rows(
     replaced
 }
 
+/// Whether `text` mentions `name` as a whole identifier.
+fn references_identifier(text: &str, name: &str) -> bool {
+    text.match_indices(name).any(|(index, _)| {
+        let before = text[..index].chars().next_back();
+        let after = text[index + name.len()..].chars().next();
+        before.is_none_or(|ch| !ch.is_alphanumeric() && ch != '_')
+            && after.is_none_or(|ch| !ch.is_alphanumeric() && ch != '_')
+    })
+}
+
+/// Fold a filtered row projection into a [`ViewSpec::MultiAgg`] consumer.
+///
+/// The row step carries a source-level filter (for example
+/// `amount <> 0`) and a column projection.  When the aggregate's group keys
+/// and calls only read identity columns, the row can be skipped: the filter
+/// moves to the aggregate source and the consumer reads the upstream table
+/// directly.  Renamed outputs are allowed only when the consumer never
+/// mentions the renamed name; otherwise the fold is rejected.
+fn inline_filtered_multi_agg(
+    spec: &mut ViewSpec,
+    rows: &HashMap<String, ViewSpec>,
+    uses: &HashMap<String, usize>,
+    tables: &HashMap<String, IvmTable>,
+) -> Vec<String> {
+    let ViewSpec::MultiAgg {
+        source_table_id,
+        filter,
+        group_keys,
+        group_exprs,
+        aggregates,
+        having,
+        having_lookup,
+        ..
+    } = spec
+    else {
+        return Vec::new();
+    };
+    if having_lookup.is_some() {
+        return Vec::new();
+    }
+    let Some(row) = rows.get(source_table_id.as_str()) else {
+        return Vec::new();
+    };
+    let ViewSpec::Row {
+        source_table_id: upstream,
+        output_columns,
+        output_exprs,
+        filter: row_filter,
+        ..
+    } = row
+    else {
+        return Vec::new();
+    };
+    let Some(row_filter) = row_filter.as_deref() else {
+        return Vec::new();
+    };
+    let Some(upstream_table) = tables.values().find(|table| &table.table_id == upstream)
+    else {
+        return Vec::new();
+    };
+    // A computed output would have to stay materialized; only a plain column
+    // projection can move to the aggregate source.
+    for (index, expression) in output_exprs.iter().enumerate() {
+        if expression.is_empty() {
+            let Some(name) = output_columns.get(index) else {
+                return Vec::new();
+            };
+            if upstream_table.schema.field_with_name(name).is_err() {
+                return Vec::new();
+            }
+        } else if upstream_table.schema.field_with_name(expression).is_err() {
+            return Vec::new();
+        }
+    }
+    let mut renamed = Vec::new();
+    for (index, expression) in output_exprs.iter().enumerate() {
+        if expression.is_empty() {
+            continue;
+        }
+        if let Some(name) = output_columns.get(index)
+            && name != expression
+        {
+            renamed.push(name.clone());
+        }
+    }
+    let mut texts = group_exprs.iter().map(String::as_str).collect::<Vec<_>>();
+    texts.extend(aggregates.iter().map(|aggregate| aggregate.call.as_str()));
+    if let Some(having) = having.as_deref() {
+        texts.push(having);
+    }
+    if let Some(filter) = filter.as_deref() {
+        texts.push(filter);
+    }
+    if renamed
+        .iter()
+        .any(|name| texts.iter().any(|text| references_identifier(text, name)))
+        || renamed
+            .iter()
+            .any(|name| references_identifier(row_filter, name))
+        || group_keys.iter().any(|key| renamed.contains(key))
+    {
+        return Vec::new();
+    }
+    let row_view_id = row.view_id().to_string();
+    if uses.get(&row_view_id).copied() != Some(1) {
+        return Vec::new();
+    }
+    let combined = match filter.take() {
+        Some(existing) => format!("({row_filter}) AND ({existing})"),
+        None => row_filter.to_string(),
+    };
+    *source_table_id = upstream.clone();
+    *filter = Some(combined);
+    vec![row_view_id]
+}
+
 /// The subplan of a derived source in an analyzer error, if any.
 fn derived_source(error: &rootcause::Report) -> Option<LogicalPlan> {
     error
@@ -2236,12 +2352,20 @@ impl IvmSqlExecutor {
         // refresh set.  The expected schema check makes the rewrite safe.
         let before_inline = spec.clone();
         let before_schema = schema.clone();
-        let replaced_rows = inline_identity_rows(&mut spec, &caches.rows);
+        let mut replaced_rows = inline_identity_rows(&mut spec, &caches.rows);
+        let replaced_filtered =
+            inline_filtered_multi_agg(&mut spec, &caches.rows, &caches.uses, tables);
+        replaced_rows.extend(replaced_filtered.iter().cloned());
         if !replaced_rows.is_empty() {
             let after_schema = expected_mv_schema(&spec, tables)?;
             if schema_matches(after_schema.as_ref(), before_schema.as_ref()) {
-                for row_id in replaced_rows {
-                    deferred.retain(|view_id| view_id != &row_id);
+                for row_id in &replaced_rows {
+                    deferred.retain(|view_id| view_id != row_id);
+                }
+                for row_id in replaced_filtered {
+                    if !caches.fused_inner.contains(&row_id) {
+                        caches.fused_inner.push(row_id);
+                    }
                 }
             } else {
                 spec = before_inline;
@@ -4645,6 +4769,100 @@ mod tests {
                 &new_schema,
             )
             .is_none()
+        );
+    }
+    fn filtered_row_spec() -> ViewSpec {
+        serde_json::from_value(serde_json::json!({
+            "kind": "row",
+            "view_id": "row",
+            "source_table_id": "base",
+            "mv_table_id": "row_mv",
+            "output_columns": ["k", "g", "v", "extra2"],
+            "output_exprs": ["k", "g", "v", "extra"],
+            "filter": "v > 0",
+        }))
+        .unwrap()
+    }
+
+    fn filtered_multi_agg(call: &str) -> ViewSpec {
+        serde_json::from_value(serde_json::json!({
+            "kind": "multi_agg",
+            "view_id": "consumer",
+            "source_table_id": "row",
+            "mv_table_id": "consumer_mv",
+            "group_keys": ["g"],
+            "aggregates": [{
+                "call": call,
+                "column": "sum_v",
+                "result": "int64",
+            }],
+        }))
+        .unwrap()
+    }
+
+    fn test_table() -> IvmTable {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("g", DataType::Utf8, false),
+            Field::new("v", DataType::Int64, false),
+            Field::new("extra", DataType::Int64, false),
+        ]));
+        IvmTable {
+            table_id: "base".to_string(),
+            table_name: "base".to_string(),
+            namespace: "default".to_string(),
+            table_path: "file:///tmp/base".to_string(),
+            schema,
+            primary_keys: vec!["k".to_string()],
+            range_partition_columns: Vec::new(),
+            internal_columns: Vec::new(),
+            bucket_columns: Vec::new(),
+            hash_bucket_num: "4".to_string(),
+            cdc_column: None,
+            file_format: crate::PhysicalFormat::Vortex,
+            allow_fallback: true,
+        }
+    }
+
+    #[test]
+    fn folds_a_filtered_row_into_a_multi_agg() {
+        let rows = HashMap::from([("row".to_string(), filtered_row_spec())]);
+        let uses = HashMap::from([("row".to_string(), 1)]);
+        let tables = HashMap::from([("base".to_string(), test_table())]);
+        let mut consumer = filtered_multi_agg("sum(v)");
+        let replaced = inline_filtered_multi_agg(&mut consumer, &rows, &uses, &tables);
+        assert_eq!(replaced, vec!["row".to_string()]);
+        let ViewSpec::MultiAgg {
+            source_table_id,
+            filter,
+            ..
+        } = consumer
+        else {
+            panic!("expected a multi aggregate");
+        };
+        assert_eq!(source_table_id, "base");
+        assert_eq!(filter.as_deref(), Some("v > 0"));
+    }
+
+    #[test]
+    fn does_not_fold_a_renamed_row_column_the_consumer_reads() {
+        let rows = HashMap::from([("row".to_string(), filtered_row_spec())]);
+        let uses = HashMap::from([("row".to_string(), 1)]);
+        let tables = HashMap::from([("base".to_string(), test_table())]);
+        let mut consumer = filtered_multi_agg("sum(extra2)");
+        assert!(
+            inline_filtered_multi_agg(&mut consumer, &rows, &uses, &tables).is_empty()
+        );
+    }
+
+    #[test]
+    fn does_not_fold_a_filtered_row_with_another_reader() {
+        let rows = HashMap::from([("row".to_string(), filtered_row_spec())]);
+        let uses = HashMap::from([("row".to_string(), 2)]);
+        let tables = HashMap::from([("base".to_string(), test_table())]);
+        let mut consumer = filtered_multi_agg("sum(v)");
+        assert!(
+            inline_filtered_multi_agg(&mut consumer, &rows, &uses, &tables).is_empty()
         );
     }
 }
