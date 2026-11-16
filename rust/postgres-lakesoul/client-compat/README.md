@@ -19,11 +19,12 @@ that ordinary PostgreSQL driver workflows can execute.
 The suite asserts **explicit refusal** for currently unsupported paths:
 
 - `COPY ... FROM STDIN`: `0A000`
-- `INSERT ... RETURNING`: `0A000`
 
 Named cursors are forward-only and non-holdable. `WITH HOLD`, `SCROLL`, binary
 cursors and backward fetches are explicitly refused instead of being silently
-downgraded.
+downgraded. `INSERT ... RETURNING` currently covers `INSERT ... VALUES` with
+`*`, column references and aliases; expressions, `INSERT ... SELECT`,
+`ON CONFLICT` and `UPDATE ... RETURNING` remain explicit `0A000` gaps.
 
 If one of these starts working, the test fails and the compatibility contract
 must be updated rather than silently widening the claim.
@@ -66,6 +67,7 @@ recorded gap. The tests already cover:
 - duplicate-key `23505` and connection recovery;
 - `information_schema`/`pg_catalog` table and column discovery, including psql `\d`;
 - forward-only named cursors through psycopg2 and psycopg3, and the `pg_cursors` view;
+- `INSERT ... VALUES ... RETURNING` for `*`, column references and aliases, including SQLAlchemy Core;
 - SQLAlchemy reflection of columns and primary keys through the `psycopg2` dialect;
 - pgjdbc `DatabaseMetaData.getTables`/`getColumns`/`getPrimaryKeys`, `setFetchSize`, and UPSERT;
 - Metabase-style startup `SET`/`SHOW` statements.
@@ -75,7 +77,6 @@ The remaining known gaps are:
 | Gap | Detail |
 | --- | --- |
 | `COPY FROM STDIN` | explicitly refused with `0A000`; this is the main blocker for Airbyte/Singer-style loaders |
-| `INSERT ... RETURNING` | explicitly refused with `0A000` |
 
 SQLAlchemy reflection is certified through the `psycopg2` dialect. The
 `psycopg3` dialect starts a nested transaction (`SAVEPOINT`) during reflection,

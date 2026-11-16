@@ -84,9 +84,9 @@ SET day = EXCLUDED.day,
 | `42601` | 源列与目标列对不上 |
 | `42804` | 表达式无法赋值转换到目标列 |
 | `22P02` | 字符串字面量无法转换为目标类型 |
-| `0A000` | `RETURNING`、分区表或 CDC 表上的 `ON CONFLICT`、赋值列表缺少非主键列，或事务块内的通用 `DO UPDATE` |
+| `0A000` | `RETURNING` 搭配 `ON CONFLICT` 或非 `VALUES` 源、分区表或 CDC 表上的 `ON CONFLICT`、赋值列表缺少非主键列，或事务块内的通用 `DO UPDATE` |
 
-不支持 `RETURNING`：sink 在行写完后提交，没有可返回的行流。
+`INSERT ... VALUES ... RETURNING` 会返回插入的行，支持 `RETURNING *`、列引用和列别名；表达式、`INSERT ... SELECT ... RETURNING`、`ON CONFLICT ... RETURNING` 和 `UPDATE ... RETURNING` 暂不支持。foreign table 和 external-file table 上的 `RETURNING` 也会被拒绝。
 
 ## 索引维护
 
