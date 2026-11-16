@@ -387,6 +387,50 @@ async fn print_token(args: &TokenArgs) -> Result<()> {
     Ok(())
 }
 
+impl Cli {
+    /// A logical-replication subscriber, started by hand or by a supervisor.
+    fn is_subscriber(&self) -> bool {
+        self.subscribe.subscribe || self.subscribe.subscription_id.is_some()
+    }
+}
+
+/// Starts the SQL subscription supervisor, resuming enabled subscriptions only
+/// in local mode. Schema and resume errors are logged without failing startup.
+async fn start_subscription_supervisor(
+    cli: &Cli,
+    meta_client: &Arc<MetaDataClient>,
+    program: PathBuf,
+    log_dir: PathBuf,
+) -> Arc<subscribe::supervisor::SubscriptionSupervisor> {
+    let executor = cli.subscription_executor;
+    let subscriptions =
+        Arc::new(subscribe::supervisor::SubscriptionSupervisor::with_mode(
+            Arc::clone(meta_client),
+            program,
+            log_dir.clone(),
+            executor,
+        ));
+    info!(
+        log_dir = %log_dir.display(),
+        executor = ?executor,
+        "subscription supervisor ready"
+    );
+    if let Err(error) = subscriptions.metadata().await.init_schema().await {
+        warn!(%error, "subscription metadata schema is unavailable");
+    }
+    if executor == subscribe::supervisor::SubscriptionMode::Local {
+        if let Err(error) = subscriptions.resume_all().await {
+            warn!(%error, "failed to resume subscriptions");
+        }
+    } else {
+        info!(
+            "external subscription executor configured; start \
+             `postgres-lakesoul --subscription-runner` to run subscribers"
+        );
+    }
+    subscriptions
+}
+
 async fn main_inner(cli: Cli) -> Result<()> {
     // Installed first: constructing the session factory below starts the
     // catalog refresher, whose first refresh would otherwise run without a
@@ -444,19 +488,13 @@ async fn main_inner(cli: Cli) -> Result<()> {
     auth::register_metrics();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
     let object_store_options = SecretMap::from_map(cli.core.s3_options());
-    if cli.subscription_runner
-        && (cli.subscribe.subscribe
-            || cli.subscribe.subscription_id.is_some()
-            || cli.index_maintenance_runner)
-    {
+    if cli.subscription_runner && (cli.is_subscriber() || cli.index_maintenance_runner) {
         rootcause::bail!(
             "--subscription-runner cannot be combined with --subscribe or \
              --index-maintenance-runner"
         );
     }
-    if cli.index_maintenance_runner
-        && (cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some())
-    {
+    if cli.index_maintenance_runner && cli.is_subscriber() {
         rootcause::bail!(
             "--index-maintenance-runner cannot be combined with --subscribe"
         );
@@ -477,7 +515,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
         )
         .await;
     }
-    if cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some() {
+    if cli.is_subscriber() {
         return subscribe::run(
             cli.subscribe,
             Arc::clone(&meta_client),
@@ -521,35 +559,8 @@ async fn main_inner(cli: Cli) -> Result<()> {
         .await;
     }
     let index_program = program.clone();
-    let executor = cli.subscription_executor;
     let subscriptions =
-        Arc::new(subscribe::supervisor::SubscriptionSupervisor::with_mode(
-            Arc::clone(&meta_client),
-            program,
-            log_dir.clone(),
-            executor,
-        ));
-    info!(
-        log_dir = %log_dir.display(),
-        executor = ?executor,
-        "subscription supervisor ready"
-    );
-    {
-        let metadata = subscriptions.metadata().await;
-        if let Err(error) = metadata.init_schema().await {
-            warn!(%error, "subscription metadata schema is unavailable");
-        }
-    }
-    if executor == subscribe::supervisor::SubscriptionMode::Local {
-        if let Err(error) = subscriptions.resume_all().await {
-            warn!(%error, "failed to resume subscriptions");
-        }
-    } else {
-        info!(
-            "external subscription executor configured; start \
-             `postgres-lakesoul --subscription-runner` to run subscribers"
-        );
-    }
+        start_subscription_supervisor(&cli, &meta_client, program, log_dir).await;
 
     let auth_manager = Arc::new(AuthManager::new());
     cli.memory.install_vortex_decode_budget()?;
@@ -825,8 +836,7 @@ pub fn run() -> Result<()> {
             .build()?;
         return rt.block_on(print_token(args));
     }
-    let subscriber = cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some();
-    let worker_threads = if subscriber {
+    let worker_threads = if cli.is_subscriber() {
         // The initial snapshot decodes N COPY streams and builds Arrow batches
         // on the async runtime; the default server thread count would leave
         // most of the parallelism waiting on two cores.
