@@ -136,8 +136,7 @@ def test_parameterized_types_round_trip(driver, connector, table_factory):
                 ),
             )
             cursor.execute(
-                f"SELECT id, name, amount, day, ts, flag "
-                f"FROM {table} WHERE id = %s",
+                f"SELECT id, name, amount, day, ts, flag FROM {table} WHERE id = %s",
                 (1,),
             )
             row = rows(cursor)[0]
@@ -270,9 +269,7 @@ def test_duplicate_key_sqlstate_and_recovery(driver, connector, table_factory):
     table = table_factory("id bigint primary key, name text", "client_error")
     with closing(connector(driver)) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                f"INSERT INTO {table} (id, name) VALUES (%s, %s)", (1, "a")
-            )
+            cursor.execute(f"INSERT INTO {table} (id, name) VALUES (%s, %s)", (1, "a"))
             with pytest.raises(Exception) as caught:
                 cursor.execute(
                     f"INSERT INTO {table} (id, name) VALUES (%s, %s)", (1, "b")
@@ -326,15 +323,11 @@ def test_psql_describe_table(table_factory, pg_env):
     assert table in result.stdout
 
 
-def test_server_side_named_cursor_is_not_supported(
-    driver, connector, table_factory
-):
+def test_server_side_named_cursor_is_not_supported(driver, connector, table_factory):
     table = table_factory("id bigint primary key, name text", "client_cursor")
     with closing(connector(driver)) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                f"INSERT INTO {table} (id, name) VALUES (%s, %s)", (1, "a")
-            )
+            cursor.execute(f"INSERT INTO {table} (id, name) VALUES (%s, %s)", (1, "a"))
         try:
             with connection.cursor(name="compat_named_cursor") as cursor:
                 cursor.execute(f"SELECT id FROM {table}")
@@ -361,14 +354,12 @@ def test_copy_from_stdin_is_explicitly_refused(driver, connector, table_factory)
             try:
                 if driver == "psycopg2":
                     cursor.copy_expert(
-                        f"COPY {table} (id, name) FROM STDIN "
-                        "WITH (FORMAT csv)",
+                        f"COPY {table} (id, name) FROM STDIN WITH (FORMAT csv)",
                         io.StringIO("1,alice\n"),
                     )
                 else:
                     with cursor.copy(
-                        f"COPY {table} (id, name) FROM STDIN "
-                        "WITH (FORMAT csv)"
+                        f"COPY {table} (id, name) FROM STDIN WITH (FORMAT csv)"
                     ) as copy:
                         copy.write("1,alice\n")
             except Exception as error:
@@ -388,8 +379,7 @@ def test_returning_is_explicitly_refused(driver, connector, table_factory):
         with connection.cursor() as cursor:
             try:
                 cursor.execute(
-                    f"INSERT INTO {table} (id, name) VALUES (%s, %s) "
-                    "RETURNING id",
+                    f"INSERT INTO {table} (id, name) VALUES (%s, %s) RETURNING id",
                     (1, "a"),
                 )
             except Exception as error:
