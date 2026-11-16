@@ -372,16 +372,6 @@ async fn a_computed_final_row_folds_into_the_sink() {
         )
         .await
         .unwrap();
-    // A pre-fusion plan left a row state next to the target; the first fused
-    // execution removes it once the sink writes from the derived source.
-    let _legacy_state = runtime
-        .create_table(IvmTableOptions::new(
-            format!("{}__ivm_state", target.table_name),
-            table_path(&dir, "fold_state"),
-            Arc::new(Schema::new(vec![Field::new("lk", DataType::Utf8, true)])),
-        ))
-        .await
-        .unwrap();
     let executor = IvmSqlExecutor::new(runtime);
     let statement = format!(
         "INSERT INTO {} SELECT \
@@ -627,6 +617,198 @@ async fn read_target(runtime: &IvmRuntime, target: &IvmTable) -> Vec<(String, i6
         }
     }
     rows
+}
+
+async fn read_sum_label(
+    runtime: &IvmRuntime,
+    target: &IvmTable,
+) -> Vec<(String, i64, String)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(target)))
+        .unwrap();
+    let batches = context
+        .sql("select biz_key, sum_v, label from mv order by biz_key")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let labels = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                keys.value(row).to_string(),
+                sums.value(row),
+                labels.value(row).to_string(),
+            ));
+        }
+    }
+    rows
+}
+
+#[test_log::test(tokio::test)]
+async fn sum_and_scalar_use_the_mv_as_state() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = source(&runtime, &dir, &format!("mvstate_src_{suffix}")).await;
+    let target_schema = Arc::new(Schema::new(vec![
+        Field::new("biz_key", DataType::Utf8, false),
+        Field::new("sum_v", DataType::Int64, true),
+        Field::new("label", DataType::Utf8, true),
+        Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]));
+    let target = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_mvstate_target_{suffix}"),
+                table_path(&dir, "target"),
+                target_schema,
+            )
+            .with_primary_keys(vec!["biz_key".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO {} SELECT CAST(k AS VARCHAR) || ':' || g AS biz_key, \
+         SUM(v) AS sum_v, UPPER(g) AS label FROM {} GROUP BY k, g",
+        target.table_name, source.table_name
+    );
+    let runtime = executor.runtime();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, "a", 10, "insert"), (2, "b", 20, "insert")]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(
+        read_sum_label(runtime, &target).await,
+        vec![
+            ("1:a".to_string(), 10, "A".to_string()),
+            ("2:b".to_string(), 20, "B".to_string()),
+        ]
+    );
+
+    // The derived aggregate step uses its MV as the state: it carries the
+    // hidden row count and has no separate multi-agg state tables.
+    let sink: ViewSpec = serde_json::from_value(
+        runtime
+            .metadata()
+            .get_view_spec(&target.table_id)
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let ViewSpec::Sink {
+        source_table_id, ..
+    } = sink
+    else {
+        panic!("expected a sink");
+    };
+    let step_spec: ViewSpec = serde_json::from_value(
+        runtime
+            .metadata()
+            .get_view_spec(&source_table_id)
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let ViewSpec::MultiAgg { mv_state, .. } = step_spec else {
+        panic!("expected a multi aggregate step");
+    };
+    assert!(mv_state);
+    let step = runtime.open_table_by_id(&source_table_id).await.unwrap();
+    assert!(
+        step.schema
+            .field_with_name(lakesoul_ivm::IVM_ROW_COUNT_COLUMN)
+            .is_ok(),
+        "{:?}",
+        step.schema
+    );
+    let states = runtime.list_states(&source_table_id).await.unwrap();
+    assert!(
+        states.iter().all(|state| state.role == StateRole::Mv),
+        "{states:?}"
+    );
+
+    // An update accumulates into the MV state.
+    source
+        .append_batch(runtime.client(), source_batch(&[(1, "a", 12, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_sum_label(runtime, &target).await,
+        vec![
+            ("1:a".to_string(), 12, "A".to_string()),
+            ("2:b".to_string(), 20, "B".to_string()),
+        ]
+    );
+
+    // Moving the group key retracts the old group and inserts the new one.
+    source
+        .append_batch(runtime.client(), source_batch(&[(1, "b", 12, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_sum_label(runtime, &target).await,
+        vec![
+            ("1:b".to_string(), 12, "B".to_string()),
+            ("2:b".to_string(), 20, "B".to_string()),
+        ]
+    );
+
+    // Deleting the last source row of a group removes its state/MV row.
+    source
+        .append_batch(runtime.client(), source_batch(&[(2, "b", 20, "delete")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_sum_label(runtime, &target).await,
+        vec![("1:b".to_string(), 12, "B".to_string())]
+    );
+
+    // A changed aggregate definition rebuilds the MV-state step from scratch.
+    let changed = format!(
+        "INSERT INTO {} SELECT CAST(k AS VARCHAR) || ':' || g AS biz_key, \
+         SUM(v * 2) AS sum_v, UPPER(g) AS label FROM {} GROUP BY k, g",
+        target.table_name, source.table_name
+    );
+    let execution = executor.execute(&changed).await.unwrap();
+    assert_eq!(execution.action.label(), "rebuild");
+    assert_eq!(
+        read_sum_label(runtime, &target).await,
+        vec![("1:b".to_string(), 24, "B".to_string())]
+    );
 }
 
 #[test_log::test(tokio::test)]

@@ -471,6 +471,11 @@ pub enum ViewSpec {
         /// Optional keyed state table for the plain SUM shape.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state_table_id: Option<String>,
+        /// Whether the MV itself is the per-group accumulator state.  The MV
+        /// then carries the internal row count and no separate row/partial
+        /// state tables are kept.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mv_state: bool,
     },
     /// `FULL JOIN` over two keyed sources: all matching pairs plus the
     /// unmatched rows of either side (NULL-padded).
@@ -4917,6 +4922,7 @@ impl IvmRuntime {
                 having,
                 having_lookup,
                 state_table_id,
+                mv_state,
             } => SpecView::MultiAgg(MultiAggView {
                 view_id: view_id.clone(),
                 source: self.open_table_by_id(source_table_id).await?,
@@ -4950,6 +4956,7 @@ impl IvmRuntime {
                     Some(id) => Some(self.open_table_by_id(id).await?),
                     None => None,
                 },
+                mv_state: *mv_state,
                 refresh_interval_ms,
             }),
             ViewSpec::MultiJoin {

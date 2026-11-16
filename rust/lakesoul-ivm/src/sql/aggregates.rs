@@ -2982,8 +2982,18 @@ fn analyze_computed_agg(
         names.push(column.clone());
         aggregates.push((call, column, data_type));
     }
+
     let having =
         render_multi_agg_having(having_exprs, aggregate, &group_keys, &aggregates, &[])?;
+    let mv_state = multi_agg_mv_state_eligible(
+        request.derived,
+        &group_keys,
+        &group_exprs,
+        having.as_deref(),
+        false,
+        &aggregates,
+        source,
+    )?;
     Ok(ViewSpec::MultiAgg {
         view_id: request.view_id.clone(),
         source_table_id: source.table_id.clone(),
@@ -3004,7 +3014,39 @@ fn analyze_computed_agg(
         having,
         having_lookup: None,
         state_table_id: None,
+        mv_state,
     })
+}
+
+/// Whether a multi-aggregate view materializes its own accumulator state.
+///
+/// Only derived steps qualify: their MV is internal and can carry the hidden
+/// row count without changing a user target.  The aggregate layout must be
+/// `SUM` plus scalars over the group keys, with plain group keys and a keyed
+/// source so a contribution can subtract the old value.
+#[allow(clippy::too_many_arguments)]
+fn multi_agg_mv_state_eligible(
+    derived: bool,
+    group_keys: &[String],
+    group_exprs: &[String],
+    having: Option<&str>,
+    having_lookup: bool,
+    aggregates: &[(String, String, DataType)],
+    source: &IvmTable,
+) -> Result<bool> {
+    if !derived
+        || having.is_some()
+        || having_lookup
+        || !group_exprs.is_empty()
+        || group_keys.is_empty()
+        || source.primary_keys.is_empty()
+    {
+        return Ok(false);
+    }
+    Ok(
+        crate::runtime::multi_agg_mv_state_plan(group_keys, aggregates, &source.schema)?
+            .is_some(),
+    )
 }
 
 /// Peel a plain projection above a plan (a subquery projection).
@@ -3203,6 +3245,7 @@ fn analyze_having_aggregate(
             filter: lookup.filter,
         }),
         state_table_id: None,
+        mv_state: false,
     })
 }
 
@@ -3383,6 +3426,15 @@ fn analyze_multi_agg(
     }
     let having =
         render_multi_agg_having(having_exprs, aggregate, &group_keys, &aggregates, &[])?;
+    let mv_state = multi_agg_mv_state_eligible(
+        request.derived,
+        &group_keys,
+        &group_exprs,
+        having.as_deref(),
+        false,
+        &aggregates,
+        source,
+    )?;
     Ok(ViewSpec::MultiAgg {
         view_id: request.view_id.clone(),
         source_table_id: source.table_id.clone(),
@@ -3403,6 +3455,7 @@ fn analyze_multi_agg(
         having,
         having_lookup: None,
         state_table_id: None,
+        mv_state,
     })
 }
 

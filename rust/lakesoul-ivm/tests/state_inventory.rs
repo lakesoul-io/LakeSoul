@@ -468,18 +468,44 @@ async fn inventory_shows_row_state_versus_compact_multi_agg_state() {
         .await
         .unwrap();
     let sum_inventory = runtime.state_inventory(&sum_mv.table_id).await.unwrap();
-    let compact_state = table_with_role(&sum_inventory, "state");
-    assert_eq!(compact_state.rows, Some(3), "{compact_state:?}");
+    let state_table = runtime
+        .open_table(
+            &format!("{}__ivm_state", sum_mv.table_name),
+            &sum_mv.namespace,
+        )
+        .await
+        .unwrap();
+    let state_spec: lakesoul_ivm::ViewSpec = serde_json::from_value(
+        runtime
+            .metadata()
+            .get_view_spec(&state_table.table_id)
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        state_spec,
+        lakesoul_ivm::ViewSpec::MultiAgg { mv_state: true, .. }
+    ));
+    let compact_rows = state_table
+        .read_current(runtime.client())
+        .await
+        .unwrap()
+        .iter()
+        .map(|batch| batch.num_rows())
+        .sum::<usize>();
+    assert_eq!(compact_rows, 3, "{sum_inventory:?}");
     assert!(
-        sum_inventory
+        !sum_inventory
             .role_totals
             .iter()
             .any(|role| role.role == "state"),
         "{sum_inventory:?}"
     );
     assert!(
-        rows_state.rows.unwrap() > compact_state.rows.unwrap(),
-        "row state {rows_state:?} should be larger than compact state {compact_state:?}"
+        rows_state.rows.unwrap() as usize > compact_rows,
+        "row state {rows_state:?} should be larger than the compact state"
     );
 
     for mv in [&max_mv, &sum_mv] {

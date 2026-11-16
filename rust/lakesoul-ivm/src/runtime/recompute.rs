@@ -403,6 +403,126 @@ pub fn multi_agg_mv_schema_for(
     Ok(Arc::new(Schema::new(fields)))
 }
 
+/// The compact accumulator layout of a multi-aggregate view when its MV is
+/// also the state table.
+#[derive(Debug, Clone)]
+pub(crate) struct MvStatePlan {
+    /// `(input expression, MV column, type)` for each SUM accumulator.
+    pub measures: Vec<(String, String, DataType)>,
+    /// `(rendered expression, MV column, type)` for each scalar over the
+    /// group keys; carried through the state instead of summed.
+    pub scalars: Vec<(String, String, DataType)>,
+}
+
+/// Whether the state merge can accumulate this SUM result type.  The merge
+/// kernel currently supports integer and Decimal128 sums; other numeric types
+/// keep the row/partial path.
+fn mv_state_measure_supported(data_type: &DataType) -> bool {
+    matches!(data_type, DataType::Int64 | DataType::Decimal128(..))
+}
+
+/// Whether a scalar column supports the `max` merge used to carry it through
+/// the compact contribution.
+fn mv_state_scalar_orderable(data_type: &DataType) -> bool {
+    data_type.is_numeric()
+        || matches!(
+            data_type,
+            DataType::Utf8
+                | DataType::LargeUtf8
+                | DataType::Utf8View
+                | DataType::Date32
+                | DataType::Date64
+                | DataType::Timestamp(..)
+                | DataType::Time32(_)
+                | DataType::Time64(_)
+                | DataType::Decimal128(..)
+                | DataType::Decimal256(..)
+        )
+}
+
+/// Classify a multi-aggregate view for the MV-as-state layout.  Only `SUM`
+/// accumulators and scalar expressions over the group keys are supported: the
+/// former merge by addition, the latter are constant within a group.
+pub(crate) fn multi_agg_mv_state_plan(
+    group_keys: &[String],
+    aggregates: &[(String, String, DataType)],
+    source_schema: &Schema,
+) -> Result<Option<MvStatePlan>> {
+    let Some(plan) = multi_agg_partial_plan(group_keys, aggregates, source_schema)?
+    else {
+        return Ok(None);
+    };
+    let mut measures = Vec::new();
+    let mut scalars = Vec::new();
+    for column in &plan.columns {
+        let Some((_, _, data_type)) = aggregates
+            .iter()
+            .find(|(_, output, _)| output == &column.output)
+        else {
+            return Ok(None);
+        };
+        match column.kind {
+            MultiAggPartialKind::Sum => {
+                if !mv_state_measure_supported(data_type) {
+                    return Ok(None);
+                }
+                let Some(inner) = call_inner(&column.call) else {
+                    return Ok(None);
+                };
+                let inner = inner.trim();
+                if inner.is_empty() || inner.to_ascii_uppercase().contains("DISTINCT") {
+                    return Ok(None);
+                }
+                measures.push((
+                    inner.to_string(),
+                    column.output.clone(),
+                    data_type.clone(),
+                ));
+            }
+            MultiAggPartialKind::Scalar => {
+                if !mv_state_scalar_orderable(data_type) {
+                    return Ok(None);
+                }
+                scalars.push((
+                    column.call.clone(),
+                    column.output.clone(),
+                    data_type.clone(),
+                ));
+            }
+            _ => return Ok(None),
+        }
+    }
+    if measures.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(MvStatePlan { measures, scalars }))
+}
+
+/// The schema of a multi-aggregate MV that is also its own accumulator state.
+/// It is the ordinary MV schema plus the per-group row count.
+pub fn multi_agg_mv_state_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+    columns: &[(String, DataType)],
+) -> Result<SchemaRef> {
+    let base = multi_agg_mv_schema_for(source_schema, group_keys, group_exprs, columns)?;
+    let mut fields = base
+        .fields()
+        .iter()
+        .map(|field| Arc::new(field.as_ref().clone()))
+        .collect::<Vec<_>>();
+    let index = fields
+        .iter()
+        .position(|field| field.name() == IVM_ROW_KINDS_COLUMN)
+        .unwrap_or(fields.len());
+    fields.insert(
+        index,
+        Arc::new(Field::new(IVM_ROW_COUNT_COLUMN, DataType::Int64, false)),
+    );
+    Ok(Arc::new(Schema::new(fields)))
+}
+
 /// An aggregate view over one source with any mix of supported aggregate
 /// functions in a single statement.
 #[derive(Debug, Clone)]
@@ -428,6 +548,8 @@ pub struct MultiAggView {
     pub having_lookup: Option<HavingLookup>,
     /// Optional keyed state for the plain SUM shape.
     pub state: Option<IvmTable>,
+    /// Whether the MV is also the per-group accumulator state.
+    pub mv_state: bool,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -469,6 +591,7 @@ impl MultiAggView {
             having: None,
             having_lookup: None,
             state: None,
+            mv_state: false,
             refresh_interval_ms: 0,
         }
     }
@@ -476,6 +599,12 @@ impl MultiAggView {
     /// Attach the keyed accumulator state.
     pub fn with_state(mut self, state: IvmTable) -> Self {
         self.state = Some(state);
+        self
+    }
+
+    /// Use the MV itself as the per-group accumulator state.
+    pub fn with_mv_state(mut self) -> Self {
+        self.mv_state = true;
         self
     }
 
@@ -534,6 +663,7 @@ impl MultiAggView {
                 }
             }),
             state_table_id: self.state.as_ref().map(|state| state.table_id.clone()),
+            mv_state: self.mv_state,
         })
     }
 
@@ -3805,6 +3935,9 @@ impl IvmRuntime {
     pub async fn refresh_multi_agg(&self, view: &MultiAggView) -> Result<Option<i64>> {
         self.register_multi_agg_view(view).await?;
         validate_multi_agg_view(view)?;
+        if view.mv_state {
+            return self.refresh_multi_agg_state(view, &view.mv).await;
+        }
         if let Some(existing) = self
             .metadata
             .get_state(&view.view_id, StateRole::MultiAggRows)
@@ -3874,6 +4007,10 @@ impl IvmRuntime {
             let array: ArrayRef = if group_keys.iter().any(|key| key == name) {
                 batch.column_by_name(name).cloned().ok_or_else(|| {
                     DataFusionError::Execution(format!("missing {name}"))
+                })?
+            } else if name == IVM_ROW_COUNT_COLUMN {
+                batch.column_by_name("d_rows").cloned().ok_or_else(|| {
+                    DataFusionError::Execution("missing d_rows".to_string())
                 })?
             } else if name == IVM_ROW_KINDS_COLUMN {
                 Arc::new(StringArray::from(vec!["insert"; num_rows]))
@@ -4324,26 +4461,43 @@ impl IvmRuntime {
                 "multi-agg state refresh needs plain group keys without lookup/having"
             ));
         }
-        let mut measures = Vec::new();
-        for (call, column, _) in &view.aggregates {
-            let call = call.trim();
-            let inner = if call
-                .get(..4)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("SUM("))
-                && call.ends_with(')')
-            {
-                call[4..call.len() - 1].trim()
-            } else {
-                return Err(report!(
-                    "multi-agg state refresh only supports SUM aggregates"
-                ));
+        let mv_state = state.table_id == view.mv.table_id;
+        let (measures, scalars) = if mv_state {
+            let Some(plan) = multi_agg_mv_state_plan(
+                &view.group_keys,
+                &view.aggregates,
+                &view.source.schema,
+            )?
+            else {
+                return Err(report!("multi-agg MV state is not eligible"));
             };
-            let data_type = view.mv.schema.field_with_name(column)?.data_type().clone();
-            measures.push((inner.to_string(), column.clone(), data_type));
-        }
+            (plan.measures, plan.scalars)
+        } else {
+            let mut measures = Vec::new();
+            for (call, column, _) in &view.aggregates {
+                let call = call.trim();
+                let inner = if call
+                    .get(..4)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("SUM("))
+                    && call.ends_with(')')
+                {
+                    call[4..call.len() - 1].trim()
+                } else {
+                    return Err(report!(
+                        "multi-agg state refresh only supports SUM aggregates"
+                    ));
+                };
+                let data_type =
+                    view.mv.schema.field_with_name(column)?.data_type().clone();
+                measures.push((inner.to_string(), column.clone(), data_type));
+            }
+            (measures, Vec::new())
+        };
         self.register_multi_agg_view(view).await?;
-        self.register_state_tables(&view.view_id, &[(StateRole::State, state)])
-            .await?;
+        if !mv_state {
+            self.register_state_tables(&view.view_id, &[(StateRole::State, state)])
+                .await?;
+        }
         let window = self
             .collect_source_window_for_filter(
                 &view.view_id,
@@ -4399,25 +4553,28 @@ impl IvmRuntime {
             })
             .collect();
         let empty_old = dataframe(&context, Vec::new(), &view.source.schema)?;
-        let keyed_contributions =
-            if keyed && !versions.is_empty() && view.source.primary_keys.len() == 1 {
-                let delta = delta
-                    .as_ref()
-                    .ok_or_else(|| report!("multi-agg refresh without a delta"))?;
-                Some(
-                    self.keyed_source_contributions(
-                        &context,
-                        &view.source,
-                        view,
-                        &window,
-                        delta,
-                        &measures,
-                    )
-                    .await?,
+        let keyed_contributions = if keyed
+            && !versions.is_empty()
+            && view.source.primary_keys.len() == 1
+            && scalars.is_empty()
+        {
+            let delta = delta
+                .as_ref()
+                .ok_or_else(|| report!("multi-agg refresh without a delta"))?;
+            Some(
+                self.keyed_source_contributions(
+                    &context,
+                    &view.source,
+                    view,
+                    &window,
+                    delta,
+                    &measures,
                 )
-            } else {
-                None
-            };
+                .await?,
+            )
+        } else {
+            None
+        };
         let (old, new, bootstrap_new) = if keyed_contributions.is_some() {
             (empty_old.clone(), empty_old, None)
         } else if keyed && !versions.is_empty() && view.source.primary_keys.len() > 1 {
@@ -4528,7 +4685,7 @@ impl IvmRuntime {
             context.register_table("new", new.into_view())?;
         }
         let keys = quoted_list(&view.group_keys);
-        let contributions = measures
+        let mut contributions = measures
             .iter()
             .map(|(inner, column, data_type)| {
                 Ok(format!(
@@ -4536,24 +4693,80 @@ impl IvmRuntime {
                     Self::data_type_sql(data_type)?
                 ))
             })
-            .collect::<Result<Vec<_>>>()?
-            .join(", ");
+            .collect::<Result<Vec<_>>>()?;
+        contributions.extend(
+            scalars
+                .iter()
+                .map(|(call, column, _)| format!("max({call}) as d_{column}")),
+        );
+        contributions.push("cast(coalesce(sum(w), 0) as bigint) as d_rows".to_string());
+        let group_row = if mv_state {
+            String::new()
+        } else {
+            format!(", ivm_group_row({keys}) as \"{IVM_GROUP_ROW_COLUMN}\"")
+        };
         let contrib_sql = format!(
-            "select {keys}, ivm_group_row({keys}) as \"{IVM_GROUP_ROW_COLUMN}\", \
-                    {contributions}, cast(coalesce(sum(w), 0) as bigint) as d_rows \
+            "select {keys}{group_row}, {contributions} \
              from (select *, -1 as w from old union all select *, 1 as w from new) t{filter} \
              group by {keys}",
+            contributions = contributions.join(", "),
             filter = filter_where(view.filter.as_deref())
         );
-        let mut input_types = Vec::with_capacity(view.group_keys.len());
-        for key in &view.group_keys {
-            input_types
-                .push(view.source.schema.field_with_name(key)?.data_type().clone());
+        if !mv_state {
+            let mut input_types = Vec::with_capacity(view.group_keys.len());
+            for key in &view.group_keys {
+                input_types
+                    .push(view.source.schema.field_with_name(key)?.data_type().clone());
+            }
+            context.register_udf(crate::runtime::group_row_udf_for_types(input_types)?);
         }
-        context.register_udf(crate::runtime::group_row_udf_for_types(input_types)?);
         if bootstrap {
             use futures::StreamExt;
             let frame = context.sql(&contrib_sql).await?;
+            if mv_state {
+                let mut stream = frame.execute_stream().await?;
+                let mv_schema = view.mv.schema.clone();
+                let group_keys = view.group_keys.clone();
+                let mut commit_ids: Vec<String> = Vec::new();
+                let mut chunk: Vec<RecordBatch> = Vec::new();
+                let mut chunk_rows = 0usize;
+                let mut writes = 0usize;
+                let mut contrib_rows = 0usize;
+                while let Some(batch) = stream.next().await {
+                    let batch = batch?;
+                    if batch.num_rows() == 0 {
+                        continue;
+                    }
+                    contrib_rows += batch.num_rows();
+                    let batch =
+                        Self::bootstrap_mv_batch(&batch, &mv_schema, &group_keys, epoch)?;
+                    chunk_rows += batch.num_rows();
+                    chunk.push(batch);
+                    if chunk_rows >= crate::table::MAX_STATE_APPEND_ROWS {
+                        let batches = std::mem::take(&mut chunk);
+                        commit_ids
+                            .extend(view.mv.append_batches(&self.client, batches).await?);
+                        chunk_rows = 0;
+                        writes += 1;
+                    }
+                }
+                if !chunk.is_empty() {
+                    commit_ids.extend(view.mv.append_batches(&self.client, chunk).await?);
+                    writes += 1;
+                }
+                tracing::info!(
+                    contrib_rows,
+                    writes,
+                    "multi-agg MV-state bootstrap finished"
+                );
+                self.checkpoint_epoch_states(&record).await?;
+                let mv_versions =
+                    output_partition_versions(&self.client, &view.mv).await?;
+                self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
+                    .await?;
+                self.advance_cursors(&view.view_id, window.cursors).await?;
+                return Ok(Some(epoch));
+            }
             let mut stream = frame.execute_stream().await?;
             let state_schema = state.schema.clone();
             let mv_schema = view.mv.schema.clone();
@@ -4651,7 +4864,18 @@ impl IvmRuntime {
         } else {
             state.current_groups(&self.client).await?
         };
-        let state_bucket_num = if state.bucket_columns.len() == 1
+        let state_bucket_num = if mv_state {
+            if state.bucket_columns == view.group_keys {
+                state
+                    .hash_bucket_num
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|count| *count > 1)
+                    .unwrap_or(1)
+            } else {
+                1
+            }
+        } else if state.bucket_columns.len() == 1
             && state.bucket_columns[0] == IVM_GROUP_ROW_COLUMN
         {
             state
@@ -4669,9 +4893,23 @@ impl IvmRuntime {
             .iter()
             .map(|(_, column, _)| column.clone())
             .collect::<Vec<_>>();
+        let scalar_columns = scalars
+            .iter()
+            .map(|(_, column, _)| column.clone())
+            .collect::<Vec<_>>();
+        let key = if mv_state {
+            super::keyed_plan::PkLookupKey::Columns {
+                input_columns: view.group_keys.clone(),
+                table_columns: view.group_keys.clone(),
+                null_safe: true,
+            }
+        } else {
+            super::keyed_plan::PkLookupKey::BinaryRow {
+                column: IVM_GROUP_ROW_COLUMN.to_string(),
+            }
+        };
         // The merge is a logical extension node: the bucket shuffle, the keyed
-        // lookup and the state merge are all planned as worker stages, and the
-        // dual sink writes the state and MV rows on the same workers.
+        // lookup and the state merge are all planned as worker stages.
         let merge = super::keyed_plan::state_merge_dataframe(
             &context,
             contrib,
@@ -4680,18 +4918,32 @@ impl IvmRuntime {
             state_bucket_num,
             view.group_keys.clone(),
             measure_columns,
+            scalar_columns,
+            key,
             epoch,
         )?;
         let write_started = std::time::Instant::now();
-        let outcome = write_dataframe_dual(state, &view.mv, &self.client, merge).await?;
-        let mut commit_ids = outcome.state_ids;
-        commit_ids.extend(outcome.mv_ids);
-        tracing::info!(
-            state_keys = outcome.state_rows,
-            mv_rows = outcome.mv_rows,
-            elapsed = ?write_started.elapsed(),
-            "multi-agg keyed incremental finished"
-        );
+        let mut commit_ids = Vec::new();
+        if mv_state {
+            let outcome = append_dataframe(&view.mv, &self.client, merge).await?;
+            commit_ids.extend(outcome.commit_ids);
+            tracing::info!(
+                rows = outcome.rows,
+                elapsed = ?write_started.elapsed(),
+                "multi-agg MV-state incremental finished"
+            );
+        } else {
+            let outcome =
+                write_dataframe_dual(state, &view.mv, &self.client, merge).await?;
+            commit_ids.extend(outcome.state_ids);
+            commit_ids.extend(outcome.mv_ids);
+            tracing::info!(
+                state_keys = outcome.state_rows,
+                mv_rows = outcome.mv_rows,
+                elapsed = ?write_started.elapsed(),
+                "multi-agg keyed incremental finished"
+            );
+        }
         self.checkpoint_epoch_states(&record).await?;
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -5230,6 +5482,24 @@ impl IvmRuntime {
     pub async fn rebuild_multi_agg(&self, view: &MultiAggView) -> Result<i64> {
         self.register_multi_agg_view(view).await?;
         validate_multi_agg_view(view)?;
+        if view.mv_state {
+            self.metadata
+                .set_view_status(&view.view_id, "rebuilding")
+                .await?;
+            let generation = self.metadata.bump_generation(&view.view_id).await?;
+            self.metadata.delete_cursors(&view.view_id).await?;
+            view.mv.truncate(&self.client).await?;
+            let Some(epoch) = self.refresh_multi_agg_state(view, &view.mv).await? else {
+                return Err(report!(
+                    "multi-agg rebuild for {} found no source files (generation {generation})",
+                    view.view_id
+                ));
+            };
+            self.metadata
+                .set_view_status(&view.view_id, "active")
+                .await?;
+            return Ok(epoch);
+        }
         if let Some(existing) = self
             .metadata
             .get_state(&view.view_id, StateRole::MultiAggRows)

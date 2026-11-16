@@ -51,7 +51,8 @@ use crate::runtime::{
     left_aggregate_mv_schema_with_outputs, left_join_view_schema_with_keys,
     lookup_chain_mv_schema_for, lookup_chain_step_id_column, lookup_join_view_schema_for,
     median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
-    multi_agg_partial_plan, multi_agg_rows_state_schema_for, multi_agg_state_schema_for,
+    multi_agg_mv_state_schema_for, multi_agg_partial_plan,
+    multi_agg_rows_state_schema_for, multi_agg_state_schema_for,
     multi_join_append_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
     multi_lookup_join_mv_schema_for, multi_window_mv_schema_for_with_payload,
     nullable_join_key_schema, parse_filter, refresh_session, row_expr_mv_schema_for,
@@ -1736,7 +1737,6 @@ impl IvmSqlExecutor {
         let fused_row = self
             .fused_terminal_row(&state_spec, &positional, target, &caches)
             .await?;
-        let fused = fused_row.is_some();
         let (source_table_id, source_definition, columns, state_rebuilt) =
             if let Some(fused) = fused_row {
                 // The final row only computes target columns; the sink can do
@@ -1972,9 +1972,6 @@ impl IvmSqlExecutor {
         } else {
             IvmExecutionAction::Incremental
         };
-        if fused {
-            self.release_legacy_state_table(target).await?;
-        }
         self.release_fused_inner_views(&caches).await?;
         Ok(IvmExecution {
             action,
@@ -2086,35 +2083,6 @@ impl IvmSqlExecutor {
             source_definition,
             columns,
         }))
-    }
-
-    /// Remove the row state a pre-fusion plan created for a split target.
-    async fn release_legacy_state_table(&self, target: &IvmTable) -> Result<()> {
-        let name = format!("{}__ivm_state", target.table_name);
-        let Ok(table) = self.runtime.open_table(&name, &target.namespace).await else {
-            return Ok(());
-        };
-        let _ = self.runtime.metadata().delete_view(&table.table_id).await;
-        for state in self.runtime.metadata().list_states(&table.table_id).await? {
-            if state.role == StateRole::Mv {
-                continue;
-            }
-            self.runtime
-                .metadata()
-                .unregister_state(&table.table_id, state.role)
-                .await?;
-            let _ = self
-                .runtime
-                .client()
-                .drop_table(&state.table_name, &state.namespace)
-                .await;
-        }
-        let _ = self
-            .runtime
-            .client()
-            .drop_table(&name, &target.namespace)
-            .await;
-        Ok(())
     }
 
     /// Create or reuse the hidden maintenance state table of a split view.
@@ -2636,6 +2604,11 @@ impl IvmSqlExecutor {
         if matches!(spec, ViewSpec::Row { .. }) {
             caches.rows.insert(view_id.clone(), spec.clone());
         }
+        if matches!(&spec, ViewSpec::MultiAgg { mv_state: true, .. }) {
+            // The MV is the state now; drop the row/partial/compact state
+            // tables a previous layout left behind.
+            self.drop_generated_state(&view_id).await?;
+        }
         // A `MIN`/`MAX` or `DISTINCT` aggregate step carries its own
         // value-count state table, created next to the step MV.
         if needs_state_table(&spec)
@@ -2727,6 +2700,7 @@ impl IvmSqlExecutor {
             {
                 return Ok(existing);
             }
+            self.drop_generated_state(&existing.table_id).await?;
             self.runtime
                 .metadata()
                 .delete_view(&existing.table_id)
@@ -3789,8 +3763,9 @@ fn needs_state_table(spec: &ViewSpec) -> bool {
         ViewSpec::MultiAgg {
             group_keys,
             having_lookup,
+            mv_state,
             ..
-        } => !group_keys.is_empty() && having_lookup.is_none(),
+        } => !*mv_state && !group_keys.is_empty() && having_lookup.is_none(),
         _ => false,
     }
 }
@@ -4558,6 +4533,7 @@ fn expected_mv_schema(
             group_keys,
             group_exprs,
             aggregates,
+            mv_state,
             ..
         } => {
             let source = find_table(tables, source_table_id)?;
@@ -4570,7 +4546,21 @@ fn expected_mv_schema(
                     ))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            multi_agg_mv_schema_for(&source.schema, group_keys, group_exprs, &columns)?
+            if *mv_state {
+                multi_agg_mv_state_schema_for(
+                    &source.schema,
+                    group_keys,
+                    group_exprs,
+                    &columns,
+                )?
+            } else {
+                multi_agg_mv_schema_for(
+                    &source.schema,
+                    group_keys,
+                    group_exprs,
+                    &columns,
+                )?
+            }
         }
         ViewSpec::MultiJoin {
             sources, columns, ..

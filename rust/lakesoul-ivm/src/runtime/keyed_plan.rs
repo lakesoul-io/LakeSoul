@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use arrow::array::{
-    Array, ArrayRef, BinaryArray, Decimal128Array, Int64Array, StringArray, UInt32Array,
-    UInt32Builder, new_null_array,
+    Array, ArrayRef, BinaryArray, BooleanArray, Decimal128Array, Int64Array, StringArray,
+    UInt32Array, UInt32Builder, new_null_array,
 };
 use arrow::compute::{SortOptions, cast, take};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -2904,6 +2904,8 @@ pub(crate) struct IvmStateMergeSpec {
     bucket_count: usize,
     group_keys: Vec<String>,
     measure_columns: Vec<String>,
+    scalar_columns: Vec<String>,
+    key: PkLookupKey,
     epoch: i64,
 }
 
@@ -2911,10 +2913,11 @@ impl std::fmt::Debug for IvmStateMergeSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "IvmStateMergeSpec(table={}, buckets={}, measures={})",
+            "IvmStateMergeSpec(table={}, buckets={}, measures={}, scalars={})",
             self.state.table_name,
             self.bucket_count,
             self.measure_columns.join(","),
+            self.scalar_columns.join(","),
         )
     }
 }
@@ -2982,10 +2985,11 @@ impl UserDefinedLogicalNodeCore for IvmStateMergeNode {
     fn fmt_for_explain(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "IvmStateMerge table={} buckets={} measures={}",
+            "IvmStateMerge table={} buckets={} measures={} scalars={}",
             self.spec.state.table_name,
             self.spec.bucket_count,
             self.spec.measure_columns.join(","),
+            self.spec.scalar_columns.join(","),
         )
     }
 
@@ -3017,6 +3021,8 @@ pub(crate) fn state_merge_dataframe(
     bucket_count: usize,
     group_keys: Vec<String>,
     measure_columns: Vec<String>,
+    scalar_columns: Vec<String>,
+    key: PkLookupKey,
     epoch: i64,
 ) -> DataFusionResult<DataFrame> {
     let schema = Arc::new(DFSchema::try_from(state.schema.clone())?);
@@ -3027,6 +3033,8 @@ pub(crate) fn state_merge_dataframe(
             bucket_count,
             group_keys,
             measure_columns,
+            scalar_columns,
+            key,
             epoch,
         }),
         contribution: contribution.logical_plan().clone(),
@@ -3135,16 +3143,24 @@ impl ExtensionPlanner for IvmKeyedLookupExtensionPlanner {
         if let Some(node) = node.as_any().downcast_ref::<IvmStateMergeNode>() {
             let spec = &node.spec;
             let input = Arc::clone(&physical_inputs[0]);
-            let input =
-                bucket_repartition(input, IVM_GROUP_ROW_COLUMN, spec.bucket_count)
-                    .map_err(|error| DataFusionError::Execution(format!("{error:?}")))?;
+            let input = match &spec.key {
+                PkLookupKey::BinaryRow { column } => {
+                    bucket_repartition(input, column, spec.bucket_count).map_err(
+                        |error| DataFusionError::Execution(format!("{error:?}")),
+                    )?
+                }
+                PkLookupKey::Columns { table_columns, .. } => {
+                    bucket_repartition_by_columns(input, table_columns, spec.bucket_count)
+                        .map_err(|error| {
+                            DataFusionError::Execution(format!("{error:?}"))
+                        })?
+                }
+            };
             let lookup = IvmPkLookupExec::new_with_key(
                 input,
                 spec.state.clone(),
                 spec.groups_by_bucket.clone(),
-                PkLookupKey::BinaryRow {
-                    column: IVM_GROUP_ROW_COLUMN.to_string(),
-                },
+                spec.key.clone(),
                 spec.bucket_count,
             )?
             // A group with no old state row is a new group: emit the
@@ -3155,6 +3171,7 @@ impl ExtensionPlanner for IvmKeyedLookupExtensionPlanner {
                 spec.state.schema.clone(),
                 spec.group_keys.clone(),
                 spec.measure_columns.clone(),
+                spec.scalar_columns.clone(),
                 spec.epoch,
             )?)));
         }
@@ -3214,6 +3231,7 @@ pub(crate) struct IvmStateMergeExec {
     state_schema: SchemaRef,
     group_keys: Vec<String>,
     measure_columns: Vec<String>,
+    scalar_columns: Vec<String>,
     epoch: i64,
     properties: Arc<PlanProperties>,
 }
@@ -3232,6 +3250,10 @@ impl IvmStateMergeExec {
         &self.measure_columns
     }
 
+    pub(crate) fn scalar_columns(&self) -> &[String] {
+        &self.scalar_columns
+    }
+
     pub(crate) fn epoch(&self) -> i64 {
         self.epoch
     }
@@ -3246,6 +3268,7 @@ impl IvmStateMergeExec {
         state_schema: SchemaRef,
         group_keys: Vec<String>,
         measure_columns: Vec<String>,
+        scalar_columns: Vec<String>,
         epoch: i64,
     ) -> DataFusionResult<Self> {
         let partitions = input.output_partitioning().partition_count();
@@ -3260,6 +3283,7 @@ impl IvmStateMergeExec {
             state_schema,
             group_keys,
             measure_columns,
+            scalar_columns,
             epoch,
             properties,
         })
@@ -3280,8 +3304,9 @@ impl DisplayAs for IvmStateMergeExec {
     ) -> std::fmt::Result {
         write!(
             f,
-            "IvmStateMergeExec measures={}",
-            self.measure_columns.join(",")
+            "IvmStateMergeExec measures={} scalars={}",
+            self.measure_columns.join(","),
+            self.scalar_columns.join(",")
         )
     }
 }
@@ -3346,6 +3371,7 @@ impl ExecutionPlan for IvmStateMergeExec {
             self.state_schema.clone(),
             self.group_keys.clone(),
             self.measure_columns.clone(),
+            self.scalar_columns.clone(),
             self.epoch,
         )?))
     }
@@ -3365,11 +3391,19 @@ impl ExecutionPlan for IvmStateMergeExec {
         let state_schema = self.state_schema.clone();
         let group_keys = self.group_keys.clone();
         let measures = self.measure_columns.clone();
+        let scalars = self.scalar_columns.clone();
         let epoch = self.epoch;
         let output_schema = self.state_schema.clone();
         let stream = input.map(move |batch| {
             let batch = batch?;
-            merge_state_batch(&batch, &state_schema, &group_keys, &measures, epoch)
+            merge_state_batch(
+                &batch,
+                &state_schema,
+                &group_keys,
+                &measures,
+                &scalars,
+                epoch,
+            )
         });
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             output_schema,
@@ -3464,6 +3498,7 @@ fn merge_state_batch(
     state_schema: &SchemaRef,
     group_keys: &[String],
     measures: &[String],
+    scalars: &[String],
     epoch: i64,
 ) -> DataFusionResult<RecordBatch> {
     let rows = batch.num_rows();
@@ -3544,32 +3579,55 @@ fn merge_state_batch(
     let mut columns = Vec::with_capacity(state_schema.fields().len());
     for field in state_schema.fields() {
         let name = field.name();
-        let array: ArrayRef =
-            if name == IVM_GROUP_ROW_COLUMN || group_keys.iter().any(|key| key == name) {
-                let column = batch.column_by_name(name).ok_or_else(|| {
-                    DataFusionError::Execution(format!("missing group column {name}"))
+        let array: ArrayRef = if name == IVM_GROUP_ROW_COLUMN
+            || group_keys.iter().any(|key| key == name)
+        {
+            let column = batch.column_by_name(name).ok_or_else(|| {
+                DataFusionError::Execution(format!("missing group column {name}"))
+            })?;
+            cast(column.as_ref(), field.data_type())
+                .map_err(|error| DataFusionError::Execution(error.to_string()))?
+        } else if name == IVM_ROW_COUNT_COLUMN {
+            Arc::new(Int64Array::from(counts.clone()))
+        } else if name == IVM_ROW_KINDS_COLUMN {
+            Arc::new(kinds.clone())
+        } else if name == IVM_EPOCH_COLUMN {
+            Arc::new(epochs.clone())
+        } else if measures.iter().any(|measure| measure == name) {
+            add_accumulator(
+                batch,
+                IVM_STATE_COLUMN_PREFIX,
+                name,
+                field.data_type(),
+                &already_applied,
+            )?
+        } else if scalars.iter().any(|scalar| scalar == name) {
+            let old = batch
+                .column_by_name(&format!("{IVM_STATE_COLUMN_PREFIX}{name}"))
+                .ok_or_else(|| {
+                    DataFusionError::Execution(format!("missing old state {name}"))
                 })?;
-                cast(column.as_ref(), field.data_type())
-                    .map_err(|error| DataFusionError::Execution(error.to_string()))?
-            } else if name == IVM_ROW_COUNT_COLUMN {
-                Arc::new(Int64Array::from(counts.clone()))
-            } else if name == IVM_ROW_KINDS_COLUMN {
-                Arc::new(kinds.clone())
-            } else if name == IVM_EPOCH_COLUMN {
-                Arc::new(epochs.clone())
-            } else if measures.iter().any(|measure| measure == name) {
-                add_accumulator(
-                    batch,
-                    IVM_STATE_COLUMN_PREFIX,
-                    name,
-                    field.data_type(),
-                    &already_applied,
-                )?
-            } else {
-                return Err(DataFusionError::Execution(format!(
-                    "state merge does not know how to write {name}"
-                )));
-            };
+            let delta = batch.column_by_name(&format!("d_{name}")).ok_or_else(|| {
+                DataFusionError::Execution(format!("missing delta {name}"))
+            })?;
+            let old = cast(old.as_ref(), field.data_type())
+                .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+            let delta = cast(delta.as_ref(), field.data_type())
+                .map_err(|error| DataFusionError::Execution(error.to_string()))?;
+            // A scalar is constant for the group: keep the old value when
+            // the delta is already applied, otherwise take the new one.
+            let mask = BooleanArray::from(
+                (0..rows)
+                    .map(|row| !already_applied[row] && delta.is_valid(row))
+                    .collect::<Vec<_>>(),
+            );
+            arrow::compute::kernels::zip::zip(&mask, &delta.as_ref(), &old.as_ref())
+                .map_err(|error| DataFusionError::Execution(error.to_string()))?
+        } else {
+            return Err(DataFusionError::Execution(format!(
+                "state merge does not know how to write {name}"
+            )));
+        };
         columns.push(array);
     }
     RecordBatch::try_new(state_schema.clone(), columns)
@@ -3765,6 +3823,7 @@ mod tests {
             &state_schema,
             &["k".to_string()],
             &["v_sum".to_string()],
+            &[],
             3,
         )
         .unwrap();
