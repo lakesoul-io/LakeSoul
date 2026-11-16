@@ -114,6 +114,11 @@ pub struct JobSettings {
     pub time_zone: Option<String>,
     pub ivm_enabled: bool,
     pub application_name: Option<String>,
+    /// The submitter's domain under `--rbac`: the job's session is confined
+    /// to it. Absent in jobs submitted without domain enforcement, which a
+    /// server running with `--rbac` refuses to run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
 }
 
 impl JobSettings {
@@ -121,13 +126,20 @@ impl JobSettings {
         settings: &SessionSettings,
         ivm_enabled: bool,
         application_name: Option<String>,
+        access: Option<&crate::auth::DomainAccess>,
     ) -> Self {
         Self {
             search_path: settings.search_path.clone(),
             time_zone: settings.time_zone.iana_name().map(str::to_owned),
             ivm_enabled,
             application_name,
+            domain: access.map(|access| access.domain().to_string()),
         }
+    }
+
+    /// The domain the job's session acts in.
+    pub fn access(&self) -> Option<crate::auth::DomainAccess> {
+        self.domain.clone().map(crate::auth::DomainAccess::new)
     }
 
     /// A fresh session configuration. `statement_timeout` is deliberately not

@@ -417,6 +417,46 @@ COMMIT;
 - The metadata publication runs detached from the statement, so a cancel request or `statement_timeout` cannot make a `COMMIT` delete files it may have published: the task publishes or deletes exactly once. A cancellation during the (post-publication) index build costs shards, never data (`server::tests::dropping_a_published_block_deletes_nothing`).
 - **Bounds and cleanup.** `--max-staged-files-per-transaction` / `--max-staged-bytes-per-transaction` (`LAKESOUL_PG_MAX_STAGED_*`) refuse a write that would exceed them with `54000` and keep the block's accepted writes staged (`transaction::staged_limit_tests`); the counter `lakesoul_transaction_staged_limit_total{resource}` records refusals. A connection that goes away with an open block hands its staged files to a deletion task (`Drop for ConnectionSession`); without a live runtime the files are left to GC. `idle_in_transaction_session_timeout` is **not** implemented. A hook cannot close the socket (`ClientInfo` has no such call), so the only available behaviour is to expire the block at the next statement boundary and answer `FATAL 25P03` (pgwire closes on a fatal response); a client that never sends another message keeps its block - and its files - until it disconnects, when they are deleted.
 
+### Authentication: LakeSoul JWT (`--jwt-auth`)
+
+Off by default: the startup `user` is trusted and the handshake completes on the `Startup` message, exactly as before. With `--jwt-auth` (`LAKESOUL_PG_JWT_AUTH=true`) the server asks every connection for a cleartext password and accepts only a LakeSoul JWT, the same token the Flight server and the S3 proxy accept: HS256 signed with the metadata client secret (derived from `LAKESOUL_PG_USERNAME`/`LAKESOUL_PG_PASSWORD`), claims `{sub, group, exp}`. The token's `sub` must equal the connection's `user`; `group` is the LakeSoul domain, logged on connect and enforced only with `--rbac` (below).
+
+```sh
+# Mint a token (prints only the token; needs the metadata env, nothing else).
+export PGPASSWORD=$(postgres-lakesoul token --user alice --group team_a --ttl 1h)
+psql "host=127.0.0.1 port=5432 user=alice dbname=default"
+```
+
+- An empty, malformed, expired (`exp` plus the validator's 60 s leeway), wrongly signed, or other-user token is `FATAL 28P01` and the connection closes. The client is not told why; the server logs `token authentication failed` with a `reason` (`missing_token`, `invalid_token`, `expired`, `user_mismatch`) and the peer address. No session is built and no connection slot is taken before the token is accepted. Refusals are counted in `lakesoul_auth_failures_total{reason}`.
+- The token travels in clear like any cleartext password. Terminate TLS in front of the server or keep it on a trusted network. Tokens are short-lived by design; there is no revocation list, so `exp` is the only way a token stops working.
+- Rotating the metadata password rotates the signing secret and invalidates every token for every LakeSoul service at once.
+- Covered by `auth::tests` (verification branches, TTL parsing), `server::tests::jwt_*` and `startup_without_jwt_completes_on_the_startup_message` (the handshake, message by message), and `tests/rbac_contract.rs` against a real `--jwt-auth` child: each bad password above is `28P01` with a message that does not name the cause, a client without a password cannot connect, a valid token for any user connects, and authentication alone hides no namespace (a namespace in a domain the token does not carry is listed in `pg_database` and connectable).
+
+#### Domain enforcement (`--rbac`)
+
+`--rbac` (`LAKESOUL_PG_RBAC=true`, requires `--jwt-auth`) confines each connection to the domain in its token's `group`, by the row-level-security rule of `script/meta_rbac_init.sql` without role inheritance: a connection sees objects in its own domain, `public` and `lake-public`, and nothing else. Hidden objects do not exist for it, the way RLS hides rows from the JVM engines (PostgreSQL would say `permission denied`; LakeSoul says nothing).
+
+| Path | Under `--rbac` |
+| --- | --- |
+| `pg_database` | Lists only namespaces in a visible domain. Connecting to another domain's namespace fails at startup exactly like a missing one (`database "…" does not exist`). |
+| `SELECT` / `INSERT` / `UPDATE` / `ALTER TABLE` / `DROP TABLE`, simple and extended | Another domain's table is `42P01`, also inside a shared (`public`) namespace. `DROP TABLE IF EXISTS` skips it. Public tables stay readable and, as under RLS, writable. |
+| `pg_class` / `pg_tables` | List only visible tables. |
+| `CREATE TABLE` | The new table's `table_info`, `table_name_id` and `table_path_id` rows carry the creator's domain; data and partition rows inherit it. |
+| Detached jobs (`lakesoul_submit`) | Run in the submitter's domain, stored with the job. A job stored without a domain (submitted before `--rbac`) fails instead of running unconfined. |
+| Subscriptions (`CREATE`/`ALTER`/`DROP SUBSCRIPTION`) | `42501`: they create and write tables through the metadata client, past the filter. |
+| IVM-maintained `INSERT … SELECT` | `42501`: maintenance can refresh on sessions of the IVM runtime's own, which carry no connection's filter. |
+| Foreign tables (federation) | Unchanged: per-user rules of their own. |
+| `COPY` | Already refused (`0A000`). |
+
+- Queries resolve a table's domain from the metadata row they read, so a table another engine has just created is usable at once by its own domain and never by another. The catalog listings, `table_exist` and `DROP` are synchronous and read the domain from the shared catalog snapshot (refreshed every 5 s and after this server's own writes): a table created elsewhere appears in `pg_class` and can be dropped after the next refresh.
+- `CREATE TABLE` of a name another domain already uses in the namespace is `42P07`, as in PostgreSQL: names are unique per namespace across domains.
+- A token carries one group. A user who needs several domains connects with one token per domain.
+- Covered by `auth::domain_tests`, `server::tests::rbac_*`, `catalog::snapshot::tests` (lakesoul-datafusion) and `rbac_contract::rbac_domain_enforcement_contract`, against a real `--jwt-auth --rbac` child with one namespace per team plus the public fixtures: database visibility and the hidden-equals-missing startup error, `create-sets-domain` read back from the metadata database, every statement above refused for another team and for a `public` token while the authoritative snapshot (metadata rows and warehouse bytes) stays unchanged, extended Parse, detached jobs, the `42501` refusals, and a table inserted straight into the metadata database (resolved at once by its team, listed after the refresh, never visible to the other team).
+
+```sh
+cargo -q test -p postgres-lakesoul --test rbac_contract -- --nocapture
+```
+
 ## Failure acceptance
 
 The commands below **should exit non-zero**; they are not normal passing commands. `expectation` deliberately corrupts an expectation (merge uses an old value, catalog uses the peer database identity, vector uses a wrong ID, TPC-H uses a wrong q06 numeric answer), and `startup` passes invalid startup arguments to the real binary; both must print cleanup proof. The storage, catalog, vector, and TPC-H target faults occur after all fixtures are created, additionally verifying that new tables/the second namespace/committed index metadata and files are reclaimed; the TPC-H dual-worker startup fault also verifies RPC port and worker task reclamation.

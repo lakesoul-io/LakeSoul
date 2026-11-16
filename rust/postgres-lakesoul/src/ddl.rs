@@ -39,7 +39,9 @@ use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire;
 use lakesoul_common::schema_evolution::column_names_collide;
-use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
+use lakesoul_datafusion::datasource::table_provider::{
+    DOMAIN_OPTION, LakeSoulTableProvider,
+};
 use lakesoul_metadata::MetaDataClientRef;
 use pgwire::api::ClientInfo;
 use pgwire::api::results::{Response, Tag};
@@ -77,6 +79,9 @@ pub struct DdlStatementHook {
     client: MetaDataClientRef,
     database: String,
     warehouse: Option<String>,
+    /// The domain new tables are created in under domain enforcement;
+    /// `None` keeps the `public` default.
+    domain: Option<String>,
 }
 
 impl DdlStatementHook {
@@ -84,11 +89,13 @@ impl DdlStatementHook {
         client: MetaDataClientRef,
         database: String,
         warehouse: Option<String>,
+        domain: Option<String>,
     ) -> Self {
         Self {
             client,
             database,
             warehouse,
+            domain,
         }
     }
 
@@ -175,6 +182,11 @@ impl DdlStatementHook {
             .or_insert_with(|| DEFAULT_HASH_BUCKET_NUM.to_string());
 
         normalize_cdc_options(&mut location_options, &schema)?;
+        // Set after the user's options were validated, which refuses this key:
+        // the domain comes from the connection's token, never from SQL.
+        if let Some(domain) = &self.domain {
+            location_options.insert(DOMAIN_OPTION.to_string(), domain.clone());
+        }
 
         let mut constraints = Constraints::default();
         if let Some(indices) = primary_key {

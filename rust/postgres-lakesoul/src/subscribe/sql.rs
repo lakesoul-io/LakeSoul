@@ -153,6 +153,9 @@ impl SubscriptionStatementHook {
         original: &str,
         client: &mut dyn HookClient,
     ) -> PgWireResult<Response> {
+        // A subscription creates and writes its target tables through the
+        // metadata client, past the connection's domain filter.
+        crate::auth::refuse_under_domain_enforcement(client, "managing subscriptions")?;
         if client.transaction_status() != TransactionStatus::Idle {
             return Err(active_transaction());
         }

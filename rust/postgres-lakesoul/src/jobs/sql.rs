@@ -128,6 +128,7 @@ impl JobStatementHook {
                     &state.session.settings.read().clone(),
                     crate::ivm::ivm_enabled(&state.session.context),
                     client.metadata().get("application_name").cloned(),
+                    state.session.identity.access.as_ref(),
                 );
                 let query_id = self
                     .jobs

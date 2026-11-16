@@ -29,9 +29,11 @@ use datafusion::error::{DataFusionError, Result};
 use lakesoul_datafusion::catalog::{
     CatalogSnapshot, LakeSoulNamespace, LakeSoulProviderOptions,
 };
+use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
 use lakesoul_metadata::MetaDataClientRef;
 use parking_lot::RwLock;
 
+use crate::auth::DomainAccess;
 use crate::federation::FederationRuntime;
 
 /// The single user-visible schema of a PG database: `public` maps to the
@@ -61,11 +63,21 @@ impl PgLakeSoulCatalog {
 
 /// `public` schema of one PostgreSQL database: LakeSoul tables plus foreign
 /// tables defined for that database.
+///
+/// Under domain enforcement (`access` is set) a LakeSoul table outside the
+/// connection's domain does not exist for it: [`SchemaProvider::table`]
+/// checks the domain of the table it just read from metadata, and the
+/// synchronous methods consult the domains the catalog snapshot holds. A
+/// table the snapshot does not know yet (created by another process since
+/// the last refresh) is therefore listed, `table_exist`-ed and dropped only
+/// after the next refresh, while queries resolve it at once. Foreign tables
+/// keep their own per-user rules.
 pub struct PgPublicSchema {
     local: Arc<LakeSoulNamespace>,
     federation: Option<Arc<FederationRuntime>>,
     database: String,
     user: String,
+    access: Option<DomainAccess>,
 }
 
 impl std::fmt::Debug for PgPublicSchema {
@@ -74,6 +86,7 @@ impl std::fmt::Debug for PgPublicSchema {
             .field("database", &self.database)
             .field("user", &self.user)
             .field("federation", &self.federation.is_some())
+            .field("access", &self.access)
             .finish()
     }
 }
@@ -84,12 +97,14 @@ impl PgPublicSchema {
         federation: Option<Arc<FederationRuntime>>,
         database: &str,
         user: &str,
+        access: Option<DomainAccess>,
     ) -> Self {
         Self {
             local,
             federation,
             database: database.to_string(),
             user: user.to_string(),
+            access,
         }
     }
 
@@ -97,12 +112,40 @@ impl PgPublicSchema {
     pub fn snapshot(&self) -> &Arc<CatalogSnapshot> {
         self.local.snapshot()
     }
+
+    /// Whether the snapshot places `table` in a domain this connection may
+    /// see. Always true without domain enforcement; false for a table the
+    /// snapshot does not know.
+    fn visible_in_snapshot(&self, table: &str) -> bool {
+        let Some(access) = &self.access else {
+            return true;
+        };
+        self.local
+            .snapshot()
+            .table_domain(self.local.namespace(), table)
+            .is_some_and(|domain| access.allows(&domain))
+    }
+
+    /// Whether a table read from metadata is visible to this connection.
+    fn visible_provider(&self, table: &Arc<dyn TableProvider>) -> bool {
+        let Some(access) = &self.access else {
+            return true;
+        };
+        // Fail closed: the local namespace only builds LakeSoul tables, so
+        // anything else has no domain to check.
+        table
+            .downcast_ref::<LakeSoulTableProvider>()
+            .is_some_and(|provider| access.allows(&provider.table_info().domain))
+    }
 }
 
 #[async_trait]
 impl SchemaProvider for PgPublicSchema {
     fn table_names(&self) -> Vec<String> {
         let mut names = self.local.table_names();
+        if self.access.is_some() {
+            names.retain(|name| self.visible_in_snapshot(name));
+        }
         if let Some(federation) = &self.federation {
             for name in federation.foreign_names(&self.database) {
                 if !names.contains(&name) {
@@ -121,7 +164,8 @@ impl SchemaProvider for PgPublicSchema {
         {
             return Ok(Some(table));
         }
-        self.local.table(name).await
+        let table = self.local.table(name).await?;
+        Ok(table.filter(|table| self.visible_provider(table)))
     }
 
     fn table_exist(&self, name: &str) -> bool {
@@ -130,7 +174,7 @@ impl SchemaProvider for PgPublicSchema {
         {
             return true;
         }
-        self.local.table_exist(name)
+        self.local.table_exist(name) && self.visible_in_snapshot(name)
     }
 
     fn register_table(
@@ -141,7 +185,13 @@ impl SchemaProvider for PgPublicSchema {
         self.local.register_table(name, table)
     }
 
+    /// Synchronous, so the domain comes from the snapshot: a hidden table, or
+    /// one the snapshot does not know yet, is reported as absent and left
+    /// alone.
     fn deregister_table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
+        if !self.visible_in_snapshot(name) {
+            return Ok(None);
+        }
         self.local.deregister_table(name)
     }
 }
@@ -318,6 +368,7 @@ pub fn pg_lakesoul_catalog(
         snapshot,
         None,
         "",
+        None,
     )
 }
 
@@ -328,6 +379,7 @@ pub fn pg_lakesoul_catalog_with_federation(
     snapshot: Arc<CatalogSnapshot>,
     federation: Option<Arc<FederationRuntime>>,
     user: &str,
+    access: Option<DomainAccess>,
 ) -> Arc<PgLakeSoulCatalog> {
     let local = Arc::new(LakeSoulNamespace::with_snapshot(
         client,
@@ -335,7 +387,9 @@ pub fn pg_lakesoul_catalog_with_federation(
         namespace,
         snapshot,
     ));
-    let public_schema = Arc::new(PgPublicSchema::new(local, federation, namespace, user));
+    let public_schema = Arc::new(PgPublicSchema::new(
+        local, federation, namespace, user, access,
+    ));
     Arc::new(PgLakeSoulCatalog::new(public_schema))
 }
 

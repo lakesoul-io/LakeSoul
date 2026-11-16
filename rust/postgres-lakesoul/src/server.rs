@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use crate::auth::DomainAccess;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::DataType;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
@@ -24,8 +25,11 @@ use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser
 use datafusion_postgres::pgwire;
 use datafusion_postgres::{DfSessionService, Parser};
 use futures::{Sink, SinkExt};
-use pgwire::api::auth::StartupHandler;
-use pgwire::api::auth::noop::NoopStartupHandler;
+use lakesoul_metadata::JwtServer;
+use pgwire::api::auth::{
+    DefaultServerParameterProvider, ServerParameterProvider, StartupHandler,
+    protocol_negotiation, save_startup_parameters_to_metadata,
+};
 use pgwire::api::cancel::CancelHandler;
 use pgwire::api::copy;
 use pgwire::api::portal::{Format, Portal, PortalExecutionState};
@@ -39,16 +43,17 @@ use pgwire::api::results::{
 use pgwire::api::stmt::{QueryParser, StoredStatement};
 use pgwire::api::store::PortalStore;
 use pgwire::api::{
-    ClientInfo, ClientPortalStore, ConnectionManager, DEFAULT_NAME, ErrorHandler,
-    METADATA_DATABASE, METADATA_USER, PgWireConnectionState, PgWireServerHandlers, Type,
+    ClientInfo, ClientPortalStore, ConnectionGuard, ConnectionHandle, ConnectionManager,
+    DEFAULT_NAME, ErrorHandler, METADATA_DATABASE, METADATA_USER, PgWireConnectionState,
+    PgWireServerHandlers, PidSecretKeyGenerator, RandomPidSecretKeyGenerator, Type,
 };
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::extendedquery::{
     Bind, Close, Execute, Parse, Sync as PgSync, TARGET_TYPE_BYTE_PORTAL,
 };
-use pgwire::messages::response::{EmptyQueryResponse, TransactionStatus};
+use pgwire::messages::response::{EmptyQueryResponse, ReadyForQuery, TransactionStatus};
 use pgwire::messages::simplequery::Query;
-use pgwire::messages::startup::ParameterStatus;
+use pgwire::messages::startup::{Authentication, BackendKeyData, ParameterStatus};
 use pgwire::messages::{PgWireBackendMessage, PgWireFrontendMessage};
 use rootcause::Report;
 use tracing::{debug, info, warn};
@@ -582,18 +587,27 @@ fn split_statements(sql: &str) -> Option<Vec<String>> {
     }
     Some(statements.iter().map(ToString::to_string).collect())
 }
-/// Startup handler: creates one session per connection.
+/// Startup handler: authenticates the connection, then creates its session.
 ///
-/// `post_startup` runs after the startup parameters have been written to the
-/// client metadata and before `ReadyForQuery` is sent, which makes it the
-/// right place to build the connection-local session. A failure here is
-/// reported as a `FATAL` error so the connection never reaches
-/// `ReadyForQuery`.
+/// Without JWT authentication the `Startup` message completes the handshake
+/// at once, as it always has. With it, the server answers `Startup` with a
+/// cleartext password request and completes the handshake only when the
+/// password is a valid LakeSoul token for the startup user (see
+/// [`crate::auth`]); anything else is `FATAL 28P01` and no session is ever
+/// built.
+///
+/// Completing the handshake sends `AuthenticationOk`, the server parameters
+/// and `BackendKeyData`, builds the connection-local session, and only then
+/// sends `ReadyForQuery`. pgwire's own helpers for that sequence are
+/// crate-private, and its public `finish_authentication` sends
+/// `ReadyForQuery` before the session could exist, so the sequence is
+/// written out here.
 pub struct LakeSoulStartupHandler {
     session_factory: Arc<PgSessionFactory>,
     cancel_registry: Arc<CancelRegistry>,
     connection_manager: Arc<ConnectionManager>,
     server_limits: Arc<ServerLimits>,
+    pid_secret_key_generator: RandomPidSecretKeyGenerator,
 }
 
 impl LakeSoulStartupHandler {
@@ -608,20 +622,110 @@ impl LakeSoulStartupHandler {
             cancel_registry,
             connection_manager,
             server_limits,
+            pid_secret_key_generator: RandomPidSecretKeyGenerator::default(),
         }
     }
-}
 
-#[async_trait]
-impl NoopStartupHandler for LakeSoulStartupHandler {
-    fn connection_manager(&self) -> Option<Arc<ConnectionManager>> {
-        Some(Arc::clone(&self.connection_manager))
+    /// Checks the password sent for the startup user against the token
+    /// verifier, and returns the domain the connection is confined to when
+    /// domain enforcement is on. The reason for a refusal is logged, never
+    /// sent.
+    fn authenticate<C: ClientInfo>(
+        &self,
+        client: &C,
+        jwt: &JwtServer,
+        password: &str,
+    ) -> PgWireResult<Option<DomainAccess>> {
+        let Some(user) = client.metadata().get(METADATA_USER).cloned() else {
+            return Err(PgWireError::UserNameRequired);
+        };
+        match crate::auth::verify_token(jwt, &user, password) {
+            Ok(claims) => {
+                info!(user = %user, group = %claims.group, "token authenticated");
+                Ok(self
+                    .session_factory
+                    .auth()
+                    .rbac
+                    .then(|| DomainAccess::new(claims.group)))
+            }
+            Err(failure) => {
+                crate::auth::record_failure(&failure);
+                warn!(
+                    user = %user,
+                    peer = %client.socket_addr(),
+                    reason = failure.reason(),
+                    detail = %failure,
+                    "token authentication failed"
+                );
+                Err(PgWireError::InvalidPassword(user))
+            }
+        }
     }
 
-    async fn post_startup<C>(
+    /// Ends a successful handshake: registers the connection, sends
+    /// `AuthenticationOk`, the server parameters and `BackendKeyData`, builds
+    /// the session, then sends `ReadyForQuery`.
+    async fn complete_startup<C>(
         &self,
         client: &mut C,
-        _message: PgWireFrontendMessage,
+        access: Option<DomainAccess>,
+    ) -> PgWireResult<()>
+    where
+        C: ClientInfo + Sink<PgWireBackendMessage> + Unpin + Send,
+        C::Error: std::fmt::Debug,
+        PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
+    {
+        let (pid, secret_key) = self.pid_secret_key_generator.generate(client);
+        client.set_pid_and_secret_key(pid, secret_key.clone());
+        let (handle, guard) = self.connection_manager.register(pid, secret_key.clone());
+        client
+            .session_extensions()
+            .insert::<Arc<ConnectionHandle>>(handle);
+        client.session_extensions().insert::<ConnectionGuard>(guard);
+
+        client
+            .feed(PgWireBackendMessage::Authentication(Authentication::Ok))
+            .await?;
+        if let Some(parameters) =
+            DefaultServerParameterProvider::default().server_parameters(client)
+        {
+            for (name, value) in parameters {
+                client
+                    .feed(PgWireBackendMessage::ParameterStatus(ParameterStatus::new(
+                        name, value,
+                    )))
+                    .await?;
+            }
+        }
+        client
+            .feed(PgWireBackendMessage::BackendKeyData(BackendKeyData::new(
+                pid, secret_key,
+            )))
+            .await?;
+
+        self.establish_session(client, access).await?;
+
+        client
+            .send(PgWireBackendMessage::ReadyForQuery(ReadyForQuery::new(
+                TransactionStatus::Idle,
+            )))
+            .await?;
+        client.set_state(PgWireConnectionState::ReadyForQuery);
+        Ok(())
+    }
+
+    /// Builds the connection-local session and installs it in the client's
+    /// session extensions.
+    ///
+    /// Runs after the startup parameters have been written to the client
+    /// metadata and before `ReadyForQuery` is sent. A failure is reported as
+    /// a `FATAL` error so the connection never reaches `ReadyForQuery`.
+    ///
+    /// `access` confines the session to one domain; `None` without `--rbac`.
+    pub(crate) async fn establish_session<C>(
+        &self,
+        client: &mut C,
+        access: Option<DomainAccess>,
     ) -> PgWireResult<()>
     where
         C: ClientInfo + Sink<PgWireBackendMessage> + Unpin + Send,
@@ -656,6 +760,7 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
                 SessionIdentity {
                     user: user.clone(),
                     database,
+                    access,
                 },
                 &SessionSettings::default(),
             )
@@ -664,6 +769,11 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
         info!(
             user = %session.identity.user,
             database = %session.identity.database,
+            domain = session
+                .identity
+                .access
+                .as_ref()
+                .map_or("-", DomainAccess::domain),
             "created connection-local session"
         );
 
@@ -680,7 +790,7 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
         let defaults = SessionDefaults::capture(&session.context, client.metadata());
         let service = Arc::new(DfSessionService::new_with_hooks(
             Arc::clone(&session.context),
-            connection_statement_hooks(&self.session_factory, &session.identity.database),
+            connection_statement_hooks(&self.session_factory, &session.identity),
         ));
         let cancellation = Arc::new(QueryCancellation::new(
             Arc::clone(&self.server_limits),
@@ -712,6 +822,50 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
     }
 }
 
+#[async_trait]
+impl StartupHandler for LakeSoulStartupHandler {
+    async fn on_startup<C>(
+        &self,
+        client: &mut C,
+        message: PgWireFrontendMessage,
+    ) -> PgWireResult<()>
+    where
+        C: ClientInfo + Sink<PgWireBackendMessage> + Unpin + Send + Sync,
+        C::Error: std::fmt::Debug,
+        PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
+    {
+        match message {
+            PgWireFrontendMessage::Startup(ref startup) => {
+                protocol_negotiation(client, startup).await?;
+                save_startup_parameters_to_metadata(client, startup);
+                if self.session_factory.auth().jwt.is_some() {
+                    client.set_state(PgWireConnectionState::AuthenticationInProgress);
+                    client
+                        .send(PgWireBackendMessage::Authentication(
+                            Authentication::CleartextPassword,
+                        ))
+                        .await?;
+                } else {
+                    self.complete_startup(client, None).await?;
+                }
+            }
+            // Only reachable after this handler asked for a password: pgwire
+            // routes startup-phase messages here, and without JWT the
+            // handshake has already completed on `Startup`.
+            PgWireFrontendMessage::PasswordMessageFamily(password) => {
+                let Some(jwt) = self.session_factory.auth().jwt.as_deref() else {
+                    return Ok(());
+                };
+                let password = password.into_password()?;
+                let access = self.authenticate(client, jwt, &password.password)?;
+                self.complete_startup(client, access).await?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
 /// Statement hooks for one connection.
 ///
 /// The pgvector GUC hook claims `ivfflat.probes` before the upstream
@@ -721,8 +875,9 @@ impl NoopStartupHandler for LakeSoulStartupHandler {
 /// own dialect-specific DDL.
 pub(crate) fn connection_statement_hooks(
     factory: &PgSessionFactory,
-    database: &str,
+    identity: &SessionIdentity,
 ) -> Vec<Arc<dyn datafusion_postgres::QueryHook>> {
+    let database = identity.database.as_str();
     let mut hooks = crate::pg_vector::statement_hooks();
     if let Some(federation) = factory.federation() {
         hooks.push(Arc::new(crate::federation::FederationStatementHook::new(
@@ -734,6 +889,10 @@ pub(crate) fn connection_statement_hooks(
         Arc::clone(factory.meta_client()),
         database.to_string(),
         factory.warehouse().map(str::to_owned),
+        identity
+            .access
+            .as_ref()
+            .map(|access| access.domain().to_string()),
     )));
     hooks.push(Arc::new(crate::ivm::IvmSettingsHook));
     hooks.push(Arc::new(crate::ivm::IvmInsertHook));

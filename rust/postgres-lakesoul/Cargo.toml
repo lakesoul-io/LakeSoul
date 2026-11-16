@@ -48,6 +48,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 futures.workspace = true
+jsonwebtoken.workspace = true
 bytes.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
