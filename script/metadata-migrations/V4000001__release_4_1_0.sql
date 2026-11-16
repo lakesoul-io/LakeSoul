@@ -300,6 +300,9 @@ create table if not exists job.queries
     job_key            text,
     user_name          text   not null,
     database_name      text   not null,
+    -- The submitter's domain under `--rbac`, empty without one. It is part of
+    -- the job's owner, so a job_key never dedupes onto another domain's job.
+    domain             text   not null default '',
     sql_text           text   not null,
     settings           jsonb  not null,
     state              text   not null default 'queued',
@@ -339,6 +342,8 @@ alter table if exists job.queries
     add column if not exists retry_on_restart boolean not null default true;
 alter table if exists job.queries
     add column if not exists timeout_ms bigint;
+alter table if exists job.queries
+    add column if not exists domain text not null default '';
 
 create index if not exists job_queries_state_idx
     on job.queries (state, created_at);
@@ -347,9 +352,10 @@ create index if not exists job_queries_user_idx
     on job.queries (user_name, created_at desc);
 
 drop index if exists job.job_queries_user_key_idx;
+drop index if exists job.job_queries_scope_key_idx;
 
-create unique index if not exists job_queries_scope_key_idx
-    on job.queries (database_name, user_name, job_key);
+create unique index if not exists job_queries_domain_key_idx
+    on job.queries (database_name, user_name, domain, job_key);
 
 -- ---------------------------------------------------------------------------
 -- Incremental view maintenance (IVM)

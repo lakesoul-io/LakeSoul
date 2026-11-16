@@ -76,6 +76,12 @@ use lakesoul_common::ser::arrow_java::{
 use super::file_format::LakeSoulMetaDataFormat;
 use crate::write_mode::UpdateUnsupported;
 
+/// `CreateExternalTable` option naming the RBAC domain the new table is
+/// created in; `public` when absent. A front end that enforces domains sets
+/// it from the caller's identity. It is consumed here and never reaches the
+/// table's IO options.
+pub const DOMAIN_OPTION: &str = "lakesoul.domain";
+
 const SCAN_STRATEGY_TOTAL: &str = "lakesoul_table_scan_strategy_total";
 const INDEX_PLANNING_TOTAL: &str = "lakesoul_index_planning_total";
 const INDEX_FALLBACKS_TOTAL: &str = "lakesoul_index_fallbacks_total";
@@ -1069,7 +1075,11 @@ impl LakeSoulTableProvider {
                     DataFusionError::Internal("missing location".to_string())
                 })?)?
             },
-            domain: "public".to_string(),
+            domain: cmd
+                .options
+                .get(DOMAIN_OPTION)
+                .cloned()
+                .unwrap_or_else(|| "public".to_string()),
         });
         // The object-store options captured on the session (`fs.s3a.*`, …)
         // must reach the table's io config: stores built outside the session
@@ -1079,7 +1089,12 @@ impl LakeSoulTableProvider {
             LakeSoulProviderOptions::from_session(session_state).object_store_options;
         let io_config = create_io_config_builder_from_table_info(
             table_info.clone(),
-            cmd.options.clone().into(),
+            cmd.options
+                .iter()
+                .filter(|(key, _)| key.as_str() != DOMAIN_OPTION)
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<HashMap<_, _>>()
+                .into(),
             object_store_options,
         )?
         .build();

@@ -40,6 +40,8 @@ use crate::catalog::{
 pub struct SessionIdentity {
     pub user: String,
     pub database: String,
+    /// The domain the connection is confined to; `None` without `--rbac`.
+    pub access: Option<crate::auth::DomainAccess>,
 }
 
 datafusion::common::extensions_options! {
@@ -49,6 +51,8 @@ datafusion::common::extensions_options! {
     pub struct PgIdentityConfig {
         pub user: String, default = String::new()
         pub database: String, default = String::new()
+        /// The domain under `--rbac`; part of a job's owner.
+        pub domain: Option<String>, default = None
     }
 }
 
@@ -183,6 +187,8 @@ pub struct PgSessionFactory {
     /// Detached-query service. `None` in tests and in embeddings that do not
     /// install the control statements.
     jobs: Option<Arc<crate::jobs::JobService>>,
+    /// How connections authenticate; the default authenticates nobody.
+    auth: crate::auth::AuthSettings,
 }
 
 impl PgSessionFactory {
@@ -226,7 +232,18 @@ impl PgSessionFactory {
             subscriptions: None,
             federation: None,
             jobs: None,
+            auth: crate::auth::AuthSettings::default(),
         })
+    }
+
+    /// Sets how connections authenticate (see [`crate::auth`]).
+    pub fn with_auth(mut self, auth: crate::auth::AuthSettings) -> Self {
+        self.auth = auth;
+        self
+    }
+
+    pub fn auth(&self) -> &crate::auth::AuthSettings {
+        &self.auth
     }
 
     pub fn with_federation(
@@ -328,11 +345,26 @@ impl PgSessionFactory {
         identity: SessionIdentity,
         settings: &SessionSettings,
     ) -> Result<Arc<PgSession>> {
+        // Fail closed: under domain enforcement every session - interactive
+        // or a detached job's - must say which domain it acts in.
+        if self.auth.rbac && identity.access.is_none() {
+            bail!(
+                "domain enforcement is on, but the session for \"{}\" carries no domain",
+                identity.user
+            );
+        }
         // Namespace visibility is snapshotted once per connection; the sync
-        // catalog interfaces later read this snapshot without blocking.
+        // catalog interfaces later read this snapshot without blocking. A
+        // namespace outside the connection's domain does not exist for it.
         let namespaces = self.meta_client.get_all_namespace().await?;
         let visible_databases: BTreeSet<String> = namespaces
             .into_iter()
+            .filter(|namespace| {
+                identity
+                    .access
+                    .as_ref()
+                    .is_none_or(|access| access.allows(&namespace.domain))
+            })
             .map(|namespace| namespace.namespace)
             .collect();
         if !visible_databases.contains(&identity.database) {
@@ -382,6 +414,10 @@ impl PgSessionFactory {
         config.options_mut().extensions.insert(PgIdentityConfig {
             user: identity.user.clone(),
             database: identity.database.clone(),
+            domain: identity
+                .access
+                .as_ref()
+                .map(|access| access.domain().to_string()),
         });
         // How the next statement treats a key that is already present. The
         // INSERT hook sets it before every write; the sink reads it while
@@ -412,6 +448,7 @@ impl PgSessionFactory {
             Arc::clone(self.base.catalog_snapshot()),
             self.federation.clone(),
             &identity.user,
+            identity.access.clone(),
         );
         let catalog_list = Arc::new(PgDatabaseCatalogList::new(
             identity.database.clone(),

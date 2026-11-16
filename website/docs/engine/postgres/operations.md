@@ -33,8 +33,13 @@ SPDX-License-Identifier: Apache-2.0
 | `--ivm` | off | Enable incremental SQL for `INSERT ... SELECT` |
 | `--distributed-workers` | — | Comma-separated worker endpoints |
 | `--distributed-fallback-to-local` | — | Run a query locally when distributed planning fails |
+| `--jwt-auth` | off | Require a LakeSoul JWT as the connection password (`LAKESOUL_PG_JWT_AUTH`) |
+| `--rbac` | off | Confine each connection to the token's domain (`LAKESOUL_PG_RBAC`, requires `--jwt-auth`) |
 
 `--ivm` and distributed execution are mutually exclusive in v1.
+
+`--jwt-auth` and `--rbac` are covered in
+[Authentication and domains](authentication.md).
 
 ## Runtime limits
 
@@ -54,6 +59,8 @@ The server exposes Prometheus metrics on `--metrics-addr`:
 - `lakesoul_worker_discovery_snapshot_age_seconds`,
   `lakesoul_worker_discovery_eligible_workers`,
   `lakesoul_worker_discovery_refresh_failures_total` — distributed discovery.
+- `lakesoul_auth_failures_total{reason}` — connections refused during token
+  authentication, by reason.
 
 ## Cancellation
 
@@ -82,6 +89,7 @@ with `--discovery kubernetes --k8s-worker-service ... --k8s-namespace ...`.
 
 ## Next
 
+- [Authentication and domains](authentication.md)
 - [Compatibility](compatibility.md)
 - [Metadata store](../../operations/metadata-postgres.md)
 - [Workspace and RBAC](../../operations/workspace-and-rbac.md)

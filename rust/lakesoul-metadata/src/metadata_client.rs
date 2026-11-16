@@ -424,6 +424,38 @@ pub fn pg_config_from_env(
     }
 }
 
+/// The client secret ([`MetaDataClient::get_client_secret`]) of a metadata
+/// connection config: derived from its user and password alone, so a token
+/// can be signed or checked without connecting to the metadata database.
+pub fn client_secret_from_config(config: &str) -> Result<String> {
+    let config = config.parse::<Config>()?;
+    let user = config.get_user().ok_or_else(|| {
+        LakeSoulMetaDataError::NotFound(
+            "the metadata connection config has no user".to_string(),
+        )
+    })?;
+    let password = config.get_password().ok_or_else(|| {
+        LakeSoulMetaDataError::NotFound(
+            "the metadata connection config has no password".to_string(),
+        )
+    })?;
+    Ok(format!(
+        "{:x}",
+        md5::compute(
+            format!("!@{}#${}&*", user, String::from_utf8_lossy(password)).as_bytes()
+        )
+    ))
+}
+
+/// [`client_secret_from_config`] of the primary metadata config that
+/// [`MetaDataClient::from_env`] would connect with, without connecting.
+pub fn client_secret_from_env() -> Result<String> {
+    client_secret_from_config(&pg_config_from_env(
+        PRIMARY_URL_PROP_KEY,
+        PRIMARY_URL_ENV_KEY,
+    )?)
+}
+
 fn table_log_summary(table_info: &TableInfo) -> String {
     // `TableInfo::properties` is deliberately omitted: table properties can carry
     // object store credentials.
@@ -475,24 +507,14 @@ impl MetaDataClient {
         secondary_config: Option<String>,
         max_retry: usize,
     ) -> Result<Self> {
+        let secret = client_secret_from_config(&config)?;
         let client = Arc::new(Mutex::new(
-            create_connection(config.clone(), secondary_config).await?,
+            create_connection(config, secondary_config).await?,
         ));
-        let config = config.parse::<Config>()?;
         Ok(Self {
             client,
             max_retry,
-            secret: format!(
-                "{:x}",
-                md5::compute(
-                    format!(
-                        "!@{}#${}&*",
-                        config.get_user().unwrap(),
-                        String::from_utf8_lossy(config.get_password().unwrap())
-                    )
-                    .as_bytes()
-                )
-            ),
+            secret,
         })
     }
 
@@ -3790,6 +3812,36 @@ mod tests {
             "host=secondary.example port=5433 dbname=production \
              user=production_user password=secret"
         );
+    }
+
+    /// The secret is the one every LakeSoul engine derives: md5 of
+    /// `!@<user>#$<password>&*`, from the settings alone.
+    #[test]
+    fn client_secret_is_derived_from_the_config_alone() {
+        // Port 1 on a reserved host: nothing could answer a connection.
+        let config = "host=offline.invalid port=1 dbname=lakesoul user=alice \
+                      password=s3cret";
+        assert_eq!(
+            client_secret_from_config(config).unwrap(),
+            "ad34237556096bf9c6886bd845e00504"
+        );
+        let properties = "lakesoul.pg.url=jdbc:postgresql://offline.invalid:1/lakesoul\n\
+                          lakesoul.pg.username=alice\n\
+                          lakesoul.pg.password=s3cret\n";
+        let from_properties = pg_config_from_properties(
+            properties,
+            PRIMARY_URL_PROP_KEY,
+            PRIMARY_URL_ENV_KEY,
+        )
+        .unwrap();
+        assert_eq!(
+            client_secret_from_config(&from_properties).unwrap(),
+            "ad34237556096bf9c6886bd845e00504"
+        );
+        assert!(matches!(
+            client_secret_from_config("host=h port=1 dbname=d user=alice"),
+            Err(LakeSoulMetaDataError::NotFound(_))
+        ));
     }
 
     #[test]

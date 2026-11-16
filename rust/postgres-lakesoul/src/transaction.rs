@@ -358,6 +358,9 @@ impl LakeSoulTransactionHook {
     fn close_portals(session: &ConnectionSession, client: &mut dyn HookClient) {
         client.portal_store().clear_portals();
         session.cancellation.forget_all_portals();
+        // Non-holdable cursors do not survive the transaction that declared
+        // them. `WITH HOLD` is refused, so the whole store goes.
+        crate::cursor::clear(client);
     }
 
     /// Publishes every staged write in one metadata transaction.

@@ -27,7 +27,9 @@ use datafusion_postgres::pgwire::api::results::Response;
 use datafusion_postgres::pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use uuid::Uuid;
 
-use crate::jobs::{CancelOutcome, JobError, JobService, JobSettings, SubmitRequest};
+use crate::jobs::{
+    CancelOutcome, JobError, JobOwner, JobService, JobSettings, SubmitRequest,
+};
 use crate::server::connection_session;
 use crate::session_settings::show_response;
 
@@ -108,8 +110,18 @@ impl JobStatementHook {
         params: Option<&ParamValues>,
     ) -> PgWireResult<Response> {
         let state = connection_session(client)?;
-        let user = state.session.identity.user.clone();
-        let database = state.session.identity.database.clone();
+        let identity = &state.session.identity;
+        let user = identity.user.clone();
+        let database = identity.database.clone();
+        let domain = identity
+            .access
+            .as_ref()
+            .map(|access| access.domain().to_string());
+        let owner = JobOwner {
+            user: &user,
+            database: &database,
+            domain: domain.as_deref(),
+        };
         let args = FunctionArgs::parse(call, params)?;
         match function {
             JobFunction::Submit => {
@@ -128,6 +140,7 @@ impl JobStatementHook {
                     &state.session.settings.read().clone(),
                     crate::ivm::ivm_enabled(&state.session.context),
                     client.metadata().get("application_name").cloned(),
+                    state.session.identity.access.as_ref(),
                 );
                 let query_id = self
                     .jobs
@@ -136,8 +149,8 @@ impl JobStatementHook {
                         job_key,
                         timeout_ms,
                         retry_on_restart,
-                        user,
-                        database,
+                        user: user.clone(),
+                        database: database.clone(),
                         settings,
                     })
                     .await
@@ -149,7 +162,7 @@ impl JobStatementHook {
                 let query_id = parse_query_id(&raw)?;
                 let outcome = self
                     .jobs
-                    .cancel(query_id, &user, &database)
+                    .cancel(query_id, &owner)
                     .await
                     .map_err(job_error)?;
                 let cancelled =
@@ -165,7 +178,7 @@ impl JobStatementHook {
                 let timeout_ms = args.optional_i64("timeout_ms", 1)?.unwrap_or(0);
                 let state = self
                     .jobs
-                    .wait(query_id, &user, &database, timeout_ms)
+                    .wait(query_id, &owner, timeout_ms)
                     .await
                     .map_err(job_error)?;
                 show_response(function.response_column(), state.as_str())

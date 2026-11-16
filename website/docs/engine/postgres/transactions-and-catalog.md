@@ -12,22 +12,27 @@ SPDX-License-Identifier: Apache-2.0
 
 ## Transactions
 
-The endpoint runs at **autocommit** with **READ COMMITTED** visibility. Each
-statement sees the latest committed snapshot; a statement that writes commits
-before it returns.
+The endpoint supports **autocommit** and explicit transaction blocks with
+**READ COMMITTED** visibility. A write inside a block writes its files but
+publishes no metadata until `COMMIT`; other connections see nothing before the
+commit. `COMMIT` publishes every staged write of every table in one metadata
+transaction. `ROLLBACK` deletes the staged files.
 
-- `BEGIN` / `COMMIT` / `ROLLBACK` are accepted for read-only work.
-- Writes inside an explicit transaction block are refused with `0A000`.
+- `BEGIN` / `COMMIT` / `ROLLBACK` are accepted. Reads inside a block see the
+  published snapshot plus that block's staged writes.
+- DDL, `COPY`, IVM maintenance, subscriptions and savepoints inside a block are
+  refused with `0A000`.
 - `REPEATABLE READ`, `SERIALIZABLE` and their `SET` forms are refused with
   `0A000`.
 - A failed transaction returns `25P02` for subsequent statements until
   `ROLLBACK`. `COMMIT` inside a failed block ends the transaction as a rollback,
   matching PostgreSQL.
+- A write in a multi-statement simple-query batch is still refused: those
+  statements are not run in one transaction. Split writes into separate
+  messages or an explicit block.
 - `statement_timeout` cancels a running query with `57014`; the connection
   remains usable.
-
-Multi-statement simple-query batches execute the reads before a refused write.
-Do not rely on a batch being atomic: it is not.
+- `idle_in_transaction_session_timeout` is not implemented.
 
 ## Catalog
 

@@ -50,6 +50,8 @@ The Python SDK reads `LAKESOUL_OBJECT_STORE_*` for index builds; see
 | `LAKESOUL_PG_MAX_RESULT_ROWS` | Row limit per statement |
 | `LAKESOUL_PG_MAX_RESULT_BYTES` | Result size limit per statement |
 | `LAKESOUL_PG_IVM` | Enable incremental SQL on `INSERT ... SELECT` |
+| `LAKESOUL_PG_JWT_AUTH` | Require a LakeSoul JWT as the connection password |
+| `LAKESOUL_PG_RBAC` | Confine each connection to the token's domain (requires `LAKESOUL_PG_JWT_AUTH`) |
 | `LAKESOUL_WORKER_THREADS` | Tokio worker threads |
 
 The full flag table is in [PostgreSQL operations](../engine/postgres/operations.md).

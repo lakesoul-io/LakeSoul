@@ -203,6 +203,71 @@ impl LakeSoulNamespace {
         );
         &self.namespace
     }
+
+    /// Removes table `name` when `allowed` accepts its current definition,
+    /// and returns it; `Ok(None)` when no such table exists or `allowed`
+    /// refuses it, which leaves it untouched.
+    ///
+    /// `allowed` sees the exact row that is deleted: the table is resolved
+    /// once and deleted by its `table_id`, so a table that replaced the name
+    /// since a caller's earlier, possibly stale, check is judged on its own
+    /// definition, and one that replaces it during this call is not deleted.
+    pub fn deregister_table_if<F>(
+        &self,
+        name: &str,
+        allowed: F,
+    ) -> DFResult<Option<Arc<dyn TableProvider>>>
+    where
+        F: FnOnce(&TableInfo) -> bool + Send + 'static,
+    {
+        debug!(
+            "LakeSoulNamespace::deregister_table - Deregistering table '{}' from namespace '{}'",
+            name, &self.namespace
+        );
+        let name = case_fold_table_name(name);
+        info!("deregister_table: {:?} {:?}", name, &self.namespace);
+        let client = self.metadata_client.clone();
+        let table_name = name.to_string();
+        let namespace = self.namespace.clone();
+        let pushdown_filters = self.provider_options.pushdown_filters;
+        let provider: Option<Arc<dyn TableProvider>> = wait_on_runtime(async move {
+            match LakeSoulTable::for_namespace_and_name(
+                &namespace,
+                &table_name,
+                Some(client.clone()),
+            )
+            .await
+            {
+                Ok(table) => {
+                    debug!("get table provider success");
+                    let table_info = table.table_info();
+                    if !allowed(&table_info) {
+                        info!(
+                            "deregister_table: {namespace}.{table_name} ({}) refused",
+                            table_info.table_id
+                        );
+                        return Ok(None);
+                    }
+                    client
+                        .delete_table_by_table_info_cascade(&table_info)
+                        .await
+                        .context("delete table info failed")?;
+                    Ok(Some(table.as_provider(pushdown_filters).await?))
+                }
+                Err(report) => match report.current_context() {
+                    LakeSoulMetaDataError::NotFound(_) => Ok(None),
+                    _ => Err(report!("get table info failed")),
+                },
+            }
+        })
+        .map_err(df_external_err)?;
+        // Published to the view: the write must be visible to the next listing,
+        // while a listing failure must never turn an already committed write
+        // into an error for the caller. After a refusal it lets a stale view
+        // converge.
+        self.snapshot.refresh_after_write();
+        Ok(provider)
+    }
 }
 
 impl Debug for LakeSoulNamespace {
@@ -364,44 +429,7 @@ impl SchemaProvider for LakeSoulNamespace {
     /// If supported by the implementation, removes an existing table from this schema and returns it.
     /// If no table of that name exists, returns Ok(None).
     fn deregister_table(&self, name: &str) -> DFResult<Option<Arc<dyn TableProvider>>> {
-        debug!(
-            "LakeSoulNamespace::deregister_table - Deregistering table '{}' from namespace '{}'",
-            name, &self.namespace
-        );
-        let name = case_fold_table_name(name);
-        info!("deregister_table: {:?} {:?}", name, &self.namespace);
-        let client = self.metadata_client.clone();
-        let table_name = name.to_string();
-        let namespace = self.namespace.clone();
-        let pushdown_filters = self.provider_options.pushdown_filters;
-        let provider: Option<Arc<dyn TableProvider>> = wait_on_runtime(async move {
-            match LakeSoulTable::for_namespace_and_name(
-                &namespace,
-                &table_name,
-                Some(client.clone()),
-            )
-            .await
-            {
-                Ok(table) => {
-                    debug!("get table provider success");
-                    client
-                        .delete_table_by_table_info_cascade(&table.table_info())
-                        .await
-                        .context("delete table info failed")?;
-                    Ok(Some(table.as_provider(pushdown_filters).await?))
-                }
-                Err(report) => match report.current_context() {
-                    LakeSoulMetaDataError::NotFound(_) => Ok(None),
-                    _ => Err(report!("get table info failed")),
-                },
-            }
-        })
-        .map_err(df_external_err)?;
-        // Published to the view: the write must be visible to the next listing,
-        // while a listing failure must never turn an already committed write
-        // into an error for the caller.
-        self.snapshot.refresh_after_write();
-        Ok(provider)
+        self.deregister_table_if(name, |_| true)
     }
 
     /// Check if the table exists in the namespace.

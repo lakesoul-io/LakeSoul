@@ -114,6 +114,11 @@ pub struct JobSettings {
     pub time_zone: Option<String>,
     pub ivm_enabled: bool,
     pub application_name: Option<String>,
+    /// The submitter's domain under `--rbac`: the job's session is confined
+    /// to it. Absent in jobs submitted without domain enforcement, which a
+    /// server running with `--rbac` refuses to run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
 }
 
 impl JobSettings {
@@ -121,13 +126,20 @@ impl JobSettings {
         settings: &SessionSettings,
         ivm_enabled: bool,
         application_name: Option<String>,
+        access: Option<&crate::auth::DomainAccess>,
     ) -> Self {
         Self {
             search_path: settings.search_path.clone(),
             time_zone: settings.time_zone.iana_name().map(str::to_owned),
             ivm_enabled,
             application_name,
+            domain: access.map(|access| access.domain().to_string()),
         }
+    }
+
+    /// The domain the job's session acts in.
+    pub fn access(&self) -> Option<crate::auth::DomainAccess> {
+        self.domain.clone().map(crate::auth::DomainAccess::new)
     }
 
     /// A fresh session configuration. `statement_timeout` is deliberately not
@@ -272,6 +284,25 @@ pub enum CancelOutcome {
     Running,
 }
 
+/// Who may see, wait on, cancel and read a job, and whose `job_key`s it
+/// shares: the submitter's user and database and, under `--rbac`, domain.
+/// Two tokens with the same `sub` but different groups are different owners,
+/// so neither can reach the other domain's jobs or spooled results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JobOwner<'a> {
+    pub user: &'a str,
+    pub database: &'a str,
+    /// `None` for a session without domain enforcement.
+    pub domain: Option<&'a str>,
+}
+
+impl JobOwner<'_> {
+    /// The `job.queries.domain` value: empty without a domain.
+    fn domain_column(&self) -> &str {
+        self.domain.unwrap_or_default()
+    }
+}
+
 /// One in-memory job. The durable copy is the `job.queries` row; this is the
 /// low-latency view status polls read and the place the runner publishes its
 /// progress.
@@ -320,6 +351,20 @@ impl JobHandle {
             bytes: AtomicU64::new(0),
             status: RwLock::new(JobStatus::default()),
         }
+    }
+
+    /// The owner the job was submitted by.
+    pub fn owner(&self) -> JobOwner<'_> {
+        JobOwner {
+            user: &self.user,
+            database: &self.database,
+            domain: self.settings.domain.as_deref(),
+        }
+    }
+
+    /// Whether `owner` may see and control this job.
+    pub fn owned_by(&self, owner: &JobOwner<'_>) -> bool {
+        self.owner() == *owner
     }
 
     pub fn set_attempt(&self, attempt: u32) {
@@ -809,6 +854,11 @@ impl JobService {
             Some(ms) => Some(ms),
             None => None,
         };
+        let owner = JobOwner {
+            user: &request.user,
+            database: &request.database,
+            domain: request.settings.domain.as_deref(),
+        };
         let query_id = Uuid::new_v4();
         let created_at = now_ms();
         let settings = serde_json::to_value(&request.settings).map_err(|error| {
@@ -819,8 +869,9 @@ impl JobService {
             .insert_job(&NewJob {
                 query_id,
                 job_key: request.job_key.as_deref(),
-                user_name: &request.user,
-                database_name: &request.database,
+                user_name: owner.user,
+                database_name: owner.database,
+                domain: owner.domain_column(),
                 sql_text: &request.sql,
                 settings: &settings,
                 created_at,
@@ -841,7 +892,7 @@ impl JobService {
             })?;
             let existing = self
                 .meta
-                .job_by_key(&request.database, &request.user, key)
+                .job_by_key(owner.database, owner.user, owner.domain_column(), key)
                 .await
                 .map_err(JobError::from)?
                 .ok_or_else(|| {
@@ -851,13 +902,18 @@ impl JobService {
             // in-memory handle (or, for a completed SELECT, its result was
             // reloaded at startup). Returning an id nothing can serve would
             // leave the client polling a ghost; ask for a new key instead.
-            if !self.records.read().contains_key(&existing) {
-                return Err(JobError::invalid(format!(
+            // The key is scoped to the owner, so the job is the caller's; the
+            // ownership check only guards that invariant.
+            return match self.handle(existing) {
+                Some(handle) if handle.owned_by(&owner) => Ok(existing),
+                Some(_) => Err(JobError::invalid(format!(
+                    "job_key {key:?} is already in use; choose a new job_key"
+                ))),
+                None => Err(JobError::invalid(format!(
                     "job_key {key:?} belongs to a job from a previous server run; \
                      choose a new job_key"
-                )));
-            }
-            return Ok(existing);
+                ))),
+            };
         }
         let handle = Arc::new(JobHandle::new(
             query_id,
@@ -908,47 +964,46 @@ impl JobService {
         self.queue_rx.lock().take()
     }
 
-    pub fn snapshot(
+    /// `owner`'s job `query_id`; `None` when it does not exist or belongs to
+    /// someone else, which callers report identically.
+    pub fn owned_handle(
         &self,
         query_id: Uuid,
-        user: &str,
-        database: &str,
-    ) -> Option<JobSnapshot> {
+        owner: &JobOwner<'_>,
+    ) -> Option<Arc<JobHandle>> {
         self.handle(query_id)
-            .filter(|handle| handle.user == user && handle.database == database)
+            .filter(|handle| handle.owned_by(owner))
+    }
+
+    pub fn snapshot(&self, query_id: Uuid, owner: &JobOwner<'_>) -> Option<JobSnapshot> {
+        self.owned_handle(query_id, owner)
             .map(|handle| handle.snapshot())
     }
 
-    pub fn snapshots(&self, user: &str, database: &str) -> Vec<JobSnapshot> {
+    pub fn snapshots(&self, owner: &JobOwner<'_>) -> Vec<JobSnapshot> {
         let mut snapshots: Vec<_> = self
             .records
             .read()
             .values()
-            .filter(|handle| handle.user == user && handle.database == database)
+            .filter(|handle| handle.owned_by(owner))
             .map(|handle| handle.snapshot())
             .collect();
         snapshots.sort_by_key(|job| std::cmp::Reverse(job.created_at));
         snapshots
     }
 
-    /// Cancels a job owned by `user`. Returns the outcome: a job that already
+    /// Cancels a job of `owner`. Returns the outcome: a job that already
     /// finished is not an error, it just cannot be canceled.
     pub async fn cancel(
         &self,
         query_id: Uuid,
-        user: &str,
-        database: &str,
+        owner: &JobOwner<'_>,
     ) -> Result<CancelOutcome, JobError> {
-        let Some(handle) = self.handle(query_id) else {
+        let Some(handle) = self.owned_handle(query_id, owner) else {
             return Err(JobError::invalid(format!(
                 "query {query_id} does not exist"
             )));
         };
-        if handle.user != user || handle.database != database {
-            return Err(JobError::invalid(format!(
-                "query {query_id} does not exist"
-            )));
-        }
         let outcome = handle.request_cancel();
         match outcome {
             CancelOutcome::Finished => Ok(outcome),
@@ -988,16 +1043,12 @@ impl JobService {
     pub async fn wait(
         &self,
         query_id: Uuid,
-        user: &str,
-        database: &str,
+        owner: &JobOwner<'_>,
         timeout_ms: i64,
     ) -> Result<JobState, JobError> {
-        let handle = self
-            .handle(query_id)
-            .filter(|handle| handle.user == user && handle.database == database)
-            .ok_or_else(|| {
-                JobError::invalid(format!("query {query_id} does not exist"))
-            })?;
+        let handle = self.owned_handle(query_id, owner).ok_or_else(|| {
+            JobError::invalid(format!("query {query_id} does not exist"))
+        })?;
         let deadline = now_ms().saturating_add(timeout_ms.max(0));
         loop {
             let state = handle.state();
@@ -1013,15 +1064,11 @@ impl JobService {
     pub fn result(
         &self,
         query_id: Uuid,
-        user: &str,
-        database: &str,
+        owner: &JobOwner<'_>,
     ) -> Result<Arc<JobResult>, JobError> {
-        let handle = self
-            .handle(query_id)
-            .filter(|handle| handle.user == user && handle.database == database)
-            .ok_or_else(|| {
-                JobError::invalid(format!("query {query_id} does not exist"))
-            })?;
+        let handle = self.owned_handle(query_id, owner).ok_or_else(|| {
+            JobError::invalid(format!("query {query_id} does not exist"))
+        })?;
         let status = handle.status();
         match status.state {
             JobState::Succeeded => {}

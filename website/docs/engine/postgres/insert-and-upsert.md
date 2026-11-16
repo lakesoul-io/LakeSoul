@@ -80,12 +80,14 @@ the same statement maintains the target from the source changelog. See
 
 ## Transactions
 
-Writes are refused inside an explicit transaction block and inside a
-multi-statement simple-query batch. LakeSoul commits immediately, so a later
-`ROLLBACK` or a failing statement in the batch could not undo the rows.
+Plain `INSERT` and `ON CONFLICT DO NOTHING` inside an explicit transaction
+block are staged and published by `COMMIT`; `ROLLBACK` removes them. The general
+`ON CONFLICT ... DO UPDATE` path still uses its own publication path and is
+refused inside a block with `0A000`. Writes inside a multi-statement simple-query
+batch are also refused.
 
-`BEGIN` / `COMMIT` are accepted for read-only work; put writes in autocommit
-statements.
+`BEGIN` / `COMMIT` are accepted for reads and for the staged insert paths; put
+general upserts in autocommit statements.
 
 ## Errors
 
@@ -96,7 +98,7 @@ statements.
 | `42601` | Source and target columns do not line up |
 | `42804` | An expression is not assignment-castable to the target column |
 | `22P02` | A string literal does not convert to the target type |
-| `0A000` | `RETURNING`, `ON CONFLICT` expression assignments, an assignment list that misses a non-key column, or a write in a transaction block |
+| `0A000` | `RETURNING`, `ON CONFLICT` on a range-partitioned or CDC table, an assignment list that misses a non-key column, or a general `DO UPDATE` inside a transaction block |
 
 `RETURNING` is not supported: the sink commits after the rows are written and
 there is no row stream to return.

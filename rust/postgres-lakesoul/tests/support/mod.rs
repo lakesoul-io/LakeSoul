@@ -51,8 +51,10 @@ use futures::FutureExt;
 use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
 use lakesoul_metadata::{
-    MetaDataClient, PRIMARY_URL_ENV_KEY, PRIMARY_URL_PROP_KEY, pg_config_from_env,
+    Claims, JwtServer, MetaDataClient, PRIMARY_URL_ENV_KEY, PRIMARY_URL_PROP_KEY,
+    pg_config_from_env,
 };
+use lakesoul_metadata_proto::entity::Namespace;
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
 use tokio_postgres::{Client, Config, NoTls};
@@ -179,6 +181,28 @@ where
     run_fixture_suite(Fixtures::Tpch(config), suite).await
 }
 
+/// Base fixtures with the server started with `--jwt-auth`.
+///
+/// The harness mints its tokens with the secret the child derives from the
+/// same metadata environment, and every harness connection authenticates
+/// with one; [`Harness::connect_attempt`] reaches the raw handshake.
+pub async fn run_jwt_suite<F>(suite: F) -> Result<()>
+where
+    F: for<'a> FnOnce(&'a Harness) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+{
+    run_fixture_suite(Fixtures::JwtAuth, suite).await
+}
+
+/// Base fixtures with the server started with `--jwt-auth --rbac`. The base
+/// namespace and its tables are `public`; [`Harness::namespace_of`] names a
+/// namespace owned by [`RBAC_TEAM_A`] and one owned by [`RBAC_TEAM_B`].
+pub async fn run_rbac_suite<F>(suite: F) -> Result<()>
+where
+    F: for<'a> FnOnce(&'a Harness) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+{
+    run_fixture_suite(Fixtures::Rbac, suite).await
+}
+
 enum Fixtures {
     Base,
     Ivm,
@@ -187,6 +211,11 @@ enum Fixtures {
     Vector,
     /// The base tables with two real Flight workers.
     Distributed,
+    /// The base tables behind `--jwt-auth`.
+    JwtAuth,
+    /// The base tables behind `--jwt-auth --rbac`, plus one namespace in
+    /// [`RBAC_TEAM_A`] and one in [`RBAC_TEAM_B`].
+    Rbac,
     Tpch(tpch::TpchConfig),
 }
 
@@ -304,6 +333,13 @@ struct StartupState {
     metrics_addr: Option<SocketAddr>,
     namespace_created: bool,
     ivm: bool,
+    /// Set for a `--jwt-auth` server: signs the harness's own tokens.
+    jwt: Option<Arc<JwtServer>>,
+    /// Start the server with `--rbac` as well.
+    rbac: bool,
+    /// `(domain, namespace)` for each namespace created in a domain of its
+    /// own; their teardown is `extra_namespaces`'.
+    domain_namespaces: Vec<(String, String)>,
     created_tables: Vec<String>,
     extra_namespaces: Vec<(String, Vec<String>)>,
     connections: parking_lot::Mutex<Vec<JoinHandle<()>>>,
@@ -377,6 +413,9 @@ impl StartupState {
             metrics_addr: None,
             namespace_created: false,
             ivm: false,
+            jwt: None,
+            rbac: false,
+            domain_namespaces: Vec::new(),
             created_tables: Vec::new(),
             extra_namespaces: Vec::new(),
             connections: parking_lot::Mutex::new(Vec::new()),
@@ -388,6 +427,19 @@ impl StartupState {
         self.create_lake_fixtures().await?;
         match fixtures {
             Fixtures::Base => {}
+            Fixtures::JwtAuth => {
+                self.jwt = Some(Arc::new(JwtServer::new(self.meta.get_client_secret())));
+                // A namespace owned by a domain no harness token carries:
+                // authentication alone must not hide it.
+                self.create_domain_namespace("other_domain", JWT_OTHER_DOMAIN)
+                    .await?;
+            }
+            Fixtures::Rbac => {
+                self.jwt = Some(Arc::new(JwtServer::new(self.meta.get_client_secret())));
+                self.rbac = true;
+                self.create_domain_namespace("team_a", RBAC_TEAM_A).await?;
+                self.create_domain_namespace("team_b", RBAC_TEAM_B).await?;
+            }
             Fixtures::Ivm => {
                 self.ivm = true;
                 self.create_ivm_fixtures().await?;
@@ -739,6 +791,18 @@ impl StartupState {
         } else {
             command.args(["--discovery", "none"]);
         }
+        if self.jwt.is_some() {
+            command.arg("--jwt-auth");
+        } else {
+            // An operator's environment must not turn authentication on for
+            // suites that connect without a password.
+            command.env_remove("LAKESOUL_PG_JWT_AUTH");
+        }
+        if self.rbac {
+            command.arg("--rbac");
+        } else {
+            command.env_remove("LAKESOUL_PG_RBAC");
+        }
         if fault == Some("startup") {
             // Controlled startup failure: clap rejects the unknown option and
             // the child exits non-zero before readiness.
@@ -782,7 +846,7 @@ impl StartupState {
                 );
             }
 
-            let config = lake_config(lake_addr, &self.namespace);
+            let config = self.authenticated(lake_config(lake_addr, &self.namespace))?;
             match connect_pg(&config, "sql_compat_lake").await {
                 Ok((client, task)) => match readiness(&client).await {
                     Ok(()) => match check_metrics(metrics_addr).await {
@@ -1271,15 +1335,77 @@ fn reference_config_from_env() -> Result<Config> {
     Config::from_str(&raw).with_context(|| "parse metadata PostgreSQL configuration")
 }
 
+/// The user every harness connection to the LakeSoul server starts as.
+pub const LAKE_USER: &str = "sql_compat";
+
+/// Domain of the extra namespace a [`run_jwt_suite`] creates.
+pub const JWT_OTHER_DOMAIN: &str = "lakesoul_jwt_suite_other";
+
+/// The two domains a [`run_rbac_suite`] keeps apart.
+pub const RBAC_TEAM_A: &str = "lakesoul_rbac_team_a";
+pub const RBAC_TEAM_B: &str = "lakesoul_rbac_team_b";
+
 fn lake_config(address: SocketAddr, namespace: &str) -> Config {
     let mut config = Config::new();
     config
         .host("127.0.0.1")
         .port(address.port())
-        .user("sql_compat")
+        .user(LAKE_USER)
         .dbname(namespace)
         .connect_timeout(OPERATION_TIMEOUT);
     config
+}
+
+/// Signs a LakeSoul token whose `exp` is `now + offset_secs` (negative for a
+/// token that has already expired).
+fn sign_token(
+    jwt: &JwtServer,
+    user: &str,
+    group: &str,
+    offset_secs: i64,
+) -> Result<String> {
+    let exp = chrono::Utc::now().timestamp() + offset_secs;
+    let exp = usize::try_from(exp).context("token expiry before the epoch")?;
+    jwt.create_token(&Claims {
+        sub: user.to_string(),
+        group: group.to_string(),
+        exp,
+    })
+    .map_err(|error| anyhow!("sign token: {error}"))
+}
+
+impl StartupState {
+    /// Creates `<namespace>_<suffix>` in `domain`, registered for teardown
+    /// before anything else can fail.
+    async fn create_domain_namespace(
+        &mut self,
+        suffix: &str,
+        domain: &str,
+    ) -> Result<()> {
+        let namespace = format!("{}_{suffix}", self.namespace);
+        self.meta
+            .create_namespace(Namespace {
+                namespace: namespace.clone(),
+                properties: "{}".to_string(),
+                comment: "postgres-lakesoul authentication suite".to_string(),
+                domain: domain.to_string(),
+            })
+            .await
+            .map_err(|error| anyhow!("create {namespace}: {error:?}"))?;
+        self.extra_namespaces.push((namespace.clone(), Vec::new()));
+        self.domain_namespaces.push((domain.to_string(), namespace));
+        Ok(())
+    }
+
+    /// Adds a fresh token for the configured user when the server requires
+    /// one; unchanged otherwise.
+    fn authenticated(&self, mut config: Config) -> Result<Config> {
+        if let Some(jwt) = &self.jwt {
+            let user = config.get_user().unwrap_or(LAKE_USER).to_string();
+            config.password(sign_token(jwt, &user, "public", 3600)?);
+        }
+        Ok(config)
+    }
 }
 
 async fn connect_pg(config: &Config, label: &str) -> Result<(Client, JoinHandle<()>)> {

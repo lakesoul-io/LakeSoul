@@ -197,9 +197,18 @@ impl JobRunner {
         let session = match self
             .factory
             .create_session(
+                // `create_session` refuses a domain-less job under `--rbac`;
+                // without it, a stored domain is ignored like every other
+                // domain.
                 SessionIdentity {
                     user: handle.user.clone(),
                     database: handle.database.clone(),
+                    access: self
+                        .factory
+                        .auth()
+                        .rbac
+                        .then(|| handle.settings.access())
+                        .flatten(),
                 },
                 &handle.settings.to_session_settings(),
             )

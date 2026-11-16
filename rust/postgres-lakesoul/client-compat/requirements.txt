@@ -1,0 +1,7 @@
+# Real PostgreSQL clients used by the compatibility baseline.
+# Keep the major versions stable; the runner prints the exact resolved
+# versions so a CI result can name the driver build it was certified against.
+pytest>=8,<10
+psycopg2-binary>=2.9,<3
+psycopg[binary]>=3.2,<4
+SQLAlchemy>=2.0,<2.1

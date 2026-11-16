@@ -13,15 +13,15 @@ SPDX-License-Identifier: Apache-2.0
 
 ## 事务
 
-端点运行在 **autocommit** 和 **READ COMMITTED** 可见性下。每条语句看到最新的已提交快照；写入语句在返回前完成提交。
+端点支持 **autocommit** 和显式事务块，可见性为 **READ COMMITTED**。事务块内的写入会先写文件，但直到 `COMMIT` 才发布元数据；其他连接在提交前看不到任何数据。`COMMIT` 在一个元数据事务中发布所有表的 staged 写入；`ROLLBACK` 删除 staged 文件。
 
-- `BEGIN` / `COMMIT` / `ROLLBACK` 可以用于只读操作。
-- 显式事务块内的写入会以 `0A000` 拒绝。
+- 支持 `BEGIN` / `COMMIT` / `ROLLBACK`。块内读取会看到已发布快照加上本块已 staged 的写入。
+- 事务块内的 DDL、`COPY`、IVM 维护、订阅和 savepoint 会以 `0A000` 拒绝。
 - `REPEATABLE READ`、`SERIALIZABLE` 及其 `SET` 形式会以 `0A000` 拒绝。
 - 失败事务之后的语句返回 `25P02`，直到 `ROLLBACK`。失败块里的 `COMMIT` 会以回滚结束事务，与 PostgreSQL 一致。
+- 多语句 simple-query batch 内的写入仍被拒绝：这些语句没有运行在同一个事务中。请把写入拆成多条消息，或使用显式事务块。
 - `statement_timeout` 会以 `57014` 取消正在运行的查询；连接仍可继续使用。
-
-多语句 simple-query batch 会先执行读语句，再在写语句处拒绝。不要依赖 batch 的原子性：它不是原子的。
+- 未实现 `idle_in_transaction_session_timeout`。
 
 ## 目录
 

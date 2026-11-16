@@ -65,10 +65,22 @@ const MISS_REFRESH_GAP: Duration = Duration::from_secs(1);
 pub struct CatalogView {
     namespaces: Vec<String>,
     tables: HashMap<String, Vec<String>>,
+    /// Namespace → ASCII-lower-cased table name → the table's RBAC domain,
+    /// from the same `table_name_id` rows as `tables`.
+    table_domains: HashMap<String, HashMap<String, String>>,
     refreshed_at: Option<Instant>,
 }
 
 impl CatalogView {
+    /// The RBAC domain of `table` in `namespace` (ASCII case-insensitive),
+    /// or `None` when the table is not part of this view.
+    pub fn table_domain(&self, namespace: &str, table: &str) -> Option<&str> {
+        self.table_domains
+            .get(namespace)?
+            .get(&table.to_ascii_lowercase())
+            .map(String::as_str)
+    }
+
     /// Namespace names, in metadata order.
     pub fn namespaces(&self) -> &[String] {
         &self.namespaces
@@ -164,6 +176,15 @@ impl CatalogSnapshot {
         })
     }
 
+    /// The RBAC domain of `table` in `namespace` as of the last refresh, or
+    /// `None` when the view does not know the table.
+    pub fn table_domain(&self, namespace: &str, table: &str) -> Option<String> {
+        self.view
+            .read()
+            .table_domain(namespace, table)
+            .map(str::to_owned)
+    }
+
     /// Whether the view has never been fully loaded.
     pub fn is_never_refreshed(&self) -> bool {
         self.view.read().refreshed_at.is_none()
@@ -202,19 +223,27 @@ impl CatalogSnapshot {
     async fn fetch_and_publish(&self) -> Result<()> {
         let namespaces = self.client.get_all_namespace().await?;
         let mut tables = HashMap::with_capacity(namespaces.len());
+        let mut table_domains = HashMap::with_capacity(namespaces.len());
         for namespace in &namespaces {
-            let names = self
+            let ids = self
                 .client
                 .get_all_table_name_id_by_namespace(&namespace.namespace)
                 .await?;
+            table_domains.insert(
+                namespace.namespace.clone(),
+                ids.iter()
+                    .map(|id| (id.table_name.to_ascii_lowercase(), id.domain.clone()))
+                    .collect(),
+            );
             tables.insert(
                 namespace.namespace.clone(),
-                names.into_iter().map(|id| id.table_name).collect(),
+                ids.into_iter().map(|id| id.table_name).collect(),
             );
         }
         *self.view.write() = CatalogView {
             namespaces: namespaces.into_iter().map(|np| np.namespace).collect(),
             tables,
+            table_domains,
             refreshed_at: Some(Instant::now()),
         };
         Ok(())
@@ -358,4 +387,33 @@ where
     // the multi-thread runtime to move other tasks to another worker while this
     // thread synchronously drives the future with `Handle::block_on`.
     tokio::task::block_in_place(|| handle.block_on(future))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn table_domain_is_case_insensitive_and_scoped_to_its_namespace() {
+        let view = CatalogView {
+            namespaces: vec!["sales".to_string(), "finance".to_string()],
+            tables: HashMap::from([(
+                "sales".to_string(),
+                vec!["Orders".to_string(), "items".to_string()],
+            )]),
+            table_domains: HashMap::from([(
+                "sales".to_string(),
+                HashMap::from([
+                    ("orders".to_string(), "team_a".to_string()),
+                    ("items".to_string(), "public".to_string()),
+                ]),
+            )]),
+            refreshed_at: None,
+        };
+        assert_eq!(view.table_domain("sales", "ORDERS"), Some("team_a"));
+        assert_eq!(view.table_domain("sales", "items"), Some("public"));
+        assert_eq!(view.table_domain("sales", "missing"), None);
+        assert_eq!(view.table_domain("finance", "orders"), None);
+        assert_eq!(view.table_domain("unknown", "orders"), None);
+    }
 }

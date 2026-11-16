@@ -28,7 +28,7 @@ use datafusion_postgres::pgwire::messages::data::DataRow;
 use datafusion_postgres::testing::MockClient;
 use futures::{Sink, StreamExt};
 use lakesoul_metadata::MetaDataClient;
-use pgwire::api::auth::noop::NoopStartupHandler;
+use pgwire::api::auth::StartupHandler;
 use pgwire::api::stmt::QueryParser;
 use pgwire::api::{
     METADATA_DATABASE, METADATA_USER, PgWireConnectionState, SessionExtensions,
@@ -40,7 +40,7 @@ use pgwire::messages::extendedquery::{
 use pgwire::messages::simplequery::Query;
 use pgwire::messages::{
     PgWireBackendMessage, PgWireFrontendMessage, ProtocolVersion,
-    extendedquery::Sync as PgSync, response::TransactionStatus, startup::SecretKey,
+    response::TransactionStatus, startup::SecretKey,
 };
 
 use super::{ConnectionSession, LakeSoulQueryRouter, LakeSoulStartupHandler};
@@ -67,7 +67,7 @@ async fn test_factory() -> Arc<PgSessionFactory> {
 
 /// Simulate one connection startup: create a session and attach it to a
 /// mock client's `SessionExtensions`, mirroring
-/// `LakeSoulStartupHandler::post_startup`.
+/// `LakeSoulStartupHandler::establish_session`.
 async fn attach_session(
     factory: &PgSessionFactory,
     client: &mut MockClient,
@@ -91,6 +91,7 @@ async fn attach_session_with_limits(
             SessionIdentity {
                 user: user.to_string(),
                 database: "default".to_string(),
+                access: None,
             },
             &SessionSettings::default(),
         )
@@ -101,7 +102,7 @@ async fn attach_session_with_limits(
     // `CLOSE`, `SET`, transactions) diverge from what tests exercise.
     let service = Arc::new(DfSessionService::new_with_hooks(
         Arc::clone(&session.context),
-        crate::server::connection_statement_hooks(factory, &session.identity.database),
+        crate::server::connection_statement_hooks(factory, &session.identity),
     ));
     let server = crate::limits::ServerLimits::new(limits);
     // Mirror production setup: the metadata `SHOW`/`RESET` read starts from
@@ -293,6 +294,7 @@ async fn sessions_are_connection_local() {
             SessionIdentity {
                 user: "user_a".to_string(),
                 database: "default".to_string(),
+                access: None,
             },
             &SessionSettings::default(),
         )
@@ -303,6 +305,7 @@ async fn sessions_are_connection_local() {
             SessionIdentity {
                 user: "user_b".to_string(),
                 database: "default".to_string(),
+                access: None,
             },
             &SessionSettings::default(),
         )
@@ -421,6 +424,7 @@ async fn connection_close_releases_session() {
             SessionIdentity {
                 user: "user_a".to_string(),
                 database: "default".to_string(),
+                access: None,
             },
             &SessionSettings::default(),
         )
@@ -487,13 +491,10 @@ async fn completed_connections_retain_no_session_state() {
         client
             .metadata_mut()
             .insert(METADATA_DATABASE.to_string(), "default".to_string());
-        NoopStartupHandler::post_startup(
-            &handler,
-            &mut client,
-            PgWireFrontendMessage::Sync(PgSync::new()),
-        )
-        .await
-        .expect("post_startup");
+        handler
+            .establish_session(&mut client, None)
+            .await
+            .expect("establish_session");
         // `pg_namespace` resolves the catalog list through `pg_catalog`. It
         // walks only catalog and schema names, so tables other tests drop
         // concurrently cannot fail the scan the way `pg_class` would.
@@ -547,10 +548,10 @@ async fn startup_handler_installs_session() {
         .metadata_mut()
         .insert(METADATA_DATABASE.to_string(), "default".to_string());
 
-    let message = PgWireFrontendMessage::Sync(PgSync::new());
-    NoopStartupHandler::post_startup(&handler, &mut client, message)
+    handler
+        .establish_session(&mut client, None)
         .await
-        .expect("post_startup");
+        .expect("establish_session");
 
     let state = client
         .session_extensions()
@@ -558,6 +559,303 @@ async fn startup_handler_installs_session() {
         .expect("connection session installed");
     assert_eq!(state.session.identity.user, "lakesoul_user");
     assert_eq!(state.session.identity.database, "default");
+}
+
+const JWT_TEST_SECRET: &str = "server-tests-jwt-secret";
+
+/// A startup handler over a fresh factory with the given authentication.
+async fn handler_with_auth(auth: crate::auth::AuthSettings) -> LakeSoulStartupHandler {
+    let meta_client = Arc::new(
+        MetaDataClient::from_env()
+            .await
+            .expect("PostgreSQL required"),
+    );
+    let factory = PgSessionFactory::new(
+        meta_client,
+        &lakesoul_datafusion::cli::CoreArgs::from_env(),
+        Arc::new(datafusion_postgres::auth::AuthManager::new()),
+    )
+    .expect("failed to create session factory")
+    .with_auth(auth);
+    LakeSoulStartupHandler::new(
+        Arc::new(factory),
+        Arc::new(crate::cancel::CancelRegistry::new()),
+        Arc::new(pgwire::api::ConnectionManager::new()),
+        crate::limits::ServerLimits::new(crate::limits::Limits::default()),
+    )
+}
+
+fn startup_message(user: &str) -> PgWireFrontendMessage {
+    let mut startup = pgwire::messages::startup::Startup::new();
+    startup
+        .parameters
+        .insert(METADATA_USER.to_string(), user.to_string());
+    startup
+        .parameters
+        .insert(METADATA_DATABASE.to_string(), "default".to_string());
+    PgWireFrontendMessage::Startup(startup)
+}
+
+fn password_message(password: &str) -> PgWireFrontendMessage {
+    PgWireFrontendMessage::PasswordMessageFamily(
+        pgwire::messages::startup::PasswordMessageFamily::Password(
+            pgwire::messages::startup::Password::new(password.to_string()),
+        ),
+    )
+}
+
+fn sent_authentication_ok(client: &MockClient) -> bool {
+    client.sent_messages().iter().any(|message| {
+        matches!(
+            message,
+            PgWireBackendMessage::Authentication(
+                pgwire::messages::startup::Authentication::Ok
+            )
+        )
+    })
+}
+
+fn ends_ready_for_query(client: &MockClient) -> bool {
+    matches!(
+        client.sent_messages().last(),
+        Some(PgWireBackendMessage::ReadyForQuery(_))
+    )
+}
+
+#[tokio::test]
+async fn startup_without_jwt_completes_on_the_startup_message() {
+    let handler = handler_with_auth(crate::auth::AuthSettings::default()).await;
+    let mut client = MockClient::new();
+    handler
+        .on_startup(&mut client, startup_message("lakesoul_user"))
+        .await
+        .expect("an unauthenticated server completes the handshake at once");
+
+    assert!(
+        sent_authentication_ok(&client),
+        "{:?}",
+        client.sent_messages()
+    );
+    assert!(
+        client
+            .sent_messages()
+            .iter()
+            .any(|message| matches!(message, PgWireBackendMessage::BackendKeyData(_))),
+        "the client needs its cancel key"
+    );
+    assert!(
+        ends_ready_for_query(&client),
+        "{:?}",
+        client.sent_messages()
+    );
+    let state = client
+        .session_extensions()
+        .get::<ConnectionSession>()
+        .expect("connection session installed");
+    assert_eq!(state.session.identity.user, "lakesoul_user");
+    assert_eq!(state.session.identity.database, "default");
+}
+
+#[tokio::test]
+async fn jwt_startup_asks_for_a_password_before_any_session() {
+    let handler =
+        handler_with_auth(crate::auth::AuthSettings::jwt(JWT_TEST_SECRET)).await;
+    let mut client = MockClient::new();
+    handler
+        .on_startup(&mut client, startup_message("alice"))
+        .await
+        .expect("startup");
+    assert!(
+        matches!(
+            client.sent_messages(),
+            [PgWireBackendMessage::Authentication(
+                pgwire::messages::startup::Authentication::CleartextPassword
+            )]
+        ),
+        "the only reply to Startup is the password request: {:?}",
+        client.sent_messages()
+    );
+    assert!(
+        client
+            .session_extensions()
+            .get::<ConnectionSession>()
+            .is_none(),
+        "no session may exist before the token is checked"
+    );
+
+    let token = crate::auth::mint_token(
+        &lakesoul_metadata::JwtServer::new(JWT_TEST_SECRET),
+        "alice",
+        "team_a",
+        std::time::Duration::from_secs(600),
+    )
+    .expect("mint");
+    handler
+        .on_startup(&mut client, password_message(&token))
+        .await
+        .expect("a valid token completes the handshake");
+    assert!(
+        sent_authentication_ok(&client),
+        "{:?}",
+        client.sent_messages()
+    );
+    assert!(
+        ends_ready_for_query(&client),
+        "{:?}",
+        client.sent_messages()
+    );
+    let state = client
+        .session_extensions()
+        .get::<ConnectionSession>()
+        .expect("connection session installed");
+    assert_eq!(state.session.identity.user, "alice");
+}
+
+/// Authenticates `user` with a token for `group` and returns the session's
+/// domain.
+async fn authenticated_access(
+    auth: crate::auth::AuthSettings,
+    user: &str,
+    group: &str,
+) -> Option<crate::auth::DomainAccess> {
+    let handler = handler_with_auth(auth).await;
+    let mut client = MockClient::new();
+    handler
+        .on_startup(&mut client, startup_message(user))
+        .await
+        .expect("startup");
+    let token = crate::auth::mint_token(
+        &lakesoul_metadata::JwtServer::new(JWT_TEST_SECRET),
+        user,
+        group,
+        std::time::Duration::from_secs(600),
+    )
+    .expect("mint");
+    handler
+        .on_startup(&mut client, password_message(&token))
+        .await
+        .expect("a valid token completes the handshake");
+    client
+        .session_extensions()
+        .get::<ConnectionSession>()
+        .expect("connection session installed")
+        .session
+        .identity
+        .access
+        .clone()
+}
+
+#[tokio::test]
+async fn rbac_confines_the_session_to_the_token_group() {
+    let access = authenticated_access(
+        crate::auth::AuthSettings::jwt(JWT_TEST_SECRET).with_rbac(true),
+        "alice",
+        "team_a",
+    )
+    .await;
+    assert_eq!(access, Some(crate::auth::DomainAccess::new("team_a")));
+}
+
+#[tokio::test]
+async fn jwt_without_rbac_leaves_the_session_unconfined() {
+    let access = authenticated_access(
+        crate::auth::AuthSettings::jwt(JWT_TEST_SECRET),
+        "alice",
+        "team_a",
+    )
+    .await;
+    assert_eq!(access, None, "authentication alone confines nothing");
+}
+
+#[tokio::test]
+async fn rbac_refuses_a_session_without_a_domain() {
+    let handler = handler_with_auth(
+        crate::auth::AuthSettings::jwt(JWT_TEST_SECRET).with_rbac(true),
+    )
+    .await;
+    let mut client = MockClient::new();
+    client
+        .metadata_mut()
+        .insert(METADATA_DATABASE.to_string(), "default".to_string());
+    let error = handler
+        .establish_session(&mut client, None)
+        .await
+        .expect_err("domain enforcement must fail closed");
+    let info = pgwire::error::ErrorInfo::from(error);
+    assert_eq!(info.severity, "FATAL");
+    assert!(
+        info.message.contains("carries no domain"),
+        "{}",
+        info.message
+    );
+    assert!(
+        client
+            .session_extensions()
+            .get::<ConnectionSession>()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn jwt_refuses_every_bad_token_with_28p01() {
+    let handler =
+        handler_with_auth(crate::auth::AuthSettings::jwt(JWT_TEST_SECRET)).await;
+    let ours = lakesoul_metadata::JwtServer::new(JWT_TEST_SECRET);
+    let ten_minutes = std::time::Duration::from_secs(600);
+    let expired = ours
+        .create_token(&lakesoul_metadata::Claims {
+            sub: "alice".to_string(),
+            group: "team_a".to_string(),
+            exp: 1_000_000,
+        })
+        .expect("sign");
+    let cases = [
+        ("empty password", String::new()),
+        ("garbage", "not-a-token".to_string()),
+        ("expired", expired),
+        (
+            "issued to another user",
+            crate::auth::mint_token(&ours, "bob", "team_a", ten_minutes).expect("mint"),
+        ),
+        (
+            "signed with another secret",
+            crate::auth::mint_token(
+                &lakesoul_metadata::JwtServer::new("another-secret"),
+                "alice",
+                "team_a",
+                ten_minutes,
+            )
+            .expect("mint"),
+        ),
+    ];
+    for (case, password) in cases {
+        let mut client = MockClient::new();
+        handler
+            .on_startup(&mut client, startup_message("alice"))
+            .await
+            .expect("startup");
+        let error = handler
+            .on_startup(&mut client, password_message(&password))
+            .await
+            .expect_err(case);
+        let info = pgwire::error::ErrorInfo::from(error);
+        assert_eq!(
+            (info.severity.as_str(), info.code.as_str()),
+            ("FATAL", "28P01"),
+            "{case}"
+        );
+        assert!(
+            !sent_authentication_ok(&client),
+            "{case}: AuthenticationOk must not be sent"
+        );
+        assert!(
+            client
+                .session_extensions()
+                .get::<ConnectionSession>()
+                .is_none(),
+            "{case}: no session may be built"
+        );
+    }
 }
 
 #[tokio::test]
@@ -569,7 +867,6 @@ async fn startup_rejects_unsupported_default_isolation() {
         Arc::new(pgwire::api::ConnectionManager::new()),
         crate::limits::ServerLimits::new(crate::limits::Limits::default()),
     );
-    let sync = || PgWireFrontendMessage::Sync(PgSync::new());
 
     // A startup GUC that promises a stronger isolation level is refused
     // before any session is created, so the client never believes the
@@ -579,7 +876,8 @@ async fn startup_rejects_unsupported_default_isolation() {
         "default_transaction_isolation".to_string(),
         "serializable".to_string(),
     );
-    let error = NoopStartupHandler::post_startup(&handler, &mut client, sync())
+    let error = handler
+        .establish_session(&mut client, None)
         .await
         .expect_err("conflicting startup GUC must fail the connection");
     let info = match error {
@@ -596,7 +894,8 @@ async fn startup_rejects_unsupported_default_isolation() {
         "options".to_string(),
         "-c statement_timeout=5 -c default_transaction_isolation=2".to_string(),
     );
-    let error = NoopStartupHandler::post_startup(&handler, &mut client, sync())
+    let error = handler
+        .establish_session(&mut client, None)
         .await
         .expect_err("conflicting libpq option must fail the connection");
     let info = match error {
@@ -618,7 +917,8 @@ async fn startup_rejects_unsupported_default_isolation() {
     client
         .metadata_mut()
         .insert(METADATA_DATABASE.to_string(), "default".to_string());
-    NoopStartupHandler::post_startup(&handler, &mut client, sync())
+    handler
+        .establish_session(&mut client, None)
         .await
         .expect("read committed default must be accepted");
 }
@@ -631,6 +931,7 @@ async fn session_scopes_namespaces_as_databases() {
             SessionIdentity {
                 user: "user_a".to_string(),
                 database: "default".to_string(),
+                access: None,
             },
             &SessionSettings::default(),
         )
@@ -705,6 +1006,7 @@ async fn connections_share_the_factory_catalog_snapshot() {
             SessionIdentity {
                 user: "user_a".to_string(),
                 database: "default".to_string(),
+                access: None,
             },
             &SessionSettings::default(),
         )
@@ -2042,8 +2344,8 @@ async fn a_cancel_request_reaches_the_connection_it_addresses() {
     client
         .metadata_mut()
         .insert(METADATA_DATABASE.to_string(), "default".to_string());
-    let message = PgWireFrontendMessage::Sync(PgSync::new());
-    NoopStartupHandler::post_startup(handler.as_ref(), &mut client, message)
+    handler
+        .establish_session(&mut client, None)
         .await
         .expect("install the connection");
     let (pid, secret_key) = client.pid_and_secret_key();

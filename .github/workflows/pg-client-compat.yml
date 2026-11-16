@@ -1,0 +1,111 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: PG Client Compatibility
+
+on:
+  push:
+    paths:
+      - ".github/workflows/pg-client-compat.yml"
+      - "rust/postgres-lakesoul/**"
+      - "rust/lakesoul-datafusion/**"
+      - "rust/lakesoul-metadata/**"
+      - "rust/lakesoul-io/**"
+      - "script/meta_init.sql"
+      - "script/metadata-migrations/**"
+      - "script/metadata_migrate.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
+    branches:
+      - "main"
+  pull_request:
+    paths:
+      - ".github/workflows/pg-client-compat.yml"
+      - "rust/postgres-lakesoul/**"
+      - "rust/lakesoul-datafusion/**"
+      - "rust/lakesoul-metadata/**"
+      - "rust/lakesoul-io/**"
+      - "script/meta_init.sql"
+      - "script/metadata-migrations/**"
+      - "script/metadata_migrate.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
+    branches:
+      - "main"
+      - "release/**"
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  client-compat:
+    runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
+      LAKESOUL_PG_URL: "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
+      LAKESOUL_PG_USERNAME: lakesoul_test
+      LAKESOUL_PG_PASSWORD: lakesoul_test
+      TZ: UTC
+    services:
+      postgres:
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
+        env:
+          POSTGRES_PASSWORD: lakesoul_test
+          POSTGRES_USER: lakesoul_test
+          POSTGRES_DB: lakesoul_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+          --name lakesoul-test-pg
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: ./.github/actions/setup-flatc
+      - uses: ./.github/actions/setup-protoc
+      - name: Install lld
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lld postgresql-client-16
+          command -v ld.lld >/dev/null || sudo ln -s "$(command -v lld)" /usr/local/bin/ld.lld
+      - name: Set up JDK 11
+        uses: actions/setup-java@v5
+        with:
+          java-version: "11"
+          distribution: "temurin"
+          cache: maven
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+      - name: Init metadata PostgreSQL
+        run: ./script/meta_init_for_local_test.sh -j 1
+      # Share rust-ci's test cache: rust-ci already builds and tests
+      # postgres-lakesoul with the same test-fast profile and RUSTFLAGS.
+      # Only main's rust-ci job updates this cache.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> rust/target"
+          shared-key: "rust-test-fast"
+          save-if: false
+      - name: Build postgres-lakesoul
+        run: cargo build --profile test-fast -p postgres-lakesoul
+      - name: Run psycopg and pgjdbc baseline
+        env:
+          POSTGRES_LAKESOUL_BIN: rust/target/test-fast/postgres-lakesoul
+        run: ./rust/postgres-lakesoul/client-compat/run.sh
