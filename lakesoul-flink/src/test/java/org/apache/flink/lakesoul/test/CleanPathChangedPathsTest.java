@@ -144,6 +144,51 @@ public class CleanPathChangedPathsTest {
         }
     }
 
+    @Test
+    public void retireBatchDefersFilesOfPinnedCommits() throws Exception {
+        String tableId = registerTable(VECTOR_PROPERTIES);
+        Path dir = tempDir();
+        String pinned = Files.write(dir.resolve("pinned.parquet"), new byte[] {1}).toUri().toString();
+        String free = Files.write(dir.resolve("free.parquet"), new byte[] {1}).toUri().toString();
+        insertPinnedCommit(tableId, pinned);
+
+        try (DataFileReadLeaseGuard guard = DataFileReadLeaseGuard.acquire(connection, tableId)) {
+            List<String> allowed = guard.retireBatch(Arrays.asList(pinned, free), Collections.emptyList());
+            assertEquals("only the unpinned file may be retired", 1, allowed.size());
+            assertFalse(allowed.contains(DataFileReadLeaseGuard.normalizePath(pinned)));
+            assertEquals(0, countFences(DataFileReadLeaseGuard.normalizePath(pinned)));
+            assertEquals(1, countFences(DataFileReadLeaseGuard.normalizePath(free)));
+        }
+    }
+
+    @Test
+    public void guardDegradesToTheOldPathWhenTheIndexMigrationIsMissing() throws Exception {
+        String adminUrl = JDBC_URL;
+        String dbName = "lakesoul_nomig_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        try (Connection admin = DriverManager.getConnection(adminUrl, USER, PASSWORD)) {
+            try (java.sql.Statement st = admin.createStatement()) {
+                st.execute("create database " + dbName);
+            }
+        }
+        String migrated = "jdbc:postgresql://127.0.0.1:5432/" + dbName;
+        try (Connection bare = DriverManager.getConnection(migrated, USER, PASSWORD)) {
+            // A pre-migration metadata database has table_info but no index_drop.
+            try (java.sql.Statement st = bare.createStatement()) {
+                st.execute("create table table_info(table_id text primary key, properties json)");
+                st.execute("insert into table_info values('nomig_vector', "
+                        + "'{\"vector_index_columns\":[{\"column\":\"vec\"}]}'::json)");
+            }
+            assertNull(
+                    "a missing index migration must fall back to the original cleanup path",
+                    DataFileReadLeaseGuard.acquireOrNull(bare, "nomig_vector"));
+        } finally {
+            try (Connection admin = DriverManager.getConnection(adminUrl, USER, PASSWORD);
+                 java.sql.Statement st = admin.createStatement()) {
+                st.execute("drop database if exists " + dbName);
+            }
+        }
+    }
+
     // ------------------------------------------------------------ TTL drop partition
 
     @Test
@@ -164,6 +209,28 @@ public class CleanPathChangedPathsTest {
         assertEquals(0, countPartitions(tableId));
         assertEquals("plain table cleanup must not fence", 0, countFencesForTableFiles(tableId));
         assertFalse(Files.exists(Path.of(dir.toUri())));
+    }
+
+    @Test
+    public void ttlDropPartitionVectorTableWritesFencesAndDeletes() throws Exception {
+        String tableId = registerTable(VECTOR_PROPERTIES);
+        Path dir = tempDir();
+        List<String> files = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            files.add(Files.write(dir.resolve("w-" + i + ".parquet"), new byte[] {1}).toUri().toString());
+        }
+        insertCommitAndPartition(tableId, files);
+        TtlBroadcastProcessFunction function = ttlFunction();
+
+        assertTrue("an un-leased vector partition may be dropped", function.dropPartition(tableId, mainPartition));
+        for (String file : files) {
+            assertFalse("file must be deleted: " + file, Files.exists(Path.of(java.net.URI.create(file))));
+        }
+        assertEquals(0, countPartitions(tableId));
+        for (String file : files) {
+            assertEquals("each deleted file needs a fence",
+                    1, countFences(DataFileReadLeaseGuard.normalizePath(file)));
+        }
     }
 
     @Test
@@ -292,6 +359,22 @@ public class CleanPathChangedPathsTest {
             ps.setString(2, mainPartition);
             ps.setLong(3, System.currentTimeMillis());
             ps.setArray(4, connection.createArrayOf("uuid", new Object[] {commit}));
+            ps.executeUpdate();
+        }
+    }
+
+    private void insertPinnedCommit(String tableId, String file) throws Exception {
+        try (PreparedStatement ps =
+                connection.prepareStatement(
+                        "insert into data_commit_info(table_id, partition_desc, commit_id, file_ops,"
+                                + " commit_op, committed, timestamp, domain, pinned)"
+                                + " values(?, ?, ?, ARRAY[ROW(?, 'add', 1, 'id')::data_file_op],"
+                                + " 'AppendCommit', true, ?, 'public', true)")) {
+            ps.setString(1, tableId);
+            ps.setString(2, mainPartition);
+            ps.setObject(3, UUID.randomUUID());
+            ps.setString(4, file);
+            ps.setLong(5, System.currentTimeMillis());
             ps.executeUpdate();
         }
     }

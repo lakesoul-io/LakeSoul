@@ -55,6 +55,11 @@ public final class DataFileReadLeaseGuard implements AutoCloseable {
         if (tableId == null || !tableHasVectorIndex(connection, tableId)) {
             return null;
         }
+        if (!fenceTableExists(connection)) {
+            // Un-migrated metadata must keep cleanup working: fall back to the
+            // original filesystem-only path instead of failing the clean job.
+            return null;
+        }
         return acquire(connection, tableId);
     }
 
