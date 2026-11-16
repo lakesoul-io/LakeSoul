@@ -30,7 +30,7 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 | 写入 | `INSERT ... VALUES`、`INSERT ... SELECT`、非 CDC 主键表上的 `UPDATE`、`ON CONFLICT DO NOTHING`、通用 `ON CONFLICT ... DO UPDATE`（部分列、表达式和 conflict `WHERE`） |
 | 订阅 | `CREATE SUBSCRIPTION`、`ALTER SUBSCRIPTION ... ENABLE/DISABLE`、`DROP SUBSCRIPTION`，把源 PostgreSQL 逻辑复制到 LakeSoul CDC 表 |
 | 事务 | Autocommit、`READ COMMITTED`；LakeSoul 写入使用 deferred publication 的 `BEGIN`/`COMMIT`/`ROLLBACK` |
-| 目录 | `pg_catalog`、`information_schema`、`psql \d`、`current_database()`、`psycopg2` dialect 下的 SQLAlchemy reflection |
+| 目录 | `pg_catalog`、`information_schema`、`psql \d`、`pg_cursors`、`current_database()`、`psycopg2` dialect 下的 SQLAlchemy reflection |
 | 会话 | `SET TIME ZONE`、`statement_timeout`、`search_path`、`ivfflat.probes`、`RESET`、`DISCARD ALL` |
 | 向量 | `vector(n)`、`<->`、`<#>`、`<=>`、`ORDER BY ... LIMIT k`、精确回退、ANN |
 | 全文 | `text_score(column, query)`，配合 `ORDER BY ... DESC LIMIT k` |
@@ -79,12 +79,13 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 真实驱动基线位于 `rust/postgres-lakesoul/client-compat/`。它当前对运行中的端点
 执行 psycopg2、psycopg3、SQLAlchemy 和 pgjdbc，覆盖连接/`SELECT`、参数化写入
 （包括 `bytea`）、batch、UPSERT、事务、重复键恢复、catalog 发现、SQLAlchemy
-reflection、fetch-size cursor 和 Metabase 风格的启动语句。
+reflection、forward-only named cursor、fetch-size cursor 和 Metabase 风格的启动语句。
 
 核心 Python 和 JDBC 工作流已通过基线，包括 psql `\d`、`bytea` 往返和
-`psycopg2` dialect 下的 SQLAlchemy reflection。已知缺口会显式保留，而不是隐藏：
-`COPY FROM STDIN`、服务端 named cursor 和 `RETURNING`。SQLAlchemy 的
-`psycopg3` dialect 尚未纳入基线，因为它的 reflection 会开启嵌套事务
+`psycopg2` dialect 下的 SQLAlchemy reflection。Named cursor 目前只支持
+forward-only、非 holdable；`WITH HOLD`、`SCROLL` 和 backward fetch 会显式拒绝。
+已知缺口会显式保留，而不是隐藏：`COPY FROM STDIN` 和 `RETURNING`。SQLAlchemy
+的 `psycopg3` dialect 尚未纳入基线，因为它的 reflection 会开启嵌套事务
 （`SAVEPOINT`），而 LakeSoul 暂不支持。具体版本和每个缺口的状态见该目录的
 README。
 

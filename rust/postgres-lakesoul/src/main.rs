@@ -34,6 +34,7 @@ mod alter;
 mod auth;
 mod cancel;
 mod catalog;
+mod cursor;
 mod ddl;
 mod failed_transaction;
 mod federation;

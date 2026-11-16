@@ -323,28 +323,58 @@ def test_psql_describe_table(table_factory, pg_env):
     assert table in result.stdout
 
 
-def test_server_side_named_cursor_is_not_supported(driver, connector, table_factory):
+def test_server_side_named_cursor(driver, connector, table_factory):
     table = table_factory("id bigint primary key, name text", "client_cursor")
-    with closing(connector(driver)) as connection:
+    with closing(connector(driver, autocommit=False)) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(f"INSERT INTO {table} (id, name) VALUES (%s, %s)", (1, "a"))
-        try:
-            with connection.cursor(name="compat_named_cursor") as cursor:
-                cursor.execute(f"SELECT id FROM {table}")
-                cursor.fetchall()
-        except Exception as error:
-            state = sqlstate(error)
-            print(f"{driver} named cursor failure SQLSTATE={state!r}")
-            # psycopg2 probes pg_catalog.pg_cursors before it sends DECLARE;
-            # that catalog is not implemented yet and produces XX000. psycopg3
-            # reaches the explicit 0A000 refusal. Both mean the workflow is
-            # unavailable, but only the latter is an explicit contract.
-            assert state in {"0A000", "XX000"}
-        else:
-            pytest.fail(
-                "server-side named cursor unexpectedly succeeded; update the "
-                "compatibility baseline"
+            cursor.executemany(
+                f"INSERT INTO {table} (id, name) VALUES (%s, %s)",
+                [(1, "a"), (2, "b"), (3, "c"), (4, "d")],
             )
+        connection.commit()
+
+        with connection.cursor(name="compat_named_cursor") as cursor:
+            cursor.execute(f"SELECT id, name FROM {table} ORDER BY id")
+            assert cursor.fetchmany(2) == [(1, "a"), (2, "b")]
+            assert cursor.fetchone() == (3, "c")
+            assert cursor.fetchall() == [(4, "d")]
+
+        # Parameters are bound in DECLARE on psycopg3 and by the client on
+        # psycopg2; both must see the same rows.
+        with connection.cursor(name="compat_named_param") as cursor:
+            cursor.execute(
+                f"SELECT id, name FROM {table} WHERE id >= %s ORDER BY id",
+                (3,),
+            )
+            assert cursor.fetchall() == [(3, "c"), (4, "d")]
+
+        # CLOSE drops the cursor; the name can be declared again.
+        with connection.cursor(name="compat_named_cursor") as cursor:
+            cursor.execute(f"SELECT id FROM {table} ORDER BY id")
+            assert cursor.fetchall() == [(1,), (2,), (3,), (4,)]
+        connection.commit()
+
+
+def test_pg_cursors_metadata(driver, connector, table_factory):
+    """Both drivers can inspect an active cursor through pg_cursors; psycopg2
+    probes it before DECLARE and other tools read its PostgreSQL columns."""
+    table = table_factory("id bigint primary key, name text", "client_cursor_meta")
+    with closing(connector(driver, autocommit=False)) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f"INSERT INTO {table} (id, name) VALUES (1, 'a')")
+        connection.commit()
+
+        with connection.cursor(name="compat_meta_cursor") as cursor:
+            cursor.execute(f"SELECT id FROM {table}")
+            with connection.cursor() as plain:
+                plain.execute(
+                    "SELECT name, is_holdable, is_binary, is_scrollable "
+                    "FROM pg_catalog.pg_cursors "
+                    "WHERE name = 'compat_meta_cursor'"
+                )
+                assert plain.fetchall() == [("compat_meta_cursor", False, False, False)]
+            assert cursor.fetchone() == (1,)
+        connection.commit()
 
 
 def test_copy_from_stdin_is_explicitly_refused(driver, connector, table_factory):
