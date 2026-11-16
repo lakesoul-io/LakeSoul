@@ -50,6 +50,8 @@ Python SDK 构建索引时读取 `LAKESOUL_OBJECT_STORE_*`；见[向量索引管
 | `LAKESOUL_PG_MAX_RESULT_ROWS` | 每条语句的行数上限 |
 | `LAKESOUL_PG_MAX_RESULT_BYTES` | 每条语句的结果大小上限 |
 | `LAKESOUL_PG_IVM` | 为 `INSERT ... SELECT` 开启增量 SQL |
+| `LAKESOUL_PG_JWT_AUTH` | 要求连接以 LakeSoul JWT 作为密码 |
+| `LAKESOUL_PG_RBAC` | 把每条连接限制在 token 的域内（需要 `LAKESOUL_PG_JWT_AUTH`） |
 | `LAKESOUL_WORKER_THREADS` | Tokio worker 线程数 |
 
 完整参数表见 [PostgreSQL 运维](../engine/postgres/operations.md)。

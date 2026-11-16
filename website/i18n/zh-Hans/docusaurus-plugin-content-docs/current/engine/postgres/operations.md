@@ -34,8 +34,12 @@ SPDX-License-Identifier: Apache-2.0
 | `--ivm` | 关闭 | 为 `INSERT ... SELECT` 开启增量 SQL |
 | `--distributed-workers` | — | 逗号分隔的 worker 端点 |
 | `--distributed-fallback-to-local` | — | 分布式计划失败时本地执行 |
+| `--jwt-auth` | 关闭 | 要求连接以 LakeSoul JWT 作为密码（`LAKESOUL_PG_JWT_AUTH`） |
+| `--rbac` | 关闭 | 把每条连接限制在 token 的域内（`LAKESOUL_PG_RBAC`，需要 `--jwt-auth`） |
 
 v1 中 `--ivm` 与分布式执行互斥。
+
+`--jwt-auth` 与 `--rbac` 详见[认证与域隔离](authentication.md)。
 
 ## 运行时限制
 
@@ -48,6 +52,7 @@ v1 中 `--ivm` 与分布式执行互斥。
 - `lakesoul_query_requests_total`、`lakesoul_query_rows_total`、`lakesoul_query_duration_seconds` —— 查询结果和延迟，按 outcome 标注。
 - `lakesoul_memory_reservation_failures_total` —— 内存准入失败。
 - `lakesoul_worker_discovery_snapshot_age_seconds`、`lakesoul_worker_discovery_eligible_workers`、`lakesoul_worker_discovery_refresh_failures_total` —— 分布式发现。
+- `lakesoul_auth_failures_total{reason}` —— token 认证阶段被拒绝的连接，按原因区分。
 
 ## 取消
 
@@ -69,6 +74,7 @@ coordinator 会跨 worker 计划；只有在设置 `--distributed-fallback-to-lo
 
 ## 下一步
 
+- [认证与域隔离](authentication.md)
 - [兼容性](compatibility.md)
 - [元数据存储](../../operations/metadata-postgres.md)
 - [工作空间与 RBAC](../../operations/workspace-and-rbac.md)

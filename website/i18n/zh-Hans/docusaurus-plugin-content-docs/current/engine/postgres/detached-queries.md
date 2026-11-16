@@ -123,8 +123,11 @@ SELECT lakesoul_cancel_query('7c9e8f3a-...');
 
 ## 限制
 
-- 作业使用提交者的身份、database、`search_path`、时区和 IVM 开关；
-  `statement_timeout` 不继承，可在脚本里 `SET`。
+- 作业使用提交者的身份、database、`search_path`、时区和 IVM 开关。开 `--rbac`
+  时，提交者的域会随作业一起存储，并成为作业归属的一部分：`lakesoul_queries`、
+  状态与结果函数、wait 和 cancel 都把其他域的作业当作不存在，`job_key` 也只在
+  同一个域内去重。
+- `statement_timeout` 不继承，可在脚本里 `SET`。
 - 作业内部的 `INSERT` 仍拒绝事务块；作业语句本身是 autocommit。
 - 服务端同时运行的作业数默认 4，暂不限制单用户并发。
 - 队列在 server 进程内。每个 pg-wire cluster 只负责自己接受的作业；如果监听地址
