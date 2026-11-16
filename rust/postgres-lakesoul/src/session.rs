@@ -51,6 +51,8 @@ datafusion::common::extensions_options! {
     pub struct PgIdentityConfig {
         pub user: String, default = String::new()
         pub database: String, default = String::new()
+        /// The domain under `--rbac`; part of a job's owner.
+        pub domain: Option<String>, default = None
     }
 }
 
@@ -412,6 +414,10 @@ impl PgSessionFactory {
         config.options_mut().extensions.insert(PgIdentityConfig {
             user: identity.user.clone(),
             database: identity.database.clone(),
+            domain: identity
+                .access
+                .as_ref()
+                .map(|access| access.domain().to_string()),
         });
         // How the next statement treats a key that is already present. The
         // INSERT hook sets it before every write; the sink reads it while

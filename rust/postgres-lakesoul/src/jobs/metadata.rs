@@ -27,6 +27,8 @@ pub struct NewJob<'a> {
     pub job_key: Option<&'a str>,
     pub user_name: &'a str,
     pub database_name: &'a str,
+    /// The submitter's domain, empty without one.
+    pub domain: &'a str,
     pub sql_text: &'a str,
     pub settings: &'a serde_json::Value,
     pub created_at: i64,
@@ -91,8 +93,8 @@ impl JobMetadata {
         Ok(())
     }
 
-    /// Inserts a queued job unless the user already submitted one with the
-    /// same `job_key`. Returns the existing id in that case.
+    /// Inserts a queued job unless its owner (database, user and domain)
+    /// already submitted one with the same `job_key`; `None` in that case.
     pub async fn insert_job(&self, job: &NewJob<'_>) -> Result<Option<Uuid>> {
         let row = self
             .client
@@ -100,9 +102,9 @@ impl JobMetadata {
                 "insert into job.queries
                     (query_id, job_key, user_name, database_name, sql_text,
                      settings, state, created_at, owner, timeout_ms,
-                     max_attempts, retry_on_restart)
-                 values ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, $9, $10, $11)
-                 on conflict (database_name, user_name, job_key) do nothing
+                     max_attempts, retry_on_restart, domain)
+                 values ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, $9, $10, $11, $12)
+                 on conflict (database_name, user_name, domain, job_key) do nothing
                  returning query_id",
                 QueryType::RW,
                 &[
@@ -117,6 +119,7 @@ impl JobMetadata {
                     &job.timeout_ms,
                     &job.max_attempts,
                     &job.retry_on_restart,
+                    &job.domain,
                 ],
             )
             .await
@@ -124,20 +127,22 @@ impl JobMetadata {
         Ok(row.map(|row| row.get(0)))
     }
 
-    /// Looks up the job a repeated `job_key` refers to.
+    /// Looks up the job a repeated `job_key` of one owner refers to.
     pub async fn job_by_key(
         &self,
         database: &str,
         user: &str,
+        domain: &str,
         key: &str,
     ) -> Result<Option<Uuid>> {
         let row = self
             .client
             .query_opt(
                 "select query_id from job.queries \
-                 where database_name = $1 and user_name = $2 and job_key = $3",
+                 where database_name = $1 and user_name = $2 and domain = $3 \
+                   and job_key = $4",
                 QueryType::RW,
-                &[&database, &user, &key],
+                &[&database, &user, &domain, &key],
             )
             .await
             .map_err(|error| report!("look up query job by key: {error}"))?;

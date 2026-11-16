@@ -100,6 +100,7 @@ async fn rbac_domain_enforcement_contract() -> Result<()> {
             table_visibility(h, &alice, &bob).await?;
             extended_protocol_hides_too(&alice, &bob).await?;
             detached_jobs_keep_the_domain(&alice, &bob).await?;
+            jobs_are_confined_to_the_domain(h, &alice).await?;
             unfiltered_paths_are_refused(&alice).await?;
             cross_process_creation(h, &alice, &bob).await?;
             stale_drop_cannot_reach_a_replacement(h, &alice, &bob).await?;
@@ -291,6 +292,96 @@ async fn detached_jobs_keep_the_domain(alice: &Client, bob: &Client) -> Result<(
         state == "succeeded",
         "rbac-job-owner: alice's job ended {state}"
     );
+    Ok(())
+}
+
+/// A job belongs to its submitter's domain as well as user and database:
+/// the same `sub` with another group, in the shared namespace, can neither
+/// list, poll, wait on, cancel nor read alice's team-A job - each fails as
+/// for a job that does not exist - and its `job_key` names a job of its own.
+async fn jobs_are_confined_to_the_domain(h: &Harness, alice: &Client) -> Result<()> {
+    const KEY: &str = "rbac-shared-job-key";
+    const MISSING_JOB: &str = "00000000-0000-4000-8000-000000000000";
+    let alice_b = connect(
+        h,
+        "rbac-job-same-sub",
+        &h.lake_namespace,
+        "alice",
+        &h.token("alice", RBAC_TEAM_B)?,
+    )
+    .await?;
+    let sql = format!("SELECT count(*) AS n FROM {OWNED}");
+
+    let team_a = submit_with_key(alice, &sql, KEY).await?;
+    let state = wait(alice, &team_a).await?;
+    ensure!(
+        state == "succeeded",
+        "rbac-job-same-sub: team A's job ended {state}"
+    );
+
+    for (id, probe) in [
+        (
+            "rbac-job-list",
+            "SELECT count(*) FROM lakesoul_queries() WHERE query_id = '{q}'",
+        ),
+        (
+            "rbac-job-status",
+            "SELECT count(*) FROM lakesoul_query_status('{q}')",
+        ),
+    ] {
+        let seen: i64 = alice_b
+            .query_one(&probe.replace("{q}", &team_a), &[])
+            .await
+            .with_context(|| format!("{id}: {probe}"))?
+            .get(0);
+        ensure!(seen == 0, "{id}: team B sees team A's job {team_a}");
+    }
+    for (id, probe) in [
+        (
+            "rbac-job-result",
+            "SELECT * FROM lakesoul_query_result('{q}')",
+        ),
+        (
+            "rbac-job-result-set",
+            "SELECT * FROM lakesoul_query_result_set('{q}', 0)",
+        ),
+        (
+            "rbac-job-result-sets",
+            "SELECT * FROM lakesoul_query_result_sets('{q}')",
+        ),
+        ("rbac-job-wait", "SELECT lakesoul_wait_query('{q}', 0)"),
+        ("rbac-job-cancel", "SELECT lakesoul_cancel_query('{q}')"),
+    ] {
+        let hidden = server_error(&alice_b, &probe.replace("{q}", &team_a)).await?;
+        let missing = server_error(&alice_b, &probe.replace("{q}", MISSING_JOB)).await?;
+        ensure!(
+            (hidden.0.as_str(), hidden.1.replace(&team_a, "<q>"))
+                == (missing.0.as_str(), missing.1.replace(MISSING_JOB, "<q>")),
+            "{id}: team A's job must fail like a missing one for team B; \
+             hidden: {hidden:?}, missing: {missing:?}"
+        );
+    }
+
+    let team_b = submit_with_key(&alice_b, &sql, KEY).await?;
+    ensure!(
+        team_b != team_a,
+        "rbac-job-key: team B's job_key {KEY:?} deduplicated onto team A's job"
+    );
+    wait(&alice_b, &team_b).await?;
+    let again = submit_with_key(alice, &sql, KEY).await?;
+    ensure!(
+        again == team_a,
+        "rbac-job-key: team A's repeated job_key gave {again}, expected {team_a}"
+    );
+    let n: i64 = alice
+        .query_one(
+            &format!("SELECT n FROM lakesoul_query_result('{team_a}')"),
+            &[],
+        )
+        .await
+        .context("rbac-job-owner-result")?
+        .get(0);
+    ensure!(n == 2, "rbac-job-owner-result: team A read {n}, expected 2");
     Ok(())
 }
 
@@ -533,6 +624,19 @@ async fn submit(client: &Client, sql: &str) -> Result<String> {
         )
         .await
         .context("lakesoul_submit")?
+        .get(0))
+}
+
+async fn submit_with_key(client: &Client, sql: &str, key: &str) -> Result<String> {
+    Ok(client
+        .query_one(
+            &format!(
+                "SELECT lakesoul_submit($lakesoul_job${sql}$lakesoul_job$, '{key}')"
+            ),
+            &[],
+        )
+        .await
+        .context("lakesoul_submit with a job_key")?
         .get(0))
 }
 
