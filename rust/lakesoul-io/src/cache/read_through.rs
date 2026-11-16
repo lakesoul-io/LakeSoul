@@ -72,6 +72,14 @@ pub struct ReadThroughCache<C: PageCache> {
     parallelism: usize,
 
     stats: Arc<dyn CacheStats>,
+
+    /// Path prefixes whose reads bypass the page cache entirely.
+    ///
+    /// Immutable index segments are read once per cold shard and never
+    /// revisited, so caching them only adds a HEAD plus a page-sized local
+    /// write.  The list is populated by the registrations that know which
+    /// paths hold such objects (see the S3 registration).
+    bypass_paths: Vec<String>,
 }
 
 impl<C: PageCache> std::fmt::Display for ReadThroughCache<C> {
@@ -104,7 +112,21 @@ impl<C: PageCache> ReadThroughCache<C> {
             cache,
             parallelism: num_cpus::get(),
             stats,
+            bypass_paths: Vec::new(),
         }
+    }
+
+    /// Reads of objects whose path contains one of `paths` skip the cache.
+    pub fn with_bypass_paths(mut self, paths: Vec<String>) -> Self {
+        self.bypass_paths = paths;
+        self
+    }
+
+    fn is_bypassed(&self, location: &Path) -> bool {
+        let location = location.as_ref();
+        self.bypass_paths
+            .iter()
+            .any(|bypass| location.contains(bypass.as_str()))
     }
 
     async fn invalidate(&self, location: &Path) -> Result<()> {
@@ -281,7 +303,7 @@ impl<C: PageCache> ObjectStore for ReadThroughCache<C> {
     }
 
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
-        if options.version.is_some() {
+        if options.version.is_some() || self.is_bypassed(location) {
             return self.inner.get_opts(location, options).await;
         }
 
@@ -461,5 +483,42 @@ mod tests {
         assert_eq!(stats.total_hit_bytes(), 9);
         assert_eq!(stats.total_miss_bytes(), 9);
         assert_eq!(stats.total_insert_bytes(), meta.size);
+    }
+
+    #[tokio::test]
+    async fn vector_index_paths_bypass_the_page_cache() {
+        use crate::cache::stats::{AtomicIntCacheStats, CacheReadStats};
+
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(DiskCache::with_path(
+            64 * 1024 * 1024,
+            16 * 1024,
+            cache_dir.path().join("cache"),
+        ));
+        let store = Arc::new(object_store::local::LocalFileSystem::new());
+        let stats = Arc::new(AtomicIntCacheStats::new());
+        let cache = ReadThroughCache::new_with_stats(store, cache, stats.clone())
+            .with_bypass_paths(vec!["_vector_index".to_string()]);
+
+        let root = tempfile::tempdir().unwrap();
+        let index_file = root.path().join("_vector_index").join("seg-1.seg");
+        std::fs::create_dir_all(index_file.parent().unwrap()).unwrap();
+        std::fs::write(&index_file, "index segment payload").unwrap();
+
+        let path = Path::from(index_file.to_str().unwrap());
+        let read = cache.get_range(&path, 0..21).await.unwrap();
+        assert_eq!(read, "index segment payload".as_bytes());
+        // A bypassed read never enters the page cache.
+        assert_eq!(stats.total_reads(), 0);
+        assert_eq!(stats.total_insert_bytes(), 0);
+
+        let data_file = root.path().join("part-1.parquet");
+        std::fs::write(&data_file, "data file payload").unwrap();
+        let path = Path::from(data_file.to_str().unwrap());
+        let read = cache.get_range(&path, 0..17).await.unwrap();
+        assert_eq!(read, "data file payload".as_bytes());
+        // Data files keep the normal read-through path.
+        assert_eq!(stats.total_reads(), 1);
+        assert_eq!(stats.total_misses(), 1);
     }
 }

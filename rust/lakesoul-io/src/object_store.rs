@@ -135,11 +135,22 @@ pub fn register_s3_object_store_with_cache(
     // cache size in bytes, default to 1GB
     // NOTE: all read-through stores share one process-wide stats instance so
     // that the cache metrics (reads/misses/bytes) aggregate correctly.
-    let cache_s3_store = Arc::new(ReadThroughCache::new_with_stats(
-        s3_store,
-        disk_cache,
-        crate::cache::get_lakesoul_cache_stats_handle(),
-    ));
+    // Vector index segments are immutable, read once per cold shard and never
+    // revisited: caching them adds a HEAD plus a page-sized local write per
+    // object.  Serve them straight from the inner store; data files keep the
+    // read-through cache.
+    let cache_s3_store = Arc::new(
+        ReadThroughCache::new_with_stats(
+            s3_store,
+            disk_cache,
+            crate::cache::get_lakesoul_cache_stats_handle(),
+        )
+        .with_bypass_paths(vec![
+            lakesoul_common::index::IndexKind::Vector
+                .directory()
+                .to_string(),
+        ]),
+    );
     runtime.register_object_store(url, cache_s3_store);
     Ok(())
 }
