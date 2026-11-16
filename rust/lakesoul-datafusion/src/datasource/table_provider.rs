@@ -747,6 +747,11 @@ impl LakeSoulTableProvider {
                 &table_info.properties,
             )
             .unwrap_or_default();
+        crate::vector_index::set_vector_index_available(
+            &table_info.table_namespace,
+            &table_info.table_name,
+            crate::vector_index::vector_index_available(&table_info.properties),
+        );
         // A frontend may ask for its own marker on the vector columns (the
         // PostgreSQL wire server reports them as its `vector` type); the
         // scan, file and execution schemas are all derived from this one, so
@@ -1112,6 +1117,11 @@ impl LakeSoulTableProvider {
                 &table_info.properties,
             )
             .unwrap_or_default();
+        crate::vector_index::set_vector_index_available(
+            &table_info.table_namespace,
+            &table_info.table_name,
+            crate::vector_index::vector_index_available(&table_info.properties),
+        );
         let text_index_configs =
             crate::text_index::parse_text_index_from_table_properties(
                 &table_info.properties,
