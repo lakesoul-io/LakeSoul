@@ -64,6 +64,10 @@ struct IvmStateMergeExecProto {
     state_schema: Vec<u8>,
     group_keys: Vec<String>,
     measure_columns: Vec<String>,
+    #[serde(default)]
+    scalar_columns: Vec<String>,
+    #[serde(default)]
+    indicators: Vec<crate::runtime::MvStateIndicator>,
     epoch: i64,
 }
 
@@ -234,6 +238,8 @@ impl PhysicalExtensionCodec for IvmRefreshCodec {
                 state_schema: Self::encode_schema(exec.state_schema())?,
                 group_keys: exec.group_keys().to_vec(),
                 measure_columns: exec.measure_columns().to_vec(),
+                scalar_columns: exec.scalar_columns().to_vec(),
+                indicators: exec.indicators().to_vec(),
                 epoch: exec.epoch(),
             };
             let bytes = serde_json::to_vec(&IvmExecProto::StateMerge(proto)).map_err(
@@ -610,6 +616,8 @@ fn decode_state_merge(
         schema,
         proto.group_keys,
         proto.measure_columns,
+        proto.scalar_columns,
+        proto.indicators,
         proto.epoch,
     )?))
 }

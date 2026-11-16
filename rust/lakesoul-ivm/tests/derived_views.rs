@@ -4767,7 +4767,10 @@ async fn two_lookups_with_the_same_keys_fuse_and_stay_correct() {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
 
     let base_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
+        // The base key is nullable on purpose: a fused multi-lookup must
+        // keep the source nullability instead of forcing every payload that
+        // is also a base key to non-nullable.
+        Field::new("id", DataType::Int64, true),
         Field::new("k", DataType::Int64, false),
         Field::new("av", DataType::Int64, false),
         Field::new(CHANGE_COLUMN, DataType::Utf8, false),

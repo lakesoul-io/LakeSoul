@@ -51,7 +51,8 @@ use crate::runtime::{
     left_aggregate_mv_schema_with_outputs, left_join_view_schema_with_keys,
     lookup_chain_mv_schema_for, lookup_chain_step_id_column, lookup_join_view_schema_for,
     median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
-    multi_agg_partial_plan, multi_agg_rows_state_schema_for, multi_agg_state_schema_for,
+    multi_agg_mv_state_plan, multi_agg_mv_state_schema_for, multi_agg_partial_plan,
+    multi_agg_rows_state_schema_for, multi_agg_state_schema_for,
     multi_join_append_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
     multi_lookup_join_mv_schema_for, multi_window_mv_schema_for_with_payload,
     nullable_join_key_schema, parse_filter, refresh_session, row_expr_mv_schema_for,
@@ -532,6 +533,122 @@ fn inline_identity_rows(
     replaced
 }
 
+/// Whether `text` mentions `name` as a whole identifier.
+fn references_identifier(text: &str, name: &str) -> bool {
+    text.match_indices(name).any(|(index, _)| {
+        let before = text[..index].chars().next_back();
+        let after = text[index + name.len()..].chars().next();
+        before.is_none_or(|ch| !ch.is_alphanumeric() && ch != '_')
+            && after.is_none_or(|ch| !ch.is_alphanumeric() && ch != '_')
+    })
+}
+
+/// Fold a filtered row projection into a [`ViewSpec::MultiAgg`] consumer.
+///
+/// The row step carries a source-level filter (for example
+/// `amount <> 0`) and a column projection.  When the aggregate's group keys
+/// and calls only read identity columns, the row can be skipped: the filter
+/// moves to the aggregate source and the consumer reads the upstream table
+/// directly.  Renamed outputs are allowed only when the consumer never
+/// mentions the renamed name; otherwise the fold is rejected.
+fn inline_filtered_multi_agg(
+    spec: &mut ViewSpec,
+    rows: &HashMap<String, ViewSpec>,
+    uses: &HashMap<String, usize>,
+    tables: &HashMap<String, IvmTable>,
+) -> Vec<String> {
+    let ViewSpec::MultiAgg {
+        source_table_id,
+        filter,
+        group_keys,
+        group_exprs,
+        aggregates,
+        having,
+        having_lookup,
+        ..
+    } = spec
+    else {
+        return Vec::new();
+    };
+    if having_lookup.is_some() {
+        return Vec::new();
+    }
+    let Some(row) = rows.get(source_table_id.as_str()) else {
+        return Vec::new();
+    };
+    let ViewSpec::Row {
+        source_table_id: upstream,
+        output_columns,
+        output_exprs,
+        filter: row_filter,
+        ..
+    } = row
+    else {
+        return Vec::new();
+    };
+    let Some(row_filter) = row_filter.as_deref() else {
+        return Vec::new();
+    };
+    let Some(upstream_table) = tables.values().find(|table| &table.table_id == upstream)
+    else {
+        return Vec::new();
+    };
+    // A computed output would have to stay materialized; only a plain column
+    // projection can move to the aggregate source.
+    for (index, expression) in output_exprs.iter().enumerate() {
+        if expression.is_empty() {
+            let Some(name) = output_columns.get(index) else {
+                return Vec::new();
+            };
+            if upstream_table.schema.field_with_name(name).is_err() {
+                return Vec::new();
+            }
+        } else if upstream_table.schema.field_with_name(expression).is_err() {
+            return Vec::new();
+        }
+    }
+    let mut renamed = Vec::new();
+    for (index, expression) in output_exprs.iter().enumerate() {
+        if expression.is_empty() {
+            continue;
+        }
+        if let Some(name) = output_columns.get(index)
+            && name != expression
+        {
+            renamed.push(name.clone());
+        }
+    }
+    let mut texts = group_exprs.iter().map(String::as_str).collect::<Vec<_>>();
+    texts.extend(aggregates.iter().map(|aggregate| aggregate.call.as_str()));
+    if let Some(having) = having.as_deref() {
+        texts.push(having);
+    }
+    if let Some(filter) = filter.as_deref() {
+        texts.push(filter);
+    }
+    if renamed
+        .iter()
+        .any(|name| texts.iter().any(|text| references_identifier(text, name)))
+        || renamed
+            .iter()
+            .any(|name| references_identifier(row_filter, name))
+        || group_keys.iter().any(|key| renamed.contains(key))
+    {
+        return Vec::new();
+    }
+    let row_view_id = row.view_id().to_string();
+    if uses.get(&row_view_id).copied() != Some(1) {
+        return Vec::new();
+    }
+    let combined = match filter.take() {
+        Some(existing) => format!("({row_filter}) AND ({existing})"),
+        None => row_filter.to_string(),
+    };
+    *source_table_id = upstream.clone();
+    *filter = Some(combined);
+    vec![row_view_id]
+}
+
 /// The subplan of a derived source in an analyzer error, if any.
 fn derived_source(error: &rootcause::Report) -> Option<LogicalPlan> {
     error
@@ -880,6 +997,14 @@ fn derived_output_mapping(
         .iter()
         .map(|field| (field.name().clone(), field.name().clone()))
         .collect())
+}
+
+/// A final projection folded into a sink: the sink reads the row's derived
+/// source and computes the target columns while it writes.
+struct FusedTerminalRow {
+    source_table_id: String,
+    source_definition: String,
+    columns: Vec<SinkColumn>,
 }
 
 /// A fused multi-right lookup and the inner view whose join-key index it
@@ -1609,55 +1734,65 @@ impl IvmSqlExecutor {
             ));
         }
 
-        let mut state_spec = state_spec;
-        let state_table = self
-            .ensure_internal_state_table(target, &state_spec, expected.clone())
+        let fused_row = self
+            .fused_terminal_row(&state_spec, &positional, target, &caches)
             .await?;
-        state_spec.set_derived_identity(&state_table.table_id, &state_table.table_id)?;
-        if needs_state_table(&state_spec)
-            && let Some(state_table_id) =
-                self.ensure_state_table(&state_table, &state_spec).await?
-        {
-            state_spec.set_derived_state_table(&state_table_id)?;
-        }
-        let state_definition = definition_hash(&state_spec)?;
-        let stored_state = self
-            .runtime
-            .metadata()
-            .view_definition(&state_table.table_id)
-            .await?;
-        let same_state = stored_state
-            .as_ref()
-            .is_some_and(|(hash, _)| hash == &state_definition);
-        self.flush_deferred(&mut deferred).await?;
-        let state_dirty = self
-            .runtime
-            .metadata()
-            .view_status(&state_table.table_id)
-            .await?
-            .as_deref()
-            == Some("dirty");
+        let (source_table_id, source_definition, columns, state_rebuilt) =
+            if let Some(fused) = fused_row {
+                // The final row only computes target columns; the sink can do
+                // that while it writes, so the row state is not materialized.
+                tracing::debug!(
+                    target = %target.table_name,
+                    source = %fused.source_table_id,
+                    "folding the final row into the sink"
+                );
+                self.flush_deferred(&mut deferred).await?;
+                (
+                    fused.source_table_id,
+                    fused.source_definition,
+                    fused.columns,
+                    false,
+                )
+            } else {
+                let mut state_spec = state_spec;
+                let state_table = self
+                    .ensure_internal_state_table(target, &state_spec, expected.clone())
+                    .await?;
+                state_spec
+                    .set_derived_identity(&state_table.table_id, &state_table.table_id)?;
+                if needs_state_table(&state_spec)
+                    && let Some(state_table_id) =
+                        self.ensure_state_table(&state_table, &state_spec).await?
+                {
+                    state_spec.set_derived_state_table(&state_table_id)?;
+                }
+                let state_definition = definition_hash(&state_spec)?;
+                let stored_state = self
+                    .runtime
+                    .metadata()
+                    .view_definition(&state_table.table_id)
+                    .await?;
+                let same_state = stored_state
+                    .as_ref()
+                    .is_some_and(|(hash, _)| hash == &state_definition);
+                self.flush_deferred(&mut deferred).await?;
+                let state_dirty = self
+                    .runtime
+                    .metadata()
+                    .view_status(&state_table.table_id)
+                    .await?
+                    .as_deref()
+                    == Some("dirty");
 
-        let state_generation_before = self
-            .runtime
-            .metadata()
-            .view_generation(&state_table.table_id)
-            .await
-            .unwrap_or(0);
-        let mut state_rebuilt =
-            overwrite || stored_state.is_none() || !same_state || state_dirty;
-        let _state_epoch = if state_rebuilt {
-            let epoch = self.runtime.rebuild_spec(&state_spec).await?;
-            self.runtime
-                .metadata()
-                .set_view_definition(&state_table.table_id, &state_definition, sql)
-                .await?;
-            Some(epoch)
-        } else {
-            match self.runtime.refresh_spec(&state_spec).await {
-                Ok(epoch) => epoch,
-                Err(error) if IvmRuntime::rebuild_required(&error) => {
-                    state_rebuilt = true;
+                let state_generation_before = self
+                    .runtime
+                    .metadata()
+                    .view_generation(&state_table.table_id)
+                    .await
+                    .unwrap_or(0);
+                let mut state_rebuilt =
+                    overwrite || stored_state.is_none() || !same_state || state_dirty;
+                let _state_epoch = if state_rebuilt {
                     let epoch = self.runtime.rebuild_spec(&state_spec).await?;
                     self.runtime
                         .metadata()
@@ -1668,62 +1803,90 @@ impl IvmSqlExecutor {
                         )
                         .await?;
                     Some(epoch)
+                } else {
+                    match self.runtime.refresh_spec(&state_spec).await {
+                        Ok(epoch) => epoch,
+                        Err(error) if IvmRuntime::rebuild_required(&error) => {
+                            state_rebuilt = true;
+                            let epoch = self.runtime.rebuild_spec(&state_spec).await?;
+                            self.runtime
+                                .metadata()
+                                .set_view_definition(
+                                    &state_table.table_id,
+                                    &state_definition,
+                                    sql,
+                                )
+                                .await?;
+                            Some(epoch)
+                        }
+                        Err(error) => return Err(error),
+                    }
+                };
+                let state_generation = self
+                    .runtime
+                    .metadata()
+                    .view_generation(&state_table.table_id)
+                    .await
+                    .unwrap_or(0);
+                if state_generation != state_generation_before {
+                    // A rebuild of the state (even with the same definition) resets
+                    // its changelog; the target must be rebuilt from the snapshot.
+                    state_rebuilt = true;
                 }
-                Err(error) => return Err(error),
-            }
-        };
-        let state_generation = self
+                if state_rebuilt || state_dirty {
+                    self.runtime
+                        .metadata()
+                        .set_view_status(&state_table.table_id, "active")
+                        .await?;
+                    self.runtime
+                        .metadata()
+                        .set_view_error(&state_table.table_id, None)
+                        .await?;
+                }
+
+                let columns = target
+                    .schema
+                    .fields()
+                    .iter()
+                    .map(|field| {
+                        let source = positional
+                            .get(field.name())
+                            .cloned()
+                            .unwrap_or_else(|| field.name().clone());
+                        Ok(SinkColumn {
+                            name: field.name().clone(),
+                            source: if source == *field.name() {
+                                String::new()
+                            } else {
+                                source
+                            },
+                            expression: None,
+                            result: encode_data_type(field.data_type())?,
+                            nullable: field.is_nullable(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                (
+                    state_table.table_id.clone(),
+                    state_definition,
+                    columns,
+                    state_rebuilt,
+                )
+            };
+        let source_generation = self
             .runtime
             .metadata()
-            .view_generation(&state_table.table_id)
+            .view_generation(&source_table_id)
             .await
             .unwrap_or(0);
-        if state_generation != state_generation_before {
-            // A rebuild of the state (even with the same definition) resets
-            // its changelog; the target must be rebuilt from the snapshot.
-            state_rebuilt = true;
-        }
-        if state_rebuilt || state_dirty {
-            self.runtime
-                .metadata()
-                .set_view_status(&state_table.table_id, "active")
-                .await?;
-            self.runtime
-                .metadata()
-                .set_view_error(&state_table.table_id, None)
-                .await?;
-        }
-
-        let columns = target
-            .schema
-            .fields()
-            .iter()
-            .map(|field| {
-                let source = positional
-                    .get(field.name())
-                    .cloned()
-                    .unwrap_or_else(|| field.name().clone());
-                Ok(SinkColumn {
-                    name: field.name().clone(),
-                    source: if source == *field.name() {
-                        String::new()
-                    } else {
-                        source
-                    },
-                    result: encode_data_type(field.data_type())?,
-                    nullable: field.is_nullable(),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let source_generation = state_generation;
         let sink_spec = ViewSpec::Sink {
             view_id: view_id.to_string(),
-            source_table_id: state_table.table_id.clone(),
+            source_table_id,
             mv_table_id: target.table_id.clone(),
             columns,
             primary_keys: target.primary_keys.clone(),
             range_partition_columns: target.range_partition_columns.clone(),
-            source_definition: state_definition.clone(),
+            source_definition,
             source_generation,
         };
         let sink_definition = definition_hash(&sink_spec)?;
@@ -1816,6 +1979,110 @@ impl IvmSqlExecutor {
             view_id: view_id.to_string(),
             definition_hash: sink_definition,
         })
+    }
+
+    /// Whether the maintenance state is only a final projection over a
+    /// derived step.  Such a row would materialize a full copy of the target
+    /// just to compute casts and CASE expressions; the sink can evaluate the
+    /// same expressions from the derived delta instead, so the row state is
+    /// not created.
+    async fn fused_terminal_row(
+        &self,
+        spec: &ViewSpec,
+        positional: &HashMap<String, String>,
+        target: &IvmTable,
+        caches: &DerivedCaches,
+    ) -> Result<Option<FusedTerminalRow>> {
+        let ViewSpec::Row {
+            source_table_id,
+            output_columns,
+            output_exprs,
+            filter,
+            ..
+        } = spec
+        else {
+            return Ok(None);
+        };
+        if filter.is_some() {
+            return Ok(None);
+        }
+        // A base table has no derived spec to hash and may be append-only; keep
+        // its explicit maintenance row.
+        if !caches
+            .derived
+            .values()
+            .any(|step| &step.view_id == source_table_id)
+        {
+            return Ok(None);
+        }
+        let source = self.runtime.open_table_by_id(source_table_id).await?;
+        if source.primary_keys.is_empty()
+            || source.schema.field_with_name(IVM_ROW_KINDS_COLUMN).is_err()
+            || source.schema.field_with_name(IVM_EPOCH_COLUMN).is_err()
+        {
+            return Ok(None);
+        }
+        let Some(source_spec) = self
+            .runtime
+            .metadata()
+            .get_view_spec(source_table_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let source_spec: ViewSpec = serde_json::from_value(source_spec)?;
+        let source_definition = definition_hash(&source_spec)?;
+        let source_schema =
+            datafusion::common::DFSchema::try_from(source.schema.as_ref().clone())
+                .map_err(|error| {
+                    rootcause::report!("invalid sink source schema: {error}")
+                })?;
+        let context = datafusion::prelude::SessionContext::new();
+        let mut columns = Vec::with_capacity(target.schema.fields().len());
+        for field in target.schema.fields() {
+            let name = field.name();
+            let internal = name == IVM_ROW_KINDS_COLUMN || name.starts_with("__ivm_");
+            let (source_column, expression) = if internal {
+                (String::new(), None)
+            } else {
+                let Some(maintenance) = positional.get(name.as_str()) else {
+                    return Ok(None);
+                };
+                let Some(index) = output_columns
+                    .iter()
+                    .position(|column| column == maintenance)
+                else {
+                    return Ok(None);
+                };
+                let expression =
+                    output_exprs.get(index).map(String::as_str).unwrap_or("");
+                if expression.is_empty() {
+                    (maintenance.clone(), None)
+                } else if source.schema.field_with_name(expression).is_ok() {
+                    (expression.to_string(), None)
+                } else if context
+                    .state()
+                    .create_logical_expr(expression, &source_schema)
+                    .is_ok()
+                {
+                    (String::new(), Some(expression.to_string()))
+                } else {
+                    return Ok(None);
+                }
+            };
+            columns.push(SinkColumn {
+                name: name.clone(),
+                source: source_column,
+                expression,
+                result: encode_data_type(field.data_type())?,
+                nullable: field.is_nullable(),
+            });
+        }
+        Ok(Some(FusedTerminalRow {
+            source_table_id: source_table_id.clone(),
+            source_definition,
+            columns,
+        }))
     }
 
     /// Create or reuse the hidden maintenance state table of a split view.
@@ -1950,6 +2217,12 @@ impl IvmSqlExecutor {
             return Ok(None);
         }
         if caches.uses.get(left_table_id).copied() != Some(1) {
+            tracing::debug!(
+                view = %spec.view_id(),
+                left = %left_table_id,
+                uses = ?caches.uses.get(left_table_id),
+                "fuse_multi_lookup: left is not a single reader"
+            );
             return Ok(None);
         }
         let Some(value) = self.runtime.metadata().get_view_spec(left_table_id).await?
@@ -2073,8 +2346,16 @@ impl IvmSqlExecutor {
         let keys_ok = self.derived_primary_keys(spec).await?
             == self.derived_primary_keys(&chain).await?;
         if !schema_ok || !keys_ok {
+            tracing::debug!(
+                view = %spec.view_id(),
+                left = %left_table_id,
+                schema_ok,
+                keys_ok,
+                "fuse_multi_lookup: schema/keys mismatch"
+            );
             return Ok(None);
         }
+        tracing::debug!(view = %spec.view_id(), left = %left_table_id, "fuse_multi_lookup: fused");
         deferred.retain(|view_id| view_id != left_table_id);
         Ok(Some(FusedMultiLookup {
             spec: chain,
@@ -2222,12 +2503,20 @@ impl IvmSqlExecutor {
         // refresh set.  The expected schema check makes the rewrite safe.
         let before_inline = spec.clone();
         let before_schema = schema.clone();
-        let replaced_rows = inline_identity_rows(&mut spec, &caches.rows);
+        let mut replaced_rows = inline_identity_rows(&mut spec, &caches.rows);
+        let replaced_filtered =
+            inline_filtered_multi_agg(&mut spec, &caches.rows, &caches.uses, tables);
+        replaced_rows.extend(replaced_filtered.iter().cloned());
         if !replaced_rows.is_empty() {
             let after_schema = expected_mv_schema(&spec, tables)?;
             if schema_matches(after_schema.as_ref(), before_schema.as_ref()) {
-                for row_id in replaced_rows {
-                    deferred.retain(|view_id| view_id != &row_id);
+                for row_id in &replaced_rows {
+                    deferred.retain(|view_id| view_id != row_id);
+                }
+                for row_id in replaced_filtered {
+                    if !caches.fused_inner.contains(&row_id) {
+                        caches.fused_inner.push(row_id);
+                    }
                 }
             } else {
                 spec = before_inline;
@@ -2314,6 +2603,11 @@ impl IvmSqlExecutor {
         }
         if matches!(spec, ViewSpec::Row { .. }) {
             caches.rows.insert(view_id.clone(), spec.clone());
+        }
+        if matches!(&spec, ViewSpec::MultiAgg { mv_state: true, .. }) {
+            // The MV is the state now; drop the row/partial/compact state
+            // tables a previous layout left behind.
+            self.drop_generated_state(&view_id).await?;
         }
         // A `MIN`/`MAX` or `DISTINCT` aggregate step carries its own
         // value-count state table, created next to the step MV.
@@ -2406,6 +2700,7 @@ impl IvmSqlExecutor {
             {
                 return Ok(existing);
             }
+            self.drop_generated_state(&existing.table_id).await?;
             self.runtime
                 .metadata()
                 .delete_view(&existing.table_id)
@@ -3468,8 +3763,9 @@ fn needs_state_table(spec: &ViewSpec) -> bool {
         ViewSpec::MultiAgg {
             group_keys,
             having_lookup,
+            mv_state,
             ..
-        } => !group_keys.is_empty() && having_lookup.is_none(),
+        } => !*mv_state && !group_keys.is_empty() && having_lookup.is_none(),
         _ => false,
     }
 }
@@ -4237,6 +4533,7 @@ fn expected_mv_schema(
             group_keys,
             group_exprs,
             aggregates,
+            mv_state,
             ..
         } => {
             let source = find_table(tables, source_table_id)?;
@@ -4249,7 +4546,40 @@ fn expected_mv_schema(
                     ))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            multi_agg_mv_schema_for(&source.schema, group_keys, group_exprs, &columns)?
+            if *mv_state {
+                let plan_columns = aggregates
+                    .iter()
+                    .map(|aggregate| {
+                        Ok((
+                            aggregate.call.clone(),
+                            aggregate.column.clone(),
+                            decode_data_type(&aggregate.result)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let plan =
+                    multi_agg_mv_state_plan(group_keys, &plan_columns, &source.schema)?
+                        .ok_or_else(|| {
+                        rootcause::report!(
+                            "the multi-aggregate view is marked as MV state but its \
+                         layout is not eligible"
+                        )
+                    })?;
+                multi_agg_mv_state_schema_for(
+                    &source.schema,
+                    group_keys,
+                    group_exprs,
+                    &columns,
+                    &plan.hidden_columns(),
+                )?
+            } else {
+                multi_agg_mv_schema_for(
+                    &source.schema,
+                    group_keys,
+                    group_exprs,
+                    &columns,
+                )?
+            }
         }
         ViewSpec::MultiJoin {
             sources, columns, ..
@@ -4631,6 +4961,100 @@ mod tests {
                 &new_schema,
             )
             .is_none()
+        );
+    }
+    fn filtered_row_spec() -> ViewSpec {
+        serde_json::from_value(serde_json::json!({
+            "kind": "row",
+            "view_id": "row",
+            "source_table_id": "base",
+            "mv_table_id": "row_mv",
+            "output_columns": ["k", "g", "v", "extra2"],
+            "output_exprs": ["k", "g", "v", "extra"],
+            "filter": "v > 0",
+        }))
+        .unwrap()
+    }
+
+    fn filtered_multi_agg(call: &str) -> ViewSpec {
+        serde_json::from_value(serde_json::json!({
+            "kind": "multi_agg",
+            "view_id": "consumer",
+            "source_table_id": "row",
+            "mv_table_id": "consumer_mv",
+            "group_keys": ["g"],
+            "aggregates": [{
+                "call": call,
+                "column": "sum_v",
+                "result": "int64",
+            }],
+        }))
+        .unwrap()
+    }
+
+    fn test_table() -> IvmTable {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("g", DataType::Utf8, false),
+            Field::new("v", DataType::Int64, false),
+            Field::new("extra", DataType::Int64, false),
+        ]));
+        IvmTable {
+            table_id: "base".to_string(),
+            table_name: "base".to_string(),
+            namespace: "default".to_string(),
+            table_path: "file:///tmp/base".to_string(),
+            schema,
+            primary_keys: vec!["k".to_string()],
+            range_partition_columns: Vec::new(),
+            internal_columns: Vec::new(),
+            bucket_columns: Vec::new(),
+            hash_bucket_num: "4".to_string(),
+            cdc_column: None,
+            file_format: crate::PhysicalFormat::Vortex,
+            allow_fallback: true,
+        }
+    }
+
+    #[test]
+    fn folds_a_filtered_row_into_a_multi_agg() {
+        let rows = HashMap::from([("row".to_string(), filtered_row_spec())]);
+        let uses = HashMap::from([("row".to_string(), 1)]);
+        let tables = HashMap::from([("base".to_string(), test_table())]);
+        let mut consumer = filtered_multi_agg("sum(v)");
+        let replaced = inline_filtered_multi_agg(&mut consumer, &rows, &uses, &tables);
+        assert_eq!(replaced, vec!["row".to_string()]);
+        let ViewSpec::MultiAgg {
+            source_table_id,
+            filter,
+            ..
+        } = consumer
+        else {
+            panic!("expected a multi aggregate");
+        };
+        assert_eq!(source_table_id, "base");
+        assert_eq!(filter.as_deref(), Some("v > 0"));
+    }
+
+    #[test]
+    fn does_not_fold_a_renamed_row_column_the_consumer_reads() {
+        let rows = HashMap::from([("row".to_string(), filtered_row_spec())]);
+        let uses = HashMap::from([("row".to_string(), 1)]);
+        let tables = HashMap::from([("base".to_string(), test_table())]);
+        let mut consumer = filtered_multi_agg("sum(extra2)");
+        assert!(
+            inline_filtered_multi_agg(&mut consumer, &rows, &uses, &tables).is_empty()
+        );
+    }
+
+    #[test]
+    fn does_not_fold_a_filtered_row_with_another_reader() {
+        let rows = HashMap::from([("row".to_string(), filtered_row_spec())]);
+        let uses = HashMap::from([("row".to_string(), 2)]);
+        let tables = HashMap::from([("base".to_string(), test_table())]);
+        let mut consumer = filtered_multi_agg("sum(v)");
+        assert!(
+            inline_filtered_multi_agg(&mut consumer, &rows, &uses, &tables).is_empty()
         );
     }
 }

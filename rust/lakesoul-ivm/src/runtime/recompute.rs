@@ -403,6 +403,264 @@ pub fn multi_agg_mv_schema_for(
     Ok(Arc::new(Schema::new(fields)))
 }
 
+/// Hidden MV-state column prefix of a 0/1 indicator count.
+pub(crate) const IVM_INDICATOR_COUNT_PREFIX: &str = "__ivm_cnt_";
+
+/// A `MIN`/`MAX` over a 0/1 indicator carried as a hidden count in the MV
+/// state.  `max(case ... then 1 else 0 end)` is 1 exactly when the count of
+/// matching rows is positive, and `min` is 1 when every group row matches;
+/// both are therefore exact under deletes without keeping the group rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct MvStateIndicator {
+    /// The rendered 0/1 expression the hidden count sums.
+    pub condition: String,
+    /// The MV output column.
+    pub output: String,
+    /// The hidden per-group count of matching rows.
+    pub count_column: String,
+    /// Whether the visible value is the minimum or the maximum.
+    pub kind: MinMaxKind,
+}
+
+/// The compact accumulator layout of a multi-aggregate view when its MV is
+/// also the state table.
+#[derive(Debug, Clone)]
+pub(crate) struct MvStatePlan {
+    /// `(input expression, MV column, type)` for each SUM accumulator.
+    pub measures: Vec<(String, String, DataType)>,
+    /// `(rendered expression, MV column, type)` for each scalar over the
+    /// group keys; carried through the state instead of summed.
+    pub scalars: Vec<(String, String, DataType)>,
+    /// `MIN`/`MAX` of a 0/1 indicator, carried by a hidden count.
+    pub indicators: Vec<MvStateIndicator>,
+}
+
+impl MvStatePlan {
+    /// The hidden MV columns the state merge maintains.
+    pub(crate) fn hidden_columns(&self) -> Vec<(String, DataType)> {
+        self.indicators
+            .iter()
+            .map(|indicator| (indicator.count_column.clone(), DataType::Int64))
+            .collect()
+    }
+}
+
+/// The integer value of a literal expression.
+fn integer_literal(expression: &Expr) -> Option<i64> {
+    let Expr::Literal(value, _) = expression else {
+        return None;
+    };
+    match value {
+        ScalarValue::Int8(Some(value)) => Some(i64::from(*value)),
+        ScalarValue::Int16(Some(value)) => Some(i64::from(*value)),
+        ScalarValue::Int32(Some(value)) => Some(i64::from(*value)),
+        ScalarValue::Int64(Some(value)) => Some(*value),
+        ScalarValue::UInt8(Some(value)) => Some(i64::from(*value)),
+        ScalarValue::UInt16(Some(value)) => Some(i64::from(*value)),
+        ScalarValue::UInt32(Some(value)) => Some(i64::from(*value)),
+        ScalarValue::UInt64(Some(value)) => i64::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+/// Classify a `MIN`/`MAX` call as one over a 0/1 `CASE` expression, which a
+/// per-group count maintains exactly.
+fn mv_state_indicator(
+    context: &SessionContext,
+    df_schema: &DFSchema,
+    call: &str,
+    output: &str,
+) -> Option<MvStateIndicator> {
+    let expression = context.state().create_logical_expr(call, df_schema).ok()?;
+    let Expr::AggregateFunction(aggregate) = expression else {
+        return None;
+    };
+    let kind = match aggregate.func.name().to_ascii_lowercase().as_str() {
+        "max" => MinMaxKind::Max,
+        "min" => MinMaxKind::Min,
+        _ => return None,
+    };
+    if aggregate.params.distinct
+        || aggregate.params.filter.is_some()
+        || !aggregate.params.order_by.is_empty()
+        || aggregate.params.args.len() != 1
+    {
+        return None;
+    }
+    let Expr::Case(case) = &aggregate.params.args[0] else {
+        return None;
+    };
+    if case.expr.is_some() || case.when_then_expr.is_empty() {
+        return None;
+    }
+    if case
+        .when_then_expr
+        .iter()
+        .any(|(_, then_expr)| integer_literal(then_expr) != Some(1))
+    {
+        return None;
+    }
+    let else_expr = case.else_expr.as_deref()?;
+    if integer_literal(else_expr) != Some(0) {
+        return None;
+    }
+    Some(MvStateIndicator {
+        condition: call_inner(call)?.trim().to_string(),
+        output: output.to_string(),
+        count_column: format!("{IVM_INDICATOR_COUNT_PREFIX}{output}"),
+        kind,
+    })
+}
+
+/// Whether the state merge can accumulate this SUM result type.  The merge
+/// kernel currently supports integer and Decimal128 sums; other numeric types
+/// keep the row/partial path.
+fn mv_state_measure_supported(data_type: &DataType) -> bool {
+    matches!(data_type, DataType::Int64 | DataType::Decimal128(..))
+}
+
+/// Whether a scalar column supports the `max` merge used to carry it through
+/// the compact contribution.
+fn mv_state_scalar_orderable(data_type: &DataType) -> bool {
+    data_type.is_numeric()
+        || matches!(
+            data_type,
+            DataType::Utf8
+                | DataType::LargeUtf8
+                | DataType::Utf8View
+                | DataType::Date32
+                | DataType::Date64
+                | DataType::Timestamp(..)
+                | DataType::Time32(_)
+                | DataType::Time64(_)
+                | DataType::Decimal128(..)
+                | DataType::Decimal256(..)
+        )
+}
+
+/// Classify a multi-aggregate view for the MV-as-state layout.  Only `SUM`
+/// accumulators and scalar expressions over the group keys are supported: the
+/// former merge by addition, the latter are constant within a group.
+pub(crate) fn multi_agg_mv_state_plan(
+    group_keys: &[String],
+    aggregates: &[(String, String, DataType)],
+    source_schema: &Schema,
+) -> Result<Option<MvStatePlan>> {
+    let Some(plan) = multi_agg_partial_plan(group_keys, aggregates, source_schema)?
+    else {
+        return Ok(None);
+    };
+    let mut measures = Vec::new();
+    let mut scalars = Vec::new();
+    let mut indicators = Vec::new();
+    let mut indicator_session: Option<(SessionContext, DFSchema)> = None;
+    for column in &plan.columns {
+        let Some((_, _, data_type)) = aggregates
+            .iter()
+            .find(|(_, output, _)| output == &column.output)
+        else {
+            return Ok(None);
+        };
+        match column.kind {
+            MultiAggPartialKind::Sum => {
+                if !mv_state_measure_supported(data_type) {
+                    return Ok(None);
+                }
+                let Some(inner) = call_inner(&column.call) else {
+                    return Ok(None);
+                };
+                let inner = inner.trim();
+                if inner.is_empty() || inner.to_ascii_uppercase().contains("DISTINCT") {
+                    return Ok(None);
+                }
+                measures.push((
+                    inner.to_string(),
+                    column.output.clone(),
+                    data_type.clone(),
+                ));
+            }
+            MultiAggPartialKind::Scalar => {
+                if !mv_state_scalar_orderable(data_type) {
+                    return Ok(None);
+                }
+                scalars.push((
+                    column.call.clone(),
+                    column.output.clone(),
+                    data_type.clone(),
+                ));
+            }
+            MultiAggPartialKind::Min | MultiAggPartialKind::Max => {
+                if !matches!(data_type, DataType::Int64) {
+                    return Ok(None);
+                }
+                if indicator_session.is_none() {
+                    indicator_session = Some((
+                        refresh_session_local(),
+                        DFSchema::try_from(source_schema.clone())
+                            .map_err(|error| report!("invalid source schema: {error}"))?,
+                    ));
+                }
+                let (context, df_schema) =
+                    indicator_session.as_ref().expect("indicator session");
+                let Some(indicator) =
+                    mv_state_indicator(context, df_schema, &column.call, &column.output)
+                else {
+                    return Ok(None);
+                };
+                indicators.push(indicator);
+            }
+            _ => return Ok(None),
+        }
+    }
+    if measures.is_empty() && indicators.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(MvStatePlan {
+        measures,
+        scalars,
+        indicators,
+    }))
+}
+
+/// The schema of a multi-aggregate MV that is also its own accumulator state.
+/// It is the ordinary MV schema plus the hidden state columns and the
+/// per-group row count.
+pub fn multi_agg_mv_state_schema_for(
+    source_schema: &Schema,
+    group_keys: &[String],
+    group_exprs: &[String],
+    columns: &[(String, DataType)],
+    hidden: &[(String, DataType)],
+) -> Result<SchemaRef> {
+    let base = multi_agg_mv_schema_for(source_schema, group_keys, group_exprs, columns)?;
+    let mut fields = base
+        .fields()
+        .iter()
+        .map(|field| Arc::new(field.as_ref().clone()))
+        .collect::<Vec<_>>();
+    let mut index = fields
+        .iter()
+        .position(|field| field.name() == IVM_ROW_KINDS_COLUMN)
+        .unwrap_or(fields.len());
+    for (name, data_type) in hidden {
+        if fields.iter().any(|field| field.name() == name) {
+            return Err(report!(
+                "hidden state column {name} collides with the MV schema"
+            ));
+        }
+        fields.insert(
+            index,
+            Arc::new(Field::new(name.clone(), data_type.clone(), true)),
+        );
+        index += 1;
+    }
+    fields.insert(
+        index,
+        Arc::new(Field::new(IVM_ROW_COUNT_COLUMN, DataType::Int64, false)),
+    );
+    Ok(Arc::new(Schema::new(fields)))
+}
+
 /// An aggregate view over one source with any mix of supported aggregate
 /// functions in a single statement.
 #[derive(Debug, Clone)]
@@ -428,6 +686,8 @@ pub struct MultiAggView {
     pub having_lookup: Option<HavingLookup>,
     /// Optional keyed state for the plain SUM shape.
     pub state: Option<IvmTable>,
+    /// Whether the MV is also the per-group accumulator state.
+    pub mv_state: bool,
     /// The refresh interval hint persisted with the view.
     pub refresh_interval_ms: i64,
 }
@@ -469,6 +729,7 @@ impl MultiAggView {
             having: None,
             having_lookup: None,
             state: None,
+            mv_state: false,
             refresh_interval_ms: 0,
         }
     }
@@ -476,6 +737,12 @@ impl MultiAggView {
     /// Attach the keyed accumulator state.
     pub fn with_state(mut self, state: IvmTable) -> Self {
         self.state = Some(state);
+        self
+    }
+
+    /// Use the MV itself as the per-group accumulator state.
+    pub fn with_mv_state(mut self) -> Self {
+        self.mv_state = true;
         self
     }
 
@@ -534,6 +801,7 @@ impl MultiAggView {
                 }
             }),
             state_table_id: self.state.as_ref().map(|state| state.table_id.clone()),
+            mv_state: self.mv_state,
         })
     }
 
@@ -3805,6 +4073,9 @@ impl IvmRuntime {
     pub async fn refresh_multi_agg(&self, view: &MultiAggView) -> Result<Option<i64>> {
         self.register_multi_agg_view(view).await?;
         validate_multi_agg_view(view)?;
+        if view.mv_state {
+            return self.refresh_multi_agg_state(view, &view.mv).await;
+        }
         if let Some(existing) = self
             .metadata
             .get_state(&view.view_id, StateRole::MultiAggRows)
@@ -3865,9 +4136,16 @@ impl IvmRuntime {
         batch: &RecordBatch,
         schema: &SchemaRef,
         group_keys: &[String],
+        indicators: &[MvStateIndicator],
         epoch: i64,
     ) -> DataFusionResult<RecordBatch> {
         let num_rows = batch.num_rows();
+        let rows = batch
+            .column_by_name("d_rows")
+            .ok_or_else(|| DataFusionError::Execution("missing d_rows".to_string()))?;
+        let rows = rows.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
+            DataFusionError::Execution("d_rows is not bigint".to_string())
+        })?;
         let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
         for field in schema.fields() {
             let name = field.name();
@@ -3875,10 +4153,40 @@ impl IvmRuntime {
                 batch.column_by_name(name).cloned().ok_or_else(|| {
                     DataFusionError::Execution(format!("missing {name}"))
                 })?
+            } else if name == IVM_ROW_COUNT_COLUMN {
+                batch.column_by_name("d_rows").cloned().ok_or_else(|| {
+                    DataFusionError::Execution("missing d_rows".to_string())
+                })?
             } else if name == IVM_ROW_KINDS_COLUMN {
                 Arc::new(StringArray::from(vec!["insert"; num_rows]))
             } else if name == IVM_EPOCH_COLUMN {
                 Arc::new(Int64Array::from(vec![epoch; num_rows]))
+            } else if let Some(indicator) = indicators
+                .iter()
+                .find(|indicator| indicator.output == *name)
+            {
+                let count = batch
+                    .column_by_name(&format!("d_{}", indicator.count_column))
+                    .ok_or_else(|| {
+                        DataFusionError::Execution(format!(
+                            "missing d_{}",
+                            indicator.count_column
+                        ))
+                    })?;
+                super::keyed_plan::indicator_value(count, rows.values(), indicator.kind)?
+            } else if let Some(indicator) = indicators
+                .iter()
+                .find(|indicator| indicator.count_column == *name)
+            {
+                batch
+                    .column_by_name(&format!("d_{}", indicator.count_column))
+                    .cloned()
+                    .ok_or_else(|| {
+                        DataFusionError::Execution(format!(
+                            "missing d_{}",
+                            indicator.count_column
+                        ))
+                    })?
             } else {
                 let source = format!("d_{name}");
                 let array = batch.column_by_name(&source).cloned().ok_or_else(|| {
@@ -4090,6 +4398,7 @@ impl IvmRuntime {
         window: &SourceWindow,
         delta: &DataFrame,
         measures: &[(String, String, DataType)],
+        indicators: &[MvStateIndicator],
     ) -> Result<KeyedContributions> {
         if view.source.primary_keys.len() != 1 {
             return Err(report!(
@@ -4140,7 +4449,7 @@ impl IvmRuntime {
             }),
         ));
         let keys = quoted_list(&view.group_keys);
-        let contributions = measures
+        let mut contributions = measures
             .iter()
             .map(|(inner, column, data_type)| {
                 Ok(format!(
@@ -4148,8 +4457,14 @@ impl IvmRuntime {
                     Self::data_type_sql(data_type)?
                 ))
             })
-            .collect::<Result<Vec<_>>>()?
-            .join(", ");
+            .collect::<Result<Vec<_>>>()?;
+        contributions.extend(indicators.iter().map(|indicator| {
+            format!(
+                "cast(coalesce(sum(({}) * w), 0) as bigint) as d_{}",
+                indicator.condition, indicator.count_column
+            )
+        }));
+        let contributions = contributions.join(", ");
         let contrib_sql = format!(
             "select {keys}, ivm_group_row({keys}) as \"{IVM_GROUP_ROW_COLUMN}\", \
                     {contributions}, cast(coalesce(sum(w), 0) as bigint) as d_rows \
@@ -4243,6 +4558,13 @@ impl IvmRuntime {
                         true,
                     )));
                 }
+                for indicator in indicators {
+                    fields.push(Arc::new(Field::new(
+                        format!("d_{}", indicator.count_column),
+                        DataType::Int64,
+                        true,
+                    )));
+                }
                 fields.push(Arc::new(Field::new("d_rows", DataType::Int64, true)));
                 Arc::new(Schema::new(fields))
             }
@@ -4274,14 +4596,18 @@ impl IvmRuntime {
             let frame = frame.ok_or_else(|| report!("keyed contribution is missing"))?;
             if chunk_index > 1 {
                 let row = quote_ident(IVM_GROUP_ROW_COLUMN);
-                let sums = measures
+                let mut sums = measures
                     .iter()
                     .map(|(_, column, _)| {
                         let alias = quote_ident(&format!("d_{column}"));
                         format!("sum({alias}) as {alias}")
                     })
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                    .collect::<Vec<_>>();
+                sums.extend(indicators.iter().map(|indicator| {
+                    let alias = quote_ident(&format!("d_{}", indicator.count_column));
+                    format!("sum({alias}) as {alias}")
+                }));
+                let sums = sums.join(", ");
                 caller_context.register_table("contrib_chunks", frame.into_view())?;
                 caller_context
                     .sql(&format!(
@@ -4324,26 +4650,43 @@ impl IvmRuntime {
                 "multi-agg state refresh needs plain group keys without lookup/having"
             ));
         }
-        let mut measures = Vec::new();
-        for (call, column, _) in &view.aggregates {
-            let call = call.trim();
-            let inner = if call
-                .get(..4)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("SUM("))
-                && call.ends_with(')')
-            {
-                call[4..call.len() - 1].trim()
-            } else {
-                return Err(report!(
-                    "multi-agg state refresh only supports SUM aggregates"
-                ));
+        let mv_state = state.table_id == view.mv.table_id;
+        let (measures, scalars, indicators) = if mv_state {
+            let Some(plan) = multi_agg_mv_state_plan(
+                &view.group_keys,
+                &view.aggregates,
+                &view.source.schema,
+            )?
+            else {
+                return Err(report!("multi-agg MV state is not eligible"));
             };
-            let data_type = view.mv.schema.field_with_name(column)?.data_type().clone();
-            measures.push((inner.to_string(), column.clone(), data_type));
-        }
+            (plan.measures, plan.scalars, plan.indicators)
+        } else {
+            let mut measures = Vec::new();
+            for (call, column, _) in &view.aggregates {
+                let call = call.trim();
+                let inner = if call
+                    .get(..4)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("SUM("))
+                    && call.ends_with(')')
+                {
+                    call[4..call.len() - 1].trim()
+                } else {
+                    return Err(report!(
+                        "multi-agg state refresh only supports SUM aggregates"
+                    ));
+                };
+                let data_type =
+                    view.mv.schema.field_with_name(column)?.data_type().clone();
+                measures.push((inner.to_string(), column.clone(), data_type));
+            }
+            (measures, Vec::new(), Vec::new())
+        };
         self.register_multi_agg_view(view).await?;
-        self.register_state_tables(&view.view_id, &[(StateRole::State, state)])
-            .await?;
+        if !mv_state {
+            self.register_state_tables(&view.view_id, &[(StateRole::State, state)])
+                .await?;
+        }
         let window = self
             .collect_source_window_for_filter(
                 &view.view_id,
@@ -4399,25 +4742,29 @@ impl IvmRuntime {
             })
             .collect();
         let empty_old = dataframe(&context, Vec::new(), &view.source.schema)?;
-        let keyed_contributions =
-            if keyed && !versions.is_empty() && view.source.primary_keys.len() == 1 {
-                let delta = delta
-                    .as_ref()
-                    .ok_or_else(|| report!("multi-agg refresh without a delta"))?;
-                Some(
-                    self.keyed_source_contributions(
-                        &context,
-                        &view.source,
-                        view,
-                        &window,
-                        delta,
-                        &measures,
-                    )
-                    .await?,
+        let keyed_contributions = if keyed
+            && !versions.is_empty()
+            && view.source.primary_keys.len() == 1
+            && scalars.is_empty()
+        {
+            let delta = delta
+                .as_ref()
+                .ok_or_else(|| report!("multi-agg refresh without a delta"))?;
+            Some(
+                self.keyed_source_contributions(
+                    &context,
+                    &view.source,
+                    view,
+                    &window,
+                    delta,
+                    &measures,
+                    &indicators,
                 )
-            } else {
-                None
-            };
+                .await?,
+            )
+        } else {
+            None
+        };
         let (old, new, bootstrap_new) = if keyed_contributions.is_some() {
             (empty_old.clone(), empty_old, None)
         } else if keyed && !versions.is_empty() && view.source.primary_keys.len() > 1 {
@@ -4434,25 +4781,34 @@ impl IvmRuntime {
                 .iter()
                 .map(|key| col(key.as_str()))
                 .collect::<Vec<_>>();
-            let delta_keys = delta.clone().select(key_exprs)?.distinct()?;
-            let old = self
-                .lookup_source_before_by_pks(
+            let delta_keys = delta.clone().select(key_exprs.clone())?.distinct()?;
+            // A deleted key has no current row: looking it up would read the
+            // tombstone and add the deleted values back to the contribution.
+            let new_keys = filter_deletes(delta.clone(), change_column(&view.source))?
+                .select(key_exprs)?
+                .distinct()?;
+            let old = filter_deletes(
+                self.lookup_source_before_by_pks(
                     &context,
                     &view.source,
                     &window,
-                    delta_keys.clone(),
+                    delta_keys,
                 )
-                .await?;
-            let new = self
-                .lookup_source_by_join_keys_null_safe(
+                .await?,
+                change_column(&view.source),
+            )?;
+            let new = filter_deletes(
+                self.lookup_source_by_join_keys_null_safe(
                     &context,
                     &view.source,
-                    delta_keys,
+                    new_keys,
                     &view.source.primary_keys,
                     &view.source.primary_keys,
                     true,
                 )
-                .await?;
+                .await?,
+                change_column(&view.source),
+            )?;
             (old, new, None)
         } else if keyed && !versions.is_empty() {
             let delta = delta
@@ -4519,7 +4875,7 @@ impl IvmRuntime {
             context.register_table("new", new.into_view())?;
         }
         let keys = quoted_list(&view.group_keys);
-        let contributions = measures
+        let mut contributions = measures
             .iter()
             .map(|(inner, column, data_type)| {
                 Ok(format!(
@@ -4527,24 +4883,91 @@ impl IvmRuntime {
                     Self::data_type_sql(data_type)?
                 ))
             })
-            .collect::<Result<Vec<_>>>()?
-            .join(", ");
+            .collect::<Result<Vec<_>>>()?;
+        contributions.extend(
+            scalars
+                .iter()
+                .map(|(call, column, _)| format!("max({call}) as d_{column}")),
+        );
+        contributions.extend(indicators.iter().map(|indicator| {
+            format!(
+                "cast(coalesce(sum(({}) * w), 0) as bigint) as d_{}",
+                indicator.condition, indicator.count_column
+            )
+        }));
+        contributions.push("cast(coalesce(sum(w), 0) as bigint) as d_rows".to_string());
+        let group_row = if mv_state {
+            String::new()
+        } else {
+            format!(", ivm_group_row({keys}) as \"{IVM_GROUP_ROW_COLUMN}\"")
+        };
         let contrib_sql = format!(
-            "select {keys}, ivm_group_row({keys}) as \"{IVM_GROUP_ROW_COLUMN}\", \
-                    {contributions}, cast(coalesce(sum(w), 0) as bigint) as d_rows \
+            "select {keys}{group_row}, {contributions} \
              from (select *, -1 as w from old union all select *, 1 as w from new) t{filter} \
              group by {keys}",
+            contributions = contributions.join(", "),
             filter = filter_where(view.filter.as_deref())
         );
-        let mut input_types = Vec::with_capacity(view.group_keys.len());
-        for key in &view.group_keys {
-            input_types
-                .push(view.source.schema.field_with_name(key)?.data_type().clone());
+        if !mv_state {
+            let mut input_types = Vec::with_capacity(view.group_keys.len());
+            for key in &view.group_keys {
+                input_types
+                    .push(view.source.schema.field_with_name(key)?.data_type().clone());
+            }
+            context.register_udf(crate::runtime::group_row_udf_for_types(input_types)?);
         }
-        context.register_udf(crate::runtime::group_row_udf_for_types(input_types)?);
         if bootstrap {
             use futures::StreamExt;
             let frame = context.sql(&contrib_sql).await?;
+            if mv_state {
+                let mut stream = frame.execute_stream().await?;
+                let mv_schema = view.mv.schema.clone();
+                let group_keys = view.group_keys.clone();
+                let mut commit_ids: Vec<String> = Vec::new();
+                let mut chunk: Vec<RecordBatch> = Vec::new();
+                let mut chunk_rows = 0usize;
+                let mut writes = 0usize;
+                let mut contrib_rows = 0usize;
+                while let Some(batch) = stream.next().await {
+                    let batch = batch?;
+                    if batch.num_rows() == 0 {
+                        continue;
+                    }
+                    contrib_rows += batch.num_rows();
+                    let batch = Self::bootstrap_mv_batch(
+                        &batch,
+                        &mv_schema,
+                        &group_keys,
+                        &indicators,
+                        epoch,
+                    )?;
+                    chunk_rows += batch.num_rows();
+                    chunk.push(batch);
+                    if chunk_rows >= crate::table::MAX_STATE_APPEND_ROWS {
+                        let batches = std::mem::take(&mut chunk);
+                        commit_ids
+                            .extend(view.mv.append_batches(&self.client, batches).await?);
+                        chunk_rows = 0;
+                        writes += 1;
+                    }
+                }
+                if !chunk.is_empty() {
+                    commit_ids.extend(view.mv.append_batches(&self.client, chunk).await?);
+                    writes += 1;
+                }
+                tracing::info!(
+                    contrib_rows,
+                    writes,
+                    "multi-agg MV-state bootstrap finished"
+                );
+                self.checkpoint_epoch_states(&record).await?;
+                let mv_versions =
+                    output_partition_versions(&self.client, &view.mv).await?;
+                self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
+                    .await?;
+                self.advance_cursors(&view.view_id, window.cursors).await?;
+                return Ok(Some(epoch));
+            }
             let mut stream = frame.execute_stream().await?;
             let state_schema = state.schema.clone();
             let mv_schema = view.mv.schema.clone();
@@ -4574,8 +4997,13 @@ impl IvmRuntime {
                     &group_keys,
                     epoch,
                 )?;
-                let mv_batch =
-                    Self::bootstrap_mv_batch(&batch, &mv_schema, &group_keys, epoch)?;
+                let mv_batch = Self::bootstrap_mv_batch(
+                    &batch,
+                    &mv_schema,
+                    &group_keys,
+                    &[],
+                    epoch,
+                )?;
                 chunk_rows += state_batch.num_rows();
                 state_chunk.push(state_batch);
                 mv_chunk.push(mv_batch);
@@ -4642,7 +5070,18 @@ impl IvmRuntime {
         } else {
             state.current_groups(&self.client).await?
         };
-        let state_bucket_num = if state.bucket_columns.len() == 1
+        let state_bucket_num = if mv_state {
+            if state.bucket_columns == view.group_keys {
+                state
+                    .hash_bucket_num
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|count| *count > 1)
+                    .unwrap_or(1)
+            } else {
+                1
+            }
+        } else if state.bucket_columns.len() == 1
             && state.bucket_columns[0] == IVM_GROUP_ROW_COLUMN
         {
             state
@@ -4660,9 +5099,23 @@ impl IvmRuntime {
             .iter()
             .map(|(_, column, _)| column.clone())
             .collect::<Vec<_>>();
+        let scalar_columns = scalars
+            .iter()
+            .map(|(_, column, _)| column.clone())
+            .collect::<Vec<_>>();
+        let key = if mv_state {
+            super::keyed_plan::PkLookupKey::Columns {
+                input_columns: view.group_keys.clone(),
+                table_columns: view.group_keys.clone(),
+                null_safe: true,
+            }
+        } else {
+            super::keyed_plan::PkLookupKey::BinaryRow {
+                column: IVM_GROUP_ROW_COLUMN.to_string(),
+            }
+        };
         // The merge is a logical extension node: the bucket shuffle, the keyed
-        // lookup and the state merge are all planned as worker stages, and the
-        // dual sink writes the state and MV rows on the same workers.
+        // lookup and the state merge are all planned as worker stages.
         let merge = super::keyed_plan::state_merge_dataframe(
             &context,
             contrib,
@@ -4671,18 +5124,33 @@ impl IvmRuntime {
             state_bucket_num,
             view.group_keys.clone(),
             measure_columns,
+            scalar_columns,
+            indicators.clone(),
+            key,
             epoch,
         )?;
         let write_started = std::time::Instant::now();
-        let outcome = write_dataframe_dual(state, &view.mv, &self.client, merge).await?;
-        let mut commit_ids = outcome.state_ids;
-        commit_ids.extend(outcome.mv_ids);
-        tracing::info!(
-            state_keys = outcome.state_rows,
-            mv_rows = outcome.mv_rows,
-            elapsed = ?write_started.elapsed(),
-            "multi-agg keyed incremental finished"
-        );
+        let mut commit_ids = Vec::new();
+        if mv_state {
+            let outcome = append_dataframe(&view.mv, &self.client, merge).await?;
+            commit_ids.extend(outcome.commit_ids);
+            tracing::info!(
+                rows = outcome.rows,
+                elapsed = ?write_started.elapsed(),
+                "multi-agg MV-state incremental finished"
+            );
+        } else {
+            let outcome =
+                write_dataframe_dual(state, &view.mv, &self.client, merge).await?;
+            commit_ids.extend(outcome.state_ids);
+            commit_ids.extend(outcome.mv_ids);
+            tracing::info!(
+                state_keys = outcome.state_rows,
+                mv_rows = outcome.mv_rows,
+                elapsed = ?write_started.elapsed(),
+                "multi-agg keyed incremental finished"
+            );
+        }
         self.checkpoint_epoch_states(&record).await?;
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
         self.mark_epoch_committed(&record, &mv_versions, &commit_ids)
@@ -5221,6 +5689,24 @@ impl IvmRuntime {
     pub async fn rebuild_multi_agg(&self, view: &MultiAggView) -> Result<i64> {
         self.register_multi_agg_view(view).await?;
         validate_multi_agg_view(view)?;
+        if view.mv_state {
+            self.metadata
+                .set_view_status(&view.view_id, "rebuilding")
+                .await?;
+            let generation = self.metadata.bump_generation(&view.view_id).await?;
+            self.metadata.delete_cursors(&view.view_id).await?;
+            view.mv.truncate(&self.client).await?;
+            let Some(epoch) = self.refresh_multi_agg_state(view, &view.mv).await? else {
+                return Err(report!(
+                    "multi-agg rebuild for {} found no source files (generation {generation})",
+                    view.view_id
+                ));
+            };
+            self.metadata
+                .set_view_status(&view.view_id, "active")
+                .await?;
+            return Ok(epoch);
+        }
         if let Some(existing) = self
             .metadata
             .get_state(&view.view_id, StateRole::MultiAggRows)
@@ -5279,5 +5765,78 @@ impl IvmRuntime {
         let parts = view.parts()?;
         validate_recompute_view(&parts)?;
         self.rebuild_recomputed(&parts).await
+    }
+}
+
+#[cfg(test)]
+mod mv_state_plan_tests {
+    use super::*;
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    fn source_schema() -> Schema {
+        Schema::new(vec![
+            Field::new("region", DataType::Utf8, false),
+            Field::new("doc_no", DataType::Utf8, false),
+            Field::new("kind", DataType::Utf8, true),
+            Field::new("amount", DataType::Decimal128(18, 6), true),
+        ])
+    }
+
+    fn keys() -> Vec<String> {
+        vec!["region".to_string(), "doc_no".to_string()]
+    }
+
+    #[test]
+    fn recognizes_an_indicator_max() {
+        let plan = multi_agg_mv_state_plan(
+            &keys(),
+            &[
+                (
+                    "sum(amount)".to_string(),
+                    "total".to_string(),
+                    DataType::Decimal128(28, 6),
+                ),
+                (
+                    "max(CASE WHEN (kind = 'a') THEN 1 ELSE 0 END)".to_string(),
+                    "has_a".to_string(),
+                    DataType::Int64,
+                ),
+            ],
+            &source_schema(),
+        )
+        .unwrap()
+        .expect("the SUM plus indicator MAX layout is eligible");
+        assert_eq!(plan.measures.len(), 1);
+        assert_eq!(plan.indicators.len(), 1);
+        let indicator = &plan.indicators[0];
+        assert_eq!(indicator.output, "has_a");
+        assert_eq!(indicator.kind, MinMaxKind::Max);
+        assert_eq!(indicator.count_column, "__ivm_cnt_has_a");
+        assert_eq!(
+            plan.hidden_columns(),
+            vec![("__ivm_cnt_has_a".to_string(), DataType::Int64)]
+        );
+    }
+
+    #[test]
+    fn rejects_an_arbitrary_max() {
+        let plan = multi_agg_mv_state_plan(
+            &keys(),
+            &[
+                (
+                    "sum(amount)".to_string(),
+                    "total".to_string(),
+                    DataType::Decimal128(28, 6),
+                ),
+                (
+                    "max(amount)".to_string(),
+                    "peak".to_string(),
+                    DataType::Decimal128(18, 6),
+                ),
+            ],
+            &source_schema(),
+        )
+        .unwrap();
+        assert!(plan.is_none());
     }
 }

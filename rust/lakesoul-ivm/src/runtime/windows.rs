@@ -2037,13 +2037,52 @@ fn push_rank_column(columns: &mut Vec<String>, column: impl Into<String>) {
     }
 }
 
+/// Strip a trailing `ASC`/`DESC` and `NULLS FIRST|LAST` from a rendered
+/// order item so its expression can be parsed for referenced columns.  The
+/// direction must be a separate token; a column whose name merely ends in
+/// `asc` or `desc` is left untouched.
+fn strip_order_direction(item: &str) -> Option<&str> {
+    fn strip_suffix<'a>(rest: &'a str, suffix: &str) -> Option<&'a str> {
+        let start = rest.len().checked_sub(suffix.len())?;
+        if !rest[start..].eq_ignore_ascii_case(suffix) {
+            return None;
+        }
+        if start > 0 && !rest.as_bytes()[start - 1].is_ascii_whitespace() {
+            return None;
+        }
+        Some(rest[..start].trim_end())
+    }
+    let mut rest = item.trim_end();
+    let mut changed = false;
+    if let Some(stripped) =
+        strip_suffix(rest, "nulls first").or_else(|| strip_suffix(rest, "nulls last"))
+    {
+        rest = stripped;
+        changed = true;
+    }
+    if let Some(stripped) =
+        strip_suffix(rest, "desc").or_else(|| strip_suffix(rest, "asc"))
+    {
+        rest = stripped;
+        changed = true;
+    }
+    changed.then_some(rest)
+}
+
 fn add_rank_expression_columns(
     columns: &mut Vec<String>,
     context: &SessionContext,
     schema: &SchemaRef,
     expression: &str,
 ) -> Result<()> {
-    for column in filter_columns(context, schema, expression)? {
+    let referenced = match filter_columns(context, schema, expression) {
+        Ok(referenced) => referenced,
+        Err(error) => match strip_order_direction(expression) {
+            Some(stripped) => filter_columns(context, schema, stripped)?,
+            None => return Err(error),
+        },
+    };
+    for column in referenced {
         push_rank_column(columns, column);
     }
     Ok(())
@@ -2113,6 +2152,28 @@ fn window_rank_columns(
         .iter()
         .map(|field| field.name().clone())
         .collect())
+}
+
+/// Whether a window view can re-rank from its MV instead of a separate rank
+/// state.
+///
+/// A window MV stores one row per filtered source row, keyed by the partition
+/// keys and the source primary key, and it already carries the payload.  When
+/// it also covers every column the ranking reads (the `window_rank_columns`
+/// projection), the MV is the same row set as the narrow rank state and can be
+/// read in its place.  A view whose ordering or filter reads a column that is
+/// not materialized keeps the rank state.
+fn window_reuses_mv_rank_state(view: &WindowView, rank_columns: &[String]) -> bool {
+    !view.source.primary_keys.is_empty()
+        && (change_column(&view.source).is_some()
+            || view
+                .source
+                .schema
+                .field_with_name(IVM_ROW_KINDS_COLUMN)
+                .is_ok())
+        && rank_columns
+            .iter()
+            .all(|column| view.mv.schema.field_with_name(column).is_ok())
 }
 
 /// Default memory budget for one materialized top-k frame.
@@ -2297,8 +2358,12 @@ impl IvmRuntime {
                 .chain(view.source.primary_keys.iter()),
         );
         let rank_columns = window_rank_columns(view, &refresh_session_local())?;
-        let rank_state = self
-            .ensure_rank_state(
+        let reuse_mv_rank = window_reuses_mv_rank_state(view, &rank_columns);
+        let rank_state = if reuse_mv_rank {
+            self.drop_rank_state(&view.view_id).await?;
+            None
+        } else {
+            self.ensure_rank_state(
                 &view.view_id,
                 &view.source,
                 "window",
@@ -2306,7 +2371,8 @@ impl IvmRuntime {
                 &view.partition_keys,
                 &rank_columns,
             )
-            .await?;
+            .await?
+        };
         let record = match self
             .begin_window(&view.view_id, &window.identity, &view.mv)
             .await?
@@ -2438,7 +2504,44 @@ impl IvmRuntime {
         phase_done!("mv_lookup");
         context.register_table("delta", delta.clone().into_view())?;
         context.register_table("mv", mv.clone().into_view())?;
-        let src = if let Some(rank) = &rank_state {
+        let src = if reuse_mv_rank {
+            // The MV already holds every current row of the affected
+            // partitions.  Remove the old version of each changed source key,
+            // add the current source row, then re-rank the result.
+            let pk_exprs = view
+                .source
+                .primary_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let pk_refs = view
+                .source
+                .primary_keys
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let changed = delta.clone().select(pk_exprs)?.distinct()?;
+            let current = self
+                .lookup_source_by_join_keys_null_safe(
+                    &context,
+                    &view.source,
+                    changed.clone(),
+                    &view.source.primary_keys,
+                    &view.source.primary_keys,
+                    true,
+                )
+                .await?;
+            let current = filter_deletes(current, change_column(&view.source))?;
+            let current = project_frame(current, &rank_columns)?;
+            let kept = project_frame(mv.clone(), &rank_columns)?.join(
+                changed,
+                JoinType::LeftAnti,
+                &pk_refs,
+                &pk_refs,
+                None,
+            )?;
+            kept.union(current)?
+        } else if let Some(rank) = &rank_state {
             let affected = if view.partition_keys.is_empty() {
                 None
             } else {
@@ -3120,8 +3223,12 @@ impl IvmRuntime {
         self.metadata.delete_cursors(&view.view_id).await?;
         let state = self.ensure_window_state(view).await?;
         let rank_columns = window_rank_columns(view, &refresh_session_local())?;
-        let rank_state = self
-            .ensure_rank_state(
+        let reuse_mv_rank = window_reuses_mv_rank_state(view, &rank_columns);
+        let rank_state = if reuse_mv_rank {
+            self.drop_rank_state(&view.view_id).await?;
+            None
+        } else {
+            self.ensure_rank_state(
                 &view.view_id,
                 &view.source,
                 "window",
@@ -3129,7 +3236,8 @@ impl IvmRuntime {
                 &view.partition_keys,
                 &rank_columns,
             )
-            .await?;
+            .await?
+        };
         let shared_state = state.table_id == view.mv.table_id;
         view.mv.truncate(&self.client).await?;
         if !shared_state {
@@ -3284,6 +3392,25 @@ impl IvmRuntime {
             }
         }
         Ok(true)
+    }
+
+    /// Retire a rank state the view no longer reads: the window MV is now
+    /// the re-ranking source.
+    async fn drop_rank_state(&self, view_id: &str) -> Result<()> {
+        if let Some(existing) = self
+            .metadata()
+            .get_state(view_id, StateRole::RankState)
+            .await?
+        {
+            self.metadata()
+                .unregister_state(view_id, StateRole::RankState)
+                .await?;
+            let _ = self
+                .client()
+                .drop_table(&existing.table_name, &existing.namespace)
+                .await;
+        }
+        Ok(())
     }
 
     /// A source-row state used to recompute window/top-k ranks without
@@ -3940,5 +4067,26 @@ impl IvmRuntime {
             .set_view_status(&view.view_id, "active")
             .await?;
         Ok(epoch)
+    }
+}
+
+#[cfg(test)]
+mod order_direction_tests {
+    use super::strip_order_direction;
+
+    #[test]
+    fn strips_rendered_order_suffixes() {
+        assert_eq!(
+            strip_order_direction("\"v\" desc nulls first"),
+            Some("\"v\"")
+        );
+        assert_eq!(strip_order_direction("\"v\" ASC NULLS LAST"), Some("\"v\""));
+        assert_eq!(strip_order_direction("\"v\" desc"), Some("\"v\""));
+        // A bare expression is not an order item.
+        assert_eq!(
+            strip_order_direction("(CASE WHEN x THEN 1 ELSE 0 END)"),
+            None
+        );
+        assert_eq!(strip_order_direction("\"cascade\""), None);
     }
 }
