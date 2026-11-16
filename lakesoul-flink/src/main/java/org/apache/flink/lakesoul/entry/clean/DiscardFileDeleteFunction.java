@@ -241,21 +241,31 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
      */
     private DataFileReadLeaseGuard readersForBatch(Connection conn, List<String> batch)
             throws SQLException {
+        if (!needsRetirementFences(conn, batch)) {
+            return null;
+        }
+        return DataFileReadLeaseGuard.acquireFenceOnlyOrNull(conn);
+    }
+
+    /** True when at least one table owning these discard files has a vector index. */
+    public static boolean needsRetirementFences(Connection conn, List<String> batch) throws SQLException {
+        if (batch == null || batch.isEmpty()) {
+            return false;
+        }
         String sql =
+                // Avoid the jsonb `?` operator here: JDBC would parse it as a placeholder.
                 "select exists (select 1 from table_info t"
-                        + " where t.properties::jsonb ? 'vector_index_columns'"
+                        + " where jsonb_typeof((t.properties::jsonb) -> 'vector_index_columns')"
+                        + " = 'array'"
                         + " and exists (select 1 from discard_compressed_file_info d"
                         + "   where d.file_path = any(?::text[]) and d.table_path = t.table_path))";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setArray(1, conn.createArrayOf("text", batch.toArray(new String[0])));
             try (java.sql.ResultSet rows = ps.executeQuery()) {
                 rows.next();
-                if (!rows.getBoolean(1)) {
-                    return null;
-                }
+                return rows.getBoolean(1);
             }
         }
-        return DataFileReadLeaseGuard.acquireFenceOnlyOrNull(conn);
     }
 
     @Override
