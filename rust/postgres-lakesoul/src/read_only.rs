@@ -121,6 +121,10 @@ pub(crate) fn statement_hooks_with(
         // pgjdbc's primary-key metadata query uses an unimplemented
         // information_schema set-returning function; answer its equivalent.
         Arc::new(crate::pg_compat::JdbcPrimaryKeysHook) as Arc<dyn QueryHook>,
+        // SQLAlchemy's reflection queries unnest catalog vector columns and
+        // join constraint tables that have no LakeSoul rows; answer the two
+        // metadata queries from the table provider instead.
+        Arc::new(crate::pg_compat::SqlAlchemyCatalogHook) as Arc<dyn QueryHook>,
         // psql \d and SQLAlchemy reflection use correlated scalar subqueries
         // in their column queries, which the pinned planner cannot execute.
         // Claim those catalog queries and answer their equivalent shape.

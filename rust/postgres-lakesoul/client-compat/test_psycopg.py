@@ -161,13 +161,30 @@ def test_bytea_parameter_round_trip(driver, connector, table_factory):
                 (1, b"\x00\x01\xff"),
             )
             cursor.execute(f"SELECT payload FROM {table} WHERE id = 1")
-            value = bytes(rows(cursor)[0][0])
-    if driver == "psycopg2" and value == b"\\x0001ff":
-        pytest.xfail(
-            "psycopg2 sends bytea parameters as text and the server stores "
-            "the literal \\x... bytes; psycopg3 binary parameters round-trip"
-        )
-    assert value == b"\x00\x01\xff"
+            assert bytes(rows(cursor)[0][0]) == b"\x00\x01\xff"
+
+            cursor.execute(
+                f"SELECT payload FROM {table} WHERE payload = %s",
+                (b"\x00\x01\xff",),
+            )
+            assert bytes(rows(cursor)[0][0]) == b"\x00\x01\xff"
+
+            cursor.execute(
+                f"UPDATE {table} SET payload = %s WHERE id = 1",
+                (b"\xde\xad\xbe\xef",),
+            )
+            cursor.execute(f"SELECT payload FROM {table} WHERE id = 1")
+            assert bytes(rows(cursor)[0][0]) == b"\xde\xad\xbe\xef"
+
+
+def test_bytea_text_literal(driver, connector):
+    """The PostgreSQL hex input form is accepted for literal bytea values."""
+    with closing(connector(driver)) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(r"SELECT '\x0001ff'::bytea")
+            assert bytes(rows(cursor)[0][0]) == b"\x00\x01\xff"
+            cursor.execute(r"SELECT '\000\001\377'::bytea")
+            assert bytes(rows(cursor)[0][0]) == b"\x00\x01\xff"
 
 
 def test_executemany_and_batch_insert(driver, connector, table_factory):
@@ -409,20 +426,31 @@ def test_sqlalchemy_select_and_write(sqlalchemy_url, table_factory):
     print(f"sqlalchemy={sqlalchemy.__version__}")
 
 
-def test_sqlalchemy_reflection_is_not_complete(sqlalchemy_url, table_factory):
-    """Reflection is a BI/tooling path, not a core SQL requirement. Keep it
-    visible as an expected gap until the catalog functions it uses exist."""
+def test_sqlalchemy_reflection(sqlalchemy_url, table_factory):
+    """Reflection is a BI/tooling path that must see columns and the primary
+    key, and report that LakeSoul has no secondary indexes or foreign keys."""
     pytest.importorskip("sqlalchemy")
-    from sqlalchemy import MetaData, Table, create_engine
+    from sqlalchemy import MetaData, Table, create_engine, inspect
 
-    table = table_factory("id bigint primary key, name text", "client_reflect")
+    table = table_factory(
+        "id bigint primary key, tenant bigint, name text", "client_reflect"
+    )
     engine = create_engine(sqlalchemy_url)
     try:
         metadata = MetaData()
-        try:
-            Table(table, metadata, autoload_with=engine)
-        except Exception as error:
-            pytest.xfail(f"SQLAlchemy reflection failed: {error}")
-        assert table in metadata.tables
+        reflected = Table(table, metadata, autoload_with=engine)
+        assert [column.name for column in reflected.columns] == [
+            "id",
+            "tenant",
+            "name",
+        ]
+        assert [column.name for column in reflected.primary_key.columns] == ["id"]
+        assert reflected.primary_key.name == f"{table}_pkey"
+
+        inspector = inspect(engine)
+        assert inspector.get_indexes(table) == []
+        assert inspector.get_foreign_keys(table) == []
+        assert inspector.get_unique_constraints(table) == []
+        assert inspector.get_check_constraints(table) == []
     finally:
         engine.dispose()

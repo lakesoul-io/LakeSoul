@@ -11,9 +11,9 @@ that ordinary PostgreSQL driver workflows can execute.
 
 | Client | Path |
 | --- | --- |
-| `psycopg2` | connect, SELECT, parameterized types, `executemany`, `execute_values`, UPSERT, transaction rollback/commit, duplicate-key SQLSTATE, `information_schema`/`pg_catalog`, `psql \d` |
+| `psycopg2` | connect, SELECT, parameterized types including `bytea`, `executemany`, `execute_values`, UPSERT, transaction rollback/commit, duplicate-key SQLSTATE, `information_schema`/`pg_catalog`, `psql \d` |
 | `psycopg3` | the same paths through its extended protocol and batch implementation |
-| `SQLAlchemy` | `SELECT`/write through the `psycopg2` dialect, plus a reflection probe |
+| `SQLAlchemy` | `SELECT`/write through the `psycopg2` dialect, plus reflection of columns and the primary key |
 | pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared SELECT, transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT |
 
 The suite asserts **explicit refusal** for currently unsupported paths:
@@ -52,16 +52,17 @@ The first run used:
 - psycopg2 2.9.13, psycopg 3.3.9, SQLAlchemy 2.0.57
 - pgjdbc 42.7.7 (pinned in `jdbc/pom.xml`)
 
-Result: **26 passed, 2 expected gaps** for the Python clients; the pgjdbc
-workflow passes without a recorded gap. The tests already cover:
+Result: **all Python tests pass**; the pgjdbc workflow also passes without a
+recorded gap. The tests already cover:
 
 - connect and `SELECT`, including the default `sslmode=prefer` fallback;
-- parameterized values, `numeric`, `date`, `timestamptz`, `boolean`;
+- parameterized values, `numeric`, `date`, `timestamptz`, `boolean`, `bytea`;
 - `executemany`, psycopg2 `execute_values`, and pgjdbc `addBatch`/`executeBatch`;
 - `ON CONFLICT ... DO UPDATE`;
 - transaction rollback and commit (including staged writes);
 - duplicate-key `23505` and connection recovery;
 - `information_schema`/`pg_catalog` table and column discovery, including psql `\d`;
+- SQLAlchemy reflection of columns and primary keys through the `psycopg2` dialect;
 - pgjdbc `DatabaseMetaData.getTables`/`getColumns`/`getPrimaryKeys`, `setFetchSize`, and UPSERT;
 - Metabase-style startup `SET`/`SHOW` statements.
 
@@ -69,11 +70,13 @@ The remaining known gaps are:
 
 | Gap | Detail |
 | --- | --- |
-| SQLAlchemy reflection | the core SQLAlchemy path works; reflection still hits an unsupported catalog `unnest` in the index/FK queries |
-| psycopg2 `bytea` parameters | psycopg2 sends the text form and the server stores the literal `\x...` bytes; psycopg3 binary parameters round-trip correctly |
 | `COPY FROM STDIN` | explicitly refused with `0A000`; this is the main blocker for Airbyte/Singer-style loaders |
 | server-side named cursors | psycopg3 reaches the explicit `0A000`; psycopg2 first probes the missing `pg_catalog.pg_cursors` and fails with `XX000` |
 | `INSERT ... RETURNING` | explicitly refused with `0A000` |
+
+SQLAlchemy reflection is certified through the `psycopg2` dialect. The
+`psycopg3` dialect starts a nested transaction (`SAVEPOINT`) during reflection,
+which LakeSoul does not support yet.
 
 `version()` now returns a PostgreSQL-compatible baseline string
 (`PostgreSQL 14.0 (LakeSoul ... / DataFusion ...)`) so SQLAlchemy can

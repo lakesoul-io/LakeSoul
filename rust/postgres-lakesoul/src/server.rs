@@ -155,7 +155,12 @@ fn rewrite_special_statements(sql: &str) -> PgWireResult<String> {
     // `SET (k = NULL)` form `DdlStatementHook` reads as a reset.
     let sql = crate::alter::rewrite_reset_options(sql).unwrap_or_else(|| sql.to_string());
     let sql = crate::federation::rewrite(&sql)?.unwrap_or(sql);
-    crate::subscribe::sql::rewrite(&sql).map(|rewritten| rewritten.unwrap_or(sql))
+    let sql = crate::subscribe::sql::rewrite(&sql)?.unwrap_or(sql);
+    // psycopg2 and other libpq clients send bytea parameters as text
+    // literals (`'\\x...'::bytea`). Decode them before DataFusion's raw
+    // Utf8 -> Binary cast can store the literal characters.
+    crate::pg_compat::rewrite_bytea_literals(&sql)
+        .map(|rewritten| rewritten.unwrap_or(sql))
 }
 
 pub(crate) fn session_not_initialized() -> PgWireError {
