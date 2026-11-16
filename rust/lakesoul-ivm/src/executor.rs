@@ -51,7 +51,7 @@ use crate::runtime::{
     left_aggregate_mv_schema_with_outputs, left_join_view_schema_with_keys,
     lookup_chain_mv_schema_for, lookup_chain_step_id_column, lookup_join_view_schema_for,
     median_groups_mv_schema_for, min_max_groups_mv_schema_for, multi_agg_mv_schema_for,
-    multi_agg_mv_state_schema_for, multi_agg_partial_plan,
+    multi_agg_mv_state_plan, multi_agg_mv_state_schema_for, multi_agg_partial_plan,
     multi_agg_rows_state_schema_for, multi_agg_state_schema_for,
     multi_join_append_schema_for, multi_join_mv_schema_for, multi_join_primary_keys,
     multi_lookup_join_mv_schema_for, multi_window_mv_schema_for_with_payload,
@@ -4547,11 +4547,30 @@ fn expected_mv_schema(
                 })
                 .collect::<Result<Vec<_>>>()?;
             if *mv_state {
+                let plan_columns = aggregates
+                    .iter()
+                    .map(|aggregate| {
+                        Ok((
+                            aggregate.call.clone(),
+                            aggregate.column.clone(),
+                            decode_data_type(&aggregate.result)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let plan =
+                    multi_agg_mv_state_plan(group_keys, &plan_columns, &source.schema)?
+                        .ok_or_else(|| {
+                        rootcause::report!(
+                            "the multi-aggregate view is marked as MV state but its \
+                         layout is not eligible"
+                        )
+                    })?;
                 multi_agg_mv_state_schema_for(
                     &source.schema,
                     group_keys,
                     group_exprs,
                     &columns,
+                    &plan.hidden_columns(),
                 )?
             } else {
                 multi_agg_mv_schema_for(

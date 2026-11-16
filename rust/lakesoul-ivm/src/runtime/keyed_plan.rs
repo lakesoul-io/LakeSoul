@@ -73,6 +73,7 @@ use tokio::sync::Semaphore;
 
 use super::{
     IVM_EPOCH_COLUMN, IVM_GROUP_ROW_COLUMN, IVM_ROW_COUNT_COLUMN, IVM_ROW_KINDS_COLUMN,
+    MinMaxKind, MvStateIndicator,
 };
 use crate::error::Result;
 use crate::table::{IvmTable, PartitionFiles, file_bucket, partition_matches};
@@ -2905,6 +2906,7 @@ pub(crate) struct IvmStateMergeSpec {
     group_keys: Vec<String>,
     measure_columns: Vec<String>,
     scalar_columns: Vec<String>,
+    indicators: Vec<MvStateIndicator>,
     key: PkLookupKey,
     epoch: i64,
 }
@@ -2913,11 +2915,12 @@ impl std::fmt::Debug for IvmStateMergeSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "IvmStateMergeSpec(table={}, buckets={}, measures={}, scalars={})",
+            "IvmStateMergeSpec(table={}, buckets={}, measures={}, scalars={}, indicators={})",
             self.state.table_name,
             self.bucket_count,
             self.measure_columns.join(","),
             self.scalar_columns.join(","),
+            self.indicators.len(),
         )
     }
 }
@@ -3022,6 +3025,7 @@ pub(crate) fn state_merge_dataframe(
     group_keys: Vec<String>,
     measure_columns: Vec<String>,
     scalar_columns: Vec<String>,
+    indicators: Vec<MvStateIndicator>,
     key: PkLookupKey,
     epoch: i64,
 ) -> DataFusionResult<DataFrame> {
@@ -3034,6 +3038,7 @@ pub(crate) fn state_merge_dataframe(
             group_keys,
             measure_columns,
             scalar_columns,
+            indicators,
             key,
             epoch,
         }),
@@ -3172,6 +3177,7 @@ impl ExtensionPlanner for IvmKeyedLookupExtensionPlanner {
                 spec.group_keys.clone(),
                 spec.measure_columns.clone(),
                 spec.scalar_columns.clone(),
+                spec.indicators.clone(),
                 spec.epoch,
             )?)));
         }
@@ -3232,6 +3238,7 @@ pub(crate) struct IvmStateMergeExec {
     group_keys: Vec<String>,
     measure_columns: Vec<String>,
     scalar_columns: Vec<String>,
+    indicators: Vec<MvStateIndicator>,
     epoch: i64,
     properties: Arc<PlanProperties>,
 }
@@ -3254,6 +3261,10 @@ impl IvmStateMergeExec {
         &self.scalar_columns
     }
 
+    pub(crate) fn indicators(&self) -> &[MvStateIndicator] {
+        &self.indicators
+    }
+
     pub(crate) fn epoch(&self) -> i64 {
         self.epoch
     }
@@ -3269,6 +3280,7 @@ impl IvmStateMergeExec {
         group_keys: Vec<String>,
         measure_columns: Vec<String>,
         scalar_columns: Vec<String>,
+        indicators: Vec<MvStateIndicator>,
         epoch: i64,
     ) -> DataFusionResult<Self> {
         let partitions = input.output_partitioning().partition_count();
@@ -3284,6 +3296,7 @@ impl IvmStateMergeExec {
             group_keys,
             measure_columns,
             scalar_columns,
+            indicators,
             epoch,
             properties,
         })
@@ -3304,9 +3317,10 @@ impl DisplayAs for IvmStateMergeExec {
     ) -> std::fmt::Result {
         write!(
             f,
-            "IvmStateMergeExec measures={} scalars={}",
+            "IvmStateMergeExec measures={} scalars={} indicators={}",
             self.measure_columns.join(","),
-            self.scalar_columns.join(",")
+            self.scalar_columns.join(","),
+            self.indicators.len()
         )
     }
 }
@@ -3372,6 +3386,7 @@ impl ExecutionPlan for IvmStateMergeExec {
             self.group_keys.clone(),
             self.measure_columns.clone(),
             self.scalar_columns.clone(),
+            self.indicators.clone(),
             self.epoch,
         )?))
     }
@@ -3392,6 +3407,7 @@ impl ExecutionPlan for IvmStateMergeExec {
         let group_keys = self.group_keys.clone();
         let measures = self.measure_columns.clone();
         let scalars = self.scalar_columns.clone();
+        let indicators = self.indicators.clone();
         let epoch = self.epoch;
         let output_schema = self.state_schema.clone();
         let stream = input.map(move |batch| {
@@ -3402,6 +3418,7 @@ impl ExecutionPlan for IvmStateMergeExec {
                 &group_keys,
                 &measures,
                 &scalars,
+                &indicators,
                 epoch,
             )
         });
@@ -3493,12 +3510,41 @@ fn add_accumulator(
     }
 }
 
+/// The visible 0/1 `MIN`/`MAX` value from the merged count of matching rows
+/// and the merged group row count.
+pub(crate) fn indicator_value(
+    count: &ArrayRef,
+    rows: &[i64],
+    kind: MinMaxKind,
+) -> DataFusionResult<ArrayRef> {
+    let count = count.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
+        DataFusionError::Execution("indicator count is not bigint".to_string())
+    })?;
+    let values = (0..count.len())
+        .map(|row| {
+            let count = if count.is_null(row) {
+                0
+            } else {
+                count.value(row)
+            };
+            let rows = rows.get(row).copied().unwrap_or(0);
+            let value = match kind {
+                MinMaxKind::Max => count > 0,
+                MinMaxKind::Min => rows > 0 && count == rows,
+            };
+            i64::from(value)
+        })
+        .collect::<Vec<_>>();
+    Ok(Arc::new(Int64Array::from(values)))
+}
+
 fn merge_state_batch(
     batch: &RecordBatch,
     state_schema: &SchemaRef,
     group_keys: &[String],
     measures: &[String],
     scalars: &[String],
+    indicators: &[MvStateIndicator],
     epoch: i64,
 ) -> DataFusionResult<RecordBatch> {
     let rows = batch.num_rows();
@@ -3560,6 +3606,19 @@ fn merge_state_batch(
             old.wrapping_add(delta)
         })
         .collect::<Vec<_>>();
+    let indicator_counts = indicators
+        .iter()
+        .map(|indicator| {
+            add_accumulator(
+                batch,
+                IVM_STATE_COLUMN_PREFIX,
+                &indicator.count_column,
+                &DataType::Int64,
+                &already_applied,
+            )
+            .map(|count| (indicator.clone(), count))
+        })
+        .collect::<DataFusionResult<Vec<_>>>()?;
     let kinds = StringArray::from_iter_values(
         counts
             .iter()
@@ -3593,6 +3652,16 @@ fn merge_state_batch(
             Arc::new(kinds.clone())
         } else if name == IVM_EPOCH_COLUMN {
             Arc::new(epochs.clone())
+        } else if let Some((indicator, count)) = indicator_counts
+            .iter()
+            .find(|(indicator, _)| indicator.output == *name)
+        {
+            indicator_value(count, &counts, indicator.kind)?
+        } else if let Some((_, count)) = indicator_counts
+            .iter()
+            .find(|(indicator, _)| indicator.count_column == *name)
+        {
+            Arc::clone(count)
         } else if measures.iter().any(|measure| measure == name) {
             add_accumulator(
                 batch,
@@ -3823,6 +3892,7 @@ mod tests {
             &state_schema,
             &["k".to_string()],
             &["v_sum".to_string()],
+            &[],
             &[],
             3,
         )

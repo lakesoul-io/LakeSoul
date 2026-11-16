@@ -811,6 +811,189 @@ async fn sum_and_scalar_use_the_mv_as_state() {
     );
 }
 
+async fn read_sum_flag(
+    runtime: &IvmRuntime,
+    target: &IvmTable,
+) -> Vec<(String, i64, i64)> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(target)))
+        .unwrap();
+    let batches = context
+        .sql("select g, sum_v, has_big from mv order by g")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let keys = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let sums = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let flags = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                keys.value(row).to_string(),
+                sums.value(row),
+                flags.value(row),
+            ));
+        }
+    }
+    rows
+}
+
+#[test_log::test(tokio::test)]
+async fn indicator_max_uses_the_mv_as_state() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let source = source(&runtime, &dir, &format!("mvflag_src_{suffix}")).await;
+    let target_schema = Arc::new(Schema::new(vec![
+        Field::new("g", DataType::Utf8, false),
+        Field::new("sum_v", DataType::Int64, true),
+        Field::new("has_big", DataType::Int64, true),
+        Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, false),
+        Field::new(IVM_EPOCH_COLUMN, DataType::Int64, false),
+    ]));
+    let target = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_mvflag_target_{suffix}"),
+                table_path(&dir, "target"),
+                target_schema,
+            )
+            .with_primary_keys(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO {} SELECT g, SUM(v) AS sum_v, \
+         MAX(CASE WHEN v > 10 THEN 1 ELSE 0 END) AS has_big FROM {} GROUP BY g",
+        target.table_name, source.table_name
+    );
+    let runtime = executor.runtime();
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "a", 10, "insert"),
+                (2, "a", 20, "insert"),
+                (3, "b", 5, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "bootstrap");
+    assert_eq!(
+        read_sum_flag(runtime, &target).await,
+        vec![("a".to_string(), 30, 1), ("b".to_string(), 5, 0),]
+    );
+
+    // The indicator MAX is carried by a hidden count inside the MV state.
+    let sink: ViewSpec = serde_json::from_value(
+        runtime
+            .metadata()
+            .get_view_spec(&target.table_id)
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let ViewSpec::Sink {
+        source_table_id, ..
+    } = sink
+    else {
+        panic!("expected a sink");
+    };
+    let step_spec: ViewSpec = serde_json::from_value(
+        runtime
+            .metadata()
+            .get_view_spec(&source_table_id)
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        step_spec,
+        ViewSpec::MultiAgg { mv_state: true, .. }
+    ));
+    let step = runtime.open_table_by_id(&source_table_id).await.unwrap();
+    assert!(
+        step.schema.field_with_name("__ivm_cnt_has_big").is_ok(),
+        "{:?}",
+        step.schema
+    );
+    let states = runtime.list_states(&source_table_id).await.unwrap();
+    assert!(
+        states.iter().all(|state| state.role == StateRole::Mv),
+        "{states:?}"
+    );
+
+    // A second matching row keeps the flag at 1 while the sum grows.
+    source
+        .append_batch(runtime.client(), source_batch(&[(4, "a", 30, "insert")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_sum_flag(runtime, &target).await,
+        vec![("a".to_string(), 60, 1), ("b".to_string(), 5, 0),]
+    );
+
+    // Removing one of the two matching rows keeps the maximum at 1.
+    source
+        .append_batch(runtime.client(), source_batch(&[(2, "a", 20, "delete")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_sum_flag(runtime, &target).await,
+        vec![("a".to_string(), 40, 1), ("b".to_string(), 5, 0),]
+    );
+
+    // Removing the last matching row drops the maximum back to 0.
+    source
+        .append_batch(runtime.client(), source_batch(&[(4, "a", 30, "delete")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_sum_flag(runtime, &target).await,
+        vec![("a".to_string(), 10, 0), ("b".to_string(), 5, 0),]
+    );
+
+    // Deleting the last source row of the group removes its state/MV row.
+    source
+        .append_batch(runtime.client(), source_batch(&[(1, "a", 10, "delete")]))
+        .await
+        .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action.label(), "incremental");
+    assert_eq!(
+        read_sum_flag(runtime, &target).await,
+        vec![("b".to_string(), 5, 0)]
+    );
+}
+
 #[test_log::test(tokio::test)]
 async fn current_timestamp_does_not_change_the_definition_identity() {
     let runtime = IvmRuntime::from_env().await.unwrap();

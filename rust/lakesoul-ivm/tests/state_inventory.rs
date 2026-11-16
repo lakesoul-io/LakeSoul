@@ -358,18 +358,6 @@ fn event_mv_schema(source_schema: &Schema) -> SchemaRef {
     .unwrap()
 }
 
-fn table_with_role<'a>(
-    inventory: &'a StateInventory,
-    role: &str,
-) -> &'a lakesoul_ivm::TableFootprint {
-    inventory
-        .views
-        .iter()
-        .flat_map(|view| &view.tables)
-        .find(|table| table.roles.iter().any(|candidate| candidate == role))
-        .unwrap_or_else(|| panic!("a {role} table in {inventory:#?}"))
-}
-
 async fn create_event_target(
     runtime: &IvmRuntime,
     dir: &tempfile::TempDir,
@@ -390,11 +378,11 @@ async fn create_event_target(
         .unwrap()
 }
 
-/// The `SUM + MAX` pattern: `SUM + MAX + MAX` keeps a row-level
-/// multi-aggregate state, while rewriting the 0/1 `MAX` flags to `SUM` keeps
-/// the compact accumulator state.
+/// The `SUM + MAX` pattern: a `SUM` plus 0/1 `MAX` flags keeps the MV
+/// as its own state through a hidden indicator count, and rewriting the flags
+/// to `SUM` keeps the same compact layout.
 #[test_log::test(tokio::test)]
-async fn inventory_shows_row_state_versus_compact_multi_agg_state() {
+async fn inventory_shows_the_multi_agg_mv_state() {
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -445,16 +433,51 @@ async fn inventory_shows_row_state_versus_compact_multi_agg_state() {
         .await
         .unwrap();
     let max_inventory = runtime.state_inventory(&max_mv.table_id).await.unwrap();
-    let rows_state = table_with_role(&max_inventory, "multi_agg_rows");
-    assert_eq!(rows_state.rows, Some(6), "{rows_state:?}");
-    assert!(rows_state.bytes > 0, "{rows_state:?}");
+    for role in ["multi_agg_rows", "multi_agg_partials", "state"] {
+        assert!(
+            !max_inventory
+                .role_totals
+                .iter()
+                .any(|total| total.role == role),
+            "{max_inventory:?}"
+        );
+    }
+    let max_state = runtime
+        .open_table(
+            &format!("{}__ivm_state", max_mv.table_name),
+            &max_mv.namespace,
+        )
+        .await
+        .unwrap();
+    let max_spec: lakesoul_ivm::ViewSpec = serde_json::from_value(
+        runtime
+            .metadata()
+            .get_view_spec(&max_state.table_id)
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        max_spec,
+        lakesoul_ivm::ViewSpec::MultiAgg { mv_state: true, .. }
+    ));
     assert!(
-        max_inventory
-            .role_totals
-            .iter()
-            .any(|role| role.role == "multi_agg_rows"),
-        "{max_inventory:?}"
+        max_state
+            .schema
+            .field_with_name("__ivm_cnt_flag_a")
+            .is_ok(),
+        "{:?}",
+        max_state.schema
     );
+    let max_rows = max_state
+        .read_current(runtime.client())
+        .await
+        .unwrap()
+        .iter()
+        .map(|batch| batch.num_rows())
+        .sum::<usize>();
+    assert_eq!(max_rows, 3, "{max_inventory:?}");
 
     executor
         .execute(&format!(
@@ -502,10 +525,6 @@ async fn inventory_shows_row_state_versus_compact_multi_agg_state() {
             .iter()
             .any(|role| role.role == "state"),
         "{sum_inventory:?}"
-    );
-    assert!(
-        rows_state.rows.unwrap() as usize > compact_rows,
-        "row state {rows_state:?} should be larger than the compact state"
     );
 
     for mv in [&max_mv, &sum_mv] {
