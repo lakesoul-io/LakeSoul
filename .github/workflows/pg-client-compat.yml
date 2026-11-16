@@ -95,11 +95,14 @@ jobs:
         uses: astral-sh/setup-uv@v6
       - name: Init metadata PostgreSQL
         run: ./script/meta_init_for_local_test.sh -j 1
+      # Share rust-ci's test cache: rust-ci already builds and tests
+      # postgres-lakesoul with the same test-fast profile and RUSTFLAGS.
+      # Only main's rust-ci job updates this cache.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
-          shared-key: "pg-client-compat"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: "rust-test-fast"
+          save-if: false
       - name: Build postgres-lakesoul
         run: cargo build --profile test-fast -p postgres-lakesoul
       - name: Run psycopg and pgjdbc baseline
