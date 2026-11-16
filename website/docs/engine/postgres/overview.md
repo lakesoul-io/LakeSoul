@@ -35,20 +35,21 @@ for the metadata database and the first table.
 | --- | --- |
 | **Connectivity** | PostgreSQL wire protocol, simple and extended query protocol, `pg_catalog`, `psql \d` |
 | **DDL** | `CREATE TABLE`, `DROP TABLE`, primary keys, `PARTITIONED BY`, `WITH (...)` options |
-| **Writes** | `INSERT ... VALUES`, `INSERT ... SELECT`, `ON CONFLICT DO NOTHING`, `ON CONFLICT ... DO UPDATE SET col = EXCLUDED.col` (every non-key column) |
+| **Writes** | `INSERT ... VALUES`, `INSERT ... SELECT`, `UPDATE` on non-CDC primary-key tables, `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial columns, expressions and conflict `WHERE`) |
 | **Queries** | The DataFusion SQL surface, including joins, aggregates, windows, CTEs and set operations |
 | **Search** | pgvector-compatible vector operators, `text_score` for BM25 |
 | **Incremental SQL** | `INSERT ... SELECT` maintains its target when the session enables it |
 | **Subscriptions** | `CREATE/DROP/ALTER SUBSCRIPTION` replicates one source PostgreSQL table into a LakeSoul CDC table |
 | **Detached queries** | `lakesoul_submit` runs a long `SELECT` or `INSERT ... SELECT` outside the submitting connection; poll, fetch and cancel it by query id |
-| **Transactions** | Autocommit; `READ COMMITTED`; failed-transaction recovery |
+| **Transactions** | Autocommit and explicit blocks; `READ COMMITTED`; deferred publication for writes; failed-transaction recovery |
 | **Isolation** | One database maps to one LakeSoul namespace; user tables live in `public` |
 
 ## What does not
 
-`UPDATE`, `DELETE`, `COPY`, `RETURNING`, `CREATE TABLE AS`, `TRUNCATE`, non-
-`READ COMMITTED` isolation, and writes inside an explicit transaction block are
-refused with SQLSTATE `0A000`. See the
+`DELETE`, `COPY`, `RETURNING`, `CREATE TABLE AS`, `CREATE TEMP TABLE`,
+`TRUNCATE`, non-`READ COMMITTED` isolation, and writes inside a multi-statement
+simple-query batch are refused with SQLSTATE `0A000`. Writes inside an explicit
+block use deferred publication. See the
 [compatibility matrix](compatibility.md) for the full list.
 
 ## Next
