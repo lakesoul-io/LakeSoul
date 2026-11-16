@@ -41,13 +41,13 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::TableProvider;
 use datafusion::common::ParamValues;
 use datafusion::error::DataFusionError;
-use datafusion::logical_expr::LogicalPlan;
-use datafusion::prelude::SessionContext;
+use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
+use datafusion::prelude::{SessionContext, col};
 use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{
     ConflictTarget, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Insert,
@@ -83,7 +83,7 @@ use lakesoul_datafusion::write_mode::{
 
 use crate::catalog::PUBLIC_SCHEMA;
 use crate::ddl::{feature_not_supported, normalize_column_ident, normalize_ident};
-use crate::server::ConnectionSession;
+use crate::server::{ConnectionSession, ResultFormatCell};
 
 /// SQLSTATE `undefined_table`.
 const UNDEFINED_TABLE: &str = "42P01";
@@ -213,8 +213,6 @@ impl QueryHook for InsertStatementHook {
                     return execute_upsert(&planned, Some(params), session_context).await;
                 }
                 let target = prepare(insert, session_context, status, &database).await?;
-                let returning =
-                    execute_returning(&target, Some(params), session_context).await?;
                 // The Parse-time plan carries the result schema for RETURNING
                 // (`Describe` needs it), not the DML node to execute. Build the
                 // write plan again only in that case; a plain prepared INSERT
@@ -224,6 +222,14 @@ impl QueryHook for InsertStatementHook {
                 } else {
                     logical_plan.clone()
                 };
+                let returning = execute_returning(
+                    &target,
+                    &write_plan,
+                    Some(params),
+                    &current_result_format(client),
+                    session_context,
+                )
+                .await?;
                 if let TargetKind::LakeSoul(mode) = target.kind {
                     write_mode(session_context)?.set(mode);
                 }
@@ -413,10 +419,6 @@ struct Target {
     /// default semantics for the unlisted columns. `DO UPDATE` never reaches
     /// this path.
     statement: Insert,
-    /// The target's declared schema.
-    schema: SchemaRef,
-    /// Schema index of the target column for each source position.
-    targets: Vec<usize>,
     /// The resolved `RETURNING` projection, when the statement has one.
     returning: Option<ReturningSpec>,
 }
@@ -511,7 +513,6 @@ fn target_from(
     insert: &Insert,
     schema: SchemaRef,
     statement: Insert,
-    analysis: pg_insert_analysis::SourceAnalysis,
 ) -> PgWireResult<Target> {
     let returning = insert
         .returning
@@ -521,8 +522,6 @@ fn target_from(
     Ok(Target {
         kind,
         statement,
-        schema,
-        targets: analysis.targets,
         returning,
     })
 }
@@ -567,14 +566,13 @@ async fn prepare(
         let table_info = provider.table_info();
         let (range, primary_keys) = split_partitions(&table_info.partitions);
         let mode = conflict_plan(insert, &primary_keys, &range)?;
-        let (statement, analysis) =
+        let statement =
             checked_statement(insert, &provider.schema(), session_context).await?;
         return target_from(
             TargetKind::LakeSoul(mode),
             insert,
             provider.schema(),
             statement,
-            analysis,
         );
     }
 
@@ -593,15 +591,9 @@ async fn prepare(
                     .to_string(),
             ));
         }
-        let (statement, analysis) =
+        let statement =
             checked_statement(insert, &provider.schema(), session_context).await?;
-        return target_from(
-            TargetKind::Foreign,
-            insert,
-            provider.schema(),
-            statement,
-            analysis,
-        );
+        return target_from(TargetKind::Foreign, insert, provider.schema(), statement);
     }
 
     if let Some(provider) = provider_any.downcast_ref::<ExternalFileTableProvider>() {
@@ -619,14 +611,13 @@ async fn prepare(
                     .to_string(),
             ));
         }
-        let (statement, analysis) =
+        let statement =
             checked_statement(insert, &provider.schema(), session_context).await?;
         return target_from(
             TargetKind::ExternalFile,
             insert,
             provider.schema(),
             statement,
-            analysis,
         );
     }
 
@@ -646,7 +637,7 @@ async fn checked_statement(
     insert: &Insert,
     schema: &SchemaRef,
     session_context: &SessionContext,
-) -> PgWireResult<(Insert, pg_insert_analysis::SourceAnalysis)> {
+) -> PgWireResult<Insert> {
     let mut statement = insert.clone();
     statement.on = None;
     statement.returning = None;
@@ -654,7 +645,7 @@ async fn checked_statement(
         .await
         .map_err(insert_analysis_error)?;
     pg_insert_analysis::pad_insert_source(&mut statement, &analysis);
-    Ok((statement, analysis))
+    Ok(statement)
 }
 
 fn insert_analysis_error(error: pg_insert_analysis::InsertAnalysisError) -> PgWireError {
@@ -1062,15 +1053,22 @@ async fn execute_write(
     database: &str,
 ) -> PgWireResult<(usize, Tag, Option<ReturnedRows>)> {
     let target = prepare(insert, session_context, status, database).await?;
+    let write_plan = plan_target(&target, session_context).await?;
     // Evaluate RETURNING before the write so a failing returning expression
     // cannot leave a committed insert without its response rows.
-    let returning = execute_returning(&target, None, session_context).await?;
+    let returning = execute_returning(
+        &target,
+        &write_plan,
+        None,
+        &Format::UnifiedText,
+        session_context,
+    )
+    .await?;
     if let TargetKind::LakeSoul(mode) = target.kind {
         write_mode(session_context)?.set(mode);
     }
-    let plan = plan_target(&target, session_context).await?;
     let dataframe = session_context
-        .execute_logical_plan(plan)
+        .execute_logical_plan(write_plan)
         .await
         .map_err(insert_error)?;
     let batches = dataframe.collect().await.map_err(insert_error)?;
@@ -1102,31 +1100,72 @@ async fn returning_plan(
     target: &Target,
     session_context: &SessionContext,
 ) -> PgWireResult<LogicalPlan> {
+    let write_plan = plan_target(target, session_context).await?;
     let Some(spec) = &target.returning else {
         return Err(internal("RETURNING plan requested without a projection"));
     };
-    let sql = returning_sql(&target.statement, &target.targets, &target.schema, spec)?;
-    let dataframe = session_context.sql(&sql).await.map_err(insert_error)?;
-    Ok(dataframe.logical_plan().clone())
+    returning_projection(&write_plan, spec)
+}
+
+/// Projects the RETURNING columns from the DML input plan.
+///
+/// The insert planner has already reordered and cast the source to the target
+/// schema at this point, so this projection inherits the same parameter types
+/// as the write. It also returns the values the write consumes instead of
+/// evaluating the source expressions a second time.
+fn returning_projection(
+    write_plan: &LogicalPlan,
+    spec: &ReturningSpec,
+) -> PgWireResult<LogicalPlan> {
+    let LogicalPlan::Dml(dml) = write_plan else {
+        return Err(internal("the INSERT plan is not a DML node"));
+    };
+    let input = dml.input.as_ref();
+    let input_schema = input.schema();
+
+    let mut projections = Vec::with_capacity(spec.columns.len());
+    for column in &spec.columns {
+        let field = input_schema
+            .fields()
+            .get(column.target_index)
+            .ok_or_else(|| {
+                internal("RETURNING target is outside the INSERT input schema")
+            })?;
+        projections.push(col(field.name()).alias(column.output_name.as_str()));
+    }
+    let projected = LogicalPlanBuilder::from(input.clone())
+        .project(projections)
+        .and_then(|builder| builder.build())
+        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+    Ok(projected)
+}
+
+/// The result format of the current extended-protocol portal; simple queries
+/// use text format.
+fn current_result_format(client: &(impl ClientInfo + ?Sized)) -> Format {
+    client
+        .session_extensions()
+        .get::<ResultFormatCell>()
+        .map(|cell| cell.0.lock().clone())
+        .unwrap_or_default()
 }
 
 async fn execute_returning(
     target: &Target,
+    write_plan: &LogicalPlan,
     params: Option<&ParamValues>,
+    format: &Format,
     session_context: &SessionContext,
 ) -> PgWireResult<Option<ReturnedRows>> {
     let Some(spec) = &target.returning else {
         return Ok(None);
     };
-    let sql = returning_sql(&target.statement, &target.targets, &target.schema, spec)?;
-    let dataframe = session_context.sql(&sql).await.map_err(insert_error)?;
+    let plan = returning_projection(write_plan, spec)?;
     let plan = match params {
-        Some(params) => dataframe
-            .logical_plan()
-            .clone()
+        Some(params) => plan
             .replace_params_with_values(params)
             .map_err(insert_error)?,
-        None => dataframe.logical_plan().clone(),
+        None => plan,
     };
     let dataframe = session_context
         .execute_logical_plan(plan)
@@ -1134,149 +1173,11 @@ async fn execute_returning(
         .map_err(insert_error)?;
     let fields = Arc::new(arrow_schema_to_pg_fields(
         dataframe.schema().as_arrow(),
-        &Format::UnifiedText,
+        format,
         None,
     )?);
     let batches = dataframe.collect().await.map_err(insert_error)?;
     Ok(Some((fields, batches)))
-}
-
-fn returning_sql(
-    statement: &Insert,
-    targets: &[usize],
-    schema: &SchemaRef,
-    spec: &ReturningSpec,
-) -> PgWireResult<String> {
-    let source = statement.source.as_deref().ok_or_else(|| {
-        feature_not_supported("INSERT ... RETURNING needs a VALUES source".to_string())
-    })?;
-    let SetExpr::Values(values) = source.body.as_ref() else {
-        return Err(feature_not_supported(
-            "INSERT ... RETURNING is only supported for INSERT ... VALUES".to_string(),
-        ));
-    };
-    if values.rows.is_empty() {
-        return Err(feature_not_supported(
-            "INSERT ... RETURNING needs at least one VALUES row".to_string(),
-        ));
-    }
-
-    let mut needed = Vec::new();
-    for column in &spec.columns {
-        if let Some(position) = targets
-            .iter()
-            .position(|target| *target == column.target_index)
-            && !needed.contains(&position)
-        {
-            needed.push(position);
-        }
-    }
-    let dummy = targets.is_empty();
-    let aliases = if dummy {
-        "c1".to_string()
-    } else {
-        (1..=targets.len())
-            .map(|index| format!("c{index}"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-
-    // Keep every source position in the VALUES list. Removing unselected
-    // positions would leave non-contiguous placeholders (`$2` without `$1`)
-    // in the generated plan, and DataFusion's parameter replacement expects
-    // the statement's original positions.
-    let mut rows = Vec::with_capacity(values.rows.len());
-    for row in &values.rows {
-        let expressions = if dummy {
-            "NULL".to_string()
-        } else {
-            (0..targets.len())
-                .map(|position| {
-                    let target_index = targets[position];
-                    let expression = row
-                        .content
-                        .get(position)
-                        .map(ToString::to_string)
-                        .unwrap_or_else(|| "NULL".to_string());
-                    match returning_type_name(schema.field(target_index).data_type()) {
-                        Ok(type_name) => Ok(format!("CAST({expression} AS {type_name})")),
-                        // An unselected column with a complex type can stay
-                        // uncast; it is only carried through the VALUES list.
-                        Err(_error) if !needed.contains(&position) => Ok(expression),
-                        Err(error) => Err(error),
-                    }
-                })
-                .collect::<PgWireResult<Vec<_>>>()?
-                .join(", ")
-        };
-        rows.push(format!("({expressions})"));
-    }
-
-    let projections = spec
-        .columns
-        .iter()
-        .map(|column| {
-            let type_name =
-                returning_type_name(schema.field(column.target_index).data_type())?;
-            let expression = if dummy {
-                "NULL".to_string()
-            } else {
-                targets
-                    .iter()
-                    .position(|target| *target == column.target_index)
-                    .map(|index| format!("t.c{}", index + 1))
-                    .unwrap_or_else(|| "NULL".to_string())
-            };
-            Ok(format!(
-                "CAST({expression} AS {type_name}) AS \"{}\"",
-                escape_identifier(&column.output_name)
-            ))
-        })
-        .collect::<PgWireResult<Vec<_>>>()?;
-
-    Ok(format!(
-        "SELECT {} FROM (VALUES {}) AS t({})",
-        projections.join(", "),
-        rows.join(", "),
-        aliases
-    ))
-}
-
-fn returning_type_name(data_type: &DataType) -> PgWireResult<String> {
-    let name = match data_type {
-        DataType::Boolean => "boolean",
-        DataType::Int8 | DataType::Int16 => "smallint",
-        DataType::Int32 => "integer",
-        DataType::Int64 => "bigint",
-        DataType::UInt8 | DataType::UInt16 => "integer",
-        DataType::UInt32 => "bigint",
-        DataType::UInt64 => "numeric(20,0)",
-        DataType::Float16 | DataType::Float32 => "real",
-        DataType::Float64 => "double precision",
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => "text",
-        DataType::Date32 | DataType::Date64 => "date",
-        DataType::Time32(_) | DataType::Time64(_) => "time",
-        DataType::Timestamp(_, Some(_)) => "timestamp with time zone",
-        DataType::Timestamp(_, None) => "timestamp without time zone",
-        DataType::Decimal128(precision, scale)
-        | DataType::Decimal256(precision, scale) => {
-            return Ok(format!("numeric({precision},{scale})"));
-        }
-        DataType::Binary
-        | DataType::LargeBinary
-        | DataType::BinaryView
-        | DataType::FixedSizeBinary(_) => "bytea",
-        other => {
-            return Err(feature_not_supported(format!(
-                "RETURNING a column of type {other} is not supported"
-            )));
-        }
-    };
-    Ok(name.to_string())
-}
-
-fn escape_identifier(value: &str) -> String {
-    value.replace('"', "\"\"")
 }
 
 fn returning_response(
@@ -1397,66 +1298,4 @@ pub(crate) fn refuse_insert_in_batch() -> PgWireError {
          and LakeSoul commits each INSERT immediately"
             .to_string(),
     )
-}
-
-#[cfg(test)]
-mod returning_tests {
-    use super::*;
-    use datafusion::arrow::datatypes::{Field, Schema};
-
-    fn parse_insert(sql: &str) -> Insert {
-        use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
-
-        let statement = PostgresCompatibilityParser::new()
-            .parse(sql)
-            .expect("parse INSERT")
-            .remove(0);
-        match statement {
-            Statement::Insert(insert) => insert,
-            other => panic!("unexpected statement: {other}"),
-        }
-    }
-
-    #[test]
-    fn returning_type_names_cover_basic_columns() {
-        assert_eq!(
-            returning_type_name(&DataType::Int64).expect("bigint"),
-            "bigint"
-        );
-        assert_eq!(returning_type_name(&DataType::Utf8).expect("text"), "text");
-        assert_eq!(
-            returning_type_name(&DataType::Decimal128(20, 4)).expect("numeric"),
-            "numeric(20,4)"
-        );
-        assert!(
-            returning_type_name(&DataType::List(Arc::new(Field::new(
-                "item",
-                DataType::Int32,
-                true
-            ))))
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn returning_sql_projects_target_columns_with_casts() {
-        let statement = parse_insert(
-            "INSERT INTO t (id, name) VALUES (1, 'a'), (2, 'b') RETURNING *",
-        );
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("name", DataType::Utf8, true),
-        ]));
-        let spec = ReturningSpec::new(
-            statement.returning.as_deref().expect("RETURNING"),
-            &schema,
-        )
-        .expect("returning spec");
-        let sql =
-            returning_sql(&statement, &[0, 1], &schema, &spec).expect("returning SQL");
-        assert!(sql.contains("CAST(1 AS bigint)"), "{sql}");
-        assert!(sql.contains("CAST('a' AS text)"), "{sql}");
-        assert!(sql.contains("AS \"id\""), "{sql}");
-        assert!(sql.contains("AS \"name\""), "{sql}");
-    }
 }
