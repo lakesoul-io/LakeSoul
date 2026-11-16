@@ -19,6 +19,7 @@ import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -186,18 +187,29 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
         boolean allSucceeded = true;
         CleanUtils cleanUtils = new CleanUtils();
         try (Connection conn = dataSource.getConnection()) {
-            DataFileReadLeaseGuard readers = readersForBatch(conn, batch);
+            // Files referenced by a pinned (tagged read) data commit stay.
+            List<String> pinned = pinnedPaths(conn, batch);
+            List<String> candidates = batch;
+            if (!pinned.isEmpty()) {
+                candidates = new ArrayList<>(batch);
+                candidates.removeAll(pinned);
+                log.info("skip {} pinned discard files", pinned.size());
+            }
+            if (candidates.isEmpty()) {
+                return true;
+            }
+            DataFileReadLeaseGuard readers = readersForBatch(conn, candidates);
             try {
                 // One protection probe and one fence commit for the whole batch.
                 List<String> deletable =
                         readers == null
-                                ? batch
-                                : readers.retireBatch(batch, Collections.emptyList());
+                                ? candidates
+                                : readers.retireBatch(candidates, Collections.emptyList());
                 java.util.Set<String> allowed = new java.util.HashSet<>();
                 for (String path : deletable) {
                     allowed.add(DataFileReadLeaseGuard.normalizePath(path));
                 }
-                for (String path : batch) {
+                for (String path : candidates) {
                     if (!allowed.contains(DataFileReadLeaseGuard.normalizePath(path))) {
                         // Retain both the database row and checkpointed retry
                         // state until the reader/tag releases this file.
@@ -232,6 +244,24 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
         } catch (SQLException error) {
             log.error("failed to guard discard file cleanup", error);
             return false;
+        }
+    }
+
+    private List<String> pinnedPaths(Connection conn, List<String> batch) throws SQLException {
+        try (PreparedStatement ps =
+                conn.prepareStatement(
+                        "SELECT p.path FROM unnest(?::text[]) AS p(path)"
+                                + " WHERE EXISTS (SELECT 1 FROM data_commit_info dci,"
+                                + " unnest(dci.file_ops) AS f WHERE dci.pinned = true"
+                                + " AND f.path = p.path)")) {
+            ps.setArray(1, conn.createArrayOf("text", batch.toArray()));
+            List<String> paths = new ArrayList<>();
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    paths.add(rs.getString(1));
+                }
+            }
+            return paths;
         }
     }
 
