@@ -837,6 +837,7 @@ impl LookupSource {
             };
             let Some(entry) = get_or_load_file(
                 store,
+                None,
                 location.clone(),
                 format,
                 columns,
@@ -1720,8 +1721,14 @@ type BuildResult<T> = std::result::Result<T, BuildError>;
 /// `Ok(None)` means the file cannot be indexed (unsorted keys, unsupported
 /// types, over the cache budget, ...) and the caller scans it normally.  `Err`
 /// means the data file itself could not be read.
+/// `store` owns the cache identity of the entry.  `io_store`, when given, is
+/// the handle used for the data-file reads themselves (the raw inner store of a
+/// read-through cache); the key index build, the opened file handle and every
+/// later block read go through it, while the namespace, index fingerprint and
+/// on-disk cache keys stay derived from `store`.
 async fn get_or_load_file(
     store: Arc<dyn ObjectStore>,
+    io_store: Option<Arc<dyn ObjectStore>>,
     location: StorePath,
     format: PhysicalFormat,
     columns: &[String],
@@ -1732,20 +1739,21 @@ async fn get_or_load_file(
     let Some(cache) = index_disk_cache() else {
         return Ok(None);
     };
+    let io_store = io_store.unwrap_or_else(|| Arc::clone(&store));
     let namespace = store_cache_namespace(&store);
     // The handle the take path needs.  Vortex has to open the file; parquet
     // only needs its size for the reader's metadata fetch.
     let source = match format {
         PhysicalFormat::Vortex => {
             let session = vortex_session(session);
-            let file = get_vortex_file(Arc::clone(&store), &location, &session).await?;
+            let file = get_vortex_file(Arc::clone(&io_store), &location, &session).await?;
             FileSource::Vortex { file, session }
         }
         PhysicalFormat::Parquet => {
             let _permit = acquire_metadata_fetch_permit()
                 .await
                 .map_err(|error| rootcause::report!(error))?;
-            let size = store
+            let size = io_store
                 .head(&location)
                 .await
                 .map_err(|error| {
@@ -1755,7 +1763,7 @@ async fn get_or_load_file(
                 })?
                 .size;
             FileSource::Parquet {
-                store: Arc::clone(&store),
+                store: Arc::clone(&io_store),
                 location: location.clone(),
                 size,
             }
@@ -2675,6 +2683,7 @@ async fn build_key_inputs(
         let t = std::time::Instant::now();
         let Some(entry) = get_or_load_file(
             Arc::clone(&store),
+            None,
             location.clone(),
             format,
             columns,
@@ -2940,8 +2949,14 @@ async fn take_rows(
 /// keys to rows, and the decoded blocks are then read straight from the data
 /// file.  The index is built into a one-shot temporary file and removed once
 /// the mmap is established.
+///
+/// `store` defines the cache identity (namespace and the store-scoped index
+/// fingerprints); `io_store` is the handle that actually reads the data file.
+/// They are the same store unless `store` is a read-through cache, in which
+/// case `io_store` is the raw inner store (see [`crate::object_store::raw_store_alias`]).
 async fn open_block_file_without_cache(
     store: Arc<dyn ObjectStore>,
+    io_store: Arc<dyn ObjectStore>,
     location: StorePath,
     format: PhysicalFormat,
     key_columns: &[String],
@@ -2952,16 +2967,16 @@ async fn open_block_file_without_cache(
     let source = match format {
         PhysicalFormat::Vortex => {
             let session = vortex_session(&mut session);
-            let file = get_vortex_file(Arc::clone(&store), &location, &session)
+            let file = get_vortex_file(Arc::clone(&io_store), &location, &session)
                 .await
                 .ok()?;
             FileSource::Vortex { file, session }
         }
         PhysicalFormat::Parquet => {
             let _permit = acquire_metadata_fetch_permit().await.ok()?;
-            let size = store.head(&location).await.ok()?.size;
+            let size = io_store.head(&location).await.ok()?.size;
             FileSource::Parquet {
-                store: Arc::clone(&store),
+                store: Arc::clone(&io_store),
                 location: location.clone(),
                 size,
             }
@@ -3551,9 +3566,17 @@ impl VectorBlockSource {
         if !block_source_enabled() {
             return None;
         }
+        // Exact re-ranking reads candidate blocks, the key index and the data
+        // file footer through thousands of small one-shot requests.  The page
+        // cache's per-request bookkeeping costs more than those reads, and the
+        // pages it keeps would evict the decoded blocks from the same budget.
+        // The cache identity (namespace, index fingerprint, decoded-block
+        // locations) stays on `store`; the IO handle is the raw store behind it.
+        let io_store = crate::object_store::raw_store_alias(&store);
         let mut session: Option<VortexSession> = None;
         let entry = match get_or_load_file(
             Arc::clone(&store),
+            Some(Arc::clone(&io_store)),
             location.clone(),
             format,
             key_columns,
@@ -3567,6 +3590,7 @@ impl VectorBlockSource {
             Ok(None) => {
                 open_block_file_without_cache(
                     store,
+                    io_store,
                     location.clone(),
                     format,
                     key_columns,
@@ -4016,6 +4040,97 @@ mod tests {
         .unwrap();
         assert_eq!(first_score, 0.0);
         assert_eq!(second_score, 2.0);
+    }
+
+    /// The decoded-block reader reads the data file on the raw store behind a
+    /// read-through cache, not through the cache.  Two stores serve the same
+    /// path with different vectors: the key index is resolved on the "cached"
+    /// store, so a block fetched through it would return `[1, 0]` (score 0);
+    /// the raw store's `[9, 0]` (score 64) proves which handle served the read.
+    #[tokio::test]
+    async fn vector_block_reads_use_the_raw_store_behind_a_cache() {
+        use arrow::array::{FixedSizeListBuilder, Float32Builder};
+        use bytes::Bytes;
+        use lakesoul_vector::IndexKey;
+        use object_store::ObjectStore;
+        use object_store::memory::InMemory;
+        use object_store::{ObjectStoreExt, path::Path};
+
+        async fn put_vector_file(store: &InMemory, vector: [f32; 2]) {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new(
+                    "vec",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        2,
+                    ),
+                    false,
+                ),
+            ]));
+            let mut vectors = FixedSizeListBuilder::new(Float32Builder::new(), 2);
+            vectors.values().append_slice(&vector);
+            vectors.append(true);
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from(vec![1])) as ArrayRef,
+                    Arc::new(vectors.finish()) as ArrayRef,
+                ],
+            )
+            .unwrap();
+            let mut bytes = Vec::new();
+            let mut writer = ArrowWriter::try_new(&mut bytes, schema, None).unwrap();
+            writer.write(&batch).unwrap();
+            writer.close().unwrap();
+            store
+                .put(&Path::from("same/path.parquet"), Bytes::from(bytes).into())
+                .await
+                .unwrap();
+        }
+
+        let cached_store = Arc::new(InMemory::new());
+        let raw_store = Arc::new(InMemory::new());
+        put_vector_file(&cached_store, [1.0, 0.0]).await;
+        put_vector_file(&raw_store, [9.0, 0.0]).await;
+        let cached: Arc<dyn ObjectStore> = cached_store;
+        let raw: Arc<dyn ObjectStore> = raw_store;
+        crate::object_store::register_raw_store_alias(&cached, &raw);
+
+        let field = Arc::new(Field::new(
+            "vec",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                2,
+            ),
+            false,
+        ));
+        let location = Path::from("same/path.parquet");
+        let types = vec![DataType::Int64];
+        let columns = vec!["id".to_string()];
+        let source = VectorBlockSource::open_cached(
+            cached,
+            &location,
+            PhysicalFormat::Parquet,
+            &columns,
+            &types,
+            &field,
+        )
+        .await
+        .expect("block source over a cached store");
+
+        let row_converter =
+            RowConverter::new(vec![SortField::new(DataType::Int64)]).unwrap();
+        let id_array: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+        let encoded = row_converter.convert_columns(&[id_array]).unwrap();
+        let key_bytes = encoded.row(0).data().to_vec();
+        let keys = vec![IndexKey::new(&key_bytes)];
+        let score = tokio::task::spawn_blocking(move || {
+            source.score_keys(&keys, &[1.0, 0.0], true).unwrap()[0]
+        })
+        .await
+        .unwrap();
+        assert_eq!(score, 64.0);
     }
 
     #[test]
