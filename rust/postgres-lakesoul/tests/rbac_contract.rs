@@ -41,6 +41,52 @@ async fn jwt_authentication_contract() -> Result<()> {
     .await
 }
 
+/// `postgres-lakesoul token` signs from the metadata settings alone: with the
+/// metadata database unreachable it still prints a token that a server
+/// configured with the same settings accepts.
+#[test]
+fn token_command_needs_no_metadata_database() -> Result<()> {
+    // Port 1 on loopback: a connection attempt would be refused at once.
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_postgres-lakesoul"))
+        .args([
+            "token",
+            "--user",
+            "alice",
+            "--group",
+            RBAC_TEAM_A,
+            "--ttl",
+            "5m",
+        ])
+        .env_remove("lakesoul_home")
+        .env_remove("LAKESOUL_PG_SECONDARY_URL")
+        .env(
+            "LAKESOUL_PG_URL",
+            "jdbc:postgresql://127.0.0.1:1/offline_metadata",
+        )
+        .env("LAKESOUL_PG_USERNAME", "offline_user")
+        .env("LAKESOUL_PG_PASSWORD", "offline_password")
+        .output()
+        .context("run postgres-lakesoul token")?;
+    ensure!(
+        output.status.success(),
+        "token-offline: the token command failed without a metadata database: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let token = String::from_utf8(output.stdout)?.trim().to_string();
+    let secret = lakesoul_metadata::client_secret_from_config(
+        "host=127.0.0.1 port=1 dbname=offline_metadata user=offline_user \
+         password=offline_password",
+    )?;
+    let claims = JwtServer::new(&secret)
+        .decode_token(&token)
+        .context("token-offline: the token must verify with the configured secret")?;
+    ensure!(
+        claims.sub == "alice" && claims.group == RBAC_TEAM_A,
+        "token-offline: claims {claims:?}"
+    );
+    Ok(())
+}
+
 /// A team-A table in the shared `public` namespace.
 const OWNED: &str = "rbac_team_a_owned";
 /// A team-A table another engine creates while the server runs.

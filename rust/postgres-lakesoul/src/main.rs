@@ -251,12 +251,13 @@ struct TokenArgs {
 
 /// Prints one token on stdout and nothing else, so it can be captured as
 /// `PGPASSWORD=$(postgres-lakesoul token ...)`.
+///
+/// The signing secret comes from the metadata settings alone: minting never
+/// connects to the metadata database, so it works offline and during a
+/// metadata outage.
 fn print_token(args: &TokenArgs) -> Result<()> {
-    let rt = runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let meta_client = rt.block_on(MetaDataClient::from_env())?;
-    let jwt = lakesoul_metadata::JwtServer::new(meta_client.get_client_secret());
+    let secret = lakesoul_metadata::client_secret_from_env()?;
+    let jwt = lakesoul_metadata::JwtServer::new(&secret);
     let token = auth::mint_token(&jwt, &args.user, &args.group, args.ttl)
         .map_err(|error| rootcause::report!("{error}"))?;
     println!("{token}");

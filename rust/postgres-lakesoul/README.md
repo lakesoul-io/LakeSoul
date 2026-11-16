@@ -422,7 +422,9 @@ COMMIT;
 Off by default: the startup `user` is trusted and the handshake completes on the `Startup` message, exactly as before. With `--jwt-auth` (`LAKESOUL_PG_JWT_AUTH=true`) the server asks every connection for a cleartext password and accepts only a LakeSoul JWT, the same token the Flight server and the S3 proxy accept: HS256 signed with the metadata client secret (derived from `LAKESOUL_PG_USERNAME`/`LAKESOUL_PG_PASSWORD`), claims `{sub, group, exp}`. The token's `sub` must equal the connection's `user`; `group` is the LakeSoul domain, logged on connect and enforced only with `--rbac` (below).
 
 ```sh
-# Mint a token (prints only the token; needs the metadata env, nothing else).
+# Mint a token (prints only the token). It reads the metadata settings
+# (LAKESOUL_PG_URL/USERNAME/PASSWORD or lakesoul_home) but never connects,
+# so it also works offline or while the metadata database is down.
 export PGPASSWORD=$(postgres-lakesoul token --user alice --group team_a --ttl 1h)
 psql "host=127.0.0.1 port=5432 user=alice dbname=default"
 ```
@@ -430,7 +432,7 @@ psql "host=127.0.0.1 port=5432 user=alice dbname=default"
 - An empty, malformed, expired (`exp` plus the validator's 60 s leeway), wrongly signed, or other-user token is `FATAL 28P01` and the connection closes. The client is not told why; the server logs `token authentication failed` with a `reason` (`missing_token`, `invalid_token`, `expired`, `user_mismatch`) and the peer address. No session is built and no connection slot is taken before the token is accepted. Refusals are counted in `lakesoul_auth_failures_total{reason}`.
 - The token travels in clear like any cleartext password. Terminate TLS in front of the server or keep it on a trusted network. Tokens are short-lived by design; there is no revocation list, so `exp` is the only way a token stops working.
 - Rotating the metadata password rotates the signing secret and invalidates every token for every LakeSoul service at once.
-- Covered by `auth::tests` (verification branches, TTL parsing), `server::tests::jwt_*` and `startup_without_jwt_completes_on_the_startup_message` (the handshake, message by message), and `tests/rbac_contract.rs` against a real `--jwt-auth` child: each bad password above is `28P01` with a message that does not name the cause, a client without a password cannot connect, a valid token for any user connects, and authentication alone hides no namespace (a namespace in a domain the token does not carry is listed in `pg_database` and connectable).
+- Covered by `auth::tests` (verification branches, TTL parsing), `server::tests::jwt_*` and `startup_without_jwt_completes_on_the_startup_message` (the handshake, message by message), and `tests/rbac_contract.rs`: `token_command_needs_no_metadata_database` mints with the metadata URL unreachable and verifies the token with the configured secret; against a real `--jwt-auth` child, each bad password above is `28P01` with a message that does not name the cause, a client without a password cannot connect, a valid token for any user connects, and authentication alone hides no namespace (a namespace in a domain the token does not carry is listed in `pg_database` and connectable).
 
 #### Domain enforcement (`--rbac`)
 
