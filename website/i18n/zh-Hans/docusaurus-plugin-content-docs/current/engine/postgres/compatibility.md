@@ -19,7 +19,7 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 | --- | --- | --- |
 | **连接性** | PostgreSQL 客户端可以连接并执行查询 | `psql`、pgjdbc、psycopg、libpq 工具；更广泛的 BI/导入工具认证仍在进行 |
 | **SQL 表面** | 下面列出的语句和语义 | 见本页表格 |
-| **生态** | 依赖 PostgreSQL catalog 行为的工具 | 基础 `pg_catalog`/`information_schema`；`psql \d` 尚未认证（见客户端基线） |
+| **生态** | 依赖 PostgreSQL catalog 行为的工具 | `pg_catalog`、`information_schema`、`psql \d`；更广泛的 BI introspection 仍在进行 |
 
 ## 支持
 
@@ -30,7 +30,7 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 | 写入 | `INSERT ... VALUES`、`INSERT ... SELECT`、非 CDC 主键表上的 `UPDATE`、`ON CONFLICT DO NOTHING`、通用 `ON CONFLICT ... DO UPDATE`（部分列、表达式和 conflict `WHERE`） |
 | 订阅 | `CREATE SUBSCRIPTION`、`ALTER SUBSCRIPTION ... ENABLE/DISABLE`、`DROP SUBSCRIPTION`，把源 PostgreSQL 逻辑复制到 LakeSoul CDC 表 |
 | 事务 | Autocommit、`READ COMMITTED`；LakeSoul 写入使用 deferred publication 的 `BEGIN`/`COMMIT`/`ROLLBACK` |
-| 目录 | 基础 `pg_catalog`、`information_schema`、`current_database()`；`psql \d` 是客户端基线缺口 |
+| 目录 | `pg_catalog`、`information_schema`、`psql \d`、`current_database()` |
 | 会话 | `SET TIME ZONE`、`statement_timeout`、`search_path`、`ivfflat.probes`、`RESET`、`DISCARD ALL` |
 | 向量 | `vector(n)`、`<->`、`<#>`、`<=>`、`ORDER BY ... LIMIT k`、精确回退、ANN |
 | 全文 | `text_score(column, query)`，配合 `ORDER BY ... DESC LIMIT k` |
@@ -81,10 +81,10 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 batch、UPSERT、事务、重复键恢复、catalog 发现、fetch-size cursor 和 Metabase
 风格的启动语句。
 
-核心 Python 和 JDBC 工作流已通过基线。已知缺口会显式保留，而不是隐藏：psql
-`\d`、SQLAlchemy reflection、psycopg2 `bytea` 参数、pgjdbc `getPrimaryKeys`、
-`COPY FROM STDIN`、服务端 named cursor 和 `RETURNING`。具体版本和每个缺口的
-状态见该目录的 README。
+核心 Python 和 JDBC 工作流已通过基线，包括 psql `\d`。已知缺口会显式保留，
+而不是隐藏：SQLAlchemy reflection、psycopg2 `bytea` 参数、`COPY FROM STDIN`、
+服务端 named cursor 和 `RETURNING`。具体版本和每个缺口的状态见该目录的
+README。
 
 ## 版本策略
 

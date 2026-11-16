@@ -96,15 +96,7 @@ public final class JdbcSmoke {
         check(hasTable(metadata, table), "DatabaseMetaData.getTables");
         check(hasColumn(metadata, table, "id"), "DatabaseMetaData.getColumns(id)");
         check(hasColumn(metadata, table, "name"), "DatabaseMetaData.getColumns(name)");
-        try {
-            check(hasPrimaryKey(metadata, table), "DatabaseMetaData.getPrimaryKeys");
-        } catch (SQLException error) {
-            // pgjdbc's getPrimaryKeys query uses
-            // information_schema._pg_expandarray, which is not implemented
-            // yet. Keep the rest of the JDBC workflow running and make the
-            // gap visible instead of treating it as a successful lookup.
-            System.out.println("JDBC KNOWN GAP getPrimaryKeys: " + error.getMessage());
-        }
+        check(hasPrimaryKey(metadata, table), "DatabaseMetaData.getPrimaryKeys");
 
         try (Statement statement = connection.createStatement()) {
             statement.setFetchSize(2);

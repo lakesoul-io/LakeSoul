@@ -20,7 +20,7 @@ covered today.
 | --- | --- | --- |
 | **Connectivity** | A PostgreSQL client can connect and run a query | `psql`, pgjdbc, psycopg, libpq-based tools; broader BI/import tool certification is in progress |
 | **SQL surface** | The statements and semantics below | See the tables on this page |
-| **Ecosystem** | Tools that rely on PostgreSQL catalog behaviour | basic `pg_catalog`/`information_schema`; `psql \d` is not yet certified (see the client baseline) |
+| **Ecosystem** | Tools that rely on PostgreSQL catalog behaviour | `pg_catalog`, `information_schema`, `psql \d`; broader BI introspection is in progress |
 
 ## Supported
 
@@ -31,7 +31,7 @@ covered today.
 | Writes | `INSERT ... VALUES`, `INSERT ... SELECT`, `UPDATE` on non-CDC primary-key tables, `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial column lists, expressions and conflict `WHERE`) |
 | Subscriptions | `CREATE SUBSCRIPTION`, `ALTER SUBSCRIPTION ... ENABLE/DISABLE`, `DROP SUBSCRIPTION` for logical replication into a LakeSoul CDC table |
 | Transactions | Autocommit and `READ COMMITTED`; `BEGIN`/`COMMIT`/`ROLLBACK` with deferred publication for LakeSoul writes |
-| Catalog | basic `pg_catalog`, `information_schema`, `current_database()`; `psql \d` is a client-baseline gap |
+| Catalog | `pg_catalog`, `information_schema`, `psql \d`, `current_database()` |
 | Session | `SET TIME ZONE`, `statement_timeout`, `search_path`, `ivfflat.probes`, `RESET`, `DISCARD ALL` |
 | Vector | `vector(n)`, `<->`, `<#>`, `<=>`, `ORDER BY ... LIMIT k`, exact fallback, ANN |
 | Full text | `text_score(column, query)` with `ORDER BY ... DESC LIMIT k` |
@@ -87,11 +87,11 @@ SQLAlchemy and pgjdbc against a live endpoint and covers connect/`SELECT`,
 parameterized writes, batches, UPSERT, transactions, duplicate-key recovery,
 catalog discovery, fetch-size cursors and Metabase-style startup statements.
 
-The current baseline passes the core Python and JDBC workflows. Known gaps are
-kept visible rather than hidden: psql `\d`, SQLAlchemy reflection, psycopg2
-`bytea` parameters, pgjdbc `getPrimaryKeys`, `COPY FROM STDIN`, server-side
-named cursors and `RETURNING`. See the README in that directory for exact
-versions and the status of each gap.
+The current baseline passes the core Python and JDBC workflows, including psql
+`\d`. Known gaps are kept visible rather than hidden: SQLAlchemy reflection,
+psycopg2 `bytea` parameters, `COPY FROM STDIN`, server-side named cursors
+and `RETURNING`. See the README in that directory for
+exact versions and the status of each gap.
 
 ## Version policy
 

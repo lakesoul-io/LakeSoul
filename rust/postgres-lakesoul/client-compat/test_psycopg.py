@@ -295,9 +295,7 @@ def test_catalog_introspection(driver, connector, table_factory):
 
 
 def test_psql_describe_table(table_factory, pg_env):
-    """psql is the libpq metadata path. Its exact query changes between psql
-    releases, so a version-specific planner gap is recorded as an xfail here
-    instead of being hidden in the generic catalog test."""
+    """psql is the libpq metadata path; its column query must remain usable."""
     table = table_factory("id bigint primary key, name text", "client_psql")
     if shutil.which("psql") is None:
         pytest.skip("psql is not installed")
@@ -307,11 +305,7 @@ def test_psql_describe_table(table_factory, pg_env):
         text=True,
         capture_output=True,
     )
-    if result.returncode != 0:
-        pytest.xfail(
-            "psql \\d metadata query is not executable by the current planner: "
-            + result.stderr.strip().splitlines()[0]
-        )
+    assert result.returncode == 0, result.stderr
     assert table in result.stdout
 
 

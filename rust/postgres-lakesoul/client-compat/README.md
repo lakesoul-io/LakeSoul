@@ -52,8 +52,8 @@ The first run used:
 - psycopg2 2.9.13, psycopg 3.3.9, SQLAlchemy 2.0.57
 - pgjdbc 42.7.7 (pinned in `jdbc/pom.xml`)
 
-Result: **25 passed, 3 expected gaps** for the Python clients; the pgjdbc
-workflow passes with one recorded metadata gap. The tests already cover:
+Result: **26 passed, 2 expected gaps** for the Python clients; the pgjdbc
+workflow passes without a recorded gap. The tests already cover:
 
 - connect and `SELECT`, including the default `sslmode=prefer` fallback;
 - parameterized values, `numeric`, `date`, `timestamptz`, `boolean`;
@@ -61,18 +61,16 @@ workflow passes with one recorded metadata gap. The tests already cover:
 - `ON CONFLICT ... DO UPDATE`;
 - transaction rollback and commit (including staged writes);
 - duplicate-key `23505` and connection recovery;
-- `information_schema`/`pg_catalog` table and column discovery;
-- pgjdbc `DatabaseMetaData.getTables`/`getColumns`, `setFetchSize`, and UPSERT;
+- `information_schema`/`pg_catalog` table and column discovery, including psql `\d`;
+- pgjdbc `DatabaseMetaData.getTables`/`getColumns`/`getPrimaryKeys`, `setFetchSize`, and UPSERT;
 - Metabase-style startup `SET`/`SHOW` statements.
 
-Known gaps are printed as `XFAIL` or `JDBC KNOWN GAP`:
+The remaining known gaps are:
 
 | Gap | Detail |
 | --- | --- |
-| psql `\d` | the psql 14 metadata query uses a correlated scalar subquery the current planner rejects |
-| SQLAlchemy reflection | the core SQLAlchemy path works; reflection still needs `json_build_object` and a complete identity-column catalog query |
+| SQLAlchemy reflection | the core SQLAlchemy path works; reflection still hits an unsupported catalog `unnest` in the index/FK queries |
 | psycopg2 `bytea` parameters | psycopg2 sends the text form and the server stores the literal `\x...` bytes; psycopg3 binary parameters round-trip correctly |
-| pgjdbc `getPrimaryKeys` | pgjdbc uses `information_schema._pg_expandarray`, which is not implemented yet |
 | `COPY FROM STDIN` | explicitly refused with `0A000`; this is the main blocker for Airbyte/Singer-style loaders |
 | server-side named cursors | psycopg3 reaches the explicit `0A000`; psycopg2 first probes the missing `pg_catalog.pg_cursors` and fails with `XX000` |
 | `INSERT ... RETURNING` | explicitly refused with `0A000` |

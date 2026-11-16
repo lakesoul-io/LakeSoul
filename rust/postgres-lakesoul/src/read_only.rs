@@ -118,6 +118,13 @@ pub(crate) fn statement_hooks_with(
         // through an owned `SessionContext::state()` clone and discards the
         // write, and its generic `SET` fallback ignores errors.
         Arc::new(SessionSettingsHook) as Arc<dyn QueryHook>, // new
+        // pgjdbc's primary-key metadata query uses an unimplemented
+        // information_schema set-returning function; answer its equivalent.
+        Arc::new(crate::pg_compat::JdbcPrimaryKeysHook) as Arc<dyn QueryHook>,
+        // psql \d and SQLAlchemy reflection use correlated scalar subqueries
+        // in their column queries, which the pinned planner cannot execute.
+        // Claim those catalog queries and answer their equivalent shape.
+        Arc::new(crate::pg_compat::CatalogProjectionHook) as Arc<dyn QueryHook>,
         Arc::new(SetShowHook),
         Arc::new(ReadOnlyStatementGuard), // new
     ]);
