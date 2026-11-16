@@ -52,6 +52,11 @@ pub struct LakeSoulProviderOptions {
     /// Field metadata to apply to the declared vector columns (see
     /// [`LakeSoulVectorFieldMetadata`]).
     pub vector_field_metadata: Vec<(String, String)>,
+    /// The connection's deferred-commit handle, when the front end installs
+    /// one. A table provider keeps it so the logical pushdown rules can tell
+    /// whether the open transaction block has written rows the index shards
+    /// cannot see.
+    pub deferred_commit: Option<Arc<crate::write_mode::LakeSoulDeferredCommit>>,
 }
 
 impl LakeSoulProviderOptions {
@@ -67,11 +72,15 @@ impl LakeSoulProviderOptions {
             .get_extension::<LakeSoulVectorFieldMetadata>()
             .map(|config| config.fields.clone())
             .unwrap_or_default();
+        let deferred_commit = session
+            .config()
+            .get_extension::<crate::write_mode::LakeSoulDeferredCommit>();
         Self {
             parquet_force_view_types: parquet.schema_force_view_types,
             pushdown_filters: parquet.pushdown_filters,
             object_store_options,
             vector_field_metadata,
+            deferred_commit,
         }
     }
 }

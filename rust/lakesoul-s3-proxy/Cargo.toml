@@ -12,9 +12,9 @@ edition.workspace = true
 
 [dependencies]
 lakesoul-metadata = { path = "../lakesoul-metadata" }
-pingora = { version = "0.9.0", features = ["lb", "rustls"] }
-pingora-core = { version = "0.9.0", features = ["rustls"] }
-pingora-prometheus = "0.9.0"
+pingora = { version = "0.9.1", features = ["lb", "rustls"] }
+pingora-core = { version = "0.9.1", features = ["rustls"] }
+pingora-prometheus = "0.9.1"
 async-trait = { workspace = true }
 hickory-resolver = "0.24.4"
 aws-sigv4 = "1.3.3"

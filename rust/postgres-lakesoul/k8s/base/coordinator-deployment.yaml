@@ -88,6 +88,12 @@ spec:
                   name: lakesoul-secrets
                   key: aws-secret-access-key
                   optional: false
+            - name: AWS_S3_VIRTUAL_HOST_STYLE
+              valueFrom:
+                secretKeyRef:
+                  name: lakesoul-secrets
+                  key: aws-s3-virtual-host-style
+                  optional: true
           ports:
             - name: pg
               containerPort: 5432
@@ -107,7 +113,18 @@ spec:
           volumeMounts:
             - name: scratch
               mountPath: /var/scratch
+      # Scratch (spill files, disk cache) on a per-Pod PVC from the cluster's
+      # default StorageClass; see worker-deployment.yaml.
       volumes:
         - name: scratch
-          emptyDir:
-            sizeLimit: 20Gi
+          ephemeral:
+            volumeClaimTemplate:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: lakesoul
+                  app.kubernetes.io/component: coordinator
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                resources:
+                  requests:
+                    storage: 20Gi

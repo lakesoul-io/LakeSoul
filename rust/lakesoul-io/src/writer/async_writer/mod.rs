@@ -30,7 +30,7 @@ mod sendable_writer;
 pub use sendable_writer::AsyncSendableMutableLakeSoulWriter;
 
 mod write_invariants;
-pub use write_invariants::WriteInvariants;
+pub use write_invariants::{NotNullViolation, WriteInvariants};
 
 use std::{
     collections::HashMap,

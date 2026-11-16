@@ -11,8 +11,8 @@
     crane.url = "github:ipetkov/crane";
 
     # The workspace tracks `rust-toolchain.toml` (`channel = "stable"`) and
-    # uses APIs newer than nixpkgs' rustc; the image build takes that channel
-    # from here.
+    # uses APIs newer than nixpkgs' rustc; development shells and image builds
+    # take that channel from here.
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -36,6 +36,9 @@
     unstable = import nixpkgs-unstable {
       inherit system;
     };
+
+    rustDevToolchain =
+      (rust-overlay.lib.mkRustBin {} pkgs).fromRustupToolchainFile ./rust-toolchain.toml;
 
     hadoopVersion = "3.3.6";
     hadoop = pkgs.stdenvNoCC.mkDerivation {
@@ -67,7 +70,6 @@
       google-java-format
       prettier
       ruff
-      rustfmt
       scalafmt
       taplo
       treefmt
@@ -75,6 +77,7 @@
 
     commonPackages =
       formatterPackages
+      ++ [rustDevToolchain]
       ++ (with pkgs; [
         actionlint
 
@@ -109,6 +112,7 @@
 
     fhsPackages =
       formatterPackages
+      ++ [rustDevToolchain]
       ++ (with pkgs; [
         actionlint
 
@@ -191,9 +195,9 @@
       };
     craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchainFor;
 
-    # Build inputs only: the k8s manifests don't invalidate the build.
-    # `.cargo` carries the repository rustflags (`+avx2`), so image binaries
-    # match local builds.
+    # Build inputs only: the k8s manifests and the benchmark harness don't
+    # invalidate the build. `.cargo` carries the repository rustflags
+    # (`+avx2`), so image binaries match local builds.
     rustSrc = pkgs.lib.fileset.toSource {
       root = ./.;
       fileset =
@@ -205,7 +209,10 @@
           ./rust
           ./python
         ])
-        ./rust/postgres-lakesoul/k8s;
+        (pkgs.lib.fileset.unions [
+          ./rust/postgres-lakesoul/k8s
+          ./rust/postgres-lakesoul/benchmark
+        ]);
     };
 
     # 12 characters, like lakesoul-build-info's own `git rev-parse` fallback.
@@ -251,7 +258,7 @@
       # `.cargo/config.toml` points target-dir at rust/target; crane's
       # artifact hooks expect the default.
       CARGO_TARGET_DIR = "target";
-      cargoExtraArgs = "--locked -p lakesoul-datafusion --bin lakesoul-worker -p postgres-lakesoul --bin postgres-lakesoul";
+      cargoExtraArgs = "--locked -p lakesoul-worker --bin lakesoul-worker -p postgres-lakesoul --bin postgres-lakesoul";
       nativeBuildInputs = with pkgs; [
         protobuf
         # vortex's build script generates FlatBuffers bindings with flatc.
@@ -266,6 +273,12 @@
       // {
         # Only `cargo build` artifacts are reused; skip the `cargo check` pass.
         cargoCheckCommand = "true";
+        # The dummy source stubs every path crate; the vendored DataFusion
+        # crate is a dependency, not workspace code, so keep it real.
+        extraDummyScript = ''
+          rm -rf $out/rust/third_party
+          cp -r ${./rust/third_party} $out/rust/third_party
+        '';
       });
 
     lakesoulBins = craneLib.buildPackage (lakesoulCraneArgs
@@ -303,10 +316,60 @@
         ];
       };
     };
+
+    # Benchmark runner image (`rust/postgres-lakesoul/benchmark`): the console
+    # loads TPC-H data (the PG endpoint is read-only), python3 runs the
+    # stdlib-only driver, busybox runs the resource sampler sidecar.
+    lakesoulConsole = craneLib.buildPackage (lakesoulCraneArgs
+      // {
+        pname = "lakesoul-console";
+        cargoExtraArgs = "--locked -p lakesoul-console --bin lakesoul-console";
+        cargoArtifacts = lakesoulDeps;
+        LAKESOUL_GIT_COMMIT = gitCommit;
+      });
+
+    benchHarness = pkgs.lib.fileset.toSource {
+      root = ./rust/postgres-lakesoul/benchmark;
+      fileset = pkgs.lib.fileset.unions [
+        ./rust/postgres-lakesoul/benchmark/driver
+        ./rust/postgres-lakesoul/benchmark/workloads
+        ./rust/postgres-lakesoul/benchmark/datagen
+        ./rust/postgres-lakesoul/benchmark/k8s/components/sampler/sampler.sh
+      ];
+    };
+
+    benchImage = pkgs.dockerTools.streamLayeredImage {
+      name = "lakesoul-bench";
+      tag = "dev";
+      contents = [
+        lakesoulConsole
+        pkgs.python312
+        pkgs.busybox
+        # `tc` for the blocked netem fault definitions (k8s/blocked).
+        pkgs.iproute2
+        pkgs.cacert
+        pkgs.dockerTools.fakeNss
+      ];
+      extraCommands = ''
+        mkdir -p bench tmp var/scratch
+        chmod 1777 tmp var/scratch
+        cp -r ${benchHarness}/. bench/
+      '';
+      config = {
+        User = "65534:65534";
+        WorkingDir = "/bench";
+        Env = [
+          "PYTHONPATH=/bench/driver"
+          "PYTHONDONTWRITEBYTECODE=1"
+          "TMPDIR=/var/scratch"
+          "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+        ];
+      };
+    };
   in {
     devShells.${system} = {
       formatter = pkgs.mkShell {
-        packages = formatterPackages;
+        packages = formatterPackages ++ [pkgs.rustfmt];
       };
 
       #
@@ -355,6 +418,8 @@
       lakesoul = lakesoulBins;
       # `nix build .#image && ./result | docker load`
       image = lakesoulImage;
+      # `nix build .#bench-image && ./result | docker load`
+      bench-image = benchImage;
     };
   };
 }

@@ -8,7 +8,7 @@ pre-commit:
   jobs:
     - name: Format
       glob: "*.{rs,java,scala,sbt,py,toml,yml,yaml,json}"
-      run: treefmt --ci -- {staged_files}
+      run: treefmt
 
 commit-msg:
   jobs:

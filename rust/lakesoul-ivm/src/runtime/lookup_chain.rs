@@ -20,7 +20,7 @@ use datafusion::logical_expr::Cast;
 // full bucket-parallel rebuild is cheaper than the incremental replay.  It is
 // per storage format because the state read dominates the replay and its
 // random-read granularity differs (Vortex blocks vs Parquet pages).
-// `LAKESOUL_IVM_REBUILD_RATIO` overrides it at runtime (a percentage).
+// `IvmOptions::rebuild_ratio` overrides it at runtime (a percentage).
 
 /// The calibrated crossover for a Parquet MV (pages cannot skip a random key
 /// set, so the state read is a full pass even at small ratios).
@@ -31,11 +31,10 @@ const PARQUET_REBUILD_RATIO_PERCENT: u64 = 4;
 const VORTEX_REBUILD_RATIO_PERCENT: u64 = 8;
 
 /// The rebuild crossover for `mv`, overridable with
-/// `LAKESOUL_IVM_REBUILD_RATIO` (percent of the estimated live rows).
+/// [`IvmOptions::rebuild_ratio`](crate::config::IvmOptions::rebuild_ratio)
+/// (percent of the estimated live rows).
 fn rebuild_ratio_percent(mv: &IvmTable) -> u64 {
-    if let Ok(value) = std::env::var("LAKESOUL_IVM_REBUILD_RATIO")
-        && let Ok(percent) = value.parse::<u64>()
-    {
+    if let Some(percent) = crate::config::options().rebuild_ratio {
         return percent;
     }
     if matches!(mv.file_format, crate::PhysicalFormat::Parquet) {
@@ -318,7 +317,7 @@ fn lookup_chain_replay(
 ) -> Result<DataFrame> {
     // The base frame's rows keep their own column names, so a computed key
     // over the base is materialized here.
-    let context = refresh_session();
+    let context = refresh_session_local();
     for step in &view.steps {
         for (key_index, expr) in step.key_exprs.left.iter().enumerate() {
             if expr.is_empty() || step_key_source(step, key_index) != 0 {
@@ -529,7 +528,7 @@ fn validate_lookup_chain_view(view: &LookupChainView) -> Result<()> {
             }
         }
     }
-    let context = refresh_session();
+    let context = refresh_session_local();
     for (table, filter) in &view.sources {
         if let Some(filter) = filter {
             parse_filter(&context, &table.schema, filter)?;
@@ -709,7 +708,7 @@ fn lookup_chain_step_frame(
     // The step's own computed keys and the computed keys later steps read
     // from it are materialized before the aliasing projection: their
     // expressions use the source's own columns.
-    let context = refresh_session();
+    let context = refresh_session_local();
     let mut now = now.clone();
     for (key_index, expr) in step.key_exprs.right.iter().enumerate() {
         if expr.is_empty() {
@@ -734,7 +733,7 @@ fn lookup_chain_step_frame(
         select.push(col(key.as_str()).alias(lookup_chain_alias(index + 1, key)));
     }
     let mut columns = lookup_chain_payload(view, index + 1);
-    for column in lookup_chain_referenced(view, index + 1, &refresh_session())? {
+    for column in lookup_chain_referenced(view, index + 1, &refresh_session_local())? {
         if !columns.contains(&column) {
             columns.push(column);
         }
@@ -784,15 +783,18 @@ fn lookup_chain_dim_frames(
     Ok(frames)
 }
 
-/// Whether every step is a unique lookup whose left keys all come from the
-/// base.  That is the shape where a per-step base join-key index can map a
-/// changed dimension row back to affected base rows without scanning the base.
+/// Whether every step's left keys all come from the base.  That is the shape
+/// where a per-step base join-key index can map a changed dimension row back
+/// to affected base rows without scanning the base.
+///
+/// The index is keyed by `(encoded join key, base primary key)`, so a step
+/// whose key is not unique (a 1:N dimension) still maps one changed dimension
+/// key to every matching base row.  A chained step key (a key produced by an
+/// earlier dimension) is not on the base and stays on the rebuild path.
 fn lookup_chain_indexable(view: &LookupChainView) -> bool {
     !view.steps.is_empty()
         && view.steps.iter().all(|step| {
-            step.unique
-                && !step.keys.is_empty()
-                && step.key_sources.iter().all(|source| *source == 0)
+            !step.keys.is_empty() && step.key_sources.iter().all(|source| *source == 0)
         })
 }
 
@@ -816,7 +818,7 @@ impl IvmRuntime {
         base: &IvmTable,
         step: &LookupChainStep,
     ) -> Result<IvmTable> {
-        let context = refresh_session();
+        let context = refresh_session_local();
         let mut columns = base.primary_keys.clone();
         let push = |column: String, columns: &mut Vec<String>| {
             if !columns.contains(&column) {
@@ -1063,7 +1065,7 @@ impl IvmRuntime {
             && base_rows > 0
         {
             let base = &view.sources[0].0;
-            let context = refresh_session();
+            let context = refresh_session_local();
             let delta =
                 self.groups_table_frame(&context, base, windows[0].added_files.clone())?;
             let delta = project_frame(delta, &base.primary_keys)?;
@@ -1139,7 +1141,7 @@ impl IvmRuntime {
             return Ok(Some(epoch));
         }
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let mut frames = Vec::with_capacity(view.sources.len());
         for (index, (table, filter)) in view.sources.iter().enumerate() {
             let columns = lookup_chain_source_columns(view, index, &context)?;
@@ -1158,6 +1160,7 @@ impl IvmRuntime {
                         &context,
                         table,
                         &windows[index].before_versions,
+                        windows[index].before_timestamp,
                     )
                     .await?,
                     &columns,
@@ -1400,7 +1403,7 @@ impl IvmRuntime {
             let base = &view.sources[0].0;
             let base_columns = lookup_chain_source_columns(view, 0, &context)?;
             let base_now = self
-                .lookup_source_by_join_keys(
+                .lookup_source_by_join_keys_null_safe(
                     &context,
                     base,
                     affected.clone(),
@@ -1423,7 +1426,7 @@ impl IvmRuntime {
             let base = &view.sources[0].0;
             let base_columns = lookup_chain_source_columns(view, 0, &context)?;
             let base_now = self
-                .lookup_source_by_join_keys(
+                .lookup_source_by_join_keys_null_safe(
                     &context,
                     base,
                     affected.clone(),
@@ -1436,8 +1439,8 @@ impl IvmRuntime {
             for (index, step) in view.steps.iter().enumerate() {
                 let table = &view.sources[index + 1].0;
                 let columns = lookup_chain_source_columns(view, index + 1, &context)?;
-                let now = self
-                    .lookup_source_by_join_keys(
+                let now = if view.null_safe {
+                    self.lookup_source_by_join_keys_null_safe(
                         &context,
                         table,
                         affected.clone(),
@@ -1445,7 +1448,18 @@ impl IvmRuntime {
                         &step.right_keys,
                         true,
                     )
-                    .await?;
+                    .await?
+                } else {
+                    self.lookup_source_by_join_keys(
+                        &context,
+                        table,
+                        affected.clone(),
+                        &step.keys,
+                        &step.right_keys,
+                        true,
+                    )
+                    .await?
+                };
                 frames[index + 1].2 = project_frame(now, &columns)?;
             }
             now_frames = frames
@@ -1517,7 +1531,9 @@ impl IvmRuntime {
         let outcome = append_dataframe(
             &view.mv,
             &self.client,
-            inserts.union(deletes)?.sort_by(sort_exprs)?,
+            collapse_update_deletes(&self.metadata, &context, &view.mv, inserts, deletes)
+                .await?
+                .sort_by(sort_exprs)?,
         )
         .await?;
         if unique_steps {
@@ -1572,7 +1588,7 @@ impl IvmRuntime {
             mv_by_bucket.entry(bucket).or_default().push(file);
         }
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let (base, base_filter) = &view.sources[0];
         let base_columns = lookup_chain_source_columns(view, 0, &context)?;
         let base_projection = project_schema(&base.schema, &base_columns)?;
@@ -1612,7 +1628,7 @@ impl IvmRuntime {
             let sort_exprs = sort_exprs.clone();
             let mv_files = mv_by_bucket.get(&bucket).cloned().unwrap_or_default();
             async move {
-                let context = refresh_session();
+                let context = refresh_session_local();
                 let provider = crate::IvmTableProvider::groups(
                     base.clone(),
                     client.clone(),
@@ -1682,7 +1698,15 @@ impl IvmRuntime {
                     .with_column(IVM_EPOCH_COLUMN, lit(epoch))?;
                 let written = write_dataframe(
                     &mv_table,
-                    inserts.union(deletes)?.sort_by(sort_exprs)?,
+                    collapse_update_deletes(
+                        &self.metadata,
+                        &context,
+                        &mv_table,
+                        inserts,
+                        deletes,
+                    )
+                    .await?
+                    .sort_by(sort_exprs)?,
                 )
                 .await?;
                 Ok::<WrittenFiles, rootcause::Report>(written)
@@ -1791,7 +1815,7 @@ impl IvmRuntime {
                 }
             }
             if splittable && groups.len() > 1 {
-                let context = refresh_session();
+                let context = refresh_session_local();
                 let base_columns = lookup_chain_source_columns(view, 0, &context)?;
                 let base_projection = project_schema(&base.schema, &base_columns)?;
                 let base_key_exprs = base
@@ -1803,7 +1827,7 @@ impl IvmRuntime {
                 let mut files = Vec::new();
                 let mut rebuilt_rows = 0u64;
                 for base_files in groups.into_values() {
-                    let context = refresh_session();
+                    let context = refresh_session_local();
                     let provider = crate::IvmTableProvider::groups(
                         base.clone(),
                         self.client.clone(),
@@ -1834,8 +1858,8 @@ impl IvmRuntime {
                         let (table, _) = &view.sources[index + 1];
                         let columns =
                             lookup_chain_source_columns(view, index + 1, &context)?;
-                        let now = self
-                            .lookup_source_by_join_keys(
+                        let now = if view.null_safe {
+                            self.lookup_source_by_join_keys_null_safe(
                                 &context,
                                 table,
                                 affected.clone(),
@@ -1843,7 +1867,18 @@ impl IvmRuntime {
                                 &step.right_keys,
                                 true,
                             )
-                            .await?;
+                            .await?
+                        } else {
+                            self.lookup_source_by_join_keys(
+                                &context,
+                                table,
+                                affected.clone(),
+                                &step.keys,
+                                &step.right_keys,
+                                true,
+                            )
+                            .await?
+                        };
                         frames.push(project_frame(now, &columns)?);
                     }
                     let frame = lookup_chain_replay(
@@ -1910,7 +1945,7 @@ impl IvmRuntime {
                 }
             }
             if splittable && groups.len() > 1 {
-                let context = refresh_session();
+                let context = refresh_session_local();
                 let (base, base_filter) = &view.sources[0];
                 let base_columns = lookup_chain_source_columns(view, 0, &context)?;
                 let base_projection = project_schema(&base.schema, &base_columns)?;
@@ -1925,7 +1960,7 @@ impl IvmRuntime {
                     let client = self.client.clone();
                     let row_exprs = row_exprs.clone();
                     async move {
-                        let context = refresh_session();
+                        let context = refresh_session_local();
                         let provider = crate::IvmTableProvider::groups(
                             base.clone(),
                             client.clone(),
@@ -1990,7 +2025,7 @@ impl IvmRuntime {
             }
         }
 
-        let context = refresh_session();
+        let context = refresh_session_local();
         let mut frames = Vec::with_capacity(view.sources.len());
         for (table, filter) in &view.sources {
             let frame = apply_side_filter(

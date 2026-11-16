@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "lakesoul-worker"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+lakesoul-build-info = { path = "../lakesoul-build-info" }
+lakesoul-common = { path = "../lakesoul-common" }
+lakesoul-datafusion = { path = "../lakesoul-datafusion", features = ["ivm"] }
+lakesoul-observability = { path = "../lakesoul-observability" }
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
+tikv-jemalloc-ctl = { workspace = true, optional = true }
+
+[features]
+default = ["jemalloc"]
+# Process allocator (src/allocator.rs); disable for the system allocator.
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
+
+[lints]
+workspace = true

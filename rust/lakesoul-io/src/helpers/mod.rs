@@ -211,6 +211,13 @@ pub fn get_columnar_values(
 ///
 /// Returns a string representation of the [`datafusion::scalar::ScalarValue`]
 pub fn format_scalar_value(v: &ScalarValue) -> String {
+    // A NULL partition value must use the canonical sentinel, not the debug
+    // spelling of the scalar (`Utf8(None).to_string()` is `"NULL"`, which is
+    // indistinguishable from the string "NULL").  `make_default_array` maps
+    // the sentinel back to a NULL array.
+    if v.is_null() {
+        return LAKESOUL_NULL_STRING.to_string();
+    }
     match v {
         ScalarValue::Date32(Some(days)) => format!(
             "{}",
@@ -317,7 +324,9 @@ pub fn into_scalar_value(val: &str, data_type: &DataType) -> Result<ScalarValue>
                 Ok(ScalarValue::FixedSizeBinary(*size, None))
             }
             DataType::LargeBinary => Ok(ScalarValue::LargeBinary(None)),
-            _ => Ok(ScalarValue::Null),
+            // Every other type gets a typed NULL scalar, so a scan that
+            // materializes the partition column gets the right array type.
+            _ => Ok(ScalarValue::try_from(data_type)?),
         }
     } else {
         match data_type {
@@ -1205,6 +1214,22 @@ mod tests {
     use super::*;
     use arrow_schema::Field;
     use datafusion::datasource::file_format::parquet::ParquetFormat;
+
+    #[test]
+    fn the_null_sentinel_parses_as_a_typed_null_scalar() {
+        assert_eq!(
+            into_scalar_value(LAKESOUL_NULL_STRING, &DataType::Utf8).unwrap(),
+            ScalarValue::Utf8(None)
+        );
+        assert_eq!(
+            into_scalar_value(LAKESOUL_NULL_STRING, &DataType::Int64).unwrap(),
+            ScalarValue::Int64(None)
+        );
+        assert_eq!(
+            into_scalar_value(LAKESOUL_NULL_STRING, &DataType::Date32).unwrap(),
+            ScalarValue::Date32(None)
+        );
+    }
 
     #[test]
     fn listing_sink_does_not_require_a_session() {

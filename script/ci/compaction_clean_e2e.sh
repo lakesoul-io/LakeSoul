@@ -44,10 +44,10 @@ log() { printf '\n=== %s ===\n' "$*"; }
 flink_jar_name="${FLINK_JAR_NAME:-}"
 spark_jar_name="${SPARK_JAR_NAME:-}"
 if [[ -z "$flink_jar_name" ]]; then
-  flink_jar_name="$(basename "$(ls "$ROOT"/lakesoul-flink/target/lakesoul-flink-*.jar 2>/dev/null | grep -v tests | head -1)")"
+  flink_jar_name="$(basename "$(ls "$ROOT"/integrations/lakesoul-flink/target/lakesoul-flink-*.jar 2>/dev/null | grep -v tests | head -1)")"
 fi
 if [[ -z "$spark_jar_name" ]]; then
-  spark_jar_name="$(basename "$(ls "$ROOT"/lakesoul-spark/target/lakesoul-spark-*.jar 2>/dev/null | grep -v tests | head -1)")"
+  spark_jar_name="$(basename "$(ls "$ROOT"/integrations/lakesoul-spark/target/lakesoul-spark-*.jar 2>/dev/null | grep -v tests | head -1)")"
 fi
 [[ -n "$flink_jar_name" && -f "$WORK_DIR/$flink_jar_name" ]] ||
   { echo "flink jar missing in $WORK_DIR (set FLINK_JAR_NAME)"; exit 1; }
@@ -96,7 +96,7 @@ YAML
 (cd "$COMPOSE_DIR" && docker compose -f docker-compose.yml -f "$PROXY_OVERRIDE" --profile s3 up -d)
 
 log "ensure object store bucket"
-# the bundled rc client fails against rustfs 1.0.0-beta.3, create the bucket directly
+# create the bucket directly instead of waiting on the rc sidecar
 uv run --quiet --no-project --with boto3 python - "${LAKESOUL_E2E_BUCKET:-lakesoul-test-bucket}" <<'PYBUCKET' || true
 import sys
 import boto3

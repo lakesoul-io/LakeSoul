@@ -64,6 +64,7 @@ mod hdfs;
 
 pub mod blob;
 pub mod cache;
+pub mod compaction;
 pub mod config;
 pub mod constant;
 pub mod execution_trace;

@@ -22,13 +22,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use datafusion::catalog::{CatalogProvider, CatalogProviderList, SchemaProvider};
+use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
 use lakesoul_datafusion::catalog::{
     CatalogSnapshot, LakeSoulNamespace, LakeSoulProviderOptions,
 };
 use lakesoul_metadata::MetaDataClientRef;
 use parking_lot::RwLock;
+
+use crate::federation::FederationRuntime;
 
 /// The single user-visible schema of a PG database: `public` maps to the
 /// LakeSoul namespace named by the database connection parameter.
@@ -42,16 +46,103 @@ pub const PUBLIC_SCHEMA: &str = "public";
 /// separate PG databases, not schemas.
 #[derive(Debug)]
 pub struct PgLakeSoulCatalog {
-    public_schema: Arc<LakeSoulNamespace>,
+    public_schema: Arc<PgPublicSchema>,
     virtual_schemas: RwLock<BTreeMap<String, Arc<dyn SchemaProvider>>>,
 }
 
 impl PgLakeSoulCatalog {
-    pub fn new(public_schema: Arc<LakeSoulNamespace>) -> Self {
+    pub fn new(public_schema: Arc<PgPublicSchema>) -> Self {
         Self {
             public_schema,
             virtual_schemas: RwLock::new(BTreeMap::new()),
         }
+    }
+}
+
+/// `public` schema of one PostgreSQL database: LakeSoul tables plus foreign
+/// tables defined for that database.
+pub struct PgPublicSchema {
+    local: Arc<LakeSoulNamespace>,
+    federation: Option<Arc<FederationRuntime>>,
+    database: String,
+    user: String,
+}
+
+impl std::fmt::Debug for PgPublicSchema {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PgPublicSchema")
+            .field("database", &self.database)
+            .field("user", &self.user)
+            .field("federation", &self.federation.is_some())
+            .finish()
+    }
+}
+
+impl PgPublicSchema {
+    pub fn new(
+        local: Arc<LakeSoulNamespace>,
+        federation: Option<Arc<FederationRuntime>>,
+        database: &str,
+        user: &str,
+    ) -> Self {
+        Self {
+            local,
+            federation,
+            database: database.to_string(),
+            user: user.to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn snapshot(&self) -> &Arc<CatalogSnapshot> {
+        self.local.snapshot()
+    }
+}
+
+#[async_trait]
+impl SchemaProvider for PgPublicSchema {
+    fn table_names(&self) -> Vec<String> {
+        let mut names = self.local.table_names();
+        if let Some(federation) = &self.federation {
+            for name in federation.foreign_names(&self.database) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        names
+    }
+
+    async fn table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
+        if let Some(federation) = &self.federation
+            && let Some(table) = federation
+                .provider(&self.database, &self.user, name)
+                .map_err(|error| DataFusionError::External(error.into()))?
+        {
+            return Ok(Some(table));
+        }
+        self.local.table(name).await
+    }
+
+    fn table_exist(&self, name: &str) -> bool {
+        if let Some(federation) = &self.federation
+            && federation.is_foreign(&self.database, name)
+        {
+            return true;
+        }
+        self.local.table_exist(name)
+    }
+
+    fn register_table(
+        &self,
+        name: String,
+        table: Arc<dyn TableProvider>,
+    ) -> Result<Option<Arc<dyn TableProvider>>> {
+        self.local.register_table(name, table)
+    }
+
+    fn deregister_table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
+        self.local.deregister_table(name)
     }
 }
 
@@ -213,18 +304,38 @@ impl CatalogProviderList for PgDatabaseCatalogList {
 /// `snapshot` is the session factory's metadata view: every connection shares
 /// it, so one process runs one background refresher rather than one per
 /// connection.
+#[cfg(test)]
 pub fn pg_lakesoul_catalog(
     client: MetaDataClientRef,
     provider_options: LakeSoulProviderOptions,
     namespace: &str,
     snapshot: Arc<CatalogSnapshot>,
 ) -> Arc<PgLakeSoulCatalog> {
-    let public_schema = Arc::new(LakeSoulNamespace::with_snapshot(
+    pg_lakesoul_catalog_with_federation(
+        client,
+        provider_options,
+        namespace,
+        snapshot,
+        None,
+        "",
+    )
+}
+
+pub fn pg_lakesoul_catalog_with_federation(
+    client: MetaDataClientRef,
+    provider_options: LakeSoulProviderOptions,
+    namespace: &str,
+    snapshot: Arc<CatalogSnapshot>,
+    federation: Option<Arc<FederationRuntime>>,
+    user: &str,
+) -> Arc<PgLakeSoulCatalog> {
+    let local = Arc::new(LakeSoulNamespace::with_snapshot(
         client,
         provider_options,
         namespace,
         snapshot,
     ));
+    let public_schema = Arc::new(PgPublicSchema::new(local, federation, namespace, user));
     Arc::new(PgLakeSoulCatalog::new(public_schema))
 }
 

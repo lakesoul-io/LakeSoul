@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# Profile `large`: 8 cores / 8 GiB, Guaranteed. Needs dedicated nodes (s6.2xlarge.2 has 7.9 allocatable cores).
+# Applied to the coordinator and to every worker.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - path: resources.yaml

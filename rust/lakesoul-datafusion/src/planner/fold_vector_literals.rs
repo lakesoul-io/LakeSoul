@@ -62,6 +62,13 @@ fn fold(expr: Expr) -> Result<Transformed<Expr>> {
     let Some((query, element_type)) = literal_query_vector(&call.args[1]) else {
         return Ok(Transformed::no(Expr::ScalarFunction(call)));
     };
+    // A NULL/empty query vector (a bound NULL parameter reaches the analyzer
+    // as an empty list literal) has no handle representation: folding it would
+    // register an empty query and turn the builtin's NULL propagation into a
+    // list-length error.  Leave the call alone so it evaluates to NULL.
+    if query.is_empty() {
+        return Ok(Transformed::no(Expr::ScalarFunction(call)));
+    }
     if !distance_handles_enabled() {
         // Fallback (`LAKESOUL_DISTANCE_HANDLE=0`): keep the vector inline as one
         // list literal instead of a handle, for A/B runs.
@@ -107,6 +114,9 @@ fn literal_list_vector(
     list: &datafusion::arrow::array::GenericListArray<i32>,
 ) -> Option<(Vec<f32>, datafusion::arrow::datatypes::DataType)> {
     use datafusion::arrow::array::{Array, Float32Array, Float64Array};
+    if list.len() == 0 || list.null_count() != 0 {
+        return None;
+    }
     let values = list.values();
     match values.data_type() {
         datafusion::arrow::datatypes::DataType::Float32 => {

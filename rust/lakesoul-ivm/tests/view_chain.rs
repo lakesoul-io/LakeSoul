@@ -218,7 +218,7 @@ async fn chain_rejects_cycles() {
 }
 
 #[test_log::test(tokio::test)]
-async fn chain_marks_a_stuck_view_dirty_and_self_heals() {
+async fn chain_reports_a_stuck_view_without_dirtying_its_state() {
     let runtime = IvmRuntime::from_env().await.unwrap();
     runtime.init_schema().await.unwrap();
     let dir = tempdir().unwrap();
@@ -294,7 +294,9 @@ async fn chain_marks_a_stuck_view_dirty_and_self_heals() {
         .unwrap_err()
         .to_string();
     assert!(error.contains(&mv1.table_id), "{error}");
-    assert_eq!(
+    // A broken spec is reported but does not poison the incremental state:
+    // restoring the spec lets the next window catch up without a rebuild.
+    assert_ne!(
         runtime
             .metadata()
             .view_status(&mv1.table_id)
@@ -311,7 +313,7 @@ async fn chain_marks_a_stuck_view_dirty_and_self_heals() {
         .into_iter()
         .find(|view| view.view_id == mv1.table_id)
         .expect("mv1 is registered");
-    assert_eq!(info.status, "dirty");
+    assert_ne!(info.status, "dirty");
     assert!(info.last_error.is_some());
     // The downstream view did not read the stuck upstream.
     assert_eq!(
@@ -319,8 +321,8 @@ async fn chain_marks_a_stuck_view_dirty_and_self_heals() {
         vec![("a".to_string(), 30), ("b".to_string(), 5)]
     );
 
-    // Restoring the spec lets the dirty view self-heal (it is rebuilt before
-    // anything else) and the downstream catches up.
+    // Restoring the spec lets the next incremental window catch up; the
+    // failed attempt did not mark the state dirty.
     runtime
         .metadata()
         .upsert_view(&mv1.table_id, &original, 0)
@@ -331,7 +333,7 @@ async fn chain_marks_a_stuck_view_dirty_and_self_heals() {
         .iter()
         .find(|view| view.view_id == mv1.table_id)
         .expect("mv1 was refreshed");
-    assert_eq!(upstream.action, RefreshAction::Rebuilt);
+    assert_eq!(upstream.action, RefreshAction::Incremental);
     let downstream = refreshed
         .iter()
         .find(|view| view.view_id == mv2.table_id)

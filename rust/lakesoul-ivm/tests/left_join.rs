@@ -534,3 +534,71 @@ async fn null_safe_left_join_matches_null_keys_and_sql() {
 
     fixture.cleanup().await;
 }
+
+/// Both sources change in one window: the refresh must rewrite only the pairs
+/// of the affected left rows, and still match a full recompute (including a
+/// left key change, a right payload update, a right delete and a new right
+/// key).
+#[test_log::test(tokio::test)]
+async fn both_sided_window_matches_a_full_recompute() {
+    let fixture = setup().await;
+    let runtime = &fixture.runtime;
+    let (left, right, output, view) = (
+        &fixture.left,
+        &fixture.right,
+        &fixture.output,
+        &fixture.view,
+    );
+
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[
+            (1, Some("a"), "L1", "insert"),
+            (2, Some("b"), "L2", "insert"),
+            (3, None, "L3", "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[
+                (10, Some("a"), 100, "insert"),
+                (11, Some("a"), 101, "insert"),
+                (12, Some("b"), 102, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_left_join(view).await.unwrap().unwrap();
+    assert_eq!(
+        left_join_rows(runtime, output).await,
+        full_left_join_rows(runtime, left, right, "l.jk = r.jk").await
+    );
+
+    // The left row 1 moves from `a` to `b`, right row 10 changes its payload,
+    // right row 12 is deleted and right row 13 introduces a new key.
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[(1, Some("b"), "L1b", "insert")]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            right_batch(&[
+                (10, Some("a"), 110, "insert"),
+                (12, Some("b"), 102, "delete"),
+                (13, Some("c"), 103, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_left_join(view).await.unwrap().unwrap();
+    assert_eq!(
+        left_join_rows(runtime, output).await,
+        full_left_join_rows(runtime, left, right, "l.jk = r.jk").await
+    );
+}

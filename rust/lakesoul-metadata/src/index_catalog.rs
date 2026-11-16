@@ -247,7 +247,7 @@ pub struct GcShardPlan {
 /// Shared connection state of a catalog; non-generic so [`LeaseHandle`] can
 /// release itself without knowing the segment payload type.
 struct CatalogCore {
-    client: Arc<RwLock<PooledClient>>,
+    client: Arc<Mutex<PooledClient>>,
     max_retry: usize,
     kind: IndexKind,
 }
@@ -257,7 +257,7 @@ struct CatalogCore {
 static TABLES_INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
 impl CatalogCore {
-    /// Create the control-plane tables if they do not exist (once per process).
+    /// Verify that the control-plane tables exist (once per process).
     async fn ensure_tables(&self) -> Result<()> {
         TABLES_INIT
             .get_or_try_init(|| self.init_tables())
@@ -266,12 +266,32 @@ impl CatalogCore {
     }
 
     async fn init_tables(&self) -> Result<()> {
-        let guard = self.client.write().await;
-        guard.batch_execute(CREATE_TABLES_SQL, QueryType::RW).await
+        let installed: Option<bool> = {
+            let guard = self.client.lock().await;
+            guard
+                .query_opt(
+                    "select to_regclass('index_shard') is not null",
+                    QueryType::RW,
+                    &[],
+                )
+                .await?
+                .map(|row| row.get(0))
+        };
+        if installed != Some(true) {
+            return Err(LakeSoulMetaDataError::Other(
+                std::io::Error::other(
+                    "the index metadata tables are missing; initialize the metadata \
+                     database with script/meta_init.sql and run \
+                     script/metadata_migrate.py migrate",
+                )
+                .into(),
+            ));
+        }
+        Ok(())
     }
 
     async fn release_lease(&self, lease_id: Uuid) -> Result<()> {
-        let guard = self.client.write().await;
+        let guard = self.client.lock().await;
         guard
             .execute(
                 "delete from index_lease where lease_id = $1",
@@ -370,7 +390,7 @@ impl<S: CatalogSegment> std::fmt::Debug for IndexCatalog<S> {
 
 impl<S: CatalogSegment> IndexCatalog<S> {
     fn from_pooled(
-        client: Arc<RwLock<PooledClient>>,
+        client: Arc<Mutex<PooledClient>>,
         max_retry: usize,
         kind: IndexKind,
     ) -> Self {
@@ -389,7 +409,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         self.core.kind
     }
 
-    /// Create the control-plane tables if they do not exist.
+    /// Verify that the control-plane tables exist.
     pub async fn init_tables(&self) -> Result<()> {
         self.core.init_tables().await
     }
@@ -404,7 +424,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         index_prefix: &str,
     ) -> Result<Option<IndexCommitView<S>>> {
         self.core.ensure_tables().await?;
-        let guard = self.core.client.read().await;
+        let guard = self.core.client.lock().await;
         resolve_with(&guard, self.core.kind, index_prefix).await
     }
 
@@ -416,7 +436,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     ) -> Result<Option<IndexCommitView<S>>> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let guard = self.core.client.read().await;
+        let guard = self.core.client.lock().await;
         let current: Option<i64> = guard
             .query_opt(
                 "select commit_id from index_commit c \
@@ -473,7 +493,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
             return Ok(result);
         }
         let prefixes: Vec<String> = index_prefixes.to_vec();
-        let guard = self.core.client.read().await;
+        let guard = self.core.client.lock().await;
         // A left join keeps one row per requested prefix, so a shard without
         // a commit resolves to `None` exactly like the single-shard call.
         let rows = guard
@@ -555,7 +575,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         let kind = self.core.kind;
         let mut last_error: Option<LakeSoulMetaDataError> = None;
         for _ in 0..self.core.max_retry.max(1) {
-            let guard = self.core.client.write().await;
+            let guard = self.core.client.lock().await;
             let shard_id = ensure_shard(&guard, kind, index_prefix).await?;
             match try_commit::<S>(
                 &guard,
@@ -608,7 +628,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     ) -> Result<IndexCommitView<S>> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let guard = self.core.client.write().await;
+        let guard = self.core.client.lock().await;
         let shard_id = ensure_shard(&guard, kind, index_prefix).await?;
         match try_commit::<S>(
             &guard,
@@ -655,7 +675,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     ) -> Result<Option<LeaseHandle>> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let guard = self.core.client.write().await;
+        let guard = self.core.client.lock().await;
         let mut conn = guard.get(QueryType::RW).await?;
         let tx = conn.transaction().await?;
 
@@ -699,7 +719,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
 
     /// Extend a lease; returns `false` when the row no longer exists.
     pub async fn renew_lease(&self, lease: &LeaseHandle, ttl: Duration) -> Result<bool> {
-        let guard = self.core.client.write().await;
+        let guard = self.core.client.lock().await;
         let updated = guard
             .execute(
                 "update index_lease set expires_at = now() + make_interval(secs => $2) \
@@ -746,7 +766,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let client = self.core.client.read().await.primary_only();
+        let client = self.core.client.lock().await.primary_only();
         let mut conn = client.get(QueryType::RW).await?;
         let tx = conn
             .build_transaction()
@@ -871,7 +891,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         }
         let kind = self.core.kind;
         let pattern = format!("{}/", normalized.trim_end_matches('/'));
-        let guard = self.core.client.write().await;
+        let guard = self.core.client.lock().await;
         let deleted = guard
             .execute(
                 "delete from index_shard \
@@ -893,7 +913,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         }
         let kind = self.core.kind;
         let pattern = format!("{normalized}/");
-        let guard = self.core.client.read().await;
+        let guard = self.core.client.lock().await;
         let rows = guard
             .query(
                 "select index_prefix from index_shard \
@@ -910,7 +930,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     pub async fn delete_shard(&self, index_prefix: &str) -> Result<u64> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let client = self.core.client.read().await.primary_only();
+        let client = self.core.client.lock().await.primary_only();
         let mut conn = client.get(QueryType::RW).await?;
         let tx = conn
             .build_transaction()
@@ -937,7 +957,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     pub async fn mark_dropped(&self, index_prefix: &str, reason: &str) -> Result<()> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let client = self.core.client.read().await.primary_only();
+        let client = self.core.client.lock().await.primary_only();
         let mut conn = client.get(QueryType::RW).await?;
         let tx = conn
             .build_transaction()
@@ -967,7 +987,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     ) -> Result<()> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let client = self.core.client.read().await.primary_only();
+        let client = self.core.client.lock().await.primary_only();
         let mut conn = client.get(QueryType::RW).await?;
         let tx = conn
             .build_transaction()
@@ -994,7 +1014,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     pub async fn set_drop_state(&self, index_prefix: &str, state: &str) -> Result<u64> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let guard = self.core.client.write().await;
+        let guard = self.core.client.lock().await;
         let updated = guard
             .execute(
                 "update index_drop set state = $1, updated_at = now() \
@@ -1019,7 +1039,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         }
         let kind = self.core.kind;
         let pattern = format!("{normalized}/");
-        let guard = self.core.client.read().await;
+        let guard = self.core.client.lock().await;
         let rows = guard
             .query(
                 "select index_prefix, drop_id from index_drop \
@@ -1042,7 +1062,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     pub async fn clear_dropped(&self, index_prefix: &str) -> Result<u64> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let client = self.core.client.read().await.primary_only();
+        let client = self.core.client.lock().await.primary_only();
         let mut conn = client.get(QueryType::RW).await?;
         let tx = conn
             .build_transaction()
@@ -1074,7 +1094,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         }
         let kind = self.core.kind;
         let pattern = format!("{normalized}/");
-        let guard = self.core.client.read().await;
+        let guard = self.core.client.lock().await;
         let rows = guard
             .query(
                 "select index_prefix from index_drop \
@@ -1091,7 +1111,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     pub async fn is_dropped(&self, index_prefix: &str) -> Result<bool> {
         self.core.ensure_tables().await?;
         let kind = self.core.kind;
-        let guard = self.core.client.read().await;
+        let guard = self.core.client.lock().await;
         let row = guard
             .query_opt(
                 "select 1 from index_drop where kind = $1 and index_prefix = $2",
@@ -1544,8 +1564,8 @@ pub fn normalize_index_prefix(path: &str) -> String {
         .to_string()
 }
 
-async fn delete_kind_under_pattern(
-    client: &crate::pooled_client::PgConnection<'_>,
+async fn delete_kind_under_pattern<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
     kind: IndexKind,
     pattern: &str,
 ) -> Result<()> {
@@ -1560,8 +1580,8 @@ async fn delete_kind_under_pattern(
 }
 
 /// Best-effort cleanup for a table path when `table_info` is already gone.
-pub(crate) async fn clean_for_table_path(
-    client: &crate::pooled_client::PgConnection<'_>,
+pub(crate) async fn clean_for_table_path<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
     table_path: &str,
 ) -> Result<()> {
     let normalized = normalize_index_prefix(table_path);
@@ -1591,7 +1611,7 @@ pub(crate) async fn clean_for_table_id(
         return Ok(());
     };
     let table_path: String = row.get(0);
-    clean_for_table_path(client, &table_path).await
+    clean_for_table_path::<tokio_postgres::Client>(client, &table_path).await
 }
 
 /// Best-effort partition-level cleanup for the drop path.
@@ -1622,7 +1642,8 @@ pub(crate) async fn clean_for_partition(
         format!("{base}/{partition}/")
     };
     for kind in IndexKind::ALL {
-        delete_kind_under_pattern(client, kind, &pattern).await?;
+        delete_kind_under_pattern::<tokio_postgres::Client>(client, kind, &pattern)
+            .await?;
     }
     Ok(())
 }

@@ -678,10 +678,354 @@ pub async fn prune_filter_and_execute(
 mod tests {
     use super::*;
 
+    use std::fmt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::execution::memory_pool::{
+        MemoryLimit, MemoryPool, UnboundedMemoryPool,
+    };
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::physical_plan::empty::EmptyExec;
 
     use crate::config::LakeSoulIOConfigBuilder;
+
+    /// Counts live `LakeSoulMerge` consumers: one per merge that has opened
+    /// and not yet been dropped.
+    #[derive(Debug, Default)]
+    struct MergeTrackingPool {
+        inner: UnboundedMemoryPool,
+        active: AtomicUsize,
+        peak: AtomicUsize,
+    }
+
+    impl MergeTrackingPool {
+        fn is_merge(consumer: &MemoryConsumer) -> bool {
+            consumer.name().starts_with("LakeSoulMerge")
+        }
+    }
+
+    impl fmt::Display for MergeTrackingPool {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "merge_tracking")
+        }
+    }
+
+    impl MemoryPool for MergeTrackingPool {
+        fn name(&self) -> &str {
+            "merge_tracking"
+        }
+
+        fn register(&self, consumer: &MemoryConsumer) {
+            if Self::is_merge(consumer) {
+                let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                self.peak.fetch_max(active, Ordering::SeqCst);
+            }
+            self.inner.register(consumer);
+        }
+
+        fn unregister(&self, consumer: &MemoryConsumer) {
+            if Self::is_merge(consumer) {
+                self.active.fetch_sub(1, Ordering::SeqCst);
+            }
+            self.inner.unregister(consumer);
+        }
+
+        fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+            self.inner.grow(reservation, additional);
+        }
+
+        fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
+            self.inner.shrink(reservation, shrink);
+        }
+
+        fn try_grow(
+            &self,
+            reservation: &MemoryReservation,
+            additional: usize,
+        ) -> DFResult<()> {
+            self.inner.try_grow(reservation, additional)
+        }
+
+        fn reserved(&self) -> usize {
+            self.inner.reserved()
+        }
+
+        fn memory_limit(&self) -> MemoryLimit {
+            self.inner.memory_limit()
+        }
+    }
+
+    /// Waits, bounded, until no merge consumer is registered: the v2 merger
+    /// runs on a spawned task that is aborted with its stream, so its consumer
+    /// disappears at the runtime's next scheduling point.
+    async fn await_released(pool: &Arc<MergeTrackingPool>) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while pool.active.load(Ordering::SeqCst) != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the merge's consumer must be released");
+    }
+
+    fn task_context(pool: &Arc<MergeTrackingPool>) -> Arc<TaskContext> {
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(Arc::clone(pool) as Arc<dyn MemoryPool>)
+            .build_arc()
+            .unwrap();
+        Arc::new(TaskContext::default().with_runtime(runtime))
+    }
+
+    fn kv_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("v", DataType::Int32, false),
+        ]))
+    }
+
+    /// One sorted, single-partition version file of `(id, v)` rows.
+    fn version(ids: &[i32], v: i32) -> Arc<dyn ExecutionPlan> {
+        let batch = RecordBatch::try_new(
+            kv_schema(),
+            vec![
+                Arc::new(Int32Array::from(ids.to_vec())) as ArrayRef,
+                Arc::new(Int32Array::from(vec![v; ids.len()])) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        MemorySourceConfig::try_new_exec(&[vec![batch]], kv_schema(), None).unwrap()
+    }
+
+    /// A merge input that fails when polled.
+    #[derive(Debug)]
+    struct FailingExec {
+        properties: Arc<PlanProperties>,
+    }
+
+    impl FailingExec {
+        fn plan() -> Arc<dyn ExecutionPlan> {
+            Arc::new(Self {
+                properties: Arc::new(PlanProperties::new(
+                    EquivalenceProperties::new(kv_schema()),
+                    Partitioning::UnknownPartitioning(1),
+                    EmissionType::Incremental,
+                    Boundedness::Bounded,
+                )),
+            })
+        }
+    }
+
+    impl DisplayAs for FailingExec {
+        fn fmt_as(
+            &self,
+            _t: DisplayFormatType,
+            f: &mut std::fmt::Formatter,
+        ) -> std::fmt::Result {
+            write!(f, "FailingExec")
+        }
+    }
+
+    impl ExecutionPlan for FailingExec {
+        fn name(&self) -> &str {
+            "FailingExec"
+        }
+
+        fn properties(&self) -> &Arc<PlanProperties> {
+            &self.properties
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            vec![]
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DFResult<TreeNodeRecursion>,
+        ) -> DFResult<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
+        }
+
+        fn with_new_children(
+            self: Arc<Self>,
+            _children: Vec<Arc<dyn ExecutionPlan>>,
+        ) -> DFResult<Arc<dyn ExecutionPlan>> {
+            Ok(self)
+        }
+
+        fn execute(
+            &self,
+            _partition: usize,
+            _context: Arc<TaskContext>,
+        ) -> DFResult<SendableRecordBatchStream> {
+            Ok(Box::pin(RecordBatchStreamAdapter::new(
+                kv_schema(),
+                futures::stream::once(async {
+                    Err(DataFusionError::Execution("injected input failure".into()))
+                }),
+            )))
+        }
+    }
+
+    /// Builds a merge over `units`, each a list of version inputs in commit
+    /// order, assigned round-robin to `lanes`.
+    fn merge_over(
+        units: Vec<Vec<Arc<dyn ExecutionPlan>>>,
+        lanes: usize,
+    ) -> MergeParquetExec {
+        let mut inputs = Vec::new();
+        let mut work_units = Vec::new();
+        for (index, versions) in units.into_iter().enumerate() {
+            let start = inputs.len();
+            let files = (0..versions.len())
+                .map(|file| format!("unit{index}-version{file}.parquet"))
+                .collect();
+            inputs.extend(versions);
+            work_units.push(MergeWorkUnit {
+                input_range: start..inputs.len(),
+                files,
+                default_column_value: Arc::new(HashMap::new()),
+                lane: index % lanes,
+            });
+        }
+        MergeParquetExec::new_with_work_units(
+            kv_schema(),
+            inputs,
+            LakeSoulIOConfigBuilder::new()
+                .with_primary_keys(vec!["id".to_string()])
+                .build(),
+            work_units,
+            lanes,
+        )
+        .unwrap()
+    }
+
+    /// `(id, v)` rows of `batches`.
+    fn rows(batches: &[RecordBatch]) -> Vec<(i32, i32)> {
+        let mut rows = Vec::new();
+        for batch in batches {
+            let column = |index: usize| {
+                batch
+                    .column(index)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .clone()
+            };
+            let (ids, values) = (column(0), column(1));
+            assert_eq!(ids.null_count() + values.null_count(), 0);
+            rows.extend(
+                (0..batch.num_rows()).map(|row| (ids.value(row), values.value(row))),
+            );
+        }
+        rows.sort_unstable();
+        rows
+    }
+
+    async fn collect_lane(
+        exec: &MergeParquetExec,
+        lane: usize,
+        context: Arc<TaskContext>,
+    ) -> DFResult<Vec<RecordBatch>> {
+        let mut stream = exec.execute(lane, context)?;
+        let mut batches = Vec::new();
+        while let Some(batch) = stream.next().await {
+            batches.push(batch?);
+        }
+        Ok(batches)
+    }
+
+    /// Six units over two lanes: each lane opens its units one after another,
+    /// so both lanes together never hold more than two merges, and every
+    /// unit's latest version is emitted exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn lanes_open_one_merge_at_a_time() {
+        let units = (0..6)
+            .map(|unit| {
+                let ids = [10 * unit, 10 * unit + 1];
+                vec![version(&ids, 1), version(&ids[..1], 2)]
+            })
+            .collect();
+        let exec = merge_over(units, 2);
+        let pool = Arc::new(MergeTrackingPool::default());
+        let context = task_context(&pool);
+
+        let (lane0, lane1) = futures::join!(
+            collect_lane(&exec, 0, Arc::clone(&context)),
+            collect_lane(&exec, 1, Arc::clone(&context)),
+        );
+        let mut batches = lane0.unwrap();
+        batches.extend(lane1.unwrap());
+        let expected: Vec<_> = (0..6)
+            .flat_map(|unit| [(10 * unit, 2), (10 * unit + 1, 1)])
+            .collect();
+        assert_eq!(rows(&batches), expected);
+        let peak = pool.peak.load(Ordering::SeqCst);
+        assert!(
+            (1..=2).contains(&peak),
+            "{peak} merges open across two lanes"
+        );
+        assert_eq!(pool.active.load(Ordering::SeqCst), 0);
+        assert_eq!(pool.reserved(), 0);
+
+        let single = Arc::new(MergeTrackingPool::default());
+        collect_lane(&exec, 0, task_context(&single)).await.unwrap();
+        assert_eq!(single.peak.load(Ordering::SeqCst), 1, "one lane, one merge");
+    }
+
+    /// A failing input fails its lane and releases the merge it opened, both
+    /// when it is the lane's first unit and after earlier units completed.
+    #[tokio::test]
+    async fn failing_unit_releases_its_merge() {
+        for failing_first in [true, false] {
+            let ok = vec![version(&[1, 2], 1), version(&[2], 2)];
+            let failing = vec![version(&[3], 1), FailingExec::plan()];
+            let units = if failing_first {
+                vec![failing, ok]
+            } else {
+                vec![ok, failing]
+            };
+            let exec = merge_over(units, 1);
+            let pool = Arc::new(MergeTrackingPool::default());
+            let error = collect_lane(&exec, 0, task_context(&pool))
+                .await
+                .expect_err("the failing unit must fail the lane");
+            assert!(
+                error.to_string().contains("injected input failure"),
+                "unexpected error: {error}"
+            );
+            assert_eq!(pool.peak.load(Ordering::SeqCst), 1);
+            await_released(&pool).await;
+            assert_eq!(pool.reserved(), 0);
+        }
+    }
+
+    /// Dropping a lane mid-unit releases the open merge and never opens the
+    /// lane's later units.
+    #[tokio::test]
+    async fn dropping_a_lane_releases_its_merge() {
+        let units = (0..3)
+            .map(|unit| vec![version(&[unit], 1), version(&[unit], 2)])
+            .collect();
+        let exec = merge_over(units, 1);
+        let pool = Arc::new(MergeTrackingPool::default());
+        let mut stream = exec.execute(0, task_context(&pool)).unwrap();
+        stream.next().await.unwrap().unwrap();
+        drop(stream);
+        // The v2 merger runs on a spawned task that is aborted with its stream,
+        // so the task (and the merge's consumer) is dropped at the runtime's
+        // next scheduling point rather than synchronously.
+        await_released(&pool).await;
+        // One unit was merged, and dropping the lane kept the later units from
+        // opening: a consumer from a later unit would raise the peak. Do not
+        // assert the consumer is still open before the drop: the v2 merger
+        // reads a whole unit into its channel buffer, so a small unit can be
+        // finished and released before its first batch is read.
+        assert_eq!(pool.peak.load(Ordering::SeqCst), 1);
+        assert_eq!(pool.reserved(), 0);
+    }
 
     #[test]
     fn new_with_inputs_marks_missing_requested_fields_nullable() {

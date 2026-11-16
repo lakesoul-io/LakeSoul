@@ -5,8 +5,8 @@
 //! Integration tests for the PostgreSQL-backed vector index catalog.
 //!
 //! They require a running PostgreSQL with `LAKESOUL_PG_*` configured (the
-//! same service `rust-ci` provides) and create their own control-plane
-//! tables plus random shard prefixes.
+//! same service `rust-ci` provides) and use the control-plane tables created
+//! by `script/meta_init.sql`, with random shard prefixes.
 
 use std::time::Duration;
 

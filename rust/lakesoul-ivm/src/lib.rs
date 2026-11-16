@@ -40,9 +40,12 @@
 //! columns, and window partition/order keys may be strings or any other
 //! sortable type, projection/filter views mirror the rows that pass their
 //! conditions, `UNION ALL` merges several same-schema sources with a source
-//! index, and a top-k view keeps the best `limit` rows of every group. Group keys and window partition keys may be NULL (NULL
-//! groups with NULL, following SQL), while row identities (source primary
-//! keys used by keyed views) must be non-nullable. An inner join over two
+//! index, and a top-k view keeps the best `limit` rows of every group. Group
+//! keys and window partition keys may be NULL (NULL groups with NULL,
+//! following SQL); the keyed state/MV lookups encode a NULL key with the
+//! Arrow row format and match it against the same encoded key, so a NULL
+//! group does not force a full scan. Row identities (source primary keys used
+//! by keyed views) must be non-nullable. An inner join over two
 //! keyed sources keeps a retractable output keyed by both row identities, so
 //! upserts, deletes and join-key changes on either side are reflected.
 //!
@@ -75,8 +78,12 @@
 //! collection (checking `min(ivm.cursors.last_timestamp)` before deleting) is a
 //! follow-up.
 
+pub mod config;
+#[cfg(feature = "distributed")]
+pub mod distributed;
 pub mod error;
 pub mod executor;
+pub mod inventory;
 pub mod metadata;
 mod observability;
 mod provider;
@@ -84,28 +91,32 @@ pub mod runtime;
 pub mod sql;
 pub mod table;
 
+pub use config::{IvmOptions, IvmRuntimeConfig, StateIndexMode};
 pub use error::Result;
 pub use executor::{IvmExecution, IvmExecutionAction, IvmSqlExecutor};
+pub use inventory::{
+    InventoryOptions, InventoryTotals, RoleTotal, SourceRef, StateInventory,
+    TableFootprint, ViewInventory,
+};
 pub use lakesoul_io::file_format::PhysicalFormat;
 pub use metadata::{
     BeginEpoch, Consumer, Cursor, EpochRecord, EpochStatus, IvmMetadata,
     PartitionVersion, SourceVersionRange, StateRole, StateTable, StateVersion, ViewInfo,
 };
 pub use provider::{IvmReadMode, IvmTableProvider};
-pub use runtime::state_partition_stats;
 pub use runtime::{
     ApproxDistinctView, ApproxPercentileView, ArrayAggView, BoolAggKind, BoolAggView,
     ChainPolicy, CompareOp, ComputedAggArg, ComputedAggResult, ComputedAggView,
-    CrossJoinView, DistinctAggKind, DistinctAggView, FullJoinView, GroupingColumn,
-    IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_CUME_DIST_COLUMN, IVM_DENSE_RANK_COLUMN,
-    IVM_FIRST_VALUE_COLUMN, IVM_GROUP_ROW_COLUMN, IVM_GROUPING_COLUMN, IVM_LAG_COLUMN,
-    IVM_LAST_VALUE_COLUMN, IVM_LEAD_COLUMN, IVM_MEDIAN_COLUMN, IVM_NONNULL_COUNT_COLUMN,
-    IVM_NTH_VALUE_COLUMN, IVM_NTILE_COLUMN, IVM_PAIR_IDENTITY_COLUMN,
-    IVM_PERCENT_RANK_COLUMN, IVM_RANK_COLUMN, IVM_ROW_COUNT_COLUMN,
-    IVM_ROW_NUMBER_COLUMN, IVM_SOURCE_COLUMN, IVM_STDDEV_COLUMN, IVM_SUM_COLUMN,
-    IVM_VALUE_COLUMN, IVM_VALUE_COUNT_COLUMN, IVM_VARIANCE_COLUMN, IvmRuntime,
-    JoinKeyExprs, JoinOutputColumn, JoinSide, JoinView, LeftAggregateView, LeftJoinView,
-    LookupChainColumn, LookupChainSource, LookupChainStep, LookupChainView,
+    CrossJoinView, DistinctAggKind, DistinctAggView, DropViewOptions, DropViewReport,
+    FullJoinView, GroupingColumn, IVM_AVG_COLUMN, IVM_COUNT_COLUMN, IVM_CUME_DIST_COLUMN,
+    IVM_DENSE_RANK_COLUMN, IVM_FIRST_VALUE_COLUMN, IVM_GROUP_ROW_COLUMN,
+    IVM_GROUPING_COLUMN, IVM_LAG_COLUMN, IVM_LAST_VALUE_COLUMN, IVM_LEAD_COLUMN,
+    IVM_MEDIAN_COLUMN, IVM_NONNULL_COUNT_COLUMN, IVM_NTH_VALUE_COLUMN, IVM_NTILE_COLUMN,
+    IVM_PAIR_IDENTITY_COLUMN, IVM_PERCENT_RANK_COLUMN, IVM_RANK_COLUMN,
+    IVM_ROW_COUNT_COLUMN, IVM_ROW_NUMBER_COLUMN, IVM_SOURCE_COLUMN, IVM_STDDEV_COLUMN,
+    IVM_SUM_COLUMN, IVM_VALUE_COLUMN, IVM_VALUE_COUNT_COLUMN, IVM_VARIANCE_COLUMN,
+    IvmRuntime, JoinKeyExprs, JoinOutputColumn, JoinSide, JoinView, LeftAggregateView,
+    LeftJoinView, LookupChainColumn, LookupChainSource, LookupChainStep, LookupChainView,
     LookupJoinView, MAX_APPEND_ONLY_MULTI_JOIN_SOURCES, MAX_KEYED_MULTI_JOIN_SOURCES,
     MedianView, MinMaxKind, MinMaxView, MultiAggSpec, MultiAggView, MultiJoinColumn,
     MultiJoinCondition, MultiJoinKey, MultiJoinSource, MultiJoinView, MultiLookupColumn,
@@ -155,6 +166,7 @@ pub use runtime::{
     window_columns_mv_schema_for_with_payload, window_key, window_mv_schema,
     window_mv_schema_for, window_ranking_mv_schema_for, window_value_mv_schema_for,
 };
+pub use runtime::{enable_partition_stats, state_partition_stats};
 pub use sql::{AnalyzeRequest, AnalyzedView, analyze_select, definition_hash};
 pub use table::{
     IVM_EPOCH_COLUMN, IVM_ROW_KINDS_COLUMN, IvmTable, IvmTableOptions, create_ivm_table,

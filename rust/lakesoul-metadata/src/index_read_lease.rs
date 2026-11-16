@@ -396,7 +396,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         snapshot: Option<&crate::VectorBatchMetadata>,
     ) -> Result<IndexReadLeaseGuard> {
         self.core.ensure_tables().await?;
-        let client = self.core.client.read().await.primary_only();
+        let client = self.core.client.lock().await.primary_only();
         let kind = self.core.kind;
         let mut pinned = pinned.to_vec();
         for (prefix, _) in &mut pinned {
@@ -526,7 +526,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
     /// control-plane row was logically deleted. Always reads the primary.
     pub async fn has_live_read_leases(&self, prefix: &str) -> Result<bool> {
         self.core.ensure_tables().await?;
-        let client = self.core.client.read().await.primary_only();
+        let client = self.core.client.lock().await.primary_only();
         let prefix = normalize_index_prefix(prefix);
         let row = client
             .query_opt(
@@ -553,7 +553,7 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         Fut: Future<Output = Result<T>>,
     {
         self.core.ensure_tables().await?;
-        let client = self.core.client.read().await.primary_only();
+        let client = self.core.client.lock().await.primary_only();
         let prefix = normalize_index_prefix(prefix);
         loop {
             let mut conn = client.get(QueryType::RW).await?;

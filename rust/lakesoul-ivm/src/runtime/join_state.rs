@@ -5,10 +5,12 @@
 //! Keyed state layout for join sources.
 //!
 //! A join source can be keyed by a row identity that is different from its
-//! join key.  The side state table therefore stores the source row under a
-//! canonical `arrow::Row` encoding of the join key plus the source primary
-//! keys.  The binary key is the bucket column, so a lookup can address one
-//! bucket without scanning the full source.
+//! join key.  The side state table therefore stores the source row under the
+//! join keys plus the source primary keys.  When every join key is a plain
+//! payload column, those natural columns are the primary-key and bucket
+//! prefix.  Otherwise (computed keys, a differently shaped key, or a
+//! range-partitioned key) the state stores a canonical `arrow::Row` encoding
+//! of the join key as a hidden binary bucket column.
 //!
 //! The caller decides whether a side state is needed.  When the source
 //! primary key already equals the join key (and the join key is unique), the
@@ -31,13 +33,50 @@ use crate::table::IvmTable;
 /// Hidden binary key encoding the source join keys with `arrow::Row`.
 pub(crate) const IVM_JOIN_KEY_COLUMN: &str = "__ivm_join_key";
 
+/// How a join side state keys its rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JoinSideStateLayout {
+    /// Store the join keys as one `arrow::Row`-encoded binary bucket key.
+    Binary,
+    /// Use the natural join-key columns as the primary-key prefix and bucket
+    /// columns.  The keys are already part of the payload, so this avoids a
+    /// second, poorly-compressed copy of every key.
+    Natural,
+}
+
+/// Whether a side state can use the natural join keys instead of the hidden
+/// binary key.
+///
+/// The natural layout needs every join key to be a plain payload column.  A
+/// computed key would have to be materialized as an extra state column, and a
+/// range-partitioned join key would put the same column into both the range
+/// layout and the hash prefix; both keep the binary layout.
+pub(crate) fn natural_join_state_eligible(
+    source: &IvmTable,
+    join_keys: &[String],
+    key_exprs: &[String],
+) -> bool {
+    if join_keys.is_empty() || source.primary_keys.is_empty() {
+        return false;
+    }
+    if key_exprs.iter().any(|expr| !expr.is_empty()) {
+        return false;
+    }
+    join_keys.iter().all(|key| {
+        source.schema.field_with_name(key).is_ok()
+            && !source.range_partition_columns.contains(key)
+    })
+}
+
 /// Build the state schema of one join source.
 ///
-/// The state keeps the source columns and adds the hidden binary join key.
+/// The state keeps the source columns.  The binary layout additionally adds
+/// the hidden join key; the natural layout stores the key columns in place.
 /// The source CDC column (when present) and epoch stay part of the table.
 pub(crate) fn join_side_state_schema_for(
     source: &IvmTable,
     join_keys: &[String],
+    layout: JoinSideStateLayout,
 ) -> DataFusionResult<SchemaRef> {
     if join_keys.is_empty() {
         return Err(DataFusionError::Execution(
@@ -68,22 +107,37 @@ pub(crate) fn join_side_state_schema_for(
             false,
         )));
     }
-    fields.push(Arc::new(Field::new(
-        IVM_JOIN_KEY_COLUMN,
-        DataType::Binary,
-        false,
-    )));
+    if layout == JoinSideStateLayout::Binary {
+        fields.push(Arc::new(Field::new(
+            IVM_JOIN_KEY_COLUMN,
+            DataType::Binary,
+            false,
+        )));
+    }
     Ok(Arc::new(Schema::new(fields)))
 }
 
-/// Primary keys of a side state table: the encoded join key followed by the
-/// source row identity.  A source range partition column that is also a join
-/// key is added as a raw key so the state can be range-partitioned by it and
-/// the lookup contribution (which carries the join key) can prune partitions.
+/// Primary keys of a side state table.
+///
+/// The binary layout starts with the encoded join key; the natural layout
+/// starts with the join-key columns.  Both append the source row identity.  A
+/// source range partition column that is also a join key is added as a raw
+/// binary-layout key so the state can be range-partitioned by it and the
+/// lookup contribution (which carries the join key) can prune partitions.
 pub(crate) fn join_side_state_primary_keys(
     source: &IvmTable,
     join_keys: &[String],
+    layout: JoinSideStateLayout,
 ) -> Vec<String> {
+    if layout == JoinSideStateLayout::Natural {
+        let mut keys = join_keys.to_vec();
+        for key in &source.primary_keys {
+            if !keys.contains(key) {
+                keys.push(key.clone());
+            }
+        }
+        return keys;
+    }
     let mut keys = vec![IVM_JOIN_KEY_COLUMN.to_string()];
     keys.extend(source.primary_keys.iter().cloned());
     for column in &source.range_partition_columns {
@@ -326,8 +380,10 @@ impl super::IvmRuntime {
         join_keys: &[String],
         role: crate::metadata::StateRole,
     ) -> crate::error::Result<Option<IvmTable>> {
-        self.ensure_join_side_state_with_force(view_id, source, join_keys, role, false)
-            .await
+        self.ensure_join_side_state_with_force(
+            view_id, source, join_keys, role, false, false,
+        )
+        .await
     }
 
     /// Like [`Self::ensure_join_side_state`], but also creates a side state
@@ -341,8 +397,25 @@ impl super::IvmRuntime {
         join_keys: &[String],
         role: crate::metadata::StateRole,
     ) -> crate::error::Result<Option<IvmTable>> {
-        self.ensure_join_side_state_with_force(view_id, source, join_keys, role, true)
-            .await
+        self.ensure_join_side_state_with_force(
+            view_id, source, join_keys, role, true, false,
+        )
+        .await
+    }
+
+    /// Create or reuse a side state keyed by the natural join-key columns.
+    pub(crate) async fn ensure_join_side_state_natural(
+        &self,
+        view_id: &str,
+        source: &IvmTable,
+        join_keys: &[String],
+        role: crate::metadata::StateRole,
+        force: bool,
+    ) -> crate::error::Result<Option<IvmTable>> {
+        self.ensure_join_side_state_with_force(
+            view_id, source, join_keys, role, force, true,
+        )
+        .await
     }
 
     /// Ensure a side state, forcing the auxiliary table for NULL-safe joins.
@@ -353,7 +426,15 @@ impl super::IvmRuntime {
         join_keys: &[String],
         role: crate::metadata::StateRole,
         null_safe: bool,
+        natural: bool,
     ) -> crate::error::Result<Option<IvmTable>> {
+        if natural {
+            return self
+                .ensure_join_side_state_with_force(
+                    view_id, source, join_keys, role, null_safe, true,
+                )
+                .await;
+        }
         if null_safe {
             self.ensure_join_side_state_forced(view_id, source, join_keys, role)
                 .await
@@ -370,12 +451,21 @@ impl super::IvmRuntime {
         join_keys: &[String],
         role: crate::metadata::StateRole,
         force: bool,
+        natural: bool,
     ) -> crate::error::Result<Option<IvmTable>> {
         if !force && !join_side_needs_state(source, join_keys) {
             return Ok(None);
         }
-        let schema = join_side_state_schema_for(source, join_keys)?;
-        let primary_keys = join_side_state_primary_keys(source, join_keys);
+        // A natural state is only valid when every join key is a plain,
+        // non-partitioning payload column; otherwise keep the binary layout.
+        let natural = natural && natural_join_state_eligible(source, join_keys, &[]);
+        let layout = if natural {
+            JoinSideStateLayout::Natural
+        } else {
+            JoinSideStateLayout::Binary
+        };
+        let schema = join_side_state_schema_for(source, join_keys, layout)?;
+        let primary_keys = join_side_state_primary_keys(source, join_keys, layout);
         if let Some(existing) = self.metadata().get_state(view_id, role).await? {
             let table = self.open_table_by_id(&existing.table_id).await?;
             if table.schema == schema && table.primary_keys == primary_keys {
@@ -398,7 +488,11 @@ impl super::IvmRuntime {
         )
         .with_namespace(source.namespace.clone())
         .with_primary_keys(primary_keys.clone())
-        .with_bucket_columns(vec![IVM_JOIN_KEY_COLUMN.to_string()])
+        .with_bucket_columns(if natural {
+            join_keys.to_vec()
+        } else {
+            vec![IVM_JOIN_KEY_COLUMN.to_string()]
+        })
         .with_file_format(crate::table::keyed_state_file_format());
         let range_partitions =
             crate::table::state_range_partition_columns(source, &primary_keys);
@@ -416,8 +510,9 @@ impl super::IvmRuntime {
         Ok(Some(state))
     }
 
-    /// Replace a side state with the current logical source rows, encoded
-    /// under the hidden `arrow::Row` join key.
+    /// Replace a side state with the current logical source rows.  The binary
+    /// layout encodes the hidden `arrow::Row` join key; the natural layout
+    /// writes the key columns already present in the source.
     pub(crate) async fn sync_join_side_state(
         &self,
         source: &IvmTable,
@@ -427,6 +522,21 @@ impl super::IvmRuntime {
     ) -> crate::error::Result<Vec<String>> {
         use futures::StreamExt;
         let context = super::refresh_session();
+        if state.schema.field_with_name(IVM_JOIN_KEY_COLUMN).is_err() {
+            // Natural layout: the join keys are already payload columns, and
+            // the state primary key starts with them.
+            let mut frame = self.current_table_frame(&context, source)?;
+            if let Some(kind) = join_side_state_cdc_column(source)
+                && state.schema.field_with_name(&kind).is_ok()
+                && frame.schema().field_with_name(None, &kind).is_err()
+            {
+                frame = frame
+                    .with_column(kind.as_str(), datafusion::prelude::lit("insert"))?;
+            }
+            state.truncate(&self.client).await?;
+            let stream = frame.execute_stream().await?;
+            return state.append_stream(&self.client, stream).await;
+        }
         let frame = materialize_join_keys(
             &context,
             self.current_table_frame(&context, source)?,
@@ -454,8 +564,8 @@ impl super::IvmRuntime {
     ///
     /// The source row identity is stable while its join key can change.  The
     /// old side row is therefore found by the source primary keys, marked as a
-    /// delete under its old encoded join key, and the window rows are appended
-    /// under their new keys.  Keeping both operations in the state table's CDC
+    /// delete under its old key, and the window rows are appended under their
+    /// new keys.  Keeping both operations in the state table's CDC
     /// log makes the read side a normal merge-on-read keyed table.
     pub(crate) async fn apply_join_side_delta(
         &self,
@@ -469,20 +579,28 @@ impl super::IvmRuntime {
         if window.added_files.is_empty() {
             return Ok(Vec::new());
         }
+        let natural = state.schema.field_with_name(IVM_JOIN_KEY_COLUMN).is_err();
         let context = super::refresh_session();
-        let delta = materialize_join_keys(
-            &context,
-            self.groups_table_frame(&context, source, window.added_files.clone())?,
-            key_exprs,
-            join_keys,
-        )?;
+        let mut delta =
+            self.groups_table_frame(&context, source, window.added_files.clone())?;
+        if !natural {
+            delta = materialize_join_keys(&context, delta, key_exprs, join_keys)?;
+        }
         let kind = join_side_state_cdc_column(source)
             .ok_or_else(|| rootcause::report!("join side state has no change column"))?;
-        let encoder = JoinKeyEncoder::new_with_schema(
-            source,
-            delta.schema().as_arrow(),
-            join_keys,
-        )?;
+        if natural && delta.schema().field_with_name(None, &kind).is_err() {
+            delta =
+                delta.with_column(kind.as_str(), datafusion::prelude::lit("insert"))?;
+        }
+        let encoder = if natural {
+            None
+        } else {
+            Some(std::sync::Arc::new(JoinKeyEncoder::new_with_schema(
+                source,
+                delta.schema().as_arrow(),
+                join_keys,
+            )?))
+        };
 
         // Read the before image from the source through the generic PK lookup
         // plan.  The source primary key is the lookup key; the plan handles
@@ -519,7 +637,11 @@ impl super::IvmRuntime {
         };
         let bucket_count = route_columns.as_ref().map_or(1, |_| bucket_count);
         let before_groups = source
-            .before_window_groups(&self.client, &window.before_versions)
+            .before_window_groups(
+                &self.client,
+                &window.before_versions,
+                window.before_timestamp,
+            )
             .await?;
         let groups = super::keyed_plan::groups_by_bucket(before_groups, bucket_count);
         let provider = super::keyed_plan::IvmLookupTable::columns(
@@ -531,8 +653,11 @@ impl super::IvmRuntime {
             bucket_count,
             route_columns,
             true,
-        );
-        let before = context.read_table(std::sync::Arc::new(provider))?;
+        )
+        // The source may be an internal view whose row identity is a NULL
+        // group key; the before image must match it.
+        .with_null_safe(true);
+        let before = provider.into_dataframe(&context).await?;
         let before_schema = before.schema().clone();
         let projections = source
             .schema
@@ -556,14 +681,13 @@ impl super::IvmRuntime {
                 super::column_expr(&actual).alias(field.name())
             })
             .collect::<Vec<_>>();
-        let old = materialize_join_keys(
-            &context,
-            before.select(projections)?,
-            key_exprs,
-            join_keys,
-        )?;
+        let mut old = before.select(projections)?;
+        if !natural {
+            old = materialize_join_keys(&context, old, key_exprs, join_keys)?;
+        } else if old.schema().field_with_name(None, &kind).is_err() {
+            old = old.with_column(kind.as_str(), datafusion::prelude::lit("insert"))?;
+        }
 
-        let encoder = std::sync::Arc::new(encoder);
         let mut streams: Vec<
             std::pin::Pin<
                 Box<
@@ -572,24 +696,37 @@ impl super::IvmRuntime {
                 >,
             >,
         > = Vec::new();
-        let old_encoder = encoder.clone();
         let old_stream = old.execute_stream().await?;
-        streams.push(Box::pin(old_stream.map(move |batch| {
-            let batch = batch?;
-            set_change_kind(&old_encoder.encode_batch(&batch)?, &kind, "delete").map_err(
-                |error| {
+        match encoder.as_ref() {
+            Some(encoder) => {
+                let old_encoder = encoder.clone();
+                streams.push(Box::pin(old_stream.map(move |batch| {
+                    let batch = batch?;
+                    set_change_kind(&old_encoder.encode_batch(&batch)?, &kind, "delete")
+                        .map_err(|error| {
+                            datafusion::error::DataFusionError::Execution(format!(
+                                "{error:?}"
+                            ))
+                        })
+                })));
+            }
+            None => streams.push(Box::pin(old_stream.map(move |batch| {
+                let batch = batch?;
+                set_change_kind(&batch, &kind, "delete").map_err(|error| {
                     datafusion::error::DataFusionError::Execution(format!("{error:?}"))
-                },
-            )
-        })));
-        let delta_encoder = encoder;
+                })
+            }))),
+        }
         let delta_stream = delta.execute_stream().await?;
-        streams.push(Box::pin(delta_stream.map(move |batch| {
-            let batch = batch?;
-            delta_encoder.encode_batch(&batch).map_err(|error| {
-                datafusion::error::DataFusionError::Execution(format!("{error:?}"))
-            })
-        })));
+        match encoder {
+            Some(encoder) => streams.push(Box::pin(delta_stream.map(move |batch| {
+                let batch = batch?;
+                encoder.encode_batch(&batch).map_err(|error| {
+                    datafusion::error::DataFusionError::Execution(format!("{error:?}"))
+                })
+            }))),
+            None => streams.push(Box::pin(delta_stream)),
+        }
         let stream = Box::pin(futures::stream::iter(streams).flatten());
         state.append_stream(&self.client, stream).await
     }
@@ -672,9 +809,51 @@ mod tests {
         assert!(!join_side_needs_state(&table, &["id".to_string()]));
         assert!(join_side_needs_state(&table, &["other".to_string()]));
         assert_eq!(
-            join_side_state_primary_keys(&table, &["id".to_string()]),
+            join_side_state_primary_keys(
+                &table,
+                &["id".to_string()],
+                JoinSideStateLayout::Binary
+            ),
             vec![IVM_JOIN_KEY_COLUMN.to_string(), "id".to_string()]
         );
+    }
+
+    #[test]
+    fn natural_layout_keeps_join_keys_as_the_primary_key_prefix() {
+        let table = source(Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("g", DataType::Int64, false),
+        ])));
+        let layout = JoinSideStateLayout::Natural;
+        let schema =
+            join_side_state_schema_for(&table, &["g".to_string()], layout).unwrap();
+        assert!(schema.field_with_name(IVM_JOIN_KEY_COLUMN).is_err());
+        assert_eq!(
+            join_side_state_primary_keys(
+                &table,
+                &["g".to_string()],
+                JoinSideStateLayout::Natural
+            ),
+            vec!["g".to_string(), "id".to_string()]
+        );
+        assert!(natural_join_state_eligible(&table, &["g".to_string()], &[]));
+        assert!(!natural_join_state_eligible(
+            &table,
+            &["g".to_string()],
+            &["g + 1".to_string()]
+        ));
+        assert!(!natural_join_state_eligible(
+            &table,
+            &["missing".to_string()],
+            &[]
+        ));
+        let mut partitioned = table;
+        partitioned.range_partition_columns = vec!["g".to_string()];
+        assert!(!natural_join_state_eligible(
+            &partitioned,
+            &["g".to_string()],
+            &[]
+        ));
     }
 
     #[test]
@@ -685,7 +864,11 @@ mod tests {
         ])));
         table.range_partition_columns = vec!["day".to_string()];
         assert_eq!(
-            join_side_state_primary_keys(&table, &["id".to_string(), "day".to_string()]),
+            join_side_state_primary_keys(
+                &table,
+                &["id".to_string(), "day".to_string()],
+                JoinSideStateLayout::Binary
+            ),
             vec![
                 IVM_JOIN_KEY_COLUMN.to_string(),
                 "id".to_string(),
@@ -693,7 +876,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            join_side_state_primary_keys(&table, &["id".to_string()]),
+            join_side_state_primary_keys(
+                &table,
+                &["id".to_string()],
+                JoinSideStateLayout::Binary
+            ),
             vec![IVM_JOIN_KEY_COLUMN.to_string(), "id".to_string()]
         );
     }

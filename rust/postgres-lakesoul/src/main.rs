@@ -5,33 +5,51 @@
 
 use std::io::IsTerminal;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use datafusion_postgres::{ServerOptions, auth::AuthManager, serve_with_handlers};
+use datafusion_postgres::{
+    ServerOptions, TcpKeepalive, auth::AuthManager, serve_with_handlers,
+};
 use lakesoul_common::misc::JiffTime;
-use lakesoul_datafusion::cli::{CoreArgs, DistributedArgs};
-use lakesoul_datafusion::session::ExecutionMemoryArgs;
+use lakesoul_datafusion::cli::{CoreArgs, DistributedArgs, IvmArgs};
+use lakesoul_datafusion::session::{ExecutionMemoryArgs, IvmRefreshSessionFactory};
+use lakesoul_ivm::IvmRuntimeConfig;
 use lakesoul_metadata::MetaDataClient;
 use lakesoul_observability::{
-    LogFormat, PrometheusMetricsConfig, TracingConfig, TracingGuard, init_tracing,
-    install_prometheus_metrics, spawn_reload_on_sighup,
+    LogFormat, MemorySamplingArgs, PrometheusMetricsConfig, TracingConfig, TracingGuard,
+    init_tracing, install_prometheus_metrics, spawn_reload_on_sighup,
 };
 use tokio::runtime::{self};
 use tracing::{info, warn};
 
+use crate::ivm::IvmService;
 use crate::limits::{Limits, ServerLimits};
 use crate::server::LakeSoulHandlers;
 use crate::session::PgSessionFactory;
 
+mod allocator;
+mod alter;
 mod cancel;
 mod catalog;
+mod ddl;
+mod failed_transaction;
+mod federation;
+mod insert;
+mod ivm;
+mod jobs;
 mod limits;
 mod pg_compat;
+mod pg_numeric;
 mod pg_vector;
 mod read_only;
 mod server;
 mod session;
+mod session_settings;
+mod subscribe;
+mod transaction;
+mod update;
 use rootcause::Report;
 
 pub(crate) type Result<T, E = Report> = std::result::Result<T, E>;
@@ -64,8 +82,18 @@ struct Cli {
     #[command(flatten)]
     pub distributed: DistributedArgs,
 
+    /// IVM refresh-engine options shared by the coordinator and its workers.
+    #[command(flatten)]
+    pub ivm_runtime: IvmArgs,
+
     #[command(flatten)]
     pub memory: ExecutionMemoryArgs,
+
+    #[command(flatten)]
+    pub memory_sampling: MemorySamplingArgs,
+
+    #[command(flatten)]
+    pub subscribe: subscribe::SubscribeArgs,
 
     /// Bind address, defaults to the loopback interface; container/cluster
     /// deployments set `LAKESOUL_PG_BIND=0.0.0.0` explicitly.
@@ -84,6 +112,17 @@ struct Cli {
     )]
     metrics_addr: SocketAddr,
 
+    /// Do not install the Prometheus metrics endpoint. Subscriber children use
+    /// this so they do not contend with the server or each other on one port.
+    #[clap(long, env = "LAKESOUL_PG_NO_METRICS")]
+    no_metrics: bool,
+
+    /// Directory for supervised subscriber stdout/stderr logs. Defaults to
+    /// `LAKESOUL_LOG_DIR` when set, otherwise a directory under the system
+    /// temporary directory.
+    #[clap(long, env = "LAKESOUL_PG_SUBSCRIPTION_LOG_DIR")]
+    subscription_log_dir: Option<PathBuf>,
+
     /// Maximum number of concurrent connections, 0 for unlimited
     #[clap(long, env = "LAKESOUL_PG_MAX_CONNECTIONS", default_value_t = 0)]
     max_connections: usize,
@@ -92,6 +131,11 @@ struct Cli {
     #[clap(long, env = "LAKESOUL_PG_MAX_QUERIES_PER_USER", default_value_t = 0)]
     max_queries_per_user: usize,
 
+    /// Maximum number of concurrent statements across all users, 0 for
+    /// unlimited. A suspended portal holds its slot until it is closed.
+    #[clap(long, env = "LAKESOUL_PG_MAX_CONCURRENT_QUERIES", default_value_t = 0)]
+    max_concurrent_queries: usize,
+
     /// Maximum number of rows a statement may return, 0 for unlimited
     #[clap(long, env = "LAKESOUL_PG_MAX_RESULT_ROWS", default_value_t = 0)]
     max_result_rows: usize,
@@ -99,6 +143,68 @@ struct Cli {
     /// Maximum encoded size a statement's result may reach, 0 for unlimited
     #[clap(long, env = "LAKESOUL_PG_MAX_RESULT_BYTES", default_value_t = 0)]
     max_result_bytes: usize,
+
+    /// Files one transaction block may stage before COMMIT, 0 for unlimited
+    #[clap(
+        long,
+        env = "LAKESOUL_PG_MAX_STAGED_FILES_PER_TRANSACTION",
+        default_value_t = 0
+    )]
+    max_staged_files_per_transaction: usize,
+
+    /// Bytes of staged files one transaction block may hold, 0 for unlimited
+    #[clap(
+        long,
+        env = "LAKESOUL_PG_MAX_STAGED_BYTES_PER_TRANSACTION",
+        default_value_t = 0
+    )]
+    max_staged_bytes_per_transaction: usize,
+
+    /// Seconds a client connection may be idle before TCP keepalive probes
+    /// start, 0 to leave keepalive off. Without it, a client that vanishes
+    /// without closing its socket keeps its connection - and every slot it
+    /// holds - open indefinitely.
+    #[clap(
+        long,
+        env = "LAKESOUL_PG_TCP_KEEPALIVE_IDLE_SECS",
+        default_value_t = 60
+    )]
+    tcp_keepalive_idle_secs: u64,
+
+    /// Seconds between unanswered TCP keepalive probes, 0 for the OS default
+    #[clap(
+        long,
+        env = "LAKESOUL_PG_TCP_KEEPALIVE_INTERVAL_SECS",
+        default_value_t = 10
+    )]
+    tcp_keepalive_interval_secs: u64,
+
+    /// Unanswered TCP keepalive probes before a connection is dropped, 0 for
+    /// the OS default
+    #[clap(long, env = "LAKESOUL_PG_TCP_KEEPALIVE_RETRIES", default_value_t = 6)]
+    tcp_keepalive_retries: u32,
+
+    /// Maximum number of detached queries running at once, 0 for unlimited
+    #[clap(long, env = "LAKESOUL_PG_MAX_JOBS", default_value_t = 4)]
+    max_jobs: usize,
+
+    /// Retention of a detached SELECT result, in hours
+    #[clap(long, env = "LAKESOUL_PG_JOB_RESULT_TTL_HOURS", default_value_t = 24)]
+    job_result_ttl_hours: u64,
+
+    /// Retention of detached query history, in hours
+    #[clap(long, env = "LAKESOUL_PG_JOB_RECORD_TTL_HOURS", default_value_t = 72)]
+    job_record_ttl_hours: u64,
+
+    /// Maximum size of a detached SELECT result, in MiB
+    #[clap(long, env = "LAKESOUL_PG_JOB_RESULT_MAX_MIB", default_value_t = 1024)]
+    job_result_max_mib: u64,
+
+    /// Stable identity of this pg-wire cluster for detached-job recovery.
+    /// Defaults to <bind>:<port>; set it when the listen address can change
+    /// across restarts.
+    #[clap(long, env = "LAKESOUL_PG_JOB_CLUSTER_ID")]
+    job_cluster_id: Option<String>,
 }
 
 async fn main_inner(cli: Cli) -> Result<()> {
@@ -109,19 +215,72 @@ async fn main_inner(cli: Cli) -> Result<()> {
     // Dynamic log level: edit LAKESOUL_LOG_FILTER_FILE (or RUST_LOG) and
     // `kill -HUP <pid>`.
     spawn_reload_on_sighup(tracing.filter_handle());
-    install_prometheus_metrics(PrometheusMetricsConfig::new(
-        "postgres-lakesoul",
-        cli.metrics_addr,
-    ))?;
+    allocator::log_active();
+    if !cli.no_metrics {
+        install_prometheus_metrics(PrometheusMetricsConfig::new(
+            "postgres-lakesoul",
+            cli.metrics_addr,
+        ))?;
+    }
+    cancel::register_query_metrics();
+    jobs::register_metrics();
+    limits::register_limit_metrics();
+    alter::register_metrics();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
+    if cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some() {
+        return subscribe::run(
+            cli.subscribe,
+            Arc::clone(&meta_client),
+            cli.core.warehouse_prefix.clone(),
+        )
+        .await;
+    }
+
+    let program = match std::env::current_exe() {
+        Ok(program) => program,
+        Err(error) => {
+            warn!(%error, "cannot resolve the server binary for subscription children");
+            PathBuf::new()
+        }
+    };
+    let log_dir = cli
+        .subscription_log_dir
+        .clone()
+        .or_else(|| std::env::var_os("LAKESOUL_LOG_DIR").map(PathBuf::from))
+        .unwrap_or_else(|| std::env::temp_dir().join("lakesoul-subscriptions"));
+    let subscriptions = Arc::new(subscribe::supervisor::SubscriptionSupervisor::new(
+        Arc::clone(&meta_client),
+        program,
+        log_dir.clone(),
+    ));
+    info!(log_dir = %log_dir.display(), "subscription supervisor ready");
+    {
+        let metadata = subscriptions.metadata().await;
+        if let Err(error) = metadata.init_schema().await {
+            warn!(%error, "subscription metadata schema is unavailable");
+        }
+    }
+    if let Err(error) = subscriptions.resume_all().await {
+        warn!(%error, "failed to resume subscriptions");
+    }
+
     let auth_manager = Arc::new(AuthManager::new());
     cli.memory.install_vortex_decode_budget()?;
-    let session_factory = PgSessionFactory::new_with_memory(
+    let memory_pool = cli.memory.create_pool();
+    {
+        let pool = Arc::clone(&memory_pool);
+        cli.memory_sampling
+            .spawn(allocator::stats_reader(), move || pool.reserved())?;
+    }
+    let federation = Arc::new(federation::FederationRuntime::new(&meta_client).await?);
+    let session_factory = PgSessionFactory::new_with_memory_pool(
         Arc::clone(&meta_client),
         &cli.core,
         Arc::clone(&auth_manager),
-        &cli.memory,
-    )?;
+        memory_pool,
+    )?
+    .with_subscriptions(Arc::clone(&subscriptions))
+    .with_federation(federation);
     info!(
         version = lakesoul_build_info::VERSION,
         commit = lakesoul_build_info::GIT_COMMIT,
@@ -145,7 +304,9 @@ async fn main_inner(cli: Cli) -> Result<()> {
     if let Some(endpoint) = tracing.otlp_endpoint() {
         info!(endpoint, "OTLP trace exporter enabled");
     }
-    info!(metrics_addr = %cli.metrics_addr, "Prometheus metrics endpoint started");
+    if !cli.no_metrics {
+        info!(metrics_addr = %cli.metrics_addr, "Prometheus metrics endpoint started");
+    }
     // Warm the shared catalog view once: every connection lists from it, so
     // the first one must not pay for the initial metadata load.
     if let Err(err) = session_factory.catalog_snapshot().load().await {
@@ -162,54 +323,232 @@ async fn main_inner(cli: Cli) -> Result<()> {
             options.fallback_to_local, options.bytes_per_partition,
         );
     }
-    let session_factory = match distributed {
+    let session_factory = match distributed.clone() {
         Some(options) => session_factory.with_distributed(options),
         None => session_factory,
     };
 
+    let distributed_enabled = distributed.is_some();
+    if distributed_enabled {
+        info!(
+            "IVM distributed refresh enabled; workers must be built with the \
+             IVM feature and the same protocol generation"
+        );
+    }
+    let template = session_factory.create_template_session()?;
+    let ivm_options = cli.ivm_runtime.options();
     info!(
-        "start serving on {}:{} (max_connections={}, max_queries_per_user={}, max_result_rows={}, max_result_bytes={})",
+        view_parallelism = ivm_options.view_parallelism,
+        max_active_tasks = ?ivm_options.max_active_tasks,
+        max_derived_steps = ivm_options.max_derived_steps,
+        state_index = ?ivm_options.state_index,
+        internal_file_format = ivm_options.internal_file_format.name(),
+        "IVM refresh options"
+    );
+    let mut config = IvmRuntimeConfig::from_session(&template).with_options(ivm_options);
+    if distributed_enabled {
+        config = config.with_session_factory(Arc::new(IvmRefreshSessionFactory::new(
+            session_factory.refresh_session_factory(),
+        )));
+    }
+    let service = IvmService::new(Arc::clone(&meta_client), config).await?;
+    let session_factory = session_factory.with_ivm(Arc::new(service));
+
+    let job_config = jobs::JobConfig {
+        max_jobs: cli.max_jobs,
+        result_max_bytes: cli.job_result_max_mib.saturating_mul(1024 * 1024),
+        result_ttl_ms: (cli.job_result_ttl_hours as i64).saturating_mul(60 * 60 * 1000),
+        record_ttl_ms: (cli.job_record_ttl_hours as i64).saturating_mul(60 * 60 * 1000),
+        ..jobs::JobConfig::default()
+    };
+    if job_config.record_ttl_ms < job_config.result_ttl_ms {
+        warn!(
+            result_ttl_hours = cli.job_result_ttl_hours,
+            record_ttl_hours = cli.job_record_ttl_hours,
+            "job record retention is shorter than result retention; \
+             expired results may be left without a job row"
+        );
+    }
+    let cluster_id = cli
+        .job_cluster_id
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", cli.bind, cli.port));
+    let jobs = jobs::JobService::new(
+        Arc::clone(&meta_client),
+        cli.core.warehouse_prefix.clone(),
+        job_config,
+        cluster_id,
+    )
+    .await?;
+    let session_factory = Arc::new(session_factory.with_jobs(Arc::clone(&jobs)));
+    Arc::new(jobs::JobRunner::new(
+        Arc::clone(&jobs),
+        Arc::clone(&session_factory),
+    ))
+    .spawn();
+
+    info!(
+        "start serving on {}:{} (max_connections={}, max_queries_per_user={}, max_concurrent_queries={}, max_result_rows={}, max_result_bytes={}, max_staged_files_per_transaction={}, max_staged_bytes_per_transaction={}, max_jobs={})",
         cli.bind,
         cli.port,
         cli.max_connections,
         cli.max_queries_per_user,
+        cli.max_concurrent_queries,
         cli.max_result_rows,
-        cli.max_result_bytes
+        cli.max_result_bytes,
+        cli.max_staged_files_per_transaction,
+        cli.max_staged_bytes_per_transaction,
+        cli.max_jobs
     );
 
     let server_opts = ServerOptions::new()
         .with_host(cli.bind.clone())
-        .with_port(cli.port);
+        .with_port(cli.port)
+        .with_tcp_keepalive(tcp_keepalive(&cli));
+    info!(tcp_keepalive = ?server_opts.tcp_keepalive(), "client connection keepalive");
 
-    let limits = ServerLimits::new(Limits {
+    let limits = Limits {
         max_connections: cli.max_connections,
         max_queries_per_user: cli.max_queries_per_user,
+        max_concurrent_queries: cli.max_concurrent_queries,
         max_result_rows: cli.max_result_rows,
         max_result_bytes: cli.max_result_bytes,
-    });
+        max_staged_files_per_transaction: cli.max_staged_files_per_transaction,
+        max_staged_bytes_per_transaction: cli.max_staged_bytes_per_transaction,
+    };
+    if limits.one_user_can_fill_the_server() {
+        warn!(
+            max_queries_per_user = limits.max_queries_per_user,
+            max_concurrent_queries = limits.max_concurrent_queries,
+            "one user can take every server-wide statement slot; set \
+             max_queries_per_user below max_concurrent_queries"
+        );
+    }
+    let limits = ServerLimits::new(limits);
 
-    serve_with_handlers(
-        Arc::new(LakeSoulHandlers::new(Arc::new(session_factory), limits)),
-        &server_opts,
-    )
-    .await?;
+    let handlers = Arc::new(LakeSoulHandlers::new(Arc::clone(&session_factory), limits));
+    let server_result = tokio::select! {
+        result = serve_with_handlers(handlers, &server_opts) => Some(result),
+        _ = shutdown_signal() => None,
+    };
+    // Children are separate processes. Stop them before this supervisor exits;
+    // otherwise a graceful server shutdown would leave them holding
+    // replication slots.
+    subscriptions.stop_all().await;
+    jobs.shutdown().await;
+    if let Some(result) = server_result {
+        result?;
+    }
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            warn!(%error, "failed to install Ctrl-C handler");
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                warn!(%error, "failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let subscriber = cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some();
+    let worker_threads = if subscriber {
+        // The initial snapshot decodes N COPY streams and builds Arrow batches
+        // on the async runtime; the default server thread count would leave
+        // most of the parallelism waiting on two cores.
+        cli.core
+            .worker_threads
+            .max(cli.subscribe.snapshot_parallelism)
+            .max(2)
+    } else {
+        cli.core.worker_threads.max(2)
+    };
     let rt = runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(cli.core.worker_threads.max(2))
+        .worker_threads(worker_threads)
         .thread_name("pg-lakesoul")
         .thread_stack_size(3 * 1024 * 1024) // 3MB
         .build()?;
     rt.block_on(main_inner(cli))?;
     Ok(())
 }
+
+/// The keepalive the CLI asks for on client connections: none when the idle
+/// time is 0; an interval or probe count of 0 leaves that parameter to the
+/// operating system.
+fn tcp_keepalive(cli: &Cli) -> Option<TcpKeepalive> {
+    let nonzero = |secs: u64| (secs > 0).then(|| std::time::Duration::from_secs(secs));
+    Some(TcpKeepalive {
+        idle: nonzero(cli.tcp_keepalive_idle_secs)?,
+        interval: nonzero(cli.tcp_keepalive_interval_secs),
+        retries: (cli.tcp_keepalive_retries > 0).then_some(cli.tcp_keepalive_retries),
+    })
+}
+
 #[cfg(test)]
 mod cli_probe_tests {
     use super::*;
+
+    fn keepalive_for(args: &[&str]) -> Option<TcpKeepalive> {
+        let cli = Cli::try_parse_from(std::iter::once("pg").chain(args.iter().copied()))
+            .expect("parse");
+        tcp_keepalive(&cli)
+    }
+
+    #[test]
+    fn tcp_keepalive_follows_the_cli() {
+        let secs = std::time::Duration::from_secs;
+        assert_eq!(
+            keepalive_for(&[
+                "--tcp-keepalive-idle-secs=60",
+                "--tcp-keepalive-interval-secs=10",
+                "--tcp-keepalive-retries=6",
+            ]),
+            Some(TcpKeepalive {
+                idle: secs(60),
+                interval: Some(secs(10)),
+                retries: Some(6),
+            })
+        );
+        assert_eq!(
+            keepalive_for(&["--tcp-keepalive-idle-secs=0"]),
+            None,
+            "an idle time of 0 leaves keepalive off"
+        );
+        assert_eq!(
+            keepalive_for(&[
+                "--tcp-keepalive-idle-secs=30",
+                "--tcp-keepalive-interval-secs=0",
+                "--tcp-keepalive-retries=0",
+            ]),
+            Some(TcpKeepalive {
+                idle: secs(30),
+                interval: None,
+                retries: None,
+            }),
+            "0 leaves the interval and the probe count to the OS"
+        );
+    }
 
     const PROBE_FILTER: &str = "pg_cli_probe";
     const PROBE_ARGV: &str = "LAKESOUL_PG_CLI_PROBE_ARGV";
@@ -222,6 +561,12 @@ mod cli_probe_tests {
             "port": cli.port,
             "metrics_addr": cli.metrics_addr.to_string(),
             "max_connections": cli.max_connections,
+            "ivm_view_parallelism": cli.ivm_runtime.view_parallelism,
+            "distributed_workers": cli.distributed.distributed_workers,
+            "max_concurrent_queries": cli.max_concurrent_queries,
+            "tcp_keepalive_idle_secs": cli.tcp_keepalive_idle_secs,
+            "tcp_keepalive_interval_secs": cli.tcp_keepalive_interval_secs,
+            "tcp_keepalive_retries": cli.tcp_keepalive_retries,
         })
     }
 
@@ -243,18 +588,26 @@ mod cli_probe_tests {
         assert_eq!(defaults["bind"], "127.0.0.1");
         assert_eq!(defaults["port"], 5432);
         assert_eq!(defaults["max_connections"], 0);
+        assert_eq!(defaults["max_concurrent_queries"], 0);
+        assert_eq!(defaults["tcp_keepalive_idle_secs"], 60);
+        assert_eq!(defaults["tcp_keepalive_interval_secs"], 10);
+        assert_eq!(defaults["tcp_keepalive_retries"], 6);
 
         let via_env = probe(
             &[
                 ("LAKESOUL_PG_BIND", "0.0.0.0"),
                 ("LAKESOUL_PG_PORT", "15432"),
                 ("LAKESOUL_PG_MAX_CONNECTIONS", "64"),
+                ("LAKESOUL_PG_MAX_CONCURRENT_QUERIES", "32"),
+                ("LAKESOUL_PG_TCP_KEEPALIVE_IDLE_SECS", "0"),
             ],
             &[],
         );
         assert_eq!(via_env["bind"], "0.0.0.0");
         assert_eq!(via_env["port"], 15432);
         assert_eq!(via_env["max_connections"], 64);
+        assert_eq!(via_env["max_concurrent_queries"], 32);
+        assert_eq!(via_env["tcp_keepalive_idle_secs"], 0);
 
         // Explicitly passed values that equal the defaults still beat env.
         let via_cli = probe(
@@ -266,6 +619,21 @@ mod cli_probe_tests {
         );
         assert_eq!(via_cli["bind"], "127.0.0.1");
         assert_eq!(via_cli["port"], 5432);
+    }
+
+    #[test]
+    fn ivm_and_distributed_flags_can_be_combined() {
+        let combined = probe(
+            &[],
+            &[
+                "--ivm-view-parallelism",
+                "2",
+                "--distributed-workers",
+                "http://127.0.0.1:50051",
+            ],
+        );
+        assert_eq!(combined["ivm_view_parallelism"], 2);
+        assert_eq!(combined["distributed_workers"][0], "http://127.0.0.1:50051");
     }
 
     /// Runs the probe subprocess with a cleared environment plus `envs`.

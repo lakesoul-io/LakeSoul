@@ -55,7 +55,8 @@ use datafusion::prelude::SessionContext;
 use lakesoul_io::file_format::PhysicalFormat;
 use lakesoul_ivm::{
     IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions, JoinKeyExprs, MultiJoinColumn,
-    Result, lookup_join_view_schema_for, multi_join_mv_schema_for,
+    Result, full_join_view_schema_for, keyed_join_output_primary_keys,
+    left_join_view_schema_for, lookup_join_view_schema_for, multi_join_mv_schema_for,
     multi_join_primary_keys, row_mv_schema_for, sum_count_mv_schema_for,
     top_k_mv_schema_for,
 };
@@ -75,6 +76,8 @@ enum Shape {
     Chain,
     Partitioned,
     Skew,
+    PairLeft,
+    PairFull,
 }
 
 impl Shape {
@@ -88,6 +91,8 @@ impl Shape {
             Shape::Chain => "chain",
             Shape::Partitioned => "partitioned",
             Shape::Skew => "skew",
+            Shape::PairLeft => "pair_left",
+            Shape::PairFull => "pair_full",
         }
     }
 
@@ -101,6 +106,8 @@ impl Shape {
             "chain" => Some(vec![Shape::Chain]),
             "partitioned" => Some(vec![Shape::Partitioned]),
             "skew" => Some(vec![Shape::Skew]),
+            "pair_left" => Some(vec![Shape::PairLeft]),
+            "pair_full" => Some(vec![Shape::PairFull]),
             "both" => Some(vec![Shape::Row, Shape::SumCount]),
             "all" => Some(vec![
                 Shape::Row,
@@ -111,6 +118,8 @@ impl Shape {
                 Shape::Chain,
                 Shape::Partitioned,
                 Shape::Skew,
+                Shape::PairLeft,
+                Shape::PairFull,
             ]),
             _ => None,
         }
@@ -124,7 +133,7 @@ impl Shape {
             | Shape::TopK
             | Shape::Partitioned
             | Shape::Skew => 1,
-            Shape::Lookup | Shape::Chain => 2,
+            Shape::Lookup | Shape::Chain | Shape::PairLeft | Shape::PairFull => 2,
             Shape::MultiJoin => 3,
         }
     }
@@ -185,6 +194,24 @@ impl Shape {
                 "v",
                 "v",
             ),
+            Shape::PairLeft => left_join_view_schema_for(
+                schema,
+                &schemas[1],
+                &["k".to_string()],
+                &["k".to_string()],
+                &["g".to_string()],
+                "v",
+                "v",
+            ),
+            Shape::PairFull => full_join_view_schema_for(
+                schema,
+                &schemas[1],
+                &["k".to_string()],
+                &["k".to_string()],
+                &["g".to_string()],
+                "v",
+                "v",
+            ),
             Shape::MultiJoin => multi_join_mv_schema_for(
                 schemas,
                 &vec![vec!["k".to_string()]; 3],
@@ -210,6 +237,9 @@ impl Shape {
                 vec!["g".to_string()]
             }
             Shape::MultiJoin => multi_join_primary_keys(&vec![vec!["k".to_string()]; 3]),
+            Shape::PairLeft | Shape::PairFull => {
+                keyed_join_output_primary_keys(&["k".to_string()], &["k".to_string()])
+            }
         }
     }
 
@@ -258,6 +288,14 @@ impl Shape {
                  JOIN {} b ON a.k = b.k JOIN {} c ON b.k = c.k",
                 names[0], names[1], names[2]
             ),
+            Shape::PairLeft => format!(
+                "SELECT a.g, a.v, b.v AS bv FROM {} a LEFT JOIN {} b ON b.g = a.g",
+                names[0], names[1]
+            ),
+            Shape::PairFull => format!(
+                "SELECT a.g, a.v, b.v AS bv FROM {} a FULL JOIN {} b ON b.g = a.g",
+                names[0], names[1]
+            ),
             Shape::TopK => format!(
                 "SELECT k, g, v FROM (SELECT k, g, v, \
                  row_number() OVER (PARTITION BY g ORDER BY v DESC) AS rn \
@@ -274,6 +312,9 @@ impl Shape {
             Shape::SumCount | Shape::Partitioned | Shape::Skew => "g, sum_v, count_v",
             Shape::Lookup | Shape::Chain => "k, left_value, right_value",
             Shape::MultiJoin => "k, ag, bv, cv, \"__pk0_k\", \"__pk1_k\", \"__pk2_k\"",
+            Shape::PairLeft | Shape::PairFull => {
+                "g, left_value, right_value, \"__left_pk_k\", \"__right_pk_k\""
+            }
         }
     }
 }
@@ -508,6 +549,7 @@ ivm_bench: incremental refresh vs a full recompute of the same statement
 Usage: ivm_bench [OPTIONS]
 
   --shape <SHAPE>               row | sum_count | lookup | multi_join | top_k |
+                                chain | partitioned | skew | pair_left | pair_full |
                                 both (row+sum_count) | all (default both)
   --rows <N>                    fact rows to seed (default 100000)
   --change-ratio <F>            changed fraction per round (default 0.01)
@@ -969,7 +1011,7 @@ async fn drop_table(runtime: &IvmRuntime, table: &IvmTable) {
 
 /// The number of rows seeded into one source of a shape.
 fn seed_rows(shape: Shape, source: usize, args: &Args) -> usize {
-    if shape == Shape::Lookup && source == 1 {
+    if matches!(shape, Shape::Lookup | Shape::PairLeft | Shape::PairFull) && source == 1 {
         args.dim_rows()
     } else {
         args.rows
@@ -1092,12 +1134,16 @@ async fn verify_views(
     let context = SessionContext::new();
     let incremental_rows = read_visible(runtime, &context, incremental, shape).await?;
     let full_rows = read_visible(runtime, &context, full, shape).await?;
-    assert_eq!(
-        incremental_rows,
-        full_rows,
-        "{}: the incremental and full views differ",
-        shape.name()
-    );
+    if incremental_rows != full_rows {
+        let missing = full_rows.iter().find(|row| !incremental_rows.contains(row));
+        let extra = incremental_rows.iter().find(|row| !full_rows.contains(row));
+        panic!(
+            "{}: the incremental and full views differ (incr={} full={} missing={missing:?} extra={extra:?})",
+            shape.name(),
+            incremental_rows.len(),
+            full_rows.len()
+        );
+    }
     Ok(())
 }
 

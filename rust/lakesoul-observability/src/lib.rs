@@ -12,8 +12,10 @@ use std::net::SocketAddr;
 use metrics::{describe_gauge, gauge};
 use metrics_exporter_prometheus::{BuildError, Matcher, PrometheusBuilder};
 
+pub mod memory;
 pub mod tracing;
 
+pub use memory::{AllocatorStats, MemorySamplingArgs};
 pub use tracing::{
     FilterReloadHandle, LogFormat, TracingConfig, TracingGuard, TracingInitError,
     init_tracing, spawn_reload_on_sighup,

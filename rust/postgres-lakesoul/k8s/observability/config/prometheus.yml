@@ -2,10 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# Scrapes the /metrics endpoint of every LakeSoul Pod in this namespace and
-# receives the span metrics / service graphs Tempo's metrics generator
-# remote-writes (see docker/observability/prometheus/prometheus.yml for the
-# host-network equivalent).
+# Scrapes the /metrics endpoint of every LakeSoul Pod in this namespace, the
+# container state of those Pods (kubelet cAdvisor, the overlay's own
+# kube-state-metrics), and receives the span metrics / service graphs Tempo's
+# metrics generator remote-writes (see
+# docker/observability/prometheus/prometheus.yml for the host-network
+# equivalent).
 
 global:
   scrape_interval: 15s
@@ -39,3 +41,47 @@ scrape_configs:
       # label, which the dashboard filters on.
       - source_labels: [__meta_kubernetes_pod_container_name]
         target_label: role
+
+  # Container memory and CPU throttling the processes cannot report
+  # themselves, from every kubelet's cAdvisor. Node discovery and the kubelet's
+  # nodes/metrics authorization need the ClusterRole in rbac.yaml. Kubelet
+  # serving certificates are commonly self-signed, hence the skipped
+  # verification (the token still authenticates Prometheus to the kubelet).
+  - job_name: kubelet-cadvisor
+    scheme: https
+    metrics_path: /metrics/cadvisor
+    authorization:
+      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      insecure_skip_verify: true
+    kubernetes_sd_configs:
+      # Targets each node's InternalIP on its kubelet port (10250).
+      - role: node
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_node_name]
+        target_label: node
+    # A kubelet reports every container on its node: keep only the LakeSoul
+    # containers' series the dashboard reads.
+    metric_relabel_configs:
+      - source_labels: [__name__, namespace, container]
+        regex: (container_memory_rss|container_memory_working_set_bytes|container_spec_memory_limit_bytes|container_cpu_cfs_periods_total|container_cpu_cfs_throttled_periods_total);lakesoul;(postgres-lakesoul|lakesoul-worker)
+        action: keep
+
+  # Restarts and termination reasons (OOMKilled) of this namespace's
+  # containers, from the overlay's namespaced kube-state-metrics.
+  - job_name: kube-state-metrics
+    # The exported namespace/pod/container labels describe the observed Pod,
+    # not kube-state-metrics' own: keep them.
+    honor_labels: true
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          own_namespace: true
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        regex: kube-state-metrics
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_container_port_name]
+        regex: http-metrics
+        action: keep

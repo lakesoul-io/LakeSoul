@@ -2,9 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# The base plus Grafana, Prometheus and Tempo, with OTLP trace export turned on
-# in the coordinator and workers. `kubectl apply -k` this directory instead of
-# ../base; the base alone keeps running without any of it.
+# The base plus Grafana, Prometheus, Tempo and a namespaced kube-state-metrics,
+# with OTLP trace export turned on in the coordinator and workers.
+# `kubectl apply -k` this directory instead of ../base; the base alone keeps
+# running without any of it.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: lakesoul
@@ -16,6 +17,7 @@ resources:
   - rbac.yaml
   - tempo.yaml
   - prometheus.yaml
+  - kube-state-metrics.yaml
   - grafana.yaml
 configMapGenerator:
   - name: lakesoul-tempo-config
@@ -37,3 +39,5 @@ images:
     newName: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/prometheus
   - name: grafana/tempo
     newName: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/tempo
+  - name: registry.k8s.io/kube-state-metrics/kube-state-metrics
+    newName: swr.cn-southwest-2.myhuaweicloud.com/dmetasoul-repo/kube-state-metrics

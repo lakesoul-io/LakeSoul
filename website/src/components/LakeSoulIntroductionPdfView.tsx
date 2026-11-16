@@ -16,7 +16,7 @@ const LakeSoulIntroPdfViewer = () => {
     }
 
     return (
-        <Worker workerUrl="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.js">
+        <Worker workerUrl="https://unpkg.com/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs">
             <div
                 style={{
                     height: '750px',

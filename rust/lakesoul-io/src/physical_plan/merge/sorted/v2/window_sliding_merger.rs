@@ -18,6 +18,7 @@ use crate::stream::merge_memory::{MergeMemory, merge_error, send_batch};
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use datafusion_common::DataFusionError;
+use datafusion_execution::memory_pool::MemoryReservation;
 use datafusion_execution::{RecordBatchStream, SendableRecordBatchStream};
 use futures::stream::{FuturesUnordered, Peekable};
 use futures::{Stream, StreamExt};
@@ -57,7 +58,14 @@ pub struct WindowSlidingMerger<C: CursorValues> {
     ranges: HashMap<usize, BatchRange<C>, BuildNoHashHasher<usize>>,
 
     column_mapping: Arc<ColumnMapping>,
+
     buffer_ledger: Option<MergeMemory>,
+
+    /// The merge's plan-level memory consumer. It reserves nothing by itself,
+    /// but it must stay registered while the merge is open so memory accounting
+    /// and the one-merge-per-lane guard see this merge; the task owns it until
+    /// the stream is dropped.
+    merge_reservation: Option<MemoryReservation>,
 }
 
 impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
@@ -120,11 +128,20 @@ impl<C: CursorValues + Send + Sync + 'static> WindowSlidingMerger<C> {
             ),
             column_mapping,
             buffer_ledger: None,
+            merge_reservation: None,
         })
     }
 
     pub(crate) fn with_buffer_ledger(mut self, ledger: MergeMemory) -> Self {
         self.buffer_ledger = Some(ledger);
+        self
+    }
+
+    pub(crate) fn with_merge_reservation(
+        mut self,
+        reservation: MemoryReservation,
+    ) -> Self {
+        self.merge_reservation = Some(reservation);
         self
     }
 

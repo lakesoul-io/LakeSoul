@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-coordinator
+  namespace: lakesoul
+spec:
+  template:
+    spec:
+      # The sampler reads the LakeSoul process' /proc entry and, through
+      # /proc/<pid>/root, its container cgroup.
+      shareProcessNamespace: true
+      containers:
+        - name: sampler
+          image: lakesoul-bench:dev
+          imagePullPolicy: Always
+          command: ["/bin/sh", "/sampler/sampler.sh"]
+          env:
+            - name: SAMPLER_TARGET
+              value: postgres-lakesoul
+            - name: SAMPLER_INTERVAL
+              value: "1"
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          volumeMounts:
+            - name: sampler-script
+              mountPath: /sampler
+      volumes:
+        - name: sampler-script
+          configMap:
+            name: lakesoul-bench-sampler
+            defaultMode: 0555
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-worker
+  namespace: lakesoul
+spec:
+  template:
+    spec:
+      # The sampler reads the LakeSoul process' /proc entry and, through
+      # /proc/<pid>/root, its container cgroup.
+      shareProcessNamespace: true
+      containers:
+        - name: sampler
+          image: lakesoul-bench:dev
+          imagePullPolicy: Always
+          command: ["/bin/sh", "/sampler/sampler.sh"]
+          env:
+            - name: SAMPLER_TARGET
+              value: lakesoul-worker
+            - name: SAMPLER_INTERVAL
+              value: "1"
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          volumeMounts:
+            - name: sampler-script
+              mountPath: /sampler
+      volumes:
+        - name: sampler-script
+          configMap:
+            name: lakesoul-bench-sampler
+            defaultMode: 0555

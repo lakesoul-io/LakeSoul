@@ -326,6 +326,28 @@ async fn lookup_join_refreshes_both_sides() {
         full_lookup_rows(runtime, left, right).await
     );
 
+    // The side state uses the natural join key as its bucket and primary-key
+    // prefix instead of a hidden binary key.
+    let states = runtime.list_states(&view.view_id).await.unwrap();
+    let state = states
+        .iter()
+        .find(|state| state.role == StateRole::JoinLeft)
+        .unwrap();
+    let state_table = runtime.open_table_by_id(&state.table_id).await.unwrap();
+    assert!(
+        state_table
+            .schema
+            .field_with_name("__ivm_join_key")
+            .is_err(),
+        "{:?}",
+        state_table.schema
+    );
+    assert_eq!(
+        state_table.primary_keys,
+        vec!["jk".to_string(), "id".to_string()]
+    );
+    assert_eq!(state_table.bucket_columns, vec!["jk".to_string()]);
+
     // A left-only payload update for a key with no right row must keep the
     // NULL-padded left row: the keyed right lookup emits an unmatched row and
     // the refresh must not filter it as a CDC tombstone.

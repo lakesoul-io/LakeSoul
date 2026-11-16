@@ -21,7 +21,10 @@ pub struct ChainPolicy {
     /// The delay between two attempts.
     pub retry_backoff: Duration,
     /// Rebuild a view whose incremental refresh kept failing.  A view marked
-    /// dirty is always rebuilt: its incremental state is not trusted.
+    /// dirty is always rebuilt: its incremental state is not trusted.  A
+    /// window that explicitly requires a rebuild (dropped partition, missing
+    /// snapshot history) is rebuilt regardless of this flag; a transient
+    /// error is not, so it does not turn into an expensive full rebuild.
     pub rebuild_on_failure: bool,
 }
 
@@ -30,7 +33,7 @@ impl Default for ChainPolicy {
         Self {
             retries: 1,
             retry_backoff: Duration::from_millis(50),
-            rebuild_on_failure: true,
+            rebuild_on_failure: false,
         }
     }
 }
@@ -201,13 +204,10 @@ fn topological_order(
 ///
 /// One keeps the historical sequential order.  Values above one run views of
 /// the same dependency level concurrently; the shared DataFusion pool and the
-/// metadata client still bound the real resource usage.
+/// metadata client still bound the real resource usage.  The value comes from
+/// [`IvmOptions::view_parallelism`](crate::config::IvmOptions::view_parallelism).
 fn view_parallelism() -> usize {
-    std::env::var("LAKESOUL_IVM_VIEW_PARALLELISM")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(1)
-        .max(1)
+    crate::config::options().view_parallelism.max(1)
 }
 
 impl IvmRuntime {
@@ -235,6 +235,11 @@ impl IvmRuntime {
 
     /// Refresh every view reachable from the roots in one traversal,
     /// upstream first.  A diamond's shared upstream is refreshed once.
+    ///
+    /// The chain scheduler always runs on the coordinator, even when a single
+    /// view's refresh uses distributed workers: a downstream level starts only
+    /// after every upstream view in the previous level has committed its epoch.
+    /// Retry, rebuild and dirty self-heal therefore stay coordinator-side.
     pub async fn refresh_view_chains(
         &self,
         view_ids: &[String],
@@ -305,6 +310,7 @@ impl IvmRuntime {
         let dirty = metadata.view_status(view_id).await?.as_deref() == Some("dirty");
         let mut refreshed = None;
         let mut failure = None;
+        let mut requires_rebuild = false;
         if !dirty {
             for attempt in 0..=policy.retries {
                 match self.refresh_spec(spec).await {
@@ -320,9 +326,10 @@ impl IvmRuntime {
                     Err(error) => {
                         // A dropped partition or a source window that needs a
                         // snapshot needs the rebuild, not a retry.
-                        let dropped = IvmRuntime::rebuild_required(&error);
+                        let rebuild = IvmRuntime::rebuild_required(&error);
+                        requires_rebuild |= rebuild;
                         failure = Some(error);
-                        if dropped {
+                        if rebuild {
                             break;
                         }
                         if attempt < policy.retries && !policy.retry_backoff.is_zero() {
@@ -332,7 +339,8 @@ impl IvmRuntime {
                 }
             }
         }
-        if refreshed.is_none() && (dirty || policy.rebuild_on_failure) {
+        if refreshed.is_none() && (dirty || requires_rebuild || policy.rebuild_on_failure)
+        {
             match self.rebuild_spec(spec).await {
                 Ok(epoch) => refreshed = Some((Some(epoch), RefreshAction::Rebuilt)),
                 Err(rebuild_error) => {
@@ -354,15 +362,16 @@ impl IvmRuntime {
         }
         let Some((epoch, action)) = refreshed else {
             let error = failure.expect("a failed incremental refresh was recorded");
-            metadata.set_view_status(view_id, "dirty").await?;
+            // A transient failure keeps the view's state; the next chain run
+            // retries incrementally instead of rebuilding from scratch.
             let message = format!("view chain: {view_id} failed to refresh ({error})");
             metadata.set_view_error(view_id, Some(&message)).await?;
             return Err(report!("{message}"));
         };
-        if dirty || action == RefreshAction::Rebuilt || failure.is_some() {
-            metadata.set_view_status(view_id, "active").await?;
-            metadata.set_view_error(view_id, None).await?;
-        }
+        // A successful refresh clears a previous error, including one recorded
+        // by an earlier failure that did not mark the view dirty.
+        metadata.set_view_status(view_id, "active").await?;
+        metadata.set_view_error(view_id, None).await?;
         Ok(ViewRefresh {
             view_id: view_id.to_string(),
             epoch,

@@ -238,6 +238,8 @@ impl NativeSession {
                     fallback_to_local,
                     target_partitions: distributed_partitions,
                     bytes_per_partition,
+                    // Python options do not expose task placement yet.
+                    ..DistributedOptions::default()
                 });
             }
             if let Some(options) = config.get_item("vector_search")? {

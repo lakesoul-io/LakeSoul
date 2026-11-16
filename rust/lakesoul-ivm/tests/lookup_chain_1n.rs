@@ -14,8 +14,8 @@ use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions, JoinKeyExprs,
-    LookupChainColumn, LookupChainStep, lookup_chain_mv_schema_for,
+    IvmExecutionAction, IvmRuntime, IvmSqlExecutor, IvmTable, IvmTableOptions,
+    JoinKeyExprs, LookupChainColumn, LookupChainStep, lookup_chain_mv_schema_for,
     lookup_chain_step_id_column,
 };
 use tempfile::tempdir;
@@ -646,4 +646,268 @@ async fn base_keyed_unique_chain_refreshes_dimensions_incrementally() {
         .await
         .unwrap();
     assert_eq!(read_rows(executor.runtime(), &mv).await, incremental);
+}
+
+type StarRow = (i64, i64, Option<i64>, Option<i64>);
+
+/// The logical `(k, v, bv, cv)` rows of a two-step star chain.
+async fn read_star_rows(runtime: &IvmRuntime, mv: &IvmTable) -> Vec<StarRow> {
+    let context = SessionContext::new();
+    context
+        .register_table("mv", Arc::new(runtime.table_provider(mv)))
+        .unwrap();
+    let batches = context
+        .sql("select k, v, bv, cv from mv order by k, bv")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let mut rows = Vec::new();
+    for batch in &batches {
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let values = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let bv = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let cv = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            rows.push((
+                ids.value(row),
+                values.value(row),
+                (!bv.is_null(row)).then(|| bv.value(row)),
+                (!cv.is_null(row)).then(|| cv.value(row)),
+            ));
+        }
+    }
+    rows.sort_unstable();
+    rows
+}
+
+/// A 1:N step whose key is a base column refreshes a changed dimension
+/// incrementally: the per-step base-key index fans one changed dimension key
+/// out to every matching base row instead of rebuilding the whole chain.
+#[test_log::test(tokio::test)]
+async fn one_to_many_star_dimension_refresh_is_incremental() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let base = create_source(&runtime, &dir, &format!("ivm_star_base_{suffix}")).await;
+    let dim = create_source(&runtime, &dir, &format!("ivm_star_dim_{suffix}")).await;
+    let lookup =
+        create_source(&runtime, &dir, &format!("ivm_star_lookup_{suffix}")).await;
+
+    // Step 1 is a 1:N dimension keyed by the base column `g`; step 2 is a
+    // unique lookup keyed by the base primary key `k`.  Both keys come from
+    // the base, so the chain has a per-step base-key index.
+    let steps = vec![
+        LookupChainStep {
+            source: 1,
+            left: true,
+            keys: vec!["g".to_string()],
+            right_keys: vec!["g".to_string()],
+            key_sources: Vec::new(),
+            unique: false,
+            key_exprs: JoinKeyExprs::default(),
+        },
+        LookupChainStep {
+            source: 2,
+            left: true,
+            keys: vec!["k".to_string()],
+            right_keys: vec!["k".to_string()],
+            key_sources: Vec::new(),
+            unique: true,
+            key_exprs: JoinKeyExprs::default(),
+        },
+    ];
+    let columns = vec![
+        LookupChainColumn {
+            source: 0,
+            column: "k".to_string(),
+            name: "k".to_string(),
+        },
+        LookupChainColumn {
+            source: 0,
+            column: "v".to_string(),
+            name: "v".to_string(),
+        },
+        LookupChainColumn {
+            source: 1,
+            column: "v".to_string(),
+            name: "bv".to_string(),
+        },
+        LookupChainColumn {
+            source: 2,
+            column: "v".to_string(),
+            name: "cv".to_string(),
+        },
+    ];
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_star_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                lookup_chain_mv_schema_for(
+                    &[
+                        base.schema.clone(),
+                        dim.schema.clone(),
+                        lookup.schema.clone(),
+                    ],
+                    &steps,
+                    &columns,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["k".to_string(), lookup_chain_step_id_column(1)]),
+        )
+        .await
+        .unwrap();
+
+    base.append_batch(
+        runtime.client(),
+        source_batch(&[
+            (1, "x", 10, "insert"),
+            (2, "x", 20, "insert"),
+            (3, "y", 30, "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    dim.append_batch(
+        runtime.client(),
+        source_batch(&[
+            (100, "x", 1, "insert"),
+            (101, "x", 2, "insert"),
+            (102, "y", 3, "insert"),
+        ]),
+    )
+    .await
+    .unwrap();
+    lookup
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, "x", 1000, "insert"),
+                (2, "x", 1001, "insert"),
+                (3, "y", 1002, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+
+    let executor = IvmSqlExecutor::new(runtime);
+    let statement = format!(
+        "INSERT INTO ivm_star_mv_{suffix}          SELECT a.k, a.v, b.v AS bv, c.v AS cv          FROM ivm_star_base_{suffix} a          LEFT JOIN ivm_star_dim_{suffix} b ON b.g = a.g          LEFT JOIN ivm_star_lookup_{suffix} c ON c.k = a.k"
+    );
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action, IvmExecutionAction::Bootstrap);
+    assert_eq!(
+        read_star_rows(executor.runtime(), &mv).await,
+        vec![
+            (1, 10, Some(1), Some(1000)),
+            (1, 10, Some(2), Some(1000)),
+            (2, 20, Some(1), Some(1001)),
+            (2, 20, Some(2), Some(1001)),
+            (3, 30, Some(3), Some(1002)),
+        ]
+    );
+
+    // A dimension value update affects every base row with `g = x`, and the
+    // refresh stays incremental (the index is built lazily from the base).
+    dim.append_batch(
+        executor.runtime().client(),
+        source_batch(&[(100, "x", 10, "update")]),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action, IvmExecutionAction::Incremental);
+    let states = executor
+        .runtime()
+        .metadata()
+        .list_states(&mv.table_id)
+        .await
+        .unwrap();
+    assert!(
+        states
+            .iter()
+            .any(|state| state.role == lakesoul_ivm::StateRole::LookupChainIndex(1)),
+        "the 1:N dimension change should create the base-key index"
+    );
+    assert_eq!(
+        read_star_rows(executor.runtime(), &mv).await,
+        vec![
+            (1, 10, Some(2), Some(1000)),
+            (1, 10, Some(10), Some(1000)),
+            (2, 20, Some(2), Some(1001)),
+            (2, 20, Some(10), Some(1001)),
+            (3, 30, Some(3), Some(1002)),
+        ]
+    );
+
+    // A new dimension row for `y` adds a match only for the `y` base row.
+    dim.append_batch(
+        executor.runtime().client(),
+        source_batch(&[(103, "y", 4, "insert")]),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action, IvmExecutionAction::Incremental);
+    assert_eq!(
+        read_star_rows(executor.runtime(), &mv).await,
+        vec![
+            (1, 10, Some(2), Some(1000)),
+            (1, 10, Some(10), Some(1000)),
+            (2, 20, Some(2), Some(1001)),
+            (2, 20, Some(10), Some(1001)),
+            (3, 30, Some(3), Some(1002)),
+            (3, 30, Some(4), Some(1002)),
+        ]
+    );
+
+    // Moving a dimension row's join key retracts it from `x` and adds it to
+    // `y`: both groups must be replayed.
+    dim.append_batch(
+        executor.runtime().client(),
+        source_batch(&[(101, "x", 2, "delete"), (101, "y", 20, "insert")]),
+    )
+    .await
+    .unwrap();
+    let execution = executor.execute(&statement).await.unwrap();
+    assert_eq!(execution.action, IvmExecutionAction::Incremental);
+    let incremental = read_star_rows(executor.runtime(), &mv).await;
+    assert_eq!(
+        incremental,
+        vec![
+            (1, 10, Some(10), Some(1000)),
+            (2, 20, Some(10), Some(1001)),
+            (3, 30, Some(3), Some(1002)),
+            (3, 30, Some(4), Some(1002)),
+            (3, 30, Some(20), Some(1002)),
+        ]
+    );
+
+    executor
+        .execute(&format!(
+            "INSERT OVERWRITE ivm_star_mv_{suffix}              SELECT a.k, a.v, b.v AS bv, c.v AS cv              FROM ivm_star_base_{suffix} a              LEFT JOIN ivm_star_dim_{suffix} b ON b.g = a.g              LEFT JOIN ivm_star_lookup_{suffix} c ON c.k = a.k"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(read_star_rows(executor.runtime(), &mv).await, incremental);
 }

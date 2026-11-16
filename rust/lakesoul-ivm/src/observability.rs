@@ -29,6 +29,8 @@ const REFRESH_ROWS_SCANNED: &str = "lakesoul_ivm_refresh_rows_scanned";
 const MV_ROWS_WRITTEN: &str = "lakesoul_ivm_mv_rows_written";
 const MV_BYTES_WRITTEN: &str = "lakesoul_ivm_mv_bytes_written";
 const REFRESH_FULL_SCANS: &str = "lakesoul_ivm_refresh_full_scans";
+const VIEW_SOURCE_LAG: &str = "lakesoul_ivm_view_source_lag_seconds";
+const VIEW_LAST_REFRESH_FAILED: &str = "lakesoul_ivm_view_last_refresh_failed";
 
 static DESCRIBE_METRICS: Once = Once::new();
 
@@ -101,6 +103,15 @@ fn describe_metrics() {
             REFRESH_FULL_SCANS,
             "Full table reads performed by one view refresh, by view kind"
         );
+        metrics::describe_gauge!(
+            VIEW_SOURCE_LAG,
+            metrics::Unit::Seconds,
+            "Largest source commit-time gap seen at the last view check, by view kind"
+        );
+        metrics::describe_gauge!(
+            VIEW_LAST_REFRESH_FAILED,
+            "Whether the last view refresh attempt failed (1) or succeeded (0), by view kind"
+        );
     });
 }
 
@@ -160,6 +171,19 @@ pub(crate) fn record_rebuild(kind: &str, duration: Duration) {
     metrics::histogram!(REBUILD_DURATION, "kind" => kind.to_string())
         .record(duration.as_secs_f64());
     metrics::counter!(EPOCHS_TOTAL, "kind" => kind.to_string()).increment(1);
+}
+
+/// The freshness signal of the last refresh attempt.  The gauge is keyed by
+/// view kind only (never a view id), so it reports the most recently attempted
+/// view of that kind; per-view values come from `IvmMetadata::list_views`.
+pub(crate) fn record_view_health(kind: &str, source_lag_ms: Option<i64>, success: bool) {
+    describe_metrics();
+    metrics::gauge!(VIEW_LAST_REFRESH_FAILED, "kind" => kind.to_string())
+        .set(if success { 0.0 } else { 1.0 });
+    if let Some(lag_ms) = source_lag_ms {
+        metrics::gauge!(VIEW_SOURCE_LAG, "kind" => kind.to_string())
+            .set(lag_ms as f64 / 1000.0);
+    }
 }
 
 /// The IO one refresh consumed, attributed to its task.

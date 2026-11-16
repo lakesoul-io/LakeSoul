@@ -49,12 +49,10 @@ use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire;
 use lakesoul_datafusion::udf::vector_search_marker::LakeSoulVectorSearchConfig;
 use pgwire::api::ClientInfo;
-use pgwire::api::Type;
-use pgwire::api::results::{
-    DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag,
-};
+use pgwire::api::results::{Response, Tag};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
-use pgwire::messages::data::DataRow;
+
+use crate::session_settings::{show_response, text_column_plan};
 
 /// Install the operand-normalizing planner.
 ///
@@ -346,12 +344,7 @@ impl VectorProbesHook {
         variable: &[Ident],
         session_context: &SessionContext,
     ) -> Option<PgWireResult<Response>> {
-        let name = variable
-            .iter()
-            .map(|ident| ident.value.to_lowercase())
-            .collect::<Vec<_>>()
-            .join(".");
-        if name != PROBES_VARIABLE {
+        if !is_probes_variable(variable) {
             return None;
         }
         let probes = session_context
@@ -364,6 +357,16 @@ impl VectorProbesHook {
             .unwrap_or(64);
         Some(show_response(PROBES_VARIABLE, &probes.to_string()))
     }
+}
+
+/// True for `SHOW ivfflat.probes`, whatever case the client typed.
+fn is_probes_variable(variable: &[Ident]) -> bool {
+    variable
+        .iter()
+        .map(|ident| ident.value.to_lowercase())
+        .collect::<Vec<_>>()
+        .join(".")
+        == PROBES_VARIABLE
 }
 
 #[async_trait]
@@ -385,13 +388,23 @@ impl QueryHook for VectorProbesHook {
 
     async fn handle_extended_parse_query(
         &self,
-        _statement: &Statement,
+        statement: &Statement,
         _session_context: &SessionContext,
         _client: &(dyn ClientInfo + Send + Sync),
     ) -> Option<PgWireResult<LogicalPlan>> {
-        // The upstream `SetShowHook` plans SET/SHOW as placeholder plans; the
-        // response is rendered in `handle_extended_query`.
-        None
+        match statement {
+            // The upstream `SetShowHook` plans `SET` as a placeholder; the
+            // assignment is applied in `handle_extended_query`.
+            Statement::Set(_) => None,
+            // `Describe` reports the schema of the parsed plan, so the `SHOW`
+            // this hook answers must carry its own column here: the upstream
+            // placeholder describes a generic `show`/`TEXT` column while the
+            // response carries `ivfflat.probes`.
+            Statement::ShowVariable { variable } => {
+                is_probes_variable(variable).then(|| text_column_plan(PROBES_VARIABLE))
+            }
+            _ => None,
+        }
     }
 
     async fn handle_extended_query(
@@ -420,24 +433,5 @@ fn invalid_probes(value: &str) -> PgWireError {
             "value \"{value}\" for parameter \"{PROBES_VARIABLE}\" is not \
              valid (expects {PROBES_MIN}..{PROBES_MAX})"
         ),
-    )))
-}
-
-/// A one-cell text response, the shape `SHOW` uses.
-fn show_response(name: &str, value: &str) -> PgWireResult<Response> {
-    let fields = vec![FieldInfo::new(
-        name.to_string(),
-        None,
-        None,
-        Type::VARCHAR,
-        FieldFormat::Text,
-    )];
-    let mut encoder = DataRowEncoder::new(Arc::new(fields.clone()));
-    encoder.encode_field(&Some(value))?;
-    let row: PgWireResult<DataRow> = Ok(encoder.take_row());
-    let stream = futures::stream::once(async move { row });
-    Ok(Response::Query(QueryResponse::new(
-        Arc::new(fields),
-        Box::pin(stream),
     )))
 }

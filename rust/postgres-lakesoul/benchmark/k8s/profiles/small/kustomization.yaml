@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# Profile `small`: 2 cores / 2 GiB per Pod. Memory request = limit; CPU request 1 (the shared nodes have <2 cores of unrequested CPU).
+# Applied to the coordinator and to every worker.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - path: resources.yaml

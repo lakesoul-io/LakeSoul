@@ -72,7 +72,7 @@ async fn read_lease_preserves_generation_and_survives_drop_for_worker() {
         catalog.has_live_read_leases(&prefix).await.unwrap(),
         "shard deletion must not cascade read leases"
     );
-    let pool = catalog.core.client.read().await.primary_only();
+    let pool = catalog.core.client.lock().await.primary_only();
     let row = pool
         .query_opt(
             "select data_files from index_read_lease where lease_id = $1",
@@ -138,7 +138,7 @@ async fn read_lease_acquisition_waits_for_drop_lock_and_rejects_tombstone() {
         )
         .await
         .unwrap();
-    let client = catalog.core.client.read().await.primary_only();
+    let client = catalog.core.client.lock().await.primary_only();
     let mut conn = client.get(QueryType::RW).await.unwrap();
     let tx = conn
         .build_transaction()
@@ -206,7 +206,7 @@ async fn read_lease_renews_cancels_on_pin_loss_and_releases_on_drop() {
         catalog.has_live_read_leases(&prefix).await.unwrap(),
         "renewal must outlive the original TTL"
     );
-    let client = catalog.core.client.read().await.primary_only();
+    let client = catalog.core.client.lock().await.primary_only();
     client
         .execute(
             "delete from index_read_lease where lease_id = $1",
@@ -268,7 +268,7 @@ async fn read_lease_expired_rows_cannot_be_renewed_or_inherited() {
         .acquire_pinned_read_views(&pins, "expired-test")
         .await
         .unwrap();
-    let client = catalog.core.client.read().await.primary_only();
+    let client = catalog.core.client.lock().await.primary_only();
     client.execute("update index_read_lease set expires_at = clock_timestamp() - interval '1 second' where lease_id = $1", QueryType::RW, &[&guard.lease_id]).await.unwrap();
     assert!(
         renew_read_lease(&client, guard.lease_id, 1, INDEX_READ_LEASE_TTL)
@@ -361,7 +361,7 @@ async fn read_lease_multi_shard_acquisition_is_all_or_nothing() {
         &owner,
     ).await;
     assert!(matches!(result, Err(LakeSoulMetaDataError::CommitConflict(_))));
-    let pool = catalog.core.client.read().await.primary_only();
+    let pool = catalog.core.client.lock().await.primary_only();
     let row = pool.query_opt("select count(*) from index_read_lease where owner = $1", QueryType::RW, &[&owner]).await.unwrap().unwrap();
     assert_eq!(row.get::<_, i64>(0), 0);
     catalog.delete_shard(&prefix).await.unwrap();
@@ -386,7 +386,7 @@ async fn read_lease_snapshot_anchor_and_retirement_fences() {
     let empty_worker = catalog.acquire_protected_read_views(&[], empty_lease.lease_id, "empty-worker").await.unwrap();
     empty_lease.release().await.unwrap();
     empty_worker.release().await.unwrap();
-    let pool = catalog.core.client.read().await.primary_only();
+    let pool = catalog.core.client.lock().await.primary_only();
     let shard_id = ensure_shard(&pool, IndexKind::Vector, &prefix).await.unwrap();
     write_snapshot_revision(&client, &table.table_id, shard_id, 1).await;
     let first = client.vector_batch_metadata(&table.table_id).await.unwrap().unwrap();
@@ -427,7 +427,7 @@ async fn write_snapshot_revision(
     shard_id: i64,
     revision: i32,
 ) {
-    let pool = client.pooled_client().read().await.primary_only();
+    let pool = client.pooled_client().lock().await.primary_only();
     let mut conn = pool.get(QueryType::RW).await.unwrap();
     let tx = conn.transaction().await.unwrap();
     let properties =
@@ -485,7 +485,7 @@ async fn read_lease_vector_batch_metadata_is_one_coherent_primary_snapshot() {
         ..Default::default()
     };
     client.create_table(table.clone()).await.unwrap();
-    let pool = catalog.core.client.read().await.primary_only();
+    let pool = catalog.core.client.lock().await.primary_only();
     let shard_id = ensure_shard(&pool, IndexKind::Vector, &prefix)
         .await
         .unwrap();

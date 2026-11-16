@@ -634,6 +634,243 @@
       }
     },
     {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Memory: container RSS, process, allocator and execution pool",
+      "description": "Container RSS, working set and limit (kubelet cAdvisor); the process's own RSS and anonymous RSS (/proc/self/status) and jemalloc's resident, active and allocated bytes, set together by the in-process memory sampler (lakesoul_process_*, lakesoul_jemalloc_*; --memory-sample-interval-ms, 1 s by default); and the DataFusion pool's reservation and limit (lakesoul_memory_pool_*). RssAnon minus jemalloc resident is a lower bound on anonymous memory outside jemalloc (jemalloc resident is an upper bound, so the difference can be negative); resident minus active is unpurged dirty pages plus allocator metadata; active minus allocated is fragmentation. Allocated minus pool reserved is not a measurement of untracked memory: reservations are operator estimates. The kernel OOM-kills the container when its usage reaches the limit. Container series exist only on Kubernetes, where lakesoul-prometheus scrapes the kubelets. Across a restart the old and new container briefly report together, hence max, not sum.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 56
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (container, pod) (container_memory_rss{container=~\"$service\"})",
+          "legendFormat": "{{container}} {{pod}} \u00b7 RSS"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (container, pod) (container_memory_working_set_bytes{container=~\"$service\"})",
+          "legendFormat": "{{container}} {{pod}} \u00b7 working set"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (container, pod) (container_spec_memory_limit_bytes{container=~\"$service\"} > 0)",
+          "legendFormat": "{{container}} {{pod}} \u00b7 container limit"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service, pod, worker) (lakesoul_memory_pool_reserved_bytes{service=~\"$service\"})",
+          "legendFormat": "{{service}} {{pod}}{{worker}} \u00b7 pool reserved"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service, pod, worker) (lakesoul_memory_pool_limit_bytes{service=~\"$service\"} > 0)",
+          "legendFormat": "{{service}} {{pod}}{{worker}} \u00b7 pool limit"
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service, pod, worker) (lakesoul_process_resident_anon_memory_bytes{service=~\"$service\"})",
+          "legendFormat": "{{service}} {{pod}}{{worker}} \u00b7 process RssAnon"
+        },
+        {
+          "refId": "G",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service, pod, worker) (lakesoul_process_resident_memory_bytes{service=~\"$service\"})",
+          "legendFormat": "{{service}} {{pod}}{{worker}} \u00b7 process RSS"
+        },
+        {
+          "refId": "H",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service, pod, worker) (lakesoul_jemalloc_resident_bytes{service=~\"$service\"})",
+          "legendFormat": "{{service}} {{pod}}{{worker}} \u00b7 jemalloc resident"
+        },
+        {
+          "refId": "I",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service, pod, worker) (lakesoul_jemalloc_active_bytes{service=~\"$service\"})",
+          "legendFormat": "{{service}} {{pod}}{{worker}} \u00b7 jemalloc active"
+        },
+        {
+          "refId": "J",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (service, pod, worker) (lakesoul_jemalloc_allocated_bytes{service=~\"$service\"})",
+          "legendFormat": "{{service}} {{pod}}{{worker}} \u00b7 jemalloc allocated"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "showPoints": "auto",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Container restarts and OOM kills",
+      "description": "From the overlay's kube-state-metrics (Kubernetes only). Restarts is the container's cumulative restart count; OOMKilled is 1 while the container's last termination was an OOM kill. cAdvisor's container_oom_events_total is not used: its series disappears with the killed container.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 64
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (container, pod) (kube_pod_container_status_restarts_total{container=~\"$service\"})",
+          "legendFormat": "{{container}} {{pod}} \u00b7 restarts"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (container, pod) (kube_pod_container_status_last_terminated_reason{container=~\"$service\", reason=\"OOMKilled\"})",
+          "legendFormat": "{{container}} {{pod}} \u00b7 last termination OOMKilled"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "showPoints": "auto",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "CPU throttling",
+      "description": "Share of CFS periods in which the container was throttled by its CPU limit (kubelet cAdvisor; Kubernetes only).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 64
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (container, pod) (rate(container_cpu_cfs_throttled_periods_total{container=~\"$service\"}[$__rate_interval])) / max by (container, pod) (rate(container_cpu_cfs_periods_total{container=~\"$service\"}[$__rate_interval]))",
+          "legendFormat": "{{container}} {{pod}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "showPoints": "auto",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
       "id": 13,
       "type": "logs",
       "title": "Logs \u2014 startup identity and runtime output (Loki)",
@@ -646,7 +883,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 56
+        "y": 72
       },
       "targets": [
         {

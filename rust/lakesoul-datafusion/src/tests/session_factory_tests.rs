@@ -92,6 +92,7 @@ fn test_session_initial_values() {
         let options = LakeSoulSessionOptions {
             default_schema: "tenant_a".to_string(),
             time_zone: Some("UTC".to_string()),
+            ..LakeSoulSessionOptions::default()
         };
         let ctx = factory.create_session(&options).unwrap();
 
@@ -144,6 +145,8 @@ fn test_target_partitions_is_parameterized() {
             fallback_to_local: true,
             target_partitions: 1,
             bytes_per_partition: None,
+            max_tasks_per_stage: 0,
+            locality: None,
         });
         let ctx = factory
             .create_session(&LakeSoulSessionOptions::default())

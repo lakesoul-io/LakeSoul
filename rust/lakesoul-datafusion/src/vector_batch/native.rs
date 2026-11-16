@@ -215,7 +215,9 @@ impl NativeBatchSnapshot {
         column: &str,
         metric: &str,
     ) -> Result<Arc<Self>> {
-        if provider.read_snapshot.is_some() {
+        if provider.read_snapshot.is_some()
+            || crate::write_mode::LakeSoulFixedSnapshot::from_session(state).is_some()
+        {
             return Err(DataFusionError::NotImplemented(
                 "native vector batch does not support time-travel views".into(),
             ));

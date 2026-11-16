@@ -955,7 +955,11 @@ fn multi_window_index_schema(source: &IvmTable) -> Result<SchemaRef> {
     ))];
     for key in &source.primary_keys {
         let field = source.schema.field_with_name(key)?;
-        fields.push(Arc::new(Field::new(key, field.data_type().clone(), false)));
+        fields.push(Arc::new(Field::new(
+            key,
+            field.data_type().clone(),
+            field.is_nullable(),
+        )));
     }
     fields.push(Arc::new(Field::new(
         IVM_ROW_KINDS_COLUMN,
@@ -974,41 +978,19 @@ fn multi_window_index_primary_keys(source: &IvmTable) -> Vec<String> {
 fn add_multi_window_partition_key(
     context: &SessionContext,
     frame: DataFrame,
-    source: &IvmTable,
+    _source: &IvmTable,
     partition_keys: &[String],
 ) -> Result<DataFrame> {
-    let encoder = Arc::new(GroupKeyRowEncoder::new(
-        source.schema.as_ref(),
-        partition_keys,
-    )?);
-    let input_types = partition_keys
-        .iter()
-        .map(|key| Ok(source.schema.field_with_name(key)?.data_type().clone()))
-        .collect::<Result<Vec<_>>>()?;
-    let name = format!("ivm_mw_partition_{}", uuid::Uuid::new_v4().simple());
-    let udf_encoder = encoder.clone();
-    let udf = datafusion::logical_expr::create_udf(
-        &name,
-        input_types,
-        DataType::Binary,
-        datafusion::logical_expr::Volatility::Immutable,
-        Arc::new(move |args: &[datafusion::logical_expr::ColumnarValue]| {
-            let arrays = datafusion::logical_expr::ColumnarValue::values_to_arrays(args)?;
-            let rows = udf_encoder.encode_columns(&arrays).map_err(|error| {
-                datafusion::error::DataFusionError::Execution(error.to_string())
-            })?;
-            Ok(datafusion::logical_expr::ColumnarValue::Array(Arc::new(
-                rows,
-            )))
-        }),
-    );
+    // Same encoding as `ivm_group_row`; the stable, worker-resolvable name
+    // lets a distributed multi-window state write ship this expression.
+    let udf = crate::runtime::worker_group_row_udf();
     let key = udf.call(
         partition_keys
             .iter()
             .map(|key| col(key.as_str()))
             .collect::<Vec<_>>(),
     );
-    context.register_udf(udf);
+    context.register_udf((*udf).clone());
     Ok(frame.with_column(IVM_MW_PARTITION, key)?)
 }
 
@@ -1030,7 +1012,7 @@ fn multi_window_state_rows(
 /// Validate that a multi-window view can be maintained.
 fn validate_multi_window_view(view: &MultiWindowView) -> Result<()> {
     if let Some(filter) = &view.filter {
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &view.source.schema, filter)?;
     }
     for column in &view.payload_columns {
@@ -1087,7 +1069,7 @@ fn validate_multi_window_view(view: &MultiWindowView) -> Result<()> {
             if view.source.schema.field_with_name(column).is_ok() {
                 continue;
             }
-            let context = refresh_session();
+            let context = refresh_session_local();
             parse_filter(&context, &view.source.schema, column).map_err(|error| {
                 report!(
                     "window view {}: order column {column} is not in the source \
@@ -1303,7 +1285,7 @@ fn top_k_materialized_columns(
 /// Validate that a window view can be maintained.
 fn validate_window_view(view: &WindowView) -> Result<()> {
     if let Some(filter) = &view.filter {
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &view.source.schema, filter)?;
     }
     if view.columns.is_empty() {
@@ -1354,7 +1336,7 @@ fn validate_window_view(view: &WindowView) -> Result<()> {
             continue;
         }
         // A computed ordering item is a rendered expression over the source.
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &view.source.schema, column).map_err(|error| {
             report!(
                 "window view {}: order column {column} is not in the source \
@@ -1410,7 +1392,7 @@ fn validate_window_column(
                 "window view {view_id}: FILTER needs an aggregate window function"
             ));
         }
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &source.schema, filter)?;
     }
     match column.function {
@@ -1802,7 +1784,7 @@ fn top_k_computed_cte(view: &TopKView, source_alias: &str) -> String {
     let mut order = order_items(&view.order_by, &view.order_keys);
     order.extend(view.source.primary_keys.iter().map(|key| quote_ident(key)));
     let orders = order.join(", ");
-    let context = refresh_session();
+    let context = refresh_session_local();
     let names = top_k_output_columns(view);
     let unparser = Unparser::default();
     // The unparser drops aliases, so every item carries its own `AS name`.
@@ -1933,7 +1915,7 @@ fn top_k_output_columns(view: &TopKView) -> Vec<String> {
 /// Validate that a top-k view can be maintained.
 fn validate_top_k_view(view: &TopKView) -> Result<()> {
     if let Some(filter) = &view.filter {
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &view.source.schema, filter)?;
     }
     if view.limit <= 0 {
@@ -1960,7 +1942,7 @@ fn validate_top_k_view(view: &TopKView) -> Result<()> {
                 view.view_id
             ));
         }
-        let context = refresh_session();
+        let context = refresh_session_local();
         let df_schema = DFSchema::try_from(view.source.schema.as_ref().clone())
             .map_err(|error| report!("invalid source schema: {error}"))?;
         for expression in &view.output_exprs {
@@ -2008,7 +1990,7 @@ fn validate_top_k_view(view: &TopKView) -> Result<()> {
             continue;
         }
         // A computed ordering item is a rendered expression over the source.
-        let context = refresh_session();
+        let context = refresh_session_local();
         parse_filter(&context, &view.source.schema, column).map_err(|error| {
             report!(
                 "top-k view {}: order column {column} is not in the source \
@@ -2055,13 +2037,52 @@ fn push_rank_column(columns: &mut Vec<String>, column: impl Into<String>) {
     }
 }
 
+/// Strip a trailing `ASC`/`DESC` and `NULLS FIRST|LAST` from a rendered
+/// order item so its expression can be parsed for referenced columns.  The
+/// direction must be a separate token; a column whose name merely ends in
+/// `asc` or `desc` is left untouched.
+fn strip_order_direction(item: &str) -> Option<&str> {
+    fn strip_suffix<'a>(rest: &'a str, suffix: &str) -> Option<&'a str> {
+        let start = rest.len().checked_sub(suffix.len())?;
+        if !rest[start..].eq_ignore_ascii_case(suffix) {
+            return None;
+        }
+        if start > 0 && !rest.as_bytes()[start - 1].is_ascii_whitespace() {
+            return None;
+        }
+        Some(rest[..start].trim_end())
+    }
+    let mut rest = item.trim_end();
+    let mut changed = false;
+    if let Some(stripped) =
+        strip_suffix(rest, "nulls first").or_else(|| strip_suffix(rest, "nulls last"))
+    {
+        rest = stripped;
+        changed = true;
+    }
+    if let Some(stripped) =
+        strip_suffix(rest, "desc").or_else(|| strip_suffix(rest, "asc"))
+    {
+        rest = stripped;
+        changed = true;
+    }
+    changed.then_some(rest)
+}
+
 fn add_rank_expression_columns(
     columns: &mut Vec<String>,
     context: &SessionContext,
     schema: &SchemaRef,
     expression: &str,
 ) -> Result<()> {
-    for column in filter_columns(context, schema, expression)? {
+    let referenced = match filter_columns(context, schema, expression) {
+        Ok(referenced) => referenced,
+        Err(error) => match strip_order_direction(expression) {
+            Some(stripped) => filter_columns(context, schema, stripped)?,
+            None => return Err(error),
+        },
+    };
+    for column in referenced {
         push_rank_column(columns, column);
     }
     Ok(())
@@ -2133,6 +2154,28 @@ fn window_rank_columns(
         .collect())
 }
 
+/// Whether a window view can re-rank from its MV instead of a separate rank
+/// state.
+///
+/// A window MV stores one row per filtered source row, keyed by the partition
+/// keys and the source primary key, and it already carries the payload.  When
+/// it also covers every column the ranking reads (the `window_rank_columns`
+/// projection), the MV is the same row set as the narrow rank state and can be
+/// read in its place.  A view whose ordering or filter reads a column that is
+/// not materialized keeps the rank state.
+fn window_reuses_mv_rank_state(view: &WindowView, rank_columns: &[String]) -> bool {
+    !view.source.primary_keys.is_empty()
+        && (change_column(&view.source).is_some()
+            || view
+                .source
+                .schema
+                .field_with_name(IVM_ROW_KINDS_COLUMN)
+                .is_ok())
+        && rank_columns
+            .iter()
+            .all(|column| view.mv.schema.field_with_name(column).is_ok())
+}
+
 /// Default memory budget for one materialized top-k frame.
 const TOP_K_MATERIALIZE_BYTES: usize = 1024 * 1024 * 1024;
 
@@ -2142,16 +2185,16 @@ const TOP_K_MATERIALIZE_BYTES: usize = 1024 * 1024 * 1024;
 /// them lazy re-runs the same keyed lookup, so the refresh materializes them
 /// by default.  A large window could otherwise pin the whole frame in memory:
 /// once the budget is crossed, drop the partial result and let the caller use
-/// the lazy frame again.  The budget is per frame and overridable with
-/// `LAKESOUL_IVM_TOPK_MATERIALIZE_BYTES`; `0` disables materialization.
+/// the lazy frame again.  The per-frame budget comes from
+/// [`IvmOptions::topk_materialize_bytes`](crate::config::IvmOptions::topk_materialize_bytes);
+/// `Some(0)` disables materialization.
 async fn materialize_top_k_frame(
     frame: DataFrame,
     label: &'static str,
 ) -> Result<Option<Vec<RecordBatch>>> {
     use futures::StreamExt;
-    let limit = std::env::var("LAKESOUL_IVM_TOPK_MATERIALIZE_BYTES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
+    let limit = crate::config::options()
+        .topk_materialize_bytes
         .unwrap_or(TOP_K_MATERIALIZE_BYTES);
     if limit == 0 {
         return Ok(None);
@@ -2262,116 +2305,28 @@ impl IvmRuntime {
     /// affected partitions instead of scanning the MV.  It is created lazily
     /// and registered as the view's `State` table; the view spec itself stays
     /// unchanged for backward compatibility.
-    /// Whether a mirror index is missing a partition that the MV has.
-    ///
-    /// A seeded mirror can legitimately have a lower absolute partition
-    /// version than a long-lived MV, so comparing version numbers would
-    /// rewrite it on every refresh.  Missing partitions are unambiguous;
-    /// row-level staleness is handled by the epoch checkpoint/recovery path.
-    async fn mirror_state_missing_partitions(
-        &self,
-        state: &IvmTable,
-        mv: &IvmTable,
-    ) -> Result<bool> {
-        if mv.current_files(&self.client).await?.is_empty() {
-            return Ok(false);
-        }
-        if state.current_files(&self.client).await?.is_empty() {
-            return Ok(true);
-        }
-        let state_versions = output_partition_versions(&self.client, state).await?;
-        let mv_versions = output_partition_versions(&self.client, mv).await?;
-        let state_partitions = state_versions
-            .into_iter()
-            .map(|version| version.partition_desc)
-            .collect::<std::collections::HashSet<_>>();
-        Ok(mv_versions
-            .iter()
-            .any(|version| !state_partitions.contains(&version.partition_desc)))
-    }
-
     async fn ensure_window_state(&self, view: &WindowView) -> Result<IvmTable> {
-        let states = self.metadata.list_states(&view.view_id).await?;
-        if let Some(existing) = states.iter().find(|state| state.role == StateRole::State)
+        // The target MV is the authoritative row set: a refresh owns the
+        // partitions it writes and the target is not mutated by other
+        // writers.  Keeping a second full MV copy only doubled the refresh
+        // write; the narrow `RankState` remains the source for re-ranking.
+        // Retire a mirror created by an older revision.
+        if let Some(existing) = self
+            .metadata()
+            .get_state(&view.view_id, StateRole::State)
+            .await?
         {
-            let state = self.open_table_by_id(&existing.table_id).await?;
-            let reset = self
-                .mirror_state_missing_partitions(&state, &view.mv)
+            self.metadata()
+                .unregister_state(&view.view_id, StateRole::State)
                 .await?;
-            if reset {
-                self.sync_window_state(view, &state, true).await?;
+            if existing.table_id != view.mv.table_id {
+                let _ = self
+                    .client()
+                    .drop_table(&existing.table_name, &existing.namespace)
+                    .await;
             }
-            return Ok(state);
         }
-        let keys = distinct_keys(
-            view.partition_keys
-                .iter()
-                .chain(view.source.primary_keys.iter()),
-        );
-        let name = format!("{}__ivm_window_state", view.mv.table_name);
-        // A derived step can be recreated under a new table id while its
-        // fixed-name window state still exists.  Reuse it when it can answer
-        // the new reads; otherwise drop the stale state before recreating.
-        if let Ok(existing) = self.open_table(&name, &view.mv.namespace).await {
-            if existing.schema == view.mv.schema
-                && existing.primary_keys == keys
-                && existing.range_partition_columns == view.mv.range_partition_columns
-            {
-                self.register_state_tables(
-                    &view.view_id,
-                    &[(StateRole::State, &existing)],
-                )
-                .await?;
-                let reset = self
-                    .mirror_state_missing_partitions(&existing, &view.mv)
-                    .await?;
-                if reset {
-                    self.sync_window_state(view, &existing, true).await?;
-                }
-                return Ok(existing);
-            }
-            let _ = self.metadata.delete_view(&existing.table_id).await;
-            let _ = self.client().drop_table(&name, &view.mv.namespace).await;
-        }
-        let mut options = IvmTableOptions::new(
-            name,
-            format!("{}__ivm_window_state", view.mv.table_path),
-            view.mv.schema.clone(),
-        )
-        .with_namespace(view.mv.namespace.clone())
-        .with_primary_keys(keys)
-        .with_bucket_columns(view.partition_keys.clone())
-        .with_range_partition_columns(view.mv.range_partition_columns.clone())
-        .with_file_format(crate::table::internal_file_format());
-        options.hash_bucket_num = view.mv.hash_bucket_num.clone();
-        let state = self.create_table(options).await?;
-        self.register_state_tables(&view.view_id, &[(StateRole::State, &state)])
-            .await?;
-        self.sync_window_state(view, &state, false).await?;
-        Ok(state)
-    }
-
-    /// Seed a newly created/empty window partition index from the current MV,
-    /// or replace a mirror that is behind the MV.
-    async fn sync_window_state(
-        &self,
-        view: &WindowView,
-        state: &IvmTable,
-        reset: bool,
-    ) -> Result<()> {
-        if view.mv.current_files(&self.client).await?.is_empty() {
-            return Ok(());
-        }
-        if reset {
-            state.truncate(&self.client).await?;
-        }
-        let context = refresh_session();
-        context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
-        let frame = context.sql("select * from mv").await?;
-        state
-            .append_stream(&self.client, frame.execute_stream().await?)
-            .await?;
-        Ok(())
+        Ok(view.mv.clone())
     }
 
     /// Refresh a `ROW_NUMBER()` view by recomputing its affected partitions.
@@ -2402,9 +2357,13 @@ impl IvmRuntime {
                 .iter()
                 .chain(view.source.primary_keys.iter()),
         );
-        let rank_columns = window_rank_columns(view, &refresh_session())?;
-        let rank_state = self
-            .ensure_rank_state(
+        let rank_columns = window_rank_columns(view, &refresh_session_local())?;
+        let reuse_mv_rank = window_reuses_mv_rank_state(view, &rank_columns);
+        let rank_state = if reuse_mv_rank {
+            self.drop_rank_state(&view.view_id).await?;
+            None
+        } else {
+            self.ensure_rank_state(
                 &view.view_id,
                 &view.source,
                 "window",
@@ -2412,7 +2371,8 @@ impl IvmRuntime {
                 &view.partition_keys,
                 &rank_columns,
             )
-            .await?;
+            .await?
+        };
         let record = match self
             .begin_window(&view.view_id, &window.identity, &view.mv)
             .await?
@@ -2461,6 +2421,7 @@ impl IvmRuntime {
             let change = change_column(&view.source).unwrap_or(IVM_ROW_KINDS_COLUMN);
             commit_ids.extend(
                 self.update_rank_state(
+                    &context,
                     rank,
                     change,
                     &rank_keys,
@@ -2528,41 +2489,59 @@ impl IvmRuntime {
                     .union(old_parts)?
                     .distinct()?
             };
-            let null_part = view
-                .partition_keys
-                .iter()
-                .map(|key| col(key.as_str()).is_null())
-                .reduce(|left, right| left.or(right))
-                .ok_or_else(|| report!("window view has no partition keys"))?;
-            if count_frame_rows(affected.clone().filter(null_part)?).await? == 0 {
-                self.lookup_source_by_join_keys(
-                    &context,
-                    &state,
-                    affected,
-                    &view.partition_keys,
-                    &view.partition_keys,
-                    true,
-                )
-                .await?
-            } else {
-                match mv_partitions {
-                    Some(restriction) => {
-                        self.current_table_frame_filtered_partitions(
-                            &context,
-                            &state,
-                            Vec::new(),
-                            &restriction,
-                        )
-                        .await?
-                    }
-                    None => self.current_table_frame(&context, &state)?,
-                }
-            }
+            // A partition key may be NULL; the keyed lookup matches it with
+            // the NULL partition instead of scanning the whole state.
+            self.lookup_source_by_join_keys_null_safe(
+                &context,
+                &state,
+                affected,
+                &view.partition_keys,
+                &view.partition_keys,
+                true,
+            )
+            .await?
         };
         phase_done!("mv_lookup");
         context.register_table("delta", delta.clone().into_view())?;
         context.register_table("mv", mv.clone().into_view())?;
-        let src = if let Some(rank) = &rank_state {
+        let src = if reuse_mv_rank {
+            // The MV already holds every current row of the affected
+            // partitions.  Remove the old version of each changed source key,
+            // add the current source row, then re-rank the result.
+            let pk_exprs = view
+                .source
+                .primary_keys
+                .iter()
+                .map(|key| col(key.as_str()))
+                .collect::<Vec<_>>();
+            let pk_refs = view
+                .source
+                .primary_keys
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let changed = delta.clone().select(pk_exprs)?.distinct()?;
+            let current = self
+                .lookup_source_by_join_keys_null_safe(
+                    &context,
+                    &view.source,
+                    changed.clone(),
+                    &view.source.primary_keys,
+                    &view.source.primary_keys,
+                    true,
+                )
+                .await?;
+            let current = filter_deletes(current, change_column(&view.source))?;
+            let current = project_frame(current, &rank_columns)?;
+            let kept = project_frame(mv.clone(), &rank_columns)?.join(
+                changed,
+                JoinType::LeftAnti,
+                &pk_refs,
+                &pk_refs,
+                None,
+            )?;
+            kept.union(current)?
+        } else if let Some(rank) = &rank_state {
             let affected = if view.partition_keys.is_empty() {
                 None
             } else {
@@ -2610,25 +2589,15 @@ impl IvmRuntime {
             match affected {
                 None => self.current_table_frame(&context, rank)?,
                 Some(affected) => {
-                    let null_part = view
-                        .partition_keys
-                        .iter()
-                        .map(|key| col(key.as_str()).is_null())
-                        .reduce(|left, right| left.or(right))
-                        .ok_or_else(|| report!("window view has no partition keys"))?;
-                    if count_frame_rows(affected.clone().filter(null_part)?).await? == 0 {
-                        self.lookup_source_by_join_keys(
-                            &context,
-                            rank,
-                            affected,
-                            &view.partition_keys,
-                            &view.partition_keys,
-                            true,
-                        )
-                        .await?
-                    } else {
-                        self.current_table_frame(&context, rank)?
-                    }
+                    self.lookup_source_by_join_keys_null_safe(
+                        &context,
+                        rank,
+                        affected,
+                        &view.partition_keys,
+                        &view.partition_keys,
+                        true,
+                    )
+                    .await?
                 }
             }
         } else {
@@ -2685,37 +2654,24 @@ impl IvmRuntime {
         };
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&window_refresh_sql(view, epoch)).await?;
-        // Execute the top-k SQL once and tee each batch into the MV and the
-        // top-k state writer.  Two independent append_stream calls executed
-        // the whole lookup/window plan twice, which dominated a 1M window.
-        use futures::StreamExt;
-        let mut output = frame.execute_stream().await?;
-        let mut mv_writer = view.mv.writer().await?;
-        let mut state_writer = state.writer().await?;
-        let mut written_rows = 0u64;
-        while let Some(batch) = output.next().await {
-            let batch = batch?;
-            if batch.num_rows() == 0 {
-                continue;
-            }
-            written_rows += batch.num_rows() as u64;
-            mv_writer
-                .write_record_batch(view.mv.cast_batch(batch.clone())?)
-                .await?;
-            state_writer
-                .write_record_batch(state.cast_batch(batch)?)
-                .await?;
+        let frame =
+            collapse_update_delta(&self.metadata, &context, &view.mv, frame).await?;
+        if state.table_id == view.mv.table_id {
+            // The target MV is also the state: one write serves both.
+            commit_ids.extend(
+                append_dataframe(&view.mv, &self.client, frame)
+                    .await?
+                    .commit_ids,
+            );
+        } else {
+            // One distributed plan writes the MV and its separate mirror
+            // state, so the coordinator only collects file descriptors.
+            let outcome =
+                write_dataframe_dual(&state, &view.mv, &self.client, frame).await?;
+            commit_ids.extend(outcome.mv_ids);
+            commit_ids.extend(outcome.state_ids);
         }
-        let mv_files = view
-            .mv
-            .output_files(mv_writer.flush_and_close().await?, written_rows);
-        let state_files =
-            state.output_files(state_writer.flush_and_close().await?, written_rows);
-        let mv_ids = view.mv.commit_files(&self.client, mv_files).await?;
-        let state_ids = state.commit_files(&self.client, state_files).await?;
         self.checkpoint_epoch_states(&record).await?;
-        commit_ids.extend(mv_ids);
-        commit_ids.extend(state_ids);
         phase_done!("sql_execute_and_append");
         let _ = phase.elapsed();
 
@@ -2809,9 +2765,9 @@ impl IvmRuntime {
         )?;
         let rows =
             multi_window_state_rows(&context, source, &view.source, spec, "insert")?;
-        state
-            .append_stream(&self.client, rows.execute_stream().await?)
+        append_dataframe(state, &self.client, rows)
             .await
+            .map(|outcome| outcome.commit_ids)
     }
 
     async fn apply_multi_window_index_delta(
@@ -2856,24 +2812,9 @@ impl IvmRuntime {
         let old =
             multi_window_state_rows(&context, before, &view.source, spec, "delete")?;
         let new = multi_window_state_rows(&context, delta, &view.source, spec, "insert")?;
-        use futures::StreamExt;
-        let streams: Vec<
-            std::pin::Pin<
-                Box<
-                    dyn futures::Stream<Item = datafusion::error::Result<RecordBatch>>
-                        + Send,
-                >,
-            >,
-        > = vec![
-            Box::pin(old.execute_stream().await?),
-            Box::pin(new.execute_stream().await?),
-        ];
-        state
-            .append_stream(
-                &self.client,
-                Box::pin(futures::stream::iter(streams).flatten()),
-            )
+        append_dataframe(state, &self.client, old.union(new)?)
             .await
+            .map(|outcome| outcome.commit_ids)
     }
 
     async fn multi_window_index_pks(
@@ -2895,7 +2836,7 @@ impl IvmRuntime {
             Some(vec![IVM_MW_PARTITION.to_string()]),
             true,
         );
-        let frame = context.read_table(Arc::new(provider))?;
+        let frame = provider.into_dataframe(context).await?;
         let projections = view
             .source
             .primary_keys
@@ -3180,10 +3121,12 @@ impl IvmRuntime {
             context.register_table("src", Arc::new(self.table_provider(&view.source)))?;
         }
         let frame = context.sql(&multi_window_refresh_sql(view, epoch)).await?;
+        let frame =
+            collapse_update_delta(&self.metadata, &context, &view.mv, frame).await?;
         commit_ids.extend(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
+            append_dataframe(&view.mv, &self.client, frame)
+                .await?
+                .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -3252,9 +3195,9 @@ impl IvmRuntime {
         )?;
         let frame = context.sql(&multi_window_rebuild_sql(view, epoch)).await?;
         commit_ids.extend(
-            view.mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?,
+            append_dataframe(&view.mv, &self.client, frame)
+                .await?
+                .commit_ids,
         );
 
         let mv_versions = output_partition_versions(&self.client, &view.mv).await?;
@@ -3279,9 +3222,13 @@ impl IvmRuntime {
         let generation = self.metadata.bump_generation(&view.view_id).await?;
         self.metadata.delete_cursors(&view.view_id).await?;
         let state = self.ensure_window_state(view).await?;
-        let rank_columns = window_rank_columns(view, &refresh_session())?;
-        let rank_state = self
-            .ensure_rank_state(
+        let rank_columns = window_rank_columns(view, &refresh_session_local())?;
+        let reuse_mv_rank = window_reuses_mv_rank_state(view, &rank_columns);
+        let rank_state = if reuse_mv_rank {
+            self.drop_rank_state(&view.view_id).await?;
+            None
+        } else {
+            self.ensure_rank_state(
                 &view.view_id,
                 &view.source,
                 "window",
@@ -3289,9 +3236,13 @@ impl IvmRuntime {
                 &view.partition_keys,
                 &rank_columns,
             )
-            .await?;
+            .await?
+        };
+        let shared_state = state.table_id == view.mv.table_id;
         view.mv.truncate(&self.client).await?;
-        state.truncate(&self.client).await?;
+        if !shared_state {
+            state.truncate(&self.client).await?;
+        }
 
         let baseline = self
             .source_baseline_for_filter(&view.source, view.filter.as_deref())
@@ -3327,14 +3278,18 @@ impl IvmRuntime {
             Arc::new(self.table_provider_groups(&view.source, baseline.groups.clone())),
         )?;
         let frame = context.sql(&window_rebuild_sql(view, epoch)).await?;
-        let (mv_ids, state_ids) = futures::future::try_join(
-            view.mv
-                .append_stream(&self.client, frame.clone().execute_stream().await?),
-            state.append_stream(&self.client, frame.execute_stream().await?),
-        )
-        .await?;
-        commit_ids.extend(mv_ids);
-        commit_ids.extend(state_ids);
+        if shared_state {
+            commit_ids.extend(
+                append_dataframe(&view.mv, &self.client, frame)
+                    .await?
+                    .commit_ids,
+            );
+        } else {
+            let outcome =
+                write_dataframe_dual(&state, &view.mv, &self.client, frame).await?;
+            commit_ids.extend(outcome.mv_ids);
+            commit_ids.extend(outcome.state_ids);
+        }
         self.checkpoint_epoch_states(&record).await?;
         if let Some(rank) = &rank_state {
             rank.truncate(&self.client).await?;
@@ -3359,74 +3314,27 @@ impl IvmRuntime {
     /// the state, avoiding a second write and a second copy.  Only share when
     /// the MV is keyed by the group itself, which is how a top-1 view created
     /// by the runtime is laid out.
-    fn top_k_shared_state(view: &TopKView) -> bool {
-        view.offset == 0
-            && view.limit == 1
-            && !view.group_keys.is_empty()
-            && view.mv.primary_keys == view.group_keys
-    }
-
     async fn ensure_top_k_state(&self, view: &TopKView) -> Result<IvmTable> {
-        if Self::top_k_shared_state(view) {
-            return Ok(view.mv.clone());
-        }
-        let states = self.metadata.list_states(&view.view_id).await?;
-        if let Some(existing) = states.iter().find(|state| state.role == StateRole::State)
+        // The target MV is the authoritative top-k row set; the refresh owns
+        // its partitions and no separate full copy is needed.  `RankState`
+        // keeps the narrow source columns used to re-rank a group.  Retire a
+        // mirror created by an older revision.
+        if let Some(existing) = self
+            .metadata()
+            .get_state(&view.view_id, StateRole::State)
+            .await?
         {
-            let state = self.open_table_by_id(&existing.table_id).await?;
-            let reset = self
-                .mirror_state_missing_partitions(&state, &view.mv)
+            self.metadata()
+                .unregister_state(&view.view_id, StateRole::State)
                 .await?;
-            if reset {
-                self.sync_top_k_state(view, &state, true).await?;
+            if existing.table_id != view.mv.table_id {
+                let _ = self
+                    .client()
+                    .drop_table(&existing.table_name, &existing.namespace)
+                    .await;
             }
-            return Ok(state);
         }
-        let keys = distinct_keys(
-            view.group_keys
-                .iter()
-                .chain(view.source.primary_keys.iter()),
-        );
-        let mut options = IvmTableOptions::new(
-            format!("{}__ivm_topk_state", view.mv.table_name),
-            format!("{}__ivm_topk_state", view.mv.table_path),
-            view.mv.schema.clone(),
-        )
-        .with_namespace(view.mv.namespace.clone())
-        .with_primary_keys(keys)
-        .with_bucket_columns(view.group_keys.clone())
-        .with_range_partition_columns(view.mv.range_partition_columns.clone())
-        .with_file_format(crate::table::keyed_state_file_format());
-        options.hash_bucket_num = view.mv.hash_bucket_num.clone();
-        let state = self.create_table(options).await?;
-        self.register_state_tables(&view.view_id, &[(StateRole::State, &state)])
-            .await?;
-        self.sync_top_k_state(view, &state, false).await?;
-        Ok(state)
-    }
-
-    async fn sync_top_k_state(
-        &self,
-        view: &TopKView,
-        state: &IvmTable,
-        reset: bool,
-    ) -> Result<()> {
-        if state.table_id == view.mv.table_id {
-            return Ok(());
-        }
-        if view.mv.current_files(&self.client).await?.is_empty() {
-            return Ok(());
-        }
-        if reset {
-            state.truncate(&self.client).await?;
-        }
-        let context = refresh_session();
-        context.register_table("mv", Arc::new(self.table_provider(&view.mv)))?;
-        let frame = context.sql("select * from mv").await?;
-        state
-            .append_stream(&self.client, frame.execute_stream().await?)
-            .await?;
-        Ok(())
+        Ok(view.mv.clone())
     }
 
     /// Whether a rank-state version change is only the external compaction.
@@ -3484,6 +3392,25 @@ impl IvmRuntime {
             }
         }
         Ok(true)
+    }
+
+    /// Retire a rank state the view no longer reads: the window MV is now
+    /// the re-ranking source.
+    async fn drop_rank_state(&self, view_id: &str) -> Result<()> {
+        if let Some(existing) = self
+            .metadata()
+            .get_state(view_id, StateRole::RankState)
+            .await?
+        {
+            self.metadata()
+                .unregister_state(view_id, StateRole::RankState)
+                .await?;
+            let _ = self
+                .client()
+                .drop_table(&existing.table_name, &existing.namespace)
+                .await;
+        }
+        Ok(())
     }
 
     /// A source-row state used to recompute window/top-k ranks without
@@ -3633,7 +3560,7 @@ impl IvmRuntime {
         if source.current_files(&self.client).await?.is_empty() {
             return Ok(Vec::new());
         }
-        let context = refresh_session();
+        let context = refresh_session_local();
         context.register_table("src", Arc::new(self.table_provider(source)))?;
         let columns = state
             .schema
@@ -3658,6 +3585,7 @@ impl IvmRuntime {
     /// row, while a deleted or partition/group-moving key gets a tombstone.
     async fn update_rank_state(
         &self,
+        context: &SessionContext,
         state: &IvmTable,
         change: &str,
         key_columns: &[String],
@@ -3707,12 +3635,15 @@ impl IvmRuntime {
             .join(old_only, JoinType::LeftSemi, &key_refs, &key_refs, None)?
             .with_column(change, lit("delete"))?;
         let inserts = current.with_column(change, lit("insert"))?;
-        let frame = inserts.union(deletes)?.sort_by(
-            key_columns
-                .iter()
-                .map(|key| column_expr(key))
-                .collect::<Vec<_>>(),
-        )?;
+        let frame =
+            collapse_update_deletes(&self.metadata, context, state, inserts, deletes)
+                .await?
+                .sort_by(
+                    key_columns
+                        .iter()
+                        .map(|key| column_expr(key))
+                        .collect::<Vec<_>>(),
+                )?;
         state
             .append_stream(&self.client, frame.execute_stream().await?)
             .await
@@ -3739,7 +3670,7 @@ impl IvmRuntime {
                 .iter()
                 .chain(view.source.primary_keys.iter()),
         );
-        let rank_columns = top_k_rank_columns(view, &refresh_session())?;
+        let rank_columns = top_k_rank_columns(view, &refresh_session_local())?;
         let rank_state = self
             .ensure_rank_state(
                 &view.view_id,
@@ -3812,6 +3743,7 @@ impl IvmRuntime {
             let change = change_column(&view.source).unwrap_or(IVM_ROW_KINDS_COLUMN);
             commit_ids.extend(
                 self.update_rank_state(
+                    &context,
                     rank,
                     change,
                     &rank_keys,
@@ -3876,36 +3808,17 @@ impl IvmRuntime {
                     .union(old_groups)?
                     .distinct()?
             };
-            let null_group = view
-                .group_keys
-                .iter()
-                .map(|key| col(key.as_str()).is_null())
-                .reduce(|left, right| left.or(right))
-                .ok_or_else(|| report!("top-k view has no group keys"))?;
-            if count_frame_rows(affected.clone().filter(null_group)?).await? == 0 {
-                self.lookup_source_by_join_keys(
-                    &context,
-                    &state,
-                    affected,
-                    &view.group_keys,
-                    &view.group_keys,
-                    true,
-                )
-                .await?
-            } else {
-                match mv_partitions {
-                    Some(restriction) => {
-                        self.current_table_frame_filtered_partitions(
-                            &context,
-                            &state,
-                            Vec::new(),
-                            &restriction,
-                        )
-                        .await?
-                    }
-                    None => self.current_table_frame(&context, &state)?,
-                }
-            }
+            // A group key may be NULL; the keyed lookup matches it with the
+            // NULL group instead of scanning the whole state.
+            self.lookup_source_by_join_keys_null_safe(
+                &context,
+                &state,
+                affected,
+                &view.group_keys,
+                &view.group_keys,
+                true,
+            )
+            .await?
         };
         context.register_table("delta", delta.clone().into_view())?;
         // The SQL below scans `mv` twice (`already` and `active`).  A lazy
@@ -3969,26 +3882,15 @@ impl IvmRuntime {
             match affected {
                 None => self.current_table_frame(&context, rank)?,
                 Some(affected) => {
-                    let null_group = view
-                        .group_keys
-                        .iter()
-                        .map(|key| col(key.as_str()).is_null())
-                        .reduce(|left, right| left.or(right))
-                        .ok_or_else(|| report!("top-k view has no group keys"))?;
-                    if count_frame_rows(affected.clone().filter(null_group)?).await? == 0
-                    {
-                        self.lookup_source_by_join_keys(
-                            &context,
-                            rank,
-                            affected,
-                            &view.group_keys,
-                            &view.group_keys,
-                            true,
-                        )
-                        .await?
-                    } else {
-                        self.current_table_frame(&context, rank)?
-                    }
+                    self.lookup_source_by_join_keys_null_safe(
+                        &context,
+                        rank,
+                        affected,
+                        &view.group_keys,
+                        &view.group_keys,
+                        true,
+                    )
+                    .await?
                 }
             }
         } else {
@@ -4045,38 +3947,23 @@ impl IvmRuntime {
         phase_done!("src_lookup");
         context.register_table("src", src.into_view())?;
         let frame = context.sql(&top_k_refresh_sql(view, epoch)).await?;
+        let frame =
+            collapse_update_delta(&self.metadata, &context, &view.mv, frame).await?;
         phase_done!("sql_plan");
-        let (mv_ids, state_ids) = if view.group_keys.is_empty() {
-            // A global top-k can rewrite the whole state; keep the streaming
-            // path instead of collecting the full result in memory.
-            let state_frame = frame.clone().execute_stream().await?;
-            futures::future::try_join(
-                view.mv
-                    .append_stream(&self.client, frame.execute_stream().await?),
-                async {
-                    let ids = state.append_stream(&self.client, state_frame).await?;
-                    self.checkpoint_epoch_states(&record).await?;
-                    Ok::<_, rootcause::Report>(ids)
-                },
-            )
-            .await?
-        } else if state.table_id == view.mv.table_id {
-            let mv_ids = view
-                .mv
-                .append_stream(&self.client, frame.execute_stream().await?)
-                .await?;
+        let (mv_ids, state_ids) = if state.table_id == view.mv.table_id {
+            // The target MV is also the state: one write serves both.
+            let commit_ids = append_dataframe(&view.mv, &self.client, frame)
+                .await?
+                .commit_ids;
             self.checkpoint_epoch_states(&record).await?;
-            (mv_ids, Vec::new())
+            (commit_ids, Vec::new())
         } else {
-            // Execute the refresh SQL once and feed both the MV and its mirror
-            // state from the same stream.  Two independent streams re-ran
-            // every keyed lookup inside the plan (including before-image).
-            let (mv_ids, state_ids) = view
-                .mv
-                .append_stream_pair(&self.client, frame.execute_stream().await?, &state)
-                .await?;
+            // The refresh SQL runs once and the dual sink writes the MV and
+            // its mirror state on the workers.
+            let outcome =
+                write_dataframe_dual(&state, &view.mv, &self.client, frame).await?;
             self.checkpoint_epoch_states(&record).await?;
-            (mv_ids, state_ids)
+            (outcome.mv_ids, outcome.state_ids)
         };
         commit_ids.extend(mv_ids);
         commit_ids.extend(state_ids);
@@ -4101,7 +3988,7 @@ impl IvmRuntime {
         let generation = self.metadata.bump_generation(&view.view_id).await?;
         self.metadata.delete_cursors(&view.view_id).await?;
         let state = self.ensure_top_k_state(view).await?;
-        let rank_columns = top_k_rank_columns(view, &refresh_session())?;
+        let rank_columns = top_k_rank_columns(view, &refresh_session_local())?;
         let rank_state = self
             .ensure_rank_state(
                 &view.view_id,
@@ -4153,21 +4040,17 @@ impl IvmRuntime {
         )?;
         let frame = context.sql(&top_k_rebuild_sql(view, epoch)).await?;
         if shared_state {
-            // The state is the MV: one append serves both.
+            // The state is the MV: one write serves both.
             commit_ids.extend(
-                view.mv
-                    .append_stream(&self.client, frame.execute_stream().await?)
-                    .await?,
+                append_dataframe(&view.mv, &self.client, frame)
+                    .await?
+                    .commit_ids,
             );
         } else {
-            let (mv_ids, state_ids) = futures::future::try_join(
-                view.mv
-                    .append_stream(&self.client, frame.clone().execute_stream().await?),
-                state.append_stream(&self.client, frame.execute_stream().await?),
-            )
-            .await?;
-            commit_ids.extend(mv_ids);
-            commit_ids.extend(state_ids);
+            let outcome =
+                write_dataframe_dual(&state, &view.mv, &self.client, frame).await?;
+            commit_ids.extend(outcome.mv_ids);
+            commit_ids.extend(outcome.state_ids);
         }
         self.checkpoint_epoch_states(&record).await?;
         if let Some(rank) = &rank_state {
@@ -4184,5 +4067,26 @@ impl IvmRuntime {
             .set_view_status(&view.view_id, "active")
             .await?;
         Ok(epoch)
+    }
+}
+
+#[cfg(test)]
+mod order_direction_tests {
+    use super::strip_order_direction;
+
+    #[test]
+    fn strips_rendered_order_suffixes() {
+        assert_eq!(
+            strip_order_direction("\"v\" desc nulls first"),
+            Some("\"v\"")
+        );
+        assert_eq!(strip_order_direction("\"v\" ASC NULLS LAST"), Some("\"v\""));
+        assert_eq!(strip_order_direction("\"v\" desc"), Some("\"v\""));
+        // A bare expression is not an order item.
+        assert_eq!(
+            strip_order_direction("(CASE WHEN x THEN 1 ELSE 0 END)"),
+            None
+        );
+        assert_eq!(strip_order_direction("\"cascade\""), None);
     }
 }

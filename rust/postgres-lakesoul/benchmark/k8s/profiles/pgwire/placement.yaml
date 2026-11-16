@@ -1,0 +1,129 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# One LakeSoul Pod per compute node, never beside a benchmark Pod or the
+# observability Pods; the observability Pods gather on one compute node.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-coordinator
+  namespace: lakesoul
+spec:
+  template:
+    spec:
+      nodeSelector:
+        Type: compute
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: lakesoul
+              topologyKey: kubernetes.io/hostname
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: lakesoul-bench
+              topologyKey: kubernetes.io/hostname
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/part-of: lakesoul
+              topologyKey: kubernetes.io/hostname
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-worker
+  namespace: lakesoul
+spec:
+  template:
+    spec:
+      nodeSelector:
+        Type: compute
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: lakesoul
+              topologyKey: kubernetes.io/hostname
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: lakesoul-bench
+              topologyKey: kubernetes.io/hostname
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/part-of: lakesoul
+              topologyKey: kubernetes.io/hostname
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-prometheus
+  namespace: lakesoul
+spec:
+  template:
+    spec:
+      nodeSelector:
+        Type: compute
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: prometheus
+              topologyKey: kubernetes.io/hostname
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-tempo
+  namespace: lakesoul
+spec:
+  template:
+    spec:
+      nodeSelector:
+        Type: compute
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: prometheus
+              topologyKey: kubernetes.io/hostname
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-grafana
+  namespace: lakesoul
+spec:
+  template:
+    spec:
+      nodeSelector:
+        Type: compute
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: prometheus
+              topologyKey: kubernetes.io/hostname
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-kube-state-metrics
+  namespace: lakesoul
+spec:
+  template:
+    spec:
+      nodeSelector:
+        Type: compute
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: prometheus
+              topologyKey: kubernetes.io/hostname

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::prelude::SessionContext;
 use lakesoul_datafusion::distributed::DistributedOptions;
 use parking_lot::RwLock;
@@ -24,21 +25,35 @@ use lakesoul_datafusion::cli::CoreArgs;
 use lakesoul_datafusion::distributed::headers::{
     SessionActor, StatementIdGuard, set_identity_headers,
 };
-use lakesoul_datafusion::session::{
-    ExecutionMemoryArgs, LakeSoulSessionFactory, LakeSoulSessionOptions,
-};
+use lakesoul_datafusion::session::{LakeSoulSessionFactory, LakeSoulSessionOptions};
 use lakesoul_datafusion::udf::vector_search_marker::LakeSoulVectorSearchConfig;
 use lakesoul_metadata::MetaDataClientRef;
 use rootcause::Report;
 use tracing::{info, instrument};
 
-use crate::catalog::{PUBLIC_SCHEMA, PgDatabaseCatalogList, pg_lakesoul_catalog};
+use crate::catalog::{
+    PUBLIC_SCHEMA, PgDatabaseCatalogList, pg_lakesoul_catalog_with_federation,
+};
 
 /// Identity resolved for one PostgreSQL connection during startup.
 #[derive(Debug, Clone, Default)]
 pub struct SessionIdentity {
     pub user: String,
     pub database: String,
+}
+
+datafusion::common::extensions_options! {
+    /// The PostgreSQL identity a session's table functions use for ownership
+    /// checks. It lives in the DataFusion session config because a table
+    /// function only receives a `&dyn Session`, not the pgwire client.
+    pub struct PgIdentityConfig {
+        pub user: String, default = String::new()
+        pub database: String, default = String::new()
+    }
+}
+
+impl datafusion::common::config::ConfigExtension for PgIdentityConfig {
+    const PREFIX: &'static str = "lakesoul_pg_identity";
 }
 
 /// PostgreSQL connection-local settings.
@@ -81,6 +96,7 @@ pub struct PgSession {
     pub context: Arc<SessionContext>,
     pub settings: RwLock<SessionSettings>,
     pub actor: SessionActor,
+    pub ivm: Option<Arc<crate::ivm::IvmService>>,
     distributed: bool,
     /// Metadata view this connection lists from: the factory's shared
     /// snapshot, i.e. one refresher per process rather than one per
@@ -108,6 +124,7 @@ impl PgSession {
             context,
             settings: RwLock::new(settings),
             actor,
+            ivm: None,
             distributed,
             catalog_snapshot,
         })
@@ -154,6 +171,18 @@ pub struct PgSessionFactory {
     auth_manager: Arc<AuthManager>,
     catalog_options: PgCatalogOptions,
     distributed: bool,
+    ivm: Option<Arc<crate::ivm::IvmService>>,
+    /// Object-store prefix new tables are created under; `CREATE TABLE`
+    /// refuses to run without one.
+    warehouse: Option<String>,
+    /// Supervises SQL-created subscription processes. `None` in tests and in
+    /// embeddings that do not enable subscriptions.
+    subscriptions: Option<Arc<crate::subscribe::supervisor::SubscriptionSupervisor>>,
+    /// Shared foreign-server registry. `None` disables federation.
+    federation: Option<Arc<crate::federation::FederationRuntime>>,
+    /// Detached-query service. `None` in tests and in embeddings that do not
+    /// install the control statements.
+    jobs: Option<Arc<crate::jobs::JobService>>,
 }
 
 impl PgSessionFactory {
@@ -163,34 +192,78 @@ impl PgSessionFactory {
         args: &CoreArgs,
         auth_manager: Arc<AuthManager>,
     ) -> Result<Self> {
-        Self::new_with_memory(
+        Self::new_with_memory_pool(
             meta_client,
             args,
             auth_manager,
-            &ExecutionMemoryArgs::default(),
+            lakesoul_datafusion::session::ExecutionMemoryArgs::default().create_pool(),
         )
     }
 
-    pub fn new_with_memory(
+    /// Build a factory whose sessions share `memory_pool`, created once by the
+    /// server process.
+    pub fn new_with_memory_pool(
         meta_client: MetaDataClientRef,
         args: &CoreArgs,
         auth_manager: Arc<AuthManager>,
-        memory: &ExecutionMemoryArgs,
+        memory_pool: Arc<dyn MemoryPool>,
     ) -> Result<Self> {
         let base = LakeSoulSessionFactory::new_with_memory_pool(
             Arc::clone(&meta_client),
             args,
-            memory.create_pool(),
+            memory_pool,
         )?;
         Ok(Self {
             meta_client,
             base,
             auth_manager,
             distributed: false,
+            ivm: None,
             catalog_options: PgCatalogOptions {
                 include_synthetic_postgres_database: false,
             },
+            warehouse: args.warehouse_prefix.clone(),
+            subscriptions: None,
+            federation: None,
+            jobs: None,
         })
+    }
+
+    pub fn with_federation(
+        mut self,
+        federation: Arc<crate::federation::FederationRuntime>,
+    ) -> Self {
+        self.federation = Some(federation);
+        self
+    }
+
+    pub fn federation(&self) -> Option<&Arc<crate::federation::FederationRuntime>> {
+        self.federation.as_ref()
+    }
+
+    /// Installs the detached-query service used by the SQL control statements
+    /// and the status/result table functions.
+    pub fn with_jobs(mut self, jobs: Arc<crate::jobs::JobService>) -> Self {
+        self.jobs = Some(jobs);
+        self
+    }
+
+    pub fn jobs(&self) -> Option<&Arc<crate::jobs::JobService>> {
+        self.jobs.as_ref()
+    }
+
+    pub fn with_subscriptions(
+        mut self,
+        subscriptions: Arc<crate::subscribe::supervisor::SubscriptionSupervisor>,
+    ) -> Self {
+        self.subscriptions = Some(subscriptions);
+        self
+    }
+
+    pub fn subscriptions(
+        &self,
+    ) -> Option<&Arc<crate::subscribe::supervisor::SubscriptionSupervisor>> {
+        self.subscriptions.as_ref()
     }
 
     /// Plans every session against distributed workers.
@@ -203,6 +276,34 @@ impl PgSessionFactory {
         self.base = self.base.with_distributed(options);
         self.distributed = true;
         self
+    }
+
+    /// Install the process-wide IVM service used by `INSERT ... SELECT`
+    /// when the connection enables `lakesoul.ivm.enabled`.
+    pub fn with_ivm(mut self, ivm: Arc<crate::ivm::IvmService>) -> Self {
+        self.ivm = Some(ivm);
+        self
+    }
+
+    /// A session with the factory's memory pool, catalog and planner, used to
+    /// build the IVM runtime configuration at startup.
+    pub(crate) fn create_template_session(&self) -> Result<Arc<SessionContext>> {
+        self.base.create_session(&LakeSoulSessionOptions::default())
+    }
+
+    /// A cloneable factory for isolated IVM refresh sessions.
+    pub fn refresh_session_factory(&self) -> LakeSoulSessionFactory {
+        self.base.clone()
+    }
+
+    /// The metadata client `CREATE TABLE`/`DROP TABLE` write through.
+    pub fn meta_client(&self) -> &MetaDataClientRef {
+        &self.meta_client
+    }
+
+    /// The object-store prefix new tables are created under.
+    pub fn warehouse(&self) -> Option<&str> {
+        self.warehouse.as_deref()
     }
 
     /// The metadata view shared by every connection of this factory.
@@ -241,6 +342,7 @@ impl PgSessionFactory {
         let context = self.base.create_session(&LakeSoulSessionOptions {
             default_schema: settings.initial_schema().to_string(),
             time_zone: settings.time_zone.iana_name().map(str::to_owned),
+            federation_writes: true,
         })?;
 
         let state = context.state();
@@ -273,14 +375,43 @@ impl PgSessionFactory {
             .options_mut()
             .extensions
             .insert(LakeSoulVectorSearchConfig::default());
+        config
+            .options_mut()
+            .extensions
+            .insert(crate::ivm::IvmSessionConfig::default());
+        config.options_mut().extensions.insert(PgIdentityConfig {
+            user: identity.user.clone(),
+            database: identity.database.clone(),
+        });
+        // How the next statement treats a key that is already present. The
+        // INSERT hook sets it before every write; the sink reads it while
+        // planning, so `ON CONFLICT DO NOTHING` drops rows instead of failing.
+        config.set_extension(Arc::new(
+            lakesoul_datafusion::write_mode::LakeSoulWriteMode::new(),
+        ));
+        // The read-modify-write snapshot of the UPDATE being executed. A new
+        // handle is created for each connection (never cloned from another
+        // session), so two sessions cannot share a mutable snapshot; the
+        // statement hook sets it at Execute and its guard clears it again.
+        config.set_extension(Arc::new(
+            lakesoul_datafusion::write_mode::LakeSoulFixedSnapshot::new(),
+        ));
+        // Where an open transaction block collects the writes it will publish.
+        // The block hook installs a sink on `BEGIN` and clears it when the block
+        // ends; the sink writes through the connection's metadata client.
+        config.set_extension(Arc::new(
+            lakesoul_datafusion::write_mode::LakeSoulDeferredCommit::new(),
+        ));
         let state = SessionStateBuilder::new_from_existing(state)
             .with_config(config)
             .build();
-        let catalog = pg_lakesoul_catalog(
+        let catalog = pg_lakesoul_catalog_with_federation(
             Arc::clone(&self.meta_client),
             LakeSoulProviderOptions::from_session(&state),
             &identity.database,
             Arc::clone(self.base.catalog_snapshot()),
+            self.federation.clone(),
+            &identity.user,
         );
         let catalog_list = Arc::new(PgDatabaseCatalogList::new(
             identity.database.clone(),
@@ -313,16 +444,41 @@ impl PgSessionFactory {
             .map_err(|error| report!("pgvector parameter planner: {error}"))?;
         datafusion_postgres::pgvector::install(&context)
             .map_err(|error| report!("pgvector install: {error}"))?;
+        if let Some(jobs) = &self.jobs {
+            crate::jobs::register_control_stubs(&context);
+            context.register_udtf(
+                "lakesoul_query_status",
+                Arc::new(crate::jobs::QueryStatusFunction::new(Arc::clone(jobs))),
+            );
+            context.register_udtf(
+                "lakesoul_queries",
+                Arc::new(crate::jobs::QueriesFunction::new(Arc::clone(jobs))),
+            );
+            context.register_udtf(
+                "lakesoul_query_result",
+                Arc::new(crate::jobs::QueryResultFunction::new(Arc::clone(jobs))),
+            );
+            context.register_udtf(
+                "lakesoul_query_result_set",
+                Arc::new(crate::jobs::QueryResultSetFunction::new(Arc::clone(jobs))),
+            );
+            context.register_udtf(
+                "lakesoul_query_result_sets",
+                Arc::new(crate::jobs::QueryResultSetsFunction::new(Arc::clone(jobs))),
+            );
+        }
         // Register on the final frontend context, after catalog/default-schema
         // and expression-planner replacement. UDTFs resolve through this state.
         lakesoul_datafusion::udf::vector_batch::register(&context);
-        let session = Arc::new(PgSession::new(
+        let mut session = PgSession::new(
             identity,
             context,
             settings.clone(),
             Arc::clone(self.base.catalog_snapshot()),
             self.distributed,
-        )?);
+        )?;
+        session.ivm = self.ivm.clone();
+        let session = Arc::new(session);
         {
             let settings = session.settings.read();
             info!(

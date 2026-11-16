@@ -4,8 +4,9 @@
 
 //! PostgreSQL metadata owned by the IVM runtime (schema `ivm`).
 //!
-//! The tables live next to the LakeSoul metadata in the same database but are
-//! created and used only by this crate:
+//! The tables live next to the LakeSoul metadata in the same database and are
+//! created by `script/meta_init.sql` (new deployments) or the metadata
+//! migration (existing 4.0 databases):
 //!
 //! * `ivm.views` stores the serialized [`crate::ViewSpec`] of every view, its
 //!   monotonic epoch counter and its rebuild generation;
@@ -30,140 +31,13 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use lakesoul_metadata::error::LakeSoulMetaDataError;
+use lakesoul_metadata::transfusion::DataFileInfo;
 use lakesoul_metadata::{PooledClient, QueryType, create_connection, pg_config_from_env};
 use serde::{Deserialize, Serialize};
 use tokio_postgres::error::SqlState;
 use tokio_postgres::types::ToSql;
 
 use crate::error::Result;
-
-/// DDL for the IVM metadata schema. Idempotent and safe to run concurrently
-/// (PostgreSQL `IF NOT EXISTS` is not race free, so each statement tolerates
-/// the duplicate created by a concurrent initializer).
-const IVM_SCHEMA_DDL: &str = "
-do $$ begin
-    create schema if not exists ivm;
-exception when duplicate_schema or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists ivm.views (
-        view_id             text primary key,
-        spec                jsonb not null,
-        refresh_interval_ms bigint not null default 0,
-        status              text not null default 'active',
-        last_epoch          bigint not null default 0,
-        generation          bigint not null default 0,
-        definition_hash     text,
-        source_sql          text,
-        created_at          bigint not null
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists last_epoch bigint not null default 0;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists generation bigint not null default 0;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists definition_hash text;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists source_sql text;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.views add column if not exists last_error text;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists ivm.cursors (
-        view_id         text not null,
-        source_table_id text not null,
-        partition_desc  text not null,
-        last_version    bigint not null,
-        last_timestamp  bigint not null,
-        primary key (view_id, source_table_id, partition_desc)
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists ivm.epochs (
-        view_id            text   not null,
-        generation         bigint not null,
-        epoch              bigint not null,
-        window_key         text   not null,
-        status             text   not null,
-        to_versions        jsonb  not null,
-        mv_versions_before jsonb  not null default '[]'::jsonb,
-        state_versions_before jsonb not null default '[]'::jsonb,
-        mv_versions        jsonb  not null default '[]'::jsonb,
-        state_versions     jsonb  not null default '[]'::jsonb,
-        commit_ids         jsonb  not null default '[]'::jsonb,
-        created_at         bigint not null,
-        committed_at       bigint,
-        primary key (view_id, generation, epoch)
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.epochs add column if not exists commit_ids jsonb not null default '[]'::jsonb;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.epochs add column if not exists state_versions_before jsonb not null default '[]'::jsonb;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    alter table ivm.epochs add column if not exists state_versions jsonb not null default '[]'::jsonb;
-exception when duplicate_column or unique_violation then null;
-end $$;
-
-do $$ begin
-    create unique index if not exists ivm_epochs_window_key
-        on ivm.epochs (view_id, generation, window_key);
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists ivm.states (
-        view_id    text   not null,
-        role       text   not null,
-        table_id   text   not null,
-        table_name text   not null,
-        namespace  text   not null default 'default',
-        table_path text   not null,
-        created_at bigint not null,
-        primary key (view_id, role)
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-
-do $$ begin
-    create table if not exists ivm.consumers (
-        view_id     text   not null,
-        consumer_id text   not null,
-        last_epoch  bigint not null,
-        updated_at  bigint not null,
-        primary key (view_id, consumer_id)
-    );
-exception when duplicate_table or unique_violation then null;
-end $$;
-";
 
 /// The persisted cursor of one source partition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +119,13 @@ pub enum StateRole {
     /// values of that partition.  A refresh recomputes only the changed
     /// partitions and merges all partials of the affected groups.
     MultiAggPartials,
+    /// A narrow `(group keys, source primary key)` index for a recomputed
+    /// aggregate.  It lets the refresh read the source rows of the affected
+    /// groups by primary key instead of scanning the whole source.
+    RecomputedIndex,
+    /// One narrow index per grouping set, keyed by the set's keys and the
+    /// source primary key.  The index position is the set position.
+    GroupingSetIndex(u32),
     /// A join source state keyed by the encoded join key.
     JoinLeft,
     /// A join source state keyed by the encoded join key.
@@ -255,6 +136,9 @@ pub enum StateRole {
     /// step's left key to the base row identities, so a changed dimension can
     /// fan out to affected base rows without scanning the base.
     LookupChainIndex(u32),
+    /// One narrow `(encoded join key, source primary key)` index for a
+    /// multi-join edge that needs a null-safe or computed key lookup.
+    MultiJoinKeyIndex(u32),
     /// The source-row state used to recompute window/top-k ranks.
     RankState,
     /// One partition spec of a multi-window view.  The index is the spec
@@ -271,10 +155,13 @@ impl StateRole {
             StateRole::State => "state",
             StateRole::MultiAggRows => "multi_agg_rows",
             StateRole::MultiAggPartials => "multi_agg_partials",
+            StateRole::RecomputedIndex => "recomputed_index",
+            StateRole::GroupingSetIndex(_) => "grouping_set_index",
             StateRole::JoinLeft => "join_left",
             StateRole::JoinRight => "join_right",
             StateRole::JoinPairIndex => "join_pair_index",
             StateRole::LookupChainIndex(_) => "lookup_chain_index",
+            StateRole::MultiJoinKeyIndex(_) => "multi_join_key_index",
             StateRole::RankState => "rank_state",
             StateRole::MultiWindow(_) => "multi_window",
         }
@@ -287,6 +174,12 @@ impl StateRole {
             StateRole::LookupChainIndex(index) => {
                 Cow::Owned(format!("lookup_chain_index:{index}"))
             }
+            StateRole::GroupingSetIndex(index) => {
+                Cow::Owned(format!("grouping_set_index:{index}"))
+            }
+            StateRole::MultiJoinKeyIndex(index) => {
+                Cow::Owned(format!("multi_join_key_index:{index}"))
+            }
             role => Cow::Borrowed(role.as_str()),
         }
     }
@@ -297,6 +190,7 @@ impl StateRole {
             "state" => Ok(StateRole::State),
             "multi_agg_rows" => Ok(StateRole::MultiAggRows),
             "multi_agg_partials" => Ok(StateRole::MultiAggPartials),
+            "recomputed_index" => Ok(StateRole::RecomputedIndex),
             // An earlier development role name; keep reading it so a
             // pre-existing metadata row does not fail the whole listing.
             "multi_agg_partitions" => Ok(StateRole::MultiAggPartials),
@@ -314,6 +208,16 @@ impl StateRole {
                         },
                     );
                 }
+                if let Some(index) = other.strip_prefix("grouping_set_index:") {
+                    return index
+                        .parse::<u32>()
+                        .map(StateRole::GroupingSetIndex)
+                        .map_err(|_| {
+                            rootcause::report!(
+                                "invalid grouping-set index state role {other:?}"
+                            )
+                        });
+                }
                 if let Some(index) = other.strip_prefix("lookup_chain_index:") {
                     return index
                         .parse::<u32>()
@@ -321,6 +225,16 @@ impl StateRole {
                         .map_err(|_| {
                             rootcause::report!(
                                 "invalid lookup-chain index state role {other:?}"
+                            )
+                        });
+                }
+                if let Some(index) = other.strip_prefix("multi_join_key_index:") {
+                    return index
+                        .parse::<u32>()
+                        .map(StateRole::MultiJoinKeyIndex)
+                        .map_err(|_| {
+                            rootcause::report!(
+                                "invalid multi-join key index state role {other:?}"
                             )
                         });
                 }
@@ -380,6 +294,24 @@ pub struct ViewInfo {
     pub fallback: bool,
     /// Why the view fell back, when it did (for example the rejected shape).
     pub fallback_reason: Option<String>,
+    /// The last successful refresh/rebuild time (unix milliseconds).
+    pub last_refresh_at: Option<i64>,
+    /// The last source-window check time, including a no-op (unix ms).
+    pub last_check_at: Option<i64>,
+    /// The last refresh action (`incremental`, `noop`, `rebuild`, ...).
+    pub last_action: Option<String>,
+    /// Wall-clock duration of the last refresh attempt.
+    pub last_duration_ms: i64,
+    /// The largest source commit timestamp gap seen at the last check.
+    pub last_source_lag_ms: Option<i64>,
+    /// Rows read by the last refresh (from the refresh IO scope).
+    pub last_rows_read: i64,
+    /// Rows written by the last refresh (from the refresh IO scope).
+    pub last_rows_written: i64,
+    /// The last failed refresh time (unix milliseconds).
+    pub last_error_at: Option<i64>,
+    /// Consecutive failed refreshes since the last success.
+    pub consecutive_failures: i64,
 }
 
 /// The partition versions of one auxiliary state table at an epoch boundary.
@@ -391,6 +323,84 @@ pub struct StateVersion {
     pub table_id: String,
     /// The partition versions, sorted by partition description.
     pub versions: Vec<PartitionVersion>,
+}
+
+/// One staged table write recorded before the coordinator commits it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitPlanEntry {
+    /// Stable identity of this entry within the plan.
+    pub id: String,
+    /// The table the files belong to.
+    pub table_id: String,
+    /// The files an append produced.
+    pub files: Vec<DataFileInfo>,
+    /// Whether the coordinator has already committed the files.
+    pub committed: bool,
+    /// The commit ids returned by LakeSoul, when known.
+    pub commit_ids: Vec<String>,
+}
+
+/// The files a refresh staged before its coordinator commits them.
+///
+/// A plan is written before each table commit, so a coordinator that dies
+/// between worker writes and commit can replay the commit without re-running
+/// the refresh.  It covers the target and every auxiliary state table.
+///
+/// `complete` is set once the target commit is about to be published (the
+/// target is the last write of every refresh shape) and again when the
+/// refresh finishes without a target write.  A plan that is not complete
+/// describes only a prefix of a refresh; recovery must fall back to the
+/// pending-epoch repair/rebuild path instead of publishing it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitPlan {
+    #[serde(default)]
+    pub entries: Vec<CommitPlanEntry>,
+    /// Whether every write of the refresh is represented in `entries`.
+    #[serde(default)]
+    pub complete: bool,
+}
+
+impl CommitPlan {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Collect the commit ids recorded for the entries.
+    pub fn commit_ids(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .flat_map(|entry| entry.commit_ids.iter().cloned())
+            .collect()
+    }
+
+    /// Record a new uncommitted table write and return its entry id.
+    pub fn record(&mut self, table_id: &str, files: Vec<DataFileInfo>) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.entries.push(CommitPlanEntry {
+            id: id.clone(),
+            table_id: table_id.to_string(),
+            files,
+            committed: false,
+            commit_ids: Vec::new(),
+        });
+        id
+    }
+
+    /// Mark an entry committed after LakeSoul accepted its files.
+    pub fn mark_committed(&mut self, id: &str, commit_ids: Vec<String>) {
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
+            entry.committed = true;
+            entry.commit_ids.extend(commit_ids);
+        }
+    }
+
+    /// Mark an entry committed without commit ids, after verifying its files
+    /// are already visible in the table.
+    pub fn mark_visible(&mut self, id: &str) {
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
+            entry.committed = true;
+        }
+    }
 }
 
 /// One row of `ivm.epochs`: a refresh window.
@@ -418,6 +428,8 @@ pub struct EpochRecord {
     pub state_versions: Vec<StateVersion>,
     /// The LakeSoul commit ids the window wrote to the MV/state.
     pub commit_ids: Vec<String>,
+    /// Files staged by workers, recorded before the coordinator commits them.
+    pub commit_plan: CommitPlan,
     /// The allocation time (unix milliseconds).
     pub created_at: i64,
     /// The commit time (unix milliseconds).
@@ -451,9 +463,10 @@ impl BeginEpoch {
 
 const EPOCH_COLUMNS: &str = "view_id, generation, epoch, window_key, status, \
      to_versions, mv_versions_before, state_versions_before, mv_versions, \
-     state_versions, commit_ids, created_at, committed_at";
+     state_versions, commit_ids, commit_plan, created_at, committed_at";
 
 /// The `ivm` schema access layer.
+#[derive(Clone)]
 pub struct IvmMetadata {
     client: PooledClient,
 }
@@ -470,9 +483,32 @@ impl IvmMetadata {
         Ok(Self { client })
     }
 
-    /// Create the `ivm` schema and tables if they do not exist.
+    /// Share a metadata client's PostgreSQL pool instead of opening a new
+    /// connection pool for the IVM metadata schema.
+    pub fn from_pool(client: PooledClient) -> Self {
+        Self { client }
+    }
+
+    /// Verify that the IVM metadata schema is installed. The schema is owned
+    /// by `script/meta_init.sql` and the metadata migrations; the runtime does
+    /// not create it.
     pub async fn init_schema(&self) -> Result<()> {
-        self.batch_execute_rw(IVM_SCHEMA_DDL).await?;
+        let installed: Option<bool> = self
+            .client
+            .query_opt(
+                "select to_regclass('ivm.views') is not null",
+                QueryType::RW,
+                &[],
+            )
+            .await?
+            .map(|row| row.get(0));
+        if installed != Some(true) {
+            return Err(rootcause::report!(
+                "the IVM metadata schema is missing; initialize the metadata \
+                 database with script/meta_init.sql and run \
+                 script/metadata_migrate.py migrate"
+            ));
+        }
         Ok(())
     }
 
@@ -543,24 +579,6 @@ impl IvmMetadata {
         }
     }
 
-    /// Run a DDL batch, retrying concurrency conflicts (idempotent DDL).
-    async fn batch_execute_rw(&self, sql: &str) -> Result<()> {
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            match self.client.batch_execute(sql, QueryType::RW).await {
-                Ok(()) => return Ok(()),
-                Err(error)
-                    if attempt < Self::MAX_RETRY_ATTEMPTS
-                        && Self::is_retryable(&error) =>
-                {
-                    Self::retry_backoff(attempt).await;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-    }
-
     /// Insert or update a registered view.
     pub async fn upsert_view(
         &self,
@@ -575,6 +593,159 @@ impl IvmMetadata {
                  set spec = excluded.spec,
                      refresh_interval_ms = excluded.refresh_interval_ms",
             &[&view_id, spec, &refresh_interval_ms, &crate::now_ms()],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Record the target commits a refresh wrote.  A pending refresh may have
+    /// committed files before its epoch row was marked, so this is written as
+    /// soon as the target commit returns, not with the epoch.
+    pub async fn record_view_commits(
+        &self,
+        view_id: &str,
+        commits: &[String],
+    ) -> Result<()> {
+        for commit_id in commits {
+            self.execute_rw(
+                "insert into ivm.view_commits(
+                         view_id, commit_id, partition_desc, created_at)
+                     values ($1::TEXT, $2::TEXT, $3::TEXT, $4::BIGINT)
+                     on conflict (view_id, commit_id) do nothing",
+                &[&view_id, commit_id, &String::new(), &crate::now_ms()],
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Commit ids the IVM runtime has written to the target of one view.
+    pub async fn view_commit_ids(
+        &self,
+        view_id: &str,
+    ) -> Result<std::collections::HashSet<String>> {
+        let rows = self
+            .client
+            .query(
+                "select commit_id from ivm.view_commits where view_id = $1::TEXT",
+                QueryType::RO,
+                &[&view_id],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|row| row.get(0)).collect())
+    }
+
+    /// The target partitions this view has published.  Only these partitions
+    /// are replaced by a rebuild; partitions written by another engine stay
+    /// untouched.
+    pub async fn view_partitions(
+        &self,
+        view_id: &str,
+    ) -> Result<std::collections::HashSet<String>> {
+        let rows = self
+            .client
+            .query(
+                "select partition_desc from ivm.view_partitions where view_id = $1::TEXT",
+                QueryType::RO,
+                &[&view_id],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|row| row.get(0)).collect())
+    }
+
+    /// Replace the set of target partitions a view owns, in one statement.
+    pub async fn replace_view_partitions(
+        &self,
+        view_id: &str,
+        partitions: &[String],
+    ) -> Result<()> {
+        let partitions = partitions.to_vec();
+        self.execute_rw(
+            "with removed as (
+                 delete from ivm.view_partitions where view_id = $1::TEXT returning 1
+             )
+             insert into ivm.view_partitions(view_id, partition_desc, updated_at)
+             select $1::TEXT, partition_desc, $3::BIGINT
+             from unnest($2::TEXT[]) as partition_desc
+             on conflict (view_id, partition_desc) do update
+             set updated_at = excluded.updated_at",
+            &[&view_id, &partitions, &crate::now_ms()],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Add target partitions to the view's ownership set.
+    pub async fn add_view_partitions(
+        &self,
+        view_id: &str,
+        partitions: &[String],
+    ) -> Result<()> {
+        if partitions.is_empty() {
+            return Ok(());
+        }
+        let partitions = partitions.to_vec();
+        self.execute_rw(
+            "insert into ivm.view_partitions(view_id, partition_desc, updated_at)
+             select $1::TEXT, partition_desc, $3::BIGINT
+             from unnest($2::TEXT[]) as partition_desc
+             on conflict (view_id, partition_desc) do update
+             set updated_at = excluded.updated_at",
+            &[&view_id, &partitions, &crate::now_ms()],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Try to take the refresh lease of one view.  A lease left by a crashed
+    /// process expires after `ttl_ms`.
+    pub async fn try_lock_view(
+        &self,
+        view_id: &str,
+        owner: &str,
+        ttl_ms: i64,
+    ) -> Result<bool> {
+        let now = crate::now_ms();
+        let expires_at = now.saturating_add(ttl_ms);
+        let row = self
+            .query_opt_rw(
+                "insert into ivm.view_locks(view_id, owner, expires_at)
+                 values ($1::TEXT, $2::TEXT, $3::BIGINT)
+                 on conflict (view_id) do update
+                 set owner = excluded.owner, expires_at = excluded.expires_at
+                 where ivm.view_locks.expires_at < $4::BIGINT
+                 returning owner",
+                &[&view_id, &owner, &expires_at, &now],
+            )
+            .await?;
+        Ok(row.is_some_and(|row| row.get::<_, String>(0) == owner))
+    }
+
+    /// Renew a refresh lease held by `owner`.  Returns false when the lease
+    /// was already taken over or expired.
+    pub async fn renew_view_lock(
+        &self,
+        view_id: &str,
+        owner: &str,
+        ttl_ms: i64,
+    ) -> Result<bool> {
+        let expires_at = crate::now_ms().saturating_add(ttl_ms);
+        let row = self
+            .query_opt_rw(
+                "update ivm.view_locks set expires_at = $3::BIGINT
+                 where view_id = $1::TEXT and owner = $2::TEXT
+                 returning owner",
+                &[&view_id, &owner, &expires_at],
+            )
+            .await?;
+        Ok(row.is_some())
+    }
+
+    /// Release a refresh lease held by `owner`.
+    pub async fn unlock_view(&self, view_id: &str, owner: &str) -> Result<()> {
+        self.execute_rw(
+            "delete from ivm.view_locks where view_id = $1::TEXT and owner = $2::TEXT",
+            &[&view_id, &owner],
         )
         .await?;
         Ok(())
@@ -752,7 +923,10 @@ impl IvmMetadata {
             .query(
                 "select view_id, status, refresh_interval_ms, last_epoch, last_error,
                         (spec->>'kind' = 'fallback') as fallback,
-                        spec->>'reason' as fallback_reason
+                        spec->>'reason' as fallback_reason,
+                        last_refresh_at, last_check_at, last_action,
+                        last_duration_ms, last_source_lag_ms, last_rows_read,
+                        last_rows_written, last_error_at, consecutive_failures
                  from ivm.views order by view_id",
                 QueryType::RO,
                 &[],
@@ -768,8 +942,39 @@ impl IvmMetadata {
                 last_error: row.get(4),
                 fallback: row.get(5),
                 fallback_reason: row.get(6),
+                last_refresh_at: row.get(7),
+                last_check_at: row.get(8),
+                last_action: row.get(9),
+                last_duration_ms: row.get(10),
+                last_source_lag_ms: row.get(11),
+                last_rows_read: row.get(12),
+                last_rows_written: row.get(13),
+                last_error_at: row.get(14),
+                consecutive_failures: row.get(15),
             })
             .collect())
+    }
+
+    /// Whether a consumer of `table_id` needs the source's full changelog.
+    ///
+    /// A direct `SUM`/`COUNT` view subtracts an update's old contribution from
+    /// the delete rows of the source delta.  The target sink also needs the old
+    /// row when it moves between target partitions.  A source that collapses
+    /// update pairs into insert-only upserts must keep the pairs while either
+    /// consumer exists.
+    pub async fn has_changelog_consumer(&self, table_id: &str) -> Result<bool> {
+        let rows = self
+            .client
+            .query(
+                "select 1 from ivm.views
+                 where spec->>'kind' in ('sum_count', 'sink')
+                   and spec->>'source_table_id' = $1::TEXT
+                 limit 1",
+                QueryType::RO,
+                &[&table_id],
+            )
+            .await?;
+        Ok(!rows.is_empty())
     }
 
     /// Start a rebuild: bump the generation and return it. Epochs of older
@@ -965,6 +1170,27 @@ impl IvmMetadata {
         Ok(())
     }
 
+    /// Persist the staged-file plan of a pending epoch before the coordinator
+    /// starts committing it.
+    pub async fn checkpoint_epoch_commit_plan(
+        &self,
+        record: &EpochRecord,
+        plan: &CommitPlan,
+    ) -> Result<()> {
+        self.execute_rw(
+            "update ivm.epochs set commit_plan = $4::JSONB
+             where view_id = $1::TEXT and generation = $2::BIGINT and epoch = $3::BIGINT",
+            &[
+                &record.view_id,
+                &record.generation,
+                &record.epoch,
+                &serde_json::to_value(plan)?,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Mark an epoch committed and record both the MV and auxiliary state
     /// partition versions.  Recovery can then distinguish a complete state
     /// write from a partial one.
@@ -993,6 +1219,29 @@ impl IvmMetadata {
         )
         .await?;
         Ok(())
+    }
+
+    /// Pending epochs of a view generation, ordered by epoch.  Used by the
+    /// coordinator recovery path and by crash tests.
+    pub async fn list_pending_epochs(
+        &self,
+        view_id: &str,
+        generation: i64,
+    ) -> Result<Vec<EpochRecord>> {
+        let rows = self
+            .client
+            .query(
+                &format!(
+                    "select {EPOCH_COLUMNS} from ivm.epochs
+                     where view_id = $1::TEXT and generation = $2::BIGINT
+                       and status = 'pending'
+                     order by epoch"
+                ),
+                QueryType::RO,
+                &[&view_id, &generation],
+            )
+            .await?;
+        rows.iter().map(epoch_record_from_row).collect()
     }
 
     /// All committed epochs of a view generation, ordered by epoch.
@@ -1223,6 +1472,53 @@ impl IvmMetadata {
         Ok(deleted)
     }
 
+    /// Record one refresh attempt for the freshness/observability surface.
+    ///
+    /// `success` is false for a failed attempt; `last_refresh_at` is then left
+    /// unchanged and the failure counter is advanced.  A no-op is a successful
+    /// check and advances both the check and refresh timestamps.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_view_refresh(
+        &self,
+        view_id: &str,
+        action: &str,
+        duration_ms: u64,
+        source_lag_ms: Option<i64>,
+        rows_read: u64,
+        rows_written: u64,
+        success: bool,
+    ) -> Result<()> {
+        let duration_ms = i64::try_from(duration_ms).unwrap_or(i64::MAX);
+        let rows_read = i64::try_from(rows_read).unwrap_or(i64::MAX);
+        let rows_written = i64::try_from(rows_written).unwrap_or(i64::MAX);
+        let now = crate::now_ms();
+        self.execute_rw(
+            "update ivm.views set
+                 last_check_at = $2::BIGINT,
+                 last_action = $3::TEXT,
+                 last_duration_ms = $4::BIGINT,
+                 last_source_lag_ms = coalesce($5::BIGINT, last_source_lag_ms),
+                 last_rows_read = $6::BIGINT,
+                 last_rows_written = $7::BIGINT,
+                 last_refresh_at = case when $8::BOOLEAN then $2::BIGINT else last_refresh_at end,
+                 last_error_at = case when $8::BOOLEAN then last_error_at else $2::BIGINT end,
+                 consecutive_failures = case when $8::BOOLEAN then 0 else consecutive_failures + 1 end
+             where view_id = $1::TEXT",
+            &[
+                &view_id,
+                &now,
+                &action,
+                &duration_ms,
+                &source_lag_ms,
+                &rows_read,
+                &rows_written,
+                &success,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Delete a view and its cursors.
     pub async fn delete_view(&self, view_id: &str) -> Result<()> {
         self.execute_rw(
@@ -1279,7 +1575,8 @@ fn epoch_record_from_row(row: &tokio_postgres::Row) -> Result<EpochRecord> {
         mv_versions: serde_json::from_value(row.get(8))?,
         state_versions: serde_json::from_value(row.get(9))?,
         commit_ids: serde_json::from_value(row.get(10))?,
-        created_at: row.get(11),
-        committed_at: row.get(12),
+        commit_plan: serde_json::from_value(row.get(11))?,
+        created_at: row.get(12),
+        committed_at: row.get(13),
     })
 }

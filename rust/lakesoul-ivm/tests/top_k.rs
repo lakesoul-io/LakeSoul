@@ -730,7 +730,7 @@ async fn pending_epoch_with_missing_auxiliary_state_is_repaired() {
         .await
         .unwrap()
         .into_iter()
-        .find(|state| state.role == StateRole::State)
+        .find(|state| state.role == StateRole::RankState)
         .unwrap();
     fixture
         .runtime
@@ -754,7 +754,7 @@ async fn pending_epoch_with_missing_auxiliary_state_is_repaired() {
         .await
         .unwrap()
         .into_iter()
-        .find(|state| state.role == StateRole::State)
+        .find(|state| state.role == StateRole::RankState)
         .unwrap();
     assert!(
         !fixture

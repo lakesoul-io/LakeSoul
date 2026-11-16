@@ -45,7 +45,7 @@ jobs:
       # Label used to access the service container
       postgres:
         # Docker Hub image
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         # Provide the password for postgres
         env:
           POSTGRES_PASSWORD: lakesoul_test
@@ -62,7 +62,7 @@ jobs:
           # Maps tcp port 5432 on service container to the host
           - 5432:5432
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install requirement
         uses: ConorMacBride/install-package@v1
         with:
@@ -85,10 +85,7 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install pymysql cryptography jproperties --no-cache-dir
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - uses: vemonet/setup-spark@v1
         with:
           spark-version: "3.5.8"
@@ -103,8 +100,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
-          shared-key: "rust-consistency"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: "native-glibc217-v2"
+          save-if: false
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -158,18 +155,18 @@ jobs:
       - name: Get jar names
         run: |
           {
-              echo "FLINK_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink)"
-              echo "FLINK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-flink | sed -e 's/.jar/-tests.jar/g')"
-              echo "SPARK_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark)"
-              echo "SPARK_TEST_JAR_NAME=$(python script/get_jar_name.py lakesoul-spark | sed -e 's/.jar/-tests.jar/g')"
+              echo "FLINK_JAR_NAME=$(python script/get_jar_name.py integrations/lakesoul-flink)"
+              echo "FLINK_TEST_JAR_NAME=$(python script/get_jar_name.py integrations/lakesoul-flink | sed -e 's/.jar/-tests.jar/g')"
+              echo "SPARK_JAR_NAME=$(python script/get_jar_name.py integrations/lakesoul-spark)"
+              echo "SPARK_TEST_JAR_NAME=$(python script/get_jar_name.py integrations/lakesoul-spark | sed -e 's/.jar/-tests.jar/g')"
           } >> "$GITHUB_ENV"
       - name: Copy built jar to work-dir
         run: |
-          cp "./lakesoul-flink/target/$FLINK_JAR_NAME" ./script/ci/work-dir
-          cp "./lakesoul-flink/target/$FLINK_TEST_JAR_NAME" ./script/ci/work-dir
-          cp "./lakesoul-spark/target/$SPARK_JAR_NAME" ./script/ci/work-dir
-          cp "./lakesoul-spark/target/$SPARK_TEST_JAR_NAME" ./script/ci/work-dir
-          rm -rf lakesoul-spark/target lakesoul-common/target native-io/lakesoul-io-java/target lakesoul-flink/target
+          cp "./integrations/lakesoul-flink/target/$FLINK_JAR_NAME" ./script/ci/work-dir
+          cp "./integrations/lakesoul-flink/target/$FLINK_TEST_JAR_NAME" ./script/ci/work-dir
+          cp "./integrations/lakesoul-spark/target/$SPARK_JAR_NAME" ./script/ci/work-dir
+          cp "./integrations/lakesoul-spark/target/$SPARK_TEST_JAR_NAME" ./script/ci/work-dir
+          rm -rf integrations/lakesoul-spark/target integrations/lakesoul-common/target integrations/native-io/lakesoul-io-java/target integrations/lakesoul-flink/target
       - name: Generate benchmark data and expected query results
         run: |
           mkdir -p lakesoul/test_files/tpch/data

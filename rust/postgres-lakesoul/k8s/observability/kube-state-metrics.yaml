@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# kube-state-metrics limited to the Pods of this namespace: container restart
+# counts and last termination reasons (OOMKilled), which the processes cannot
+# report about themselves. Namespaced informers need only the Role in
+# rbac.yaml. lakesoul-prometheus finds it by Pod discovery (job
+# `kube-state-metrics`); no Service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-kube-state-metrics
+  namespace: lakesoul
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-state-metrics
+      app.kubernetes.io/part-of: lakesoul
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-state-metrics
+        app.kubernetes.io/part-of: lakesoul
+    spec:
+      serviceAccountName: lakesoul-kube-state-metrics
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kube-state-metrics
+          image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.13.0
+          args:
+            - --port=8080
+            - --telemetry-port=8081
+            - --namespaces=lakesoul
+            - --resources=pods
+            # Only what the dashboard reads.
+            - --metric-allowlist=kube_pod_container_status_restarts_total,kube_pod_container_status_last_terminated_reason
+          ports:
+            - name: http-metrics
+              containerPort: 8080
+            - name: telemetry
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http-metrics
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: telemetry
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"

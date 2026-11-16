@@ -49,8 +49,8 @@ psql "${connection[@]}" -v ON_ERROR_STOP=1 -d "$fresh_db" -f script/meta_init.sq
 schema_query="
 select table_name || '|' || column_name || '|' || data_type || '|' || is_nullable
 from information_schema.columns
-where table_schema = 'public'
-order by table_name, column_name;
+where table_schema in ('public', 'subscription', 'federation', 'job', 'ivm')
+order by table_schema, table_name, column_name;
 select c.relname || '|replica_identity|' || c.relreplident
 from pg_class c join pg_namespace n on n.oid = c.relnamespace
 where n.nspname = 'public' and c.relkind = 'r'
@@ -70,8 +70,8 @@ replica_identity="$(psql "${connection[@]}" -At -d "$migration_db" -c \
   "select relreplident from pg_class where relname = 'data_commit_info';")"
 test "$replica_identity" = "f"
 migration_records="$(psql "${connection[@]}" -At -d "$migration_db" -c \
-  "select count(*) from lakesoul_schema_migrations where version = 4000000;")"
-test "$migration_records" = "1"
+  "select count(*) from lakesoul_schema_migrations where version in (4000000, 4000001);")"
+test "$migration_records" = "2"
 
 cp -R script/metadata-migrations "$work_dir/changed-migrations"
 printf '\n-- checksum regression\n' >> "$work_dir/changed-migrations/V4000000__core_4_0_0.sql"
@@ -83,7 +83,7 @@ if "${migration_runner[@]}" check \
 fi
 cp -R script/metadata-migrations "$work_dir/failing-migrations"
 printf 'ALTER TABLE table_that_does_not_exist ADD COLUMN value text;\n' \
-  > "$work_dir/failing-migrations/V4000001__intentional_failure.sql"
+  > "$work_dir/failing-migrations/V9000000__intentional_failure.sql"
 if "${migration_runner[@]}" migrate \
   --database-url "$(database_url "$migration_db")" \
   --migrations-dir "$work_dir/failing-migrations" >/dev/null 2>&1; then
@@ -91,7 +91,7 @@ if "${migration_runner[@]}" migrate \
   exit 1
 fi
 failed_migration_records="$(psql "${connection[@]}" -At -d "$migration_db" -c \
-  "select count(*) from lakesoul_schema_migrations where version = 4000001;")"
+  "select count(*) from lakesoul_schema_migrations where version = 9000000;")"
 test "$failed_migration_records" = "0"
 
 pg_dump "${connection[@]}" --format=custom --file="$work_dir/metadata.dump" "$migration_db"
@@ -103,7 +103,7 @@ restored_row="$(psql "${connection[@]}" -At -d "$migration_db" -c \
 test "$restored_row" = "$baseline_tag|preserve me"
 "${migration_runner[@]}" check --database-url "$(database_url "$migration_db")"
 restored_migration_records="$(psql "${connection[@]}" -At -d "$migration_db" -c \
-  "select count(*) from lakesoul_schema_migrations where version = 4000000;")"
-test "$restored_migration_records" = "1"
+  "select count(*) from lakesoul_schema_migrations where version in (4000000, 4000001);")"
+test "$restored_migration_records" = "2"
 
 printf 'Metadata migration from %s and PostgreSQL backup recovery passed.\n' "$baseline_tag"

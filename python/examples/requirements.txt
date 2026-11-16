@@ -8,4 +8,4 @@ datasets
 evaluate
 accelerate
 scikit-learn
-pillow
+pillow>=13.0.0

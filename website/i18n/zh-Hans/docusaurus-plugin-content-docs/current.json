@@ -22,5 +22,57 @@
   "sidebar.tutorialSidebar.category.Development": {
     "message": "开发者指南",
     "description": "The label for category Development in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.Get Started": {
+    "message": "快速开始",
+    "description": "The label for category Get Started in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.Engine": {
+    "message": "引擎",
+    "description": "The label for category Engine in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.PostgreSQL": {
+    "message": "PostgreSQL",
+    "description": "The label for category PostgreSQL in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.Incremental SQL": {
+    "message": "增量 SQL",
+    "description": "The label for category Incremental SQL in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.Vector Search": {
+    "message": "向量检索",
+    "description": "The label for category Vector Search in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.Full-Text Search": {
+    "message": "全文检索",
+    "description": "The label for category Full-Text Search in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.Python SDK": {
+    "message": "Python SDK",
+    "description": "The label for category Python SDK in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.Multimodal": {
+    "message": "多模态",
+    "description": "The label for category Multimodal in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.Connectors": {
+    "message": "连接器",
+    "description": "The label for category Connectors in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.Spark": {
+    "message": "Spark",
+    "description": "The label for category Spark in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.Flink": {
+    "message": "Flink",
+    "description": "The label for category Flink in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.Operations": {
+    "message": "运维",
+    "description": "The label for category Operations in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.Reference": {
+    "message": "参考",
+    "description": "The label for category Reference in sidebar tutorialSidebar"
   }
 }

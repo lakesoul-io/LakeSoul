@@ -42,11 +42,15 @@ use crate::lakesoul_table::helpers::case_fold_table_name;
 struct CachedTableProvider {
     table_info: TableInfo,
     provider_options: String,
+    /// Identity of the metadata client the provider was built from.  A
+    /// provider holds that client (and its read-replica routing), so it must
+    /// never be reused by a session bound to another client.
+    client: usize,
     provider: Arc<dyn TableProvider>,
 }
 
 static TABLE_PROVIDER_CACHE: LazyLock<
-    Mutex<HashMap<(String, String), CachedTableProvider>>,
+    Mutex<HashMap<(String, String, usize), CachedTableProvider>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 const TABLE_PROVIDER_CACHE_ENTRIES: usize = 256;
@@ -67,11 +71,19 @@ fn provider_options_fingerprint(options: &LakeSoulProviderOptions) -> String {
         .collect();
     object_store_options.sort();
     format!(
-        "{}|{}|{:?}|{:?}",
+        "{}|{}|{:?}|{:?}|deferred={:?}",
         options.parquet_force_view_types,
         options.pushdown_filters,
         object_store_options,
-        options.vector_field_metadata
+        options.vector_field_metadata,
+        // A transaction block's deferred-commit handle is part of the
+        // provider's behaviour (staged rows must stay invisible to index
+        // shards), so a provider built for a block may not be reused by a
+        // statement outside it.
+        options
+            .deferred_commit
+            .as_ref()
+            .map(|commit| Arc::as_ptr(commit) as *const () as usize),
     )
 }
 
@@ -80,12 +92,16 @@ fn cached_table_provider(
     name: &str,
     table_info: &TableInfo,
     provider_options: &str,
+    client: usize,
 ) -> Option<Arc<dyn TableProvider>> {
     let cache = TABLE_PROVIDER_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let entry = cache.get(&(namespace.to_string(), name.to_string()))?;
-    if &entry.table_info != table_info || entry.provider_options != provider_options {
+    let entry = cache.get(&(namespace.to_string(), name.to_string(), client))?;
+    if &entry.table_info != table_info
+        || entry.provider_options != provider_options
+        || entry.client != client
+    {
         return None;
     }
     Some(Arc::clone(&entry.provider))
@@ -96,6 +112,7 @@ fn store_table_provider(
     name: &str,
     table_info: TableInfo,
     provider_options: String,
+    client: usize,
     provider: Arc<dyn TableProvider>,
 ) {
     let mut cache = TABLE_PROVIDER_CACHE
@@ -105,10 +122,11 @@ fn store_table_provider(
         cache.clear();
     }
     cache.insert(
-        (namespace.to_string(), name.to_string()),
+        (namespace.to_string(), name.to_string(), client),
         CachedTableProvider {
             table_info,
             provider_options,
+            client,
             provider,
         },
     );
@@ -261,6 +279,7 @@ impl SchemaProvider for LakeSoulNamespace {
                 &name,
                 table.table_info().as_ref(),
                 options,
+                Arc::as_ptr(&self.metadata_client) as *const () as usize,
             )
         {
             if profile {
@@ -284,6 +303,7 @@ impl SchemaProvider for LakeSoulNamespace {
                 &name,
                 table.table_info().as_ref().clone(),
                 options,
+                Arc::as_ptr(&self.metadata_client) as *const () as usize,
                 Arc::clone(&provider),
             );
         }

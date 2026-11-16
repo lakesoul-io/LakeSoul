@@ -2,8 +2,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 copy-to-java ext="so":
     cargo build -p lakesoul-io-c -p lakesoul-metadata-c
-    cp target/debug/liblakesoul_io_c.{{ ext }} ../lakesoul-common/target/classes/
-    cp target/debug/liblakesoul_metadata_c.{{ ext }} ../lakesoul-common/target/classes/
+    cp target/debug/liblakesoul_io_c.{{ ext }} ../integrations/lakesoul-common/target/classes/
+    cp target/debug/liblakesoul_metadata_c.{{ ext }} ../integrations/lakesoul-common/target/classes/
 
 log_level := "info"
 
@@ -142,7 +142,7 @@ cross:
     cross build --target x86_64-unknown-linux-gnu --release --package lakesoul-io-c -F hdfs
     cross build --target x86_64-unknown-linux-gnu --release  --package lakesoul-metadata-c --all-features
     cp target/x86_64-unknown-linux-gnu/release/lib*.so target/release
-    cd .. && mvn install -pl lakesoul-flink -Pcross-build -am -DskipTests
+    cd .. && mvn install -pl integrations/lakesoul-flink -Pcross-build -am -DskipTests
 
 # Create the test_tables fixtures: 1M synthetic rows + full TPC-H SF 0.1.
 test-tables:

@@ -3698,6 +3698,22 @@ async fn a_union_step_makes_an_aggregate_over_it_maintainable() {
         read_sum_mv(runtime, &mv).await,
         full_union_sum(runtime, &first, &second).await
     );
+
+    // An update and a delete in the same window: the union step must keep the
+    // update's old image for the aggregate's changelog subtraction.
+    first
+        .append_batch(runtime.client(), source_batch(&[(2, "b", 6, "insert")]))
+        .await
+        .unwrap();
+    second
+        .append_batch(runtime.client(), source_batch(&[(4, "c", 7, "delete")]))
+        .await
+        .unwrap();
+    executor.execute(&statement).await.unwrap();
+    assert_eq!(
+        read_sum_mv(runtime, &mv).await,
+        full_union_sum(runtime, &first, &second).await
+    );
 }
 
 #[test_log::test(tokio::test)]
@@ -4751,7 +4767,10 @@ async fn two_lookups_with_the_same_keys_fuse_and_stay_correct() {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
 
     let base_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
+        // The base key is nullable on purpose: a fused multi-lookup must
+        // keep the source nullability instead of forcing every payload that
+        // is also a base key to non-nullable.
+        Field::new("id", DataType::Int64, true),
         Field::new("k", DataType::Int64, false),
         Field::new("av", DataType::Int64, false),
         Field::new(CHANGE_COLUMN, DataType::Utf8, false),

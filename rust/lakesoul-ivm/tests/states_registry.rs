@@ -391,7 +391,7 @@ async fn states_are_registered_for_each_view_kind() {
             .iter()
             .map(|(role, _)| *role)
             .collect::<Vec<_>>(),
-        vec!["mv", "rank_state", "state"]
+        vec!["mv", "rank_state"]
     );
     assert!(window_states.contains(&("mv", window_mv.table_id.clone())));
     let join_states = pair_list(&runtime, &join_view.view_id).await;
@@ -406,6 +406,14 @@ async fn states_are_registered_for_each_view_kind() {
     );
     assert!(join_states.contains(&("mv", join_mv.table_id.clone())));
     assert!(join_states.contains(&("state", join_state.table_id.clone())));
+    let pair_index = join_states
+        .iter()
+        .find(|(role, _)| *role == "join_pair_index")
+        .map(|(_, table_id)| table_id.clone())
+        .expect("the keyed join keeps a right-key pair index");
+    let pair_index = runtime.open_table_by_id(&pair_index).await.unwrap();
+    assert!(pair_index.schema.field_with_name("lv").is_err());
+    assert!(pair_index.schema.field_with_name("rv").is_err());
 
     // Re-registering the same tables (a fresh refresh or a rebuild) keeps one
     // row per role.

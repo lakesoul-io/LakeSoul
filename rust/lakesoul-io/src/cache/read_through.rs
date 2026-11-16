@@ -16,6 +16,7 @@ use object_store::{
     PutOptions, PutPayload, PutResult, path::Path,
 };
 
+use super::stats::SCHEMA_INFERENCE_TIMING;
 use super::{paging::PageCache, stats::CacheStats};
 use object_store::Result;
 
@@ -143,7 +144,15 @@ async fn get_range<C: PageCache>(
     // background task.
     metrics::gauge!(CAPACITY_BYTES).set(stats.max_capacity() as f64);
     metrics::gauge!(USAGE_BYTES).set(stats.usage() as f64);
+    let head_started = SCHEMA_INFERENCE_TIMING.try_with(|_| Instant::now()).ok();
     let meta = cache.head(location, store.head(location)).await?;
+    if let Some(started) = head_started {
+        let _ = SCHEMA_INFERENCE_TIMING.try_with(|timing| {
+            timing
+                .range_head_ns
+                .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        });
+    }
 
     let pages = stream::iter((start..range.end).step_by(page_size))
         .map(|offset| {
@@ -170,9 +179,22 @@ async fn get_range<C: PageCache>(
                         stats_for_fetch.inc_total_misses();
                         metrics::counter!(PAGE_MISSES_TOTAL).increment(1);
                         miss_flag.store(true, Ordering::Relaxed);
+                        let fetch_started =
+                            SCHEMA_INFERENCE_TIMING.try_with(|_| Instant::now()).ok();
                         let fetched = store
                             .get_range(location, offset as u64..page_end as u64)
                             .await?;
+                        if let Some(started) = fetch_started {
+                            let _ = SCHEMA_INFERENCE_TIMING.try_with(|timing| {
+                                timing.remote_ns.fetch_add(
+                                    started.elapsed().as_nanos() as u64,
+                                    Ordering::Relaxed,
+                                );
+                                timing
+                                    .remote_bytes
+                                    .fetch_add(fetched.len() as u64, Ordering::Relaxed);
+                            });
+                        }
                         stats_for_fetch.inc_insert_bytes(fetched.len() as u64);
                         metrics::counter!(PAGE_INSERT_BYTES_TOTAL)
                             .increment(fetched.len() as u64);
@@ -180,10 +202,16 @@ async fn get_range<C: PageCache>(
                     })
                     .await?;
                 if was_miss.load(Ordering::Relaxed) {
+                    let _ = SCHEMA_INFERENCE_TIMING.try_with(|timing| {
+                        timing.page_misses.fetch_add(1, Ordering::Relaxed);
+                    });
                     stats.inc_miss_bytes(page_bytes.len() as u64);
                     metrics::counter!(PAGE_MISS_BYTES_TOTAL)
                         .increment(page_bytes.len() as u64);
                 } else {
+                    let _ = SCHEMA_INFERENCE_TIMING.try_with(|timing| {
+                        timing.page_hits.fetch_add(1, Ordering::Relaxed);
+                    });
                     stats.inc_hit_bytes(page_bytes.len() as u64);
                     metrics::counter!(PAGE_HIT_BYTES_TOTAL)
                         .increment(page_bytes.len() as u64);
@@ -197,6 +225,15 @@ async fn get_range<C: PageCache>(
 
     let total_read_bytes: usize = pages.iter().map(|p| p.len()).sum();
     let duration = Instant::now() - current_time;
+    let _ = SCHEMA_INFERENCE_TIMING.try_with(|timing| {
+        timing.range_calls.fetch_add(1, Ordering::Relaxed);
+        timing
+            .range_ns
+            .fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
+        timing
+            .requested_bytes
+            .fetch_add(range.len() as u64, Ordering::Relaxed);
+    });
     stats.inc_total_query_time(duration.as_millis() as u64);
     stats.inc_total_data_size(total_read_bytes as u64);
 
@@ -248,7 +285,15 @@ impl<C: PageCache> ObjectStore for ReadThroughCache<C> {
             return self.inner.get_opts(location, options).await;
         }
 
+        let head_started = SCHEMA_INFERENCE_TIMING.try_with(|_| Instant::now()).ok();
         let meta = self.cache.head(location, self.inner.head(location)).await?;
+        if let Some(started) = head_started {
+            let _ = SCHEMA_INFERENCE_TIMING.try_with(|timing| {
+                timing
+                    .head_ns
+                    .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            });
+        }
         options.check_preconditions(&meta)?;
 
         if options.head {

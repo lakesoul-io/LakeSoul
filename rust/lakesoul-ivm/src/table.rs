@@ -25,8 +25,9 @@ use arrow_array::Array;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::error::DataFusionError;
 use datafusion::prelude::Expr;
+use lakesoul_common::schema_evolution::{ColumnChange, TableLayout, check_evolution};
 use lakesoul_common::ser::arrow_java::{
-    schema_from_table_info_metadata, schema_to_metadata_str,
+    schema_from_table_info_metadata, schema_to_metadata_parts, schema_to_metadata_str,
 };
 use lakesoul_io::{
     config::{
@@ -38,9 +39,14 @@ use lakesoul_io::{
     reader::LakeSoulReader,
     writer::{SendableWriter, async_writer::FlushOutput, create_writer_with_io_config},
 };
-use lakesoul_metadata::{MetaDataClient, transfusion::DataFileInfo};
+use lakesoul_metadata::{
+    LakeSoulMetaDataError, MetaDataClient, TableDefinitionUpdate,
+    transfusion::DataFileInfo,
+};
 use lakesoul_metadata_proto::entity::{CommitOp, MetaInfo, PartitionInfo, TableInfo};
+use serde::{Deserialize, Serialize};
 
+use crate::config::IvmOptions;
 use crate::error::Result;
 use crate::metadata::PartitionVersion;
 use crate::provider::IvmTableProvider;
@@ -174,56 +180,48 @@ where
 /// The in-memory multipart buffer used by the LakeSoul writer.
 pub(crate) const WRITE_MEMORY_BUFFER: usize = 8 * 1024 * 1024;
 
-/// Apply IO threads to a reader.  Readers stream batches and never spill, so
-/// they do not get a private memory pool: a pool per reader multiplied the
-/// refresh's memory by the number of open buckets.  An explicit
-/// `LAKESOUL_IVM_READ_POOL_SIZE` still opts into the old bounded-reader
-/// behavior for deployments that rely on it.
+/// Readers stream batches and never spill, so they do not get a private
+/// memory pool: a pool per reader multiplied the refresh's memory by the
+/// number of open buckets.  The caller's DataFusion memory pool is the only
+/// budget; the reader thread count is likewise owned by the IO layer.
 fn with_reader_io(builder: LakeSoulIOConfigBuilder) -> LakeSoulIOConfigBuilder {
-    let threads = std::env::var("LAKESOUL_IVM_IO_THREADS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(4);
-    let builder = builder.with_thread_num(threads);
-    let Ok(size) = std::env::var("LAKESOUL_IVM_READ_POOL_SIZE") else {
-        return builder;
-    };
-    let directory = std::env::var("LAKESOUL_IVM_SPILL_DIR")
-        .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
-    let _ = std::fs::create_dir_all(&directory);
-    tracing::debug!(size, threads, %directory, "IVM reader spill pool configured");
+    with_object_store_options(builder)
+}
+
+/// Attach the object-store options copied from the caller's session.
+fn with_object_store_options(
+    mut builder: LakeSoulIOConfigBuilder,
+) -> LakeSoulIOConfigBuilder {
+    for (key, value) in crate::config::object_store_options() {
+        builder = builder.with_object_store_option(key, value);
+    }
     builder
-        .with_option(OPTION_KEY_POOL_SIZE, size)
-        .with_option(OPTION_KEY_POOL_DIR, directory)
 }
 
 /// Give a LakeSoul writer its own bounded memory pool and spill directory.
 /// DataFusion's session limit does not automatically apply to the IO layer:
-/// its sort and merge operators create a separate runtime.
-fn with_spill_pool(
+/// its sort and merge operators create a separate runtime.  Both values come
+/// from [`IvmOptions`]; `None` keeps the historical `500mb` pool under the
+/// default spill directory.
+fn with_write_pool(
     builder: LakeSoulIOConfigBuilder,
-    size_env: &str,
-    default_size: &str,
+    options: &IvmOptions,
 ) -> LakeSoulIOConfigBuilder {
-    let size = std::env::var(size_env).unwrap_or_else(|_| default_size.to_string());
-    let threads = std::env::var("LAKESOUL_IVM_IO_THREADS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(4);
-    let directory = std::env::var("LAKESOUL_IVM_SPILL_DIR")
-        .unwrap_or_else(|_| "/tmp/lakesoul/ivm-spill".to_string());
+    let size = options
+        .write_pool_size
+        .clone()
+        .unwrap_or_else(|| "500mb".to_string());
+    let directory = options
+        .write_pool_dir
+        .clone()
+        .unwrap_or_else(crate::config::default_spill_dir);
     let _ = std::fs::create_dir_all(&directory);
-    tracing::debug!(
-        size_env,
-        size,
-        threads,
-        %directory,
-        "IVM IO spill pool configured"
-    );
-    builder
-        .with_thread_num(threads)
-        .with_option(OPTION_KEY_POOL_SIZE, size)
-        .with_option(OPTION_KEY_POOL_DIR, directory)
+    tracing::debug!(size, %directory, "IVM IO spill pool configured");
+    with_object_store_options(
+        builder
+            .with_option(OPTION_KEY_POOL_SIZE, size)
+            .with_option(OPTION_KEY_POOL_DIR, directory),
+    )
 }
 
 /// The largest affected-key set a key-filtered state read resolves through the
@@ -245,22 +243,17 @@ pub(crate) const MAX_STATE_KEY_CANDIDATES: usize = 1_000_000;
 /// Parquet stays off by default: a page holds tens of thousands of rows, so at
 /// 0.1%–1% almost every page contains a key and the index cannot skip data —
 /// measured slower than the plain scan (639–674 ms vs 367–422 ms at 10M/0.01%).
-/// `LAKESOUL_IVM_STATE_INDEX=1` forces it on for any format (clustered key sets
-/// and point lookups can still benefit on Parquet).  The index needs the local
+/// `StateIndexMode::Force` enables it for any format (clustered key sets and
+/// point lookups can still benefit on Parquet).  The index needs the local
 /// disk cache (`LAKESOUL_CACHE`); without it the read falls back to a scan.
 fn with_state_key_lookup(
     builder: lakesoul_io::config::LakeSoulIOConfigBuilder,
     file_format: PhysicalFormat,
 ) -> lakesoul_io::config::LakeSoulIOConfigBuilder {
-    let configured = std::env::var("LAKESOUL_IVM_STATE_INDEX").ok();
-    if matches!(
-        configured.as_deref(),
-        Some("0") | Some("false") | Some("off")
-    ) {
-        return builder;
-    }
-    let vortex = !matches!(file_format, PhysicalFormat::Parquet);
-    if !vortex && configured.is_none() {
+    if !crate::config::options()
+        .state_index
+        .enabled_for(file_format)
+    {
         return builder;
     }
     builder
@@ -273,18 +266,10 @@ fn with_state_key_lookup(
 /// Internal state and derived steps are read by point lookups far more often
 /// than by full scans, so they use Vortex even when the user target/source
 /// tables are Parquet.  Vortex's small row blocks let the row-level primary
-/// key locator skip most of a file; `LAKESOUL_IVM_INTERNAL_FILE_FORMAT` can
+/// key locator skip most of a file; [`IvmOptions::internal_file_format`] can
 /// still select parquet or vortex-compact for experiments.
 pub fn internal_file_format() -> PhysicalFormat {
-    match std::env::var("LAKESOUL_IVM_INTERNAL_FILE_FORMAT")
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "parquet" => PhysicalFormat::Parquet,
-        "vortex-compact" | "vortex_compact" => PhysicalFormat::VortexCompact,
-        _ => PhysicalFormat::Vortex,
-    }
+    crate::config::options().internal_file_format
 }
 
 /// The format of keyed auxiliary state tables.  IVM keeps these on Vortex as
@@ -341,7 +326,7 @@ pub struct IvmTable {
 }
 
 /// The data files of one storage partition of a table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartitionFiles {
     /// The `partition_desc` of the group (the LakeSoul default `-5` for an
     /// unpartitioned group).
@@ -812,7 +797,8 @@ impl IvmTable {
     }
 
     fn writer_builder(&self) -> LakeSoulIOConfigBuilder {
-        let mut builder = with_spill_pool(
+        let options = crate::config::options();
+        let mut builder = with_write_pool(
             LakeSoulIOConfig::builder()
                 .with_prefix(self.table_path.clone())
                 .with_schema(self.schema.clone())
@@ -822,8 +808,7 @@ impl IvmTable {
                 .with_physical_format(self.file_format)
                 .with_max_file_size(MAX_WRITE_FILE_SIZE)
                 .with_memory_buffer_capacity(WRITE_MEMORY_BUFFER),
-            "LAKESOUL_IVM_WRITE_POOL_SIZE",
-            "500mb",
+            &options,
         );
         if !self.range_partition_columns.is_empty() {
             builder = builder.with_range_partitions(self.range_partition_columns.clone());
@@ -837,15 +822,90 @@ impl IvmTable {
             self.file_format,
             PhysicalFormat::Vortex | PhysicalFormat::VortexCompact
         ) {
-            if let Ok(value) = std::env::var("LAKESOUL_IVM_VORTEX_ROW_BLOCK_SIZE") {
-                builder = builder.with_option(OPTION_KEY_VORTEX_ROW_BLOCK_SIZE, value);
-            }
-            if let Ok(value) = std::env::var("LAKESOUL_IVM_VORTEX_DATA_BLOCK_BYTES") {
-                builder =
-                    builder.with_option(OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES, value);
-            }
+            // IVM keeps the small random-access layout for its internal
+            // tables; the generic Vortex writer default is 8192 / 1 MiB.
+            let row_block_size =
+                options.vortex_row_block_size.as_deref().unwrap_or("1024");
+            builder =
+                builder.with_option(OPTION_KEY_VORTEX_ROW_BLOCK_SIZE, row_block_size);
+            let data_block_bytes = options
+                .vortex_data_block_bytes
+                .as_deref()
+                .unwrap_or("131072");
+            builder = builder
+                .with_option(OPTION_KEY_VORTEX_DATA_BLOCK_TARGET_BYTES, data_block_bytes);
         }
         builder
+    }
+
+    /// Add the nullable `__ivm_epoch` bookkeeping column to the table's
+    /// schema metadata when it is missing.  Existing data files do not carry
+    /// the column; the caller must rebuild so future rows write an epoch.
+    pub(crate) async fn ensure_epoch_column(
+        &self,
+        client: &MetaDataClient,
+    ) -> Result<Option<Self>> {
+        if self.schema.field_with_name(IVM_EPOCH_COLUMN).is_ok() {
+            return Ok(None);
+        }
+        // The column is added to the *stored* definition and published only
+        // onto that definition, so a concurrent change to the table is never
+        // overwritten with this handle's older schema. One concurrent
+        // redefinition is absorbed by re-reading; a second is an error.
+        // The metadata futures are boxed so this call, which runs deep inside
+        // the refresh executor's state machine, does not inline a metadata
+        // transaction into it.
+        let mut retries = 1;
+        loop {
+            let info = Box::pin(client.get_table_info_by_table_id(&self.table_id))
+                .await?
+                .ok_or_else(|| {
+                    rootcause::report!(
+                        "table {}.{} no longer exists",
+                        self.namespace,
+                        self.table_name
+                    )
+                })?;
+            let stored = Self::from_table_info(&info)?;
+            if stored.schema.field_with_name(IVM_EPOCH_COLUMN).is_ok() {
+                // Another runtime added it first.
+                let mut updated = self.clone();
+                updated.schema = stored.schema;
+                return Ok(Some(updated));
+            }
+            let layout = TableLayout {
+                primary_keys: stored.primary_keys.clone(),
+                range_partitions: stored.range_partition_columns.clone(),
+                cdc_column: stored.cdc_column.clone(),
+            };
+            let schema = check_evolution(
+                &stored.schema,
+                &ColumnChange::Add(Field::new(IVM_EPOCH_COLUMN, DataType::Int64, true)),
+                &layout,
+            )
+            .map_err(|error| {
+                rootcause::report!(
+                    "add {IVM_EPOCH_COLUMN} to {}.{}: {error}",
+                    self.namespace,
+                    self.table_name
+                )
+            })?;
+            let update = TableDefinitionUpdate {
+                schema: Some(schema_to_metadata_parts(&schema)),
+                properties: None,
+            };
+            match Box::pin(client.alter_table_definition(&info, &update)).await {
+                Ok(()) => {
+                    let mut updated = self.clone();
+                    updated.schema = Arc::new(schema);
+                    return Ok(Some(updated));
+                }
+                Err(LakeSoulMetaDataError::CommitConflict(_)) if retries > 0 => {
+                    retries -= 1;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     /// Create one rolling writer for a refresh/compaction output.
@@ -977,12 +1037,200 @@ impl IvmTable {
         client: &MetaDataClient,
         files: Vec<DataFileInfo>,
     ) -> Result<Vec<String>> {
-        if files.is_empty() {
+        #[cfg(debug_assertions)]
+        if crate::runtime::recovery_target_active(&self.table_id)
+            && !crate::runtime::target_writes_suppressed(&self.table_id)
+        {
+            panic!(
+                "target {} commit escaped the recovery suppression",
+                self.table_id
+            );
+        }
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
             return Ok(Vec::new());
         }
-        let commit_ids = client
-            .commit_data_files(&self.table_name, &self.namespace, files)
+        let journal =
+            crate::runtime::commit_plan_before_commit(&self.table_id, &files).await?;
+        let commit_ids = self.commit_files_inner(client, files).await;
+        if let Ok(ref commit_ids) = commit_ids {
+            crate::runtime::commit_plan_after_commit(journal, commit_ids).await?;
+        }
+        commit_ids
+    }
+
+    async fn commit_files_inner(
+        &self,
+        client: &MetaDataClient,
+        files: Vec<DataFileInfo>,
+    ) -> Result<Vec<String>> {
+        let context = crate::runtime::TARGET_WRITE
+            .try_with(std::sync::Arc::clone)
+            .ok();
+        let Some(context) = context else {
+            if files.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Ok(client
+                .commit_data_files(&self.table_name, &self.namespace, files)
+                .await?);
+        };
+        let (
+            view_id,
+            target_table_id,
+            atomic,
+            committed,
+            skip_target,
+            internal,
+            owned_partitions,
+            begin_partitions,
+            metadata,
+        ) = {
+            let guard = context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            (
+                guard.view_id.clone(),
+                guard.target_table_id.clone(),
+                guard.atomic,
+                guard.committed,
+                guard.skip_target,
+                guard.internal,
+                guard.owned_partitions.clone(),
+                guard.begin_partitions.clone(),
+                guard.metadata.clone(),
+            )
+        };
+        if skip_target && target_table_id == self.table_id {
+            // The MV is already published for this window; the recovery
+            // replay only rebuilds the auxiliary state.
+            return Ok(Vec::new());
+        }
+        if target_table_id != self.table_id {
+            if files.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Ok(client
+                .commit_data_files(&self.table_name, &self.namespace, files)
+                .await?);
+        }
+
+        let written = files
+            .iter()
+            .map(|file| file.partition_desc.clone())
+            .collect::<std::collections::HashSet<_>>();
+        // An incremental refresh with no output does not touch the target.
+        if !atomic && written.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Every target partition this refresh reads or writes is in scope:
+        // owned partitions may be replaced by a rebuild, and written
+        // partitions are about to be committed.  Partitions owned by another
+        // writer are not touched.
+        let current = latest_partition_info(client, &self.table_id).await?;
+        if !internal && !partitions_unchanged(&begin_partitions, &current) {
+            return Err(rootcause::report!(
+                "target table {} changed while the IVM refresh was running: \
+                 another writer committed a partition; retry after it stops",
+                self.table_name
+            ));
+        }
+        // Internal derived/state tables keep the historical whole-table
+        // replacement; only the user-visible target tracks partition
+        // ownership.
+        let scope_partitions = if internal {
+            current
+        } else {
+            current
+                .iter()
+                .filter(|partition| {
+                    owned_partitions.contains(&partition.partition_desc)
+                        || written.contains(&partition.partition_desc)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        if !internal {
+            crate::runtime::TargetWrite::check_external_commits(
+                client,
+                &metadata,
+                &view_id,
+                &target_table_id,
+                &scope_partitions,
+            )
             .await?;
+        }
+
+        let commit_ids = if atomic && !committed {
+            let empty_partitions = scope_partitions
+                .iter()
+                .filter(|partition| {
+                    (internal || owned_partitions.contains(&partition.partition_desc))
+                        && !written.contains(&partition.partition_desc)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            client
+                .commit_update_parts(
+                    &self.table_name,
+                    &self.namespace,
+                    files,
+                    scope_partitions,
+                    empty_partitions,
+                )
+                .await?
+        } else if files.is_empty() {
+            Vec::new()
+        } else {
+            client
+                .commit_data_files(&self.table_name, &self.namespace, files)
+                .await?
+        };
+        if !commit_ids.is_empty() {
+            metadata.record_view_commits(&view_id, &commit_ids).await?;
+        }
+
+        // The first commit of a rebuild replaces the owned set (partitions
+        // that produced no rows were emptied above); later commits add to it.
+        let mut new_owned = if atomic && !committed {
+            std::collections::HashSet::new()
+        } else {
+            owned_partitions
+        };
+        new_owned.extend(written.iter().cloned());
+        if !internal {
+            if atomic && !committed {
+                metadata
+                    .replace_view_partitions(
+                        &view_id,
+                        &new_owned.iter().cloned().collect::<Vec<_>>(),
+                    )
+                    .await?;
+            } else {
+                metadata
+                    .add_view_partitions(
+                        &view_id,
+                        &written.iter().cloned().collect::<Vec<_>>(),
+                    )
+                    .await?;
+            }
+        }
+        let after = latest_partition_info(client, &self.table_id).await?;
+        {
+            let mut guard = context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.committed = true;
+            guard.owned_partitions = new_owned.clone();
+            guard.begin_partitions = if internal {
+                after
+            } else {
+                after
+                    .into_iter()
+                    .filter(|partition| new_owned.contains(&partition.partition_desc))
+                    .collect()
+            };
+        }
         Ok(commit_ids)
     }
 
@@ -997,8 +1245,45 @@ impl IvmTable {
         client: &MetaDataClient,
         batches: Vec<RecordBatch>,
     ) -> Result<Vec<String>> {
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
+            return Ok(Vec::new());
+        }
         let files = self.write_batches(batches).await?;
         self.commit_files(client, files).await
+    }
+
+    /// Publish one refresh output to a state mirror and the target.
+    ///
+    /// Both writers run concurrently, then the mirror commits before the
+    /// target so the target remains the last write of the refresh.
+    pub(crate) async fn append_batches_pair(
+        &self,
+        client: &MetaDataClient,
+        batches: Vec<RecordBatch>,
+        other: &IvmTable,
+        other_batches: Vec<RecordBatch>,
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        let mine_suppressed = crate::runtime::target_writes_suppressed(&self.table_id);
+        let other_suppressed = crate::runtime::target_writes_suppressed(&other.table_id);
+        if mine_suppressed && other_suppressed {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        if mine_suppressed {
+            let other_ids = other.append_batches(client, other_batches).await?;
+            return Ok((Vec::new(), other_ids));
+        }
+        if other_suppressed {
+            let ids = self.append_batches(client, batches).await?;
+            return Ok((ids, Vec::new()));
+        }
+        let (files, other_files) = futures::future::try_join(
+            self.write_batches(batches),
+            other.write_batches(other_batches),
+        )
+        .await?;
+        let other_ids = other.commit_files(client, other_files).await?;
+        let ids = self.commit_files(client, files).await?;
+        Ok((ids, other_ids))
     }
 
     /// Publish a refresh output stream without collecting the whole result.
@@ -1014,6 +1299,9 @@ impl IvmTable {
     where
         S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
     {
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
+            return Ok(Vec::new());
+        }
         use futures::StreamExt;
         let mut stream = Box::pin(coalesce_batch_stream(
             stream,
@@ -1048,6 +1336,7 @@ impl IvmTable {
     /// hand each batch to both writers; cloning a `RecordBatch` only clones
     /// its `Arc` buffers.  Memory stays at one writer batch instead of the
     /// whole result set.
+    #[allow(dead_code)]
     pub(crate) async fn append_stream_pair<S>(
         &self,
         client: &MetaDataClient,
@@ -1057,6 +1346,19 @@ impl IvmTable {
     where
         S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
     {
+        let mine_suppressed = crate::runtime::target_writes_suppressed(&self.table_id);
+        let other_suppressed = crate::runtime::target_writes_suppressed(&other.table_id);
+        if mine_suppressed && other_suppressed {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        if mine_suppressed {
+            let other_ids = other.append_stream(client, stream).await?;
+            return Ok((Vec::new(), other_ids));
+        }
+        if other_suppressed {
+            let ids = self.append_stream(client, stream).await?;
+            return Ok((ids, Vec::new()));
+        }
         use futures::StreamExt;
         let mut stream = Box::pin(coalesce_batch_stream(
             stream,
@@ -1088,8 +1390,10 @@ impl IvmTable {
         crate::observability::add_write_time(started.elapsed());
         let files = self.output_files(outputs, rows);
         let other_files = other.output_files(other_outputs, rows);
-        let ids = self.commit_files(client, files).await?;
+        // The target is the last write of a refresh: commit its mirror first
+        // so a persisted target plan always covers every state write.
         let other_ids = other.commit_files(client, other_files).await?;
+        let ids = self.commit_files(client, files).await?;
         Ok((ids, other_ids))
     }
 
@@ -1101,6 +1405,7 @@ impl IvmTable {
     /// put them in different files, and merge-on-read then resolves the same
     /// key ambiguously.  Buffering only the trailing key group of each batch
     /// keeps the pair together without collecting the whole delta.
+    #[allow(dead_code)]
     pub(crate) async fn append_stream_by_key<S>(
         &self,
         client: &MetaDataClient,
@@ -1109,6 +1414,9 @@ impl IvmTable {
     where
         S: futures::Stream<Item = datafusion::error::Result<RecordBatch>> + Send + Unpin,
     {
+        if crate::runtime::target_writes_suppressed(&self.table_id) {
+            return Ok(Vec::new());
+        }
         use futures::StreamExt;
         if self.primary_keys.is_empty() {
             return self.append_stream(client, stream).await;
@@ -1410,7 +1718,7 @@ impl IvmTable {
             &self.schema,
             &defaults,
         )
-        .await;
+        .await?;
         Ok(source.map(|source| (source, session.io_config().clone())))
     }
 
@@ -1541,16 +1849,24 @@ impl IvmTable {
     ///
     /// Every partition the window touched is pinned to the version it was
     /// consumed at (`before`); a partition the window touched for the first
-    /// time contributes nothing and a partition the window did not touch is
-    /// read at its current state, so the result is the exact before state of
-    /// the window.
+    /// time contributes nothing.  A partition the window did not touch is
+    /// pinned to its latest version at `before_timestamp` (the last consumed
+    /// snapshot), not to its current version, so a source writer that commits
+    /// after the window was computed cannot leak into the before image.
     pub async fn read_before_window(
         &self,
         client: &MetaDataClient,
         before: &std::collections::HashMap<String, Option<i64>>,
+        before_timestamp: i64,
     ) -> Result<Vec<RecordBatch>> {
-        self.read_before_window_with_options(client, before, Vec::new(), None)
-            .await
+        self.read_before_window_with_options(
+            client,
+            before,
+            before_timestamp,
+            Vec::new(),
+            None,
+        )
+        .await
     }
 
     /// Read the before state of a refresh window restricted to `filters`.
@@ -1558,10 +1874,17 @@ impl IvmTable {
         &self,
         client: &MetaDataClient,
         before: &std::collections::HashMap<String, Option<i64>>,
+        before_timestamp: i64,
         filters: Vec<Expr>,
     ) -> Result<Vec<RecordBatch>> {
-        self.read_before_window_with_options(client, before, filters, None)
-            .await
+        self.read_before_window_with_options(
+            client,
+            before,
+            before_timestamp,
+            filters,
+            None,
+        )
+        .await
     }
 
     /// Read the before state of a refresh window projected to `projection`.
@@ -1569,10 +1892,17 @@ impl IvmTable {
         &self,
         client: &MetaDataClient,
         before: &std::collections::HashMap<String, Option<i64>>,
+        before_timestamp: i64,
         projection: Option<&SchemaRef>,
     ) -> Result<Vec<RecordBatch>> {
-        self.read_before_window_with_options(client, before, Vec::new(), projection)
-            .await
+        self.read_before_window_with_options(
+            client,
+            before,
+            before_timestamp,
+            Vec::new(),
+            projection,
+        )
+        .await
     }
 
     /// Read the before state of a refresh window with pushed filters and a
@@ -1586,33 +1916,59 @@ impl IvmTable {
         &self,
         client: &MetaDataClient,
         before: &std::collections::HashMap<String, Option<i64>>,
+        before_timestamp: i64,
         filters: Vec<Expr>,
         projection: Option<&SchemaRef>,
     ) -> Result<Vec<RecordBatch>> {
-        self.read_before_window_with_options(client, before, filters, projection)
-            .await
+        self.read_before_window_with_options(
+            client,
+            before,
+            before_timestamp,
+            filters,
+            projection,
+        )
+        .await
     }
 
+    /// The partition groups of the before state at `before_timestamp`.
     pub(crate) async fn before_window_groups(
         &self,
         client: &MetaDataClient,
         before: &std::collections::HashMap<String, Option<i64>>,
+        before_timestamp: i64,
     ) -> Result<Vec<PartitionFiles>> {
+        // Untouched partitions are resolved at the window boundary.  Using the
+        // current version would fold source commits that landed after the
+        // window was computed into a full before-image read.
+        let boundary = if before_timestamp > 0 {
+            client
+                .get_all_partition_info_as_of(&self.table_id, before_timestamp)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let boundary = boundary
+            .into_iter()
+            .map(|partition| (partition.partition_desc.clone(), partition))
+            .collect::<std::collections::HashMap<_, _>>();
         let mut versions = Vec::new();
-        for partition in client.get_all_partition_info(&self.table_id).await? {
-            match before.get(&partition.partition_desc) {
-                // The partition is first consumed by this window: it has no
-                // before state.
-                Some(None) => continue,
-                Some(Some(version)) => versions.push(PartitionVersion {
-                    partition_desc: partition.partition_desc.clone(),
-                    version: *version,
-                }),
-                // The window did not touch the partition: before == current.
-                None => versions.push(PartitionVersion {
-                    partition_desc: partition.partition_desc.clone(),
+        for (partition_desc, version) in before {
+            // The partition is first consumed by this window: it has no before
+            // state.
+            let Some(version) = version else {
+                continue;
+            };
+            versions.push(PartitionVersion {
+                partition_desc: partition_desc.clone(),
+                version: *version,
+            });
+        }
+        for (partition_desc, partition) in &boundary {
+            if !before.contains_key(partition_desc) {
+                versions.push(PartitionVersion {
+                    partition_desc: partition_desc.clone(),
                     version: i64::from(partition.version),
-                }),
+                });
             }
         }
         self.version_groups(client, &versions).await
@@ -1622,10 +1978,13 @@ impl IvmTable {
         &self,
         client: &MetaDataClient,
         before: &std::collections::HashMap<String, Option<i64>>,
+        before_timestamp: i64,
         filters: Vec<Expr>,
         projection: Option<&SchemaRef>,
     ) -> Result<Vec<RecordBatch>> {
-        let groups = self.before_window_groups(client, before).await?;
+        let groups = self
+            .before_window_groups(client, before, before_timestamp)
+            .await?;
         self.read_groups_with_options(groups, filters, projection)
             .await
     }
@@ -1921,11 +2280,10 @@ impl IvmTable {
             // The row-level index is only a win on Vortex's small blocks; a
             // Parquet page holds too many rows, and building the index on the
             // fly is much slower than the regular scan.
-            let vortex = !matches!(self.file_format, PhysicalFormat::Parquet);
-            let forced = std::env::var("LAKESOUL_IVM_STATE_INDEX")
-                .ok()
-                .is_some_and(|value| !matches!(value.as_str(), "0" | "false" | "off"));
-            if vortex || forced {
+            if crate::config::options()
+                .state_index
+                .enabled_for(self.file_format)
+            {
                 builder = with_state_key_lookup(builder, self.file_format);
                 builder = builder.with_explicit_pk_keys(columns, keys);
             }
@@ -2255,6 +2613,43 @@ impl IvmTable {
     /// delete commit would reject the following merge/append via the commit
     /// conflict rules, while a compaction leaves the partition writable again.
     pub async fn truncate(&self, client: &MetaDataClient) -> Result<()> {
+        let skip_target = crate::runtime::TARGET_WRITE
+            .try_with(|context| {
+                let guard = context
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.skip_target && guard.target_table_id == self.table_id
+            })
+            .unwrap_or(false);
+        if skip_target {
+            // A recovery replay must not clear an already published target.
+            return Ok(());
+        }
+        let is_user_target = crate::runtime::ATOMIC_TARGET
+            .try_with(|target| target == &self.table_id)
+            .unwrap_or(false);
+        if is_user_target
+            && let Ok(context) =
+                crate::runtime::TARGET_WRITE.try_with(std::sync::Arc::clone)
+            && context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .target_table_id
+                == self.table_id
+        {
+            // A rebuild replaces the user-visible target with one atomic
+            // version; an empty version between truncate and append would be
+            // visible to readers.  The refresh path may start incrementally
+            // and fall back to a rebuild, so the truncate itself selects the
+            // atomic mode.  Internal derived/state tables keep the historical
+            // truncate+append path so their consumers see an append commit.
+            let mut guard = context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.atomic = true;
+            guard.committed = false;
+            return Ok(());
+        }
         let partitions = client.get_all_partition_info(&self.table_id).await?;
         if partitions.is_empty() {
             return Ok(());
@@ -2283,6 +2678,34 @@ impl IvmTable {
             .await?;
         Ok(())
     }
+}
+
+/// The latest version of every partition of a table.
+pub(crate) async fn latest_partition_info(
+    client: &MetaDataClient,
+    table_id: &str,
+) -> Result<Vec<PartitionInfo>> {
+    let mut latest = std::collections::HashMap::<String, PartitionInfo>::new();
+    for partition in client.get_all_partition_info(table_id).await? {
+        let replace = latest
+            .get(&partition.partition_desc)
+            .is_none_or(|current| current.version < partition.version);
+        if replace {
+            latest.insert(partition.partition_desc.clone(), partition);
+        }
+    }
+    Ok(latest.into_values().collect())
+}
+
+/// True when every partition in `before` still has its captured version.
+fn partitions_unchanged(before: &[PartitionInfo], current: &[PartitionInfo]) -> bool {
+    let current = current
+        .iter()
+        .map(|partition| (&partition.partition_desc, partition.version))
+        .collect::<std::collections::HashMap<_, _>>();
+    before.iter().all(|partition| {
+        current.get(&partition.partition_desc).copied() == Some(partition.version)
+    })
 }
 
 /// The first or last key bytes of a batch.
@@ -2381,5 +2804,137 @@ mod coalesce_tests {
             .downcast_ref::<Int32Array>()
             .expect("int32 column");
         assert_eq!(values.values(), &[0, 1, 2, 3, 4, 5]);
+    }
+}
+
+/// Adding the epoch column to a target that lacks it. These tests need the
+/// metadata PostgreSQL configured through `LAKESOUL_PG_*`.
+#[cfg(test)]
+mod epoch_column_tests {
+    use super::*;
+
+    async fn create_target(client: &MetaDataClient, tag: &str) -> TableInfo {
+        let name = format!("ivm_epoch_{tag}_{}", uuid::Uuid::new_v4().simple());
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("v", DataType::Int32, true),
+            Field::new(IVM_ROW_KINDS_COLUMN, DataType::Utf8, true),
+        ]);
+        let (table_schema, table_schema_arrow_ipc, table_schema_arrow_ipc_json_hash) =
+            schema_to_metadata_parts(&schema);
+        let info = TableInfo {
+            table_id: format!("table_{}", uuid::Uuid::new_v4()),
+            table_name: name.clone(),
+            table_namespace: "default".to_string(),
+            table_path: format!("file:///tmp/{name}"),
+            table_schema,
+            table_schema_arrow_ipc,
+            table_schema_arrow_ipc_json_hash,
+            properties: serde_json::json!({
+                "hashBucketNum": "1",
+                "use_cdc": "true",
+                "lakesoul_cdc_change_column": IVM_ROW_KINDS_COLUMN,
+            })
+            .to_string(),
+            partitions: ";id".to_string(),
+            domain: "public".to_string(),
+        };
+        client.create_table(info.clone()).await.unwrap();
+        client
+            .get_table_info_by_table_id(&info.table_id)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    async fn stored_schema(
+        client: &MetaDataClient,
+        table_id: &str,
+    ) -> (TableInfo, SchemaRef) {
+        let info = client
+            .get_table_info_by_table_id(table_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let schema = IvmTable::from_table_info(&info).unwrap().schema;
+        (info, schema)
+    }
+
+    #[tokio::test]
+    async fn epoch_column_is_added_to_the_stored_definition() {
+        let client = MetaDataClient::from_env().await.unwrap();
+        let info = create_target(&client, "add").await;
+        let table = IvmTable::from_table_info(&info).unwrap();
+
+        let updated = table
+            .ensure_epoch_column(&client)
+            .await
+            .unwrap()
+            .expect("the column is missing, so it is added");
+        assert!(updated.schema.field_with_name(IVM_EPOCH_COLUMN).is_ok());
+        let (stored_info, stored) = stored_schema(&client, &info.table_id).await;
+        let epoch = stored.field_with_name(IVM_EPOCH_COLUMN).unwrap();
+        assert_eq!(epoch.data_type(), &DataType::Int64);
+        assert!(epoch.is_nullable());
+        // The IPC mirror is rewritten with the schema, not cleared.
+        assert!(!stored_info.table_schema_arrow_ipc.is_empty());
+        assert_eq!(
+            stored_info.table_schema_arrow_ipc_json_hash,
+            lakesoul_common::ser::arrow_java::schema_metadata_json_hash(
+                &stored_info.table_schema
+            )
+        );
+        // A handle that already has the column changes nothing.
+        assert!(
+            updated
+                .ensure_epoch_column(&client)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        client
+            .delete_table_by_table_info_cascade(&stored_info)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_concurrent_redefinition_is_not_overwritten() {
+        let client = MetaDataClient::from_env().await.unwrap();
+        let info = create_target(&client, "keep").await;
+        // The handle is loaded before another writer adds a column.
+        let stale = IvmTable::from_table_info(&info).unwrap();
+        let widened = check_evolution(
+            &stale.schema,
+            &ColumnChange::Add(Field::new("extra", DataType::Utf8, true)),
+            &TableLayout::default(),
+        )
+        .unwrap();
+        client
+            .alter_table_definition(
+                &info,
+                &TableDefinitionUpdate {
+                    schema: Some(schema_to_metadata_parts(&widened)),
+                    properties: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let updated = stale.ensure_epoch_column(&client).await.unwrap().unwrap();
+        let (stored_info, stored) = stored_schema(&client, &info.table_id).await;
+        for schema in [&stored, &updated.schema] {
+            assert!(schema.field_with_name("extra").is_ok(), "{schema:?}");
+            assert!(
+                schema.field_with_name(IVM_EPOCH_COLUMN).is_ok(),
+                "{schema:?}"
+            );
+        }
+
+        client
+            .delete_table_by_table_info_cascade(&stored_info)
+            .await
+            .unwrap();
     }
 }

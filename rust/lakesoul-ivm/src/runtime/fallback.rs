@@ -648,7 +648,7 @@ impl IvmRuntime {
         restriction: &PartitionRestriction,
         epoch: i64,
     ) -> Result<Option<Vec<String>>> {
-        let context = refresh_session();
+        let context = refresh_session_local();
         for table in &view.tables {
             let restricted = table
                 .range_partition_columns
@@ -716,7 +716,7 @@ impl IvmRuntime {
             ))
             .await
             .map_err(|error| report!("fallback `{}`: {error}", view.statement))?;
-        let compose = refresh_session();
+        let compose = refresh_session_local();
         compose.register_table("ins", ins.into_view())?;
         if has_deletes {
             let mv = self.groups_table_frame(&compose, &view.mv, current_groups)?;
@@ -909,7 +909,7 @@ impl IvmRuntime {
         view: &FallbackView,
         epoch: i64,
     ) -> Result<Vec<String>> {
-        let context = refresh_session();
+        let context = refresh_session_local();
         for table in &view.tables {
             let provider: Arc<dyn datafusion::catalog::TableProvider> =
                 Arc::new(self.table_provider(table));
@@ -1066,7 +1066,7 @@ mod partition_scope_tests {
         mv_partitions: &[&str],
         sources: Vec<IvmTable>,
     ) -> PartitionScopeAnalysis {
-        let context = refresh_session();
+        let context = refresh_session_local();
         for source in &sources {
             let table = MemTable::try_new(source.schema.clone(), vec![vec![]]).unwrap();
             context

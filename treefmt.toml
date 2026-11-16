@@ -21,8 +21,10 @@ excludes = [
   "**/uv.lock",
   "website/package-lock.json",
   # Generated code
-  "lakesoul-flink/src/main/java/org/apache/flink/fnexecution/v1/FlinkFnApi.java",
+  "integrations/lakesoul-flink/src/main/java/org/apache/flink/fnexecution/v1/FlinkFnApi.java",
   "python/src/lakesoul/metadata/generated/**",
+  # Vendored upstream crates
+  "rust/third_party/**",
 ]
 
 # Rust ─────────────────────────────────────────────────
@@ -64,6 +66,11 @@ includes = ["*.toml"]
 command = "prettier"
 options = ["--write"]
 includes = ["*.yml", "*.yaml"]
+# Rendered by `scripts/bench.py console`: `${EXTRA_ENV}` is replaced with an
+# indented env block, so the unrendered file is not valid YAML and prettier
+# rejects it. Keep the template out of the parser; every other manifest still
+# formats.
+excludes = ["rust/postgres-lakesoul/benchmark/k8s/jobs/console-job.yaml"]
 
 # JSON ─────────────────────────────────────────────────
 [formatter.json]

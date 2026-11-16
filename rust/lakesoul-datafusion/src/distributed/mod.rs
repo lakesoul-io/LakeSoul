@@ -29,6 +29,14 @@
 //! the planner drops a boundary between two one-task stages, and a plan left
 //! without any boundary runs on the coordinator as the single-node plan.
 //!
+//! A primary-key scan groups its files into atomic `(range partition, hash
+//! bucket)` work units, preserving version order within each unit. Whole units
+//! are packed across the scan's task budget, so even one range partition (or
+//! a table without range columns) can use several workers when it has several
+//! populated buckets. Each task's merge runs at most `target_partitions` local
+//! lanes, executing further units sequentially. If any file has a missing or
+//! out-of-range bucket ID, its whole range stays one indivisible unit instead.
+//!
 //! DataFusion splits file scans into partitions by a rule of its own, before
 //! the distributed planner runs: `EnforceDistribution` byte-splits a scan of
 //! at least `repartition_file_min_size` bytes, while the distributed planner
@@ -65,13 +73,13 @@
 
 pub mod codec;
 pub mod headers;
+pub mod locality;
 pub mod planner;
 pub mod resolver;
 mod trace_context;
 pub(crate) mod vector_batch_codec;
 pub mod worker;
 
-pub use codec::LakeSoulCodec;
 pub use planner::LakeSoulDistributedQueryPlanner;
 pub use resolver::{
     KubernetesDiscovery, StaticWorkerResolver, WorkerDiscovery, WorkerSnapshot,
@@ -80,35 +88,45 @@ pub use resolver::{
 /// Protocol version exchanged between coordinators and workers.
 ///
 /// Discovery filters workers whose reported version does not match, and
-/// workers with a different build reject encoded plans loudly at decode time.
+/// workers whose [`codec::CODEC_VERSION`] differs reject encoded plans loudly
+/// at decode time.
 ///
 /// # Generations
 ///
 /// The version identifies a *protocol generation*, not just this crate's
-/// release: bump it whenever the physical-plan encoding changes.
+/// release. Bump it for incompatible changes to a released protocol.
 ///
 /// `/1` advertised an unversioned `MergeParquetExecProto`: protobuf decoders
 /// ignore unknown fields rather than rejecting them, so a plan written by this
 /// build would have been silently accepted by a `/1` worker.
 ///
-/// `/2` was the first generation versioned on the wire: it
-/// carries the explicit [`codec::CODEC_VERSION`] field *and* registers the
-/// vortex scan codec at position 2 of [`codec::user_codecs`]. Both changes are
-/// one generation rather than two because neither format has ever been
-/// released — a `/2` worker from this tree resolves every codec position a
-/// coordinator from it can stamp. Split them the moment one of the two ships on
-/// its own: extension payloads name the *position* of the codec that wrote
-/// them, so a coordinator that can stamp position 2 needs workers that resolve
-/// it.
+/// The protocol is still unreleased, so the generation stays at `/2`
+/// (`/2-ivm` with the `ivm` feature) while the codec list grows. It carries
+/// the explicit [`codec::CODEC_VERSION`] field and registers the vortex scan
+/// codec at position 1, the metadata-only scan codec at position 2, the write
+/// codec at position 3, the federation codec at position 4, the IVM refresh
+/// codec at position 5 when the `ivm` feature is enabled, then the
+/// external-file scan and write codecs and the ordered per-key upsert state
+/// machine.
 ///
-/// `/3` appends the native vector batch probe codec at position 3. A bounded
-/// query window is a real Arrow IPC child, broadcast to shard-only worker tasks;
-/// the probe payload carries a pinned descriptor and parent read lease token.
+/// The numeric part tracks [`codec::CODEC_VERSION`]; the `-ivm` suffix keeps
+/// the two codec lists apart during discovery. Because the same number covers
+/// every development build, every coordinator and worker must run the same
+/// build: a payload from another build can name a codec position that
+/// dispatches to a different codec instead of failing loudly.
 ///
-/// Advertising `/3` filters older workers out at discovery and closes the
-/// other direction at decode time.
-pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/3";
+/// Do not bump the number for an unreleased change: append codecs and keep
+/// `/2`. Discovery is the only gate between two development builds that share
+/// this number; [`StaticWorkerResolver`] probes only when it is built or
+/// updated and keeps workers whose probe timed out, so rebuild the resolver
+/// when a static worker changes build.
+#[cfg(feature = "ivm")]
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2-ivm";
+#[cfg(not(feature = "ivm"))]
+pub const DISTRIBUTED_PROTOCOL_VERSION: &str = "lakesoul-distributed/2";
 
+#[cfg(feature = "ivm")]
+pub use worker::set_ivm_worker_options;
 pub use worker::{
     LakeSoulWorkerOptions, LakeSoulWorkerSessionBuilder, lakesoul_worker,
     spawn_lakesoul_worker,
@@ -146,6 +164,16 @@ pub struct DistributedOptions {
     /// scans this splits wherever their source supports it (see
     /// [Task placement](self#task-placement)).
     pub bytes_per_partition: Option<usize>,
+    /// Maximum tasks per distributed stage, or 0 for the library default
+    /// (the number of workers).
+    ///
+    /// A worker has several execution threads; keeping the cap at the worker
+    /// count leaves all but one of them idle.  Raising it lets a stage fan a
+    /// scan or keyed merge out over several tasks per worker.
+    pub max_tasks_per_stage: usize,
+    /// Cache-locality placement of append-only scan tasks (see
+    /// [`locality`]). `None` keeps the default split and random routing.
+    pub locality: Option<locality::LocalityOptions>,
 }
 
 impl Default for DistributedOptions {
@@ -155,6 +183,8 @@ impl Default for DistributedOptions {
             fallback_to_local: false,
             target_partitions: 4,
             bytes_per_partition: None,
+            max_tasks_per_stage: 0,
+            locality: None,
         }
     }
 }

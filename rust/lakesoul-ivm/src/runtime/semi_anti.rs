@@ -406,7 +406,7 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
         }
     }
     if view.left_filter.is_some() || view.right_filter.is_some() {
-        let context = refresh_session();
+        let context = refresh_session_local();
         if let Some(filter) = &view.left_filter {
             parse_filter(&context, &view.left.schema, filter)?;
         }
@@ -426,7 +426,7 @@ fn validate_semi_anti_view(view: &SemiAntiView) -> Result<()> {
             let predicate = view.match_predicate.as_deref().ok_or_else(|| {
                 report!("semi/anti view {} has no aggregate predicate", view.view_id)
             })?;
-            let context = refresh_session();
+            let context = refresh_session_local();
             let aggregate_type = right_aggregate_type(&context, view)?;
             let schema = match_schema(&view.left.schema, &aggregate_type)?;
             parse_filter(&context, &schema, predicate).map_err(|error| {
@@ -857,7 +857,10 @@ fn null_safe_semi_join(
             NullEquality::NullEqualsNull,
         )?
         .build()?;
-    Ok(DataFrame::new(refresh_session().state().clone(), plan))
+    Ok(DataFrame::new(
+        refresh_session_local().state().clone(),
+        plan,
+    ))
 }
 
 /// Join `left` against `right` with a semi/anti view's predicate.
@@ -933,7 +936,10 @@ fn semi_anti_join(
             NullEquality::NullEqualsNull,
         )?
         .build()?;
-    Ok(DataFrame::new(refresh_session().state().clone(), plan))
+    Ok(DataFrame::new(
+        refresh_session_local().state().clone(),
+        plan,
+    ))
 }
 
 impl IvmRuntime {
@@ -1015,6 +1021,16 @@ impl IvmRuntime {
         let context = refresh_session();
         let (left_state_source, right_state_source, left_columns, right_columns) =
             semi_anti_state_sources(&context, view)?;
+        let left_natural = super::join_state::natural_join_state_eligible(
+            &left_state_source,
+            &view.join_keys,
+            &[],
+        );
+        let right_natural = super::join_state::natural_join_state_eligible(
+            &right_state_source,
+            right_join_keys(view),
+            &[],
+        );
         let left_state = if side_keyed {
             self.ensure_join_side_state_for_view(
                 &view.view_id,
@@ -1022,6 +1038,7 @@ impl IvmRuntime {
                 &view.join_keys,
                 StateRole::JoinLeft,
                 view.null_safe,
+                left_natural,
             )
             .await?
         } else {
@@ -1034,6 +1051,7 @@ impl IvmRuntime {
                 right_join_keys(view),
                 StateRole::JoinRight,
                 view.null_safe,
+                right_natural,
             )
             .await?
         } else {
@@ -1271,6 +1289,7 @@ impl IvmRuntime {
                     &context,
                     &view.left,
                     &left_window.before_versions,
+                    left_window.before_timestamp,
                 )
                 .await?,
                 &left_columns,
@@ -1281,6 +1300,7 @@ impl IvmRuntime {
                         &context,
                         &view.right,
                         &right_window.before_versions,
+                        right_window.before_timestamp,
                     )
                     .await?,
                     &right_columns,
@@ -1459,7 +1479,7 @@ impl IvmRuntime {
         // Read those keys through the shared PK lookup instead of scanning
         // the whole MV when its key matches the left key.
         let mv = if view.mv.primary_keys == view.left.primary_keys {
-            self.lookup_source_by_join_keys(
+            self.lookup_source_by_join_keys_null_safe(
                 &context,
                 &view.mv,
                 affected.clone(),
@@ -1576,7 +1596,15 @@ impl IvmRuntime {
             append_dataframe(
                 &view.mv,
                 &self.client,
-                inserts.union(deletes)?.sort_by(sort_exprs)?,
+                collapse_update_deletes(
+                    &self.metadata,
+                    &context,
+                    &view.mv,
+                    inserts,
+                    deletes,
+                )
+                .await?
+                .sort_by(sort_exprs)?,
             )
             .await?
             .commit_ids,
@@ -1654,12 +1682,19 @@ impl IvmRuntime {
             )?;
             let missing = missing.select(aliases)?;
             // Only the right keys are read: the existence answer never needs
-            // the payload of the right table.
-            let rows = self
-                .lookup_source_by_join_keys(
+            // the payload of the right table.  INTERSECT/EXCEPT probes are
+            // null-safe; a plain SEMI/ANTI join never matches a NULL key.
+            let rows = if view.null_safe {
+                self.lookup_source_by_join_keys_null_safe(
                     context, right, missing, right_keys, right_keys, true,
                 )
-                .await?;
+                .await?
+            } else {
+                self.lookup_source_by_join_keys(
+                    context, right, missing, right_keys, right_keys, true,
+                )
+                .await?
+            };
             let rows = rows.select(
                 right_keys
                     .iter()
@@ -1755,6 +1790,11 @@ impl IvmRuntime {
             && !view.left.primary_keys.is_empty()
             && !view.right.primary_keys.is_empty()
         {
+            let left_natural = super::join_state::natural_join_state_eligible(
+                &left_state_source,
+                &view.join_keys,
+                &[],
+            );
             let left_state = self
                 .ensure_join_side_state_for_view(
                     &view.view_id,
@@ -1762,6 +1802,7 @@ impl IvmRuntime {
                     &view.join_keys,
                     StateRole::JoinLeft,
                     view.null_safe,
+                    left_natural,
                 )
                 .await?;
             if let Some(state) = left_state {
@@ -1775,6 +1816,11 @@ impl IvmRuntime {
                     .await?,
                 );
             }
+            let right_natural = super::join_state::natural_join_state_eligible(
+                &right_state_source,
+                right_join_keys(view),
+                &[],
+            );
             let right_state = self
                 .ensure_join_side_state_for_view(
                     &view.view_id,
@@ -1782,6 +1828,7 @@ impl IvmRuntime {
                     right_join_keys(view),
                     StateRole::JoinRight,
                     view.null_safe,
+                    right_natural,
                 )
                 .await?;
             if let Some(state) = right_state {
@@ -2238,7 +2285,7 @@ fn validate_left_aggregate_view(view: &LeftAggregateView) -> Result<()> {
             )
         })?;
     }
-    let context = refresh_session();
+    let context = refresh_session_local();
     let df_schema = DFSchema::try_from(view.right.schema.as_ref().clone())
         .map_err(|error| report!("invalid source schema: {error}"))?;
     context
@@ -2268,7 +2315,7 @@ fn left_aggregate_left_columns(view: &LeftAggregateView) -> Result<Vec<String>> 
             columns.push(key.clone());
         }
     }
-    let context = refresh_session();
+    let context = refresh_session_local();
     if let Some(filter) = &view.left_filter {
         for column in filter_columns(&context, &view.left.schema, filter)? {
             if !columns.contains(&column) {
@@ -2436,6 +2483,7 @@ impl IvmRuntime {
                 &view.join_keys,
                 StateRole::JoinLeft,
                 false,
+                false,
             )
             .await?
         } else {
@@ -2447,6 +2495,7 @@ impl IvmRuntime {
                 &view.right,
                 left_aggregate_right_keys(view),
                 StateRole::JoinRight,
+                false,
                 false,
             )
             .await?
@@ -2541,6 +2590,7 @@ impl IvmRuntime {
                         &context,
                         &view.left,
                         &left_window.before_versions,
+                        left_window.before_timestamp,
                     )
                     .await?,
                     &left_columns,
@@ -2557,6 +2607,7 @@ impl IvmRuntime {
                         &context,
                         &view.right,
                         &right_window.before_versions,
+                        right_window.before_timestamp,
                     )
                     .await?,
                     &right_columns,
@@ -2677,7 +2728,7 @@ impl IvmRuntime {
             affected_from_left.union(affected_from_right)?.distinct()?
         };
         let mv = if view.mv.primary_keys == view.left.primary_keys {
-            self.lookup_source_by_join_keys(
+            self.lookup_source_by_join_keys_null_safe(
                 &context,
                 &view.mv,
                 affected.clone(),
@@ -2754,7 +2805,15 @@ impl IvmRuntime {
             append_dataframe(
                 &view.mv,
                 &self.client,
-                inserts.union(deletes)?.sort_by(sort_exprs)?,
+                collapse_update_deletes(
+                    &self.metadata,
+                    &context,
+                    &view.mv,
+                    inserts,
+                    deletes,
+                )
+                .await?
+                .sort_by(sort_exprs)?,
             )
             .await?
             .commit_ids,
@@ -2820,6 +2879,22 @@ impl IvmRuntime {
             && !view.left.primary_keys.is_empty()
             && !view.right.primary_keys.is_empty()
         {
+            // The left-aggregate side states still keep the full source
+            // schema; only the join views narrow theirs.
+            let left_columns = view
+                .left
+                .schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect::<Vec<_>>();
+            let right_columns = view
+                .right
+                .schema
+                .fields()
+                .iter()
+                .map(|field| field.name().clone())
+                .collect::<Vec<_>>();
             commit_ids.extend(
                 self.sync_full_join_side_states(
                     &view.view_id,
@@ -2829,6 +2904,8 @@ impl IvmRuntime {
                     left_aggregate_right_keys(view),
                     &[],
                     &[],
+                    &left_columns,
+                    &right_columns,
                     false,
                 )
                 .await?,

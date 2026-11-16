@@ -4,6 +4,10 @@
 本文以 2026-10 的实测数据（B0–B3、P1a/P1b、R1）和业务约束为基础，
 是 `ROADMAP.md` §G 在目标场景下的展开；两者冲突时以本文为准。
 
+> 配置说明（2026-11）：本文中的 `LAKESOUL_IVM_*` 环境变量已移除，等价的
+> 行为配置见 `IvmOptions`，资源/会话配置见 `IvmRuntimeConfig`（README
+> "Runtime configuration"）。下文保留当时的实施记录。
+
 ## 1. 目标场景
 
 | 维度 | 目标 |

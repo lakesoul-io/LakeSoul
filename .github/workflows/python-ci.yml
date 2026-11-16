@@ -1,28 +1,68 @@
 name: CI with Python Test
 on:
   push:
-    paths-ignore:
-      - "javadoc/**"
-      - "website/**"
-      - "**.md"
-      - "rust/lakesoul-es-gateway/**"
-      - "rust/lakesoul-ivm/**"
-      - "rust/postgres-lakesoul/**"
-      - "script/weknora-es-harness/**"
+    paths:
+      - ".github/workflows/python-ci.yml"
+      - ".github/actions/**"
+      - "python/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "rust/lakesoul-build-info/**"
+      - "rust/lakesoul-common/**"
+      - "rust/lakesoul-io/**"
+      - "rust/lakesoul-io-c/**"
+      - "rust/lakesoul-console/**"
+      - "rust/lakesoul-datafusion/**"
+      - "rust/lakesoul-metadata/**"
+      - "rust/lakesoul-metadata-c/**"
+      - "rust/lakesoul-metadata-proto/**"
+      - "rust/lakesoul-observability/**"
+      - "rust/lakesoul-text/**"
+      - "rust/lakesoul-vector/**"
+      - "pom.xml"
+      - ".mvn/**"
+      - "integrations/lakesoul-common/**"
+      - "integrations/lakesoul-spark/**"
+      - "integrations/native-io/**"
+      - "script/meta_init.sql"
+      - "script/meta_cleanup.sql"
+      - "script/meta_init_for_local_test.sh"
     branches:
       - "main"
       - "release/**"
     tags:
       - "py-v[0-9]+.[0-9]+.[0-9]+"
   pull_request:
-    paths-ignore:
-      - "javadoc/**"
-      - "website/**"
-      - "**.md"
-      - "rust/lakesoul-es-gateway/**"
-      - "rust/lakesoul-ivm/**"
-      - "rust/postgres-lakesoul/**"
-      - "script/weknora-es-harness/**"
+    paths:
+      - ".github/workflows/python-ci.yml"
+      - ".github/actions/**"
+      - "python/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "rust/lakesoul-build-info/**"
+      - "rust/lakesoul-common/**"
+      - "rust/lakesoul-io/**"
+      - "rust/lakesoul-io-c/**"
+      - "rust/lakesoul-console/**"
+      - "rust/lakesoul-datafusion/**"
+      - "rust/lakesoul-metadata/**"
+      - "rust/lakesoul-metadata-c/**"
+      - "rust/lakesoul-metadata-proto/**"
+      - "rust/lakesoul-observability/**"
+      - "rust/lakesoul-text/**"
+      - "rust/lakesoul-vector/**"
+      - "pom.xml"
+      - ".mvn/**"
+      - "integrations/lakesoul-common/**"
+      - "integrations/lakesoul-spark/**"
+      - "integrations/native-io/**"
+      - "script/meta_init.sql"
+      - "script/meta_cleanup.sql"
+      - "script/meta_init_for_local_test.sh"
     branches:
       - "main"
       - "release/**"
@@ -39,11 +79,14 @@ concurrency:
 jobs:
   run-pytest:
     runs-on: ubuntu-24.04
+    env:
+      # Keep the Python build's compiler and linker setup stable.
+      RUSTFLAGS: "-Awarnings -C link-arg=-fuse-ld=lld"
     services:
       # Label used to access the service container
       postgres:
         # Docker Hub image
-        image: postgres:14.5
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/postgres:18
         # Provide the password for postgres
         env:
           POSTGRES_PASSWORD: lakesoul_test
@@ -60,7 +103,7 @@ jobs:
           # Maps tcp port 5432 on service container to the host
           - 5432:5432
       rustfs:
-        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rustfs:1.0.0-beta.3
+        image: swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs:1.0.4
         ports:
           - "9000:9000"
           - "9001:9001"
@@ -87,7 +130,7 @@ jobs:
         run: |
           docker run --rm --network host \
             --entrypoint /bin/sh \
-            swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.16 \
+            swr.ap-southeast-3.myhuaweicloud.com/dmetasoul-repo/rustfs/rc:v0.1.37 \
             -c '
               set -e
 
@@ -104,7 +147,7 @@ jobs:
 
               echo "RustFS Configuration Complete!"
             '
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Validate Python release tag
         if: github.event_name == 'push' && github.ref_type == 'tag'
         run: python script/release.py check-tag "$GITHUB_REF_NAME"
@@ -119,31 +162,41 @@ jobs:
           java-version: "11"
           distribution: "temurin"
           cache: maven
-      - name: Set up Python 3.10
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
       - name: Install psql
         run: sudo apt-get install -y postgresql-client-16
       - name: Init PG
         run: |
           ./script/meta_init_for_local_test.sh -j 2
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       - name: Install uv
         uses: astral-sh/setup-uv@v6
+      - name: Install lld
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lld
+          command -v ld.lld >/dev/null || sudo ln -s "$(command -v lld)" /usr/local/bin/ld.lld
+      # Python builds a package/feature graph that differs from rust-ci's test
+      # job. Sharing rust-test-fast restores the archive and still rebuilds
+      # every unit because the fingerprints differ, so Python owns this tier:
+      # main seeds it, pull requests restore it.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> rust/target"
+          shared-key: "python-test-fast"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build native libraries
         run: |
-          cargo build --release --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-console --package lakesoul-python --features lakesoul-python/ci-unify
-          cp rust/target/release/liblakesoul_python.so python/src/lakesoul/_lib.abi3.so
+          cargo build --profile test-fast --package lakesoul-io-c --package lakesoul-metadata-c --package lakesoul-console --package lakesoul-python --features lakesoul-python/ci-unify
+          mkdir -p rust/target/release
+          cp rust/target/test-fast/liblakesoul_io_c.so rust/target/release/
+          cp rust/target/test-fast/liblakesoul_metadata_c.so rust/target/release/
+          cp rust/target/test-fast/liblakesoul_python.so python/src/lakesoul/_lib.abi3.so
       - name: pytest
         env:
           LAKESOUL_SOURCE_DIR: ${{ github.workspace }}
@@ -152,10 +205,10 @@ jobs:
         run: |
           mvn package -pl :lakesoul-spark-3.5_2.12 -am -DskipTests -Pcross-build
           cd python
-          uv sync --no-install-project --python 3.10 --group dev
+          uv sync --no-install-project --python 3.11 --group dev
           export LAKESOUL_IO_USE_V2_MERGE=true
-          ../rust/target/release/lakesoul-console tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8
-          ../rust/target/release/lakesoul-console -f test.sql
+          ../rust/target/test-fast/lakesoul-console tpch-gen -p "file:///tmp/lakesoul/tpch_data" --scale-factor 0.1 -n 8
+          ../rust/target/test-fast/lakesoul-console -f test.sql
           .venv/bin/python -m pytest ./tests/ -s
       - name: pytest (Daft Ray runner)
         env:
@@ -175,12 +228,9 @@ jobs:
       id-token: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          version: "23.x"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/setup-protoc
       # `maturin build` compiles the extension, so the vortex build script still needs flatc.
       - uses: ./.github/actions/setup-flatc
       - name: Install uv

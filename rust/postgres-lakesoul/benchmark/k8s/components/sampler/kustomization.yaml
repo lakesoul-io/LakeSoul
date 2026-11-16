@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# Resource sampler sidecar for the coordinator and worker Pods: reads the
+# LakeSoul process' /proc and cgroup files once per second and logs JSON.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+configMapGenerator:
+  - name: lakesoul-bench-sampler
+    namespace: lakesoul
+    files:
+      - sampler.sh
+patches:
+  - path: sampler-patch.yaml

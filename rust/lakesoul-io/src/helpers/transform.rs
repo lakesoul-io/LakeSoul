@@ -394,6 +394,9 @@ pub fn transform_array(
                 DataType::Int64 => {
                     as_primitive_array::<Int64Type>(&array).clone().into_data()
                 }
+                DataType::Date32 => {
+                    as_primitive_array::<Date32Type>(&array).clone().into_data()
+                }
                 DataType::Utf8 => as_string_array(&array).clone().into_data(),
                 _ => {
                     bail!(
@@ -662,6 +665,32 @@ mod tests {
     use arrow_array::{ListArray, StringViewArray};
 
     #[test]
+    fn transform_date32_to_timestamp_with_timezone() {
+        let source: ArrayRef = Arc::new(PrimitiveArray::<Date32Type>::from(vec![
+            Some(0),
+            Some(20_000),
+            None,
+        ]));
+        let target = DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")));
+
+        let transformed = transform_array(
+            "order_date".to_string(),
+            target.clone(),
+            source,
+            3,
+            false,
+            Arc::new(HashMap::new()),
+        )
+        .unwrap();
+
+        assert_eq!(transformed.data_type(), &target);
+        let timestamps = as_primitive_array::<TimestampMicrosecondType>(&transformed);
+        assert_eq!(timestamps.value(0), 0);
+        assert_eq!(timestamps.value(1), 20_000_i64 * 86_400_000_000_i64);
+        assert!(timestamps.is_null(2));
+    }
+
+    #[test]
     fn transform_record_batch_materializes_utf8_view_as_utf8() {
         let target_schema =
             Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, true)]));
@@ -776,5 +805,16 @@ mod tests {
         );
         assert!(list_values.is_null(1));
         assert_eq!(list_values.value(0).data_type(), &DataType::Utf8);
+    }
+
+    #[test]
+    fn make_default_array_fills_a_null_partition_column() {
+        use arrow_array::Array;
+        let value = LAKESOUL_NULL_STRING.to_string();
+        for data_type in [DataType::Utf8, DataType::Int64, DataType::Date32] {
+            let array = make_default_array(&data_type, &value, 5).unwrap();
+            assert_eq!(array.len(), 5);
+            assert_eq!(array.null_count(), 5);
+        }
     }
 }

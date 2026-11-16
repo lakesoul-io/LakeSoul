@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-coordinator
+  namespace: lakesoul
+spec:
+  template:
+    spec:
+      containers:
+        - name: postgres-lakesoul
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "4"
+              memory: "4Gi"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakesoul-worker
+  namespace: lakesoul
+spec:
+  template:
+    spec:
+      containers:
+        - name: lakesoul-worker
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "4"
+              memory: "4Gi"

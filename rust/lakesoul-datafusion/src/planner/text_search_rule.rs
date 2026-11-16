@@ -75,9 +75,15 @@ impl OptimizerRule for TextSearchPushdownRule {
         plan: LogicalPlan,
         _config: &dyn OptimizerConfig,
     ) -> DFResult<Transformed<LogicalPlan>> {
+        // The rewrite replaces the relevance sort with the index's ordering
+        // and moves `text_score` into the index node: neither can see the rows
+        // a block has staged for this table. Leave the plan alone then.
         let Some(found) = detect(&plan) else {
             return Ok(Transformed::no(plan));
         };
+        if crate::write_mode::table_source_has_staged_writes(&found.source) {
+            return Ok(Transformed::no(plan));
+        }
         let Some(with_marker) = rewrite_plan(plan.clone(), &found, true) else {
             return Ok(Transformed::no(plan));
         };

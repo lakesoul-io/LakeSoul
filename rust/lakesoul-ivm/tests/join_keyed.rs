@@ -17,7 +17,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::memory::MemTable;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmTable, IvmTableOptions, JoinView,
+    IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmTable, IvmTableOptions, JoinView, StateRole,
     keyed_join_output_primary_keys, keyed_join_view_schema_for,
 };
 use tempfile::tempdir;
@@ -1073,5 +1073,226 @@ async fn keyed_join_validation() {
             "rv",
         )
         .is_err()
+    );
+}
+
+/// The keyed join side state keeps only the columns the view reads (primary
+/// key, join key, payload, filter, CDC) instead of copying every source
+/// column.
+#[test_log::test(tokio::test)]
+async fn join_side_state_keeps_only_referenced_columns() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("jk", DataType::Utf8, true),
+        Field::new("lv", DataType::Utf8, true),
+        Field::new("l_extra", DataType::Utf8, true),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("rid", DataType::Int64, false),
+        Field::new("jk", DataType::Utf8, true),
+        Field::new("rv", DataType::Int64, true),
+        Field::new("r_extra", DataType::Utf8, true),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]));
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_proj_join_l_{suffix}"),
+                table_path(&dir, "left"),
+                left_schema,
+            )
+            .with_primary_keys(vec!["id".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_proj_join_r_{suffix}"),
+                table_path(&dir, "right"),
+                right_schema,
+            )
+            .with_primary_keys(vec!["rid".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let join_keys = vec!["jk".to_string()];
+    let output = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_proj_join_out_{suffix}"),
+                table_path(&dir, "out"),
+                keyed_join_view_schema_for(
+                    &left.schema,
+                    &right.schema,
+                    &["id".to_string()],
+                    &["rid".to_string()],
+                    &join_keys,
+                    "lv",
+                    "rv",
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(keyed_join_output_primary_keys(
+                &["id".to_string()],
+                &["rid".to_string()],
+            )),
+        )
+        .await
+        .unwrap();
+    let view = JoinView::new_with_join_keys(
+        format!("keyed_projection_{suffix}"),
+        left.clone(),
+        right.clone(),
+        output.clone(),
+        join_keys,
+        "lv",
+        "rv",
+    );
+
+    left.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            left.schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values([1])),
+                Arc::new(StringArray::from_iter_values(["a"])),
+                Arc::new(StringArray::from_iter_values(["lv1"])),
+                Arc::new(StringArray::from_iter_values(["left extra"])),
+                Arc::new(StringArray::from_iter_values(["insert"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                right.schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from_iter_values([10])),
+                    Arc::new(StringArray::from_iter_values(["a"])),
+                    Arc::new(Int64Array::from_iter_values([100])),
+                    Arc::new(StringArray::from_iter_values(["right extra"])),
+                    Arc::new(StringArray::from_iter_values(["insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    runtime.refresh_join(&view).await.unwrap();
+    assert_eq!(
+        read_join_rows(&runtime, &output).await,
+        vec![(
+            1,
+            10,
+            Some("a".to_string()),
+            Some("lv1".to_string()),
+            Some(100)
+        )]
+    );
+
+    let left_state = runtime
+        .metadata()
+        .get_state(&view.view_id, StateRole::JoinLeft)
+        .await
+        .unwrap()
+        .expect("left side state");
+    let left_state = runtime
+        .open_table_by_id(&left_state.table_id)
+        .await
+        .unwrap();
+    let left_names = left_state
+        .schema
+        .fields()
+        .iter()
+        .map(|field| field.name().as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        left_names,
+        vec!["id", "jk", "lv", CHANGE_COLUMN, "__ivm_join_key"]
+    );
+
+    let right_state = runtime
+        .metadata()
+        .get_state(&view.view_id, StateRole::JoinRight)
+        .await
+        .unwrap()
+        .expect("right side state");
+    let right_state = runtime
+        .open_table_by_id(&right_state.table_id)
+        .await
+        .unwrap();
+    let right_names = right_state
+        .schema
+        .fields()
+        .iter()
+        .map(|field| field.name().as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        right_names,
+        vec!["rid", "jk", "rv", CHANGE_COLUMN, "__ivm_join_key"]
+    );
+
+    // A join-key change on the left retracts the old pair and leaves the new
+    // key unmatched until the right side follows.
+    left.append_batch(
+        runtime.client(),
+        RecordBatch::try_new(
+            left.schema.clone(),
+            vec![
+                Arc::new(Int64Array::from_iter_values([1])),
+                Arc::new(StringArray::from_iter_values(["b"])),
+                Arc::new(StringArray::from_iter_values(["lv1"])),
+                Arc::new(StringArray::from_iter_values(["left extra"])),
+                Arc::new(StringArray::from_iter_values(["update"])),
+            ],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    runtime.refresh_join(&view).await.unwrap();
+    assert!(read_join_rows(&runtime, &output).await.is_empty());
+
+    right
+        .append_batch(
+            runtime.client(),
+            RecordBatch::try_new(
+                right.schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from_iter_values([11])),
+                    Arc::new(StringArray::from_iter_values(["b"])),
+                    Arc::new(Int64Array::from_iter_values([101])),
+                    Arc::new(StringArray::from_iter_values(["right extra"])),
+                    Arc::new(StringArray::from_iter_values(["insert"])),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_join(&view).await.unwrap();
+    assert_eq!(
+        read_join_rows(&runtime, &output).await,
+        vec![(
+            1,
+            11,
+            Some("b".to_string()),
+            Some("lv1".to_string()),
+            Some(101)
+        )]
     );
 }

@@ -87,8 +87,28 @@ mod tests {
     async fn test_verify_token_expired() {
         let metadata_client = Arc::new(MetaDataClient::from_env().await.unwrap());
         let jwt_server = JwtServer::new(metadata_client.get_client_secret().as_str());
-        let token = "eyJhbGciOiJIUzI1NiJ9.eyJncm91cCI6Imxha2UtcHVibGljIiwic3ViIjoiQWRtaW4iLCJpYXQiOjE3NjI0MDQ5ODAsImV4cCI6MTc5Mzk0MDk4MH0.p-6u8WjPHOfvNn-IE5QNxdWj5gHjc5XkxQAiC6fxeCc";
-        let decoded_claims = jwt_server.decode_token(token).unwrap();
-        println!("{:?}", decoded_claims);
+        // Mint the token here instead of pinning one whose `exp` is a fixed
+        // instant: a hard-coded fixture is a time bomb that starts failing the
+        // moment its `exp` passes, and the assertion has to match the name --
+        // an expired token must be rejected.
+        let claims = Claims {
+            sub: "Admin".to_string(),
+            group: "lake-public".to_string(),
+            exp: chrono::Utc::now()
+                .checked_sub_days(Days::new(1))
+                .unwrap()
+                .timestamp() as usize,
+        };
+        let token = jwt_server.create_token(&claims).unwrap();
+        let error = jwt_server
+            .decode_token(&token)
+            .expect_err("an expired token must be rejected");
+        assert!(
+            matches!(
+                error.kind(),
+                jsonwebtoken::errors::ErrorKind::ExpiredSignature
+            ),
+            "an expired token must be rejected for its expiry, got {error}"
+        );
     }
 }

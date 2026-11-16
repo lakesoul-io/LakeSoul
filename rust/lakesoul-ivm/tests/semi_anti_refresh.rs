@@ -16,7 +16,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::memory::MemTable;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
-    IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmTable, IvmTableOptions, SemiAntiView,
+    IVM_ROW_KINDS_COLUMN, IvmRuntime, IvmTable, IvmTableOptions, SemiAntiView, StateRole,
     semi_anti_mv_schema,
 };
 use tempfile::tempdir;
@@ -407,6 +407,245 @@ async fn semi_join_recomputes_affected_rows() {
     assert_eq!(
         view_state(runtime, mv).await,
         full_result(runtime, left, right, false).await
+    );
+
+    fixture.cleanup().await;
+}
+
+fn nullable_left_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("g", DataType::Int64, true),
+        Field::new("x", DataType::Int64, false),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]))
+}
+
+fn nullable_right_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("rk", DataType::Int64, false),
+        Field::new("g", DataType::Int64, true),
+        Field::new(CHANGE_COLUMN, DataType::Utf8, false),
+    ]))
+}
+
+fn nullable_left_batch(rows: &[(i64, Option<i64>, i64, &str)]) -> RecordBatch {
+    RecordBatch::try_new(
+        nullable_left_schema(),
+        vec![
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.0))),
+            Arc::new(Int64Array::from_iter(rows.iter().map(|row| row.1))),
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.2))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.3))),
+        ],
+    )
+    .unwrap()
+}
+
+fn nullable_right_batch(rows: &[(i64, Option<i64>, &str)]) -> RecordBatch {
+    RecordBatch::try_new(
+        nullable_right_schema(),
+        vec![
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|row| row.0))),
+            Arc::new(Int64Array::from_iter(rows.iter().map(|row| row.1))),
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|row| row.2))),
+        ],
+    )
+    .unwrap()
+}
+
+async fn nullable_view_state(
+    runtime: &IvmRuntime,
+    mv: &IvmTable,
+) -> HashMap<i64, (Option<i64>, i64)> {
+    let mut state = HashMap::new();
+    for batch in mv.read_current(runtime.client()).await.unwrap() {
+        let schema = batch.schema();
+        let keys = batch
+            .column(schema.index_of("k").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let joins = batch
+            .column(schema.index_of("g").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let payloads = batch
+            .column(schema.index_of("x").unwrap())
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let kinds = batch
+            .column(schema.index_of(IVM_ROW_KINDS_COLUMN).unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for row in 0..batch.num_rows() {
+            if kinds.value(row) == "insert" {
+                state.insert(
+                    keys.value(row),
+                    (
+                        (!joins.is_null(row)).then(|| joins.value(row)),
+                        payloads.value(row),
+                    ),
+                );
+            }
+        }
+    }
+    state
+}
+
+#[test_log::test(tokio::test)]
+async fn null_safe_semi_join_natural_state_matches_null_keys() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let left = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_null_semi_left_{suffix}"),
+                table_path(&dir, "left"),
+                nullable_left_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let right = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_null_semi_right_{suffix}"),
+                table_path(&dir, "right"),
+                nullable_right_schema(),
+            )
+            .with_primary_keys(vec!["rk".to_string()])
+            .with_cdc_column(CHANGE_COLUMN),
+        )
+        .await
+        .unwrap();
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_null_semi_mv_{suffix}"),
+                table_path(&dir, "mv"),
+                semi_anti_mv_schema(&left.schema),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let mut view = SemiAntiView::new(
+        format!("null_semi_{suffix}"),
+        left.clone(),
+        right.clone(),
+        mv.clone(),
+        vec!["g".to_string()],
+        false,
+    );
+    view.null_safe = true;
+
+    left.append_batch(
+        runtime.client(),
+        nullable_left_batch(&[(1, Some(7), 10, "insert"), (2, None, 20, "insert")]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(
+            runtime.client(),
+            nullable_right_batch(&[(100, None, "insert"), (101, Some(7), "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_semi_anti(&view).await.unwrap().unwrap();
+    assert_eq!(
+        nullable_view_state(&runtime, &mv).await,
+        HashMap::from([(1, (Some(7), 10)), (2, (None, 20))])
+    );
+
+    // Removing the NULL-key right row retracts the NULL-key left row.
+    right
+        .append_batch(
+            runtime.client(),
+            nullable_right_batch(&[(100, None, "delete")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_semi_anti(&view).await.unwrap().unwrap();
+    assert_eq!(
+        nullable_view_state(&runtime, &mv).await,
+        HashMap::from([(1, (Some(7), 10))])
+    );
+
+    for table in [&left, &right, &mv] {
+        let _ = runtime
+            .client()
+            .drop_table(&table.table_name, &table.namespace)
+            .await;
+    }
+    drop(dir);
+}
+
+#[test_log::test(tokio::test)]
+async fn semi_join_side_state_uses_natural_join_keys() {
+    let fixture = setup(false).await;
+    let runtime = &fixture.runtime;
+    let (left, right, mv, view) =
+        (&fixture.left, &fixture.right, &fixture.mv, &fixture.view);
+
+    left.append_batch(
+        runtime.client(),
+        left_batch(&[(1, 2, 10, "insert"), (2, 2, 20, "insert")]),
+    )
+    .await
+    .unwrap();
+    right
+        .append_batch(runtime.client(), right_batch(&[(100, 2, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_semi_anti(view).await.unwrap().unwrap();
+    assert_eq!(
+        view_state(runtime, mv).await,
+        HashMap::from([(1, (2, 10)), (2, (2, 20))])
+    );
+
+    // The state is keyed by the natural join key, not the hidden binary key.
+    let states = runtime.list_states(&view.view_id).await.unwrap();
+    let state = states
+        .iter()
+        .find(|state| state.role == StateRole::JoinLeft)
+        .unwrap();
+    let state_table = runtime.open_table_by_id(&state.table_id).await.unwrap();
+    assert!(
+        state_table
+            .schema
+            .field_with_name("__ivm_join_key")
+            .is_err(),
+        "{:?}",
+        state_table.schema
+    );
+    assert_eq!(
+        state_table.primary_keys,
+        vec!["g".to_string(), "k".to_string()]
+    );
+    assert_eq!(state_table.bucket_columns, vec!["g".to_string()]);
+
+    // A left row moving to another join key retracts its old state row and
+    // inserts the new one under the natural key.
+    left.append_batch(runtime.client(), left_batch(&[(2, 3, 20, "insert")]))
+        .await
+        .unwrap();
+    right
+        .append_batch(runtime.client(), right_batch(&[(101, 3, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_semi_anti(view).await.unwrap().unwrap();
+    assert_eq!(
+        view_state(runtime, mv).await,
+        HashMap::from([(1, (2, 10)), (2, (3, 20))])
     );
 
     fixture.cleanup().await;

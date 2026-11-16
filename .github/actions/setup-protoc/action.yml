@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: 2026 LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: "Setup protoc"
+description: "Install the pinned protoc that the Rust build scripts and the Maven build expect"
+inputs:
+  protoc_version:
+    description: "Version of the protoc binary"
+    default: "23.4"
+runs:
+  using: "composite"
+  steps:
+    # arduino/setup-protoc@v2 still targets Node 16, so GitHub forces it onto
+    # Node 24 and every job prints a Node deprecation annotation plus a
+    # `url.parse()` DEP0169 warning. prost-build only needs the compiler
+    # binary, so fetch the release archive directly instead.
+    - name: Install protoc
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        VERSION="${{ inputs.protoc_version }}"
+        if [ "$(protoc --version 2>/dev/null)" = "libprotoc ${VERSION}" ]; then
+          echo "protoc ${VERSION} is already installed"
+          exit 0
+        fi
+
+        ARCH=$(uname -m)
+        case "$ARCH" in
+          x86_64) ASSET="linux-x86_64" ;;
+          aarch64 | arm64) ASSET="linux-aarch_64" ;;
+          *)
+            echo "No protoc release for ${ARCH}" >&2
+            exit 1
+            ;;
+        esac
+
+        # This sometimes runs in a container where the user is root and there is no sudo.
+        if command -v sudo &>/dev/null; then
+          CMD=sudo
+        else
+          CMD=
+        fi
+
+        # GitHub's release CDN (release-assets.githubusercontent.com) intermittently
+        # answers 504/502 to asset downloads, so retry the transfer instead of
+        # failing the job on the first hiccup.
+        fetch() {
+          curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 180 \
+            --retry-all-errors --connect-timeout 15 -o "$2" "$1"
+        }
+
+        # The archive ships bin/protoc and include/google/protobuf, so extracting
+        # it under /usr/local puts both on the default PATH / include path.
+        ZIP_URL="https://github.com/protocolbuffers/protobuf/releases/download/v${VERSION}/protoc-${VERSION}-${ASSET}.zip"
+        if fetch "$ZIP_URL" /tmp/protoc.zip; then
+          $CMD unzip -o -q /tmp/protoc.zip -d /usr/local
+          rm -f /tmp/protoc.zip
+        else
+          # Fall back to the same compiler binary published on Maven Central, which
+          # is served by different infrastructure. It only contains the executable
+          # (no include/ headers), which is fine because entity.proto does not
+          # import any google/protobuf/*.proto.
+          MAJOR="${VERSION%%.*}"
+          if [ "$MAJOR" -lt 24 ]; then MVN_VERSION="3.${VERSION}"; else MVN_VERSION="4.${VERSION}"; fi
+          echo "::warning::${ZIP_URL} is unreachable, falling back to com.google.protobuf:protoc:${MVN_VERSION}"
+          fetch "https://repo1.maven.org/maven2/com/google/protobuf/protoc/${MVN_VERSION}/protoc-${MVN_VERSION}-${ASSET}.exe" \
+            /tmp/protoc.bin
+          $CMD install -m 0755 /tmp/protoc.bin /usr/local/bin/protoc
+          rm -f /tmp/protoc.bin
+        fi
+
+        protoc --version

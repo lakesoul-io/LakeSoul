@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: LakeSoul Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+# BLOCKED (not authorized on the shared cluster): object-store latency and
+# bandwidth injection with tc netem on the coordinator and worker Pods.
+# Needs NET_ADMIN in the Pod and a bench image with iproute2 (flake.nix
+# `bench-image`). Usage: add `../../blocked/slow-storage` to `components:` of
+# a rendered run kustomization (scripts/bench.py deploy writes one), then run
+# the TPC-H baseline and compare against the same profile without it.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - path: netem-patch.yaml
