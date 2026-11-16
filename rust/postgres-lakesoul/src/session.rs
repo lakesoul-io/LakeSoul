@@ -601,6 +601,7 @@ mod tests {
                 SessionIdentity {
                     user: "lakesoul_test".into(),
                     database: "default".into(),
+                    access: None,
                 },
                 &SessionSettings::default(),
             )
