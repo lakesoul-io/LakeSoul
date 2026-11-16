@@ -463,10 +463,7 @@ async fn inventory_shows_the_multi_agg_mv_state() {
         lakesoul_ivm::ViewSpec::MultiAgg { mv_state: true, .. }
     ));
     assert!(
-        max_state
-            .schema
-            .field_with_name("__ivm_cnt_flag_a")
-            .is_ok(),
+        max_state.schema.field_with_name("__ivm_cnt_flag_a").is_ok(),
         "{:?}",
         max_state.schema
     );

@@ -17,8 +17,8 @@ use datafusion::datasource::memory::MemTable;
 use datafusion::prelude::SessionContext;
 use lakesoul_ivm::{
     IVM_ROW_KINDS_COLUMN, IVM_ROW_NUMBER_COLUMN, IvmRuntime, IvmTable, IvmTableOptions,
-    WindowColumn, WindowFunction, WindowView, window_columns_mv_schema_for,
-    window_mv_schema,
+    StateRole, WindowColumn, WindowFunction, WindowView, window_columns_mv_schema_for,
+    window_columns_mv_schema_for_with_payload, window_mv_schema,
 };
 use tempfile::tempdir;
 
@@ -200,6 +200,15 @@ async fn multi_column_window_refreshes_and_rebuilds() {
         .await
         .unwrap();
     runtime.refresh_window(&view).await.unwrap().unwrap();
+    // The order key `v` is not materialized in this MV, so the view keeps a
+    // separate rank state.
+    let states = runtime.list_states(&view.view_id).await.unwrap();
+    assert!(
+        states
+            .iter()
+            .any(|state| state.role == StateRole::RankState),
+        "{states:?}"
+    );
     assert_eq!(
         multi_window_map(&runtime, &mv).await,
         HashMap::from([
@@ -673,4 +682,121 @@ async fn keyed_partition_source_refreshes() {
 
     runtime.rebuild_window(&view).await.unwrap();
     assert_eq!(read().await, vec![(1, 1), (2, 1)]);
+}
+#[test_log::test(tokio::test)]
+async fn window_reuses_the_mv_as_its_rank_source() {
+    let runtime = IvmRuntime::from_env().await.unwrap();
+    runtime.init_schema().await.unwrap();
+    let dir = tempdir().unwrap();
+    let suffix = uuid::Uuid::new_v4().simple();
+    let source = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_window_mvsrc_{suffix}"),
+                table_path(&dir, "src"),
+                source_schema(),
+            )
+            .with_primary_keys(vec!["k".to_string()]),
+        )
+        .await
+        .unwrap();
+    let payload = vec!["v".to_string()];
+    let columns = vec![WindowColumn::new(WindowFunction::RowNumber)];
+    let mv = runtime
+        .create_table(
+            IvmTableOptions::new(
+                format!("ivm_window_mvrank_{suffix}"),
+                table_path(&dir, "mv"),
+                window_columns_mv_schema_for_with_payload(
+                    &source_schema(),
+                    &["g".to_string()],
+                    &["k".to_string()],
+                    &payload,
+                    &columns,
+                )
+                .unwrap(),
+            )
+            .with_primary_keys(vec!["g".to_string(), "k".to_string()])
+            .with_bucket_columns(vec!["g".to_string()]),
+        )
+        .await
+        .unwrap();
+    let mut view = WindowView::new_with_columns(
+        format!("window_mvrank_{suffix}"),
+        source.clone(),
+        mv.clone(),
+        vec!["g".to_string()],
+        vec!["v".to_string()],
+        columns,
+    );
+    view.payload_columns = payload;
+
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[
+                (1, 1, 10, "insert"),
+                (2, 1, 20, "insert"),
+                (3, 1, 30, "insert"),
+                (4, 2, 5, "insert"),
+            ]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_window(&view).await.unwrap().unwrap();
+    assert_eq!(
+        window_map(&runtime, &mv).await,
+        HashMap::from([((1, 1), 1), ((1, 2), 2), ((1, 3), 3), ((2, 4), 1),])
+    );
+    // The payload carries the order key, so the MV itself is the rank source.
+    let states = runtime.list_states(&view.view_id).await.unwrap();
+    assert!(
+        states
+            .iter()
+            .all(|state| state.role != StateRole::RankState),
+        "{states:?}"
+    );
+
+    // An order-key update re-ranks from the current MV row set.
+    source
+        .append_batch(runtime.client(), source_batch(&[(2, 1, 40, "insert")]))
+        .await
+        .unwrap();
+    runtime.refresh_window(&view).await.unwrap().unwrap();
+    assert_eq!(
+        window_map(&runtime, &mv).await,
+        HashMap::from([((1, 1), 1), ((1, 2), 3), ((1, 3), 2), ((2, 4), 1),])
+    );
+
+    // A delete and a new row share the same affected partition.
+    source
+        .append_batch(
+            runtime.client(),
+            source_batch(&[(1, 1, 10, "delete"), (5, 1, 15, "insert")]),
+        )
+        .await
+        .unwrap();
+    runtime.refresh_window(&view).await.unwrap().unwrap();
+    assert_eq!(
+        window_map(&runtime, &mv).await,
+        HashMap::from([((1, 5), 1), ((1, 3), 2), ((1, 2), 3), ((2, 4), 1),])
+    );
+    assert_eq!(
+        window_map(&runtime, &mv).await,
+        full_window(&runtime, &source).await
+    );
+
+    // A rebuild keeps the same rows without recreating the rank state.
+    runtime.rebuild_window(&view).await.unwrap();
+    assert_eq!(
+        window_map(&runtime, &mv).await,
+        full_window(&runtime, &source).await
+    );
+    let states = runtime.list_states(&view.view_id).await.unwrap();
+    assert!(
+        states
+            .iter()
+            .all(|state| state.role != StateRole::RankState),
+        "{states:?}"
+    );
 }
