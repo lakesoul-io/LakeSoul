@@ -176,5 +176,5 @@ off 6.3 QPS，L1-only 1765.7 QPS。GIST/Deep 的 `—` 没有在修改后重测�
 
 ## 9. 原始结果
 
-- [minio.jsonl](/benchmark-data/vector-index-minio-2026-11-11/minio.jsonl)
+原始 JSONL 保留在本地基准运行目录，不随仓库发布。
 

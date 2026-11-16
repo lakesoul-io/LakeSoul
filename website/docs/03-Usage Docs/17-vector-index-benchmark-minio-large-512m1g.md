@@ -79,7 +79,4 @@
 
 ## 6. Raw data
 
-- [raw/sift.jsonl](/benchmark-data/vector-index-minio-large-512m1g-2026-11-11/sift-512m1g.jsonl)
-- [raw/glove.jsonl](/benchmark-data/vector-index-minio-large-512m1g-2026-11-11/glove-512m1g.jsonl)
-- [raw/gist.jsonl](/benchmark-data/vector-index-minio-large-512m1g-2026-11-11/gist-512m1g.jsonl)
-- [raw/deep.jsonl](/benchmark-data/vector-index-minio-large-512m1g-2026-11-11/deep-512m1g.jsonl)
+Raw JSONL output is kept in the local benchmark run directories and is not published with the repository.

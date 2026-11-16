@@ -25,7 +25,7 @@
 | 构建 | Rust release，`-C target-cpu=native`；仅本机性能构建，不作为跨CPU通用产物 |
 | 清理 | 同时只测一个数据集；每个run/接口组完成后停止专属进程，drop专属表并删除其prefix/cache，再继续；Deep中断恢复的两组各自建表并清理 |
 
-旧DataFusion/pgwire的batch列是SQL loop，不能作为native batch性能。后续旧补测脚本还出现过full batch与百分位采样混入同一计时分母、结果重复导致recall越界。本页用新runner的真实测量替换，不将旧QPS乘2推算。原2026-11-11 raw保留在[旧记录](/benchmark-data/vector-index-minio-large-512m1g-2026-11-11/sift-512m1g.jsonl)。第一轮新runner还触发cache初始化删除owner标记，已在修正owner目录后整轮重跑；旧失败run不混入本表。
+旧DataFusion/pgwire的batch列是SQL loop，不能作为native batch性能。后续旧补测脚本还出现过full batch与百分位采样混入同一计时分母、结果重复导致recall越界。本页用新runner的真实测量替换，不将旧QPS乘2推算。原2026-11-11 raw 不随仓库发布（口径差异见上文）。第一轮新runner还触发cache初始化删除owner标记，已在修正owner目录后整轮重跑；旧失败run不混入本表。
 
 本次有效记录来自2026年11月13日的20组完整测量和11月14日的10组Deep补测。13日的Deep运行收到外部SIGTERM；它的未完成exact测量未纳入本表，完成的20组保留。补测使用相同二进制SHA256、参数和query/truth指纹，未重跑已完成组。各来源的中断记录、恢复清理及选择关系保留在manifest和raw的source_run字段。不同日期的非独占宿主机负载可能影响耗时，不作微小差距的稳定性承诺。
 
@@ -151,15 +151,7 @@
 
 ## 6. 本轮原始记录
 
-- [SIFT-128 raw](/benchmark-data/vector-index-native-batch-512m1g-2026-11-14/sift.v2.jsonl)
-- [GloVe-200 raw](/benchmark-data/vector-index-native-batch-512m1g-2026-11-14/glove.v2.jsonl)
-- [GIST-960 raw](/benchmark-data/vector-index-native-batch-512m1g-2026-11-14/gist.v2.jsonl)
-- [Deep-Image-96 raw](/benchmark-data/vector-index-native-batch-512m1g-2026-11-14/deep.v2.jsonl)
-- [协议、参数与二进制指纹](/benchmark-data/vector-index-native-batch-512m1g-2026-11-14/manifest.v2.json)
-- [全量跨接口ID与排名核验：20组配对、164,000个query比较](/benchmark-data/vector-index-native-batch-512m1g-2026-11-14/api-parity-final.json)
-- [最终清理复核：3个来源、6个专属前缀为空](/benchmark-data/vector-index-native-batch-512m1g-2026-11-14/cleanup-proof-final.json)
-- [测量后原有湖仓兼容性：8项通过、release哈希不变](/benchmark-data/vector-index-native-batch-512m1g-2026-11-14/core-compatibility-results.json)
-- [真实长请求读租约：150秒跨TTL续期证明](/benchmark-data/vector-index-native-batch-512m1g-2026-11-14/live-read-lease-renewal-proof.json)
+原始 JSONL、manifest 与核验产物保留在本地基准运行目录，不随仓库发布。
 
 本地完整ranked结果与stderr/stdout保留在以下来源run目录；原始压缩结果的路径及SHA256见raw的result_artifact字段。写表/构建表展示每个数据集首个来源run的成本；Deep恢复run重新构建的成本也完整保留在raw中。
 

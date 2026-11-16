@@ -180,5 +180,5 @@ for index (single row); exact uses more service memory.
 
 ## 9. Raw data
 
-- [minio.jsonl](/benchmark-data/vector-index-minio-2026-11-11/minio.jsonl)
+Raw JSONL output is kept in the local benchmark run directories and is not published with the repository.
 

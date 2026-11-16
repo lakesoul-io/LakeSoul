@@ -96,7 +96,4 @@ its ~16 QPS / ~1.8 QPS exact rates would take many minutes to hours.
 
 ## 6. Raw data
 
-- [raw/sift.jsonl](/benchmark-data/vector-index-minio-large-2026-11-11/sift.jsonl)
-- [raw/glove.jsonl](/benchmark-data/vector-index-minio-large-2026-11-11/glove.jsonl)
-- [raw/gist.jsonl](/benchmark-data/vector-index-minio-large-2026-11-11/gist.jsonl)
-- [raw/deep.jsonl](/benchmark-data/vector-index-minio-large-2026-11-11/deep.jsonl)
+Raw JSONL output is kept in the local benchmark run directories and is not published with the repository.

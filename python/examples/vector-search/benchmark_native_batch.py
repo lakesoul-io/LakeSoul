@@ -88,7 +88,7 @@ def methodology() -> dict[str, Any]:
         "sql_functions": {"inline": SQL_INLINE, "table": SQL_TABLE},
         "sql_source": "owned LakeSoul query table for full batch, inline JSON for percentile chunks",
         "sql_exact_contract": "final optional exact_overfetch literal must be supported",
-        "baseline_raw": "website/static/benchmark-data/vector-index-minio-large-512m1g-2026-11-11 (immutable)",
+        "baseline_raw": "vector-index-minio-large-512m1g-2026-11-11 (historical; raw data is no longer published with the repository)",
     }
 
 
