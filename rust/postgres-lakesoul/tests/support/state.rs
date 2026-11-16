@@ -125,17 +125,53 @@ impl Harness {
         table: &str,
         domain: &str,
     ) -> Result<()> {
+        self.write_table_out_of_band(table, domain, false).await
+    }
+
+    /// Drops `table` from the base namespace and recreates the name in
+    /// `domain`, as another engine would, in one metadata transaction: the
+    /// name now belongs to a different table, which this server learns of
+    /// only at its next catalog refresh. The old table must have no data.
+    pub async fn replace_table_out_of_band(
+        &self,
+        table: &str,
+        domain: &str,
+    ) -> Result<()> {
+        self.write_table_out_of_band(table, domain, true).await
+    }
+
+    async fn write_table_out_of_band(
+        &self,
+        table: &str,
+        domain: &str,
+        replace: bool,
+    ) -> Result<()> {
         let client = self.connect_reference().await?;
         let table_id = format!("table_{}", uuid::Uuid::new_v4());
-        let table_path = format!(
-            "file://{}/{}/{table}",
-            self.warehouse_dir.to_string_lossy(),
-            self.lake_namespace
-        );
         let namespace = &self.lake_namespace;
+        // A path of its own: a replacement is a different table.
+        let table_path = format!(
+            "file://{}/{namespace}/{table}_{}",
+            self.warehouse_dir.to_string_lossy(),
+            &table_id[6..14]
+        );
         // Every value is harness-generated: no quoting concerns.
+        let drop_old = if replace {
+            format!(
+                "DELETE FROM public.table_path_id WHERE table_id IN
+                   (SELECT table_id FROM public.table_info
+                    WHERE table_namespace = '{namespace}' AND table_name = '{table}');
+                 DELETE FROM public.table_name_id
+                   WHERE table_namespace = '{namespace}' AND table_name = '{table}';
+                 DELETE FROM public.table_info
+                   WHERE table_namespace = '{namespace}' AND table_name = '{table}';"
+            )
+        } else {
+            String::new()
+        };
         let sql = format!(
             "BEGIN;
+             {drop_old}
              INSERT INTO public.table_info
                SELECT (jsonb_populate_record(NULL::public.table_info,
                  to_jsonb(t) || jsonb_build_object(
@@ -152,7 +188,7 @@ impl Harness {
         client
             .batch_execute(&sql)
             .await
-            .with_context(|| format!("create {table} in {domain} out of band"))
+            .with_context(|| format!("write {table} in {domain} out of band"))
     }
 
     fn jwt(&self) -> Result<&lakesoul_metadata::JwtServer> {

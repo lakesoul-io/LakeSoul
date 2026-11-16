@@ -45,6 +45,43 @@ async fn jwt_authentication_contract() -> Result<()> {
 const OWNED: &str = "rbac_team_a_owned";
 /// A team-A table another engine creates while the server runs.
 const EXTERNAL: &str = "rbac_team_a_external";
+/// A team-A table another engine replaces by a team-B table of the same name.
+const REPLACED: &str = "rbac_team_a_replaced";
+
+/// `DROP` authorizes the table it deletes, not the name the catalog snapshot
+/// remembers: when another engine drops a team-A table and recreates its
+/// name in team B, alice's `DROP` before the next refresh - which the
+/// snapshot still allows - must leave team B's table alone.
+async fn stale_drop_cannot_reach_a_replacement(
+    h: &Harness,
+    alice: &Client,
+    bob: &Client,
+) -> Result<()> {
+    // Created through this server, so the snapshot records it as team A.
+    alice
+        .batch_execute(&format!("CREATE TABLE {REPLACED} (id BIGINT, val BIGINT)"))
+        .await
+        .context("rbac-stale-drop: create as team A")?;
+    h.replace_table_out_of_band(REPLACED, RBAC_TEAM_B).await?;
+    // No wait: the snapshot still says team A (a refresh in between would
+    // only hide the name from alice, with the same outcome).
+    let (code, message) = server_error(alice, &format!("DROP TABLE {REPLACED}")).await?;
+    ensure!(
+        code == SqlState::UNDEFINED_TABLE.code(),
+        "rbac-stale-drop: alice's DROP gave {code} ({message}), expected 42P01"
+    );
+    let domains = h.stored_domains(REPLACED).await?;
+    ensure!(
+        domains == vec![RBAC_TEAM_B.to_string(); 3],
+        "rbac-stale-drop: team B's replacement must survive alice's DROP, \
+         found domains {domains:?}"
+    );
+    // The refused DROP refreshed the snapshot: the name is now team B's.
+    bob.batch_execute(&format!("DROP TABLE {REPLACED}"))
+        .await
+        .context("rbac-stale-drop: team B drops its own table")?;
+    Ok(())
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rbac_domain_enforcement_contract() -> Result<()> {
@@ -65,6 +102,7 @@ async fn rbac_domain_enforcement_contract() -> Result<()> {
             detached_jobs_keep_the_domain(&alice, &bob).await?;
             unfiltered_paths_are_refused(&alice).await?;
             cross_process_creation(h, &alice, &bob).await?;
+            stale_drop_cannot_reach_a_replacement(h, &alice, &bob).await?;
 
             // One statement per message: DDL is never batched.
             for table in [OWNED, EXTERNAL] {

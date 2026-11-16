@@ -185,14 +185,21 @@ impl SchemaProvider for PgPublicSchema {
         self.local.register_table(name, table)
     }
 
-    /// Synchronous, so the domain comes from the snapshot: a hidden table, or
-    /// one the snapshot does not know yet, is reported as absent and left
-    /// alone.
+    /// A table hidden by the snapshot, or one it does not know yet, is
+    /// reported as absent, like `table_exist` reports it. The snapshot may
+    /// be stale, though: the name it allowed can have been dropped and
+    /// recreated in another domain since. The deletion is therefore
+    /// authorized again on the exact row it deletes.
     fn deregister_table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
+        let Some(access) = self.access.clone() else {
+            return self.local.deregister_table(name);
+        };
         if !self.visible_in_snapshot(name) {
             return Ok(None);
         }
-        self.local.deregister_table(name)
+        self.local.deregister_table_if(name, move |table_info| {
+            access.allows(&table_info.domain)
+        })
     }
 }
 
