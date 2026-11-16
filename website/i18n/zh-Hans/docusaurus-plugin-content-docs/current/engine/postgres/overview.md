@@ -30,18 +30,18 @@ cargo run -p postgres-lakesoul -- --port 5433 \
 | --- | --- |
 | **连接** | PostgreSQL wire protocol、simple 与 extended query protocol、`pg_catalog`、`psql \d` |
 | **DDL** | `CREATE TABLE`、`DROP TABLE`、主键、`PARTITIONED BY`、`WITH (...)` 选项 |
-| **写入** | `INSERT ... VALUES`、`INSERT ... SELECT`、`ON CONFLICT DO NOTHING`、`ON CONFLICT ... DO UPDATE SET col = EXCLUDED.col`（覆盖每个非主键列） |
+| **写入** | `INSERT ... VALUES`、`INSERT ... SELECT`、非 CDC 主键表上的 `UPDATE`、`ON CONFLICT DO NOTHING`、通用 `ON CONFLICT ... DO UPDATE`（部分列、表达式和 conflict `WHERE`） |
 | **查询** | DataFusion SQL 表面，包括 join、聚合、窗口、CTE 和集合运算 |
 | **检索** | 兼容 pgvector 的向量操作符、BM25 的 `text_score` |
 | **增量 SQL** | 会话开启后，`INSERT ... SELECT` 维护目标表 |
 | **订阅** | `CREATE/DROP/ALTER SUBSCRIPTION` 把一张源 PostgreSQL 表复制到 LakeSoul CDC 表 |
 | **后台查询** | `lakesoul_submit` 让长 `SELECT` / `INSERT ... SELECT` 脱离提交连接运行，之后可按 query id 轮询、取结果和取消 |
-| **事务** | Autocommit；`READ COMMITTED`；失败事务恢复 |
+| **事务** | Autocommit 和显式事务块；`READ COMMITTED`；写入使用 deferred publication；失败事务恢复 |
 | **目录** | 一个 database 映射一个 LakeSoul namespace；用户表在 `public` |
 
 ## 不支持
 
-`UPDATE`、`DELETE`、`COPY`、`RETURNING`、`CREATE TABLE AS`、`TRUNCATE`、非 `READ COMMITTED` 隔离级别，以及显式事务块里的写入，都会以 SQLSTATE `0A000` 被拒绝。完整列表见[兼容性矩阵](compatibility.md)。
+`DELETE`、`COPY`、`RETURNING`、`CREATE TABLE AS`、`CREATE TEMP TABLE`、`TRUNCATE`、非 `READ COMMITTED` 隔离级别，以及多语句 simple-query batch 里的写入，都会以 SQLSTATE `0A000` 被拒绝。显式事务块里的写入使用 deferred publication。完整列表见[兼容性矩阵](compatibility.md)。
 
 ## 下一步
 

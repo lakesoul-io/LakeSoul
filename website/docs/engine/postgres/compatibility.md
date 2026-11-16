@@ -18,20 +18,20 @@ covered today.
 
 | Tier | Meaning | Status |
 | --- | --- | --- |
-| **Connectivity** | A PostgreSQL client can connect and run a query | `psql`, JDBC, `pgx`, DBeaver, libpq-based tools |
+| **Connectivity** | A PostgreSQL client can connect and run a query | `psql`, pgjdbc, psycopg, libpq-based tools; broader BI/import tool certification is in progress |
 | **SQL surface** | The statements and semantics below | See the tables on this page |
-| **Ecosystem** | Tools that rely on PostgreSQL catalog behaviour | `pg_catalog`, `information_schema`, `psql \d`, BI tools that introspect |
+| **Ecosystem** | Tools that rely on PostgreSQL catalog behaviour | basic `pg_catalog`/`information_schema`; `psql \d` is not yet certified (see the client baseline) |
 
 ## Supported
 
 | Area | Statements |
 | --- | --- |
 | Queries | `SELECT` with joins, aggregates, windows, CTEs, `UNION`/`INTERSECT`/`EXCEPT`, subqueries |
-| DDL | `CREATE TABLE`, `DROP TABLE`, primary keys, `PARTITIONED BY`, `WITH (...)` |
-| Writes | `INSERT ... VALUES`, `INSERT ... SELECT`, `ON CONFLICT DO NOTHING`, `ON CONFLICT ... DO UPDATE SET col = EXCLUDED.col` (every non-key column) |
+| DDL | `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE` schema evolution (add/widen columns, `SET`/`RESET` supported options), primary keys, `PARTITIONED BY`, `WITH (...)` |
+| Writes | `INSERT ... VALUES`, `INSERT ... SELECT`, `UPDATE` on non-CDC primary-key tables, `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial column lists, expressions and conflict `WHERE`) |
 | Subscriptions | `CREATE SUBSCRIPTION`, `ALTER SUBSCRIPTION ... ENABLE/DISABLE`, `DROP SUBSCRIPTION` for logical replication into a LakeSoul CDC table |
-| Transactions | Autocommit, `READ COMMITTED`, `BEGIN`/`COMMIT`/`ROLLBACK` for reads |
-| Catalog | `pg_catalog`, `information_schema`, `psql \d`, `current_database()` |
+| Transactions | Autocommit and `READ COMMITTED`; `BEGIN`/`COMMIT`/`ROLLBACK` with deferred publication for LakeSoul writes |
+| Catalog | basic `pg_catalog`, `information_schema`, `current_database()`; `psql \d` is a client-baseline gap |
 | Session | `SET TIME ZONE`, `statement_timeout`, `search_path`, `ivfflat.probes`, `RESET`, `DISCARD ALL` |
 | Vector | `vector(n)`, `<->`, `<#>`, `<=>`, `ORDER BY ... LIMIT k`, exact fallback, ANN |
 | Full text | `text_score(column, query)` with `ORDER BY ... DESC LIMIT k` |
@@ -40,15 +40,18 @@ covered today.
 
 These return SQLSTATE `0A000` rather than being silently ignored:
 
-- `UPDATE`, `DELETE`, `TRUNCATE`, `COPY`
-- `CREATE TABLE AS`, `RETURNING`
-- Writes inside an explicit transaction block or a multi-statement batch
+- `DELETE`, `TRUNCATE`, `COPY`, `CREATE TABLE AS`, `CREATE TEMP TABLE`, `RETURNING`
+- Writes inside a multi-statement simple-query batch; DDL, `COPY`, IVM maintenance,
+  subscriptions and savepoints inside an explicit transaction block
+- `UPDATE` on CDC tables, tables without a primary key, append-only tables,
+  `UPDATE ... FROM`, and assignments to primary-key or partition columns
+- `ON CONFLICT` on range-partitioned tables; the general `DO UPDATE` form on CDC
+  tables; and changing the conflict key
 - `REPEATABLE READ` and `SERIALIZABLE`
 - `LIKE`, `CLONE`, `INHERITS`
 - Column defaults, `UNIQUE`, `CHECK` and `FOREIGN KEY` constraints
 - `STORED AS` / `LOCATION` in DDL (use `WITH (file_format = ...)`)
 - PostgreSQL extensions, PL/pgSQL and `LISTEN`/`NOTIFY`
-- `ON CONFLICT DO UPDATE` with expressions over the old row
 
 ## SQLSTATE mapping
 
@@ -76,11 +79,28 @@ example, an invalid integer conversion returns `XX000` where PostgreSQL returns
 `22P02`; the [SQL errors reference](../../reference/sql-errors.md) lists the
 known boundaries.
 
+## Client baseline
+
+A real-driver baseline lives in
+`rust/postgres-lakesoul/client-compat/`. It currently runs psycopg2, psycopg3,
+SQLAlchemy and pgjdbc against a live endpoint and covers connect/`SELECT`,
+parameterized writes, batches, UPSERT, transactions, duplicate-key recovery,
+catalog discovery, fetch-size cursors and Metabase-style startup statements.
+
+The current baseline passes the core Python and JDBC workflows. Known gaps are
+kept visible rather than hidden: psql `\d`, SQLAlchemy reflection, psycopg2
+`bytea` parameters, pgjdbc `getPrimaryKeys`, `COPY FROM STDIN`, server-side
+named cursors and `RETURNING`. See the README in that directory for exact
+versions and the status of each gap.
+
 ## Version policy
 
-The SQL surface follows the engine, not a PostgreSQL release. The endpoint does
-not advertise a `server_version` that implies PostgreSQL feature parity. Treat
-the tables above as the contract.
+The SQL surface follows the engine, not a PostgreSQL release. `version()`
+returns a PostgreSQL-compatible baseline string (`PostgreSQL 14.0 (LakeSoul ...
+/ DataFusion ...)`) so drivers such as SQLAlchemy can initialize their
+PostgreSQL dialect. The suffix identifies the actual engine; the string is a
+feature-discovery compatibility shim, not a claim of PostgreSQL 14 parity.
+Treat the tables above as the contract.
 
 ## Next
 

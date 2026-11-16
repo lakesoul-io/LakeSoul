@@ -71,7 +71,7 @@ SET day = EXCLUDED.day,
 
 ## 事务
 
-显式事务块内和多语句 simple-query batch 内的写入会被拒绝。LakeSoul 立即提交，后续的 `ROLLBACK` 或 batch 中失败语句无法撤销已写入的行。
+显式事务块内的普通 `INSERT` 和 `ON CONFLICT DO NOTHING` 会先 staged，由 `COMMIT` 发布；`ROLLBACK` 会删除它们。通用 `ON CONFLICT ... DO UPDATE` 仍使用自己的发布路径，在事务块内以 `0A000` 拒绝。多语句 simple-query batch 内的写入也会被拒绝。
 
 `BEGIN` / `COMMIT` 可以用于只读操作；写入放在 autocommit 语句里。
 
@@ -84,7 +84,7 @@ SET day = EXCLUDED.day,
 | `42601` | 源列与目标列对不上 |
 | `42804` | 表达式无法赋值转换到目标列 |
 | `22P02` | 字符串字面量无法转换为目标类型 |
-| `0A000` | `RETURNING`、`ON CONFLICT` 表达式赋值、赋值列表缺少非主键列，或事务块内写入 |
+| `0A000` | `RETURNING`、分区表或 CDC 表上的 `ON CONFLICT`、赋值列表缺少非主键列，或事务块内的通用 `DO UPDATE` |
 
 不支持 `RETURNING`：sink 在行写完后提交，没有可返回的行流。
 
