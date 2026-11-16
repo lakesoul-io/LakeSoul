@@ -331,6 +331,7 @@ impl IvmInsertHook {
         session_context: &SessionContext,
         client: &mut dyn HookClient,
     ) -> PgWireResult<Response> {
+        refuse_ivm_under_domain_enforcement(client)?;
         let (status, database) = request_context(client)?;
         reject_transaction_strict(status, "INSERT")?;
         let session = client
@@ -424,6 +425,7 @@ impl QueryHook for IvmInsertHook {
         }
         Some(
             async {
+                refuse_ivm_under_domain_enforcement(client)?;
                 validate_statement(insert)?;
                 let (status, database) = request_context(client)?;
                 reject_transaction_strict(status, "INSERT")?;
@@ -447,6 +449,17 @@ impl QueryHook for IvmInsertHook {
         dml.target.as_ref().downcast_ref::<IvmTargetSource>()?;
         Some(Self::run(statement, session_context, client).await)
     }
+}
+
+/// IVM maintenance can refresh on sessions of the IVM runtime's own, which
+/// carry no connection's domain filter, so it is refused under `--rbac`.
+fn refuse_ivm_under_domain_enforcement<C: ClientInfo + ?Sized>(
+    client: &C,
+) -> PgWireResult<()> {
+    crate::auth::refuse_under_domain_enforcement(
+        client,
+        "IVM-maintained INSERT ... SELECT",
+    )
 }
 
 fn feature_not_supported(message: String) -> PgWireError {

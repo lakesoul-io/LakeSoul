@@ -144,8 +144,11 @@ polling statement, never the detached job.
 ## Limits
 
 - A job runs with the submitting user's identity, database, `search_path`, time
-  zone and IVM switch. `statement_timeout` is not inherited; the script may
-  `SET` it.
+  zone and IVM switch. Under `--rbac`, the submitter's domain is stored with the
+  job and is part of its owner: `lakesoul_queries`, the status and result
+  functions, wait and cancel treat another domain's job as nonexistent, and a
+  `job_key` is deduplicated only within one domain.
+- `statement_timeout` is not inherited; the script may `SET` it.
 - `INSERT` still refuses a transaction block inside the job; the job's own
   statements are autocommit.
 - The server-wide concurrency limit defaults to 4 running jobs. There is no

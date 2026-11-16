@@ -31,6 +31,7 @@ use crate::session::PgSessionFactory;
 
 mod allocator;
 mod alter;
+mod auth;
 mod cancel;
 mod catalog;
 mod ddl;
@@ -205,6 +206,62 @@ struct Cli {
     /// across restarts.
     #[clap(long, env = "LAKESOUL_PG_JOB_CLUSTER_ID")]
     job_cluster_id: Option<String>,
+
+    /// Require a LakeSoul JWT as the password of every connection. The token
+    /// is the one the Flight server and the S3 proxy accept: HS256 with the
+    /// metadata client secret, and its `sub` must equal the connecting user.
+    /// It travels as a cleartext password, so terminate TLS in front of the
+    /// server or keep it on a trusted network.
+    #[clap(long, env = "LAKESOUL_PG_JWT_AUTH")]
+    jwt_auth: bool,
+
+    /// Confine every connection to the LakeSoul domain in its token's
+    /// `group`: namespaces and tables of other domains do not exist for it,
+    /// and its new tables are created in its domain. `public` and
+    /// `lake-public` objects stay visible to everyone. Requires `--jwt-auth`.
+    #[clap(long, env = "LAKESOUL_PG_RBAC", requires = "jwt_auth")]
+    rbac: bool,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Print a LakeSoul JWT for connecting to a server started with
+    /// `--jwt-auth`. Needs only the metadata connection settings, from which
+    /// the signing secret is derived.
+    Token(TokenArgs),
+}
+
+#[derive(clap::Args)]
+struct TokenArgs {
+    /// The PostgreSQL user the token is issued to (its `sub` claim).
+    #[clap(long)]
+    user: String,
+
+    /// The LakeSoul domain the user acts in (its `group` claim).
+    #[clap(long)]
+    group: String,
+
+    /// Lifetime of the token: a number with an optional unit s, m, h or d.
+    #[clap(long, default_value = "1h", value_parser = auth::parse_ttl)]
+    ttl: std::time::Duration,
+}
+
+/// Prints one token on stdout and nothing else, so it can be captured as
+/// `PGPASSWORD=$(postgres-lakesoul token ...)`.
+///
+/// The signing secret comes from the metadata settings alone: minting never
+/// connects to the metadata database, so it works offline and during a
+/// metadata outage.
+fn print_token(args: &TokenArgs) -> Result<()> {
+    let secret = lakesoul_metadata::client_secret_from_env()?;
+    let jwt = lakesoul_metadata::JwtServer::new(&secret);
+    let token = auth::mint_token(&jwt, &args.user, &args.group, args.ttl)
+        .map_err(|error| rootcause::report!("{error}"))?;
+    println!("{token}");
+    Ok(())
 }
 
 async fn main_inner(cli: Cli) -> Result<()> {
@@ -226,6 +283,7 @@ async fn main_inner(cli: Cli) -> Result<()> {
     jobs::register_metrics();
     limits::register_limit_metrics();
     alter::register_metrics();
+    auth::register_metrics();
     let meta_client = Arc::new(MetaDataClient::from_env().await?);
     if cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some() {
         return subscribe::run(
@@ -273,6 +331,21 @@ async fn main_inner(cli: Cli) -> Result<()> {
             .spawn(allocator::stats_reader(), move || pool.reserved())?;
     }
     let federation = Arc::new(federation::FederationRuntime::new(&meta_client).await?);
+    if cli.rbac && !cli.jwt_auth {
+        // clap enforces this for the flags; checked again so no other way
+        // of setting them can turn domain enforcement on without tokens.
+        rootcause::bail!("--rbac requires --jwt-auth: the domain comes from the token");
+    }
+    let auth = if cli.jwt_auth {
+        info!(
+            rbac = cli.rbac,
+            "JWT authentication enabled: every connection must send a LakeSoul \
+             token for its user as the password"
+        );
+        auth::AuthSettings::jwt(meta_client.get_client_secret()).with_rbac(cli.rbac)
+    } else {
+        auth::AuthSettings::default()
+    };
     let session_factory = PgSessionFactory::new_with_memory_pool(
         Arc::clone(&meta_client),
         &cli.core,
@@ -280,7 +353,8 @@ async fn main_inner(cli: Cli) -> Result<()> {
         memory_pool,
     )?
     .with_subscriptions(Arc::clone(&subscriptions))
-    .with_federation(federation);
+    .with_federation(federation)
+    .with_auth(auth);
     info!(
         version = lakesoul_build_info::VERSION,
         commit = lakesoul_build_info::GIT_COMMIT,
@@ -458,6 +532,9 @@ async fn shutdown_signal() {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(Command::Token(args)) = &cli.command {
+        return print_token(args);
+    }
     let subscriber = cli.subscribe.subscribe || cli.subscribe.subscription_id.is_some();
     let worker_threads = if subscriber {
         // The initial snapshot decodes N COPY streams and builds Arrow batches
@@ -554,7 +631,80 @@ mod cli_probe_tests {
             "tcp_keepalive_idle_secs": cli.tcp_keepalive_idle_secs,
             "tcp_keepalive_interval_secs": cli.tcp_keepalive_interval_secs,
             "tcp_keepalive_retries": cli.tcp_keepalive_retries,
+            "jwt_auth": cli.jwt_auth,
+            "rbac": cli.rbac,
         })
+    }
+
+    #[test]
+    fn token_subcommand_parses_after_server_flags() {
+        let cli = Cli::try_parse_from([
+            "pg", "--port", "15432", "token", "--user", "alice", "--group", "team_a",
+            "--ttl", "15m",
+        ])
+        .expect("parse");
+        let Some(Command::Token(args)) = cli.command else {
+            panic!("token subcommand not parsed");
+        };
+        assert_eq!(args.user, "alice");
+        assert_eq!(args.group, "team_a");
+        assert_eq!(args.ttl, std::time::Duration::from_secs(900));
+
+        let cli = Cli::try_parse_from(["pg", "token", "--user", "a", "--group", "g"])
+            .expect("parse");
+        let Some(Command::Token(args)) = cli.command else {
+            panic!("token subcommand not parsed");
+        };
+        assert_eq!(
+            args.ttl,
+            std::time::Duration::from_secs(3600),
+            "default ttl"
+        );
+
+        assert!(
+            Cli::try_parse_from([
+                "pg", "token", "--user", "a", "--group", "g", "--ttl", "0"
+            ])
+            .is_err()
+        );
+        assert!(Cli::try_parse_from(["pg", "token", "--user", "a"]).is_err());
+    }
+
+    #[test]
+    fn jwt_auth_follows_cli_and_env() {
+        assert_eq!(probe(&[], &[])["jwt_auth"], false);
+        assert_eq!(
+            probe(&[("LAKESOUL_PG_JWT_AUTH", "true")], &[])["jwt_auth"],
+            true
+        );
+        assert_eq!(probe(&[], &["--jwt-auth"])["jwt_auth"], true);
+    }
+
+    #[test]
+    fn rbac_requires_jwt_auth() {
+        assert!(
+            Cli::try_parse_from(["pg", "--rbac"]).is_err(),
+            "--rbac without --jwt-auth must be refused"
+        );
+        let cli = Cli::try_parse_from(["pg", "--jwt-auth", "--rbac"]).expect("parse");
+        assert!(cli.jwt_auth && cli.rbac);
+        let cli = Cli::try_parse_from(["pg", "--jwt-auth"]).expect("parse");
+        assert!(!cli.rbac, "domain enforcement is off by default");
+    }
+
+    #[test]
+    fn rbac_follows_env() {
+        assert_eq!(probe(&[], &[])["rbac"], false);
+        assert_eq!(
+            probe(
+                &[
+                    ("LAKESOUL_PG_JWT_AUTH", "true"),
+                    ("LAKESOUL_PG_RBAC", "true")
+                ],
+                &[]
+            )["rbac"],
+            true
+        );
     }
 
     #[test]

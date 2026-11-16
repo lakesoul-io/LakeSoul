@@ -95,7 +95,7 @@
         metals
         jdt-language-server
 
-        postgresql_14
+        postgresql_18
 
         tzdata
 
@@ -129,7 +129,7 @@
 
         metals
 
-        postgresql_14
+        postgresql_18
 
         tzdata
 

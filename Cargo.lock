@@ -8082,6 +8082,7 @@ dependencies = [
  "datafusion-postgres",
  "encoding_rs",
  "futures",
+ "jsonwebtoken",
  "lakesoul-build-info",
  "lakesoul-common",
  "lakesoul-datafusion",

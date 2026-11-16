@@ -25,7 +25,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::scalar::ScalarValue;
 use uuid::Uuid;
 
-use crate::jobs::{JobService, JobSnapshot, spool_scan};
+use crate::jobs::{JobOwner, JobService, JobSnapshot, spool_scan};
 use crate::session::PgIdentityConfig;
 
 /// The columns every status row carries.
@@ -168,16 +168,14 @@ fn truncate(value: &str, max: usize) -> String {
 /// prepared `SELECT * FROM lakesoul_query_status($1)` fresh on every Execute.
 struct JobStatusTable {
     jobs: Arc<JobService>,
-    user: String,
-    database: String,
+    identity: PgIdentityConfig,
     query_id: Option<Uuid>,
 }
 
 impl fmt::Debug for JobStatusTable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("JobStatusTable")
-            .field("user", &self.user)
-            .field("database", &self.database)
+            .field("owner", &self.identity.job_owner())
             .field("query_id", &self.query_id)
             .finish()
     }
@@ -200,13 +198,10 @@ impl TableProvider for JobStatusTable {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        let owner = self.identity.job_owner();
         let snapshots = match self.query_id {
-            Some(query_id) => self
-                .jobs
-                .snapshot(query_id, &self.user, &self.database)
-                .into_iter()
-                .collect(),
-            None => self.jobs.snapshots(&self.user, &self.database),
+            Some(query_id) => self.jobs.snapshot(query_id, &owner).into_iter().collect(),
+            None => self.jobs.snapshots(&owner),
         };
         let batch = status_batch(&snapshots)?;
         let table = MemTable::try_new(status_schema(), vec![vec![batch]])?;
@@ -214,7 +209,19 @@ impl TableProvider for JobStatusTable {
     }
 }
 
-fn identity(session: &dyn Session) -> DFResult<(String, String)> {
+impl PgIdentityConfig {
+    /// The owner whose jobs this session may see and read: its user,
+    /// database and, under `--rbac`, domain.
+    pub(crate) fn job_owner(&self) -> JobOwner<'_> {
+        JobOwner {
+            user: &self.user,
+            database: &self.database,
+            domain: self.domain.as_deref(),
+        }
+    }
+}
+
+fn identity(session: &dyn Session) -> DFResult<PgIdentityConfig> {
     let options = session.config().options();
     let identity = options
         .extensions
@@ -230,7 +237,7 @@ fn identity(session: &dyn Session) -> DFResult<(String, String)> {
             "this session has no PostgreSQL user for the query job tables".to_string(),
         ));
     }
-    Ok((identity.user.clone(), identity.database.clone()))
+    Ok(identity.clone())
 }
 
 fn string_argument(exprs: &[Expr], index: usize, name: &str) -> DFResult<String> {
@@ -300,12 +307,11 @@ impl TableFunctionImpl for QueryStatusFunction {
         &self,
         args: TableFunctionArgs,
     ) -> DFResult<Arc<dyn TableProvider>> {
-        let (user, database) = identity(args.session())?;
+        let identity = identity(args.session())?;
         let query_id = parse_query_id(&string_argument(args.exprs(), 0, "query_id")?)?;
         Ok(Arc::new(JobStatusTable {
             jobs: Arc::clone(&self.jobs),
-            user,
-            database,
+            identity,
             query_id: Some(query_id),
         }))
     }
@@ -333,11 +339,10 @@ impl TableFunctionImpl for QueriesFunction {
         &self,
         args: TableFunctionArgs,
     ) -> DFResult<Arc<dyn TableProvider>> {
-        let (user, database) = identity(args.session())?;
+        let identity = identity(args.session())?;
         Ok(Arc::new(JobStatusTable {
             jobs: Arc::clone(&self.jobs),
-            user,
-            database,
+            identity,
             query_id: None,
         }))
     }
@@ -365,7 +370,7 @@ impl TableFunctionImpl for QueryResultFunction {
         &self,
         args: TableFunctionArgs,
     ) -> DFResult<Arc<dyn TableProvider>> {
-        let (user, database) = identity(args.session())?;
+        let identity = identity(args.session())?;
         let raw = string_argument(args.exprs(), 0, "query_id")?;
         let query_id = parse_query_id(&raw)?;
         let offset = integer_argument(args.exprs(), 1, "offset", 0)?.max(0) as usize;
@@ -373,7 +378,7 @@ impl TableFunctionImpl for QueryResultFunction {
             integer_argument(args.exprs(), 2, "limit", 1_000_000)?.max(0) as usize;
         let result = self
             .jobs
-            .result(query_id, &user, &database)
+            .result(query_id, &identity.job_owner())
             .map_err(|error| DataFusionError::Plan(error.message))?;
         let Some(last) = result.sets.last() else {
             return Err(DataFusionError::Plan(format!(
@@ -413,7 +418,7 @@ impl TableFunctionImpl for QueryResultSetFunction {
         &self,
         args: TableFunctionArgs,
     ) -> DFResult<Arc<dyn TableProvider>> {
-        let (user, database) = identity(args.session())?;
+        let identity = identity(args.session())?;
         let query_id = parse_query_id(&string_argument(args.exprs(), 0, "query_id")?)?;
         let set_index =
             integer_argument(args.exprs(), 1, "set_index", 0)?.max(0) as usize;
@@ -422,7 +427,7 @@ impl TableFunctionImpl for QueryResultSetFunction {
             integer_argument(args.exprs(), 3, "limit", 1_000_000)?.max(0) as usize;
         let result = self
             .jobs
-            .result(query_id, &user, &database)
+            .result(query_id, &identity.job_owner())
             .map_err(|error| DataFusionError::Plan(error.message))?;
         let Some(set) = result.sets.get(set_index) else {
             return Err(DataFusionError::Plan(format!(
@@ -475,11 +480,11 @@ impl TableFunctionImpl for QueryResultSetsFunction {
         &self,
         args: TableFunctionArgs,
     ) -> DFResult<Arc<dyn TableProvider>> {
-        let (user, database) = identity(args.session())?;
+        let identity = identity(args.session())?;
         let query_id = parse_query_id(&string_argument(args.exprs(), 0, "query_id")?)?;
         let result = self
             .jobs
-            .result(query_id, &user, &database)
+            .result(query_id, &identity.job_owner())
             .map_err(|error| DataFusionError::Plan(error.message))?;
         let schema = result_sets_schema();
         let set_index = Int64Array::from_iter(

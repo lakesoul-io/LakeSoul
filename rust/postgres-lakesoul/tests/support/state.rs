@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use datafusion::arrow::util::display::array_value_to_string;
-use tokio_postgres::{Client, Config};
+use tokio_postgres::{Client, Config, NoTls};
 
 use super::{
     Harness, OPERATION_TIMEOUT, StartupState, bounded, configure_session, connect_pg,
@@ -22,8 +22,180 @@ impl Harness {
 
     /// Select a database at connection startup; never mutate a shared session.
     pub async fn connect_database(&self, database: &str) -> Result<Client> {
-        self.connect_extra(&lake_config(self.lake_addr, database), false)
+        let config = self
+            .state
+            .authenticated(lake_config(self.lake_addr, database))?;
+        self.connect_extra(&config, false).await
+    }
+
+    /// The startup configuration for `user` on `database`, with `password`
+    /// sent as is and no token added.
+    pub fn lake_config_as(
+        &self,
+        database: &str,
+        user: &str,
+        password: Option<&str>,
+    ) -> Config {
+        let mut config = lake_config(self.lake_addr, database);
+        config.user(user);
+        if let Some(password) = password {
+            config.password(password);
+        }
+        config
+    }
+
+    /// One raw handshake: the driver's own error when the server refuses it,
+    /// so a test can read the SQLSTATE. The outer error is a timeout.
+    pub async fn connect_attempt(
+        &self,
+        config: &Config,
+    ) -> Result<std::result::Result<Client, tokio_postgres::Error>> {
+        let attempt = tokio::time::timeout(OPERATION_TIMEOUT, config.connect(NoTls))
             .await
+            .context("connection attempt timed out")?;
+        Ok(attempt.map(|(client, connection)| {
+            self.state.connections.lock().push(tokio::spawn(async move {
+                let _ = connection.await;
+            }));
+            client
+        }))
+    }
+
+    /// A token for `user` in `group`, signed with the server's secret and
+    /// valid for an hour. Only in a [`super::run_jwt_suite`].
+    pub fn token(&self, user: &str, group: &str) -> Result<String> {
+        super::sign_token(self.jwt()?, user, group, 3600)
+    }
+
+    /// The same, expired a day ago: well past the validator's leeway.
+    pub fn expired_token(&self, user: &str, group: &str) -> Result<String> {
+        super::sign_token(self.jwt()?, user, group, -86_400)
+    }
+
+    /// The namespace this suite created in `domain`.
+    pub fn namespace_of(&self, domain: &str) -> Result<&str> {
+        self.state
+            .domain_namespaces
+            .iter()
+            .find(|(owner, _)| owner == domain)
+            .map(|(_, namespace)| namespace.as_str())
+            .with_context(|| format!("this suite created no namespace in {domain:?}"))
+    }
+
+    /// The `domain` column of `table`'s `table_info`, `table_name_id` and
+    /// `table_path_id` rows in the base namespace, read from the metadata
+    /// database itself.
+    pub async fn stored_domains(&self, table: &str) -> Result<Vec<String>> {
+        let client = self.connect_reference().await?;
+        let mut domains = Vec::new();
+        for (relation, sql) in [
+            (
+                "table_info",
+                "SELECT domain FROM public.table_info \
+                 WHERE table_namespace = $1 AND table_name = $2",
+            ),
+            (
+                "table_name_id",
+                "SELECT domain FROM public.table_name_id \
+                 WHERE table_namespace = $1 AND table_name = $2",
+            ),
+            (
+                // `table_path_id` has no name column: reach it by id.
+                "table_path_id",
+                "SELECT p.domain FROM public.table_path_id p \
+                 JOIN public.table_info t ON t.table_id = p.table_id \
+                 WHERE t.table_namespace = $1 AND t.table_name = $2",
+            ),
+        ] {
+            let row = client
+                .query_one(sql, &[&self.lake_namespace, &table])
+                .await
+                .with_context(|| format!("read {relation}.domain of {table}"))?;
+            domains.push(row.get(0));
+        }
+        Ok(domains)
+    }
+
+    /// Creates `table` in the base namespace and `domain` the way another
+    /// engine would: straight in the metadata database, in one transaction,
+    /// so this server learns of it only from metadata. The definition is
+    /// `items`'s; the new table has no data.
+    pub async fn create_table_out_of_band(
+        &self,
+        table: &str,
+        domain: &str,
+    ) -> Result<()> {
+        self.write_table_out_of_band(table, domain, false).await
+    }
+
+    /// Drops `table` from the base namespace and recreates the name in
+    /// `domain`, as another engine would, in one metadata transaction: the
+    /// name now belongs to a different table, which this server learns of
+    /// only at its next catalog refresh. The old table must have no data.
+    pub async fn replace_table_out_of_band(
+        &self,
+        table: &str,
+        domain: &str,
+    ) -> Result<()> {
+        self.write_table_out_of_band(table, domain, true).await
+    }
+
+    async fn write_table_out_of_band(
+        &self,
+        table: &str,
+        domain: &str,
+        replace: bool,
+    ) -> Result<()> {
+        let client = self.connect_reference().await?;
+        let table_id = format!("table_{}", uuid::Uuid::new_v4());
+        let namespace = &self.lake_namespace;
+        // A path of its own: a replacement is a different table.
+        let table_path = format!(
+            "file://{}/{namespace}/{table}_{}",
+            self.warehouse_dir.to_string_lossy(),
+            &table_id[6..14]
+        );
+        // Every value is harness-generated: no quoting concerns.
+        let drop_old = if replace {
+            format!(
+                "DELETE FROM public.table_path_id WHERE table_id IN
+                   (SELECT table_id FROM public.table_info
+                    WHERE table_namespace = '{namespace}' AND table_name = '{table}');
+                 DELETE FROM public.table_name_id
+                   WHERE table_namespace = '{namespace}' AND table_name = '{table}';
+                 DELETE FROM public.table_info
+                   WHERE table_namespace = '{namespace}' AND table_name = '{table}';"
+            )
+        } else {
+            String::new()
+        };
+        let sql = format!(
+            "BEGIN;
+             {drop_old}
+             INSERT INTO public.table_info
+               SELECT (jsonb_populate_record(NULL::public.table_info,
+                 to_jsonb(t) || jsonb_build_object(
+                   'table_id', '{table_id}', 'table_name', '{table}',
+                   'table_path', '{table_path}', 'domain', '{domain}'))).*
+               FROM public.table_info t
+               WHERE t.table_namespace = '{namespace}' AND t.table_name = 'items';
+             INSERT INTO public.table_name_id (table_name, table_id, table_namespace, domain)
+               VALUES ('{table}', '{table_id}', '{namespace}', '{domain}');
+             INSERT INTO public.table_path_id (table_path, table_id, table_namespace, domain)
+               VALUES ('{table_path}', '{table_id}', '{namespace}', '{domain}');
+             COMMIT;"
+        );
+        client
+            .batch_execute(&sql)
+            .await
+            .with_context(|| format!("write {table} in {domain} out of band"))
+    }
+
+    fn jwt(&self) -> Result<&lakesoul_metadata::JwtServer> {
+        self.state
+            .jwt
+            .as_deref()
+            .context("tokens exist only in a JWT suite")
     }
 
     pub async fn connect_reference(&self) -> Result<Client> {
@@ -38,7 +210,9 @@ impl Harness {
     /// comparable. Used by the time-zone/reset contract to derive the expected
     /// post-`RESET`/`DISCARD` state instead of re-pinning current output.
     pub async fn connect_lake_startup_defaults(&self) -> Result<Client> {
-        let config = lake_config(self.lake_addr, &self.lake_namespace);
+        let config = self
+            .state
+            .authenticated(lake_config(self.lake_addr, &self.lake_namespace))?;
         let (client, task) = connect_pg(&config, "sql_compat_lake").await?;
         self.state.connections.lock().push(task);
         Ok(client)

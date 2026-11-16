@@ -415,6 +415,9 @@ create table if not exists job.queries
     job_key            text,
     user_name          text   not null,
     database_name      text   not null,
+    -- The submitter's domain under `--rbac`, empty without one. It is part of
+    -- the job's owner, so a job_key never dedupes onto another domain's job.
+    domain             text   not null default '',
     sql_text           text   not null,
     settings           jsonb  not null,
     state              text   not null default 'queued',
@@ -448,8 +451,8 @@ create index if not exists job_queries_state_idx
 create index if not exists job_queries_user_idx
     on job.queries (user_name, created_at desc);
 
-create unique index if not exists job_queries_scope_key_idx
-    on job.queries (database_name, user_name, job_key);
+create unique index if not exists job_queries_domain_key_idx
+    on job.queries (database_name, user_name, domain, job_key);
 
 -- ---------------------------------------------------------------------------
 -- Incremental view maintenance (IVM)
