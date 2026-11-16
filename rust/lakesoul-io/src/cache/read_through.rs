@@ -123,10 +123,12 @@ impl<C: PageCache> ReadThroughCache<C> {
     }
 
     fn is_bypassed(&self, location: &Path) -> bool {
-        let location = location.as_ref();
-        self.bypass_paths
-            .iter()
-            .any(|bypass| location.contains(bypass.as_str()))
+        // Match whole path segments: a table or file whose name merely
+        // contains a reserved directory name must keep the normal cache path.
+        location.parts().any(|part| {
+            let part: &str = part.as_ref();
+            self.bypass_paths.iter().any(|bypass| bypass == part)
+        })
     }
 
     async fn invalidate(&self, location: &Path) -> Result<()> {
@@ -520,5 +522,13 @@ mod tests {
         // Data files keep the normal read-through path.
         assert_eq!(stats.total_reads(), 1);
         assert_eq!(stats.total_misses(), 1);
+
+        // A path that only contains the name as a substring is not bypassed.
+        let lookalike = root.path().join("my_vector_index_table.parquet");
+        std::fs::write(&lookalike, "lookalike payload").unwrap();
+        let path = Path::from(lookalike.to_str().unwrap());
+        let read = cache.get_range(&path, 0..17).await.unwrap();
+        assert_eq!(read, "lookalike payload".as_bytes());
+        assert_eq!(stats.total_reads(), 2);
     }
 }
