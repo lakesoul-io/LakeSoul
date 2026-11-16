@@ -100,6 +100,7 @@ use vortex::session::VortexSession;
 
 use crate::cache::get_lakesoul_cache;
 use crate::cache::paging::PageCache;
+use crate::cache::store_namespace::{StoreCacheNamespace, store_cache_namespace};
 use crate::config::LakeSoulIOConfig;
 use crate::file_format::{
     PhysicalFormat, acquire_metadata_fetch_permit, vortex_scan_session,
@@ -194,10 +195,23 @@ pub fn cache_stats() -> (u64, u64) {
     )
 }
 
-/// Opened vortex files, keyed by location: opening reads the footer and layout
-/// over the object store, so it is worth amortizing across queries.  The index
-/// itself lives in the shared disk cache; this only keeps handles.
-static VORTEX_FILES: LazyLock<Cache<String, Arc<VortexFile>>> =
+/// An opened vortex file together with the store identity it was opened from.
+///
+/// The namespace retains the `ObjectStore` while the handle is cached, so a
+/// new store allocated at the same address can never inherit the old one's
+/// entry, and the entry itself keeps the store alive.
+struct CachedVortexFile {
+    file: Arc<VortexFile>,
+    _namespace: Arc<StoreCacheNamespace>,
+}
+
+/// Opened vortex files, keyed by store identity and location: opening reads the
+/// footer and layout over the object store, so it is worth amortizing across
+/// queries.  The index itself lives in the shared disk cache; this only keeps
+/// handles.  The store namespace is part of the key because two object stores
+/// (different endpoints, or two in-memory stores) commonly serve the same
+/// relative path.
+static VORTEX_FILES: LazyLock<Cache<String, Arc<CachedVortexFile>>> =
     LazyLock::new(|| Cache::builder().max_capacity(1024).build());
 
 /// Files whose index was rejected (unsorted, oversized, ...).  Remembering the
@@ -717,9 +731,14 @@ impl IndexWriter {
 }
 
 /// Cached per-file state: the mmapped index plus the opened vortex handle.
+///
+/// The entry keeps the store namespace alive, both to pin the `ObjectStore`
+/// while the index is usable and to derive store-scoped identities for the
+/// decoded-block cache (see [`BlockSource`]).
 struct CachedFile {
     index: Arc<MmapIndex>,
     source: FileSource,
+    namespace: Arc<StoreCacheNamespace>,
 }
 
 /// The handle a take path needs, per physical format.
@@ -1565,8 +1584,9 @@ async fn get_vortex_file(
     location: &StorePath,
     session: &VortexSession,
 ) -> crate::Result<Arc<VortexFile>> {
+    let namespace = store_cache_namespace(&store);
     let path = location.clone();
-    let key = path.as_ref().to_string();
+    let key = format!("{}:{}", namespace.token(), path.as_ref());
     let session = session.clone();
     VORTEX_FILES
         .try_get_with(key, async move {
@@ -1574,7 +1594,7 @@ async fn get_vortex_file(
                 .await
                 .map_err(|error| error.to_string())?;
             let read_at = Arc::new(ObjectStoreReadAt::new_with_allocator(
-                store,
+                namespace.store(),
                 path.clone(),
                 session.handle(),
                 session.allocator(),
@@ -1583,10 +1603,16 @@ async fn get_vortex_file(
                 .open_options()
                 .open_read(read_at)
                 .await
-                .map(Arc::new)
+                .map(|file| {
+                    Arc::new(CachedVortexFile {
+                        file: Arc::new(file),
+                        _namespace: namespace,
+                    })
+                })
                 .map_err(|error| error.to_string())
         })
         .await
+        .map(|cached| Arc::clone(&cached.file))
         .map_err(|error| {
             rootcause::report!("failed to open vortex data file {location}: {error}")
         })
@@ -1640,10 +1666,36 @@ fn index_kind_hash(kind: &str) -> u64 {
 
 /// Fingerprint of the data file the index belongs to, stored in the header so
 /// a name-hash collision can never serve one file's index for another.
+///
+/// Only unit tests that build an index by hand still use the plain variant;
+/// the production paths include the object store's namespace (see
+/// [`namespaced_index_source_hash`]) in the fingerprint.
+#[cfg(test)]
 fn index_source_hash(location: &StorePath) -> u64 {
     use std::hash::{Hash, Hasher};
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    location.as_ref().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Fingerprint of the data file the index belongs to, plus the object store
+/// that holds it, stored in the index header.
+///
+/// Two object stores commonly serve the same relative path (different buckets
+/// or endpoints, or two in-memory stores); a fingerprint that only hashed the
+/// path would let one store's mmapped key index or decoded-block cache answer
+/// a read for the other.  The store namespace is allocated from the store's
+/// `Arc` identity and dies with it, so the fingerprint cannot go stale while
+/// the entry is alive.
+fn namespaced_index_source_hash(
+    namespace: &StoreCacheNamespace,
+    location: &StorePath,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    namespace.token().hash(&mut hasher);
     location.as_ref().hash(&mut hasher);
     hasher.finish()
 }
@@ -1680,6 +1732,7 @@ async fn get_or_load_file(
     let Some(cache) = index_disk_cache() else {
         return Ok(None);
     };
+    let namespace = store_cache_namespace(&store);
     // The handle the take path needs.  Vortex has to open the file; parquet
     // only needs its size for the reader's metadata fetch.
     let source = match format {
@@ -1709,20 +1762,26 @@ async fn get_or_load_file(
         }
         _ => return Ok(None),
     };
-    let kind = lookup_index_kind(columns, types, defaults);
+    let base_kind = lookup_index_kind(columns, types, defaults);
+    // The store namespace is part of the cache kind, the index fingerprint and
+    // the on-disk location: two stores serving the same relative path must not
+    // read each other's key index or decoded blocks.
+    let kind = format!("{base_kind}#store:{}", namespace.token());
     let kind_hash = index_kind_hash(&kind);
-    let source_hash = index_source_hash(&location);
-    let rejected_key = format!("{location}#{kind}");
+    let source_hash = namespaced_index_source_hash(&namespace, &location);
+    let disk_location = namespace.path(&location);
+    let rejected_key = format!("{disk_location}#{kind}");
     if REJECTED.get(&rejected_key).await.is_some() {
         return Ok(None);
     }
 
-    if let Some((entry, size)) = cache.get_file_entry(&location, &kind).await {
+    if let Some((entry, size)) = cache.get_file_entry(&disk_location, &kind).await {
         if let Some(index) = MmapIndex::open(entry, size, kind_hash, source_hash) {
             HITS.fetch_add(1, AtomicOrdering::Relaxed);
             return Ok(Some(Arc::new(CachedFile {
                 index: Arc::new(index),
                 source,
+                namespace: Arc::clone(&namespace),
             })));
         }
         warn!("corrupt pk index for {location}; rebuilding");
@@ -1779,7 +1838,7 @@ async fn get_or_load_file(
         }
     };
     let (entry, size, built) = match cache
-        .insert_file_entry(&location, &kind, temp.clone(), size)
+        .insert_file_entry(&disk_location, &kind, temp.clone(), size)
         .await
     {
         Ok(entry) => entry,
@@ -1805,6 +1864,7 @@ async fn get_or_load_file(
     Ok(Some(Arc::new(CachedFile {
         index: Arc::new(index),
         source,
+        namespace,
     })))
 }
 
@@ -2887,6 +2947,7 @@ async fn open_block_file_without_cache(
     key_columns: &[String],
     key_types: &[DataType],
 ) -> Option<Arc<CachedFile>> {
+    let namespace = store_cache_namespace(&store);
     let mut session: Option<VortexSession> = None;
     let source = match format {
         PhysicalFormat::Vortex => {
@@ -2908,9 +2969,13 @@ async fn open_block_file_without_cache(
         _ => return None,
     };
     let defaults: HashMap<String, String> = HashMap::new();
-    let kind = lookup_index_kind(key_columns, key_types, &defaults);
+    // Same store-scoped identity as the disk-cache path, so block identities
+    // derived from this entry match the cached one and cannot collide across
+    // object stores.
+    let base_kind = lookup_index_kind(key_columns, key_types, &defaults);
+    let kind = format!("{base_kind}#store:{}", namespace.token());
     let kind_hash = index_kind_hash(&kind);
-    let source_hash = index_source_hash(&location);
+    let source_hash = namespaced_index_source_hash(&namespace, &location);
     static UNCACHED_SEQ: AtomicU64 = AtomicU64::new(0);
     let temp = std::env::temp_dir().join(format!(
         "lakesoul-vector-block-index-{}-{}.idx",
@@ -2974,6 +3039,7 @@ async fn open_block_file_without_cache(
     Some(Arc::new(CachedFile {
         index: Arc::new(index?),
         source,
+        namespace,
     }))
 }
 
@@ -3237,7 +3303,7 @@ impl BlockSource {
             DataType::FixedSizeList(_, dim) if *dim > 0 => *dim as usize,
             _ => return None,
         };
-        let source_hash = index_source_hash(&location);
+        let source_hash = namespaced_index_source_hash(&entry.namespace, &location);
         let field_hash = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -3245,9 +3311,12 @@ impl BlockSource {
             field.data_type().hash(&mut hasher);
             hasher.finish()
         };
-        let block_location = StorePath::from(format!(
+        // The disk block cache is keyed by location only, so its location has
+        // to carry the store namespace as well: the same relative data path in
+        // two stores must not serve the same decoded vector block bytes.
+        let block_location = entry.namespace.path(&StorePath::from(format!(
             "vector-blocks/{source_hash:016x}/{field_hash:016x}"
-        ));
+        )));
         let rows = entry.index.rows;
         Some(Self {
             entry,
@@ -3430,9 +3499,15 @@ impl VectorBlockSource {
             .await
             .map(Arc::new);
         }
+        let namespace = store_cache_namespace(&store);
         let key = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            // Two object stores commonly serve the same relative path, so the
+            // cache key has to include the store identity: without it the
+            // second store would be answered with the first store's source,
+            // including its mmapped key index and decoded blocks.
+            namespace.token().hash(&mut hasher);
             location.as_ref().hash(&mut hasher);
             key_columns.hash(&mut hasher);
             for data_type in key_types {
@@ -3829,10 +3904,119 @@ mod tests {
 
     use super::{
         IndexCursor, IndexWriter, Key, KeyConstraint, KeyValue, LakeSoulIOConfig,
-        MmapIndex, collect_candidate_rows, extract_key_constraints,
-        extract_key_constraints_with_cap, extract_pk_candidates, key_values_to_arrays,
-        row_selection,
+        MmapIndex, PhysicalFormat, VectorBlockSource, collect_candidate_rows,
+        extract_key_constraints, extract_key_constraints_with_cap, extract_pk_candidates,
+        key_values_to_arrays, row_selection,
     };
+
+    /// Two object stores commonly serve identical relative paths; a key index
+    /// or decoded-block source resolved from one of them must never be reused
+    /// for the other, or a query would read the wrong store's vectors.
+    #[tokio::test]
+    async fn vector_block_source_cache_is_scoped_to_object_store() {
+        use arrow::array::{FixedSizeListBuilder, Float32Builder};
+        use bytes::Bytes;
+        use lakesoul_vector::IndexKey;
+        use object_store::ObjectStore;
+        use object_store::memory::InMemory;
+        use object_store::{ObjectStoreExt, path::Path};
+
+        async fn put_vector_file(store: &InMemory, vector: [f32; 2]) {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new(
+                    "vec",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        2,
+                    ),
+                    false,
+                ),
+            ]));
+            let mut vectors = FixedSizeListBuilder::new(Float32Builder::new(), 2);
+            vectors.values().append_slice(&vector);
+            vectors.append(true);
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int64Array::from(vec![1])) as ArrayRef,
+                    Arc::new(vectors.finish()) as ArrayRef,
+                ],
+            )
+            .unwrap();
+            let mut bytes = Vec::new();
+            let mut writer = ArrowWriter::try_new(&mut bytes, schema, None).unwrap();
+            writer.write(&batch).unwrap();
+            writer.close().unwrap();
+            store
+                .put(&Path::from("same/path.parquet"), Bytes::from(bytes).into())
+                .await
+                .unwrap();
+        }
+
+        let first = Arc::new(InMemory::new());
+        let second = Arc::new(InMemory::new());
+        put_vector_file(&first, [1.0, 0.0]).await;
+        put_vector_file(&second, [0.0, 1.0]).await;
+        let first_store: Arc<dyn ObjectStore> = first;
+        let second_store: Arc<dyn ObjectStore> = second;
+        let field = Arc::new(Field::new(
+            "vec",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                2,
+            ),
+            false,
+        ));
+        let location = Path::from("same/path.parquet");
+        let types = vec![DataType::Int64];
+        let columns = vec!["id".to_string()];
+        let first_source = VectorBlockSource::open_cached(
+            Arc::clone(&first_store),
+            &location,
+            PhysicalFormat::Parquet,
+            &columns,
+            &types,
+            &field,
+        )
+        .await
+        .expect("first store PK and decoded-block source");
+        let second_source = VectorBlockSource::open_cached(
+            Arc::clone(&second_store),
+            &location,
+            PhysicalFormat::Parquet,
+            &columns,
+            &types,
+            &field,
+        )
+        .await
+        .expect("second store PK and decoded-block source");
+        assert!(
+            !Arc::ptr_eq(&first_source, &second_source),
+            "the block-source cache must not reuse one object store's source for another"
+        );
+        let row_converter =
+            RowConverter::new(vec![SortField::new(DataType::Int64)]).unwrap();
+        let id_array: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+        let encoded = row_converter.convert_columns(&[id_array]).unwrap();
+        let key_bytes = encoded.row(0).data().to_vec();
+        let keys = vec![IndexKey::new(&key_bytes)];
+        let first_keys = keys.clone();
+        let first_score = tokio::task::spawn_blocking(move || {
+            first_source
+                .score_keys(&first_keys, &[1.0, 0.0], true)
+                .unwrap()[0]
+        })
+        .await
+        .unwrap();
+        let second_score = tokio::task::spawn_blocking(move || {
+            second_source.score_keys(&keys, &[1.0, 0.0], true).unwrap()[0]
+        })
+        .await
+        .unwrap();
+        assert_eq!(first_score, 0.0);
+        assert_eq!(second_score, 2.0);
+    }
 
     #[test]
     fn row_selection_covers_exactly_the_indices() {
