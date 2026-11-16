@@ -100,12 +100,17 @@ pub(crate) fn statement_hooks_with(
     connection_hooks: Vec<Arc<dyn QueryHook>>,
 ) -> Vec<Arc<dyn QueryHook>> {
     let mut hooks: Vec<Arc<dyn QueryHook>> = vec![
-        Arc::new(ReadCommittedOnlyGuard),   // new
-        Arc::new(UncancellableCursorGuard), // new
-        Arc::new(PortalCloseCleanup),       // new
-        Arc::new(CursorStatementHook),
+        Arc::new(ReadCommittedOnlyGuard), // new
+        Arc::new(PortalCloseCleanup),     // new
+        // The failed-transaction gate and the transaction hook run before the
+        // cursor hook: a failed block must reject DECLARE/FETCH with `25P02`,
+        // and COMMIT/ROLLBACK must close the block's cursors.
         Arc::new(FailedTransactionGuard), // new
         Arc::new(crate::transaction::LakeSoulTransactionHook),
+        Arc::new(crate::cursor::CancellableCursorHook),
+        // Fallback for any cursor statement the local hook did not claim; the
+        // local hook is cancellation-aware and claims all three forms.
+        Arc::new(CursorStatementHook),
     ];
     hooks.extend(connection_hooks);
     hooks.extend([
@@ -118,6 +123,9 @@ pub(crate) fn statement_hooks_with(
         // through an owned `SessionContext::state()` clone and discards the
         // write, and its generic `SET` fallback ignores errors.
         Arc::new(SessionSettingsHook) as Arc<dyn QueryHook>, // new
+        // psycopg2 checks pg_cursors before declaring a named cursor; the
+        // catalog has no such relation, so answer it from the cursor store.
+        Arc::new(crate::cursor::PgCursorsHook) as Arc<dyn QueryHook>,
         // pgjdbc's primary-key metadata query uses an unimplemented
         // information_schema set-returning function; answer its equivalent.
         Arc::new(crate::pg_compat::JdbcPrimaryKeysHook) as Arc<dyn QueryHook>,
@@ -137,12 +145,12 @@ pub(crate) fn statement_hooks_with(
 
 /// Removes the cancellation state of portals closed through SQL.
 ///
-/// SQL `CLOSE name` and `CLOSE ALL` are answered by the upstream cursor hook,
-/// which only removes the portal from pgwire's store: a portal that the
-/// extended protocol created (and whose statement the cancellation map keeps
-/// for cancel requests) would then stay registered forever. This hook runs
-/// before it and forgets what the closed portal kept; it never claims the
-/// statement, so the upstream close keeps answering it.
+/// SQL `CLOSE name` and `CLOSE ALL` are answered by [`crate::cursor`], which
+/// removes the cursor's portal from pgwire's store. A portal that the extended
+/// protocol created (and whose statement the cancellation map keeps for cancel
+/// requests) would otherwise stay registered forever. This hook runs before
+/// the cursor hook and forgets what the closed portal kept; it never claims the
+/// statement.
 struct PortalCloseCleanup;
 
 fn forget_closed_portal(statement: &Statement, client: &dyn HookClient) {
@@ -346,72 +354,6 @@ fn libpq_option(name: &str, options: &str) -> Option<String> {
     None
 }
 
-/// Rejects SQL cursors (`DECLARE`/`FETCH`).
-///
-/// The upstream cursor hook stores the statement's row stream in the portal and
-/// polls it from `do_query`, so no cancellation token or deadline reaches the
-/// execution, and cancelling a `FETCH` would only drop the fetch while the
-/// portal kept the distributed stream alive — the workers would keep reading.
-/// Until cursors can be made cancellation-aware, they are refused like any
-/// other statement the server cannot honour.
-struct UncancellableCursorGuard;
-
-fn cursor_error(verb: &str) -> PgWireError {
-    PgWireError::UserError(Box::new(ErrorInfo::new(
-        "ERROR".to_string(),
-        FEATURE_NOT_SUPPORTED.to_string(),
-        format!(
-            "{verb} is not supported: a cursor's rows are produced outside the \
-             statement's cancellation and statement_timeout, so it cannot be \
-             interrupted"
-        ),
-    )))
-}
-
-#[async_trait]
-impl QueryHook for UncancellableCursorGuard {
-    async fn handle_simple_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        match statement {
-            Statement::Declare { .. } => Some(Err(cursor_error("DECLARE"))),
-            Statement::Fetch { .. } => Some(Err(cursor_error("FETCH"))),
-            _ => None,
-        }
-    }
-
-    async fn handle_extended_parse_query(
-        &self,
-        statement: &Statement,
-        _session_context: &SessionContext,
-        _client: &(dyn ClientInfo + Send + Sync),
-    ) -> Option<PgWireResult<LogicalPlan>> {
-        match statement {
-            Statement::Declare { .. } => Some(Err(cursor_error("DECLARE"))),
-            Statement::Fetch { .. } => Some(Err(cursor_error("FETCH"))),
-            _ => None,
-        }
-    }
-
-    async fn handle_extended_query(
-        &self,
-        statement: &Statement,
-        _logical_plan: &LogicalPlan,
-        _params: &ParamValues,
-        _session_context: &SessionContext,
-        _client: &mut dyn HookClient,
-    ) -> Option<PgWireResult<Response>> {
-        match statement {
-            Statement::Declare { .. } => Some(Err(cursor_error("DECLARE"))),
-            Statement::Fetch { .. } => Some(Err(cursor_error("FETCH"))),
-            _ => None,
-        }
-    }
-}
-
 #[async_trait]
 impl QueryHook for ReadCommittedOnlyGuard {
     async fn handle_simple_query(
@@ -539,9 +481,9 @@ struct ReadOnlyStatementGuard;
 impl ReadOnlyStatementGuard {
     /// Statements the server accepts: queries, `DESCRIBE <table>`,
     /// session-local `SET`/`SHOW`, `RESET`/`DISCARD ALL` and transaction
-    /// control. Cursors are refused by [`UncancellableCursorGuard`]; `EXPLAIN`
-    /// is allowed only for a query, so `EXPLAIN INSERT` is rejected like the
-    /// statement it wraps.
+    /// control. Cursors are claimed by [`crate::cursor::CancellableCursorHook`];
+    /// `EXPLAIN` is allowed only for a query, so `EXPLAIN INSERT` is rejected
+    /// like the statement it wraps.
     fn allow(statement: &Statement) -> bool {
         match statement {
             Statement::Query(_)
@@ -790,37 +732,10 @@ mod tests {
         "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
         "COMMIT",
         "ROLLBACK",
-        // `CLOSE` stays allowed: with `DECLARE` refused there is no cursor to
-        // close, and the statement itself is harmless.
+        // `CLOSE` is answered by the local cursor hook; the statement is
+        // harmless even when no cursor exists.
         "CLOSE c",
     ];
-
-    /// Cursors are refused until their execution can be cancelled: the upstream
-    /// cursor hook stores the row stream in the portal, so no token or deadline
-    /// reaches it.
-    #[tokio::test]
-    async fn cursors_are_rejected_as_uncancellable() {
-        let service = service();
-        for sql in ["DECLARE c CURSOR FOR SELECT 1", "FETCH 1 FROM c"] {
-            let error = parse(&service, sql).await.expect_err(sql);
-            assert_eq!(sql_state(&error), Some("0A000"), "sql: {sql}");
-            let message = match error {
-                PgWireError::UserError(info) => info.message,
-                other => panic!("unexpected error: {other:?}"),
-            };
-            assert!(message.contains("cursor"), "{message}");
-
-            let mut client = MockClient::new();
-            let error = <DfSessionService as SimpleQueryHandler>::do_query(
-                &service,
-                &mut client,
-                sql,
-            )
-            .await
-            .expect_err(sql);
-            assert_eq!(sql_state(&error), Some("0A000"), "sql: {sql}");
-        }
-    }
 
     /// `INSERT` and `UPDATE` are answered by their own hooks, which refuse
     /// the unsupported clauses themselves, so the guard must not claim them;

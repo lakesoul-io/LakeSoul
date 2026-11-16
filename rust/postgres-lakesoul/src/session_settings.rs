@@ -55,10 +55,9 @@
 //!   would roll a session `SET` back on `ROLLBACK`; none of this server's
 //!   `SET` statements (including the upstream `datafusion.*` ones) are
 //!   transactional today.
-//! * `DISCARD ALL` does not drop prepared statements or portals: SQL-level
-//!   `PREPARE`/`DECLARE` are refused and this server has no `DEALLOCATE`, so
-//!   there is none of that state to discard. It restores every setting the
-//!   server tracks.
+//! * `DISCARD ALL` restores every setting the server tracks and closes
+//!   server-side cursors, matching PostgreSQL's `CLOSE ALL` component. SQL
+//!   `PREPARE` is still refused and this server has no `DEALLOCATE`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -500,6 +499,7 @@ impl SessionSettingsHook {
             DiscardObject::ALL => {
                 let defaults = session_defaults(client)?;
                 defaults.restore_all(context, client.metadata_mut())?;
+                crate::cursor::clear_with_portals(client);
                 send_time_zone_status(client, defaults.time_zone_value().to_string())
                     .await?;
                 Ok(Response::Execution(Tag::new("DISCARD ALL")))

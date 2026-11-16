@@ -11,16 +11,19 @@ that ordinary PostgreSQL driver workflows can execute.
 
 | Client | Path |
 | --- | --- |
-| `psycopg2` | connect, SELECT, parameterized types including `bytea`, `executemany`, `execute_values`, UPSERT, transaction rollback/commit, duplicate-key SQLSTATE, `information_schema`/`pg_catalog`, `psql \d` |
-| `psycopg3` | the same paths through its extended protocol and batch implementation |
+| `psycopg2` | connect, SELECT, parameterized types including `bytea`, `executemany`, `execute_values`, UPSERT, transaction rollback/commit, duplicate-key SQLSTATE, `information_schema`/`pg_catalog`, `psql \d`, named cursors |
+| `psycopg3` | the same paths through its extended protocol and batch implementation, including named cursors |
 | `SQLAlchemy` | `SELECT`/write through the `psycopg2` dialect, plus reflection of columns and the primary key |
 | pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared SELECT, transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT |
 
 The suite asserts **explicit refusal** for currently unsupported paths:
 
-- server-side named cursors (`DECLARE`/`FETCH`): `0A000`
 - `COPY ... FROM STDIN`: `0A000`
 - `INSERT ... RETURNING`: `0A000`
+
+Named cursors are forward-only and non-holdable. `WITH HOLD`, `SCROLL`, binary
+cursors and backward fetches are explicitly refused instead of being silently
+downgraded.
 
 If one of these starts working, the test fails and the compatibility contract
 must be updated rather than silently widening the claim.
@@ -62,6 +65,7 @@ recorded gap. The tests already cover:
 - transaction rollback and commit (including staged writes);
 - duplicate-key `23505` and connection recovery;
 - `information_schema`/`pg_catalog` table and column discovery, including psql `\d`;
+- forward-only named cursors through psycopg2 and psycopg3, and the `pg_cursors` view;
 - SQLAlchemy reflection of columns and primary keys through the `psycopg2` dialect;
 - pgjdbc `DatabaseMetaData.getTables`/`getColumns`/`getPrimaryKeys`, `setFetchSize`, and UPSERT;
 - Metabase-style startup `SET`/`SHOW` statements.
@@ -71,7 +75,6 @@ The remaining known gaps are:
 | Gap | Detail |
 | --- | --- |
 | `COPY FROM STDIN` | explicitly refused with `0A000`; this is the main blocker for Airbyte/Singer-style loaders |
-| server-side named cursors | psycopg3 reaches the explicit `0A000`; psycopg2 first probes the missing `pg_catalog.pg_cursors` and fails with `XX000` |
 | `INSERT ... RETURNING` | explicitly refused with `0A000` |
 
 SQLAlchemy reflection is certified through the `psycopg2` dialect. The

@@ -31,7 +31,7 @@ covered today.
 | Writes | `INSERT ... VALUES`, `INSERT ... SELECT`, `UPDATE` on non-CDC primary-key tables, `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial column lists, expressions and conflict `WHERE`) |
 | Subscriptions | `CREATE SUBSCRIPTION`, `ALTER SUBSCRIPTION ... ENABLE/DISABLE`, `DROP SUBSCRIPTION` for logical replication into a LakeSoul CDC table |
 | Transactions | Autocommit and `READ COMMITTED`; `BEGIN`/`COMMIT`/`ROLLBACK` with deferred publication for LakeSoul writes |
-| Catalog | `pg_catalog`, `information_schema`, `psql \d`, `current_database()`, SQLAlchemy reflection through the `psycopg2` dialect |
+| Catalog | `pg_catalog`, `information_schema`, `psql \d`, `pg_cursors`, `current_database()`, SQLAlchemy reflection through the `psycopg2` dialect |
 | Session | `SET TIME ZONE`, `statement_timeout`, `search_path`, `ivfflat.probes`, `RESET`, `DISCARD ALL` |
 | Vector | `vector(n)`, `<->`, `<#>`, `<=>`, `ORDER BY ... LIMIT k`, exact fallback, ANN |
 | Full text | `text_score(column, query)` with `ORDER BY ... DESC LIMIT k` |
@@ -85,16 +85,17 @@ A real-driver baseline lives in
 `rust/postgres-lakesoul/client-compat/`. It currently runs psycopg2, psycopg3,
 SQLAlchemy and pgjdbc against a live endpoint and covers connect/`SELECT`,
 parameterized writes including `bytea`, batches, UPSERT, transactions,
-duplicate-key recovery, catalog discovery, SQLAlchemy reflection, fetch-size
-cursors and Metabase-style startup statements.
+duplicate-key recovery, catalog discovery, SQLAlchemy reflection, forward-only
+named cursors, fetch-size cursors and Metabase-style startup statements.
 
 The current baseline passes the core Python and JDBC workflows, including psql
 `\d`, `bytea` round-trips and SQLAlchemy reflection through the `psycopg2`
-dialect. Known gaps are kept visible rather than hidden: `COPY FROM STDIN`,
-server-side named cursors and `RETURNING`. SQLAlchemy's `psycopg3` dialect is
-not part of the baseline yet because its reflection starts nested transactions
-(`SAVEPOINT`), which LakeSoul does not support. See the README in that
-directory for exact versions and the status of each gap.
+dialect. Named cursors are forward-only and non-holdable; `WITH HOLD`,
+`SCROLL` and backward fetches are explicitly refused. Known gaps are kept
+visible rather than hidden: `COPY FROM STDIN` and `RETURNING`. SQLAlchemy's
+`psycopg3` dialect is not part of the baseline yet because its reflection
+starts nested transactions (`SAVEPOINT`), which LakeSoul does not support. See
+the README in that directory for exact versions and the status of each gap.
 
 ## Version policy
 
