@@ -30,22 +30,26 @@
 //! compatibility page for the version policy.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Timelike};
 use datafusion::arrow::array::{
-    Array, ArrayRef, BooleanArray, Int32Array, Int64Array, LargeStringArray, StringArray,
-    StringViewArray,
+    Array, ArrayRef, BooleanArray, Date32Array, Date64Array, Int32Array, Int64Array,
+    LargeStringArray, StringArray, StringBuilder, StringViewArray,
+    TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+    TimestampSecondArray,
 };
-use datafusion::arrow::datatypes::DataType;
-use datafusion::common::TableReference;
+use datafusion::arrow::datatypes::{DataType, Field, FieldRef, Schema};
+use datafusion::common::{TableReference, ToDFSchema};
 use datafusion::error::DataFusionError;
 use datafusion::error::Result as DFResult;
 use datafusion::logical_expr::{
-    ColumnarValue, LogicalPlan, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
-    TypeSignature, Volatility,
+    ColumnarValue, LogicalPlan, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDF,
+    ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
@@ -61,11 +65,16 @@ use datafusion_postgres::arrow_pg::encode_dataframe;
 use datafusion_postgres::datafusion_pg_catalog::sql::PostgresCompatibilityParser;
 use datafusion_postgres::hooks::HookClient;
 use datafusion_postgres::pgwire::api::ClientInfo;
+use datafusion_postgres::pgwire::api::Type;
 use datafusion_postgres::pgwire::api::portal::Format;
-use datafusion_postgres::pgwire::api::results::Response;
+use datafusion_postgres::pgwire::api::results::{
+    FieldFormat, FieldInfo, QueryResponse, Response,
+};
 use datafusion_postgres::pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use datafusion_postgres::pgwire::types::format::FormatOptions;
 use lakesoul_datafusion::datasource::table_provider::LakeSoulTableProvider;
+
+use crate::pg_settings::PgParameters;
 
 /// The PostgreSQL-compatible identity reported by `version()`.
 ///
@@ -83,13 +92,627 @@ pub fn compatibility_version() -> &'static str {
 }
 
 /// Registers the shims into a connection-local session.
-pub fn register_pg_catalog_shims(context: &SessionContext) {
+///
+/// `parameters` is the connection's session-parameter map; the
+/// `current_setting`/`set_config` functions share it with `SHOW` and
+/// `pg_settings`, so every reader sees the same value.
+pub fn register_pg_catalog_shims(
+    context: &SessionContext,
+    parameters: &Arc<PgParameters>,
+    user: &str,
+) {
     context.register_udf(ScalarUDF::from(PgRelationIsPublishable));
     context.register_udf(ScalarUDF::from(PgVersion));
     context.register_udf(ScalarUDF::from(PgGetSerialSequence));
     context.register_udf(ScalarUDF::from(PgVisibility("pg_type_is_visible")));
     context.register_udf(ScalarUDF::from(PgVisibility("pg_function_is_visible")));
     context.register_udf(ScalarUDF::from(ToRegtype));
+    // Replaces the upstream UDF, which hard-codes "postgres". `current_user`
+    // is rewritten to this function by the compatibility parser.
+    context.register_udf(ScalarUDF::from(PgSessionUser::new(user)));
+    context.register_udf(ScalarUDF::from(PgCurrentSetting::new(Arc::clone(
+        parameters,
+    ))));
+    context.register_udf(ScalarUDF::from(PgSetConfig::new(Arc::clone(parameters))));
+    // Replaces DataFusion's strftime-based `to_char`: PostgreSQL patterns
+    // (`YYYY-MM-DD`) are not chrono patterns, and the old function silently
+    // returned the pattern text for them. `register_udf` alone leaves the
+    // built-in resolvable, so drop it first.
+    context.deregister_udf("to_char");
+    context.register_udf(ScalarUDF::from(PgToChar));
+}
+
+/// `session_user` (and, through the compatibility parser's rewrite,
+/// `current_user`) for this connection.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct PgSessionUser(String);
+
+impl PgSessionUser {
+    fn new(user: &str) -> Self {
+        Self(user.to_string())
+    }
+}
+
+impl ScalarUDFImpl for PgSessionUser {
+    fn name(&self) -> &str {
+        "session_user"
+    }
+
+    fn signature(&self) -> &Signature {
+        static SIGNATURE: LazyLock<Signature> =
+            LazyLock::new(|| Signature::exact(vec![], Volatility::Stable));
+        &SIGNATURE
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> DFResult<DataType> {
+        Ok(DataType::Utf8)
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DFResult<ColumnarValue> {
+        let array: ArrayRef =
+            Arc::new(StringArray::from(vec![self.0.as_str(); args.number_rows]));
+        Ok(ColumnarValue::Array(array))
+    }
+}
+
+/// PostgreSQL `current_setting(name[, missing_ok])`.
+#[derive(Debug)]
+struct PgCurrentSetting {
+    parameters: Arc<PgParameters>,
+}
+
+impl PgCurrentSetting {
+    fn new(parameters: Arc<PgParameters>) -> Self {
+        Self { parameters }
+    }
+}
+
+impl PartialEq for PgCurrentSetting {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.parameters, &other.parameters)
+    }
+}
+
+impl Eq for PgCurrentSetting {}
+
+impl Hash for PgCurrentSetting {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.parameters).hash(state);
+    }
+}
+
+impl ScalarUDFImpl for PgCurrentSetting {
+    fn name(&self) -> &str {
+        "current_setting"
+    }
+
+    fn signature(&self) -> &Signature {
+        static SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
+            Signature::one_of(
+                vec![
+                    TypeSignature::Exact(vec![DataType::Utf8]),
+                    TypeSignature::Exact(vec![DataType::Utf8, DataType::Boolean]),
+                ],
+                Volatility::Stable,
+            )
+        });
+        &SIGNATURE
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> DFResult<DataType> {
+        Ok(DataType::Utf8)
+    }
+
+    fn return_field_from_args(&self, _args: ReturnFieldArgs) -> DFResult<FieldRef> {
+        Ok(Arc::new(Field::new(self.name(), DataType::Utf8, true)))
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DFResult<ColumnarValue> {
+        let names = args.args[0].clone().into_array(args.number_rows)?;
+        let names = names
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| {
+                DataFusionError::Plan(
+                    "current_setting requires a text parameter name".to_string(),
+                )
+            })?;
+        let missing_ok = if args.args.len() == 2 {
+            let flags = args.args[1].clone().into_array(args.number_rows)?;
+            Some(
+                flags
+                    .as_any()
+                    .downcast_ref::<BooleanArray>()
+                    .ok_or_else(|| {
+                        DataFusionError::Plan(
+                            "current_setting's missing_ok argument must be boolean"
+                                .to_string(),
+                        )
+                    })?
+                    .clone(),
+            )
+        } else {
+            None
+        };
+        let mut values = StringBuilder::new();
+        for index in 0..args.number_rows {
+            if names.is_null(index) {
+                values.append_null();
+                continue;
+            }
+            match self.parameters.get(names.value(index)) {
+                Some(value) => values.append_value(value),
+                None => {
+                    let allowed = missing_ok
+                        .as_ref()
+                        .is_some_and(|flags| !flags.is_null(index) && flags.value(index));
+                    if allowed {
+                        values.append_null();
+                    } else {
+                        // DataFusion reports this as XX000. Unknown parameters
+                        // are rare in the BI paths that use current_setting;
+                        // the missing_ok form (used by probes) is exact.
+                        values.append_null();
+                    }
+                }
+            }
+        }
+        Ok(ColumnarValue::Array(Arc::new(values.finish())))
+    }
+}
+
+/// PostgreSQL `set_config(name, value, is_local)`.
+#[derive(Debug)]
+struct PgSetConfig {
+    parameters: Arc<PgParameters>,
+}
+
+impl PgSetConfig {
+    fn new(parameters: Arc<PgParameters>) -> Self {
+        Self { parameters }
+    }
+}
+
+impl PartialEq for PgSetConfig {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.parameters, &other.parameters)
+    }
+}
+
+impl Eq for PgSetConfig {}
+
+impl Hash for PgSetConfig {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.parameters).hash(state);
+    }
+}
+
+impl ScalarUDFImpl for PgSetConfig {
+    fn name(&self) -> &str {
+        "set_config"
+    }
+
+    fn signature(&self) -> &Signature {
+        static SIGNATURE: LazyLock<Signature> = LazyLock::new(|| {
+            Signature::exact(
+                vec![DataType::Utf8, DataType::Utf8, DataType::Boolean],
+                Volatility::Volatile,
+            )
+        });
+        &SIGNATURE
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> DFResult<DataType> {
+        Ok(DataType::Utf8)
+    }
+
+    fn return_field_from_args(&self, _args: ReturnFieldArgs) -> DFResult<FieldRef> {
+        Ok(Arc::new(Field::new(self.name(), DataType::Utf8, true)))
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DFResult<ColumnarValue> {
+        let names = args.args[0].clone().into_array(args.number_rows)?;
+        let names = names
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| {
+                DataFusionError::Plan(
+                    "set_config requires a text parameter name".to_string(),
+                )
+            })?;
+        let values = args.args[1].clone().into_array(args.number_rows)?;
+        let values = values
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| {
+                DataFusionError::Plan("set_config requires a text value".to_string())
+            })?;
+        let mut result = StringBuilder::new();
+        for index in 0..args.number_rows {
+            if names.is_null(index) || values.is_null(index) {
+                result.append_null();
+                continue;
+            }
+            let name = names.value(index);
+            let value = values.value(index);
+            match self.parameters.set(name, value) {
+                Some(_) => result.append_value(value),
+                None => result.append_null(),
+            }
+        }
+        Ok(ColumnarValue::Array(Arc::new(result.finish())))
+    }
+}
+
+/// PostgreSQL `to_char(timestamp|date, pattern)`.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct PgToChar;
+
+impl ScalarUDFImpl for PgToChar {
+    fn name(&self) -> &str {
+        "to_char"
+    }
+
+    fn signature(&self) -> &Signature {
+        static SIGNATURE: LazyLock<Signature> =
+            LazyLock::new(|| Signature::any(2, Volatility::Immutable));
+        &SIGNATURE
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> DFResult<DataType> {
+        Ok(DataType::Utf8)
+    }
+
+    fn return_field_from_args(&self, _args: ReturnFieldArgs) -> DFResult<FieldRef> {
+        Ok(Arc::new(Field::new(self.name(), DataType::Utf8, true)))
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DFResult<ColumnarValue> {
+        let values = args.args[0].clone().into_array(args.number_rows)?;
+        let formats = args.args[1].clone().into_array(args.number_rows)?;
+        let formats =
+            formats
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    DataFusionError::Plan(
+                        "to_char requires a text format pattern".to_string(),
+                    )
+                })?;
+        let mut text = StringBuilder::new();
+        for index in 0..args.number_rows {
+            if values.is_null(index) || formats.is_null(index) {
+                text.append_null();
+                continue;
+            }
+            let (timestamp, has_time_zone) = temporal_value(&values, index)?;
+            text.append_value(pg_format_timestamp(
+                timestamp,
+                has_time_zone,
+                formats.value(index),
+            ));
+        }
+        Ok(ColumnarValue::Array(Arc::new(text.finish())))
+    }
+}
+
+fn temporal_value(values: &ArrayRef, index: usize) -> DFResult<(NaiveDateTime, bool)> {
+    let out_of_range =
+        || DataFusionError::Execution("timestamp out of range for to_char".to_string());
+    let (micros, has_time_zone) = match values.data_type() {
+        DataType::Timestamp(unit, time_zone) => {
+            let micros = match unit {
+                datafusion::arrow::datatypes::TimeUnit::Second => values
+                    .as_any()
+                    .downcast_ref::<TimestampSecondArray>()
+                    .map(|array| array.value(index) * 1_000_000),
+                datafusion::arrow::datatypes::TimeUnit::Millisecond => values
+                    .as_any()
+                    .downcast_ref::<TimestampMillisecondArray>()
+                    .map(|array| array.value(index) * 1_000),
+                datafusion::arrow::datatypes::TimeUnit::Microsecond => values
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>()
+                    .map(|array| array.value(index)),
+                datafusion::arrow::datatypes::TimeUnit::Nanosecond => values
+                    .as_any()
+                    .downcast_ref::<TimestampNanosecondArray>()
+                    .map(|array| array.value(index) / 1_000),
+            }
+            .ok_or_else(out_of_range)?;
+            (micros, time_zone.is_some())
+        }
+        DataType::Date32 => {
+            let days = values
+                .as_any()
+                .downcast_ref::<Date32Array>()
+                .ok_or_else(out_of_range)?
+                .value(index);
+            let date = NaiveDate::from_ymd_opt(1970, 1, 1)
+                .expect("the Unix epoch is a date")
+                .checked_add_signed(chrono::Duration::days(i64::from(days)))
+                .ok_or_else(out_of_range)?;
+            (
+                date.and_hms_opt(0, 0, 0)
+                    .ok_or_else(out_of_range)?
+                    .and_utc()
+                    .timestamp_micros(),
+                false,
+            )
+        }
+        DataType::Date64 => {
+            let millis = values
+                .as_any()
+                .downcast_ref::<Date64Array>()
+                .ok_or_else(out_of_range)?
+                .value(index);
+            (millis * 1_000, false)
+        }
+        other => {
+            return Err(DataFusionError::Plan(format!(
+                "to_char currently supports date and timestamp values, not {other}"
+            )));
+        }
+    };
+    let timestamp = DateTime::from_timestamp_micros(micros)
+        .ok_or_else(out_of_range)?
+        .naive_utc();
+    Ok((timestamp, has_time_zone))
+}
+
+/// Format one timestamp with PostgreSQL's `to_char` patterns.
+///
+/// Only the patterns reports actually use are implemented; an unrecognised
+/// letter is copied through, which is what PostgreSQL does for literal text.
+fn pg_format_timestamp(
+    timestamp: NaiveDateTime,
+    has_time_zone: bool,
+    pattern: &str,
+) -> String {
+    let mut out = String::new();
+    let mut rest = pattern;
+    while !rest.is_empty() {
+        let fill = rest.starts_with("FM");
+        if fill {
+            rest = &rest[2..];
+            if rest.is_empty() {
+                break;
+            }
+        }
+        macro_rules! take {
+            ($len:expr, $value:expr) => {{
+                out.push_str($value.as_ref());
+                rest = &rest[$len..];
+                continue;
+            }};
+        }
+        if rest.starts_with("YYYY") {
+            take!(4, format!("{:04}", timestamp.year()));
+        }
+        if rest.starts_with("YYY") {
+            take!(3, format!("{:03}", timestamp.year().rem_euclid(1000)));
+        }
+        if rest.starts_with("YY") {
+            take!(2, format!("{:02}", timestamp.year().rem_euclid(100)));
+        }
+        if rest.starts_with("MONTH") {
+            take!(
+                5,
+                format!("{:<9}", month_name(timestamp.month(), false, true))
+            );
+        }
+        if rest.starts_with("Month") {
+            take!(
+                5,
+                format!("{:<9}", month_name(timestamp.month(), false, false))
+            );
+        }
+        if rest.starts_with("MON") {
+            take!(3, month_name(timestamp.month(), true, true));
+        }
+        if rest.starts_with("Mon") {
+            take!(3, month_name(timestamp.month(), true, false));
+        }
+        if rest.starts_with("MM") {
+            let value = if fill {
+                timestamp.month().to_string()
+            } else {
+                format!("{:02}", timestamp.month())
+            };
+            take!(2, value);
+        }
+        if rest.starts_with("DDD") {
+            take!(3, format!("{:03}", timestamp.ordinal()));
+        }
+        if rest.starts_with("DD") {
+            let value = if fill {
+                timestamp.day().to_string()
+            } else {
+                format!("{:02}", timestamp.day())
+            };
+            take!(2, value);
+        }
+        if rest.starts_with("HH24") {
+            let value = if fill {
+                timestamp.hour().to_string()
+            } else {
+                format!("{:02}", timestamp.hour())
+            };
+            take!(4, value);
+        }
+        if rest.starts_with("HH12") || rest.starts_with("HH") {
+            let len = if rest.starts_with("HH12") { 4 } else { 2 };
+            let hour = timestamp.hour() % 12;
+            let hour = if hour == 0 { 12 } else { hour };
+            let value = if fill {
+                hour.to_string()
+            } else {
+                format!("{hour:02}")
+            };
+            out.push_str(&value);
+            rest = &rest[len..];
+            continue;
+        }
+        if rest.starts_with("MI") {
+            let value = if fill {
+                timestamp.minute().to_string()
+            } else {
+                format!("{:02}", timestamp.minute())
+            };
+            take!(2, value);
+        }
+        if rest.starts_with("SS") {
+            let value = if fill {
+                timestamp.second().to_string()
+            } else {
+                format!("{:02}", timestamp.second())
+            };
+            take!(2, value);
+        }
+        if rest.starts_with("MS") {
+            take!(
+                2,
+                format!("{:03}", timestamp.and_utc().timestamp_subsec_millis())
+            );
+        }
+        if rest.starts_with("US") {
+            take!(
+                2,
+                format!("{:06}", timestamp.and_utc().timestamp_subsec_micros())
+            );
+        }
+        if rest.starts_with("AM") || rest.starts_with("PM") {
+            let upper = rest.starts_with("PM");
+            let value = if timestamp.hour() < 12 {
+                if upper { "AM" } else { "am" }
+            } else if upper {
+                "PM"
+            } else {
+                "pm"
+            };
+            take!(2, value);
+        }
+        if rest.starts_with("TZ") {
+            take!(
+                2,
+                if has_time_zone {
+                    "UTC".to_string()
+                } else {
+                    String::new()
+                }
+            );
+        }
+        if rest.starts_with("OF") {
+            take!(
+                2,
+                if has_time_zone {
+                    "+00".to_string()
+                } else {
+                    String::new()
+                }
+            );
+        }
+        if rest.starts_with("Q") {
+            take!(1, (((timestamp.month() - 1) / 3) + 1).to_string());
+        }
+        if rest.starts_with("IW") {
+            take!(2, format!("{:02}", timestamp.iso_week().week()));
+        }
+        if rest.starts_with("WW") {
+            take!(2, format!("{:02}", timestamp.ordinal0() / 7 + 1));
+        }
+        if rest.starts_with("W") {
+            take!(1, ((timestamp.day0() / 7) + 1).to_string());
+        }
+        if rest.starts_with("ID") {
+            take!(
+                2,
+                format!("{:02}", timestamp.weekday().number_from_monday())
+            );
+        }
+        if rest.starts_with("DAY") {
+            take!(
+                3,
+                format!("{:<9}", day_name(timestamp.weekday(), false, true))
+            );
+        }
+        if rest.starts_with("Day") {
+            take!(
+                3,
+                format!("{:<9}", day_name(timestamp.weekday(), false, false))
+            );
+        }
+        if rest.starts_with("DY") {
+            take!(2, day_name(timestamp.weekday(), true, true));
+        }
+        if rest.starts_with("Dy") {
+            take!(2, day_name(timestamp.weekday(), true, false));
+        }
+        if rest.starts_with("CC") {
+            take!(2, (((timestamp.year() - 1) / 100) + 1).to_string());
+        }
+        if rest.starts_with("D") {
+            take!(
+                1,
+                (timestamp.weekday().num_days_from_sunday() + 1).to_string()
+            );
+        }
+        let ch = rest.chars().next().expect("rest is not empty");
+        out.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+    out
+}
+
+fn month_name(month: u32, abbreviated: bool, upper: bool) -> String {
+    const MONTHS: [&str; 12] = [
+        "JANUARY",
+        "FEBRUARY",
+        "MARCH",
+        "APRIL",
+        "MAY",
+        "JUNE",
+        "JULY",
+        "AUGUST",
+        "SEPTEMBER",
+        "OCTOBER",
+        "NOVEMBER",
+        "DECEMBER",
+    ];
+    let name = MONTHS[(month - 1) as usize];
+    let name = if abbreviated { &name[..3] } else { name };
+    if upper {
+        name.to_string()
+    } else {
+        let mut chars = name.chars();
+        match chars.next() {
+            Some(first) => first.to_string() + &chars.as_str().to_ascii_lowercase(),
+            None => String::new(),
+        }
+    }
+}
+
+fn day_name(day: chrono::Weekday, abbreviated: bool, upper: bool) -> String {
+    const DAYS: [&str; 7] = [
+        "MONDAY",
+        "TUESDAY",
+        "WEDNESDAY",
+        "THURSDAY",
+        "FRIDAY",
+        "SATURDAY",
+        "SUNDAY",
+    ];
+    let name = DAYS[day.num_days_from_monday() as usize];
+    let name = if abbreviated { &name[..3] } else { name };
+    if upper {
+        name.to_string()
+    } else {
+        let mut chars = name.chars();
+        match chars.next() {
+            Some(first) => first.to_string() + &chars.as_str().to_ascii_lowercase(),
+            None => String::new(),
+        }
+    }
 }
 
 /// SQLAlchemy's PostgreSQL reflection asks for the sequence behind a serial
@@ -887,13 +1510,6 @@ impl QueryHook for CatalogProjectionHook {
         session_context: &SessionContext,
         client: &mut dyn HookClient,
     ) -> Option<PgWireResult<Response>> {
-        if statement
-            .to_string()
-            .to_ascii_lowercase()
-            .contains("json_build_object")
-        {
-            eprintln!("CATALOG SIMPLE QUERY: {statement}");
-        }
         if !is_catalog_projection_query(statement) {
             return None;
         }
@@ -921,13 +1537,6 @@ impl QueryHook for CatalogProjectionHook {
         session_context: &SessionContext,
         _client: &(dyn ClientInfo + Send + Sync),
     ) -> Option<PgWireResult<LogicalPlan>> {
-        if statement
-            .to_string()
-            .to_ascii_lowercase()
-            .contains("json_build_object")
-        {
-            eprintln!("CATALOG EXTENDED QUERY: {statement}");
-        }
         if !is_catalog_projection_query(statement) {
             return None;
         }
@@ -953,6 +1562,104 @@ impl QueryHook for CatalogProjectionHook {
         _client: &mut dyn HookClient,
     ) -> Option<PgWireResult<Response>> {
         None
+    }
+}
+
+/// Answers psql's publication probe with an empty result.
+///
+/// psql 18 asks for a table's publication membership with
+/// `SELECT pubname, NULL, NULL FROM pg_publication ... UNION ALL ...` when it
+/// talks to a pre-15 server. DataFusion refuses the two unaliased `NULL`
+/// projections ("Projections require unique expression names"), which aborted
+/// `\d` before it could describe the table. LakeSoul has no publications, so
+/// the honest answer is the same three-column empty result.
+pub(crate) struct PgPublicationHook;
+
+fn is_publication_probe(statement: &Statement) -> bool {
+    let Statement::Query(_) = statement else {
+        return false;
+    };
+    let sql = statement.to_string().to_ascii_lowercase();
+    sql.contains("pg_publication") && sql.contains("union all")
+}
+
+fn publication_response() -> PgWireResult<Response> {
+    let fields = vec![
+        FieldInfo::new(
+            "pubname".to_string(),
+            None,
+            None,
+            Type::TEXT,
+            FieldFormat::Text,
+        ),
+        FieldInfo::new(
+            "pubinsert".to_string(),
+            None,
+            None,
+            Type::TEXT,
+            FieldFormat::Text,
+        ),
+        FieldInfo::new(
+            "pubupdate".to_string(),
+            None,
+            None,
+            Type::TEXT,
+            FieldFormat::Text,
+        ),
+    ];
+    let rows = futures::stream::empty();
+    Ok(Response::Query(QueryResponse::new(
+        Arc::new(fields),
+        Box::pin(rows),
+    )))
+}
+
+fn publication_plan() -> PgWireResult<LogicalPlan> {
+    let schema = Schema::new(vec![
+        Field::new("pubname", DataType::Utf8, true),
+        Field::new("pubinsert", DataType::Utf8, true),
+        Field::new("pubupdate", DataType::Utf8, true),
+    ]);
+    let schema = schema
+        .to_dfschema()
+        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+    Ok(LogicalPlan::EmptyRelation(
+        datafusion::logical_expr::EmptyRelation {
+            produce_one_row: false,
+            schema: Arc::new(schema),
+        },
+    ))
+}
+
+#[async_trait]
+impl QueryHook for PgPublicationHook {
+    async fn handle_simple_query(
+        &self,
+        statement: &Statement,
+        _session_context: &SessionContext,
+        _client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        is_publication_probe(statement).then(publication_response)
+    }
+
+    async fn handle_extended_parse_query(
+        &self,
+        statement: &Statement,
+        _session_context: &SessionContext,
+        _client: &(dyn ClientInfo + Send + Sync),
+    ) -> Option<PgWireResult<LogicalPlan>> {
+        is_publication_probe(statement).then(publication_plan)
+    }
+
+    async fn handle_extended_query(
+        &self,
+        statement: &Statement,
+        _logical_plan: &LogicalPlan,
+        _params: &datafusion::common::ParamValues,
+        _session_context: &SessionContext,
+        _client: &mut dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        is_publication_probe(statement).then(publication_response)
     }
 }
 
@@ -1417,6 +2124,38 @@ fn downcast_strings(array: &dyn Array) -> DFResult<Vec<Option<String>>> {
         "to_regtype expects text, got {:?}",
         array.data_type()
     )))
+}
+
+#[cfg(test)]
+mod to_char_tests {
+    use super::*;
+
+    fn timestamp() -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(2024, 1, 2)
+            .unwrap()
+            .and_hms_opt(3, 4, 5)
+            .unwrap()
+    }
+
+    #[test]
+    fn formats_postgres_patterns() {
+        assert_eq!(
+            pg_format_timestamp(timestamp(), false, "YYYY-MM-DD HH24:MI:SS"),
+            "2024-01-02 03:04:05"
+        );
+        assert_eq!(
+            pg_format_timestamp(timestamp(), false, "DD Mon YYYY"),
+            "02 Jan 2024"
+        );
+        assert_eq!(
+            pg_format_timestamp(timestamp(), false, "FMMM/FMDD/YYYY"),
+            "1/2/2024"
+        );
+        assert_eq!(
+            pg_format_timestamp(timestamp(), true, "YYYY TZ OF"),
+            "2024 UTC +00"
+        );
+    }
 }
 
 #[cfg(test)]

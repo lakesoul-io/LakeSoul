@@ -90,6 +90,7 @@ use pgwire::messages::data::DataRow;
 use pgwire::messages::startup::ParameterStatus;
 
 use crate::cancel::STATEMENT_TIMEOUT_KEY;
+use crate::pg_settings::{PgParameters, description, show_name};
 use crate::server::{ConnectionSession, session_not_initialized};
 use crate::session::PgSession;
 
@@ -463,12 +464,43 @@ impl SessionSettingsHook {
         }
     }
 
+    /// `SHOW <parameter>` and `SHOW ALL`.
+    ///
+    /// The values come from the connection's [`PgParameters`], with the
+    /// client metadata the upstream `SET` path maintains merged on top. An
+    /// unknown parameter returns `None` so the upstream hook keeps its
+    /// existing (empty) answer.
+    fn handle_show(
+        variable: &[Ident],
+        client: &dyn HookClient,
+    ) -> Option<PgWireResult<Response>> {
+        let session = client.session_extensions().get::<ConnectionSession>()?;
+        let parameters = &session.session.parameters;
+        if variable.len() == 1 && variable[0].value.eq_ignore_ascii_case("all") {
+            return Some(show_all_response(parameters, client));
+        }
+        let name = show_name(variable)?;
+        let value = parameters.display_value(client, name);
+        Some(show_response(name, &value))
+    }
+
     /// `RESET ALL` / `RESET <parameter>`.
     async fn handle_reset(
         ResetStatement { reset }: &ResetStatement,
         context: &SessionContext,
         client: &mut dyn HookClient,
     ) -> PgWireResult<Response> {
+        if let Some(session) = client.session_extensions().get::<ConnectionSession>() {
+            match reset {
+                Reset::ALL => session.session.parameters.reset_all(),
+                Reset::ConfigurationParameter(variable) => {
+                    session
+                        .session
+                        .parameters
+                        .reset(&normalized_parameter(variable));
+                }
+            }
+        }
         match reset {
             Reset::ALL => {
                 let defaults = session_defaults(client)?;
@@ -511,13 +543,6 @@ impl SessionSettingsHook {
         }
     }
 
-    /// `SHOW timezone` / `SHOW TimeZone`. PostgreSQL reports the canonical
-    /// spelling of the parameter as the column name, whatever the client
-    /// typed.
-    fn handle_show_time_zone(context: &SessionContext) -> PgWireResult<Response> {
-        show_response("TimeZone", &time_zone_value(context))
-    }
-
     /// Response for statements claimed at Parse time.
     pub(crate) fn placeholder_plan() -> LogicalPlan {
         LogicalPlan::EmptyRelation(EmptyRelation {
@@ -549,9 +574,7 @@ impl QueryHook for SessionSettingsHook {
         }
         match statement {
             Statement::Set(set) => Self::handle_set(set, session_context, client).await,
-            Statement::ShowVariable { variable } if is_time_zone_show(variable) => {
-                Some(Self::handle_show_time_zone(session_context))
-            }
+            Statement::ShowVariable { variable } => Self::handle_show(variable, client),
             Statement::Reset(reset) => {
                 Some(Self::handle_reset(reset, session_context, client).await)
             }
@@ -577,9 +600,7 @@ impl QueryHook for SessionSettingsHook {
             // `SHOW` this hook answers must be claimed here as well: the
             // upstream placeholder would describe a generic `show`/`TEXT`
             // column while `Execute` returns the parameter's own name.
-            Statement::ShowVariable { variable } if is_time_zone_show(variable) => {
-                Some(text_column_plan("TimeZone"))
-            }
+            Statement::ShowVariable { variable } => Self::show_plan(variable),
             Statement::Discard { object_type } => match object_type {
                 DiscardObject::ALL => Some(Ok(Self::placeholder_plan())),
                 other => Some(Err(feature_not_supported(format!(
@@ -611,24 +632,6 @@ fn is_timezone_variable(variable: &ObjectName) -> bool {
         && variable.0[0]
             .as_ident()
             .is_some_and(|ident| ident.value.eq_ignore_ascii_case("timezone"))
-}
-
-/// True for `SHOW timezone` / `SHOW TimeZone`, the one-word spelling of the
-/// parameter. `SHOW time zone` is served by the upstream hook.
-fn is_time_zone_show(variable: &[Ident]) -> bool {
-    variable.len() == 1 && variable[0].value.eq_ignore_ascii_case("timezone")
-}
-
-/// The connection's current time zone, as `SHOW TimeZone` reports it.
-fn time_zone_value(context: &SessionContext) -> String {
-    context
-        .state()
-        .config()
-        .options()
-        .execution
-        .time_zone
-        .clone()
-        .unwrap_or_else(|| DEFAULT_TIME_ZONE.to_string())
 }
 
 /// Resolve one `SET TIME ZONE` value expression.
@@ -675,6 +678,7 @@ async fn assign_time_zone(
                 Ok(())
             })?;
             defaults.restore_metadata_key(client.metadata_mut(), TIMEZONE_METADATA_KEY);
+            reset_session_parameter(client, "TimeZone");
             send_time_zone_status(client, defaults.time_zone_value().to_string()).await?;
             Ok(Response::Execution(Tag::new("SET")))
         }
@@ -692,6 +696,7 @@ async fn assign_time_zone(
             client
                 .metadata_mut()
                 .insert(TIMEZONE_METADATA_KEY.to_string(), zone.clone());
+            set_session_parameter(client, "TimeZone", &zone);
             send_time_zone_status(client, zone).await?;
             Ok(Response::Execution(Tag::new("SET")))
         }
@@ -699,6 +704,19 @@ async fn assign_time_zone(
             &raw,
             Some("only IANA time zone names are supported"),
         )),
+    }
+}
+
+/// Record a value in the connection's session parameters.
+fn set_session_parameter(client: &dyn HookClient, name: &str, value: &str) {
+    if let Some(session) = client.session_extensions().get::<ConnectionSession>() {
+        session.session.parameters.set(name, value);
+    }
+}
+
+fn reset_session_parameter(client: &dyn HookClient, name: &str) {
+    if let Some(session) = client.session_extensions().get::<ConnectionSession>() {
+        session.session.parameters.reset(name);
     }
 }
 
@@ -750,6 +768,78 @@ fn normalized_parameter(variable: &ObjectName) -> String {
 /// hook: `Describe` reports the schema of the parsed plan, and the upstream
 /// placeholder would describe a generic `show`/`TEXT` column instead of the
 /// column and type the response carries.
+impl SessionSettingsHook {
+    /// The plan `Describe` reports for a `SHOW` this hook answers.
+    fn show_plan(variable: &[Ident]) -> Option<PgWireResult<LogicalPlan>> {
+        if variable.len() == 1 && variable[0].value.eq_ignore_ascii_case("all") {
+            return Some(columns_plan(&["name", "setting", "description"]));
+        }
+        show_name(variable).map(text_column_plan)
+    }
+}
+
+/// `SHOW ALL`: one row per session parameter.
+fn show_all_response(
+    parameters: &PgParameters,
+    client: &(impl ClientInfo + ?Sized),
+) -> PgWireResult<Response> {
+    let fields = vec![
+        FieldInfo::new(
+            "name".to_string(),
+            None,
+            None,
+            Type::TEXT,
+            FieldFormat::Text,
+        ),
+        FieldInfo::new(
+            "setting".to_string(),
+            None,
+            None,
+            Type::TEXT,
+            FieldFormat::Text,
+        ),
+        FieldInfo::new(
+            "description".to_string(),
+            None,
+            None,
+            Type::TEXT,
+            FieldFormat::Text,
+        ),
+    ];
+    let mut rows = Vec::new();
+    for (name, _) in parameters.entries() {
+        let value = parameters.display_value(client, name);
+        let mut encoder = DataRowEncoder::new(Arc::new(fields.clone()));
+        encoder.encode_field(&Some(name))?;
+        encoder.encode_field(&Some(value.as_str()))?;
+        encoder.encode_field(&Some(description(name)))?;
+        rows.push(Ok(encoder.take_row()));
+    }
+    let stream = futures::stream::iter(rows);
+    Ok(Response::Query(QueryResponse::new(
+        Arc::new(fields),
+        Box::pin(stream),
+    )))
+}
+
+/// A text-only plan with several named columns, the shape `SHOW ALL`
+/// describes.
+fn columns_plan(names: &[&str]) -> PgWireResult<LogicalPlan> {
+    let schema = Schema::new(
+        names
+            .iter()
+            .map(|name| Field::new(*name, DataType::Utf8, false))
+            .collect::<Vec<_>>(),
+    );
+    let schema = schema
+        .to_dfschema()
+        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+    Ok(LogicalPlan::EmptyRelation(EmptyRelation {
+        produce_one_row: true,
+        schema: Arc::new(schema),
+    }))
+}
+
 pub(crate) fn text_column_plan(name: &str) -> PgWireResult<LogicalPlan> {
     let schema = Schema::new(vec![Field::new(name, DataType::Utf8, false)]);
     let schema = schema
