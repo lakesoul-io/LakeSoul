@@ -191,7 +191,7 @@ public class CompactionBroadcastProcessFunction
                     boolean latestCompactVersionIsOld = state.get(key).isOldCompaction();
                     // Older commits are obsolete, but a file may be re-added by a newer commit
                     // with the same path (UpdateCommit / leveled compaction). CleanUtils checks
-                    // the latest snapshot before deleting any file.
+                    // every retained snapshot before deleting any file or commit row.
                     boolean belongOldCompaction =
                             value.version < state.get(key).switchVersion
                                     || latestCompactVersionIsOld;
@@ -202,7 +202,8 @@ public class CompactionBroadcastProcessFunction
                                         value.tableId,
                                         value.partitionDesc,
                                         connection,
-                                        belongOldCompaction);
+                                        belongOldCompaction,
+                                        currTimestamp - expiredTime);
                         if (cleaned) {
                             cleanUtils.cleanPartitionInfo(
                                     value.tableId, value.partitionDesc, value.version, connection);
@@ -264,8 +265,8 @@ public class CompactionBroadcastProcessFunction
             if (eventTimestamp < compactTimestamp && timestamp - eventTimestamp > expiredTime) {
                 boolean latestCompactVersionIsOld = state.get(partitionDescKey).isOldCompaction();
                 // Older commits are obsolete, but a file may be re-added by a newer commit with
-                // the same path (UpdateCommit / leveled compaction). CleanUtils checks the latest
-                // snapshot before deleting any file.
+                // the same path (UpdateCommit / leveled compaction). CleanUtils checks every
+                // retained snapshot before deleting any file or commit row.
                 boolean belongOldCompaction =
                         value.version < state.get(partitionDescKey).switchVersion
                                 || latestCompactVersionIsOld;
@@ -277,7 +278,8 @@ public class CompactionBroadcastProcessFunction
                                     value.tableId,
                                     value.partitionDesc,
                                     connection,
-                                    belongOldCompaction);
+                                    belongOldCompaction,
+                                    System.currentTimeMillis() - expiredTime);
                     if (cleaned) {
                         cleanUtils.cleanPartitionInfo(
                                 value.tableId, value.partitionDesc, value.version, connection);

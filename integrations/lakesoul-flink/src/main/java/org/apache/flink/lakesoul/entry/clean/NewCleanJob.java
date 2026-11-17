@@ -259,7 +259,7 @@ public class NewCleanJob {
                 .process(new DiscardFilePathProcessFunction(expiredTime))
                 .name("处理新版过期数据")
                 .keyBy(value -> DISCARD_FILE_DELETE_KEY)
-                .process(new DiscardFileDeleteFunction(pgUrl, userName, passWord))
+                .process(new DiscardFileDeleteFunction(pgUrl, userName, passWord, expiredTime))
                 .name("批量异步删除数据");
     }
 }

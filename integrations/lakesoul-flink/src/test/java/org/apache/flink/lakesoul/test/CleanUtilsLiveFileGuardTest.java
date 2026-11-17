@@ -49,6 +49,7 @@ public class CleanUtilsLiveFileGuardTest {
     private Path updateFile;
     private UUID compactionCommit;
     private UUID updateCommit;
+    private long retainedAfter;
 
     @Before
     public void setUp() throws Exception {
@@ -96,8 +97,10 @@ public class CleanUtilsLiveFileGuardTest {
                     {expiredFile.toUri().toString(), "del"}
                 });
 
-        insertPartition(1, "CompactionCommit", compactionCommit);
-        insertPartition(2, "UpdateCommit", updateCommit);
+        long now = System.currentTimeMillis();
+        retainedAfter = now - 86_400_000L;
+        insertPartition(1, "CompactionCommit", compactionCommit, now - 2 * 86_400_000L);
+        insertPartition(2, "UpdateCommit", updateCommit, now);
     }
 
     @After
@@ -177,7 +180,8 @@ public class CleanUtilsLiveFileGuardTest {
                                 tableId,
                                 "-5",
                                 connection,
-                                true);
+                                true,
+                                retainedAfter);
         assertFalse("cleanup must stay retryable while the batch is active", cleaned);
         assertTrue(Files.exists(expiredFile));
         assertEquals(1, countCommits(compactionCommit));
@@ -193,7 +197,8 @@ public class CleanUtilsLiveFileGuardTest {
                                 tableId,
                                 "-5",
                                 connection,
-                                true));
+                                true,
+                                retainedAfter));
         assertFalse(Files.exists(expiredFile));
         assertEquals(0, countCommits(compactionCommit));
     }
@@ -206,7 +211,8 @@ public class CleanUtilsLiveFileGuardTest {
                         tableId,
                         "-5",
                         connection,
-                        true);
+                        true,
+                        retainedAfter);
 
         assertTrue(
                 "file re-added by the update commit must not be deleted", Files.exists(sharedFile));
@@ -234,7 +240,8 @@ public class CleanUtilsLiveFileGuardTest {
                                         tableId,
                                         "-5",
                                         broken,
-                                        true));
+                                        true,
+                                        retainedAfter));
 
         assertTrue("shared file must survive a failed lookup", Files.exists(sharedFile));
         assertTrue("expired file must survive a failed lookup", Files.exists(expiredFile));
@@ -262,7 +269,8 @@ public class CleanUtilsLiveFileGuardTest {
                                 tableId,
                                 "-5",
                                 connection,
-                                true);
+                                true,
+                                retainedAfter);
 
         assertFalse("cleanup must report incomplete", cleaned);
         assertTrue(Files.exists(sharedFile));
@@ -293,7 +301,8 @@ public class CleanUtilsLiveFileGuardTest {
                                 tableId,
                                 "-5",
                                 connection,
-                                true);
+                                true,
+                                retainedAfter);
 
         assertFalse("cleanup must report incomplete", cleaned);
         assertTrue(Files.exists(sharedFile));
@@ -321,7 +330,8 @@ public class CleanUtilsLiveFileGuardTest {
                                 tableId,
                                 "-5",
                                 connection,
-                                true));
+                                true,
+                                retainedAfter));
         assertFalse("expired file should be deleted", Files.exists(expiredFile));
         assertTrue("live file must survive", Files.exists(sharedFile));
         assertEquals(0, countCommits(compactionCommit));
@@ -373,7 +383,8 @@ public class CleanUtilsLiveFileGuardTest {
         }
     }
 
-    private void insertPartition(int version, String commitOp, UUID commitId) throws Exception {
+    private void insertPartition(int version, String commitOp, UUID commitId, long timestamp)
+            throws Exception {
         String sql =
                 "insert into partition_info(table_id, partition_desc, version, commit_op,"
                         + " timestamp, snapshot, domain) values (?, '-5', ?, ?, ?, ?, 'public')";
@@ -381,7 +392,7 @@ public class CleanUtilsLiveFileGuardTest {
             ps.setString(1, tableId);
             ps.setInt(2, version);
             ps.setString(3, commitOp);
-            ps.setLong(4, System.currentTimeMillis());
+            ps.setLong(4, timestamp);
             ps.setArray(5, connection.createArrayOf("uuid", new Object[] {commitId}));
             ps.executeUpdate();
         }
