@@ -1,0 +1,2 @@
+# Preserve upstream psql table padding and final blank lines byte-for-byte.
+expected/*.out -whitespace

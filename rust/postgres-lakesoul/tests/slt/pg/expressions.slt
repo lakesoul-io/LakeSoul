@@ -1,0 +1,33 @@
+# NULL, empty strings, literal markers and whitespace must stay distinct.
+query ITTTT
+SELECT CAST(NULL AS INTEGER), '', 'NULL', '(empty)', ' β '
+----
+NULL (empty) "NULL" "(empty)" " β "
+
+query TTT
+SELECT 'it''s', 'a\b', '中文'
+----
+it's "a\\b" 中文
+
+query TTTTT
+SELECT TRUE AND NULL, FALSE AND NULL, TRUE OR NULL, FALSE OR NULL, 1 NOT IN (2, NULL)
+----
+NULL f t NULL NULL
+
+query IIIT
+SELECT id, val, COALESCE(val, CAST(-1 AS INTEGER)), CASE WHEN val IS NULL THEN 'missing' ELSE 'present' END FROM items ORDER BY id NULLS LAST, val NULLS FIRST
+----
+1 NULL -1 missing
+1 10 10 present
+2 20 20 present
+NULL NULL -1 missing
+
+query IT
+SELECT CHAR_LENGTH('中文'), SUBSTR('abcdef', 2, 3) || 'x'
+----
+2 bcdx
+
+query IT
+SELECT "id" AS "Id", "label" AS "Label" FROM items WHERE id = 2
+----
+2 " β "

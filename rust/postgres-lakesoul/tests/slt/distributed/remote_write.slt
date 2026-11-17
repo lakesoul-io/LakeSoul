@@ -1,0 +1,47 @@
+# Four independent source commits/files create a multi-task remote scan. These
+# tables intentionally remain until Rust checks the committed worker files;
+# the owning harness removes them, including after an assertion failure.
+statement ok
+CREATE TABLE slt_remote_source (id BIGINT, n INTEGER)
+
+statement ok
+CREATE TABLE slt_remote_target (id BIGINT NOT NULL PRIMARY KEY, n INTEGER)
+
+statement count 2
+INSERT INTO slt_remote_source VALUES (1, 10), (2, 20)
+
+statement count 2
+INSERT INTO slt_remote_source VALUES (3, 30), (4, 40)
+
+statement count 2
+INSERT INTO slt_remote_source VALUES (5, 50), (6, 60)
+
+statement count 2
+INSERT INTO slt_remote_source VALUES (7, 70), (8, 80)
+
+statement count 8
+INSERT INTO slt_remote_target SELECT id, n FROM slt_remote_source
+
+query II
+SELECT id, n FROM slt_remote_target ORDER BY id
+----
+1 10
+2 20
+3 30
+4 40
+5 50
+6 60
+7 70
+8 80
+
+# Worker errors must retain their SQLSTATE and publish no extra rows.
+statement error (23505)
+INSERT INTO slt_remote_target SELECT id, n FROM slt_remote_source
+
+statement error (23502)
+INSERT INTO slt_remote_target SELECT CASE WHEN id = 1 THEN CAST(NULL AS BIGINT) ELSE id + 10 END, n FROM slt_remote_source
+
+query II
+SELECT COUNT(*), SUM(n) FROM slt_remote_target
+----
+8 360

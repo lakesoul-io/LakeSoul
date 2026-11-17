@@ -86,6 +86,7 @@ jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 
 [dev-dependencies]
 anyhow.workspace = true
+sqllogictest = "0.29"
 tempfile.workspace = true
 uuid.workspace = true
 rust_decimal = { version = "1", features = ["db-tokio-postgres"] }

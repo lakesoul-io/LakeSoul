@@ -17,8 +17,8 @@ export TZ=UTC
 # Prepare the dedicated test database on first use; this script wipes the test database, do not use it on production databases.
 ./script/meta_init_for_local_test.sh -j 1
 
-LAKESOUL_IO_USE_V2_MERGE=false cargo -q test -p postgres-lakesoul --test contracts -- --nocapture
-LAKESOUL_IO_USE_V2_MERGE=true cargo -q test -p postgres-lakesoul --test contracts -- --nocapture
+LAKESOUL_IO_USE_V2_MERGE=false cargo -q test -p postgres-lakesoul --test contracts --test sqllogic -- --nocapture
+LAKESOUL_IO_USE_V2_MERGE=true cargo -q test -p postgres-lakesoul --test contracts --test sqllogic -- --nocapture
 ```
 
 This requires a reachable, initialized, and migrated PostgreSQL, plus the repository's native build dependencies such as `protoc`, the Vortex `flatc`, and Clang/libclang; the TPC-H targets additionally require Python 3.11+ and use only the standard library. No separate PG wire service or hand-made fixtures are needed; these targets use a local warehouse, do not depend on S3/RustFS, and do not require pgvector in a reference PostgreSQL.
@@ -28,10 +28,186 @@ The physical executor uses the `datafusion-physical-plan` patch pinned by Git `r
 In addition to the existing legacy/v2 default member tests, CI explicitly runs:
 
 ```sh
-cargo -q test --profile test-fast -p postgres-lakesoul --test contracts --jobs 4 -- --nocapture
+cargo -q test --profile test-fast -p postgres-lakesoul --test contracts --test sqllogic --jobs 4 -- --nocapture
 ```
 
-The workspace `default-members` is unchanged. The default result includes two **named, explicitly marked strict reproductions of known defects** (see below); they are not part of the passing compatibility claim, and the remaining tests must not be skipped for lack of a service. Projection scalar subquery multi-row and `SET TIME ZONE`/connection reset have been fixed and promoted to normal gates; they are no longer counted as defects.
+The workspace `default-members` is unchanged. Known defects are kept as named,
+explicitly ignored strict reproductions; they are excluded from passing
+compatibility claims, and normal tests never skip for lack of a service.
+The SQLLogicTest reproduction below records a simple-protocol NOT NULL mapping
+defect. Projection scalar subquery multi-row, `SET TIME ZONE`/connection reset,
+SHOW metadata and NUMERIC zero scale have been fixed and are normal gates.
+
+## SQLLogicTest over the PostgreSQL service
+
+`tests/sqllogic.rs` reads `tests/slt/**/*.slt` at runtime and uses the same real
+child-process harness as the protocol contracts. Each run owns a namespace,
+warehouse and reference schema. Simple text and extended binary each run in
+standalone and distributed modes. Distributed mode starts two real Flight worker
+services as tasks in the test process, with a separate coordinator child and
+`--distributed-fallback-local=false`. Each file gets fresh connections, and
+cleanup also runs on failure (including worker tasks and RPC ports). Missing
+metadata PostgreSQL, invalid scripts and an empty file selection fail the test.
+No separately started `postgres-lakesoul` is needed.
+
+```sh
+LAKESOUL_IO_USE_V2_MERGE=false cargo -q test --profile test-fast -p postgres-lakesoul --test sqllogic --jobs 4 -- --nocapture
+LAKESOUL_IO_USE_V2_MERGE=true cargo -q test --profile test-fast -p postgres-lakesoul --test sqllogic --jobs 4 -- --nocapture
+# Only the two distributed protocol runners:
+cargo -q test --profile test-fast -p postgres-lakesoul --test sqllogic sqllogic_distributed -- --nocapture
+# Select filenames by substring; no matches is an error.
+LAKESOUL_SLT_FILTER=queries.slt cargo -q test --profile test-fast -p postgres-lakesoul --test sqllogic -- --nocapture
+```
+
+- `tests/slt/pg/`: identical SQL and checked-in answers run against both LakeSoul
+  and reference PostgreSQL. The initial files cover NULL/expressions, aggregates,
+  joins, paging, CTEs/subqueries, sets/windows, types, CREATE/DROP/ALTER,
+  INSERT/UPDATE/UPSERT, transactions and session time zones.
+  INTEGER array tests use explicit element-type casts rather than claiming
+  PostgreSQL-equivalent inference for untyped integer literals.
+- `tests/slt/lakesoul/`: LakeSoul extensions and deliberate refusals, run only
+  against LakeSoul; initially partitioned tables, `INSERT ... RETURNING`,
+  append multiplicity and unsupported `DELETE ... USING`, CTAS and `SET LOCAL`.
+  This is a separate contract, not PostgreSQL equivalence.
+  Multiple scalar projections use explicit aliases in the portable scripts:
+  duplicate generated subquery column names currently fail LakeSoul planning
+  with `XX000` (PostgreSQL accepts them), recorded separately in the LakeSoul file.
+- `tests/slt/distributed/`: portable SQL run on LakeSoul and PostgreSQL only
+  in distributed mode. `remote_write.slt` seeds four independent source commits,
+  copies eight rows through INSERT SELECT and checks worker `23505`/`23502`
+  errors and recovery. Rust then checks runtime EXPLAIN ANALYZE for two-task
+  remote execution and shuffle, and primary metadata plus real files for one
+  publication with one write id and task suffixes 0/1. The target directory must
+  contain exactly its committed files, with no uncommitted metadata, including
+  records with empty file lists. This proof always runs in distributed mode
+  even when `LAKESOUL_SLT_FILTER` selects another file; a filter matching no
+  applicable file still fails before startup. To select `distributed/` files,
+  use the `sqllogic_distributed` test-name filter so standalone tests do not
+  report an empty selection.
+- Use `statement ok`, `statement count N`, `statement error (23505)`,
+  `query IRT [rowsort]`, or `query error (21000)`. Errors check the driver's
+  actual server SQLSTATE, never an error-message pattern. Recovery queries
+  follow errors. Keep one SQL command per record.
+- Answers compare exact rendered cells without trimming, floating-point
+  tolerances, wildcard matching or deduplication. Default order is significant;
+  use `rowsort` for a multiset, preserving duplicate rows. SQL NULL is `NULL`,
+  an empty string is `(empty)`. Whitespace/quotes/backslashes and literal marker
+  strings are JSON-quoted: the literal string `NULL` is `"NULL"`, and padded
+  text is `" β "`. Decimal scale remains visible (`0.00`).
+- I/R/T are coarse integer/real/text categories; NUMERIC belongs to R but is
+  decoded exactly, without conversion to float. Extended checks categories
+  against Describe OIDs; simple checks column count because tokio-postgres
+  hides simple-query OIDs. Precise OIDs, column names, codecs and parameter
+  rebinding remain in the existing Rust contracts.
+- The gate rejects skip/onlyif, retries, halt, hash/control directives, named
+  connections and shell commands rather than silently reducing coverage.
+  Each new regression is a reviewed SQL/answer file, automatically discovered;
+  there is no automatic answer-update mode. Both legacy/v2 CI compatibility
+  commands explicitly include `--test sqllogic`.
+
+The standalone normal corpus has 9 files and 191 SQL records (102 query, 89
+statement). Distributed mode runs those same files plus the 11-record remote-write
+script (10 files, 202 records total). Records include expected errors, not just successful
+commands; enabling worker discovery alone is not accepted as remote execution
+evidence.
+`tests/known_defects/simple_not_null.slt` is a separate strict reproduction:
+simple `INSERT ... VALUES (NULL, ...)` into a NOT NULL primary key currently
+returns `XX000` from Arrow, while PostgreSQL and the extended path report
+`23502`. The normal portable file exercises a nullable SELECT expression that
+does reach the typed NOT NULL check in both protocols. The literal case keeps
+the correct `23502` expectation, first verifies it against PostgreSQL, and is
+a named ignored SQLLogicTest case; running it explicitly must currently
+fail and still reclaim its resources:
+
+```sh
+cargo -q test --profile test-fast -p postgres-lakesoul --test sqllogic simple_literal_null_reports_not_null_sqlstate -- --exact --ignored --nocapture
+```
+
+The upstream regression fixtures are pinned to PostgreSQL **REL_18_6**, full
+commit `724edf9bde9d356724ad384a2e196edc3c9f80f7`. Original SQL, `.out`,
+`COPYRIGHT`, hashes and selected ranges are checked in under
+[`tests/upstream/postgresql/`](tests/upstream/postgresql/README.md). Every derived
+record has original SQL/output line references. The first selection contains
+60 queries and 41 setup statements from `subselect.sql` and `join.sql`; SQL is
+unchanged and answers come from PostgreSQL's checked-in outputs. Of these,
+48 queries and all 41 setup statements enter `tests/slt/pg/upstream/` and the
+ordinary four protocol/execution runners. CI needs no source downloads.
+
+The other 12 queries keep strict PostgreSQL answers in
+`tests/known_defects/upstream/`, with fixture copies. These expose USING column
+ordering/binding, FULL JOIN merged-key results, scalar UNION parsing, and two
+simple FLOAT text-format differences (`1.0` versus `1`; binary values agree).
+They are excluded from passing coverage and exercised by one additional named
+ignored test. It first validates the reference PostgreSQL answers, then checks
+every LakeSoul query in all four protocol/execution combinations and reports all
+failures; a fixture failure still stops that suite. Run it explicitly:
+
+```sh
+cargo -q test --profile test-fast -p postgres-lakesoul --test sqllogic upstream_postgresql_known_defects -- --exact --ignored --nocapture
+```
+
+Keep these answers unchanged when fixing the incompatibilities and promote each
+fixed query to the normal gate. The current normal target has two named ignored
+tests: this upstream reproduction and the existing literal-NULL SQLSTATE case.
+This is a selected initial import, not a claim that PostgreSQL's full regression
+suite passes. All imported queries use `rowsort`, preserving duplicate rows;
+order-sensitive behavior stays covered by the existing handwritten cases.
+
+Local validation on 2026-11-16 used an isolated PostgreSQL 18.6 metadata
+instance: legacy/v2 each **4 passed / 1 ignored** in `sqllogic`, and each
+**5 passed / 0 ignored** in the existing `sql_compat` target. Explicitly running
+the named defect fails with the expected `23502` versus `XX000` mismatch. A
+runtime-added wrong-answer file failed both protocols and was removed; a filter
+matching no files failed before process startup. Harness cleanup proofs cover
+normal and failed runs; final metadata/index/schema/connection counts were zero,
+and the temporary PostgreSQL was stopped and removed. Target-scoped Clippy
+(`--no-deps -- -D warnings`), changed-file rustfmt and workflow actionlint passed.
+These initial standalone results do not claim a new run of TPC-H, all other
+contracts, or GitHub Actions.
+
+The distributed runner exposed a scalar-subquery correctness defect: upstream's
+`with_distributed_planner()` disabled physical scalar subqueries, allowing
+`SELECT (SELECT val FROM items WHERE id = 1)` to return two rows instead of
+`21000`. `LakeSoulSessionFactory` now preserves runtime scalar subqueries, and
+the existing placement gate keeps both queries and writes with surviving
+runtime subqueries on the coordinator. Already-decorrelated joins and ordinary
+scans/writes still use workers, and `fallback_to_local=false` is unchanged.
+The existing strict shared SLT case covers this fix in both wire protocols;
+no SQL expectation was weakened or skipped.
+
+After adding the distributed runners and that correction, PostgreSQL 18.6
+acceptance on 2026-11-16 passed in both legacy and v2: `sqllogic` **6 passed /
+1 ignored**, `sql_compat` **5 passed**, `update_contract` **4 passed**, and
+`upsert_contract` **4 passed**. The sole ignored test remains the separate simple
+literal-NULL SQLSTATE reproduction. Each distributed protocol run observed four
+source commits/files, remote two-task shuffle with runtime metrics, and one
+publication containing five real files with a common write id and task indexes
+0/1 (the proof requires both tasks, not a fixed number of files). Runtime-injected
+wrong answers still failed after the mandatory remote proof despite filename
+filtering; empty selections failed before startup. Deliberately invalid
+coordinator startup also reclaimed both worker tasks and all four ports.
+Clippy passed for the DataFusion library and SLT target with `--no-deps -- -D
+warnings`; changed-file rustfmt and workflow actionlint also passed. Final
+metadata/index/schema/connection residual counts were zero, and the isolated
+PostgreSQL was stopped with its port and data directory reclaimed.
+
+The pinned upstream import was validated on 2026-11-17 with an isolated
+PostgreSQL 18.6 instance. Legacy and v2 each passed the complete normal SLT target
+with **6 passed / 2 ignored**, including the 89 new normal records in all four
+protocol/execution combinations and the mandatory distributed proof. Explicitly
+running the upstream reproduction on both merges checked all 12 queries against
+PostgreSQL in every combination, then failed as intended: 12 LakeSoul differences
+per simple run and 10 per extended run. Snapshot hashes and every imported
+SQL/output line reference were checked; target-scoped Clippy and rustfmt passed.
+All 11 metadata/index/namespace/schema/connection residual counts were zero;
+the temporary PostgreSQL was stopped and its port and data directory reclaimed.
+Other test targets and GitHub Actions were not rerun for this import.
+
+```text
+.slt SQL + expected rows → tokio-postgres → real PG socket → LakeSoul files
+                        → same SQL on reference PostgreSQL (pg/ only)
+                        → exact answers / server SQLSTATE
+```
 
 ## IVM incremental entry point
 

@@ -58,9 +58,14 @@ pub fn binary(statement: &Statement, rows: &[Row]) -> Result<ResultSet> {
                 Type::BOOL => row
                     .try_get::<_, Option<bool>>(i)?
                     .map(|v| if v { "t" } else { "f" }.to_owned()),
+                Type::INT2 => row.try_get::<_, Option<i16>>(i)?.map(|v| v.to_string()),
                 Type::INT4 => row.try_get::<_, Option<i32>>(i)?.map(|v| v.to_string()),
                 Type::INT8 => row.try_get::<_, Option<i64>>(i)?.map(|v| v.to_string()),
-                Type::TEXT => row.try_get::<_, Option<String>>(i)?,
+                Type::FLOAT4 => row.try_get::<_, Option<f32>>(i)?.map(|v| v.to_string()),
+                Type::FLOAT8 => row.try_get::<_, Option<f64>>(i)?.map(|v| v.to_string()),
+                Type::TEXT | Type::VARCHAR | Type::BPCHAR => {
+                    row.try_get::<_, Option<String>>(i)?
+                }
                 // Exact PostgreSQL `numeric`: rust_decimal preserves the
                 // value's scale, so the rendered text keeps significant
                 // trailing zeros like the reference server's text output.

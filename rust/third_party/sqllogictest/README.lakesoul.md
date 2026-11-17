@@ -13,4 +13,5 @@ cascades into `parquet`, `vortex` and `datafusion` rebuilds in CI.  With this
 change both users resolve `md-5` to the same unit, so the IVM test build reuses
 the shared dependency build of the main test steps.
 
-`sqllogictest` is only used by `rust/lakesoul-ivm/tests/sqllogic.rs`.
+`sqllogictest` is used by `rust/lakesoul-ivm/tests/sqllogic.rs` and
+`rust/postgres-lakesoul/tests/sqllogic.rs`.

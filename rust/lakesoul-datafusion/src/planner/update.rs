@@ -114,13 +114,15 @@ impl fmt::Debug for PlannedUpdate {
 /// Keeps the statement's runtime subqueries as expressions, not as joins, for
 /// as long as the planned statement lives.
 ///
-/// A distributed session is built with
+/// The upstream distributed builder sets
 /// `optimizer.enable_physical_uncorrelated_scalar_subquery = false`
 /// (`with_distributed_planner` disables it because a worker stage cannot ship
 /// a `ScalarSubqueryExec`). With that option off, the optimizer rewrites an
 /// uncorrelated `SET n = (SELECT ...)` into `LEFT JOIN ... ON true` while this
 /// statement is optimized - the very first thing `plan_update` does - and a
-/// later planner can no longer see the subquery at all. Such a join is not an
+/// later planner can no longer see the subquery at all. LakeSoul's session
+/// factory restores the option; this guard also protects contexts built
+/// directly through upstream's builder. Such a join is not an
 /// equivalent update: a subquery returning several rows duplicates the target
 /// row instead of raising PostgreSQL's `21000`, so the statement may publish a
 /// row and report a count instead of its error.

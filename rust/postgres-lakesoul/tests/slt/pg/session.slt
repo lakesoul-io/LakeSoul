@@ -1,0 +1,39 @@
+statement ok
+SET TIME ZONE 'America/New_York'
+
+query T
+SHOW TimeZone
+----
+America/New_York
+
+query T
+SELECT CAST(TIMESTAMPTZ '2024-01-01 00:00:00+00' AS DATE)
+----
+2023-12-31
+
+statement error (22023)
+SET TIME ZONE 'not/a/timezone'
+
+query T
+SHOW TimeZone
+----
+America/New_York
+
+statement ok
+SET TIME ZONE 'UTC'
+
+query T
+SELECT CAST(TIMESTAMPTZ '2024-01-01 00:00:00+00' AS DATE)
+----
+2024-01-01
+
+statement ok
+SET statement_timeout = '60s'
+
+statement ok
+RESET statement_timeout
+
+query I
+SELECT COUNT(*) FROM items
+----
+4

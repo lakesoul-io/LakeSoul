@@ -1,0 +1,183 @@
+# SPDX-License-Identifier: PostgreSQL
+# Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+# Portions Copyright (c) 1994, The Regents of the University of California
+# License: tests/upstream/postgresql/COPYRIGHT (the full upstream notice).
+# PostgreSQL REL_18_6 @ 724edf9bde9d356724ad384a2e196edc3c9f80f7
+# Selected source statements are unchanged, including their semicolons.
+# Answers come from upstream expected output; rowsort compares multisets
+# and deliberately does not claim upstream incidental/partial row order.
+# The shared harness removes these tables and files at suite teardown.
+
+# upstream-sql: sql/subselect.sql:5-5
+# upstream-expected: expected/subselect.out:4-8
+query I rowsort
+SELECT 1 AS one WHERE 1 IN (SELECT 1);
+----
+1
+
+# upstream-sql: sql/subselect.sql:7-7
+# upstream-expected: expected/subselect.out:10-13
+query I rowsort
+SELECT 1 AS zero WHERE 1 NOT IN (SELECT 1);
+----
+
+# upstream-sql: sql/subselect.sql:9-9
+# upstream-expected: expected/subselect.out:15-18
+query I rowsort
+SELECT 1 AS zero WHERE 1 IN (SELECT 2);
+----
+
+# upstream-sql: sql/subselect.sql:13-13
+# upstream-expected: expected/subselect.out:21-25
+query I rowsort
+SELECT * FROM (SELECT 1 AS x) ss;
+----
+1
+
+# upstream-sql: sql/subselect.sql:14-14
+# upstream-expected: expected/subselect.out:27-31
+query I rowsort
+SELECT * FROM ((SELECT 1 AS x)) ss;
+----
+1
+
+# upstream-sql: sql/subselect.sql:16-16
+# upstream-expected: expected/subselect.out:33-37
+query II rowsort
+SELECT * FROM ((SELECT 1 AS x)), ((SELECT * FROM ((SELECT 2 AS y))));
+----
+1 2
+
+# upstream-sql: sql/subselect.sql:18-18
+# upstream-expected: expected/subselect.out:39-43
+query I rowsort
+(SELECT 2) UNION SELECT 2;
+----
+2
+
+# upstream-sql: sql/subselect.sql:19-19
+# upstream-expected: expected/subselect.out:45-49
+query I rowsort
+((SELECT 2)) UNION SELECT 2;
+----
+2
+
+# upstream-sql: sql/subselect.sql:24-24
+# upstream-expected: expected/subselect.out:63-67
+query I rowsort
+SELECT (SELECT ARRAY[1,2,3])[1];
+----
+1
+
+# upstream-sql: sql/subselect.sql:25-25
+# upstream-expected: expected/subselect.out:69-73
+query I rowsort
+SELECT ((SELECT ARRAY[1,2,3]))[2];
+----
+2
+
+# upstream-sql: sql/subselect.sql:26-26
+# upstream-expected: expected/subselect.out:75-79
+query I rowsort
+SELECT (((SELECT ARRAY[1,2,3])))[3];
+----
+3
+
+# upstream-sql: sql/subselect.sql:30-34
+# upstream-expected: expected/subselect.out:82
+statement ok
+CREATE TABLE SUBSELECT_TBL (
+  f1 integer,
+  f2 integer,
+  f3 float
+);
+
+# upstream-sql: sql/subselect.sql:36-36
+# upstream-expected: expected/subselect.out:87
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (1, 2, 3);
+
+# upstream-sql: sql/subselect.sql:37-37
+# upstream-expected: expected/subselect.out:88
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (2, 3, 4);
+
+# upstream-sql: sql/subselect.sql:38-38
+# upstream-expected: expected/subselect.out:89
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (3, 4, 5);
+
+# upstream-sql: sql/subselect.sql:39-39
+# upstream-expected: expected/subselect.out:90
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (1, 1, 1);
+
+# upstream-sql: sql/subselect.sql:40-40
+# upstream-expected: expected/subselect.out:91
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (2, 2, 2);
+
+# upstream-sql: sql/subselect.sql:41-41
+# upstream-expected: expected/subselect.out:92
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (3, 3, 3);
+
+# upstream-sql: sql/subselect.sql:42-42
+# upstream-expected: expected/subselect.out:93
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (6, 7, 8);
+
+# upstream-sql: sql/subselect.sql:43-43
+# upstream-expected: expected/subselect.out:94
+statement count 1
+INSERT INTO SUBSELECT_TBL VALUES (8, 9, NULL);
+
+# upstream-sql: sql/subselect.sql:49-50
+# upstream-expected: expected/subselect.out:109-115
+query I rowsort
+SELECT f1 AS "Constant Select" FROM SUBSELECT_TBL
+  WHERE f1 IN (SELECT 1);
+----
+1
+1
+
+# upstream-sql: sql/subselect.sql:52-53
+# upstream-expected: expected/subselect.out:117-127
+query I rowsort
+SELECT f1 AS "Uncorrelated Field" FROM SUBSELECT_TBL
+  WHERE f1 IN (SELECT f2 FROM SUBSELECT_TBL);
+----
+1
+1
+2
+2
+3
+3
+
+# upstream-sql: sql/subselect.sql:55-57
+# upstream-expected: expected/subselect.out:129-140
+query I rowsort
+SELECT f1 AS "Uncorrelated Field" FROM SUBSELECT_TBL
+  WHERE f1 IN (SELECT f2 FROM SUBSELECT_TBL WHERE
+    f2 IN (SELECT f1 FROM SUBSELECT_TBL));
+----
+1
+1
+2
+2
+3
+3
+
+# upstream-sql: sql/subselect.sql:66-68
+# upstream-expected: expected/subselect.out:154-165
+query II rowsort
+SELECT f1 AS "Correlated Field", f2 AS "Second Field"
+  FROM SUBSELECT_TBL upper
+  WHERE f1 IN (SELECT f2 FROM SUBSELECT_TBL WHERE f1 = upper.f1);
+----
+1 1
+1 2
+2 2
+2 3
+3 3
+3 4

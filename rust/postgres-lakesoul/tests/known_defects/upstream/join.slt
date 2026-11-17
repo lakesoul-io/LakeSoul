@@ -1,0 +1,285 @@
+# SPDX-License-Identifier: PostgreSQL
+# Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+# Portions Copyright (c) 1994, The Regents of the University of California
+# License: tests/upstream/postgresql/COPYRIGHT (the full upstream notice).
+# PostgreSQL REL_18_6 @ 724edf9bde9d356724ad384a2e196edc3c9f80f7
+# Selected source statements are unchanged, including their semicolons.
+# Answers come from upstream expected output; rowsort compares multisets
+# and deliberately does not claim upstream incidental/partial row order.
+# The shared harness removes these tables and files at suite teardown.
+
+# Known incompatibilities: keep PostgreSQL answers; explicitly run the ignored
+# upstream_postgresql_known_defects test to reproduce them.
+
+# upstream-sql: sql/join.sql:6-10
+# upstream-expected: expected/join.out:5
+statement ok
+CREATE TABLE J1_TBL (
+  i integer,
+  j integer,
+  t text
+);
+
+# upstream-sql: sql/join.sql:12-15
+# upstream-expected: expected/join.out:10
+statement ok
+CREATE TABLE J2_TBL (
+  i integer,
+  k integer
+);
+
+# upstream-sql: sql/join.sql:18-18
+# upstream-expected: expected/join.out:14
+statement count 1
+INSERT INTO J1_TBL VALUES (1, 4, 'one');
+
+# upstream-sql: sql/join.sql:19-19
+# upstream-expected: expected/join.out:15
+statement count 1
+INSERT INTO J1_TBL VALUES (2, 3, 'two');
+
+# upstream-sql: sql/join.sql:20-20
+# upstream-expected: expected/join.out:16
+statement count 1
+INSERT INTO J1_TBL VALUES (3, 2, 'three');
+
+# upstream-sql: sql/join.sql:21-21
+# upstream-expected: expected/join.out:17
+statement count 1
+INSERT INTO J1_TBL VALUES (4, 1, 'four');
+
+# upstream-sql: sql/join.sql:22-22
+# upstream-expected: expected/join.out:18
+statement count 1
+INSERT INTO J1_TBL VALUES (5, 0, 'five');
+
+# upstream-sql: sql/join.sql:23-23
+# upstream-expected: expected/join.out:19
+statement count 1
+INSERT INTO J1_TBL VALUES (6, 6, 'six');
+
+# upstream-sql: sql/join.sql:24-24
+# upstream-expected: expected/join.out:20
+statement count 1
+INSERT INTO J1_TBL VALUES (7, 7, 'seven');
+
+# upstream-sql: sql/join.sql:25-25
+# upstream-expected: expected/join.out:21
+statement count 1
+INSERT INTO J1_TBL VALUES (8, 8, 'eight');
+
+# upstream-sql: sql/join.sql:26-26
+# upstream-expected: expected/join.out:22
+statement count 1
+INSERT INTO J1_TBL VALUES (0, NULL, 'zero');
+
+# upstream-sql: sql/join.sql:27-27
+# upstream-expected: expected/join.out:23
+statement count 1
+INSERT INTO J1_TBL VALUES (NULL, NULL, 'null');
+
+# upstream-sql: sql/join.sql:28-28
+# upstream-expected: expected/join.out:24
+statement count 1
+INSERT INTO J1_TBL VALUES (NULL, 0, 'zero');
+
+# upstream-sql: sql/join.sql:30-30
+# upstream-expected: expected/join.out:25
+statement count 1
+INSERT INTO J2_TBL VALUES (1, -1);
+
+# upstream-sql: sql/join.sql:31-31
+# upstream-expected: expected/join.out:26
+statement count 1
+INSERT INTO J2_TBL VALUES (2, 2);
+
+# upstream-sql: sql/join.sql:32-32
+# upstream-expected: expected/join.out:27
+statement count 1
+INSERT INTO J2_TBL VALUES (3, -3);
+
+# upstream-sql: sql/join.sql:33-33
+# upstream-expected: expected/join.out:28
+statement count 1
+INSERT INTO J2_TBL VALUES (2, 4);
+
+# upstream-sql: sql/join.sql:34-34
+# upstream-expected: expected/join.out:29
+statement count 1
+INSERT INTO J2_TBL VALUES (5, -5);
+
+# upstream-sql: sql/join.sql:35-35
+# upstream-expected: expected/join.out:30
+statement count 1
+INSERT INTO J2_TBL VALUES (5, -5);
+
+# upstream-sql: sql/join.sql:36-36
+# upstream-expected: expected/join.out:31
+statement count 1
+INSERT INTO J2_TBL VALUES (0, NULL);
+
+# upstream-sql: sql/join.sql:37-37
+# upstream-expected: expected/join.out:32
+statement count 1
+INSERT INTO J2_TBL VALUES (NULL, NULL);
+
+# upstream-sql: sql/join.sql:38-38
+# upstream-expected: expected/join.out:33
+statement count 1
+INSERT INTO J2_TBL VALUES (NULL, 0);
+
+# upstream-sql: sql/join.sql:125-127
+# upstream-expected: expected/join.out:1613-1622
+query IITI rowsort
+SELECT *
+  FROM J1_TBL t1 (a, b, c) JOIN J2_TBL t2 (a, b) USING (b)
+  ORDER BY b, t1.a;
+----
+0 5 five NULL
+0 NULL zero NULL
+2 3 three 2
+4 1 one 2
+
+# upstream-sql: sql/join.sql:210-211
+# upstream-expected: expected/join.out:1897-1902
+query IITI rowsort
+SELECT *
+  FROM J1_TBL LEFT JOIN J2_TBL USING (i) WHERE (i = 1);
+----
+1 4 one -1
+
+# upstream-sql: sql/join.sql:231-231
+# upstream-expected: expected/join.out:1933
+statement ok
+CREATE TABLE t1 (name TEXT, n INTEGER);
+
+# upstream-sql: sql/join.sql:232-232
+# upstream-expected: expected/join.out:1934
+statement ok
+CREATE TABLE t2 (name TEXT, n INTEGER);
+
+# upstream-sql: sql/join.sql:233-233
+# upstream-expected: expected/join.out:1935
+statement ok
+CREATE TABLE t3 (name TEXT, n INTEGER);
+
+# upstream-sql: sql/join.sql:235-235
+# upstream-expected: expected/join.out:1936
+statement count 1
+INSERT INTO t1 VALUES ( 'bb', 11 );
+
+# upstream-sql: sql/join.sql:236-236
+# upstream-expected: expected/join.out:1937
+statement count 1
+INSERT INTO t2 VALUES ( 'bb', 12 );
+
+# upstream-sql: sql/join.sql:237-237
+# upstream-expected: expected/join.out:1938
+statement count 1
+INSERT INTO t2 VALUES ( 'cc', 22 );
+
+# upstream-sql: sql/join.sql:238-238
+# upstream-expected: expected/join.out:1939
+statement count 1
+INSERT INTO t2 VALUES ( 'ee', 42 );
+
+# upstream-sql: sql/join.sql:239-239
+# upstream-expected: expected/join.out:1940
+statement count 1
+INSERT INTO t3 VALUES ( 'bb', 13 );
+
+# upstream-sql: sql/join.sql:240-240
+# upstream-expected: expected/join.out:1941
+statement count 1
+INSERT INTO t3 VALUES ( 'cc', 23 );
+
+# upstream-sql: sql/join.sql:241-241
+# upstream-expected: expected/join.out:1942
+statement count 1
+INSERT INTO t3 VALUES ( 'dd', 33 );
+
+# upstream-sql: sql/join.sql:243-243
+# upstream-expected: expected/join.out:1943-1950
+query TIII rowsort
+SELECT * FROM t1 FULL JOIN t2 USING (name) FULL JOIN t3 USING (name);
+----
+bb 11 12 13
+cc NULL 22 23
+dd NULL NULL 33
+ee NULL 42 NULL
+
+# upstream-sql: sql/join.sql:262-266
+# upstream-expected: expected/join.out:1979-1990
+query TII rowsort
+SELECT * FROM
+(SELECT * FROM t2) as s2
+FULL JOIN
+(SELECT * FROM t3) s3
+USING (name);
+----
+bb 12 13
+cc 22 23
+dd NULL 33
+ee 42 NULL
+
+# upstream-sql: sql/join.sql:280-283
+# upstream-expected: expected/join.out:2015-2025
+query TIIII rowsort
+SELECT * FROM
+(SELECT name, n as s2_n, 2 as s2_2 FROM t2) as s2
+NATURAL FULL JOIN
+(SELECT name, n as s3_n, 3 as s3_2 FROM t3) s3;
+----
+bb 12 2 13 3
+cc 22 2 23 3
+dd NULL NULL 33 3
+ee 42 2 NULL NULL
+
+# upstream-sql: sql/join.sql:292-297
+# upstream-expected: expected/join.out:2038-2050
+query TIIIIII rowsort
+SELECT * FROM
+(SELECT name, n as s1_n, 1 as s1_1 FROM t1) as s1
+NATURAL FULL JOIN
+(SELECT name, n as s2_n, 2 as s2_2 FROM t2) as s2
+NATURAL FULL JOIN
+(SELECT name, n as s3_n, 3 as s3_2 FROM t3) s3;
+----
+bb 11 1 12 2 13 3
+cc NULL NULL 22 2 23 3
+dd NULL NULL NULL NULL 33 3
+ee NULL NULL 42 2 NULL NULL
+
+# upstream-sql: sql/join.sql:299-306
+# upstream-expected: expected/join.out:2052-2066
+query TIII rowsort
+SELECT * FROM
+(SELECT name, n as s1_n FROM t1) as s1
+NATURAL FULL JOIN
+  (SELECT * FROM
+    (SELECT name, n as s2_n FROM t2) as s2
+    NATURAL FULL JOIN
+    (SELECT name, n as s3_n FROM t3) as s3
+  ) ss2;
+----
+bb 11 12 13
+cc NULL 22 23
+dd NULL NULL 33
+ee NULL 42 NULL
+
+# upstream-sql: sql/join.sql:308-315
+# upstream-expected: expected/join.out:2068-2082
+query TIIII rowsort
+SELECT * FROM
+(SELECT name, n as s1_n FROM t1) as s1
+NATURAL FULL JOIN
+  (SELECT * FROM
+    (SELECT name, n as s2_n, 2 as s2_2 FROM t2) as s2
+    NATURAL FULL JOIN
+    (SELECT name, n as s3_n FROM t3) as s3
+  ) ss2;
+----
+bb 11 12 2 13
+cc NULL 22 2 23
+dd NULL NULL NULL 33
+ee NULL 42 2 NULL

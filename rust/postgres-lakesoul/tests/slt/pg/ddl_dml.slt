@@ -1,0 +1,71 @@
+statement ok
+CREATE TABLE slt_items (id BIGINT NOT NULL PRIMARY KEY, n INTEGER, label TEXT)
+
+statement error (42P07)
+CREATE TABLE slt_items (id BIGINT)
+
+statement ok
+CREATE TABLE IF NOT EXISTS slt_items (id BIGINT)
+
+statement count 3
+INSERT INTO slt_items (id, n, label) VALUES (1, 10, 'a'), (2, 20, 'b'), (3, NULL, NULL)
+
+query IIT
+SELECT id, n, label FROM slt_items ORDER BY id
+----
+1 10 a
+2 20 b
+3 NULL NULL
+
+statement error (23505)
+INSERT INTO slt_items VALUES (1, 99, 'duplicate')
+
+statement error (23502)
+INSERT INTO slt_items (id, n, label) SELECT CASE WHEN id = 2 THEN CAST(NULL AS BIGINT) ELSE CAST(id AS BIGINT) END, val, label FROM items WHERE id = 2
+
+statement error (42601)
+INSERT INTO slt_items (id, n) VALUES (4)
+
+query I
+SELECT COUNT(*) FROM slt_items
+----
+3
+
+statement count 0
+INSERT INTO slt_items VALUES (1, 99, 'ignored') ON CONFLICT (id) DO NOTHING
+
+statement count 2
+UPDATE slt_items SET n = COALESCE(n, CAST(0 AS INTEGER)) + 1 WHERE id >= 2
+
+statement count 1
+INSERT INTO slt_items VALUES (2, 2, 'changed') ON CONFLICT (id) DO UPDATE SET n = slt_items.n + EXCLUDED.n, label = EXCLUDED.label WHERE slt_items.n > 0
+
+statement count 1
+INSERT INTO slt_items (id, n, label) SELECT id + 10, n, label FROM slt_items WHERE id = 1
+
+statement ok
+ALTER TABLE slt_items ADD COLUMN note TEXT
+
+statement count 1
+INSERT INTO slt_items (id, n, label, note) VALUES (4, 40, 'd', 'added')
+
+statement ok
+ALTER TABLE slt_items ALTER COLUMN n TYPE BIGINT
+
+query IITT
+SELECT id, n, label, note FROM slt_items ORDER BY id
+----
+1 10 a NULL
+2 23 changed NULL
+3 1 NULL NULL
+4 40 d added
+11 10 a NULL
+
+statement ok
+DROP TABLE slt_items
+
+statement error (42P01)
+DROP TABLE slt_items
+
+statement ok
+DROP TABLE IF EXISTS slt_items

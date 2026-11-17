@@ -1,0 +1,73 @@
+# LakeSoul extension: these statements are not claimed to run in PostgreSQL.
+statement ok
+CREATE TABLE slt_parts (part INTEGER NOT NULL, id BIGINT NOT NULL, n INTEGER, PRIMARY KEY (id)) PARTITIONED BY (part) WITH (hash_bucket_num = 2)
+
+statement count 3
+INSERT INTO slt_parts VALUES (1, 1, 10), (2, 1, 20), (2, 2, 30)
+
+query III
+SELECT part, id, n FROM slt_parts ORDER BY part, id
+----
+1 1 10
+2 1 20
+2 2 30
+
+query III
+SELECT part, COUNT(*), SUM(n) FROM slt_parts GROUP BY part ORDER BY part
+----
+1 1 10
+2 2 50
+
+# `INSERT ... RETURNING` and plain `DELETE` are supported since the PostgreSQL
+# compatibility phases eight and eleven; the refusal shapes below are the ones
+# that still answer 0A000.
+query I
+INSERT INTO slt_parts VALUES (3, 1, 40) RETURNING id
+----
+1
+
+statement error (0A000)
+INSERT INTO slt_parts VALUES (1, 1, 99) ON CONFLICT (id) DO NOTHING
+
+statement error (0A000)
+DELETE FROM slt_parts USING slt_parts AS other WHERE slt_parts.id = other.id
+
+statement error (0A000)
+CREATE TABLE slt_ctas AS SELECT * FROM slt_parts
+
+statement error (0A000)
+SET LOCAL TIME ZONE 'UTC'
+
+query I
+SELECT COUNT(*) FROM slt_parts
+----
+4
+
+statement ok
+DROP TABLE slt_parts
+
+statement ok
+CREATE TABLE slt_bag (id INTEGER, label TEXT) WITH (append_only = true)
+
+statement count 3
+INSERT INTO slt_bag VALUES (1, 'same'), (1, 'same'), (2, '')
+
+query IT rowsort
+SELECT id, label FROM slt_bag
+----
+1 same
+1 same
+2 (empty)
+
+statement ok
+DROP TABLE slt_bag
+
+# Current planning boundary: PostgreSQL permits duplicate generated projection
+# names; DataFusion requires explicit aliases for these two scalar subqueries.
+query error (XX000)
+SELECT (SELECT val FROM items WHERE id = 2), (SELECT val FROM items WHERE id > 1000)
+
+query I
+SELECT COUNT(*) FROM items
+----
+4

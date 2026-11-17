@@ -976,6 +976,17 @@ impl LakeSoulSessionFactory {
         }
 
         let mut state = builder.build();
+        if distributed.is_some() {
+            // The upstream distributed builder disables physical scalar
+            // subqueries, making the optimizer flatten even multi-row scalar
+            // results into joins. Preserve their runtime/cardinality state;
+            // our placement gate keeps surviving subqueries on the coordinator.
+            state
+                .config_mut()
+                .options_mut()
+                .optimizer
+                .enable_physical_uncorrelated_scalar_subquery = true;
+        }
         #[cfg(feature = "ivm")]
         {
             state = lakesoul_ivm::runtime::with_keyed_lookup_rule(state);
