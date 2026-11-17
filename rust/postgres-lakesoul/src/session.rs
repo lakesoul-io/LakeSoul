@@ -34,6 +34,34 @@ use tracing::{info, instrument};
 use crate::catalog::{
     PUBLIC_SCHEMA, PgDatabaseCatalogList, pg_lakesoul_catalog_with_federation,
 };
+use crate::pg_settings::PgParameters;
+
+/// The `pg_catalog` role provider for this connection.
+///
+/// The pinned catalog's blanket `impl PgCatalogContextProvider for Arc<T>`
+/// calls `self.roles()` inside the `Arc` implementation, which recurses until
+/// the stack overflows (`SELECT * FROM pg_roles` aborts the process). This
+/// newtype delegates to `AuthManager` directly and keeps that blanket impl
+/// out of the path.
+#[derive(Clone, Debug)]
+struct AuthRoles(Arc<AuthManager>);
+
+#[async_trait::async_trait]
+impl datafusion_postgres::datafusion_pg_catalog::pg_catalog::context::PgCatalogContextProvider
+    for AuthRoles
+{
+    async fn roles(&self) -> Vec<String> {
+        self.0.list_roles().await
+    }
+
+    async fn role(
+        &self,
+        name: &str,
+    ) -> Option<datafusion_postgres::datafusion_pg_catalog::pg_catalog::context::Role>
+    {
+        self.0.get_role(name).await
+    }
+}
 
 /// Identity resolved for one PostgreSQL connection during startup.
 #[derive(Debug, Clone, Default)]
@@ -99,6 +127,9 @@ pub struct PgSession {
     pub identity: SessionIdentity,
     pub context: Arc<SessionContext>,
     pub settings: RwLock<SessionSettings>,
+    /// The PostgreSQL session parameters `SHOW`, `current_setting` and
+    /// `pg_settings` report.
+    pub parameters: Arc<PgParameters>,
     pub actor: SessionActor,
     pub ivm: Option<Arc<crate::ivm::IvmService>>,
     distributed: bool,
@@ -113,6 +144,7 @@ impl PgSession {
         identity: SessionIdentity,
         context: Arc<SessionContext>,
         settings: SessionSettings,
+        parameters: Arc<PgParameters>,
         catalog_snapshot: Arc<CatalogSnapshot>,
         distributed: bool,
     ) -> Result<Self> {
@@ -127,6 +159,7 @@ impl PgSession {
             identity,
             context,
             settings: RwLock::new(settings),
+            parameters,
             actor,
             ivm: None,
             distributed,
@@ -464,12 +497,17 @@ impl PgSessionFactory {
         setup_pg_catalog_with_options(
             &context,
             &identity.database,
-            Arc::clone(&self.auth_manager),
+            AuthRoles(Arc::clone(&self.auth_manager)),
             self.catalog_options,
         )?;
+        let parameters = Arc::new(PgParameters::new(&identity, settings));
         // After the upstream setup: the registry is keyed by name, so the shims
         // replace the narrower upstream signatures.
-        crate::pg_compat::register_pg_catalog_shims(&context);
+        crate::pg_compat::register_pg_catalog_shims(
+            &context,
+            &parameters,
+            &identity.user,
+        );
         // pgvector syntax (`<->`, `<#>`, `<=>` and `'[...]'` literals).  The
         // install rebuilds the state from the existing one, so the LakeSoul
         // catalog, optimizer rules and config extensions stay in place; it
@@ -511,6 +549,7 @@ impl PgSessionFactory {
             identity,
             context,
             settings.clone(),
+            parameters,
             Arc::clone(self.base.catalog_snapshot()),
             self.distributed,
         )?;

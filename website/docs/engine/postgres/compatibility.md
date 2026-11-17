@@ -31,8 +31,9 @@ covered today.
 | Writes | `INSERT ... VALUES` (including `RETURNING *`/column references), `INSERT ... SELECT`, `COPY ... FROM STDIN` (TEXT and CSV), `UPDATE` on non-CDC primary-key tables, `ON CONFLICT DO NOTHING`, general `ON CONFLICT ... DO UPDATE` (partial column lists, expressions and conflict `WHERE`) |
 | Subscriptions | `CREATE SUBSCRIPTION`, `ALTER SUBSCRIPTION ... ENABLE/DISABLE`, `DROP SUBSCRIPTION` for logical replication into a LakeSoul CDC table |
 | Transactions | Autocommit and `READ COMMITTED`; `BEGIN`/`COMMIT`/`ROLLBACK` with deferred publication for LakeSoul writes |
-| Catalog | `pg_catalog`, `information_schema`, `psql \d`, `pg_cursors`, `current_database()`, SQLAlchemy reflection through the `psycopg2` dialect |
-| Session | `SET TIME ZONE`, `statement_timeout`, `search_path`, `ivfflat.probes`, `RESET`, `DISCARD ALL` |
+| Catalog | `pg_catalog`, `information_schema`, `psql \d`/`\dt`/`\l`/`\dn`, `pg_cursors`, `pg_settings`, `pg_roles`, `current_database()`, `current_user`/`session_user`, `to_regtype`, `current_setting`/`set_config`, SQLAlchemy reflection through the `psycopg2` dialect |
+| Session | `SHOW`/`SHOW ALL`, `SET TIME ZONE`, `statement_timeout`, `search_path`, `ivfflat.probes`, `RESET`, `DISCARD ALL` |
+| Reporting | `date_trunc`, `date_part`/`extract`, `to_char` with PostgreSQL date/time patterns, `generate_series`, `DISTINCT ON`, `ROLLUP`/`GROUPING SETS`/`CUBE` |
 | Vector | `vector(n)`, `<->`, `<#>`, `<=>`, `ORDER BY ... LIMIT k`, exact fallback, ANN |
 | Full text | `text_score(column, query)` with `ORDER BY ... DESC LIMIT k` |
 
@@ -91,16 +92,20 @@ A real-driver baseline lives in
 SQLAlchemy and pgjdbc against a live endpoint and covers connect/`SELECT`,
 parameterized writes including `bytea`, `COPY ... FROM STDIN` (TEXT and CSV
 through psycopg2, psycopg3 and pgjdbc `CopyManager`), batches, UPSERT,
-transactions, duplicate-key recovery, catalog discovery, SQLAlchemy reflection,
-forward-only named cursors, fetch-size cursors and Metabase-style startup
-statements.
+transactions, duplicate-key recovery, catalog discovery (`SHOW`, `pg_settings`,
+`pg_roles`, psql `\dt`/`\l`/`\dn`), SQLAlchemy reflection, forward-only named
+cursors, fetch-size cursors and Metabase-style startup statements.
 
 The current baseline passes the core Python and JDBC workflows, including psql
 `\d`, `bytea` round-trips and SQLAlchemy reflection through the `psycopg2`
 dialect. Named cursors are forward-only and non-holdable; `WITH HOLD`,
 `SCROLL` and backward fetches are explicitly refused. Known gaps are kept
 visible rather than hidden: `COPY ... TO STDOUT` and `RETURNING` for
-`INSERT ... SELECT`/`ON CONFLICT`/`UPDATE`. SQLAlchemy's
+`INSERT ... SELECT`/`ON CONFLICT`/`UPDATE`. Numeric `to_char` patterns are not
+implemented and fail explicitly; selecting `current_user` and `session_user`
+in one projection is still limited by the compatibility parser's
+`current_user -> session_user` rewrite, and `psql \du` still needs
+`ARRAY(subquery)` support. SQLAlchemy's
 `psycopg3` dialect is not part of the baseline yet because its reflection
 starts nested transactions (`SAVEPOINT`), which LakeSoul does not support. See
 the README in that directory for exact versions and the status of each gap.

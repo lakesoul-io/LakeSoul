@@ -30,8 +30,9 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 | 写入 | `INSERT ... VALUES`（包括 `RETURNING *`/列引用）、`INSERT ... SELECT`、`COPY ... FROM STDIN`（TEXT 和 CSV）、非 CDC 主键表上的 `UPDATE`、`ON CONFLICT DO NOTHING`、通用 `ON CONFLICT ... DO UPDATE`（部分列、表达式和 conflict `WHERE`） |
 | 订阅 | `CREATE SUBSCRIPTION`、`ALTER SUBSCRIPTION ... ENABLE/DISABLE`、`DROP SUBSCRIPTION`，把源 PostgreSQL 逻辑复制到 LakeSoul CDC 表 |
 | 事务 | Autocommit、`READ COMMITTED`；LakeSoul 写入使用 deferred publication 的 `BEGIN`/`COMMIT`/`ROLLBACK` |
-| 目录 | `pg_catalog`、`information_schema`、`psql \d`、`pg_cursors`、`current_database()`、`psycopg2` dialect 下的 SQLAlchemy reflection |
-| 会话 | `SET TIME ZONE`、`statement_timeout`、`search_path`、`ivfflat.probes`、`RESET`、`DISCARD ALL` |
+| 目录 | `pg_catalog`、`information_schema`、`psql \d`/`\dt`/`\l`/`\dn`、`pg_cursors`、`pg_settings`、`pg_roles`、`current_database()`、`current_user`/`session_user`、`to_regtype`、`current_setting`/`set_config`、`psycopg2` dialect 下的 SQLAlchemy reflection |
+| 会话 | `SHOW`/`SHOW ALL`、`SET TIME ZONE`、`statement_timeout`、`search_path`、`ivfflat.probes`、`RESET`、`DISCARD ALL` |
+| 报表 | `date_trunc`、`date_part`/`extract`、PostgreSQL 日期/时间 pattern 的 `to_char`、`generate_series`、`DISTINCT ON`、`ROLLUP`/`GROUPING SETS`/`CUBE` |
 | 向量 | `vector(n)`、`<->`、`<#>`、`<=>`、`ORDER BY ... LIMIT k`、精确回退、ANN |
 | 全文 | `text_score(column, query)`，配合 `ORDER BY ... DESC LIMIT k` |
 
@@ -84,15 +85,19 @@ LakeSoul 是 **PostgreSQL-native，不是 drop-in 的 PostgreSQL**。wire protoc
 真实驱动基线位于 `rust/postgres-lakesoul/client-compat/`。它当前对运行中的端点
 执行 psycopg2、psycopg3、SQLAlchemy 和 pgjdbc，覆盖连接/`SELECT`、参数化写入
 （包括 `bytea`）、`COPY ... FROM STDIN`（psycopg2、psycopg3 和 pgjdbc
-`CopyManager` 的 TEXT/CSV）、batch、UPSERT、事务、重复键恢复、catalog 发现、
-SQLAlchemy reflection、forward-only named cursor、fetch-size cursor 和 Metabase
-风格的启动语句。
+`CopyManager` 的 TEXT/CSV）、batch、UPSERT、事务、重复键恢复、catalog 发现
+（`SHOW`、`pg_settings`、`pg_roles`、psql `\dt`/`\l`/`\dn`）、SQLAlchemy
+reflection、forward-only named cursor、fetch-size cursor 和 Metabase 风格的启动
+语句。
 
 核心 Python 和 JDBC 工作流已通过基线，包括 psql `\d`、`bytea` 往返和
 `psycopg2` dialect 下的 SQLAlchemy reflection。Named cursor 目前只支持
 forward-only、非 holdable；`WITH HOLD`、`SCROLL` 和 backward fetch 会显式拒绝。
 已知缺口会显式保留，而不是隐藏：`COPY ... TO STDOUT`，以及
-`INSERT ... SELECT`/`ON CONFLICT`/`UPDATE` 上的 `RETURNING`。SQLAlchemy
+`INSERT ... SELECT`/`ON CONFLICT`/`UPDATE` 上的 `RETURNING`。数字 `to_char`
+pattern 未实现，会显式报错；在同一个 projection 里同时选择 `current_user` 和
+`session_user` 仍受兼容 parser 的 `current_user -> session_user` 重写限制；
+`psql \du` 仍需要 `ARRAY(subquery)` 支持。SQLAlchemy
 的 `psycopg3` dialect 尚未纳入基线，因为它的 reflection 会开启嵌套事务
 （`SAVEPOINT`），而 LakeSoul 暂不支持。具体版本和每个缺口的状态见该目录的
 README。

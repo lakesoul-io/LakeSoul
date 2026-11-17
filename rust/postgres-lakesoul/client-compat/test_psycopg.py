@@ -333,6 +333,86 @@ def test_psql_describe_table(table_factory, pg_env):
     assert table in result.stdout
 
 
+def test_session_parameters_and_catalog(driver, connector):
+    """BI tools read session state before a report: the PostgreSQL version,
+    `SHOW` values, `current_setting`, `pg_settings` and the role list. The
+    role list used to abort the server with a stack overflow."""
+    expected_user = os.environ.get("PGUSER", "lakesoul_test")
+    with closing(connector(driver)) as connection:
+        server_version = (
+            connection.server_version
+            if driver == "psycopg2"
+            else connection.info.server_version
+        )
+        assert server_version == 140000, server_version
+
+        with connection.cursor() as cursor:
+            for sql, expected in [
+                ("SHOW server_version", "14.0"),
+                ("SHOW server_version_num", "140000"),
+                ("SHOW standard_conforming_strings", "on"),
+                ("SHOW client_encoding", "UTF8"),
+                ("SHOW transaction isolation level", "read committed"),
+                ("SHOW transaction_isolation", "read committed"),
+                ("SELECT current_setting('server_version_num')", "140000"),
+            ]:
+                cursor.execute(sql)
+                assert rows(cursor) == [(expected,)], (sql, rows(cursor))
+
+            cursor.execute("SELECT current_user")
+            assert rows(cursor) == [(expected_user,)]
+            cursor.execute("SELECT session_user")
+            assert rows(cursor) == [(expected_user,)]
+
+            cursor.execute("SELECT set_config('application_name', 'compat', false)")
+            assert rows(cursor) == [("compat",)]
+            cursor.execute("SHOW application_name")
+            assert rows(cursor) == [("compat",)]
+            cursor.execute("SELECT current_setting('application_name')")
+            assert rows(cursor) == [("compat",)]
+
+            cursor.execute("SELECT count(*) FROM pg_catalog.pg_roles")
+            assert rows(cursor)[0][0] >= 0
+            cursor.execute("SELECT count(*) FROM pg_catalog.pg_settings")
+            assert rows(cursor)[0][0] > 20
+            cursor.execute(
+                "SELECT setting FROM pg_catalog.pg_settings "
+                "WHERE name = 'server_version_num'"
+            )
+            assert rows(cursor) == [("140000",)]
+
+            cursor.execute(
+                "SELECT to_char(TIMESTAMP '2024-01-02 03:04:05', "
+                "'YYYY-MM-DD HH24:MI:SS')"
+            )
+            assert rows(cursor) == [("2024-01-02 03:04:05",)]
+            cursor.execute("SELECT to_char(DATE '2024-01-02', 'DD Mon YYYY')")
+            assert rows(cursor) == [("02 Jan 2024",)]
+
+
+def test_psql_metadata_commands(table_factory, pg_env):
+    """`\dt`, `\l` and `\dn` are the psql discovery commands BI users run
+    first; they must succeed and list the created table."""
+    table = table_factory("id bigint primary key, name text", "client_psql_meta")
+    if shutil.which("psql") is None:
+        pytest.skip("psql is not installed")
+    for command in (r"\dt", r"\l", r"\dn"):
+        result = subprocess.run(
+            ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-c", command],
+            env={**os.environ, **pg_env},
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 0, (command, result.stderr)
+    result = subprocess.run(
+        ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-c", r"\dt"],
+        env={**os.environ, **pg_env},
+        text=True,
+        capture_output=True,
+    )
+    assert table in result.stdout, result.stdout
+
+
 def test_server_side_named_cursor(driver, connector, table_factory):
     table = table_factory("id bigint primary key, name text", "client_cursor")
     with closing(connector(driver, autocommit=False)) as connection:

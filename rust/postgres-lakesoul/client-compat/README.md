@@ -11,7 +11,7 @@ that ordinary PostgreSQL driver workflows can execute.
 
 | Client | Path |
 | --- | --- |
-| `psycopg2` | connect, SELECT, parameterized types including `bytea`, `executemany`, `execute_values`, `COPY ... FROM STDIN` (TEXT/CSV, `copy_expert`/`copy_from`), UPSERT, transaction rollback/commit, duplicate-key SQLSTATE, `information_schema`/`pg_catalog`, `psql \d`, named cursors |
+| `psycopg2` | connect, SELECT, parameterized types including `bytea`, `executemany`, `execute_values`, `COPY ... FROM STDIN` (TEXT/CSV, `copy_expert`/`copy_from`), UPSERT, transaction rollback/commit, duplicate-key SQLSTATE, `information_schema`/`pg_catalog`, `SHOW`/`SHOW ALL`, `current_setting`/`set_config`, `pg_settings`, `pg_roles`, `to_char`, `psql \d`/`\dt`/`\l`/`\dn`, named cursors |
 | `psycopg3` | the same paths through its extended protocol and batch implementation, including `cursor.copy()`/`write_row`, CopyFail aborts and named cursors |
 | `SQLAlchemy` | `SELECT`/write through the `psycopg2` dialect, plus reflection of columns and the primary key |
 | pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared SELECT, `CopyManager.copyIn` (TEXT/CSV), transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT |
@@ -68,6 +68,9 @@ recorded gap. The tests already cover:
 - duplicate-key `23505` and connection recovery;
 - `information_schema`/`pg_catalog` table and column discovery, including psql `\d`;
 - forward-only named cursors through psycopg2 and psycopg3, and the `pg_cursors` view;
+- `SHOW`, `SHOW ALL`, `current_setting`/`set_config`, `pg_settings`, `pg_roles`
+  and PostgreSQL `to_char` date patterns, including the psql `\dt`/`\l`/`\dn`
+  metadata commands;
 - `COPY ... FROM STDIN` in TEXT and CSV, including NULL, escaped newlines, quoted
   commas/newlines, a CSV header, an omitted column list, one-commit atomicity,
   transaction rollback, driver-side encoders (`copy_from`, `write_row`,
@@ -82,6 +85,9 @@ The remaining known gaps are:
 | Gap | Detail |
 | --- | --- |
 | `COPY ... TO STDOUT` | explicitly refused with `0A000`; `COPY FROM STDIN` is supported in TEXT and CSV |
+| `psql \du` | the role list query uses `ARRAY(subquery)`, which the pinned planner cannot execute; `pg_roles` itself answers |
+| `current_user, session_user` | both work separately; one projection selecting both is limited by the parser's `current_user -> session_user` rewrite |
+| numeric `to_char` | explicit error; date/time patterns are implemented |
 
 SQLAlchemy reflection is certified through the `psycopg2` dialect. The
 `psycopg3` dialect starts a nested transaction (`SAVEPOINT`) during reflection,

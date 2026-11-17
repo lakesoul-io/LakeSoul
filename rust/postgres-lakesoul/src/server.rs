@@ -745,9 +745,7 @@ impl LakeSoulStartupHandler {
         client
             .feed(PgWireBackendMessage::Authentication(Authentication::Ok))
             .await?;
-        if let Some(parameters) =
-            DefaultServerParameterProvider::default().server_parameters(client)
-        {
+        if let Some(parameters) = server_parameter_provider().server_parameters(client) {
             for (name, value) in parameters {
                 client
                     .feed(PgWireBackendMessage::ParameterStatus(ParameterStatus::new(
@@ -836,6 +834,14 @@ impl LakeSoulStartupHandler {
             "created connection-local session"
         );
 
+        // Startup parameters the client sent are part of the session's
+        // parameters: `SHOW application_name` and `current_setting` must see
+        // them, not just the later `SET` path.
+        for name in ["application_name", "client_encoding"] {
+            if let Some(value) = client.metadata().get(name) {
+                session.parameters.set_default(name, value);
+            }
+        }
         // Seed the metadata the `SHOW`/`SET` paths read from the settings the
         // session was actually created with, and report the real time zone:
         // pgwire's own startup `ParameterStatus` is a fixed `Etc/UTC`.
@@ -1735,6 +1741,18 @@ impl ExtendedQueryHandler for LakeSoulQueryRouter {
         )
         .await
     }
+}
+
+/// The startup parameters every connection sees.
+///
+/// The version must agree with `version()` and the session parameters:
+/// clients gate SQL features on it, and advertising pgwire's own version
+/// would claim support for a newer PostgreSQL than the engine implements.
+fn server_parameter_provider() -> DefaultServerParameterProvider {
+    let mut provider = DefaultServerParameterProvider::default();
+    provider.server_version = crate::pg_settings::PG_COMPAT_VERSION.to_string();
+    provider.search_path = "public, pg_catalog".to_string();
+    provider
 }
 
 /// Top-level pgwire handler set.
