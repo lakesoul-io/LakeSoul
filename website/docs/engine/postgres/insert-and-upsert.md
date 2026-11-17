@@ -112,8 +112,14 @@ If the table declares vector or full-text indexes, the index is updated after th
 metadata commit. If the index build fails, the statement returns an error but the
 inserted rows are already committed and visible.
 
+## Bulk load
+
+For bulk loads, use [`COPY ... FROM STDIN`](copy.md) instead of many
+single-row inserts: it is one commit, in TEXT or CSV format.
+
 ## Next
 
 - [Transactions and catalog](transactions-and-catalog.md)
+- [COPY FROM STDIN](copy.md)
 - [Incremental SQL](../incremental-sql/getting-started.md)
 - [Vector search](../vector-search/overview.md)

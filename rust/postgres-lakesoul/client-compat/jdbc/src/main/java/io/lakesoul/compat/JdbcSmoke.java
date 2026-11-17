@@ -4,7 +4,13 @@
 
 package io.lakesoul.compat;
 
+import org.postgresql.PGConnection;
+import org.postgresql.copy.CopyManager;
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
@@ -51,7 +57,7 @@ public final class JdbcSmoke {
         System.out.println("JDBC PASS table=" + table);
     }
 
-    private static void run(Connection connection, String table) throws SQLException {
+    private static void run(Connection connection, String table) throws SQLException, IOException {
         try (Statement statement = connection.createStatement()) {
             statement.executeUpdate("DROP TABLE IF EXISTS " + table);
             statement.executeUpdate(
@@ -132,6 +138,33 @@ public final class JdbcSmoke {
         }
         check("updated".equals(nameOf(connection, table, 1)), "JDBC UPSERT");
 
+        CopyManager copy = connection.unwrap(PGConnection.class).getCopyAPI();
+        long textRows =
+                copy.copyIn(
+                        "COPY " + table + " (id, name) FROM STDIN",
+                        new ByteArrayInputStream(
+                                "200\tcopy-text\n201\t\\N\n".getBytes(StandardCharsets.UTF_8)));
+        check(textRows == 2, "CopyManager.copyIn text rows");
+        check("copy-text".equals(nameOf(connection, table, 200)), "CopyManager text value");
+        check(nameOfOrNull(connection, table, 201) == null, "CopyManager text NULL");
+
+        long csvRows =
+                copy.copyIn(
+                        "COPY " + table + " (id, name) FROM STDIN WITH (FORMAT csv, HEADER true)",
+                        new ByteArrayInputStream(
+                                "id,name\n202,\"copied, csv\"\n".getBytes(StandardCharsets.UTF_8)));
+        check(csvRows == 1, "CopyManager.copyIn csv rows");
+        check("copied, csv".equals(nameOf(connection, table, 202)), "CopyManager csv value");
+
+        try {
+            copy.copyIn(
+                    "COPY " + table + " (id, name) FROM STDIN",
+                    new ByteArrayInputStream("1\tduplicate\n".getBytes(StandardCharsets.UTF_8)));
+            check(false, "a duplicate-key COPY must fail");
+        } catch (SQLException expected) {
+            check("23505".equals(expected.getSQLState()), "CopyManager duplicate SQLSTATE");
+        }
+
         try (Statement statement = connection.createStatement()) {
             statement.executeUpdate("DROP TABLE IF EXISTS " + table);
         }
@@ -142,6 +175,18 @@ public final class JdbcSmoke {
                 ResultSet result = statement.executeQuery("SELECT count(*) FROM " + table)) {
             check(result.next(), "count query returned a row");
             return result.getInt(1);
+        }
+    }
+
+    private static String nameOfOrNull(Connection connection, String table, long id)
+            throws SQLException {
+        try (PreparedStatement statement =
+                connection.prepareStatement("SELECT name FROM " + table + " WHERE id = ?")) {
+            statement.setLong(1, id);
+            try (ResultSet result = statement.executeQuery()) {
+                check(result.next(), "name lookup returned a row");
+                return result.getString(1);
+            }
         }
     }
 
