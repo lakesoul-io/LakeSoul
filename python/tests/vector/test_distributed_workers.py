@@ -139,30 +139,42 @@ def test_distributed_workers_execute_queries() -> None:
         )
         query = rng.normal(size=DIM).astype(np.float32)
         single = catalog.session(vector_search={"nprobe": 4, "exact_overfetch": 30})
-        expected_ids = table.search(query, top_k=5, session=single).column(
-            "id"
-        ).to_pylist()
-        expected_count = single.sql(
-            f'SELECT count(*) AS cnt FROM "lakesoul".default.{table_name}'
-        ).column("cnt").to_pylist()
+        expected_ids = (
+            table.search(query, top_k=5, session=single).column("id").to_pylist()
+        )
+        expected_count = (
+            single.sql(f'SELECT count(*) AS cnt FROM "lakesoul".default.{table_name}')
+            .column("cnt")
+            .to_pylist()
+        )
 
-        before = sum(_executed_rows(url) for url in WORKER_METRICS) if WORKER_METRICS else None
+        before = (
+            sum(_executed_rows(url) for url in WORKER_METRICS)
+            if WORKER_METRICS
+            else None
+        )
         distributed = LakeSoulSession.from_env(
             vector_search={"nprobe": 4, "exact_overfetch": 30},
             distributed={"worker_urls": WORKER_URLS, "target_partitions": 4},
         )
         try:
-            returned = table.search(
-                query, top_k=5, session=distributed
-            ).column("id").to_pylist()
+            returned = (
+                table.search(query, top_k=5, session=distributed)
+                .column("id")
+                .to_pylist()
+            )
             assert len(returned) == 5, returned
             assert len(set(returned) & set(expected_ids)) >= 4, (
                 returned,
                 expected_ids,
             )
-            counts = distributed.sql(
-                f'SELECT count(*) AS cnt FROM "lakesoul".default.{table_name}'
-            ).column("cnt").to_pylist()
+            counts = (
+                distributed.sql(
+                    f'SELECT count(*) AS cnt FROM "lakesoul".default.{table_name}'
+                )
+                .column("cnt")
+                .to_pylist()
+            )
             assert counts == expected_count, (counts, expected_count)
             grouped = distributed.sql(
                 f'SELECT dt, count(*) AS cnt FROM "lakesoul".default.{table_name} '

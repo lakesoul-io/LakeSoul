@@ -254,8 +254,12 @@ pub async fn is_loaded_scoped(
     namespace: &crate::cache::store_namespace::StoreCacheNamespace,
     commit_id: i64,
 ) -> bool {
-    let Some(cache) = CACHE.as_ref() else { return false; };
-    cache.get(&scoped_cache_key(kind, prefix, namespace)).await
+    let Some(cache) = CACHE.as_ref() else {
+        return false;
+    };
+    cache
+        .get(&scoped_cache_key(kind, prefix, namespace))
+        .await
         .is_some_and(|entry| entry.commit_id == commit_id)
 }
 
@@ -287,7 +291,9 @@ pub async fn get_loaded_scoped<T: IndexCacheEntry>(
     commit_id: i64,
 ) -> Option<Arc<T>> {
     let cache = CACHE.as_ref()?;
-    let entry = cache.get(&scoped_cache_key(kind, prefix, namespace)).await?;
+    let entry = cache
+        .get(&scoped_cache_key(kind, prefix, namespace))
+        .await?;
     if entry.commit_id != commit_id {
         return None;
     }

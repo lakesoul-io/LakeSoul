@@ -20,8 +20,8 @@
 //! for that snapshot, and the caller picks the snapshot by choosing when to
 //! call it.
 
-pub mod native;
 pub mod distributed;
+pub mod native;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -582,8 +582,13 @@ async fn search_vector_batch_chunk(
             );
         // A hot batch takes the loaded shard straight from the cache; the
         // parsed segment list is only rebuilt when the shard has to load.
-        let shard = match cached_typed_shard_for_store(store, prefix, view.commit_id, expected_key_kind)
-            .await
+        let shard = match cached_typed_shard_for_store(
+            store,
+            prefix,
+            view.commit_id,
+            expected_key_kind,
+        )
+        .await
         {
             Some(shard) => shard,
             None => {

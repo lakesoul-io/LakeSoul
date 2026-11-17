@@ -1,1 +1,8 @@
-{"dataset": "deep", "rows": 9990000, "dim": 96, "write_s": 56.69540084153414, "rss": {"VmHWM": 12191.1328125, "VmRSS": 10582.1953125}, "gt_queries": 10000}
+{
+  "dataset": "deep",
+  "rows": 9990000,
+  "dim": 96,
+  "write_s": 56.69540084153414,
+  "rss": { "VmHWM": 12191.1328125, "VmRSS": 10582.1953125 },
+  "gt_queries": 10000
+}

@@ -22,8 +22,8 @@ use object_store::ObjectStore;
 use tracing::{debug, info, warn};
 
 use crate::Result as IoResult;
-use crate::config::LakeSoulIOConfig;
 use crate::cache::store_namespace::{StoreCacheNamespace, store_cache_namespace};
+use crate::config::LakeSoulIOConfig;
 use crate::index::cache::{self, IndexCacheEntry};
 use crate::index::commit::ResolvedIndex;
 use crate::index::key::{KeyCodec, KeyLayout};
@@ -291,51 +291,57 @@ async fn load_shard(
     let prefix = index_prefix.trim_end_matches('/').to_string();
     let error_prefix = index_prefix.to_string();
     let namespace = store_cache_namespace(store);
-    let entry = cache::get_or_load_scoped(IndexKind::Vector, &prefix, namespace, commit_id, || {
-        // Copied only on a cache miss: a hit must not rebuild coverage or
-        // clone the segment list.
-        let store = store.clone();
-        let prefix = prefix.clone();
-        let header = header.clone();
-        let segments = segments.to_vec();
-        let mutation_head = mutation_head.map(str::to_owned);
-        async move {
-            let covered = CoveredFiles::from_segments(&segments);
-            // Index files are immutable: route their reads through the
-            // persistent local SSD cache.  This only wraps index loading; the
-            // session object store used for data files is left untouched.
-            let index_store = crate::index::ssd_cache::wrap(store);
-            let istore = IndexStore::new(index_store, prefix);
-            let mutation = match mutation_head.as_deref() {
-                Some(head) => Some(
-                    load_state(&istore, Some(head), mutation_records, revision)
-                        .await
-                        .map_err(ShardLoadError::Mutation)?,
-                ),
-                None => None,
-            };
-            let index = IvfRabitqIndex::load_from_segments_with_mutations(
-                &istore,
-                &header,
-                &segments,
-                mutation.as_ref(),
-            )
-            .await
-            .map_err(ShardLoadError::Index)?;
-            let bytes = index.memory_bytes();
-            Ok::<LoadedVectorShard, ShardLoadError>(LoadedVectorShard {
-                cached: CachedVectorIndex {
-                    commit_id,
-                    index,
-                    bytes,
-                },
-                covered,
-                dim: header.dim,
-                metric: header.metric,
-                key_kind: header.key_kind,
-            })
-        }
-    })
+    let entry = cache::get_or_load_scoped(
+        IndexKind::Vector,
+        &prefix,
+        namespace,
+        commit_id,
+        || {
+            // Copied only on a cache miss: a hit must not rebuild coverage or
+            // clone the segment list.
+            let store = store.clone();
+            let prefix = prefix.clone();
+            let header = header.clone();
+            let segments = segments.to_vec();
+            let mutation_head = mutation_head.map(str::to_owned);
+            async move {
+                let covered = CoveredFiles::from_segments(&segments);
+                // Index files are immutable: route their reads through the
+                // persistent local SSD cache.  This only wraps index loading; the
+                // session object store used for data files is left untouched.
+                let index_store = crate::index::ssd_cache::wrap(store);
+                let istore = IndexStore::new(index_store, prefix);
+                let mutation = match mutation_head.as_deref() {
+                    Some(head) => Some(
+                        load_state(&istore, Some(head), mutation_records, revision)
+                            .await
+                            .map_err(ShardLoadError::Mutation)?,
+                    ),
+                    None => None,
+                };
+                let index = IvfRabitqIndex::load_from_segments_with_mutations(
+                    &istore,
+                    &header,
+                    &segments,
+                    mutation.as_ref(),
+                )
+                .await
+                .map_err(ShardLoadError::Index)?;
+                let bytes = index.memory_bytes();
+                Ok::<LoadedVectorShard, ShardLoadError>(LoadedVectorShard {
+                    cached: CachedVectorIndex {
+                        commit_id,
+                        index,
+                        bytes,
+                    },
+                    covered,
+                    dim: header.dim,
+                    metric: header.metric,
+                    key_kind: header.key_kind,
+                })
+            }
+        },
+    )
     .await;
     let entry = match entry {
         Ok(entry) => entry,
@@ -435,7 +441,10 @@ fn lazy_shard_key(
     commit_id: i64,
     key_kind: u64,
 ) -> String {
-    format!("{prefix}\0{}\0{commit_id}\0{key_kind:016x}", namespace.token())
+    format!(
+        "{prefix}\0{}\0{commit_id}\0{key_kind:016x}",
+        namespace.token()
+    )
 }
 
 fn lazy_shard_get(
@@ -464,7 +473,10 @@ fn lazy_shard_put(
         if cache.len() >= 16 {
             cache.clear();
         }
-        cache.insert(lazy_shard_key(prefix, &namespace, commit_id, key_kind), shard);
+        cache.insert(
+            lazy_shard_key(prefix, &namespace, commit_id, key_kind),
+            shard,
+        );
     }
 }
 
@@ -549,7 +561,13 @@ async fn load_lazy_shard(
     {
         Ok(shard) => {
             let shard = Arc::new(shard);
-            lazy_shard_put(store, &prefix, commit_id, expected_key_kind, Arc::clone(&shard));
+            lazy_shard_put(
+                store,
+                &prefix,
+                commit_id,
+                expected_key_kind,
+                Arc::clone(&shard),
+            );
             Ok(Some(shard))
         }
         Err(error) => {
@@ -616,16 +634,32 @@ impl LoadedShard {
         top_k: usize,
         nprobe: usize,
         options: &lakesoul_vector::rabitq::ivf::BatchSearchOptions,
-    ) -> IoResult<(Vec<Vec<VectorHit>>, lakesoul_vector::rabitq::ivf::BatchSearchDiagnostics)> {
-        let params = SearchParams::new(top_k, nprobe).with_parallelism(options.parallelism);
+    ) -> IoResult<(
+        Vec<Vec<VectorHit>>,
+        lakesoul_vector::rabitq::ivf::BatchSearchDiagnostics,
+    )> {
+        let params =
+            SearchParams::new(top_k, nprobe).with_parallelism(options.parallelism);
         let output = match self.kind.as_ref() {
-            LoadedShardKind::Eager(inner) => inner.cached.index.batch_search_with_options(queries, params, options),
-            LoadedShardKind::Lazy(inner) => inner.search_batch_with_options(queries, params, options),
+            LoadedShardKind::Eager(inner) => inner
+                .cached
+                .index
+                .batch_search_with_options(queries, params, options),
+            LoadedShardKind::Lazy(inner) => {
+                inner.search_batch_with_options(queries, params, options)
+            }
         };
-        let hits = output.results.into_iter().map(|result| {
-            result.map(|hits| hits.into_iter().map(vector_hit).collect())
-                .map_err(|error| rootcause::report!("native batch search failed: {error}"))
-        }).collect::<IoResult<Vec<_>>>()?;
+        let hits = output
+            .results
+            .into_iter()
+            .map(|result| {
+                result
+                    .map(|hits| hits.into_iter().map(vector_hit).collect())
+                    .map_err(|error| {
+                        rootcause::report!("native batch search failed: {error}")
+                    })
+            })
+            .collect::<IoResult<Vec<_>>>()?;
         Ok((hits, output.diagnostics))
     }
 
@@ -645,14 +679,20 @@ impl LoadedShard {
                 SearchParams::new(top_k, nprobe).with_parallelism(parallelism),
                 cancel,
             ),
-            LoadedShardKind::Lazy(inner) => inner.search_batch_controlled(
-                queries, top_k, nprobe, parallelism, cancel,
-            ),
+            LoadedShardKind::Lazy(inner) => {
+                inner.search_batch_controlled(queries, top_k, nprobe, parallelism, cancel)
+            }
         };
-        results.into_iter().map(|result| {
-            result.map(|hits| hits.into_iter().map(vector_hit).collect())
-                .map_err(|error| rootcause::report!("native batch search failed: {error}"))
-        }).collect()
+        results
+            .into_iter()
+            .map(|result| {
+                result
+                    .map(|hits| hits.into_iter().map(vector_hit).collect())
+                    .map_err(|error| {
+                        rootcause::report!("native batch search failed: {error}")
+                    })
+            })
+            .collect()
     }
 
     /// Search several queries against this shard.
@@ -724,8 +764,12 @@ pub async fn cached_typed_shard_for_store(
     }
     let namespace = store_cache_namespace(store);
     let entry = cache::get_loaded_scoped::<LoadedVectorShard>(
-        IndexKind::Vector, prefix, &namespace, commit_id,
-    ).await?;
+        IndexKind::Vector,
+        prefix,
+        &namespace,
+        commit_id,
+    )
+    .await?;
     if entry.key_kind != expected_key_kind {
         return None;
     }

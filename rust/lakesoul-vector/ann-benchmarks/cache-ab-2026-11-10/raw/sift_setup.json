@@ -1,1 +1,8 @@
-{"dataset": "sift", "rows": 1000000, "dim": 128, "write_s": 3.1140710171312094, "rss": {"VmHWM": 1464.3671875, "VmRSS": 1278.984375}, "gt_queries": 10000}
+{
+  "dataset": "sift",
+  "rows": 1000000,
+  "dim": 128,
+  "write_s": 3.1140710171312094,
+  "rss": { "VmHWM": 1464.3671875, "VmRSS": 1278.984375 },
+  "gt_queries": 10000
+}

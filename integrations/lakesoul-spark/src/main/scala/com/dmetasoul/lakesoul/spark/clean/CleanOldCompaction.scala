@@ -113,22 +113,30 @@ object CleanOldCompaction {
     val directories = pathSet.filter(p => p != null && p != "").toList
     if (needsGuard && directories.nonEmpty) {
       tryWithResource(DBConnector.getConn) { connection =>
-        tryWithResource(DataFileReadLeaseGuard.acquire(connection, tableId)) { readers =>
-          val allowedCanonical = readers
-            .retireBatch(java.util.Collections.emptyList[String](), directories.asJava)
-            .asScala
-            .toSet
-          directories.foreach { directory =>
-            if (allowedCanonical.contains(DataFileReadLeaseGuard.normalizePath(directory))) {
-              val path = new Path(directory)
-              val fs = path.getFileSystem(sessionHadoopConf)
-              if (fs.exists(path) && !fs.delete(path, true)) {
-                throw new java.io.IOException(
-                  s"failed to delete retired compaction directory $path"
+        tryWithResource(DataFileReadLeaseGuard.acquire(connection, tableId)) {
+          readers =>
+            val allowedCanonical = readers
+              .retireBatch(
+                java.util.Collections.emptyList[String](),
+                directories.asJava
+              )
+              .asScala
+              .toSet
+            directories.foreach { directory =>
+              if (
+                allowedCanonical.contains(
+                  DataFileReadLeaseGuard.normalizePath(directory)
                 )
+              ) {
+                val path = new Path(directory)
+                val fs = path.getFileSystem(sessionHadoopConf)
+                if (fs.exists(path) && !fs.delete(path, true)) {
+                  throw new java.io.IOException(
+                    s"failed to delete retired compaction directory $path"
+                  )
+                }
               }
             }
-          }
         }
       }
     } else {

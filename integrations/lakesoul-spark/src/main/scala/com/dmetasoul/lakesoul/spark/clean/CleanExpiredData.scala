@@ -4,7 +4,11 @@
 
 package com.dmetasoul.lakesoul.spark.clean
 
-import com.dmetasoul.lakesoul.meta.{DBConnector, DBManager, DataFileReadLeaseGuard}
+import com.dmetasoul.lakesoul.meta.{
+  DBConnector,
+  DBManager,
+  DataFileReadLeaseGuard
+}
 import org.apache.spark.sql.lakesoul.utils.SparkUtil.tryWithResource
 import com.dmetasoul.lakesoul.spark.ParametersTool
 import com.dmetasoul.lakesoul.spark.clean.CleanUtils.{
@@ -370,7 +374,8 @@ object CleanExpiredData {
       p.getParent.toString
     })
 
-    val deferred = spark.sparkContext.longAccumulator("read-lease-deferred-cleanup")
+    val deferred =
+      spark.sparkContext.longAccumulator("read-lease-deferred-cleanup")
     // Only tables that declare a vector index column need original-file
     // retirement fences. Every other table keeps the original filesystem-only
     // cleanup: no metadata round trips per file and no schema dependency.
@@ -396,10 +401,9 @@ object CleanExpiredData {
       }
     }
 
-    /**
-     * One guard per batch: a single protection probe and a single fence commit
-     * for every path of the batch, then the filesystem deletions.
-     */
+    /** One guard per batch: a single protection probe and a single fence commit
+      * for every path of the batch, then the filesystem deletions.
+      */
     def deletePaths(
         fs: FileSystem,
         paths: Seq[Path],
@@ -413,33 +417,38 @@ object CleanExpiredData {
         return
       }
       tryWithResource(DBConnector.getConn) { connection =>
-        tryWithResource(DataFileReadLeaseGuard.acquire(connection, tableId)) { readers =>
-          val requested = paths.map(_.toString).toList
-          val allowed =
-            if (immutableDirectory) {
-              readers.retireBatch(
-                java.util.Collections.emptyList[String](),
-                requested.asJava
+        tryWithResource(DataFileReadLeaseGuard.acquire(connection, tableId)) {
+          readers =>
+            val requested = paths.map(_.toString).toList
+            val allowed =
+              if (immutableDirectory) {
+                readers.retireBatch(
+                  java.util.Collections.emptyList[String](),
+                  requested.asJava
+                )
+              } else {
+                readers.retireBatch(
+                  requested.asJava,
+                  java.util.Collections.emptyList[String]()
+                )
+              }
+            // The guard answers with canonical paths; map them back to the
+            // original strings so the filesystem call keeps its scheme.
+            val allowedCanonical = allowed.asScala.toSet
+            val deletable = requested
+              .filter(p =>
+                allowedCanonical.contains(
+                  DataFileReadLeaseGuard.normalizePath(p)
+                )
               )
-            } else {
-              readers.retireBatch(
-                requested.asJava,
-                java.util.Collections.emptyList[String]()
-              )
+              .toSet
+            paths.foreach { path =>
+              if (deletable.contains(path.toString)) {
+                removePath(fs, path, immutableDirectory)
+              } else {
+                deferred.add(1L)
+              }
             }
-          // The guard answers with canonical paths; map them back to the
-          // original strings so the filesystem call keeps its scheme.
-          val allowedCanonical = allowed.asScala.toSet
-          val deletable = requested
-            .filter(p => allowedCanonical.contains(DataFileReadLeaseGuard.normalizePath(p)))
-            .toSet
-          paths.foreach { path =>
-            if (deletable.contains(path.toString)) {
-              removePath(fs, path, immutableDirectory)
-            } else {
-              deferred.add(1L)
-            }
-          }
         }
       }
     }

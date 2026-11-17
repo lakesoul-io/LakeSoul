@@ -31,17 +31,17 @@ mod hash_tests;
 #[cfg(test)]
 mod insert_tests;
 #[cfg(test)]
+mod native_batch_tests;
+#[cfg(test)]
 mod pk_locator_tests;
 #[cfg(test)]
 mod text_search_tests;
 #[cfg(test)]
 mod upsert_tests;
 #[cfg(test)]
-mod vector_search_tests;
-#[cfg(test)]
-mod native_batch_tests;
-#[cfg(test)]
 mod vector_batch_distributed;
+#[cfg(test)]
+mod vector_search_tests;
 // mod compaction_tests;
 // mod streaming_tests;
 #[cfg(feature = "ci")]

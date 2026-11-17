@@ -22,11 +22,10 @@ import org.scalatestplus.junit.JUnitRunner
 
 import java.sql.{Connection, DriverManager, PreparedStatement}
 
-/**
- * Covers the Spark cleanup paths this change touched: a table without a vector index must delete
- * its expired files without writing retirement fences, and a vector table must fence every file it
- * deletes through the batched guard.
- */
+/** Covers the Spark cleanup paths this change touched: a table without a vector
+  * index must delete its expired files without writing retirement fences, and a
+  * vector table must fence every file it deletes through the batched guard.
+  */
 @RunWith(classOf[JUnitRunner])
 class CleanPathGuardSparkSuite
     extends QueryTest
@@ -36,7 +35,10 @@ class CleanPathGuardSparkSuite
   override protected def createSparkSession: TestSparkSession = {
     SparkSession.cleanupAnyExistingSession()
     val session = new LakeSoulTestSparkSession(sparkConf)
-    session.conf.set("spark.sql.catalog.lakesoul", classOf[LakeSoulCatalog].getName)
+    session.conf.set(
+      "spark.sql.catalog.lakesoul",
+      classOf[LakeSoulCatalog].getName
+    )
     session.conf.set(SQLConf.DEFAULT_CATALOG.key, "lakesoul")
     session.conf.set(LakeSoulSQLConf.NATIVE_IO_ENABLE.key, true)
     session.sparkContext.setLogLevel("ERROR")
@@ -49,15 +51,19 @@ class CleanPathGuardSparkSuite
     sys.env
       .getOrElse(
         "LAKESOUL_PG_URL",
-        "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified")
+        "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
+      )
       .replace("?stringtype=unspecified", "")
 
-  private def jdbcUser: String = sys.env.getOrElse("LAKESOUL_PG_USERNAME", "lakesoul_test")
+  private def jdbcUser: String =
+    sys.env.getOrElse("LAKESOUL_PG_USERNAME", "lakesoul_test")
 
-  private def jdbcPassword: String = sys.env.getOrElse("LAKESOUL_PG_PASSWORD", "lakesoul_test")
+  private def jdbcPassword: String =
+    sys.env.getOrElse("LAKESOUL_PG_PASSWORD", "lakesoul_test")
 
   private def withPg[T](f: Connection => T): T = {
-    val connection = DriverManager.getConnection(jdbcUrl, jdbcUser, jdbcPassword)
+    val connection =
+      DriverManager.getConnection(jdbcUrl, jdbcUser, jdbcPassword)
     try f(connection)
     finally connection.close()
   }
@@ -65,7 +71,8 @@ class CleanPathGuardSparkSuite
   private def fenceCount(normalizedTableRoot: String): Int =
     withPg { connection =>
       val ps = connection.prepareStatement(
-        "select count(*) from index_drop where index_prefix like ?")
+        "select count(*) from index_drop where index_prefix like ?"
+      )
       try {
         ps.setString(1, normalizedTableRoot + "%")
         val rs = ps.executeQuery()
@@ -77,7 +84,8 @@ class CleanPathGuardSparkSuite
   private def markVectorIndex(tableId: String): Unit =
     withPg { connection =>
       val ps: PreparedStatement = connection.prepareStatement(
-        "update table_info set properties = ?::json where table_id = ?")
+        "update table_info set properties = ?::json where table_id = ?"
+      )
       try {
         ps.setString(1, "{\"vector_index_columns\":[{\"column\":\"vec\"}]}")
         ps.setString(2, tableId)
@@ -116,14 +124,16 @@ class CleanPathGuardSparkSuite
   }
 
   private def runClean(tableName: String, vector: Boolean): (Int, Int) = {
-    val qualified = SparkUtil.makeQualifiedTablePath(new Path(tableName)).toString
+    val qualified =
+      SparkUtil.makeQualifiedTablePath(new Path(tableName)).toString
     val sm = SnapshotManagement(qualified)
     val tableId = sm.snapshot.getTableInfo.table_id
     if (vector) markVectorIndex(tableId)
     val partitions =
       withPg { connection =>
         val ps = connection.prepareStatement(
-          "select distinct partition_desc from partition_info where table_id = ?")
+          "select distinct partition_desc from partition_info where table_id = ?"
+        )
         try {
           ps.setString(1, tableId)
           val rs = ps.executeQuery()
@@ -136,11 +146,19 @@ class CleanPathGuardSparkSuite
     val tableRoot = new Path(qualified).toUri.getPath
     val filesBefore = countParquet(tableName)
     partitions.foreach { partition =>
-      cleanSinglePartitionExpiredDiskData(tableId, partition, Long.MaxValue, spark)
+      cleanSinglePartitionExpiredDiskData(
+        tableId,
+        partition,
+        Long.MaxValue,
+        spark
+      )
     }
     val filesAfter = countParquet(tableName)
     assert(filesBefore > 0, "the fixture must have written data files")
-    assert(filesAfter == 0, s"every expired file must be deleted, $filesAfter remain")
+    assert(
+      filesAfter == 0,
+      s"every expired file must be deleted, $filesAfter remain"
+    )
     (filesBefore, fenceCount(tableRoot))
   }
 
@@ -150,7 +168,10 @@ class CleanPathGuardSparkSuite
       writeTable(tableName)
       val (files, fences) = runClean(tableName, vector = false)
       assert(files > 0)
-      assert(fences == 0, s"a table without a vector index must not fence, got $fences")
+      assert(
+        fences == 0,
+        s"a table without a vector index must not fence, got $fences"
+      )
     }
   }
 
@@ -160,7 +181,10 @@ class CleanPathGuardSparkSuite
       writeTable(tableName)
       val (files, fences) = runClean(tableName, vector = true)
       assert(files > 0)
-      assert(fences == files, s"one fence per deleted file expected: files=$files fences=$fences")
+      assert(
+        fences == files,
+        s"one fence per deleted file expected: files=$files fences=$fences"
+      )
     }
   }
 }

@@ -1413,13 +1413,9 @@ impl LakeSoulTableProvider {
         };
 
         let snapshot = match &self.read_snapshot {
-            Some(_) => Some(
-                self.read_partition_info()
-                    .await
-                    .map_err(|error| {
-                        report!(error).attach(self.table_info().table_name.clone())
-                    })?,
-            ),
+            Some(_) => Some(self.read_partition_info().await.map_err(|error| {
+                report!(error).attach(self.table_info().table_name.clone())
+            })?),
             None => self.scan_snapshot(ctx).map_err(|error| {
                 report!(error).attach(self.table_info().table_name.clone())
             })?,
@@ -1593,31 +1589,52 @@ impl LakeSoulTableProvider {
         // for eligible tables. Preserve the older verification path only for
         // table capabilities this new SQL contract explicitly cannot serve.
         match crate::vector_batch::native::NativeBatchSnapshot::prepare(
-            self, state, &request.column, &request.metric,
-        ).await {
+            self,
+            state,
+            &request.column,
+            &request.metric,
+        )
+        .await
+        {
             Ok(snapshot) => {
                 let options = crate::vector_batch::native::NativeBatchOptions {
                     top_k: request.top_k,
                     nprobe: request.nprobe,
                     exact: request.exact,
                     exact_overfetch: request.exact_overfetch,
-                    parallelism: if request.parallelism <= 1 { 0 } else { request.parallelism },
+                    parallelism: if request.parallelism <= 1 {
+                        0
+                    } else {
+                        request.parallelism
+                    },
                     ..Default::default()
                 };
                 options.validate()?;
-                let mut chunk_size = if request.batch_size == 0 { 256 } else { request.batch_size.min(256) };
-                while chunk_size > 1 && snapshot.estimated_work_bytes(chunk_size,&options)? > options.memory_bytes {
+                let mut chunk_size = if request.batch_size == 0 {
+                    256
+                } else {
+                    request.batch_size.min(256)
+                };
+                while chunk_size > 1
+                    && snapshot.estimated_work_bytes(chunk_size, &options)?
+                        > options.memory_bytes
+                {
                     chunk_size /= 2;
                 }
                 let mut results = Vec::with_capacity(request.queries.len());
                 let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 for queries in request.queries.chunks(chunk_size.max(1)) {
-                    let hits = snapshot.search(queries,&options,Arc::clone(&cancel)).await?;
-                    results.extend(hits.into_iter().map(|query| query.into_iter().map(|hit| hit.id).collect()));
+                    let hits = snapshot
+                        .search(queries, &options, Arc::clone(&cancel))
+                        .await?;
+                    results.extend(
+                        hits.into_iter()
+                            .map(|query| query.into_iter().map(|hit| hit.id).collect()),
+                    );
                 }
                 return Ok(results);
             }
-            Err(DataFusionError::NotImplemented(_)) => {},
+            Err(DataFusionError::NotImplemented(_)) => {}
             Err(error) => return Err(error),
         }
         let profile = std::env::var("LAKESOUL_VECTOR_SEARCH_PROFILE").is_ok();
@@ -1733,7 +1750,6 @@ impl LakeSoulTableProvider {
         ),
         err
     )]
-
 
     async fn try_build_vector_search_exec(
         &self,
@@ -2347,10 +2363,9 @@ impl TableProvider for LakeSoulTableProvider {
         // The vector/text indexes describe the latest files; a pinned read
         // view must not use them, or it could return rows that only exist in
         // a newer version.  The scan then falls back to merge-on-read.
-        let index_pushdown_allowed =
-            self.read_snapshot.is_none()
-                && crate::write_mode::LakeSoulFixedSnapshot::from_session(session_state)
-                    .is_none();
+        let index_pushdown_allowed = self.read_snapshot.is_none()
+            && crate::write_mode::LakeSoulFixedSnapshot::from_session(session_state)
+                .is_none();
         let vector_search = if index_pushdown_allowed {
             crate::udf::vector_search_marker::parse_vector_search_request(filters)
         } else {

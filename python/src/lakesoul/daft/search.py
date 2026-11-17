@@ -80,7 +80,9 @@ def _native_vector_search_frame(
         return None
     try:
         session = table.catalog.session()
-        options: dict[str, Any] = {"rerank": rerank if rerank in ("exact", "index") else "index"}
+        options: dict[str, Any] = {
+            "rerank": rerank if rerank in ("exact", "index") else "index"
+        }
         if nprobe:
             options["nprobe"] = int(nprobe)
         if parallelism > 1:
@@ -131,7 +133,9 @@ def _native_multi_search_frame(
         return None
     try:
         session = table.catalog.session()
-        options: dict[str, Any] = {"rerank": rerank if rerank in ("exact", "index") else "index"}
+        options: dict[str, Any] = {
+            "rerank": rerank if rerank in ("exact", "index") else "index"
+        }
         if nprobe:
             options["nprobe"] = int(nprobe)
         if parallelism > 1:

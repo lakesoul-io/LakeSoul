@@ -219,8 +219,10 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
                     }
                     try {
                         cleanUtils.deleteFile(path);
-                        try (PreparedStatement ps = conn.prepareStatement(
-                                "delete from discard_compressed_file_info where file_path = ?")) {
+                        try (PreparedStatement ps =
+                                conn.prepareStatement(
+                                        "delete from discard_compressed_file_info where file_path ="
+                                                + " ?")) {
                             ps.setString(1, path);
                             ps.executeUpdate();
                         }
@@ -228,7 +230,8 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
                             readers.commit();
                         }
                     } catch (Exception error) {
-                        log.error("discard file cleanup failed [{}], retain for retry", path, error);
+                        log.error(
+                                "discard file cleanup failed [{}], retain for retry", path, error);
                         allSucceeded = false;
                     }
                 }
@@ -282,8 +285,8 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
      * Owning tables of the batch, when every batch table path belongs to exactly one table.
      *
      * <p>{@code null} means the fast path cannot prove it matches the global pinned probe: a table
-     * path shared by several tables (or missing from {@code table_info}) could be pinned by
-     * another table, so the caller falls back to scanning all pinned commits.
+     * path shared by several tables (or missing from {@code table_info}) could be pinned by another
+     * table, so the caller falls back to scanning all pinned commits.
      */
     private List<String> singleOwnerTableIds(Connection conn, Array paths) throws SQLException {
         int distinctPaths;
@@ -309,10 +312,10 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
         try (PreparedStatement ps =
                 conn.prepareStatement(
                         "select ti.table_path, count(distinct ti.table_id) as owners,"
-                                + " min(ti.table_id) as table_id from table_info ti"
-                                + " where ti.table_path = any(select distinct table_path"
-                                + "   from discard_compressed_file_info where file_path = any(?::text[]))"
-                                + " group by ti.table_path")) {
+                            + " min(ti.table_id) as table_id from table_info ti where ti.table_path"
+                            + " = any(select distinct table_path   from"
+                            + " discard_compressed_file_info where file_path = any(?::text[]))"
+                            + " group by ti.table_path")) {
             ps.setArray(1, paths);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -358,7 +361,8 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
     }
 
     /** True when at least one table owning these discard files has a vector index. */
-    public static boolean needsRetirementFences(Connection conn, List<String> batch) throws SQLException {
+    public static boolean needsRetirementFences(Connection conn, List<String> batch)
+            throws SQLException {
         if (batch == null || batch.isEmpty()) {
             return false;
         }

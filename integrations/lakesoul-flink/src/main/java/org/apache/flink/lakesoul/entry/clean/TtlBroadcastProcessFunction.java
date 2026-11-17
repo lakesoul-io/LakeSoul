@@ -4,8 +4,8 @@
 package org.apache.flink.lakesoul.entry.clean;
 
 import com.dmetasoul.lakesoul.meta.DBConnector;
-import com.dmetasoul.lakesoul.meta.DataFileReadLeaseGuard;
 import com.dmetasoul.lakesoul.meta.DBManager;
+import com.dmetasoul.lakesoul.meta.DataFileReadLeaseGuard;
 import com.dmetasoul.lakesoul.meta.entity.TableInfo;
 
 import org.apache.flink.api.common.state.*;
@@ -196,8 +196,10 @@ public class TtlBroadcastProcessFunction
                 if (readers != null && readers.hasActiveReaders()) {
                     return false;
                 }
-                try (PreparedStatement statement = connection.prepareStatement(
-                        "select 1 from partition_info where table_id = ? and partition_desc = ? and pinned = true limit 1")) {
+                try (PreparedStatement statement =
+                        connection.prepareStatement(
+                                "select 1 from partition_info where table_id = ? and partition_desc"
+                                        + " = ? and pinned = true limit 1")) {
                     statement.setString(1, tableId);
                     statement.setString(2, partitionDesc);
                     try (ResultSet rows = statement.executeQuery()) {
@@ -207,11 +209,13 @@ public class TtlBroadcastProcessFunction
                     }
                 }
                 List<String> paths = new ArrayList<>();
-                try (PreparedStatement statement = connection.prepareStatement(
-                        "select distinct f.path from partition_info p join data_commit_info d"
-                                + " on d.table_id = p.table_id and d.partition_desc = p.partition_desc"
-                                + " and d.commit_id = any(p.snapshot), unnest(d.file_ops) f"
-                                + " where p.table_id = ? and p.partition_desc = ?")) {
+                try (PreparedStatement statement =
+                        connection.prepareStatement(
+                                "select distinct f.path from partition_info p join data_commit_info"
+                                        + " d on d.table_id = p.table_id and d.partition_desc ="
+                                        + " p.partition_desc and d.commit_id = any(p.snapshot),"
+                                        + " unnest(d.file_ops) f where p.table_id = ? and"
+                                        + " p.partition_desc = ?")) {
                     statement.setString(1, tableId);
                     statement.setString(2, partitionDesc);
                     try (ResultSet rows = statement.executeQuery()) {

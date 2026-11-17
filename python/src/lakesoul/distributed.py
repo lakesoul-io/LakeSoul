@@ -124,7 +124,9 @@ class DistributedSearch:
         session: LakeSoulSession | None = None,
     ) -> None:
         if engine not in ("threads", "ray", "dask"):
-            raise ValueError(f"engine must be 'threads', 'ray' or 'dask', got {engine!r}")
+            raise ValueError(
+                f"engine must be 'threads', 'ray' or 'dask', got {engine!r}"
+            )
         if int(num_workers) < 1:
             raise ValueError("num_workers must be >= 1")
         self._table = table
@@ -249,8 +251,7 @@ class DistributedSearch:
             import dask
         except ImportError as error:  # pragma: no cover - env dependent
             raise ImportError(
-                "dask is required for engine='dask'; install it with "
-                "`pip install dask`"
+                "dask is required for engine='dask'; install it with `pip install dask`"
             ) from error
         delayed = [dask.delayed(_run_partition_search)(spec) for spec in specs]
         return list(dask.compute(*delayed))
@@ -271,7 +272,9 @@ class DistributedSearch:
         for result in results:
             if result.num_rows == 0:
                 continue
-            rows = {name: result.column(name).to_pylist() for name in result.column_names}
+            rows = {
+                name: result.column(name).to_pylist() for name in result.column_names
+            }
             if "__lakesoul_vector_distance" not in rows:
                 raise DistributedSearchError(
                     "a worker did not return its distance column"
@@ -292,13 +295,11 @@ class DistributedSearch:
                             if name in rows
                         },
                     )
-        ordered = sorted(
-            best.values(), key=lambda item: item[0], reverse=descending
-        )[:top_k]
+        ordered = sorted(best.values(), key=lambda item: item[0], reverse=descending)[
+            :top_k
+        ]
         columns: dict[str, Any] = {}
-        source_schema = {
-            field.name: field for field in schema_source.schema
-        }
+        source_schema = {field.name: field for field in schema_source.schema}
         for name in final_columns:
             if name not in source_schema:
                 raise DistributedSearchError(
@@ -357,9 +358,7 @@ class DistributedSearch:
         pk_column = table.primary_keys[0] if table.primary_keys else "id"
         if columns is None:
             final_columns = [
-                field.name
-                for field in table.schema
-                if field.name != resolved_column
+                field.name for field in table.schema if field.name != resolved_column
             ]
         else:
             final_columns = [str(name) for name in columns]

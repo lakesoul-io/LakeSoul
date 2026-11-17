@@ -880,7 +880,6 @@ class LakeSoulTable:
         """
         self._catalog._session = None
 
-
     @property
     def name(self) -> str:
         return self._table_info.table_name
@@ -1012,9 +1011,7 @@ class LakeSoulTable:
             )
         resolved_metric = metric if metric is not None else config.get("metric", "L2")
         resolved_metric = (
-            "IP"
-            if str(resolved_metric).upper() in ("IP", "INNERPRODUCT")
-            else "L2"
+            "IP" if str(resolved_metric).upper() in ("IP", "INNERPRODUCT") else "L2"
         )
         if int(top_k) < 1:
             raise ValueError("top_k must be >= 1")
@@ -1054,11 +1051,17 @@ class LakeSoulTable:
                 )
         select_list = ", ".join(self._sql_identifier(name) for name in selected)
         if with_distance:
-            select_list += f", {distance} AS {self._sql_identifier(VECTOR_DISTANCE_COLUMN)}"
+            select_list += (
+                f", {distance} AS {self._sql_identifier(VECTOR_DISTANCE_COLUMN)}"
+            )
         where = f" WHERE ({filter})" if filter is not None else ""
-        resolved_table_ref = table_ref if table_ref is not None else (
-            f'"lakesoul".{self._sql_identifier(self.namespace)}.'
-            f"{self._sql_identifier(self.name)}"
+        resolved_table_ref = (
+            table_ref
+            if table_ref is not None
+            else (
+                f'"lakesoul".{self._sql_identifier(self.namespace)}.'
+                f"{self._sql_identifier(self.name)}"
+            )
         )
         sql = (
             f"SELECT {select_list} FROM {resolved_table_ref}{where} "
@@ -1158,9 +1161,7 @@ class LakeSoulTable:
         """
         selectors = [snapshot is not None, tag is not None, as_of is not None]
         if sum(selectors) > 1:
-            raise ValueError(
-                "pass at most one of snapshot, tag or as_of"
-            )
+            raise ValueError("pass at most one of snapshot, tag or as_of")
         if rerank not in ("auto", "exact", "index"):
             raise ValueError(
                 f"rerank must be 'auto', 'exact' or 'index', got {rerank!r}"
@@ -1893,9 +1894,7 @@ class LakeSoulTable:
             self._reset_query_session()
         return result
 
-    def declare_vector_index(
-        self, configs: Sequence[Mapping[str, Any]]
-    ) -> None:
+    def declare_vector_index(self, configs: Sequence[Mapping[str, Any]]) -> None:
         """Re-add or replace ``vector_index_columns`` declarations.
 
         This clears the drop tombstone for the declared columns, so a

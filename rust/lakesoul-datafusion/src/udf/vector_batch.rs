@@ -51,16 +51,26 @@ impl datafusion::common::config::ConfigExtension for VectorBatchConfig {
 impl VectorBatchConfig {
     pub(crate) fn validate(&self) -> Result<()> {
         if self.query_window == 0 || self.query_window > 256 {
-            return Err(plan_error("lakesoul_vector_batch.query_window must be between 1 and 256"));
+            return Err(plan_error(
+                "lakesoul_vector_batch.query_window must be between 1 and 256",
+            ));
         }
         if self.parallelism > 256 {
-            return Err(plan_error("lakesoul_vector_batch.parallelism must be between 0 and 256"));
+            return Err(plan_error(
+                "lakesoul_vector_batch.parallelism must be between 0 and 256",
+            ));
         }
         if self.io_concurrency == 0 || self.io_concurrency > 64 {
-            return Err(plan_error("lakesoul_vector_batch.io_concurrency must be between 1 and 64"));
+            return Err(plan_error(
+                "lakesoul_vector_batch.io_concurrency must be between 1 and 64",
+            ));
         }
-        if self.memory_bytes == 0 || self.memory_bytes > crate::vector_batch::native::DEFAULT_WORK_MEMORY {
-            return Err(plan_error("lakesoul_vector_batch.memory_bytes must be between 1 and 134217728"));
+        if self.memory_bytes == 0
+            || self.memory_bytes > crate::vector_batch::native::DEFAULT_WORK_MEMORY
+        {
+            return Err(plan_error(
+                "lakesoul_vector_batch.memory_bytes must be between 1 and 134217728",
+            ));
         }
         Ok(())
     }
@@ -72,8 +82,17 @@ pub fn register(context: &SessionContext) {
     {
         let state_ref = context.state_ref();
         let mut state = state_ref.write();
-        if state.config_options().extensions.get::<VectorBatchConfig>().is_none() {
-            state.config_mut().options_mut().extensions.insert(VectorBatchConfig::default());
+        if state
+            .config_options()
+            .extensions
+            .get::<VectorBatchConfig>()
+            .is_none()
+        {
+            state
+                .config_mut()
+                .options_mut()
+                .extensions
+                .insert(VectorBatchConfig::default());
         }
     }
     context.register_udtf(VECTOR_SEARCH_BATCH, Arc::new(VectorBatchFunction(false)));
@@ -218,9 +237,21 @@ impl TableFunctionImpl for VectorBatchFunction {
         } else {
             10
         };
-        let options = NativeBatchOptions { top_k, nprobe, exact, exact_overfetch, ..Default::default() };
+        let options = NativeBatchOptions {
+            top_k,
+            nprobe,
+            exact,
+            exact_overfetch,
+            ..Default::default()
+        };
         options.validate()?;
-        Ok(Arc::new(VectorBatchProvider { target, column, input, options, metric }))
+        Ok(Arc::new(VectorBatchProvider {
+            target,
+            column,
+            input,
+            options,
+            metric,
+        }))
     }
 }
 
@@ -453,9 +484,30 @@ mod tests {
         let state = context.state();
         drop(context);
         let final_context = SessionContext::new_with_state(state);
-        final_context.sql("SET lakesoul_vector_batch.query_window = '32'").await.unwrap().collect().await.unwrap();
-        final_context.sql("SET lakesoul_vector_batch.parallelism = '2'").await.unwrap().collect().await.unwrap();
-        assert_eq!(final_context.state().config_options().extensions.get::<VectorBatchConfig>().unwrap().query_window, 32);
+        final_context
+            .sql("SET lakesoul_vector_batch.query_window = '32'")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        final_context
+            .sql("SET lakesoul_vector_batch.parallelism = '2'")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(
+            final_context
+                .state()
+                .config_options()
+                .extensions
+                .get::<VectorBatchConfig>()
+                .unwrap()
+                .query_window,
+            32
+        );
         let plan = final_context.sql("SELECT * FROM lakesoul_vector_search_batch('missing', 'vec', '[[1,2]]', 2)").await.unwrap();
         assert_eq!(plan.schema().as_arrow(), output_schema().as_ref());
         let error = plan.collect().await.unwrap_err().to_string();

@@ -590,67 +590,68 @@ impl ClusterData {
             )
         };
         type RepackBuffers = (Vec<u8>, Vec<u8>, Vec<f32>, Vec<f32>, Vec<f32>);
-        let repack = |(codes, unpacked, f_add, f_rescale, f_error): &mut RepackBuffers,
-                      (b, batch_slice): (usize, &mut [u8])| {
-            let actual = (n_total - b * batch).min(batch);
-            for s in 0..actual {
-                let g = b * batch + s;
-                let idx = offsets.partition_point(|&o| o <= g) - 1;
-                let i = g - offsets[idx];
-                let cd = &cds[idx];
-                let src_batch = i / batch;
-                let src_slot = i % batch;
-                simd::unpack_single_vector(
-                    cd.batch_bin_codes(src_batch),
-                    src_slot,
-                    dim_bytes,
-                    unpacked,
-                );
-                simd::pack_binary_code(
-                    unpacked,
-                    &mut codes[s * dim_bytes..(s + 1) * dim_bytes],
-                    padded_dim,
-                );
-                f_add[s] = cd.batch_f_add(src_batch)[src_slot];
-                f_rescale[s] = cd.batch_f_rescale(src_batch)[src_slot];
-                f_error[s] = cd.batch_f_error(src_batch)[src_slot];
-            }
-            // The worker-local buffers are reused: clear a partial block's padding.
-            codes[actual * dim_bytes..].fill(0);
-            for s in actual..batch {
-                f_add[s] = 0.0;
-                f_rescale[s] = 0.0;
-                f_error[s] = 0.0;
-            }
+        let repack =
+            |(codes, unpacked, f_add, f_rescale, f_error): &mut RepackBuffers,
+             (b, batch_slice): (usize, &mut [u8])| {
+                let actual = (n_total - b * batch).min(batch);
+                for s in 0..actual {
+                    let g = b * batch + s;
+                    let idx = offsets.partition_point(|&o| o <= g) - 1;
+                    let i = g - offsets[idx];
+                    let cd = &cds[idx];
+                    let src_batch = i / batch;
+                    let src_slot = i % batch;
+                    simd::unpack_single_vector(
+                        cd.batch_bin_codes(src_batch),
+                        src_slot,
+                        dim_bytes,
+                        unpacked,
+                    );
+                    simd::pack_binary_code(
+                        unpacked,
+                        &mut codes[s * dim_bytes..(s + 1) * dim_bytes],
+                        padded_dim,
+                    );
+                    f_add[s] = cd.batch_f_add(src_batch)[src_slot];
+                    f_rescale[s] = cd.batch_f_rescale(src_batch)[src_slot];
+                    f_error[s] = cd.batch_f_error(src_batch)[src_slot];
+                }
+                // The worker-local buffers are reused: clear a partial block's padding.
+                codes[actual * dim_bytes..].fill(0);
+                for s in actual..batch {
+                    f_add[s] = 0.0;
+                    f_rescale[s] = 0.0;
+                    f_error[s] = 0.0;
+                }
 
-            let binary_bytes = padded_dim * batch / 8;
-            simd::pack_codes(
-                codes,
-                batch,
-                dim_bytes,
-                &mut batch_slice[..binary_bytes],
-            );
-            let f_add_offset = binary_bytes;
-            let f_rescale_offset = f_add_offset + 4 * batch;
-            let f_error_offset = f_rescale_offset + 4 * batch;
-            unsafe {
-                std::slice::from_raw_parts_mut(
-                    batch_slice[f_add_offset..].as_mut_ptr() as *mut f32,
+                let binary_bytes = padded_dim * batch / 8;
+                simd::pack_codes(
+                    codes,
                     batch,
-                )
-                .copy_from_slice(f_add);
-                std::slice::from_raw_parts_mut(
-                    batch_slice[f_rescale_offset..].as_mut_ptr() as *mut f32,
-                    batch,
-                )
-                .copy_from_slice(f_rescale);
-                std::slice::from_raw_parts_mut(
-                    batch_slice[f_error_offset..].as_mut_ptr() as *mut f32,
-                    batch,
-                )
-                .copy_from_slice(f_error);
-            }
-        };
+                    dim_bytes,
+                    &mut batch_slice[..binary_bytes],
+                );
+                let f_add_offset = binary_bytes;
+                let f_rescale_offset = f_add_offset + 4 * batch;
+                let f_error_offset = f_rescale_offset + 4 * batch;
+                unsafe {
+                    std::slice::from_raw_parts_mut(
+                        batch_slice[f_add_offset..].as_mut_ptr() as *mut f32,
+                        batch,
+                    )
+                    .copy_from_slice(f_add);
+                    std::slice::from_raw_parts_mut(
+                        batch_slice[f_rescale_offset..].as_mut_ptr() as *mut f32,
+                        batch,
+                    )
+                    .copy_from_slice(f_rescale);
+                    std::slice::from_raw_parts_mut(
+                        batch_slice[f_error_offset..].as_mut_ptr() as *mut f32,
+                        batch,
+                    )
+                    .copy_from_slice(f_error);
+                }
+            };
         if parallel {
             batch_data
                 .par_chunks_mut(stride)

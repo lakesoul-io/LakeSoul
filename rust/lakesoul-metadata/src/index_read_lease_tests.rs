@@ -353,16 +353,48 @@ async fn read_lease_gc_sweep_serializes_against_new_publication() {
 async fn read_lease_multi_shard_acquisition_is_all_or_nothing() {
     let (_, catalog, prefix) = test_catalog().await;
     let second_prefix = format!("{prefix}-second");
-    let first = catalog.commit(&prefix, b"header", &[segment("first.seg")], CommitMode::Rebuild).await.unwrap();
-    let second = catalog.commit(&second_prefix, b"header", &[segment("second.seg")], CommitMode::Rebuild).await.unwrap();
+    let first = catalog
+        .commit(
+            &prefix,
+            b"header",
+            &[segment("first.seg")],
+            CommitMode::Rebuild,
+        )
+        .await
+        .unwrap();
+    let second = catalog
+        .commit(
+            &second_prefix,
+            b"header",
+            &[segment("second.seg")],
+            CommitMode::Rebuild,
+        )
+        .await
+        .unwrap();
     let owner = format!("atomic-pins-{}", Uuid::new_v4());
-    let result = catalog.acquire_pinned_read_views(
-        &[(prefix.clone(), first.commit_id), (second_prefix.clone(), second.commit_id + 1000)],
-        &owner,
-    ).await;
-    assert!(matches!(result, Err(LakeSoulMetaDataError::CommitConflict(_))));
+    let result = catalog
+        .acquire_pinned_read_views(
+            &[
+                (prefix.clone(), first.commit_id),
+                (second_prefix.clone(), second.commit_id + 1000),
+            ],
+            &owner,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(LakeSoulMetaDataError::CommitConflict(_))
+    ));
     let pool = catalog.core.client.lock().await.primary_only();
-    let row = pool.query_opt("select count(*) from index_read_lease where owner = $1", QueryType::RW, &[&owner]).await.unwrap().unwrap();
+    let row = pool
+        .query_opt(
+            "select count(*) from index_read_lease where owner = $1",
+            QueryType::RW,
+            &[&owner],
+        )
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(row.get::<_, i64>(0), 0);
     catalog.delete_shard(&prefix).await.unwrap();
     catalog.delete_shard(&second_prefix).await.unwrap();
@@ -377,48 +409,148 @@ async fn read_lease_snapshot_anchor_and_retirement_fences() {
         table_name: format!("anchor_{}", Uuid::new_v4()),
         table_namespace: "default".into(),
         table_path: prefix.split("/_vector_index/").next().unwrap().to_string(),
-        properties: "{}".into(), table_schema: "{}".into(), partitions: ";id".into(), domain: "public".into(),
+        properties: "{}".into(),
+        table_schema: "{}".into(),
+        partitions: ";id".into(),
+        domain: "public".into(),
         ..Default::default()
     };
     client.create_table(table.clone()).await.unwrap();
-    let empty = client.vector_batch_metadata(&table.table_id).await.unwrap().unwrap();
-    let empty_lease = catalog.acquire_snapshot_read_views(&empty, &[], "empty").await.unwrap();
-    let empty_worker = catalog.acquire_protected_read_views(&[], empty_lease.lease_id, "empty-worker").await.unwrap();
+    let empty = client
+        .vector_batch_metadata(&table.table_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let empty_lease = catalog
+        .acquire_snapshot_read_views(&empty, &[], "empty")
+        .await
+        .unwrap();
+    let empty_worker = catalog
+        .acquire_protected_read_views(&[], empty_lease.lease_id, "empty-worker")
+        .await
+        .unwrap();
     empty_lease.release().await.unwrap();
     empty_worker.release().await.unwrap();
     let pool = catalog.core.client.lock().await.primary_only();
-    let shard_id = ensure_shard(&pool, IndexKind::Vector, &prefix).await.unwrap();
+    let shard_id = ensure_shard(&pool, IndexKind::Vector, &prefix)
+        .await
+        .unwrap();
     write_snapshot_revision(&client, &table.table_id, shard_id, 1).await;
-    let first = client.vector_batch_metadata(&table.table_id).await.unwrap().unwrap();
+    let first = client
+        .vector_batch_metadata(&table.table_id)
+        .await
+        .unwrap()
+        .unwrap();
     let pins = vec![(prefix.clone(), first.index_views[&prefix].commit_id)];
-    let parent = catalog.acquire_pinned_read_views_with_timing(
-        &pins, "anchored", Duration::from_millis(400), Duration::from_millis(50), None, Some(&first),
-    ).await.unwrap();
+    let parent = catalog
+        .acquire_pinned_read_views_with_timing(
+            &pins,
+            "anchored",
+            Duration::from_millis(400),
+            Duration::from_millis(50),
+            None,
+            Some(&first),
+        )
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(650)).await;
     parent.ensure_valid().unwrap();
-    let row = pool.query_opt("select count(*) from index_read_lease where lease_id = $1", QueryType::RW, &[&parent.lease_id]).await.unwrap().unwrap();
-    assert_eq!(row.get::<_, i64>(0), 2, "index pin and full table anchor both renewed");
+    let row = pool
+        .query_opt(
+            "select count(*) from index_read_lease where lease_id = $1",
+            QueryType::RW,
+            &[&parent.lease_id],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.get::<_, i64>(0),
+        2,
+        "index pin and full table anchor both renewed"
+    );
     write_snapshot_revision(&client, &table.table_id, shard_id, 2).await;
-    assert!(catalog.acquire_snapshot_read_views(&first, &pins, "stale-snapshot").await.is_err());
-    let worker = catalog.acquire_protected_read_views(&pins, parent.lease_id, "worker-after-update").await.unwrap();
+    assert!(
+        catalog
+            .acquire_snapshot_read_views(&first, &pins, "stale-snapshot")
+            .await
+            .is_err()
+    );
+    let worker = catalog
+        .acquire_protected_read_views(&pins, parent.lease_id, "worker-after-update")
+        .await
+        .unwrap();
     let row = pool.query_opt("select data_files from index_read_lease where lease_id = $1 and kind = 'snapshot'", QueryType::RW, &[&worker.lease_id]).await.unwrap().unwrap();
-    assert_eq!(row.get::<_, Vec<String>>(0), vec![first.data_files[0].path.clone()]);
+    assert_eq!(
+        row.get::<_, Vec<String>>(0),
+        vec![first.data_files[0].path.clone()]
+    );
     parent.release().await.unwrap();
     worker.release().await.unwrap();
-    let fresh = client.vector_batch_metadata(&table.table_id).await.unwrap().unwrap();
+    let fresh = client
+        .vector_batch_metadata(&table.table_id)
+        .await
+        .unwrap()
+        .unwrap();
     let fresh_pins = vec![(prefix.clone(), fresh.index_views[&prefix].commit_id)];
-    let file = fresh.data_files[0].path.trim_start_matches("file://").to_string();
+    let file = fresh.data_files[0]
+        .path
+        .trim_start_matches("file://")
+        .to_string();
     pool.execute("insert into index_drop(kind,index_prefix,reason) values('data_file',$1,'physical deletion pending')", QueryType::RW, &[&file]).await.unwrap();
-    assert!(catalog.acquire_snapshot_read_views(&fresh, &fresh_pins, "retired-file").await.is_err());
-    pool.execute("delete from index_drop where kind = 'data_file' and index_prefix = $1", QueryType::RW, &[&file]).await.unwrap();
+    assert!(
+        catalog
+            .acquire_snapshot_read_views(&fresh, &fresh_pins, "retired-file")
+            .await
+            .is_err()
+    );
+    pool.execute(
+        "delete from index_drop where kind = 'data_file' and index_prefix = $1",
+        QueryType::RW,
+        &[&file],
+    )
+    .await
+    .unwrap();
     let directory = file.rsplit_once('/').unwrap().0.to_string();
     let sibling = format!("{directory}-sibling");
-    pool.execute("insert into index_drop(kind,index_prefix) values('data_directory',$1)", QueryType::RW, &[&sibling]).await.unwrap();
-    catalog.acquire_snapshot_read_views(&fresh, &fresh_pins, "boundary-ok").await.unwrap().release().await.unwrap();
-    pool.execute("insert into index_drop(kind,index_prefix) values('data_directory',$1)", QueryType::RW, &[&directory]).await.unwrap();
-    assert!(catalog.acquire_snapshot_read_views(&fresh, &fresh_pins, "retired-directory").await.is_err());
-    pool.execute("delete from index_drop where kind = 'data_directory' and index_prefix = any($1)", QueryType::RW, &[&vec![directory, sibling]]).await.unwrap();
-    client.delete_table_by_table_info_cascade(&table).await.unwrap();
+    pool.execute(
+        "insert into index_drop(kind,index_prefix) values('data_directory',$1)",
+        QueryType::RW,
+        &[&sibling],
+    )
+    .await
+    .unwrap();
+    catalog
+        .acquire_snapshot_read_views(&fresh, &fresh_pins, "boundary-ok")
+        .await
+        .unwrap()
+        .release()
+        .await
+        .unwrap();
+    pool.execute(
+        "insert into index_drop(kind,index_prefix) values('data_directory',$1)",
+        QueryType::RW,
+        &[&directory],
+    )
+    .await
+    .unwrap();
+    assert!(
+        catalog
+            .acquire_snapshot_read_views(&fresh, &fresh_pins, "retired-directory")
+            .await
+            .is_err()
+    );
+    pool.execute(
+        "delete from index_drop where kind = 'data_directory' and index_prefix = any($1)",
+        QueryType::RW,
+        &[&vec![directory, sibling]],
+    )
+    .await
+    .unwrap();
+    client
+        .delete_table_by_table_info_cascade(&table)
+        .await
+        .unwrap();
 }
 
 async fn write_snapshot_revision(
@@ -439,7 +571,8 @@ async fn write_snapshot_revision(
     .await
     .unwrap();
     let commit = Uuid::new_v4();
-    let path = format!("file:///tmp/coherent/{table_id}/revision{revision}_00000.parquet");
+    let path =
+        format!("file:///tmp/coherent/{table_id}/revision{revision}_00000.parquet");
     let ops = vec![crate::DataFileOp {
         path: path.clone(),
         file_op: "add".into(),

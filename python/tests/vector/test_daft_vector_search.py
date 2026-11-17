@@ -352,9 +352,7 @@ def test_daft_vector_search_index_rerank() -> None:
     _, table, table_path = _create_and_write(train)
     try:
         exact = (
-            vector_search(
-                table, query.tolist(), top_k=top_k, nprobe=8, rerank="exact"
-            )
+            vector_search(table, query.tolist(), top_k=top_k, nprobe=8, rerank="exact")
             .collect()
             .to_arrow()
         )

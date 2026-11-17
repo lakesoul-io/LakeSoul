@@ -11,6 +11,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import com.dmetasoul.lakesoul.meta.DataFileReadLeaseGuard;
+
 import org.apache.flink.api.common.state.MapStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.lakesoul.entry.clean.DiscardFileDeleteFunction;
@@ -39,8 +40,9 @@ import java.util.UUID;
  */
 public class CleanPathChangedPathsTest {
     private static final String JDBC_URL =
-            System.getenv().getOrDefault(
-                    "LAKESOUL_PG_URL", "jdbc:postgresql://127.0.0.1:5432/lakesoul_test");
+            System.getenv()
+                    .getOrDefault(
+                            "LAKESOUL_PG_URL", "jdbc:postgresql://127.0.0.1:5432/lakesoul_test");
     private static final String USER =
             System.getenv().getOrDefault("LAKESOUL_PG_USERNAME", "lakesoul_test");
     private static final String PASSWORD =
@@ -67,14 +69,15 @@ public class CleanPathChangedPathsTest {
     public void tearDown() throws Exception {
         if (connection != null) {
             for (String tableId : tableIds) {
-                for (String sql : Arrays.asList(
-                        "delete from index_read_lease where index_prefix = ?",
-                        "delete from data_commit_info where table_id = ?",
-                        "delete from partition_info where table_id = ?",
-                        "delete from discard_compressed_file_info where table_path = ?",
-                        "delete from table_name_id where table_id = ?",
-                        "delete from table_path_id where table_id = ?",
-                        "delete from table_info where table_id = ?")) {
+                for (String sql :
+                        Arrays.asList(
+                                "delete from index_read_lease where index_prefix = ?",
+                                "delete from data_commit_info where table_id = ?",
+                                "delete from partition_info where table_id = ?",
+                                "delete from discard_compressed_file_info where table_path = ?",
+                                "delete from table_name_id where table_id = ?",
+                                "delete from table_path_id where table_id = ?",
+                                "delete from table_info where table_id = ?")) {
                     try (PreparedStatement ps = connection.prepareStatement(sql)) {
                         ps.setString(1, tableId);
                         ps.executeUpdate();
@@ -134,9 +137,9 @@ public class CleanPathChangedPathsTest {
                         allowed.contains(DataFileReadLeaseGuard.normalizePath(file)));
             }
             assertEquals(
-                "one fence per retired file",
-                1,
-                countFences(DataFileReadLeaseGuard.normalizePath(files.get(2))));
+                    "one fence per retired file",
+                    1,
+                    countFences(DataFileReadLeaseGuard.normalizePath(files.get(2))));
         }
         // Idempotent: running the same batch again neither fails nor duplicates fences.
         try (DataFileReadLeaseGuard guard = DataFileReadLeaseGuard.acquire(connection, tableId)) {
@@ -148,12 +151,14 @@ public class CleanPathChangedPathsTest {
     public void retireBatchDefersFilesOfPinnedCommits() throws Exception {
         String tableId = registerTable(VECTOR_PROPERTIES);
         Path dir = tempDir();
-        String pinned = Files.write(dir.resolve("pinned.parquet"), new byte[] {1}).toUri().toString();
+        String pinned =
+                Files.write(dir.resolve("pinned.parquet"), new byte[] {1}).toUri().toString();
         String free = Files.write(dir.resolve("free.parquet"), new byte[] {1}).toUri().toString();
         insertPinnedCommit(tableId, pinned);
 
         try (DataFileReadLeaseGuard guard = DataFileReadLeaseGuard.acquire(connection, tableId)) {
-            List<String> allowed = guard.retireBatch(Arrays.asList(pinned, free), Collections.emptyList());
+            List<String> allowed =
+                    guard.retireBatch(Arrays.asList(pinned, free), Collections.emptyList());
             assertEquals("only the unpinned file may be retired", 1, allowed.size());
             assertFalse(allowed.contains(DataFileReadLeaseGuard.normalizePath(pinned)));
             assertEquals(0, countFences(DataFileReadLeaseGuard.normalizePath(pinned)));
@@ -164,7 +169,8 @@ public class CleanPathChangedPathsTest {
     @Test
     public void guardDegradesToTheOldPathWhenTheIndexMigrationIsMissing() throws Exception {
         String adminUrl = JDBC_URL;
-        String dbName = "lakesoul_nomig_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        String dbName =
+                "lakesoul_nomig_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         try (Connection admin = DriverManager.getConnection(adminUrl, USER, PASSWORD)) {
             try (java.sql.Statement st = admin.createStatement()) {
                 st.execute("create database " + dbName);
@@ -175,15 +181,16 @@ public class CleanPathChangedPathsTest {
             // A pre-migration metadata database has table_info but no index_drop.
             try (java.sql.Statement st = bare.createStatement()) {
                 st.execute("create table table_info(table_id text primary key, properties json)");
-                st.execute("insert into table_info values('nomig_vector', "
-                        + "'{\"vector_index_columns\":[{\"column\":\"vec\"}]}'::json)");
+                st.execute(
+                        "insert into table_info values('nomig_vector', "
+                                + "'{\"vector_index_columns\":[{\"column\":\"vec\"}]}'::json)");
             }
             assertNull(
                     "a missing index migration must fall back to the original cleanup path",
                     DataFileReadLeaseGuard.acquireOrNull(bare, "nomig_vector"));
         } finally {
             try (Connection admin = DriverManager.getConnection(adminUrl, USER, PASSWORD);
-                 java.sql.Statement st = admin.createStatement()) {
+                    java.sql.Statement st = admin.createStatement()) {
                 st.execute("drop database if exists " + dbName);
             }
         }
@@ -197,14 +204,20 @@ public class CleanPathChangedPathsTest {
         Path dir = tempDir();
         List<String> files = new ArrayList<>();
         for (int i = 0; i < 3; i++) {
-            files.add(Files.write(dir.resolve("p-" + i + ".parquet"), new byte[] {1}).toUri().toString());
+            files.add(
+                    Files.write(dir.resolve("p-" + i + ".parquet"), new byte[] {1})
+                            .toUri()
+                            .toString());
         }
         insertCommitAndPartition(tableId, files);
         TtlBroadcastProcessFunction function = ttlFunction();
 
-        assertTrue("plain table cleanup must succeed", function.dropPartition(tableId, mainPartition));
+        assertTrue(
+                "plain table cleanup must succeed", function.dropPartition(tableId, mainPartition));
         for (String file : files) {
-            assertFalse("file must be deleted: " + file, Files.exists(Path.of(java.net.URI.create(file))));
+            assertFalse(
+                    "file must be deleted: " + file,
+                    Files.exists(Path.of(java.net.URI.create(file))));
         }
         assertEquals(0, countPartitions(tableId));
         assertEquals("plain table cleanup must not fence", 0, countFencesForTableFiles(tableId));
@@ -217,19 +230,28 @@ public class CleanPathChangedPathsTest {
         Path dir = tempDir();
         List<String> files = new ArrayList<>();
         for (int i = 0; i < 3; i++) {
-            files.add(Files.write(dir.resolve("w-" + i + ".parquet"), new byte[] {1}).toUri().toString());
+            files.add(
+                    Files.write(dir.resolve("w-" + i + ".parquet"), new byte[] {1})
+                            .toUri()
+                            .toString());
         }
         insertCommitAndPartition(tableId, files);
         TtlBroadcastProcessFunction function = ttlFunction();
 
-        assertTrue("an un-leased vector partition may be dropped", function.dropPartition(tableId, mainPartition));
+        assertTrue(
+                "an un-leased vector partition may be dropped",
+                function.dropPartition(tableId, mainPartition));
         for (String file : files) {
-            assertFalse("file must be deleted: " + file, Files.exists(Path.of(java.net.URI.create(file))));
+            assertFalse(
+                    "file must be deleted: " + file,
+                    Files.exists(Path.of(java.net.URI.create(file))));
         }
         assertEquals(0, countPartitions(tableId));
         for (String file : files) {
-            assertEquals("each deleted file needs a fence",
-                    1, countFences(DataFileReadLeaseGuard.normalizePath(file)));
+            assertEquals(
+                    "each deleted file needs a fence",
+                    1,
+                    countFences(DataFileReadLeaseGuard.normalizePath(file)));
         }
     }
 
@@ -239,15 +261,21 @@ public class CleanPathChangedPathsTest {
         Path dir = tempDir();
         List<String> files = new ArrayList<>();
         for (int i = 0; i < 3; i++) {
-            files.add(Files.write(dir.resolve("v-" + i + ".parquet"), new byte[] {1}).toUri().toString());
+            files.add(
+                    Files.write(dir.resolve("v-" + i + ".parquet"), new byte[] {1})
+                            .toUri()
+                            .toString());
         }
         insertCommitAndPartition(tableId, files);
         lease(tableId, files.subList(0, 1));
         TtlBroadcastProcessFunction function = ttlFunction();
 
-        assertFalse("a live lease must defer the partition drop", function.dropPartition(tableId, mainPartition));
+        assertFalse(
+                "a live lease must defer the partition drop",
+                function.dropPartition(tableId, mainPartition));
         for (String file : files) {
-            assertTrue("no file may be deleted while deferred: " + file,
+            assertTrue(
+                    "no file may be deleted while deferred: " + file,
                     Files.exists(Path.of(java.net.URI.create(file))));
         }
         assertEquals("partition metadata must stay", 1, countPartitions(tableId));
@@ -260,8 +288,10 @@ public class CleanPathChangedPathsTest {
         String plain = registerTable(PLAIN_PROPERTIES);
         String vector = registerTable(VECTOR_PROPERTIES);
         Path dir = tempDir();
-        String plainFile = Files.write(dir.resolve("d-plain.parquet"), new byte[] {1}).toUri().toString();
-        String vectorFile = Files.write(dir.resolve("d-vector.parquet"), new byte[] {1}).toUri().toString();
+        String plainFile =
+                Files.write(dir.resolve("d-plain.parquet"), new byte[] {1}).toUri().toString();
+        String vectorFile =
+                Files.write(dir.resolve("d-vector.parquet"), new byte[] {1}).toUri().toString();
         insertDiscard(plain, plainFile);
         insertDiscard(vector, vectorFile);
 
@@ -314,7 +344,8 @@ public class CleanPathChangedPathsTest {
     private void lease(String tableId, List<String> files) throws Exception {
         try (PreparedStatement ps =
                 connection.prepareStatement(
-                        "insert into index_read_lease(lease_id,kind,index_prefix,shard_id,commit_id,"
+                        "insert into"
+                                + " index_read_lease(lease_id,kind,index_prefix,shard_id,commit_id,"
                                 + "generation,version,owner,data_files,expires_at)"
                                 + " values(?,'snapshot',?,0,0,0,0,'clean-path-test',?,"
                                 + " clock_timestamp() + interval '2 minutes')")) {
@@ -337,9 +368,10 @@ public class CleanPathChangedPathsTest {
         array.append("]");
         try (PreparedStatement ps =
                 connection.prepareStatement(
-                        "insert into data_commit_info(table_id, partition_desc, commit_id, file_ops,"
-                                + " commit_op, committed, timestamp, domain)"
-                                + " values(?, ?, ?, " + array + ", 'AppendCommit', true, ?, 'public')")) {
+                        "insert into data_commit_info(table_id, partition_desc, commit_id,"
+                            + " file_ops, commit_op, committed, timestamp, domain) values(?, ?, ?, "
+                                + array
+                                + ", 'AppendCommit', true, ?, 'public')")) {
             int index = 1;
             ps.setString(index++, tableId);
             ps.setString(index++, mainPartition);
@@ -366,8 +398,8 @@ public class CleanPathChangedPathsTest {
     private void insertPinnedCommit(String tableId, String file) throws Exception {
         try (PreparedStatement ps =
                 connection.prepareStatement(
-                        "insert into data_commit_info(table_id, partition_desc, commit_id, file_ops,"
-                                + " commit_op, committed, timestamp, domain, pinned)"
+                        "insert into data_commit_info(table_id, partition_desc, commit_id,"
+                                + " file_ops, commit_op, committed, timestamp, domain, pinned)"
                                 + " values(?, ?, ?, ARRAY[ROW(?, 'add', 1, 'id')::data_file_op],"
                                 + " 'AppendCommit', true, ?, 'public', true)")) {
             ps.setString(1, tableId);

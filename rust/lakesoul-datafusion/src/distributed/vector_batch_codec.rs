@@ -81,7 +81,12 @@ impl PhysicalExtensionCodec for NativeBatchProbeCodec {
                 node.name()
             )));
         };
-        if probe.descriptor().read_lease_id.as_deref().is_none_or(str::is_empty) {
+        if probe
+            .descriptor()
+            .read_lease_id
+            .as_deref()
+            .is_none_or(str::is_empty)
+        {
             return Err(DataFusionError::Internal(
                 "native batch worker descriptor has no parent read lease".into(),
             ));

@@ -4,6 +4,7 @@
 package org.apache.flink.lakesoul.entry.clean;
 
 import com.dmetasoul.lakesoul.meta.DataFileReadLeaseGuard;
+
 import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
@@ -156,11 +157,15 @@ public class CleanUtils {
         try (DataFileReadLeaseGuard readers =
                 DataFileReadLeaseGuard.acquireOrNull(connection, tableId)) {
             if (readers != null && readers.hasActiveReaders()) {
-                logger.info("defer cleanup of {}/{} while batch snapshots are active", tableId, partitionDesc);
+                logger.info(
+                        "defer cleanup of {}/{} while batch snapshots are active",
+                        tableId,
+                        partitionDesc);
                 return false;
             }
-            boolean complete = deleteFileAndDataCommitInfoUnlocked(
-                    snapshot, tableId, partitionDesc, connection, oldCompaction, readers);
+            boolean complete =
+                    deleteFileAndDataCommitInfoUnlocked(
+                            snapshot, tableId, partitionDesc, connection, oldCompaction, readers);
             if (readers != null) {
                 readers.commit();
             }
@@ -171,8 +176,12 @@ public class CleanUtils {
     }
 
     private boolean deleteFileAndDataCommitInfoUnlocked(
-            List<String> snapshot, String tableId, String partitionDesc,
-            Connection connection, Boolean oldCompaction, DataFileReadLeaseGuard readers) {
+            List<String> snapshot,
+            String tableId,
+            String partitionDesc,
+            Connection connection,
+            Boolean oldCompaction,
+            DataFileReadLeaseGuard readers) {
         Set<String> livePaths = null;
         if (oldCompaction) {
             try {
@@ -240,7 +249,8 @@ public class CleanUtils {
                             // whole commit's files instead of one per file.
                             retired = readers.retireBatch(candidates, Collections.emptyList());
                         } catch (SQLException error) {
-                            throw new RuntimeException("failed to retire original data file", error);
+                            throw new RuntimeException(
+                                    "failed to retire original data file", error);
                         }
                         // The guard answers with canonical paths; keep the
                         // original strings for the filesystem call.

@@ -60,9 +60,7 @@ def _batch(
     vectors: np.ndarray, *, titles: bool = True, uint64_ids: bool = False
 ) -> pa.Table:
     columns: dict[str, pa.Array] = {
-        "id": pa.array(
-            range(N), type=pa.uint64() if uint64_ids else pa.int64()
-        ),
+        "id": pa.array(range(N), type=pa.uint64() if uint64_ids else pa.int64()),
         "vec": pa.FixedSizeListArray.from_arrays(
             pa.array(vectors.reshape(-1), type=pa.float32()), DIM
         ),
@@ -134,7 +132,9 @@ def test_session_sql_and_explain() -> None:
     try:
         query = np.random.default_rng(11).normal(size=DIM).astype(np.float32)
         session = catalog.session(vector_search={"nprobe": 4, "exact_overfetch": 20})
-        count = session.sql(f'SELECT count(*) AS cnt FROM "lakesoul".default.{table_name}')
+        count = session.sql(
+            f'SELECT count(*) AS cnt FROM "lakesoul".default.{table_name}'
+        )
         assert count.column("cnt").to_pylist() == [N]
 
         plan = session.explain(table.to_sql(query, top_k=5))
@@ -192,9 +192,7 @@ def test_search_filter_projection_and_projection_extra_column() -> None:
     try:
         query = np.random.default_rng(17).normal(size=DIM).astype(np.float32)
         session = catalog.session(vector_search={"nprobe": 4, "exact_overfetch": 20})
-        filtered = table.search(
-            query, top_k=5, filter="id < 100", session=session
-        )
+        filtered = table.search(query, top_k=5, filter="id < 100", session=session)
         assert filtered.num_rows == 5
         assert all(value < 100 for value in filtered.column("id").to_pylist())
         assert "title" in filtered.column_names
@@ -309,9 +307,9 @@ def test_search_batch_exact_multi_file_bucket() -> None:
     vectors = _vectors()
     catalog, table, table_path = _create_table(table_name, vectors=vectors)
     try:
-        extra_vectors = np.random.default_rng(71).normal(
-            size=(N, DIM)
-        ).astype(np.float32)
+        extra_vectors = (
+            np.random.default_rng(71).normal(size=(N, DIM)).astype(np.float32)
+        )
         extra = pa.table(
             {
                 "id": pa.array(range(N, 2 * N), type=pa.int64()),
@@ -338,17 +336,22 @@ def test_search_batch_exact_multi_file_bucket() -> None:
             exact_overfetch=2,
         )
         for index, query in enumerate(queries):
-            expected = table.search(
-                query.tolist(),
-                top_k=5,
-                rerank="exact",
-                nprobe=4,
-                exact_overfetch=2,
-                session=session,
-            ).column("id").to_pylist()
+            expected = (
+                table.search(
+                    query.tolist(),
+                    top_k=5,
+                    rerank="exact",
+                    nprobe=4,
+                    exact_overfetch=2,
+                    session=session,
+                )
+                .column("id")
+                .to_pylist()
+            )
             assert native.ids[index] == expected
     finally:
         _drop(catalog, table_name, table_path)
+
 
 def test_search_batch_falls_back_for_non_native_primary_key() -> None:
     """A non-Int64-`id` table falls back to per-query SQL, same results."""
@@ -361,9 +364,7 @@ def test_search_batch_falls_back_for_non_native_primary_key() -> None:
         generator = np.random.default_rng(31)
         queries = generator.normal(size=(3, DIM)).astype(np.float32)
         session = catalog.session(vector_search={"nprobe": 4, "exact_overfetch": 30})
-        result = table.search_batch(
-            queries, top_k=5, rerank="exact", session=session
-        )
+        result = table.search_batch(queries, top_k=5, rerank="exact", session=session)
         assert len(result.ids) == 3
         assert result.distances is None
         for index, query in enumerate(queries):
@@ -492,9 +493,7 @@ def test_distributed_search_over_partitions() -> None:
         assert hits >= 4, (returned, expected)
         assert "dt" in rows.column_names
 
-        with_distance = distributed.search(
-            query, top_k=5, with_distance=True
-        )
+        with_distance = distributed.search(query, top_k=5, with_distance=True)
         distances = with_distance.column("__lakesoul_vector_distance").to_pylist()
         assert distances == sorted(distances), distances
 
@@ -523,7 +522,9 @@ def test_distributed_single_node_fallback_and_validation() -> None:
         assert not distributed.is_distributed
         via_distributed = distributed.search(query, top_k=5)
         single = table.search(query, top_k=5)
-        assert via_distributed.column("id").to_pylist() == single.column("id").to_pylist()
+        assert (
+            via_distributed.column("id").to_pylist() == single.column("id").to_pylist()
+        )
 
         with pytest.raises(ValueError):
             table.distributed(engine="unknown")
@@ -562,7 +563,10 @@ def test_distributed_session_configuration() -> None:
         LakeSoulSession(distributed={"worker_urls": []})
     with pytest.raises(ValueError):
         LakeSoulSession(
-            distributed={"worker_urls": ["grpc://127.0.0.1:59999"], "target_partitions": 1}
+            distributed={
+                "worker_urls": ["grpc://127.0.0.1:59999"],
+                "target_partitions": 1,
+            }
         )
     with pytest.raises(ValueError):
         LakeSoulSession(
@@ -621,9 +625,7 @@ def test_search_pinned_snapshot_tag_and_as_of() -> None:
                         [f"extra-{index}" for index in range(extra_rows)]
                     ),
                     "vec": pa.FixedSizeListArray.from_arrays(
-                        pa.array(
-                            extra_vectors.reshape(-1), type=pa.float32()
-                        ),
+                        pa.array(extra_vectors.reshape(-1), type=pa.float32()),
                         DIM,
                     ),
                 }
@@ -635,24 +637,45 @@ def test_search_pinned_snapshot_tag_and_as_of() -> None:
         assert latest_after.column("cnt").to_pylist() == [N + extra_rows]
 
         query = np.random.default_rng(59).normal(size=DIM).astype(np.float32)
-        frozen_ids = {int(value) for value in table.search(
-            query, top_k=50, rerank="exact", snapshot=snapshot_id, session=session
-        ).column("id").to_pylist()}
+        frozen_ids = {
+            int(value)
+            for value in table.search(
+                query, top_k=50, rerank="exact", snapshot=snapshot_id, session=session
+            )
+            .column("id")
+            .to_pylist()
+        }
         assert frozen_ids
         assert max(frozen_ids) < N, sorted(frozen_ids)[-3:]
-        latest_ids = table.search(query, top_k=50, rerank="exact", session=session).column(
-            "id"
-        ).to_pylist()
+        latest_ids = (
+            table.search(query, top_k=50, rerank="exact", session=session)
+            .column("id")
+            .to_pylist()
+        )
         assert latest_ids and max(latest_ids) >= N, latest_ids[-3:]
 
-        tag_ids = {int(value) for value in table.search(
-            query, top_k=50, rerank="exact", tag="v1", session=session
-        ).column("id").to_pylist()}
+        tag_ids = {
+            int(value)
+            for value in table.search(
+                query, top_k=50, rerank="exact", tag="v1", session=session
+            )
+            .column("id")
+            .to_pylist()
+        }
         assert tag_ids == frozen_ids
 
-        as_of_ids = {int(value) for value in table.search(
-            query, top_k=50, rerank="exact", as_of=int(snapshot.created_at), session=session
-        ).column("id").to_pylist()}
+        as_of_ids = {
+            int(value)
+            for value in table.search(
+                query,
+                top_k=50,
+                rerank="exact",
+                as_of=int(snapshot.created_at),
+                session=session,
+            )
+            .column("id")
+            .to_pylist()
+        }
         assert as_of_ids == frozen_ids
 
         frozen_count = table.sql(
@@ -669,12 +692,10 @@ def test_search_pinned_snapshot_tag_and_as_of() -> None:
 
         # The index describes the latest files, so a pinned plan is a plain
         # merge-on-read scan with an exact Sort above it.
-        alias = session.register_snapshot(
-            table_name, snapshot=snapshot_id
-        )
+        alias = session.register_snapshot(table_name, snapshot=snapshot_id)
         try:
             plan = session.explain(
-                f'SELECT id FROM {alias} ORDER BY array_distance(vec, '
+                f"SELECT id FROM {alias} ORDER BY array_distance(vec, "
                 f"ARRAY[{', '.join('0.0' for _ in range(DIM))}]) LIMIT 5"
             )
         finally:
@@ -684,7 +705,12 @@ def test_search_pinned_snapshot_tag_and_as_of() -> None:
 
         # A pinned scan with an extra filter keeps the filter semantics.
         filtered = table.search(
-            query, top_k=10, rerank="exact", filter="id < 50", snapshot=snapshot_id, session=session
+            query,
+            top_k=10,
+            rerank="exact",
+            filter="id < 50",
+            snapshot=snapshot_id,
+            session=session,
         )
         assert filtered.num_rows == 10
         assert all(value < 50 for value in filtered.column("id").to_pylist())

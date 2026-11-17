@@ -57,8 +57,8 @@ use object_store::{
     MultipartUpload, ObjectMeta, ObjectStore, ObjectStoreExt, PutMultipartOptions,
     PutOptions, PutPayload, PutResult, Result as OsResult,
 };
-use tokio::sync::OnceCell;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 
 const ENV_KIND: &str = "LAKESOUL_INDEX_SSD_KIND";
@@ -205,7 +205,8 @@ impl IndexSsdCache {
                 let Some(hash) = name_text.strip_suffix(".bin") else {
                     continue;
                 };
-                if hash.len() != 16 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                if hash.len() != 16 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
                     continue;
                 }
                 let path = entry.path();
@@ -245,8 +246,9 @@ impl IndexSsdCache {
                 } else {
                     let owned_regular_file = std::fs::symlink_metadata(&path)
                         .is_ok_and(|metadata| metadata.file_type().is_file())
-                        && std::fs::canonicalize(&path)
-                            .is_ok_and(|canonical| canonical.parent() == Some(canonical_root.as_path()));
+                        && std::fs::canonicalize(&path).is_ok_and(|canonical| {
+                            canonical.parent() == Some(canonical_root.as_path())
+                        });
                     if owned_regular_file {
                         let _ = std::fs::remove_file(path);
                     }
@@ -402,7 +404,11 @@ pub struct IndexCachedStore {
 impl IndexCachedStore {
     pub fn new(inner: Arc<dyn ObjectStore>, cache: Arc<IndexSsdCache>) -> Self {
         let namespace = crate::cache::store_namespace::store_cache_namespace(&inner);
-        Self { inner, cache, namespace }
+        Self {
+            inner,
+            cache,
+            namespace,
+        }
     }
 }
 
@@ -590,8 +596,8 @@ mod tests {
 
     #[tokio::test]
     async fn adopts_only_owned_entries_and_enforces_budget_after_restart() {
-        use std::io::Read;
         use object_store::ObjectStoreExt;
+        use std::io::Read;
 
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -611,26 +617,52 @@ mod tests {
         put(&inner, &location, &vec![b'c'; 2 * 1024]).await;
         let cache = Arc::new(IndexSsdCache::new(root.to_path_buf(), 3 * 1024));
         let store = IndexCachedStore::new(inner, Arc::clone(&cache));
-        assert_eq!(store.get(&location).await.unwrap().bytes().await.unwrap().len(), 2 * 1024);
+        assert_eq!(
+            store
+                .get(&location)
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
+                .len(),
+            2 * 1024
+        );
         cache.cache.run_pending_tasks().await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let mut bytes = [0u8; 1];
         old_reader.read_exact(&mut bytes).unwrap();
-        assert_eq!(bytes[0], b'o', "unlink must not break an existing open handle");
-        assert!(unknown_path.exists(), "unknown files are not owned by this cache");
-        assert!(active_temp.exists(), "temporary files may belong to active writers");
+        assert_eq!(
+            bytes[0], b'o',
+            "unlink must not break an existing open handle"
+        );
+        assert!(
+            unknown_path.exists(),
+            "unknown files are not owned by this cache"
+        );
+        assert!(
+            active_temp.exists(),
+            "temporary files may belong to active writers"
+        );
         let owned_files = std::fs::read_dir(root)
             .unwrap()
             .flatten()
             .filter(|entry| {
                 let name = entry.file_name();
-                let Some(name) = name.to_str() else { return false; };
-                let Some(hash) = name.strip_suffix(".bin") else { return false; };
+                let Some(name) = name.to_str() else {
+                    return false;
+                };
+                let Some(hash) = name.strip_suffix(".bin") else {
+                    return false;
+                };
                 hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
             })
             .count();
-        assert!(owned_files <= 1, "recognized cache files must obey the 3 KiB LRU budget");
+        assert!(
+            owned_files <= 1,
+            "recognized cache files must obey the 3 KiB LRU budget"
+        );
     }
 
     #[tokio::test]

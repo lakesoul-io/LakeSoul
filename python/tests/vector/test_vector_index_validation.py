@@ -408,9 +408,7 @@ def test_sparse_write_preserves_omitted_vector_and_text_indexes(
         assert index_files("vector") != vector_files
         assert index_files("text") == text_files
         nearest = (
-            vector_search(
-                table, replacement, top_k=1, nprobe=2, rerank="exact"
-            )
+            vector_search(table, replacement, top_k=1, nprobe=2, rerank="exact")
             .collect()
             .to_arrow()
         )

@@ -184,9 +184,8 @@ unsafe fn pack_binary_code_avx2(binary_code: &[u8], packed: &mut [u8], dim: usiz
     let one = _mm256_set1_epi8(1);
 
     for chunk in 0..chunks {
-        let v = _mm256_loadu_si256(
-            binary_code.as_ptr().add(chunk * 32) as *const __m256i
-        );
+        let v =
+            _mm256_loadu_si256(binary_code.as_ptr().add(chunk * 32) as *const __m256i);
         // Same bit layout as the AVX-512 path: bit k -> dimension k, then
         // reverse each byte so the packed layout is MSB-first.
         let bits = _mm256_slli_epi16::<7>(_mm256_min_epu8(v, one));
@@ -210,17 +209,15 @@ unsafe fn pack_binary_code_avx2(binary_code: &[u8], packed: &mut [u8], dim: usiz
 #[target_feature(enable = "sse2")]
 unsafe fn pack_binary_code_sse2(binary_code: &[u8], packed: &mut [u8], dim: usize) {
     use std::arch::x86_64::{
-        __m128i, _mm_loadu_si128, _mm_min_epu8, _mm_movemask_epi8,
-        _mm_set1_epi8, _mm_slli_epi16,
+        __m128i, _mm_loadu_si128, _mm_min_epu8, _mm_movemask_epi8, _mm_set1_epi8,
+        _mm_slli_epi16,
     };
 
     let chunks = dim / 16;
     let one = _mm_set1_epi8(1);
 
     for chunk in 0..chunks {
-        let v = _mm_loadu_si128(
-            binary_code.as_ptr().add(chunk * 16) as *const __m128i
-        );
+        let v = _mm_loadu_si128(binary_code.as_ptr().add(chunk * 16) as *const __m128i);
         let bits = _mm_slli_epi16::<7>(_mm_min_epu8(v, one));
         let mask = _mm_movemask_epi8(bits) as u16;
         let rev = reverse_bits_per_byte(mask as u64) as u16;
@@ -266,9 +263,7 @@ unsafe fn unpack_binary_code_sse2(packed: &[u8], binary_code: &mut [u8], dim: us
             let row = &UNPACK_TABLE[packed[chunk * 2 + slot] as usize];
             let value = _mm_loadl_epi64(row.as_ptr() as *const __m128i);
             _mm_storel_epi64(
-                binary_code
-                    .as_mut_ptr()
-                    .add(chunk * 16 + slot * 8) as *mut __m128i,
+                binary_code.as_mut_ptr().add(chunk * 16 + slot * 8) as *mut __m128i,
                 value,
             );
         }
@@ -288,8 +283,7 @@ unsafe fn unpack_binary_code_sse2(packed: &[u8], binary_code: &mut [u8], dim: us
 #[target_feature(enable = "avx2")]
 unsafe fn unpack_binary_code_avx2(packed: &[u8], binary_code: &mut [u8], dim: usize) {
     use std::arch::x86_64::{
-        __m128i, __m256i, _mm256_i32gather_epi64, _mm256_storeu_si256,
-        _mm_loadu_si128,
+        __m128i, __m256i, _mm_loadu_si128, _mm256_i32gather_epi64, _mm256_storeu_si256,
     };
 
     let chunks = dim / 32;
@@ -4099,7 +4093,9 @@ mod dispatch_tests {
         if !std::arch::is_x86_feature_detected!("avx2") {
             return;
         }
-        for dim in [0usize, 1, 7, 8, 15, 16, 31, 32, 33, 63, 64, 65, 127, 128, 960] {
+        for dim in [
+            0usize, 1, 7, 8, 15, 16, 31, 32, 33, 63, 64, 65, 127, 128, 960,
+        ] {
             let binary: Vec<u8> = (0..dim)
                 .map(|index| ((index * 37 + 11) % 2) as u8)
                 .collect();
@@ -4148,7 +4144,9 @@ mod dispatch_tests {
     #[test]
     fn test_sse2_binary_pack_unpack_matches_scalar() {
         assert!(std::arch::is_x86_feature_detected!("sse2"));
-        for dim in [0usize, 1, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 960] {
+        for dim in [
+            0usize, 1, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 960,
+        ] {
             let binary: Vec<u8> = (0..dim)
                 .map(|index| ((index * 41 + 13) % 2) as u8)
                 .collect();
@@ -4300,7 +4298,12 @@ mod dispatch_tests {
             if std::arch::is_x86_feature_detected!("avx2") {
                 avx2_fastscan = time_ns(
                     || {
-                        accumulate_batch_avx2_impl(&packed_codes, &lut, dim, &mut results);
+                        accumulate_batch_avx2_impl(
+                            &packed_codes,
+                            &lut,
+                            dim,
+                            &mut results,
+                        );
                         black_box(&results);
                     },
                     fastscan_iterations,
@@ -4311,7 +4314,12 @@ mod dispatch_tests {
             {
                 avx512_fastscan = time_ns(
                     || {
-                        accumulate_batch_avx512_impl(&packed_codes, &lut, dim, &mut results);
+                        accumulate_batch_avx512_impl(
+                            &packed_codes,
+                            &lut,
+                            dim,
+                            &mut results,
+                        );
                         black_box(&results);
                     },
                     fastscan_iterations,
@@ -4320,12 +4328,17 @@ mod dispatch_tests {
         }
 
         eprintln!("SIMD performance (ns/op, dim={dim})");
-        eprintln!("pack  scalar={scalar_pack:.1} sse2={sse2_pack:.1} avx2={avx2_pack:.1} avx512={avx512_pack:.1}");
-        eprintln!("unpack scalar={scalar_unpack:.1} sse2={sse2_unpack:.1} avx2={avx2_unpack:.1} avx512={avx512_unpack:.1}");
-        eprintln!("fastscan scalar={scalar_fastscan:.1} avx2={avx2_fastscan:.1} avx512={avx512_fastscan:.1}");
+        eprintln!(
+            "pack  scalar={scalar_pack:.1} sse2={sse2_pack:.1} avx2={avx2_pack:.1} avx512={avx512_pack:.1}"
+        );
+        eprintln!(
+            "unpack scalar={scalar_unpack:.1} sse2={sse2_unpack:.1} avx2={avx2_unpack:.1} avx512={avx512_unpack:.1}"
+        );
+        eprintln!(
+            "fastscan scalar={scalar_fastscan:.1} avx2={avx2_fastscan:.1} avx512={avx512_fastscan:.1}"
+        );
         scalar_pack = black_box(scalar_pack);
         scalar_unpack = black_box(scalar_unpack);
         let _ = (scalar_pack, scalar_unpack);
     }
-
 }

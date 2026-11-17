@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright 2026 LakeSoul contributors
 """Pure tests: no LakeSoul import, HDF5, database, MinIO, or Rust build."""
+
 import gzip
 import importlib.util
 import json
@@ -11,7 +12,10 @@ import types
 import unittest
 from unittest.mock import patch
 
-SOURCE = Path(__file__).resolve().parents[1] / "examples/vector-search/benchmark_native_batch.py"
+SOURCE = (
+    Path(__file__).resolve().parents[1]
+    / "examples/vector-search/benchmark_native_batch.py"
+)
 SPEC = importlib.util.spec_from_file_location("native_batch_benchmark", SOURCE)
 runner = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = runner
@@ -48,7 +52,7 @@ class FakeAdapter:
 
     def prepare_single(self, qid):
         self.singles.append(qid)
-        return self.prepared([qid], .25)
+        return self.prepared([qid], 0.25)
 
     def prepare_batch(self, qids, *, full):
         self.batches.append((list(qids), full))
@@ -62,7 +66,10 @@ class MemoryStore:
         self.fail_delete = False
 
     def list_files(self, prefix):
-        return sorted(key for key in self.data if key.startswith(prefix + "/")) + self.extra_listing
+        return (
+            sorted(key for key in self.data if key.startswith(prefix + "/"))
+            + self.extra_listing
+        )
 
     def read(self, path):
         return self.data[path]
@@ -90,8 +97,12 @@ class ProtocolTests(unittest.TestCase):
                 runner.real_query_indices(dataset, n, n - 1)
 
     def test_original_dataset_parameters(self):
-        expected = {"sift": (256, (64,)), "glove": (1024, (512,)),
-                    "gist": (256, (64,)), "deep": (1024, (32, 64))}
+        expected = {
+            "sift": (256, (64,)),
+            "glove": (1024, (512,)),
+            "gist": (256, (64,)),
+            "deep": (1024, (32, 64)),
+        }
         for dataset, (nlist, probes) in expected.items():
             spec = runner.DATASETS[dataset]
             self.assertEqual((spec.nlist, spec.probes, spec.bits), (nlist, probes, 7))
@@ -102,8 +113,15 @@ class ProtocolTests(unittest.TestCase):
         adapter = FakeAdapter(clock)
         truth = [list(range(runner.K)) for _ in range(1000)]
         saved = []
-        result = runner.measure(adapter, "gist", truth, clock=clock,
-                                save_groups=lambda phase, groups, recalls: saved.append((phase, len(groups.qids))))
+        result = runner.measure(
+            adapter,
+            "gist",
+            truth,
+            clock=clock,
+            save_groups=lambda phase, groups, recalls: saved.append(
+                (phase, len(groups.qids))
+            ),
+        )
         self.assertEqual(adapter.singles, list(range(200)))
         full = [qids for qids, is_full in adapter.batches if is_full]
         chunks = [qids for qids, is_full in adapter.batches if not is_full]
@@ -157,18 +175,27 @@ class ProtocolTests(unittest.TestCase):
 
     def test_duplicate_missing_qid_short_k_and_invalid_id_rejected(self):
         truth = [list(range(100)), list(range(100))]
-        cases = [runner.Groups([0, 0], [list(range(100))] * 2),
-                 runner.Groups([0], [list(range(100))]),
-                 runner.Groups([0, 1], [list(range(99)), list(range(100))]),
-                 runner.Groups([0, 1], [[0] * 100, list(range(100))]),
-                 runner.Groups([0, 1], [list(range(99)) + [-1], list(range(100))]),
-                 runner.Groups([0, 1], [list(range(99)) + [1000], list(range(100))])]
+        cases = [
+            runner.Groups([0, 0], [list(range(100))] * 2),
+            runner.Groups([0], [list(range(100))]),
+            runner.Groups([0, 1], [list(range(99)), list(range(100))]),
+            runner.Groups([0, 1], [[0] * 100, list(range(100))]),
+            runner.Groups([0, 1], [list(range(99)) + [-1], list(range(100))]),
+            runner.Groups([0, 1], [list(range(99)) + [1000], list(range(100))]),
+        ]
         for groups in cases:
-            with self.subTest(groups=groups.qids), self.assertRaises(runner.ProtocolError):
+            with (
+                self.subTest(groups=groups.qids),
+                self.assertRaises(runner.ProtocolError),
+            ):
                 runner.validate_groups(groups, [0, 1], truth, 1000)
 
     def test_sql_interleaved_rows_qids_and_ranks_preserved(self):
-        rows = [(qid, rank, rank - 1, float(rank)) for rank in range(100, 0, -1) for qid in (7, 3)]
+        rows = [
+            (qid, rank, rank - 1, float(rank))
+            for rank in range(100, 0, -1)
+            for qid in (7, 3)
+        ]
         groups = runner.sql_groups(rows, [3, 7], inline=False)
         self.assertEqual(groups.qids, [3, 7])
         self.assertEqual(groups.ids, [list(range(100))] * 2)
@@ -177,17 +204,29 @@ class ProtocolTests(unittest.TestCase):
 
     def test_sql_unexpected_qid_rank_and_distance_rejected(self):
         rows = [(0, rank, rank - 1, float(rank)) for rank in range(1, 101)]
-        cases = [rows[:-1], rows + [rows[0]], [(99, *rows[0][1:])] + rows[1:],
-                 [(0, 0, 0, 0.0)] + rows[1:], [(0, 1, 0, float("nan"))] + rows[1:],
-                 [(0, 1, 0, float("inf"))] + rows[1:], [(0, 1, 0, 1000.0)] + rows[1:]]
+        cases = [
+            rows[:-1],
+            rows + [rows[0]],
+            [(99, *rows[0][1:])] + rows[1:],
+            [(0, 0, 0, 0.0)] + rows[1:],
+            [(0, 1, 0, float("nan"))] + rows[1:],
+            [(0, 1, 0, float("inf"))] + rows[1:],
+            [(0, 1, 0, 1000.0)] + rows[1:],
+        ]
         for malformed in cases:
-            with self.subTest(first=malformed[0]), self.assertRaises(runner.ProtocolError):
+            with (
+                self.subTest(first=malformed[0]),
+                self.assertRaises(runner.ProtocolError),
+            ):
                 runner.sql_groups(malformed, [0], inline=False)
 
     def test_empty_sql_stream_is_not_retried(self):
         from unittest.mock import Mock
-        inner = types.SimpleNamespace(sql_stream=Mock(return_value=iter(())),
-                                      sql=Mock(side_effect=AssertionError("must not retry")))
+
+        inner = types.SimpleNamespace(
+            sql_stream=Mock(return_value=iter(())),
+            sql=Mock(side_effect=AssertionError("must not retry")),
+        )
         session = types.SimpleNamespace(_inner=inner)
         self.assertEqual(runner.one_shot_sql(session, "SELECT native_batch"), [])
         inner.sql_stream.assert_called_once_with("SELECT native_batch")
@@ -195,11 +234,17 @@ class ProtocolTests(unittest.TestCase):
 
     def test_sql_uses_native_function_and_explicit_overfetch(self):
         config = {"dataset": "gist", "nprobe": 64, "rerank": "exact"}
-        query = types.SimpleNamespace(tolist=lambda: [.1, .2])
-        full = runner.sql_batch(config, [query], [0], full=True, target="target", query_table="queries")
-        sample = runner.sql_batch(config, [query], [0], full=False, target="target", query_table="queries")
+        query = types.SimpleNamespace(tolist=lambda: [0.1, 0.2])
+        full = runner.sql_batch(
+            config, [query], [0], full=True, target="target", query_table="queries"
+        )
+        sample = runner.sql_batch(
+            config, [query], [0], full=False, target="target", query_table="queries"
+        )
         self.assertIn("FROM lakesoul_vector_search_batch_from_table(", full)
-        self.assertIn("'queries', 'query_id', 'query_vector', 100, 64, 'L2', 'exact', 1)", full)
+        self.assertIn(
+            "'queries', 'query_id', 'query_vector', 100, 64, 'L2', 'exact', 1)", full
+        )
         self.assertIn("FROM lakesoul_vector_search_batch(", sample)
         self.assertNotIn("UNION", full + sample)
         self.assertNotIn("ORDER BY", full + sample)
@@ -247,7 +292,9 @@ class OwnershipTests(unittest.TestCase):
         runner.remove_owned_cache(cache, self.root, self.parent, self.token, "gist")
         self.assertFalse(cache.exists())
         with self.assertRaises(runner.ProtocolError):
-            runner.remove_owned_cache(self.parent, self.root, self.parent, self.token, "gist")
+            runner.remove_owned_cache(
+                self.parent, self.root, self.parent, self.token, "gist"
+            )
 
     def test_cache_initializer_clears_only_data_child_not_owner_marker(self):
         cache = self.root / "cache/python_exact_64"
@@ -261,7 +308,9 @@ class OwnershipTests(unittest.TestCase):
         # The native DiskCache initializes by clearing its own contents.
         for item in data.iterdir():
             item.unlink()
-        self.assertEqual(json.loads((cache / runner.MARKER).read_text())["token"], self.token)
+        self.assertEqual(
+            json.loads((cache / runner.MARKER).read_text())["token"], self.token
+        )
         runner.remove_owned_cache(cache, self.root, self.parent, self.token, "gist")
         self.assertFalse(cache.exists())
 
@@ -278,7 +327,10 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(store.deleted[-1], owned.marker)
 
     def test_s3_prefix_escape_detected_before_any_delete(self):
-        for escaped in ("lakesoul-bench2/elsewhere/keep", "lakesoul-bench2/native-batch-v2/" + self.token + "/gist/../deep/keep"):
+        for escaped in (
+            "lakesoul-bench2/elsewhere/keep",
+            "lakesoul-bench2/native-batch-v2/" + self.token + "/gist/../deep/keep",
+        ):
             store = MemoryStore()
             owned = runner.OwnedObjects(store, self.token, "gist")
             owned.create()
@@ -310,8 +362,13 @@ class OwnershipTests(unittest.TestCase):
                 runner.ensure_exited(self.parent)
 
     def test_environment_overrides_inherited_cache_and_preserves_stderr(self):
-        inherited = {"LAKESOUL_VECTOR_MEMORY_BYTES": "8GiB", "LAKESOUL_INDEX_CACHE_BYTES": "100GiB",
-                     "LAKESOUL_CACHE": "0", "LAKESOUL_CACHE_PATH": "/shared", "PYTHONPATH": "/other"}
+        inherited = {
+            "LAKESOUL_VECTOR_MEMORY_BYTES": "8GiB",
+            "LAKESOUL_INDEX_CACHE_BYTES": "100GiB",
+            "LAKESOUL_CACHE": "0",
+            "LAKESOUL_CACHE_PATH": "/shared",
+            "PYTHONPATH": "/other",
+        }
         env = runner.worker_environment(self.root / "cache", "query", inherited)
         self.assertEqual(env["LAKESOUL_VECTOR_MEMORY_BYTES"], "512MiB")
         self.assertEqual(env["LAKESOUL_CACHE_SIZE"], "1GiB")
@@ -322,19 +379,32 @@ class OwnershipTests(unittest.TestCase):
 
     def test_result_artifact_contains_qids_ids_ranks_and_is_exclusive(self):
         groups = runner.Groups([17], [list(range(100))], [list(map(float, range(100)))])
-        record = runner.save_result_groups(self.parent, "batch", groups, [.98])
+        record = runner.save_result_groups(self.parent, "batch", groups, [0.98])
         with gzip.open(record["path"], "rt") as stream:
             row = json.loads(stream.readline())
         self.assertEqual(row["query_id"], 17)
         self.assertEqual(row["ids"], list(range(100)))
         self.assertEqual(row["ranks"], list(range(1, 101)))
-        self.assertEqual(row["recall"], .98)
+        self.assertEqual(row["recall"], 0.98)
         with self.assertRaises(FileExistsError):
-            runner.save_result_groups(self.parent, "batch", groups, [.98])
+            runner.save_result_groups(self.parent, "batch", groups, [0.98])
 
     def test_supervisor_finishes_cleanup_before_next_dataset(self):
-        args = runner.arguments(["--datasets", "gist", "sift", "--apis", "python", "--rerank", "index",
-                                 "--scratch-root", str(self.parent / "scratch"), "--output-dir", str(self.parent / "output")])
+        args = runner.arguments(
+            [
+                "--datasets",
+                "gist",
+                "sift",
+                "--apis",
+                "python",
+                "--rerank",
+                "index",
+                "--scratch-root",
+                str(self.parent / "scratch"),
+                "--output-dir",
+                str(self.parent / "output"),
+            ]
+        )
         store = MemoryStore()
         calls = []
 
@@ -342,21 +412,57 @@ class OwnershipTests(unittest.TestCase):
             calls.append((config["dataset"], stage))
             return {"kind": stage, "dataset": config["dataset"]}
 
-        with patch.object(runner, "ArrowStore", return_value=store), \
-             patch.object(runner, "build_fingerprint", return_value={}), \
-             patch.object(runner, "execute_stage", side_effect=fake_stage):
+        with (
+            patch.object(runner, "ArrowStore", return_value=store),
+            patch.object(runner, "build_fingerprint", return_value={}),
+            patch.object(runner, "execute_stage", side_effect=fake_stage),
+        ):
             out = runner.supervisor(args)
-        self.assertEqual(calls, [(name, stage) for name in ("gist", "sift")
-                                 for stage in ("setup", "build", "query", "cleanup")])
-        records = [json.loads(line) for line in (out / "results.v2.jsonl").read_text().splitlines()]
-        self.assertEqual([row["kind"] for row in records],
-                         ["protocol", "setup", "build", "query", "cleanup", "setup", "build", "query", "cleanup"])
+        self.assertEqual(
+            calls,
+            [
+                (name, stage)
+                for name in ("gist", "sift")
+                for stage in ("setup", "build", "query", "cleanup")
+            ],
+        )
+        records = [
+            json.loads(line)
+            for line in (out / "results.v2.jsonl").read_text().splitlines()
+        ]
+        self.assertEqual(
+            [row["kind"] for row in records],
+            [
+                "protocol",
+                "setup",
+                "build",
+                "query",
+                "cleanup",
+                "setup",
+                "build",
+                "query",
+                "cleanup",
+            ],
+        )
         self.assertEqual(store.data, {})
         self.assertEqual(list(args.scratch_root.glob("nbatch_*")), [])
 
     def test_failure_cleans_first_dataset_and_does_not_start_next(self):
-        args = runner.arguments(["--datasets", "gist", "sift", "--apis", "python", "--rerank", "index",
-                                 "--scratch-root", str(self.parent / "scratch"), "--output-dir", str(self.parent / "output")])
+        args = runner.arguments(
+            [
+                "--datasets",
+                "gist",
+                "sift",
+                "--apis",
+                "python",
+                "--rerank",
+                "index",
+                "--scratch-root",
+                str(self.parent / "scratch"),
+                "--output-dir",
+                str(self.parent / "output"),
+            ]
+        )
         store = MemoryStore()
         store.data["lakesoul-bench2/minio_deep/keep"] = b"keep"
         calls = []
@@ -367,17 +473,23 @@ class OwnershipTests(unittest.TestCase):
                 raise RuntimeError("simulated engine failure")
             return {"kind": stage, "dataset": config["dataset"]}
 
-        with patch.object(runner, "ArrowStore", return_value=store), \
-             patch.object(runner, "build_fingerprint", return_value={}), \
-             patch.object(runner, "execute_stage", side_effect=fake_stage):
+        with (
+            patch.object(runner, "ArrowStore", return_value=store),
+            patch.object(runner, "build_fingerprint", return_value={}),
+            patch.object(runner, "execute_stage", side_effect=fake_stage),
+        ):
             with self.assertRaisesRegex(RuntimeError, "simulated engine failure"):
                 runner.supervisor(args)
-        self.assertEqual(calls, [("gist", "setup"), ("gist", "build"), ("gist", "cleanup")])
+        self.assertEqual(
+            calls, [("gist", "setup"), ("gist", "build"), ("gist", "cleanup")]
+        )
         self.assertEqual(store.data, {"lakesoul-bench2/minio_deep/keep": b"keep"})
         self.assertEqual(list(args.scratch_root.glob("nbatch_*")), [])
 
     def test_child_error_preserves_stderr_and_exit_evidence(self):
-        process = types.SimpleNamespace(pid=12345, returncode=7, wait=lambda **kwargs: 7)
+        process = types.SimpleNamespace(
+            pid=12345, returncode=7, wait=lambda **kwargs: 7
+        )
 
         def fake_popen(command, **kwargs):
             kwargs["stderr"].write(b"native engine failure\\n")
@@ -385,24 +497,34 @@ class OwnershipTests(unittest.TestCase):
             return process
 
         out = self.parent / "child-logs"
-        with patch.object(runner.subprocess, "Popen", side_effect=fake_popen), \
-             patch.object(runner, "stop_process") as stop:
+        with (
+            patch.object(runner.subprocess, "Popen", side_effect=fake_popen),
+            patch.object(runner, "stop_process") as stop,
+        ):
             with self.assertRaisesRegex(runner.ProtocolError, "exited 7"):
                 runner.run_child(["not-executed"], {}, out, 1)
         stop.assert_called_once_with(process)
         self.assertEqual((out / "stderr.log").read_bytes(), b"native engine failure\\n")
-        self.assertTrue(json.loads((out / "process.json").read_text())["process_group_exited"])
+        self.assertTrue(
+            json.loads((out / "process.json").read_text())["process_group_exited"]
+        )
 
     def test_timeout_records_joined_exit_before_cleanup(self):
         process = types.SimpleNamespace(pid=12345, returncode=-15)
-        process.wait = lambda **kwargs: (_ for _ in ()).throw(runner.subprocess.TimeoutExpired("mock", 1))
+        process.wait = lambda **kwargs: (_ for _ in ()).throw(
+            runner.subprocess.TimeoutExpired("mock", 1)
+        )
         out = self.parent / "timeout-logs"
-        with patch.object(runner.subprocess, "Popen", return_value=process), \
-             patch.object(runner, "stop_process") as stop:
+        with (
+            patch.object(runner.subprocess, "Popen", return_value=process),
+            patch.object(runner, "stop_process") as stop,
+        ):
             with self.assertRaises(runner.subprocess.TimeoutExpired):
                 runner.run_child(["not-executed"], {}, out, 1)
         stop.assert_called_once_with(process)
-        self.assertTrue(json.loads((out / "process.json").read_text())["process_group_exited"])
+        self.assertTrue(
+            json.loads((out / "process.json").read_text())["process_group_exited"]
+        )
 
     def test_empty_owned_object_prefix_is_safe_to_retry(self):
         owned = runner.OwnedObjects(MemoryStore(), self.token, "gist")

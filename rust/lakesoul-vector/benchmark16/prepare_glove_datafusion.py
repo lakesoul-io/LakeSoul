@@ -22,7 +22,9 @@ def fvecs(handle, destination: Path, dataset: str, rows: int, block_rows: int) -
         values = handle[dataset]
         dimension = values.shape[1]
         for start in range(0, rows, block_rows):
-            block = np.asarray(values[start : min(rows, start + block_rows)], dtype=np.float32)
+            block = np.asarray(
+                values[start : min(rows, start + block_rows)], dtype=np.float32
+            )
             norms = np.sqrt(np.einsum("ij,ij->i", block, block, dtype=np.float32))
             np.maximum(norms, np.float32(1e-12), out=norms)
             block /= norms[:, None]
@@ -40,7 +42,9 @@ def ivecs(
 ) -> None:
     with destination.open("xb") as output:
         for start in range(0, rows, block_rows):
-            block = np.asarray(source[start : min(rows, start + block_rows), :top_k], dtype="<i4")
+            block = np.asarray(
+                source[start : min(rows, start + block_rows), :top_k], dtype="<i4"
+            )
             headers = np.full((len(block), 1), top_k, dtype="<i4")
             np.concatenate((headers, block), axis=1).tofile(output)
 
@@ -74,7 +78,11 @@ def main() -> None:
         train = source["train"]
         test = source["test"]
         neighbors = source["neighbors"]
-        if args.queries < 1 or args.queries > len(test) or args.queries > len(neighbors):
+        if (
+            args.queries < 1
+            or args.queries > len(test)
+            or args.queries > len(neighbors)
+        ):
             parser.error("query count is outside the available test/neighbor rows")
         if args.top_k < 1 or args.top_k > neighbors.shape[1]:
             parser.error("top-k is outside the available ground-truth width")

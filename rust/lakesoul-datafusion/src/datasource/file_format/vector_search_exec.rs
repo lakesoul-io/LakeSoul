@@ -1107,7 +1107,11 @@ impl LakeSoulVectorSearchExec {
         expected_key_kind: u64,
         cdc_free: bool,
     ) -> DFResult<Option<(Arc<CachedSnapshot>, f64, bool)>> {
-        let cache_key = format!("{}\0store={:p}", self.snapshot_key(expected_key_kind), Arc::as_ptr(store));
+        let cache_key = format!(
+            "{}\0store={:p}",
+            self.snapshot_key(expected_key_kind),
+            Arc::as_ptr(store)
+        );
         let expected_prefixes: Vec<String> = groups
             .iter()
             .flat_map(|group| {

@@ -31,7 +31,8 @@ async fn lock_snapshot_table(tx: &Transaction<'_>, table_id: &str) -> Result<()>
     tx.query_one(
         "select pg_advisory_xact_lock(hashtextextended($1, 73409521))",
         &[&key],
-    ).await?;
+    )
+    .await?;
     Ok(())
 }
 
@@ -62,22 +63,28 @@ async fn validate_table_snapshot(
     snapshot: &crate::VectorBatchMetadata,
 ) -> Result<()> {
     let expected = &snapshot.table_info;
-    let row = tx.query_opt(
-        "select table_path, properties, table_schema, table_schema_arrow_ipc, \
+    let row = tx
+        .query_opt(
+            "select table_path, properties, table_schema, table_schema_arrow_ipc, \
                 table_schema_arrow_ipc_json_hash from table_info where table_id = $1",
-        &[&expected.table_id],
-    ).await?;
+            &[&expected.table_id],
+        )
+        .await?;
     let matches = row.is_some_and(|row| {
         row.get::<_, String>(0) == expected.table_path
             && row.get::<_, serde_json::Value>(1)
-                == serde_json::from_str::<serde_json::Value>(&expected.properties).unwrap_or_default()
+                == serde_json::from_str::<serde_json::Value>(&expected.properties)
+                    .unwrap_or_default()
             && row.get::<_, String>(2) == expected.table_schema
-            && row.get::<_, Option<Vec<u8>>>(3).unwrap_or_default() == expected.table_schema_arrow_ipc
-            && row.get::<_, Option<String>>(4).unwrap_or_default() == expected.table_schema_arrow_ipc_json_hash
+            && row.get::<_, Option<Vec<u8>>>(3).unwrap_or_default()
+                == expected.table_schema_arrow_ipc
+            && row.get::<_, Option<String>>(4).unwrap_or_default()
+                == expected.table_schema_arrow_ipc_json_hash
     });
     if !matches {
         return Err(LakeSoulMetaDataError::CommitConflict(
-            "table changed before snapshot pin acquisition; retry the complete snapshot".into(),
+            "table changed before snapshot pin acquisition; retry the complete snapshot"
+                .into(),
         ));
     }
     let rows = tx.query(
@@ -85,16 +92,26 @@ async fn validate_table_snapshot(
          where table_id = $1 order by partition_desc, version desc",
         &[&expected.table_id],
     ).await?;
-    let actual: Vec<(String, i32)> = rows.into_iter().map(|row| (row.get(0), row.get(1))).collect();
-    let mut expected: Vec<(String, i32)> = snapshot.partitions.iter()
-        .map(|partition| (partition.partition_desc.clone(), partition.version)).collect();
+    let actual: Vec<(String, i32)> = rows
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    let mut expected: Vec<(String, i32)> = snapshot
+        .partitions
+        .iter()
+        .map(|partition| (partition.partition_desc.clone(), partition.version))
+        .collect();
     expected.sort();
     if actual != expected {
         return Err(LakeSoulMetaDataError::CommitConflict(
             "partition snapshots changed before pin acquisition; retry the complete snapshot".into(),
         ));
     }
-    let files: Vec<String> = snapshot.data_files.iter().map(|file| file.path.clone()).collect();
+    let files: Vec<String> = snapshot
+        .data_files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect();
     let retired: bool = tx.query_one(
         "select exists (select 1 from unnest($1::text[]) p(path), index_drop d \
          where (d.kind = 'data_file' and d.index_prefix = \
@@ -360,9 +377,14 @@ impl<S: CatalogSegment> IndexCatalog<S> {
         owner: &str,
     ) -> Result<IndexReadLeaseGuard> {
         self.acquire_pinned_read_views_with_timing(
-            pinned, owner, INDEX_READ_LEASE_TTL, INDEX_READ_LEASE_RENEW_INTERVAL,
-            None, Some(snapshot),
-        ).await
+            pinned,
+            owner,
+            INDEX_READ_LEASE_TTL,
+            INDEX_READ_LEASE_RENEW_INTERVAL,
+            None,
+            Some(snapshot),
+        )
+        .await
     }
 
     /// Transfer coordinator-protected immutable views to a worker request.
@@ -426,7 +448,11 @@ impl<S: CatalogSegment> IndexCatalog<S> {
             validate_table_snapshot(&tx, snapshot).await?;
             Some(SnapshotAnchor {
                 table_id: snapshot.table_info.table_id.clone(),
-                data_files: snapshot.data_files.iter().map(|file| file.path.clone()).collect(),
+                data_files: snapshot
+                    .data_files
+                    .iter()
+                    .map(|file| file.path.clone())
+                    .collect(),
             })
         } else if let Some(parent) = parent_lease_id {
             let parent_anchor = tx.query_opt(
@@ -443,7 +469,10 @@ impl<S: CatalogSegment> IndexCatalog<S> {
                 ).await?.ok_or_else(|| LakeSoulMetaDataError::CommitConflict(
                     "parent table snapshot lease expired or was released".into(),
                 ))?;
-                Some(SnapshotAnchor { table_id, data_files: row.get(0) })
+                Some(SnapshotAnchor {
+                    table_id,
+                    data_files: row.get(0),
+                })
             } else if pinned.is_empty() {
                 return Err(LakeSoulMetaDataError::CommitConflict(
                     "parent request no longer holds a snapshot lease".into(),

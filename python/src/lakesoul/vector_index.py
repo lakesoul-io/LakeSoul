@@ -314,9 +314,7 @@ def delete_by_primary_keys(
     table_info = client.get_table_info_by_name(table_name, namespace)
     _, pk_cols = client.get_partition_and_pk_cols(table_info)
     if not pk_cols:
-        raise ValueError(
-            f"Table '{table_name}' has no primary key columns defined."
-        )
+        raise ValueError(f"Table '{table_name}' has no primary key columns defined.")
     pk_columns = list(pk_cols)
     encoded: list[str] = []
     for batch in batches:

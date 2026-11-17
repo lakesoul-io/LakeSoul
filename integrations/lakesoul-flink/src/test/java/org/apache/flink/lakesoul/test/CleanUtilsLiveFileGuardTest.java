@@ -114,16 +114,20 @@ public class CleanUtilsLiveFileGuardTest {
                 ps.setString(1, tableId);
                 ps.executeUpdate();
             }
-            try (PreparedStatement ps = connection.prepareStatement(
-                    "delete from index_read_lease where kind = 'snapshot' and index_prefix = ?")) {
+            try (PreparedStatement ps =
+                    connection.prepareStatement(
+                            "delete from index_read_lease where kind = 'snapshot' and index_prefix"
+                                    + " = ?")) {
                 ps.setString(1, tableId);
                 ps.executeUpdate();
             }
             if (dir != null) {
                 String root = dir.toAbsolutePath().toString();
-                try (PreparedStatement ps = connection.prepareStatement(
-                        "delete from index_drop where kind in ('data_file','data_directory')"
-                                + " and left(index_prefix,length(?) + 1) = ? || '/'")) {
+                try (PreparedStatement ps =
+                        connection.prepareStatement(
+                                "delete from index_drop where kind in"
+                                        + " ('data_file','data_directory') and"
+                                        + " left(index_prefix,length(?) + 1) = ? || '/'")) {
                     ps.setString(1, root);
                     ps.setString(2, root);
                     ps.executeUpdate();
@@ -152,25 +156,44 @@ public class CleanUtilsLiveFileGuardTest {
     @Test
     public void batchReadLeaseDefersCleanupUntilRelease() throws Exception {
         UUID lease = UUID.randomUUID();
-        try (PreparedStatement statement = connection.prepareStatement(
-                "insert into index_read_lease(lease_id,kind,index_prefix,shard_id,commit_id,generation,version,owner,data_files,expires_at)"
-                        + " values(?,'snapshot',?,0,0,0,0,'flink-clean-test',?,clock_timestamp() + interval '2 minutes')")) {
+        try (PreparedStatement statement =
+                connection.prepareStatement(
+                        "insert into"
+                            + " index_read_lease(lease_id,kind,index_prefix,shard_id,commit_id,generation,version,owner,data_files,expires_at)"
+                            + " values(?,'snapshot',?,0,0,0,0,'flink-clean-test',?,clock_timestamp()"
+                            + " + interval '2 minutes')")) {
             statement.setObject(1, lease);
             statement.setString(2, tableId);
-            statement.setArray(3, connection.createArrayOf("text", new String[] {expiredFile.toUri().toString()}));
+            statement.setArray(
+                    3,
+                    connection.createArrayOf(
+                            "text", new String[] {expiredFile.toUri().toString()}));
             statement.executeUpdate();
         }
-        boolean cleaned = new CleanUtils().deleteFileAndDataCommitInfo(
-                Collections.singletonList(compactionCommit.toString()), tableId, "-5", connection, true);
+        boolean cleaned =
+                new CleanUtils()
+                        .deleteFileAndDataCommitInfo(
+                                Collections.singletonList(compactionCommit.toString()),
+                                tableId,
+                                "-5",
+                                connection,
+                                true);
         assertFalse("cleanup must stay retryable while the batch is active", cleaned);
         assertTrue(Files.exists(expiredFile));
         assertEquals(1, countCommits(compactionCommit));
-        try (PreparedStatement statement = connection.prepareStatement("delete from index_read_lease where lease_id = ?")) {
+        try (PreparedStatement statement =
+                connection.prepareStatement("delete from index_read_lease where lease_id = ?")) {
             statement.setObject(1, lease);
             statement.executeUpdate();
         }
-        assertTrue(new CleanUtils().deleteFileAndDataCommitInfo(
-                Collections.singletonList(compactionCommit.toString()), tableId, "-5", connection, true));
+        assertTrue(
+                new CleanUtils()
+                        .deleteFileAndDataCommitInfo(
+                                Collections.singletonList(compactionCommit.toString()),
+                                tableId,
+                                "-5",
+                                connection,
+                                true));
         assertFalse(Files.exists(expiredFile));
         assertEquals(0, countCommits(compactionCommit));
     }
@@ -280,8 +303,8 @@ public class CleanUtilsLiveFileGuardTest {
     }
 
     /**
-     * A table without a vector index keeps the original cleanup: no guard, no advisory locks and
-     * no retirement fences, so ordinary lakehouse cleanup pays no metadata cost per file.
+     * A table without a vector index keeps the original cleanup: no guard, no advisory locks and no
+     * retirement fences, so ordinary lakehouse cleanup pays no metadata cost per file.
      */
     @Test
     public void tableWithoutVectorIndexSkipsRetirementFences() throws Exception {
@@ -310,8 +333,10 @@ public class CleanUtilsLiveFileGuardTest {
                 connection.prepareStatement(
                         "select count(*) from index_drop where kind = 'data_file'"
                                 + " and index_prefix = ?")) {
-            ps.setString(1, com.dmetasoul.lakesoul.meta.DataFileReadLeaseGuard
-                    .normalizePath(file.toUri().toString()));
+            ps.setString(
+                    1,
+                    com.dmetasoul.lakesoul.meta.DataFileReadLeaseGuard.normalizePath(
+                            file.toUri().toString()));
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();
                 return rs.getInt(1);

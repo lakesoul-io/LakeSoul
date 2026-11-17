@@ -70,7 +70,9 @@ impl Fixture {
         let batch = RecordBatch::try_new(
             schema,
             vec![
-                Arc::new(Int64Array::from_iter_values((0..64).map(|id| if duplicate_ids { id / 2 } else { id }))) as ArrayRef,
+                Arc::new(Int64Array::from_iter_values(
+                    (0..64).map(|id| if duplicate_ids { id / 2 } else { id }),
+                )) as ArrayRef,
                 Arc::new(Int32Array::from_iter_values(
                     (0..64).map(|i| (i % 2) as i32),
                 )),
@@ -306,23 +308,61 @@ async fn native_batch_read_lease_preserves_query_across_drop() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_batch_keeps_same_id_from_distinct_range_partitions() {
     let fixture = Fixture::with_partition_scoped_ids("L2", true).await;
-    let snapshot = NativeBatchSnapshot::prepare(fixture.provider(), &fixture.context.state(), "vec", "L2").await.unwrap();
-    for exact in [false,true] {
-        let options = NativeBatchOptions { top_k:64,nprobe:4,exact,exact_overfetch:1,parallelism:2,..Default::default() };
-        let results = snapshot.search(&[fixture.vectors[1].clone()], &options, Arc::new(AtomicBool::new(false))).await.unwrap();
-        assert_eq!(results[0].len(),64,"partition-scoped rows must not collapse to 32 IDs");
+    let snapshot = NativeBatchSnapshot::prepare(
+        fixture.provider(),
+        &fixture.context.state(),
+        "vec",
+        "L2",
+    )
+    .await
+    .unwrap();
+    for exact in [false, true] {
+        let options = NativeBatchOptions {
+            top_k: 64,
+            nprobe: 4,
+            exact,
+            exact_overfetch: 1,
+            parallelism: 2,
+            ..Default::default()
+        };
+        let results = snapshot
+            .search(
+                &[fixture.vectors[1].clone()],
+                &options,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            results[0].len(),
+            64,
+            "partition-scoped rows must not collapse to 32 IDs"
+        );
         let mut counts = HashMap::new();
-        for hit in &results[0] { *counts.entry(hit.id).or_insert(0) += 1; }
-        assert_eq!(counts.len(),32);
+        for hit in &results[0] {
+            *counts.entry(hit.id).or_insert(0) += 1;
+        }
+        assert_eq!(counts.len(), 32);
         assert!(counts.values().all(|count| *count == 2));
         if exact {
-            let mut expected: Vec<_> = fixture.vectors.iter().enumerate().map(|(row,vector)| {
-                let d = vector.iter().zip(&fixture.vectors[1]).map(|(a,b)|(a-b)*(a-b)).sum::<f32>().sqrt() as f64;
-                ((row/2) as i64,d)
-            }).collect();
-            expected.sort_by(|a,b|a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
-            for (hit,(id,d)) in results[0].iter().zip(expected) {
-                assert_eq!(hit.id,id);assert!((hit.distance-d).abs()<1e-5);
+            let mut expected: Vec<_> = fixture
+                .vectors
+                .iter()
+                .enumerate()
+                .map(|(row, vector)| {
+                    let d = vector
+                        .iter()
+                        .zip(&fixture.vectors[1])
+                        .map(|(a, b)| (a - b) * (a - b))
+                        .sum::<f32>()
+                        .sqrt() as f64;
+                    ((row / 2) as i64, d)
+                })
+                .collect();
+            expected.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+            for (hit, (id, d)) in results[0].iter().zip(expected) {
+                assert_eq!(hit.id, id);
+                assert!((hit.distance - d).abs() < 1e-5);
             }
         }
     }

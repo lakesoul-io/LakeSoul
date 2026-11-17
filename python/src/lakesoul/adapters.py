@@ -62,7 +62,9 @@ def to_ray_dataset(result: pa.Table | pa.RecordBatch) -> Any:
     return ray_data.from_arrow(to_pyarrow(result))
 
 
-def to_duckdb(result: pa.Table | pa.RecordBatch, *, connection: Any | None = None) -> Any:
+def to_duckdb(
+    result: pa.Table | pa.RecordBatch, *, connection: Any | None = None
+) -> Any:
     """Register the result in DuckDB and return a lazy relation.
 
     Requires the ``duckdb`` extra (``pip install 'lakesoul[duckdb]'``).  Pass an

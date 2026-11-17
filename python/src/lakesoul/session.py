@@ -265,7 +265,7 @@ class LakeSoulSession:
 
     def sql(self, sql: str, *, to: OutputFormat | None = None) -> Any:
         """Execute one SQL statement and return the result.
-        
+
 
         The statement runs on the LakeSoul-enabled DataFusion engine, so the
         full lakehouse query surface is available: filters, projections, joins,
@@ -289,7 +289,6 @@ class LakeSoulSession:
             # fallback runs the normal collected path once.
             batches = self._inner.sql(sql)
         return convert(pa.Table.from_batches(batches), to)
-
 
     def batch_search(
         self,
@@ -387,9 +386,7 @@ class LakeSoulSession:
         except Exception as error:  # noqa: BLE001
             raise LakeSoulQueryError(str(error)) from error
 
-    def explain(
-        self, sql: str, *, verbose: bool = True, analyze: bool = False
-    ) -> str:
+    def explain(self, sql: str, *, verbose: bool = True, analyze: bool = False) -> str:
         """Return ``EXPLAIN``/``EXPLAIN ANALYZE`` output for a statement.
 
         Use it to confirm that a vector search was pushed down: the plan

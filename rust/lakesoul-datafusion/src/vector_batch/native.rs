@@ -251,18 +251,31 @@ impl NativeBatchSnapshot {
                     DataFusionError::Execution("batch target no longer exists".into())
                 })?;
             if metadata.table_info.table_schema != provider.table_info.table_schema
-                || metadata.table_info.table_schema_arrow_ipc != provider.table_info.table_schema_arrow_ipc
-                || metadata.table_info.table_schema_arrow_ipc_json_hash != provider.table_info.table_schema_arrow_ipc_json_hash
+                || metadata.table_info.table_schema_arrow_ipc
+                    != provider.table_info.table_schema_arrow_ipc
+                || metadata.table_info.table_schema_arrow_ipc_json_hash
+                    != provider.table_info.table_schema_arrow_ipc_json_hash
                 || metadata.table_info.table_path != provider.table_info.table_path
                 || metadata.table_info.partitions != provider.table_info.partitions
             {
                 return Err(DataFusionError::Execution("target schema/location changed after planning; retry batch statement".into()));
             }
-            let fresh_properties: crate::catalog::LakeSoulTableProperty = serde_json::from_str(
-                &metadata.table_info.properties,
-            ).map_err(|error| DataFusionError::Execution(format!("invalid table properties: {error}")))?;
-            if fresh_properties.cdc_change_column.as_deref().is_some_and(|column| !column.is_empty()) {
-                return Err(DataFusionError::NotImplemented("native SQL batch requires a snapshot without CDC".into()));
+            let fresh_properties: crate::catalog::LakeSoulTableProperty =
+                serde_json::from_str(&metadata.table_info.properties).map_err(
+                    |error| {
+                        DataFusionError::Execution(format!(
+                            "invalid table properties: {error}"
+                        ))
+                    },
+                )?;
+            if fresh_properties
+                .cdc_change_column
+                .as_deref()
+                .is_some_and(|column| !column.is_empty())
+            {
+                return Err(DataFusionError::NotImplemented(
+                    "native SQL batch requires a snapshot without CDC".into(),
+                ));
             }
             if !crate::vector_index::vector_index_available(
                 &metadata.table_info.properties,
@@ -608,9 +621,16 @@ impl NativeBatchSnapshot {
         let declared_field = schema.field_with_name(&self.descriptor.column)?;
         let field = match declared_field.data_type() {
             DataType::List(item) | DataType::LargeList(item) => Arc::new(
-                declared_field.clone().with_data_type(DataType::FixedSizeList(
-                    item.clone(), i32::try_from(self.dim()).map_err(|_| DataFusionError::Plan("index dimension exceeds Arrow list limit".into()))?,
-                )),
+                declared_field
+                    .clone()
+                    .with_data_type(DataType::FixedSizeList(
+                        item.clone(),
+                        i32::try_from(self.dim()).map_err(|_| {
+                            DataFusionError::Plan(
+                                "index dimension exceeds Arrow list limit".into(),
+                            )
+                        })?,
+                    )),
             ),
             _ => Arc::new(declared_field.clone()),
         };

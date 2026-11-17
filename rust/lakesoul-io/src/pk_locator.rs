@@ -65,10 +65,10 @@ use arrow::record_batch::RecordBatch;
 use arrow::row::{RowConverter, SortField};
 use async_stream::try_stream;
 use datafusion::catalog::Session;
+use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::{
     MemoryConsumer, MemoryPool, MemoryReservation, UnboundedMemoryPool,
 };
-use datafusion::execution::TaskContext;
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -136,7 +136,6 @@ pub enum PrefixMatch {
     /// The key occurs more than once; the visible row cannot be chosen here.
     Multiple,
 }
-
 
 /// The candidate count above which the sorted index merge replaces the
 /// per-key binary search.  Below it the binary search is cheaper (the merge
@@ -582,7 +581,6 @@ impl MmapIndex {
         }
         rows
     }
-
 }
 
 /// Scan position of a sorted index lookup across key batches.
@@ -1757,7 +1755,8 @@ async fn get_or_load_file(
     let source = match format {
         PhysicalFormat::Vortex => {
             let session = vortex_session(session);
-            let file = get_vortex_file(Arc::clone(&io_store), &location, &session).await?;
+            let file =
+                get_vortex_file(Arc::clone(&io_store), &location, &session).await?;
             FileSource::Vortex { file, session }
         }
         PhysicalFormat::Parquet => {
@@ -3446,11 +3445,13 @@ async fn take_rows_block(
                 rootcause::report!("column {name} missing from file {location}")
             })?;
             let mut array = Arc::clone(batch.column(index));
-            let expected = projected_schema.field_with_name(name)
-                .map_err(|error| rootcause::report!("candidate column schema: {error}"))?;
+            let expected = projected_schema.field_with_name(name).map_err(|error| {
+                rootcause::report!("candidate column schema: {error}")
+            })?;
             if array.data_type() != expected.data_type() {
-                array = cast(array.as_ref(), expected.data_type())
-                    .map_err(|error| rootcause::report!("cast candidate column {name}: {error}"))?;
+                array = cast(array.as_ref(), expected.data_type()).map_err(|error| {
+                    rootcause::report!("cast candidate column {name}: {error}")
+                })?;
             }
             columns.push(array);
         }
@@ -3497,7 +3498,10 @@ async fn take_rows_parquet_block(
         .register(&scratch_pool);
     let mut stream = builder
         .with_projection(mask)
-        .with_row_selection(row_selection(indices, rows, &scratch).map_err(|error| rootcause::report!("row selection: {error}"))?)
+        .with_row_selection(
+            row_selection(indices, rows, &scratch)
+                .map_err(|error| rootcause::report!("row selection: {error}"))?,
+        )
         .build()
         .map_err(|error| open_error(location, error))?;
     let mut batches = Vec::new();
@@ -3512,11 +3516,13 @@ async fn take_rows_parquet_block(
                 rootcause::report!("column {name} missing from file {location}")
             })?;
             let mut array = Arc::clone(batch.column(index));
-            let expected = projected_schema.field_with_name(name)
-                .map_err(|error| rootcause::report!("candidate column schema: {error}"))?;
+            let expected = projected_schema.field_with_name(name).map_err(|error| {
+                rootcause::report!("candidate column schema: {error}")
+            })?;
             if array.data_type() != expected.data_type() {
-                array = cast(array.as_ref(), expected.data_type())
-                    .map_err(|error| rootcause::report!("cast candidate column {name}: {error}"))?;
+                array = cast(array.as_ref(), expected.data_type()).map_err(|error| {
+                    rootcause::report!("cast candidate column {name}: {error}")
+                })?;
             }
             columns.push(array);
         }
@@ -4067,31 +4073,49 @@ impl VectorBlockSource {
         let mut position = 0;
         let mut stored = Vec::with_capacity(self.blocks.dim);
         while position < order.len() {
-            if cancel.load(AtomicOrdering::Acquire) { return None; }
+            if cancel.load(AtomicOrdering::Acquire) {
+                return None;
+            }
             let row = requests[order[position]].2 as u64;
-            if row as usize >= self.blocks.rows { return None; }
+            if row as usize >= self.blocks.rows {
+                return None;
+            }
             let block_id = self.blocks.block_id(row)?;
             if active_block != Some(block_id) {
                 bytes = self.blocks.get_block(block_id)?;
                 active_block = Some(block_id);
                 blocks += 1;
             }
-            let offset = (row % self.blocks.block_rows as u64) as usize * self.blocks.row_bytes;
-            let row_bytes = bytes.get(offset..offset.checked_add(self.blocks.row_bytes)?)?;
+            let offset =
+                (row % self.blocks.block_rows as u64) as usize * self.blocks.row_bytes;
+            let row_bytes =
+                bytes.get(offset..offset.checked_add(self.blocks.row_bytes)?)?;
             stored.clear();
             match self.blocks.elem {
                 block::VectorElem::F32 => {
-                    stored.extend(row_bytes.chunks_exact(4).map(|v| f32::from_le_bytes([v[0],v[1],v[2],v[3]])));
+                    stored.extend(
+                        row_bytes
+                            .chunks_exact(4)
+                            .map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]])),
+                    );
                 }
                 block::VectorElem::F64 => {
-                    stored.extend(row_bytes.chunks_exact(8).map(|v| f64::from_le_bytes([v[0],v[1],v[2],v[3],v[4],v[5],v[6],v[7]]) as f32));
+                    stored.extend(row_bytes.chunks_exact(8).map(|v| {
+                        f64::from_le_bytes([
+                            v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
+                        ]) as f32
+                    }));
                 }
             }
-            if stored.len() != self.blocks.dim { return None; }
+            if stored.len() != self.blocks.dim {
+                return None;
+            }
             while position < order.len() && requests[order[position]].2 as u64 == row {
                 let request = order[position];
                 let query = queries.get(requests[request].0)?;
-                if query.len() != stored.len() { return None; }
+                if query.len() != stored.len() {
+                    return None;
+                }
                 scores[request] = if ascending {
                     block::squared_distance_f32(&stored, query)
                 } else {
