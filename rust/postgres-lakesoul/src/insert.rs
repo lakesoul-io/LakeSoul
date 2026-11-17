@@ -13,8 +13,13 @@
 //! planned by [`lakesoul_datafusion::planner::upsert`]; this module only
 //! routes it there.
 //!
-//! `RETURNING` is refused because the sink commits after the statement's rows
-//! are written and returns no row stream.
+//! `INSERT ... VALUES ... RETURNING` is projected from the write's input
+//! plan, so the returned rows are the values the sink consumed. `RETURNING`
+//! over `INSERT ... SELECT`, `ON CONFLICT` and `UPDATE` is still refused.
+//!
+//! `COPY ... FROM STDIN` uses the same write path through
+//! [`execute_copy_write`]: it plans the `Dml` node directly from the decoded
+//! rows instead of going through a SQL `INSERT`.
 //!
 //! A write inside a transaction block is staged: its files are recorded in the
 //! block and published by `COMMIT`, so `ROLLBACK` can still undo it. A
@@ -41,12 +46,15 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::TableProvider;
-use datafusion::common::ParamValues;
+use datafusion::common::{DFSchema, ParamValues, ScalarValue};
+use datafusion::datasource::{DefaultTableSource, MemTable};
 use datafusion::error::DataFusionError;
-use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
+use datafusion::logical_expr::ExprSchemable;
+use datafusion::logical_expr::dml::InsertOp;
+use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder, TableSource};
 use datafusion::prelude::{SessionContext, col};
 use datafusion::sql::parser::Statement as DfStatement;
 use datafusion::sql::sqlparser::ast::{
@@ -87,6 +95,8 @@ use crate::server::{ConnectionSession, ResultFormatCell};
 
 /// SQLSTATE `undefined_table`.
 const UNDEFINED_TABLE: &str = "42P01";
+/// SQLSTATE `undefined_column`.
+const UNDEFINED_COLUMN: &str = "42703";
 /// SQLSTATE `invalid_schema_name`.
 const INVALID_SCHEMA_NAME: &str = "3F000";
 /// SQLSTATE `invalid_catalog_name`.
@@ -996,6 +1006,162 @@ fn write_mode(session_context: &SessionContext) -> PgWireResult<Arc<LakeSoulWrit
         .config()
         .get_extension::<LakeSoulWriteMode>()
         .ok_or_else(|| internal("the session has no LakeSoul write mode"))
+}
+
+/// The write targets LakeSoul exposes, classified by how a transaction block
+/// treats them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WriteTargetKind {
+    LakeSoul,
+    Foreign,
+    ExternalFile,
+}
+
+/// Classify a write target and refuse it when the session's transaction state
+/// cannot hold it.
+///
+/// `COPY` and `INSERT` share this policy: a LakeSoul write is staged in a
+/// block, while a foreign or external-file write commits remotely and is
+/// refused there.
+pub(crate) fn check_write_target(
+    provider: &dyn TableProvider,
+    status: TransactionStatus,
+    session_context: &SessionContext,
+    verb: &str,
+    table_name: &str,
+) -> PgWireResult<WriteTargetKind> {
+    let any: &dyn std::any::Any = provider;
+    if any.downcast_ref::<LakeSoulTableProvider>().is_some() {
+        reject_transaction(status, session_context, verb)?;
+        Ok(WriteTargetKind::LakeSoul)
+    } else if any.downcast_ref::<FederationTableProvider>().is_some() {
+        reject_transaction_strict(status, verb)?;
+        Ok(WriteTargetKind::Foreign)
+    } else if any.downcast_ref::<ExternalFileTableProvider>().is_some() {
+        reject_transaction_strict(status, verb)?;
+        Ok(WriteTargetKind::ExternalFile)
+    } else {
+        Err(feature_not_supported(format!(
+            "relation \"{table_name}\" is not a LakeSoul or foreign table"
+        )))
+    }
+}
+
+/// Writes the rows a `COPY ... FROM STDIN` decoded as one statement.
+///
+/// The plan is the one `INSERT INTO <table> (<columns>) SELECT ...` would
+/// build: a projection puts the copied columns back into table order, fills
+/// the columns the COPY list omitted with their defaults (NULL when there is
+/// none), and casts each value to the target type. Building the `Dml` node
+/// directly avoids registering a staging relation in the connection's
+/// catalog, which RBAC would hide from the planner.
+pub(crate) async fn execute_copy_write(
+    table: &datafusion::sql::sqlparser::ast::ObjectName,
+    columns: &[String],
+    batches: Vec<RecordBatch>,
+    session_context: &SessionContext,
+    status: TransactionStatus,
+    database: &str,
+) -> PgWireResult<usize> {
+    let (table_ref, table_name) =
+        target_reference(&TableObject::TableName(table.clone()), database)?;
+    let provider = session_context
+        .table_provider(table_ref.clone())
+        .await
+        .map_err(|error| {
+            user_error(
+                UNDEFINED_TABLE,
+                format!("relation \"{table_name}\" does not exist: {error}"),
+            )
+        })?;
+    let kind = check_write_target(
+        provider.as_ref(),
+        status,
+        session_context,
+        "COPY",
+        &table_name,
+    )?;
+    if kind == WriteTargetKind::LakeSoul {
+        write_mode(session_context)?.set(ConflictMode::Reject);
+    }
+    let table_schema = provider.schema();
+    // The source schema is the COPY column list in the client's order; a
+    // source position maps to the table column it fills.
+    let mut source_fields = Vec::with_capacity(table_schema.fields().len());
+    let mut supplied = Vec::with_capacity(table_schema.fields().len());
+    if columns.is_empty() {
+        for (index, field) in table_schema.fields().iter().enumerate() {
+            source_fields.push(Field::new(field.name(), field.data_type().clone(), true));
+            supplied.push(index);
+        }
+    } else {
+        for column in columns {
+            let index = table_schema.index_of(column).map_err(|_| {
+                user_error(
+                    UNDEFINED_COLUMN,
+                    format!(
+                        "column \"{column}\" of relation \"{table_name}\" does not exist"
+                    ),
+                )
+            })?;
+            let field = table_schema.field(index);
+            source_fields.push(Field::new(field.name(), field.data_type().clone(), true));
+            supplied.push(index);
+        }
+    }
+    if batches.is_empty() {
+        return Ok(0);
+    }
+    let source_schema = Arc::new(Schema::new(source_fields));
+    let source = Arc::new(
+        MemTable::try_new(source_schema.clone(), vec![batches])
+            .map_err(|error| internal(&format!("COPY rows cannot be staged: {error}")))?,
+    );
+    let source_plan = LogicalPlanBuilder::scan(
+        "__lakesoul_copy_source",
+        Arc::new(DefaultTableSource::new(source)),
+        None,
+    )
+    .map_err(|error| PgWireError::ApiError(Box::new(error)))?
+    .build()
+    .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+    let table_source: Arc<dyn TableSource> = Arc::new(DefaultTableSource::new(provider));
+    let mut projections = Vec::with_capacity(table_schema.fields().len());
+    for (index, field) in table_schema.fields().iter().enumerate() {
+        let expression = match supplied.iter().position(|column| *column == index) {
+            Some(position) => col(source_schema.field(position).name())
+                .cast_to(field.data_type(), source_plan.schema()),
+            None => table_source
+                .get_column_default(field.name())
+                .cloned()
+                .unwrap_or_else(|| {
+                    datafusion::logical_expr::Expr::Literal(ScalarValue::Null, None)
+                })
+                .cast_to(field.data_type(), &DFSchema::empty()),
+        }
+        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+        projections.push(expression.alias(field.name()));
+    }
+    let projected = LogicalPlanBuilder::from(source_plan)
+        .project(projections)
+        .map_err(|error| PgWireError::ApiError(Box::new(error)))?
+        .build()
+        .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+    let plan = LogicalPlanBuilder::insert_into(
+        projected,
+        table_ref,
+        table_source,
+        InsertOp::Append,
+    )
+    .map_err(|error| PgWireError::ApiError(Box::new(error)))?
+    .build()
+    .map_err(|error| PgWireError::ApiError(Box::new(error)))?;
+    let dataframe = session_context
+        .execute_logical_plan(plan)
+        .await
+        .map_err(insert_error)?;
+    let batches = dataframe.collect().await.map_err(insert_error)?;
+    rows_affected(&batches)
 }
 
 async fn run(

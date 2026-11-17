@@ -11,14 +11,15 @@ that ordinary PostgreSQL driver workflows can execute.
 
 | Client | Path |
 | --- | --- |
-| `psycopg2` | connect, SELECT, parameterized types including `bytea`, `executemany`, `execute_values`, UPSERT, transaction rollback/commit, duplicate-key SQLSTATE, `information_schema`/`pg_catalog`, `psql \d`, named cursors |
-| `psycopg3` | the same paths through its extended protocol and batch implementation, including named cursors |
+| `psycopg2` | connect, SELECT, parameterized types including `bytea`, `executemany`, `execute_values`, `COPY ... FROM STDIN` (TEXT/CSV, `copy_expert`/`copy_from`), UPSERT, transaction rollback/commit, duplicate-key SQLSTATE, `information_schema`/`pg_catalog`, `psql \d`, named cursors |
+| `psycopg3` | the same paths through its extended protocol and batch implementation, including `cursor.copy()`/`write_row`, CopyFail aborts and named cursors |
 | `SQLAlchemy` | `SELECT`/write through the `psycopg2` dialect, plus reflection of columns and the primary key |
-| pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared SELECT, transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT |
+| pgjdbc | connect, DDL, prepared batch `addBatch`/`executeBatch`, prepared SELECT, `CopyManager.copyIn` (TEXT/CSV), transaction rollback, `DatabaseMetaData`, `setFetchSize`, UPSERT |
 
 The suite asserts **explicit refusal** for currently unsupported paths:
 
-- `COPY ... FROM STDIN`: `0A000`
+- `COPY ... TO STDOUT` and `COPY ... FROM` a file: `0A000`
+- a `COPY` that shares a multi-statement simple-query batch: `0A000`
 
 Named cursors are forward-only and non-holdable. `WITH HOLD`, `SCROLL`, binary
 cursors and backward fetches are explicitly refused instead of being silently
@@ -67,6 +68,10 @@ recorded gap. The tests already cover:
 - duplicate-key `23505` and connection recovery;
 - `information_schema`/`pg_catalog` table and column discovery, including psql `\d`;
 - forward-only named cursors through psycopg2 and psycopg3, and the `pg_cursors` view;
+- `COPY ... FROM STDIN` in TEXT and CSV, including NULL, escaped newlines, quoted
+  commas/newlines, a CSV header, an omitted column list, one-commit atomicity,
+  transaction rollback, driver-side encoders (`copy_from`, `write_row`,
+  `CopyManager.copyIn`) and CopyFail aborts;
 - `INSERT ... VALUES ... RETURNING` for `*`, column references and aliases, including SQLAlchemy Core;
 - SQLAlchemy reflection of columns and primary keys through the `psycopg2` dialect;
 - pgjdbc `DatabaseMetaData.getTables`/`getColumns`/`getPrimaryKeys`, `setFetchSize`, and UPSERT;
@@ -76,7 +81,7 @@ The remaining known gaps are:
 
 | Gap | Detail |
 | --- | --- |
-| `COPY FROM STDIN` | explicitly refused with `0A000`; this is the main blocker for Airbyte/Singer-style loaders |
+| `COPY ... TO STDOUT` | explicitly refused with `0A000`; `COPY FROM STDIN` is supported in TEXT and CSV |
 
 SQLAlchemy reflection is certified through the `psycopg2` dialect. The
 `psycopg3` dialect starts a nested transaction (`SAVEPOINT`) during reflection,

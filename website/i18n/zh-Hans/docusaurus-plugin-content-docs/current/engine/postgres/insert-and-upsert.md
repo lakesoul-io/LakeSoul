@@ -92,8 +92,14 @@ SET day = EXCLUDED.day,
 
 如果表声明了向量或全文索引，索引会在元数据提交后更新。索引构建失败时语句返回错误，但写入的行已经提交且可见。
 
+## 批量导入
+
+批量导入请使用 [`COPY ... FROM STDIN`](copy.md)，而不是大量单行插入：它是
+一次 commit，支持 TEXT 和 CSV。
+
 ## 下一步
 
 - [事务与目录](transactions-and-catalog.md)
+- [COPY FROM STDIN](copy.md)
 - [增量 SQL](../incremental-sql/getting-started.md)
 - [向量检索](../vector-search/overview.md)

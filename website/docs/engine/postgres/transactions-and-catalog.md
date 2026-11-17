@@ -20,8 +20,9 @@ transaction. `ROLLBACK` deletes the staged files.
 
 - `BEGIN` / `COMMIT` / `ROLLBACK` are accepted. Reads inside a block see the
   published snapshot plus that block's staged writes.
-- DDL, `COPY`, IVM maintenance, subscriptions and savepoints inside a block are
-  refused with `0A000`.
+- DDL, IVM maintenance, subscriptions and savepoints inside a block are refused
+  with `0A000`. `COPY ... FROM STDIN` is a write: it is staged in the block and
+  published by `COMMIT`.
 - `REPEATABLE READ`, `SERIALIZABLE` and their `SET` forms are refused with
   `0A000`.
 - A failed transaction returns `25P02` for subsequent statements until
