@@ -56,7 +56,7 @@ block use deferred publication. See the
 
 - [DDL](ddl.md)
 - [Insert and upsert](insert-and-upsert.md)
-- [COPY FROM STDIN](copy.md)
+- [COPY](copy.md)
 - [Transactions and catalog](transactions-and-catalog.md)
 - [PostgreSQL subscriptions](subscription.md)
 - [Detached queries](detached-queries.md)

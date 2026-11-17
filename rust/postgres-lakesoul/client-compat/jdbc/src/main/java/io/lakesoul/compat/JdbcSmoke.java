@@ -9,6 +9,7 @@ import org.postgresql.copy.CopyManager;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.StringWriter;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
@@ -165,7 +166,37 @@ public final class JdbcSmoke {
             check("23505".equals(expected.getSQLState()), "CopyManager duplicate SQLSTATE");
         }
 
+        String outTable = table + "_out";
         try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DROP TABLE IF EXISTS " + outTable);
+            statement.executeUpdate(
+                    "CREATE TABLE " + outTable + " (id bigint primary key, name text)");
+            statement.executeUpdate(
+                    "INSERT INTO " + outTable + " (id, name) VALUES (1, 'alice'), (2, 'bob')");
+        }
+        StringWriter csv = new StringWriter();
+        long outRows =
+                copy.copyOut(
+                        "COPY " + outTable + " (id, name) TO STDOUT WITH (FORMAT csv, HEADER true)",
+                        csv);
+        check(outRows == 2, "CopyManager.copyOut csv rows");
+        String[] lines = csv.toString().split("\n");
+        check(lines.length == 3 && "id,name".equals(lines[0]), "CopyManager csv header");
+        java.util.Arrays.sort(lines, 1, lines.length);
+        check("1,alice".equals(lines[1]), "CopyManager csv row 1");
+        check("2,bob".equals(lines[2]), "CopyManager csv row 2");
+
+        StringWriter text = new StringWriter();
+        check(
+                copy.copyOut("COPY " + outTable + " (id, name) TO STDOUT", text) == 2,
+                "CopyManager.copyOut text rows");
+        String[] textLines = text.toString().split("\n");
+        java.util.Arrays.sort(textLines);
+        check("1\talice".equals(textLines[0]), "CopyManager text row 1");
+        check("2\tbob".equals(textLines[1]), "CopyManager text row 2");
+
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DROP TABLE IF EXISTS " + outTable);
             statement.executeUpdate("DROP TABLE IF EXISTS " + table);
         }
     }

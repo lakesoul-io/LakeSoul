@@ -103,6 +103,7 @@ pub fn register_pg_catalog_shims(
 ) {
     context.register_udf(ScalarUDF::from(PgRelationIsPublishable));
     context.register_udf(ScalarUDF::from(PgVersion));
+    context.register_udf(ScalarUDF::from(PgIsInRecovery));
     context.register_udf(ScalarUDF::from(PgGetSerialSequence));
     context.register_udf(ScalarUDF::from(PgVisibility("pg_type_is_visible")));
     context.register_udf(ScalarUDF::from(PgVisibility("pg_function_is_visible")));
@@ -1660,6 +1661,31 @@ impl QueryHook for PgPublicationHook {
         _client: &mut dyn HookClient,
     ) -> Option<PgWireResult<Response>> {
         is_publication_probe(statement).then(publication_response)
+    }
+}
+
+/// `pg_is_in_recovery()`: the endpoint is never a standby.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct PgIsInRecovery;
+
+impl ScalarUDFImpl for PgIsInRecovery {
+    fn name(&self) -> &str {
+        "pg_is_in_recovery"
+    }
+
+    fn signature(&self) -> &Signature {
+        static SIGNATURE: LazyLock<Signature> =
+            LazyLock::new(|| Signature::exact(vec![], Volatility::Stable));
+        &SIGNATURE
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> DFResult<DataType> {
+        Ok(DataType::Boolean)
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DFResult<ColumnarValue> {
+        let array: ArrayRef = Arc::new(BooleanArray::from(vec![false; args.number_rows]));
+        Ok(ColumnarValue::Array(array))
     }
 }
 

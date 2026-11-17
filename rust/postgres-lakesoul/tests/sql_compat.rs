@@ -314,11 +314,11 @@ async fn merge_across_commits(h: &Harness) -> Result<()> {
 }
 
 async fn server_error_and_recovery(h: &Harness) -> Result<()> {
-    // No writes to fixtures: unsupported COPY is rejected before execution.
-    // Full no-side-effect/write-policy coverage belongs to phase two.
-    let sql = "COPY items TO STDOUT";
+    // No writes to fixtures: the read-only policy rejects DELETE before
+    // execution. Full no-side-effect/write-policy coverage belongs to phase two.
+    let sql = "DELETE FROM items WHERE id = 1";
     let error = h.lake.simple_query(sql).await.err()
-        .context("case=server-sqlstate SQL=COPY items TO STDOUT protocol=simple-text expected rejection, actual success")?;
+        .context("case=server-sqlstate SQL=DELETE FROM items WHERE id = 1 protocol=simple-text expected rejection, actual success")?;
     let db = error.as_db_error().context("case=server-sqlstate protocol=simple-text expected server ErrorResponse, not client rejection")?;
     ensure!(
         db.code().code() == "0A000",

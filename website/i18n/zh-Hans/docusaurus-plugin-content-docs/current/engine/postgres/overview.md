@@ -47,7 +47,7 @@ cargo run -p postgres-lakesoul -- --port 5433 \
 
 - [DDL](ddl.md)
 - [写入与 Upsert](insert-and-upsert.md)
-- [COPY FROM STDIN](copy.md)
+- [COPY](copy.md)
 - [事务与目录](transactions-and-catalog.md)
 - [PostgreSQL 订阅](subscription.md)
 - [后台查询](detached-queries.md)

@@ -2,7 +2,7 @@
 sidebar_position: 3.5
 ---
 
-# COPY FROM STDIN
+# COPY
 
 <!--
 SPDX-FileCopyrightText: 2026 LakeSoul Contributors
@@ -10,10 +10,11 @@ SPDX-FileCopyrightText: 2026 LakeSoul Contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-`COPY ... FROM STDIN` 通过 PostgreSQL 的 copy 子协议批量导入数据。它是导入工具和
-dump/restore 工具使用的路径，而不是逐行 `INSERT`：Airbyte 和 Singer target、
-`pg_dump`/`pg_restore`、`psql \copy`、pgjdbc `CopyManager`、psycopg2
-`copy_expert`/`copy_from`、psycopg3 `cursor.copy()`。
+PostgreSQL 的 copy 子协议支持双向批量搬运。`COPY ... FROM STDIN` 是导入工具
+使用的路径，而不是逐行 `INSERT`；`COPY ... TO STDOUT` 是报表导出和数据搬运工具
+使用的导出路径。常见客户端包括 Airbyte、Singer、`psql \copy`、pgjdbc
+`CopyManager`、psycopg2 `copy_expert`/`copy_from` 和 psycopg3
+`cursor.copy()`。
 
 ```sql
 COPY orders (id, day, region, amount) FROM STDIN;
@@ -36,7 +37,7 @@ COPY orders FROM STDIN WITH (FORMAT text, DELIMITER '|', NULL 'NULL');
 | `FORMAT text` / `FORMAT csv` | 支持 | 支持 |
 | `DELIMITER` | 单字节，默认 tab | 单字节，默认逗号 |
 | `NULL` | 默认 `\N` | 默认未加引号的空字段 |
-| `HEADER` | 拒绝（`42601`） | 跳过第一条记录 |
+| `HEADER` | 拒绝（`42601`） | 导入时跳过第一条记录；导出时写列名 |
 | `QUOTE`、`ESCAPE` | 拒绝（`42601`） | 单字节，默认 `"` |
 | `ENCODING` | 仅 `UTF8` | 仅 `UTF8` |
 
@@ -55,7 +56,7 @@ CSV 字段可以加引号；引号字段内可以包含分隔符、换行和成�
 
 ## 语义
 
-- 一条 `COPY` 对应一次 LakeSoul commit。重复主键（`23505`）、NOT NULL 违反
+- 一条 `COPY ... FROM STDIN` 对应一次 LakeSoul commit。重复主键（`23505`）、NOT NULL 违反
   （`23502`）或格式错误的行（`22P02`/`22P04`）不会发布**任何**行，包括失败行
   之前的行。
 - 在 `BEGIN`/`COMMIT` 中，COPY 与 `INSERT` 一样先 staged，由 `COMMIT` 发布；
@@ -63,20 +64,33 @@ CSV 字段可以加引号；引号字段内可以包含分隔符、换行和成�
 - 不写列清单时，数据流必须按表顺序包含所有列。显式列清单可以省略列：省略的列
   写入 NULL（如果表声明了默认值，则写默认值）。
 - 空的 COPY 不写入任何内容，返回 `COPY 0`。
-- COPY 不能与其他语句共享一个 simple-query batch：batch 在执行前就会以 `0A000`
-  拒绝，因为 copy 子协议会占用连接直到 `CopyDone`。
+- COPY（任一方向）不能与其他语句共享一个 simple-query batch：batch 在执行前就会
+  以 `0A000` 拒绝。
 - 客户端可以用 CopyFail 中止；已缓冲的行被丢弃，语句返回 `57014`，连接仍可继续
   使用。
 - 行会在内存中缓冲到 `CopyDone`，因为一条语句必须对应一次 commit。超大导入请
   拆成多条 `COPY` 语句。
 
+## 导出：COPY TO STDOUT
+
+```sql
+COPY orders TO STDOUT;
+COPY orders (id, amount) TO STDOUT WITH (FORMAT csv, HEADER true);
+COPY (SELECT id, amount FROM orders WHERE amount > 0 ORDER BY id)
+  TO STDOUT WITH (FORMAT csv);
+```
+
+服务端逐行流式发送 `CopyData`，最后返回 `COPY <rows>`。
+
+`HEADER` 会与第一行数据一起发送；零行导出不带表头。TEXT 和 CSV 使用与导入
+相同的选项。行来自查询计划，因此事务块内的表导出能看到本块 staged 的写入，
+查询导出支持 `ORDER BY`、过滤和 join。没有 `ORDER BY` 的表导出不保证行顺序。
+
 ## 不支持
 
 以下形式会显式拒绝，而不是近似执行：
 
-- `COPY ... TO STDOUT`
-- `COPY ... FROM` 文件或程序
-- `COPY (query) ...`
+- `COPY ... TO` 文件或程序，以及 `COPY ... FROM` 文件或程序
 - `FORMAT binary`
 - `FREEZE`、`FORCE_QUOTE`、`FORCE_NOT_NULL`、`FORCE_NULL`
 - 语句文本内嵌数据（`COPY t FROM STDIN; ...`）
@@ -85,10 +99,10 @@ CSV 字段可以加引号；引号字段内可以包含分隔符、换行和成�
 
 | 客户端 | 入口 |
 | --- | --- |
-| psycopg2 | `cursor.copy_expert(...)`、`cursor.copy_from(...)` |
-| psycopg3 | `cursor.copy(...)`，配合 `copy.write` / `copy.write_row` |
-| pgjdbc | `connection.unwrap(PGConnection.class).getCopyAPI().copyIn(...)` |
-| psql | `\copy orders FROM 'orders.csv' WITH (FORMAT csv, HEADER true)` |
+| psycopg2 | `cursor.copy_expert(...)`、`cursor.copy_from(...)`；导出用 `copy_expert` |
+| psycopg3 | `cursor.copy(...)`，配合 `copy.write` / `copy.write_row` / `copy.read` |
+| pgjdbc | `connection.unwrap(PGConnection.class).getCopyAPI().copyIn(...)` / `copyOut(...)` |
+| psql | `\copy orders FROM 'orders.csv' ...` / `\copy orders TO 'orders.csv' ...` |
 
 ```python
 with cursor.copy(
@@ -96,4 +110,10 @@ with cursor.copy(
 ) as copy:
     copy.write("1,42.00\n")
     copy.write("2,7.50\n")
+
+with cursor.copy(
+    "COPY orders (id, amount) TO STDOUT WITH (FORMAT csv)"
+) as copy:
+    for chunk in copy:
+        print(chunk)
 ```

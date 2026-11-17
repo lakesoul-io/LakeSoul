@@ -120,6 +120,6 @@ single-row inserts: it is one commit, in TEXT or CSV format.
 ## Next
 
 - [Transactions and catalog](transactions-and-catalog.md)
-- [COPY FROM STDIN](copy.md)
+- [COPY](copy.md)
 - [Incremental SQL](../incremental-sql/getting-started.md)
 - [Vector search](../vector-search/quickstart.md)

@@ -35,6 +35,7 @@ mod auth;
 mod cancel;
 mod catalog;
 mod copy_in;
+mod copy_out;
 mod cursor;
 mod ddl;
 mod failed_transaction;

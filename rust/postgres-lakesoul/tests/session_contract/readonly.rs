@@ -19,6 +19,7 @@ use crate::support::{Harness, compare};
 pub async fn run(h: &Harness) -> Result<()> {
     refused_writes_and_ddl(h).await?;
     supported_update_is_not_a_read_only_refusal(h).await?;
+    supported_copy_out_is_not_a_read_only_refusal(h).await?;
     refused_write_in_simple_batch(h).await?;
     parameter_error_boundaries(h).await?;
     Ok(())
@@ -57,10 +58,6 @@ const REFUSALS: &[Refusal] = &[
     Refusal {
         id: "truncate",
         sql: "TRUNCATE items",
-    },
-    Refusal {
-        id: "copy-out",
-        sql: "COPY items TO STDOUT",
     },
 ];
 
@@ -223,6 +220,31 @@ async fn supported_update_is_not_a_read_only_refusal(h: &Harness) -> Result<()> 
     eprintln!(
         "sql-compat case=read-only-update-supported classification=executed \
          simple=1 extended=1 value=12"
+    );
+    Ok(())
+}
+
+/// `COPY ... TO STDOUT` exports rows: it is a read and must reach the copy
+/// hook, not be caught by the read-only policy's refusal list.
+async fn supported_copy_out_is_not_a_read_only_refusal(h: &Harness) -> Result<()> {
+    const SQL: &str = "COPY items TO STDOUT";
+    let context = format!("case=read-only-copy-out-supported SQL={SQL}");
+    let stream = h.lake.copy_out(SQL).await.with_context(|| {
+        format!("{context}: expected a CopyOutResponse, actual error")
+    })?;
+    let mut stream = std::pin::pin!(stream);
+    let mut rows = 0usize;
+    while let Some(chunk) = futures::StreamExt::next(&mut stream).await {
+        let chunk = chunk.with_context(|| format!("{context}: read CopyData"))?;
+        rows += chunk.iter().filter(|&&byte| byte == b'\n').count();
+    }
+    ensure!(
+        rows == 4,
+        "{context}: expected 4 exported rows, actual {rows}"
+    );
+    common::assert_items_intact(&h.lake, &format!("{context} after-export")).await?;
+    eprintln!(
+        "sql-compat case=read-only-copy-out-supported rows=4 classification=executed"
     );
     Ok(())
 }
