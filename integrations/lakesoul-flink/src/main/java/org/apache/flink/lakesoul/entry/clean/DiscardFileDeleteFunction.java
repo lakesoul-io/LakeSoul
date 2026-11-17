@@ -17,6 +17,7 @@ import org.apache.flink.util.Collector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.sql.Array;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -248,20 +249,99 @@ public class DiscardFileDeleteFunction extends KeyedProcessFunction<String, Stri
     }
 
     private List<String> pinnedPaths(Connection conn, List<String> batch) throws SQLException {
+        if (batch == null || batch.isEmpty()) {
+            return new ArrayList<>();
+        }
+        Array paths = conn.createArrayOf("text", batch.toArray());
+        // A batch belongs to a handful of tables; probing only those tables uses
+        // the (table_id, pinned) index instead of scanning every pinned commit.
+        List<String> tableIds = singleOwnerTableIds(conn, paths);
+        if (tableIds == null) {
+            return pinnedPathsGlobal(conn, paths);
+        }
+        try (PreparedStatement ps =
+                conn.prepareStatement(
+                        "select distinct f.path from data_commit_info dci,"
+                                + " unnest(dci.file_ops) as f"
+                                + " where dci.pinned = true"
+                                + " and dci.table_id = any(?::text[])"
+                                + " and f.path = any(?::text[])")) {
+            ps.setArray(1, conn.createArrayOf("text", tableIds.toArray()));
+            ps.setArray(2, paths);
+            List<String> pinned = new ArrayList<>();
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    pinned.add(rs.getString(1));
+                }
+            }
+            return pinned;
+        }
+    }
+
+    /**
+     * Owning tables of the batch, when every batch table path belongs to exactly one table.
+     *
+     * <p>{@code null} means the fast path cannot prove it matches the global pinned probe: a table
+     * path shared by several tables (or missing from {@code table_info}) could be pinned by
+     * another table, so the caller falls back to scanning all pinned commits.
+     */
+    private List<String> singleOwnerTableIds(Connection conn, Array paths) throws SQLException {
+        int distinctPaths;
+        try (PreparedStatement ps =
+                conn.prepareStatement(
+                        "select count(distinct table_path),"
+                                + " count(*) filter (where table_path is null)"
+                                + " from discard_compressed_file_info"
+                                + " where file_path = any(?::text[])")) {
+            ps.setArray(1, paths);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                distinctPaths = rs.getInt(1);
+                if (rs.getInt(2) > 0) {
+                    return null;
+                }
+            }
+        }
+        if (distinctPaths == 0) {
+            return null;
+        }
+        List<String> tableIds = new ArrayList<>();
+        try (PreparedStatement ps =
+                conn.prepareStatement(
+                        "select ti.table_path, count(distinct ti.table_id) as owners,"
+                                + " min(ti.table_id) as table_id from table_info ti"
+                                + " where ti.table_path = any(select distinct table_path"
+                                + "   from discard_compressed_file_info where file_path = any(?::text[]))"
+                                + " group by ti.table_path")) {
+            ps.setArray(1, paths);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    if (rs.getInt("owners") != 1) {
+                        return null;
+                    }
+                    tableIds.add(rs.getString("table_id"));
+                }
+            }
+        }
+        return tableIds.size() == distinctPaths ? tableIds : null;
+    }
+
+    /** Global pinned probe used when the owning tables are not unambiguous. */
+    private List<String> pinnedPathsGlobal(Connection conn, Array paths) throws SQLException {
         try (PreparedStatement ps =
                 conn.prepareStatement(
                         "SELECT p.path FROM unnest(?::text[]) AS p(path)"
                                 + " WHERE EXISTS (SELECT 1 FROM data_commit_info dci,"
                                 + " unnest(dci.file_ops) AS f WHERE dci.pinned = true"
                                 + " AND f.path = p.path)")) {
-            ps.setArray(1, conn.createArrayOf("text", batch.toArray()));
-            List<String> paths = new ArrayList<>();
+            ps.setArray(1, paths);
+            List<String> pinned = new ArrayList<>();
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    paths.add(rs.getString(1));
+                    pinned.add(rs.getString(1));
                 }
             }
-            return paths;
+            return pinned;
         }
     }
 
