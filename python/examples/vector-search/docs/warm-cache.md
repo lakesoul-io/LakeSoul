@@ -11,7 +11,7 @@ L1 Memory
 
 L2 Local SSD
   ├─ 通用 DiskCache（数据页 / PK key index / decoded block）
-  └─ IndexSsdCache（索引 segment / mutation 文件，可选、可持久化）
+  └─ IndexSsdCache（索引 segment / mutation 文件，可选、进程内复用）
 
 L3 Object Storage
   └─ 数据文件 + _vector_index/...
@@ -32,7 +32,12 @@ flowchart TB
 
 L1/L2 只影响速度，对象存储是 source of truth。缓存键现在包含实际 `ObjectStore` 的分配身份；不同 bucket/endpoint 的同名路径不会复用 PK locator、decoded block、parsed vector shard 或 index SSD 内容。cache entry保留store引用以防指针复用。
 
-通用store接口无法可靠提供持久后端身份，因此本实现为disk key增加进程nonce：服务重启后不盲目复用旧后端的同路径缓存。IndexSsdCache首次访问会扫描其专属目录中格式正确的16位十六进制`.bin`条目，按mtime和当前预算采用/淘汰旧条目，避免每次重启累积在LRU之外；未知文件、符号链接和活动临时下载文件不删除。预算按缓存实例/进程管理，不是多个进程共享一个目录时的全局硬配额；部署可为进程分配独立cache目录。
+通用store接口无法可靠提供持久后端身份，因此本实现为disk key增加进程nonce：服务重启后不盲目复用旧后端的同路径缓存。具体语义是：
+
+- **同一进程内**重建缓存实例（`IndexSsdCache`/decoded block/PK index）仍能命中已写入的 L2 文件，因为同一个 `ObjectStore` 分配期间 token 保持稳定；
+- **进程重启后两类 L2 都不命中**（包括 `IndexSsdCache`），旧目录内容只在首次访问时被惰性扫描、按 mtime 与当前预算采用/淘汰，随后按需重建。
+
+`IndexSsdCache`首次访问会扫描其专属目录中格式正确的16位十六进制`.bin`条目，按mtime和当前预算采用/淘汰旧条目，避免每次重启累积在LRU之外；未知文件、符号链接和活动临时下载文件不删除。预算按缓存实例/进程管理，不是多个进程共享一个目录时的全局硬配额；部署可为进程分配独立cache目录。
 
 ## 1. 配置
 
@@ -104,7 +109,7 @@ flowchart LR
 
 - moka 加权 LRU，按容量淘汰并删除本地文件；
 - 下载到 `.tmp` → `sync_all` → `rename`，不会读到半写文件；
-- 跨进程重启保留；启动时惰性注册，首次命中才打开文件；
+- 同一进程内跨 cache 实例保留（store 分配存活期间 token 稳定）；进程重启后不复用，启动时惰性注册，首次命中才打开文件；
 - 通过 `IndexCachedStore` 包装 object store，只对索引加载生效；
 - HEAD/条件 GET 直接委托，避免为了元数据下载整文件；
 - 预算独立：`LAKESOUL_INDEX_SSD_BYTES`，默认关闭，不挤占通用页缓存。
@@ -128,7 +133,7 @@ flowchart LR
 | SSD 首次填充 | 504.5 ms | 557.8 | 280.9 MB |
 | SSD 命中，且 S3 上索引对象已删除 | 174.6 ms | 533.4 | 278.6 MB |
 
-第三行说明 L2 确实在服务：S3 索引对象已删除，查询仍成功。
+第三行说明同进程内 L2 确实在服务：S3 索引对象已删除，同进程后续查询仍成功；进程重启后不再命中，会重新下载。
 本机 MinIO 延迟远低于真实 S3，真实环境下 SSD 对首查/tail 的收益会更明显。
 
 ## 3. exact 路径：按需 decoded-block
