@@ -49,9 +49,10 @@ struct CachedTableProvider {
     provider: Arc<dyn TableProvider>,
 }
 
-static TABLE_PROVIDER_CACHE: LazyLock<
-    Mutex<HashMap<(String, String, usize), CachedTableProvider>>,
-> = LazyLock::new(|| Mutex::new(HashMap::new()));
+type TableProviderCache = Mutex<HashMap<(String, String, usize), CachedTableProvider>>;
+
+static TABLE_PROVIDER_CACHE: LazyLock<TableProviderCache> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 const TABLE_PROVIDER_CACHE_ENTRIES: usize = 256;
 

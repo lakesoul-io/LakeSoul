@@ -3555,25 +3555,26 @@ pub fn vector_exact_block_cache_enabled() -> bool {
 /// `DiskCache` (the same S3->SSD cache used by `LAKESOUL_CACHE`) and in a small
 /// in-memory LRU, then reused by later candidate reads.  It never materializes
 /// a full vector column.
-static BLOCK_MEMORY: LazyLock<Option<moka::sync::Cache<(u64, u64, u32), Arc<[u8]>>>> =
-    LazyLock::new(|| {
-        let config = vector_cache_config();
-        if !config.enabled() {
-            return None;
-        }
-        let capacity = config.block_bytes() as u64;
-        if capacity == 0 {
-            return None;
-        }
-        Some(
-            moka::sync::Cache::builder()
-                .max_capacity(capacity.div_ceil(1024))
-                .weigher(|_key: &(u64, u64, u32), value: &Arc<[u8]>| {
-                    (value.len().div_ceil(1024)).min(u32::MAX as usize) as u32
-                })
-                .build(),
-        )
-    });
+type BlockMemoryCache = moka::sync::Cache<(u64, u64, u32), Arc<[u8]>>;
+
+static BLOCK_MEMORY: LazyLock<Option<BlockMemoryCache>> = LazyLock::new(|| {
+    let config = vector_cache_config();
+    if !config.enabled() {
+        return None;
+    }
+    let capacity = config.block_bytes() as u64;
+    if capacity == 0 {
+        return None;
+    }
+    Some(
+        moka::sync::Cache::builder()
+            .max_capacity(capacity.div_ceil(1024))
+            .weigher(|_key: &(u64, u64, u32), value: &Arc<[u8]>| {
+                (value.len().div_ceil(1024)).min(u32::MAX as usize) as u32
+            })
+            .build(),
+    )
+});
 
 fn block_rows_for(row_bytes: usize) -> usize {
     vector_cache_config().block_rows(row_bytes)
@@ -3719,14 +3720,13 @@ impl BlockSource {
         if let Some(value) = self.memory_get(block) {
             return Some(value);
         }
-        if let Some(cache) = index_disk_cache() {
-            if let Ok(Some(bytes)) =
+        if let Some(cache) = index_disk_cache()
+            && let Ok(Some(bytes)) =
                 GLOBAL_RUNTIME.block_on(cache.get(&self.block_location, block))
-            {
-                let value: Arc<[u8]> = Arc::from(bytes.as_ref());
-                self.memory_put(block, Arc::clone(&value));
-                return Some(value);
-            }
+        {
+            let value: Arc<[u8]> = Arc::from(bytes.as_ref());
+            self.memory_put(block, Arc::clone(&value));
+            return Some(value);
         }
         let start = block as usize * self.block_rows;
         if start >= self.rows {
@@ -4095,12 +4095,14 @@ impl VectorBlockSource {
                 block::VectorElem::F32 => {
                     stored.extend(
                         row_bytes
-                            .chunks_exact(4)
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
                             .map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]])),
                     );
                 }
                 block::VectorElem::F64 => {
-                    stored.extend(row_bytes.chunks_exact(8).map(|v| {
+                    stored.extend(row_bytes.as_chunks::<8>().0.iter().map(|v| {
                         f64::from_le_bytes([
                             v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
                         ]) as f32

@@ -157,8 +157,10 @@ pub async fn gc_shard_now<S: CatalogSegment, F: Fn(&str) -> bool>(
 ) -> Result<IndexGcReport> {
     Ok(catalog
         .with_gc_cleanup(prefix, grace, keep_generations, |plan| async move {
-            let mut report = IndexGcReport::default();
-            report.commits_deleted = plan.deleted_commit_rows;
+            let mut report = IndexGcReport {
+                commits_deleted: plan.deleted_commit_rows,
+                ..Default::default()
+            };
             if plan.deleted_commit_rows == 0
                 && plan.removed_filenames.is_empty()
                 && plan.removed_generations.is_empty()

@@ -111,12 +111,12 @@ impl VectorShardIndexBuilder {
         use lakesoul_vector::RabitqError;
 
         let index_prefix = self.index_prefix();
-        if self.base.is_none() && streaming_build_enabled() {
-            if let Some(outcome) =
+        if self.base.is_none()
+            && streaming_build_enabled()
+            && let Some(outcome) =
                 self.build_fresh_streaming(index_prefix.clone()).await?
-            {
-                return Ok(outcome);
-            }
+        {
+            return Ok(outcome);
         }
         let (codec, all_batches) = self
             .read_batches()
@@ -169,12 +169,11 @@ impl VectorShardIndexBuilder {
         use lakesoul_vector::RabitqError;
 
         let index_prefix = self.index_prefix();
-        if streaming_build_enabled() {
-            if let Some(outcome) =
+        if streaming_build_enabled()
+            && let Some(outcome) =
                 self.build_fresh_streaming(index_prefix.clone()).await?
-            {
-                return Ok(outcome);
-            }
+        {
+            return Ok(outcome);
         }
         let (codec, all_batches) = self
             .read_batches()

@@ -224,15 +224,14 @@ impl NativeSession {
                     ));
                 }
                 let distributed_partitions =
-                    config_usize(&options, "target_partitions")?.unwrap_or(8);
+                    config_usize(options, "target_partitions")?.unwrap_or(8);
                 if distributed_partitions < 2 {
                     return Err(PyValueError::new_err(
                         "distributed.target_partitions must be >= 2",
                     ));
                 }
-                let fallback_to_local =
-                    config_bool(&options, "fallback_to_local")?.unwrap_or(false);
-                let bytes_per_partition = config_usize(&options, "bytes_per_partition")?;
+                let fallback_to_local = config_bool(options, "fallback_to_local")?.unwrap_or(false);
+                let bytes_per_partition = config_usize(options, "bytes_per_partition")?;
                 distributed = Some(DistributedOptions {
                     discovery: WorkerDiscovery::Static(worker_urls),
                     fallback_to_local,

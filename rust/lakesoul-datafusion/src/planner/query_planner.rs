@@ -205,21 +205,16 @@ async fn build_fast_plan_exact(
     }
     // Plain column projections above the sort.
     let mut projections: Vec<&datafusion::logical_expr::Projection> = Vec::new();
-    loop {
-        match node {
-            LogicalPlan::Projection(projection) => {
-                if projection
-                    .expr
-                    .iter()
-                    .any(|expr| !matches!(expr, Expr::Column(_)))
-                {
-                    return Ok(None);
-                }
-                projections.push(projection);
-                node = projection.input.as_ref();
-            }
-            _ => break,
+    while let LogicalPlan::Projection(projection) = node {
+        if projection
+            .expr
+            .iter()
+            .any(|expr| !matches!(expr, Expr::Column(_)))
+        {
+            return Ok(None);
         }
+        projections.push(projection);
+        node = projection.input.as_ref();
     }
     let LogicalPlan::Sort(sort) = node else {
         return Ok(None);

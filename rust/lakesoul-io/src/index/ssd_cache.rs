@@ -114,7 +114,7 @@ impl IndexSsdCache {
                 // for an in-process index anyway.
                 (entry.size.div_ceil(1024)).min(u32::MAX as u64) as u32
             })
-            .max_capacity((capacity_bytes as u64).div_ceil(1024))
+            .max_capacity(capacity_bytes.div_ceil(1024))
             .eviction_listener(|_key: Arc<String>, entry: Entry, cause| {
                 if matches!(
                     cause,

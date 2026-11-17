@@ -981,6 +981,8 @@ fn score_multi_file(
 /// `score_keys` fast path.  Primary keys are decoded only for the candidates
 /// that win the top-k, so no key value is materialised for the losers.
 #[allow(clippy::too_many_arguments)]
+type BucketHits = Vec<(usize, Vec<(f32, IndexKey)>)>;
+
 async fn exact_rank_and_merge(
     store: &Arc<dyn ObjectStore>,
     buckets: &[(String, Vec<String>)],
@@ -1095,7 +1097,7 @@ async fn exact_rank_and_merge(
         // Newest first.  Equal ranks are allowed only when they own disjoint
         // keys; resolve_bucket_keys() rejects overlap.
         if files.len() > 1 {
-            files.sort_by(|left, right| right.1.cmp(&left.1));
+            files.sort_by_key(|file| std::cmp::Reverse(file.1));
         }
         sources.push(files);
     }
@@ -1158,71 +1160,66 @@ async fn exact_rank_and_merge(
                 let sources = &sources;
                 let resolved = &resolved;
                 let descriptors = &descriptors;
-                let bucket_hits = bucket_hits;
                 let query_vectors = &request.queries;
                 let next = &next;
-                handles.push(scope.spawn(
-                    move || -> DFResult<Vec<(usize, Vec<(f32, IndexKey)>)>> {
-                        let mut rows = Vec::new();
-                        loop {
-                            let index =
-                                next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            if index >= descriptors.len() {
-                                break;
-                            }
-                            let (bucket, start, end) = descriptors[index];
-                            let files = &sources[bucket];
-                            if files.is_empty() {
-                                return Err(DataFusionError::Execution(
-                                    "exact batch search lost a bucket source"
-                                        .to_string(),
-                                ));
-                            }
-                            for query in start..end {
-                                let keys: Vec<IndexKey> = bucket_hits[bucket][query]
-                                    .iter()
-                                    .take(candidates)
-                                    .map(|hit| hit.key.clone())
-                                    .collect();
-                                let scores = if files.len() == 1 {
-                                    files[0].0.score_keys(
-                                        &keys,
-                                        &query_vectors[query],
-                                        request.ascending(),
-                                    )
-                                } else {
-                                    let Some(map) = resolved[bucket].as_ref() else {
-                                        return Err(DataFusionError::Execution(
-                                            "exact batch search lost a multi-file resolver"
-                                                .to_string(),
-                                        ));
-                                    };
-                                    score_multi_file(
-                                        files,
-                                        map,
-                                        &keys,
-                                        &query_vectors[query],
-                                        request.ascending(),
-                                    )
-                                };
-                                let Some(scores) = scores else {
+                handles.push(scope.spawn(move || -> DFResult<BucketHits> {
+                    let mut rows = Vec::new();
+                    loop {
+                        let index =
+                            next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if index >= descriptors.len() {
+                            break;
+                        }
+                        let (bucket, start, end) = descriptors[index];
+                        let files = &sources[bucket];
+                        if files.is_empty() {
+                            return Err(DataFusionError::Execution(
+                                "exact batch search lost a bucket source".to_string(),
+                            ));
+                        }
+                        for query in start..end {
+                            let keys: Vec<IndexKey> = bucket_hits[bucket][query]
+                                .iter()
+                                .take(candidates)
+                                .map(|hit| hit.key.clone())
+                                .collect();
+                            let scores = if files.len() == 1 {
+                                files[0].0.score_keys(
+                                    &keys,
+                                    &query_vectors[query],
+                                    request.ascending(),
+                                )
+                            } else {
+                                let Some(map) = resolved[bucket].as_ref() else {
                                     return Err(DataFusionError::Execution(
-                                        "stored-vector block read failed"
+                                        "exact batch search lost a multi-file resolver"
                                             .to_string(),
                                     ));
                                 };
-                                rows.push((
-                                    query,
-                                    keys.into_iter()
-                                        .zip(scores)
-                                        .map(|(key, score)| (score, key))
-                                        .collect(),
+                                score_multi_file(
+                                    files,
+                                    map,
+                                    &keys,
+                                    &query_vectors[query],
+                                    request.ascending(),
+                                )
+                            };
+                            let Some(scores) = scores else {
+                                return Err(DataFusionError::Execution(
+                                    "stored-vector block read failed".to_string(),
                                 ));
-                            }
+                            };
+                            rows.push((
+                                query,
+                                keys.into_iter()
+                                    .zip(scores)
+                                    .map(|(key, score)| (score, key))
+                                    .collect(),
+                            ));
                         }
-                        Ok(rows)
-                    },
-                ));
+                    }
+                    Ok(rows)
+                }));
             }
             let mut collected: Vec<(usize, Vec<(f32, IndexKey)>)> =
                 Vec::with_capacity(queries);

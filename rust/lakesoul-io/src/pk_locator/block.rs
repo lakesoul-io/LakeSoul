@@ -245,14 +245,14 @@ pub(crate) fn score_rows_from_bytes(
         stored.clear();
         match elem {
             VectorElem::F32 => {
-                for value in row.chunks_exact(4) {
+                for value in row.as_chunks::<4>().0.iter() {
                     stored.push(f32::from_le_bytes([
                         value[0], value[1], value[2], value[3],
                     ]));
                 }
             }
             VectorElem::F64 => {
-                for value in row.chunks_exact(8) {
+                for value in row.as_chunks::<8>().0.iter() {
                     stored.push(f64::from_le_bytes([
                         value[0], value[1], value[2], value[3], value[4], value[5],
                         value[6], value[7],
