@@ -4,6 +4,7 @@
 
 package org.apache.spark.sql.lakesoul.commands
 
+import com.dmetasoul.lakesoul.meta.DBUtil
 import com.dmetasoul.lakesoul.spark.clean.CleanExpiredData.cleanSinglePartitionExpiredDiskData
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.internal.SQLConf
@@ -47,19 +48,18 @@ class CleanPathGuardSparkSuite
 
   import testImplicits._
 
+  // Use the same metadata database as the Spark session: surefire sets
+  // `lakesoul.pg.url` per fork (lakesoul_test_${forkNumber}) and DBUtil is the
+  // production resolver, so an env-defaulted URL here would point at a
+  // different database in CI.
+  private lazy val dbInfo = DBUtil.getDBInfo
+
   private def jdbcUrl: String =
-    sys.env
-      .getOrElse(
-        "LAKESOUL_PG_URL",
-        "jdbc:postgresql://127.0.0.1:5432/lakesoul_test?stringtype=unspecified"
-      )
-      .replace("?stringtype=unspecified", "")
+    dbInfo.getUrl.replace("?stringtype=unspecified", "")
 
-  private def jdbcUser: String =
-    sys.env.getOrElse("LAKESOUL_PG_USERNAME", "lakesoul_test")
+  private def jdbcUser: String = dbInfo.getUsername
 
-  private def jdbcPassword: String =
-    sys.env.getOrElse("LAKESOUL_PG_PASSWORD", "lakesoul_test")
+  private def jdbcPassword: String = dbInfo.getPassword
 
   private def withPg[T](f: Connection => T): T = {
     val connection =
