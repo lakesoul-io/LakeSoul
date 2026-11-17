@@ -5,7 +5,7 @@ sidebar_label: "基准：本地文件"
 
 # 向量索引基准测试（Local File）
 
-> 本文档是 **Local File（本地文件系统）** 版本。旧版 upsert/rebuild 结果已全部废弃。
+> 本文档是 **Local File（本地文件系统）** 版本，覆盖构建与索引检索。
 > 本轮只测试**构建和索引检索**，不测试 upsert/增量维护。MinIO 版本见 [MinIO 版本](/docs/engine/vector-search/benchmark-minio-large)。
 
 ## 1. 结论摘要

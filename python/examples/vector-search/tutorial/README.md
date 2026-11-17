@@ -1,7 +1,7 @@
 # LakeSoul 向量检索教程
 
 本目录只保留可运行的 Notebook；概念、配置和 API 说明见
-[docs/README.md](../docs/README.md)。
+[官网快速开始](../../../website/docs/engine/vector-search/quickstart.md)。
 
 ## Notebooks
 
@@ -20,4 +20,4 @@
 - MinIO 或本地路径；
 - 可选：`psycopg` + `pgvector`（pgvector 兼容服务示例）。
 
-环境变量与最小示例见 [docs/quickstart.md](../docs/quickstart.md)。
+环境变量与最小示例见 [快速开始](../../../website/docs/engine/vector-search/quickstart.md)。

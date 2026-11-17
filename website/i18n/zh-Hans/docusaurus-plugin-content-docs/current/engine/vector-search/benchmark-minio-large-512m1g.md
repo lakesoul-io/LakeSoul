@@ -5,11 +5,9 @@ sidebar_label: "基准：MinIO L1 512MiB / L2 1GiB"
 
 # 向量索引大规模基准（L1 512MiB / L2 1GiB）
 
-> **补测完成（2026-11-14）：30/30组结果已验证。** 全部专属索引、表对象及缓存已按来源清理；20组跨接口配对的164,000个query比较完全同序，测量后8项原有湖仓兼容性回归通过。原始数据与核验证据见文末。
-
 本页使用原生批查询重测 Python、DataFusion SQL 和 LakeSoul pgwire。单查固定 **200** 条；GIST批查 **1,000** 条；SIFT/GloVe/Deep-Image批查 **10,000** 条真实query。DataFusion/pgwire批查均为一次SQL，不是客户端逐条SQL循环。
 
-## 1. 方法与历史校正
+## 1. 方法
 
 | 项目 | 本轮设定 |
 |---|---|
@@ -30,9 +28,7 @@ sidebar_label: "基准：MinIO L1 512MiB / L2 1GiB"
 | 构建 | Rust release，`-C target-cpu=native`；仅本机性能构建，不作为跨CPU通用产物 |
 | 清理 | 同时只测一个数据集；每个run/接口组完成后停止专属进程，drop专属表并删除其prefix/cache，再继续；Deep中断恢复的两组各自建表并清理 |
 
-旧DataFusion/pgwire的batch列是SQL loop，不能作为native batch性能。后续旧补测脚本还出现过full batch与百分位采样混入同一计时分母、结果重复导致recall越界。本页用新runner的真实测量替换，不将旧QPS乘2推算。原2026-11-11 raw 不随仓库发布（口径差异见上文）。第一轮新runner还触发cache初始化删除owner标记，已在修正owner目录后整轮重跑；旧失败run不混入本表。
-
-本次有效记录来自2026年11月13日的20组完整测量和11月14日的10组Deep补测。13日的Deep运行收到外部SIGTERM；它的未完成exact测量未纳入本表，完成的20组保留。补测使用相同二进制SHA256、参数和query/truth指纹，未重跑已完成组。各来源的中断记录、恢复清理及选择关系保留在manifest和raw的source_run字段。不同日期的非独占宿主机负载可能影响耗时，不作微小差距的稳定性承诺。
+所有入口都走同一条原生执行栈：DataFusion/pgwire 的 batch 是一次 SQL 调用，不是逐条 SQL 循环；数据仅反映本页所列硬件与参数，不承诺跨机器的微小差距。
 
 两个SQL入口共享原生引擎：`lakesoul_vector_search_batch`、`lakesoul_vector_search_batch_from_table`。本轮full batch用query表入口，chunk采样用inline JSON。SQL算子会跨小Arrow输入batch填充有界query window，避免GIST每batch35行导致过小窗口；1,000query回归实际验证为4个窗口。pgwire是LakeSoul的PostgreSQL/pgvector兼容前端，不是上游pgvector扩展的batch能力。输入/输出、LUT/heap和候选使用受限window及工作内存；缓存容量不等于进程RSS，RSS包含运行时、映射和瞬时工作。
 
@@ -152,14 +148,8 @@ sidebar_label: "基准：MinIO L1 512MiB / L2 1GiB"
 - 单条SQL仍按一个query执行；native batch一次传入整张query表，内部按有界window/CPU tile并行，共享快照、cluster和FastScan block。不能将SQL loop的QPS当作native batch。
 - index和exact的差距同时受候选计算、原始向量块读取、L1/L2命中和结果传输影响；仅凭QPS不能把慢全部归因于MinIO。
 - 新SQL入口目前要求Int64主键id、完整索引覆盖、无CDC/mutation chain；不能证明可见性时明确拒绝。不同range partition的同id是不同的行，不按全表ID误去重。
-- 每组保留实际query数、单查逐条延迟、batch wall时间、分离的百分位采样时间、recall、RSS、数据query/truth指纹和binary SHA256。每个来源run均已存在成功cleanup记录，并已独立复核其专属资源释放情况。
+- 每组保留实际 query 数、单查逐条延迟、batch wall 时间、百分位采样时间、recall、RSS 与 query/truth 指纹。
 
-## 6. 本轮原始记录
+## 6. 原始数据
 
-原始 JSONL、manifest 与核验产物保留在本地基准运行目录，不随仓库发布。
-
-本地完整ranked结果与stderr/stdout保留在以下来源run目录；原始压缩结果的路径及SHA256见raw的result_artifact字段。写表/构建表展示每个数据集首个来源run的成本；Deep恢复run重新构建的成本也完整保留在raw中。
-
-- `/tmp/lakesoul-native-batch-results/native-batch-v2-20261113T060505Z-321091b5f07d48abbed8e03552ef0cb4`
-- `/tmp/lakesoul-native-batch-results/native-batch-v2-20261114T041849Z-6aad3284328a4464b32562cb6819c6eb`
-- `/tmp/lakesoul-native-batch-results/native-batch-v2-20261114T051135Z-32b55b0d8ce64403b816cb2160eee722`
+原始 JSONL 与 manifest 保存在基准运行目录，不随仓库发布。

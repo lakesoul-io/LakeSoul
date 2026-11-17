@@ -5,7 +5,7 @@ sidebar_label: "Benchmark: local file (SSD + memory)"
 
 # Vector Index Benchmark (Local File)
 
-> This is the **Local File** (local filesystem) variant. The old upsert/rebuild results are retired.
+> This is the **Local File** (local filesystem) variant, covering build + index search.
 > This benchmark covers **build + index search only**; it does not test upserts. The MinIO (three-tier cache) variant is [MinIO benchmark](/docs/engine/vector-search/benchmark-minio-large).
 
 ## 1. Summary
